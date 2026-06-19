@@ -1,0 +1,8 @@
+{
+  "budgets": {
+    "ci-test": {
+      "description": "Local and GitHub CI gate (ci-test.sh), calibrated for cold GitHub runners",
+      "max_seconds": 1200
+    }
+  }
+}

@@ -1,0 +1,67 @@
+name: CI
+
+# Push to main or open PR to main → run tests.
+# Bump FIRMWARE_VERSION manually before an intentional release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ci-test.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: interface/package-lock.json
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install toolchain
+        run: |
+          pip install "platformio>=6.1.19,<7" "cryptography>=41"
+          cd interface && npm ci
+
+      - name: Run ci-test.sh
+        run: |
+          set -o pipefail
+          ./scripts/ci-test.sh 2>&1 | tee ci-test.log
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-test-log-${{ github.sha }}
+          path: ci-test.log
+          retention-days: 14

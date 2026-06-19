@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "source": "display_correctness_trace+native_render_operation_tests",
+  "event": "DisplayCorrectnessTraceEvent",
+  "notes": "Render-frame trace checks composed source fields; native render-operation tests additionally verify selected RenderFrame inputs reach the V1Display leaf draw calls. Physical LCD/pixel-camera verification remains separate manual/future coverage.",
+  "invariants": [
+    {
+      "id": "C-BAND-PRIMARY",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind in [V1_LIVE,V1_PERSISTED,ALP_LIVE,ALP_PERSISTED] assert bandStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-ARROWS-PRIMARY",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind in [V1_LIVE,V1_PERSISTED,ALP_LIVE,ALP_PERSISTED] assert arrowsStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-FREQ-V1",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind in [V1_LIVE,V1_PERSISTED] assert frequencyStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-BOGEY-STATUS",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind != NONE assert bogeyStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-MUTE-V1-LIVE",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind == V1_LIVE assert muteStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-SIGNAL-LIVE",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind in [V1_LIVE,ALP_LIVE,ALP_PERSISTED] assert signalBarsStatus == MATCH",
+      "native_test": "test_display_update_render_paths::test_render_frame_v1_live_drives_native_leaf_outputs"
+    },
+    {
+      "id": "C-ALP-OWNER",
+      "status": "measured-render-frame+native-render-operation",
+      "query": "where primaryKind in [ALP_LIVE,ALP_PERSISTED] assert owner == ALP and renderedBand == BAND_LASER",
+      "native_test": "test_display_update_render_paths::test_render_frame_alp_live_drives_laser_owner_outputs"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "files": [
+    "band_k.mul",
+    "band_ka.mul",
+    "band_laser.mul",
+    "band_x.mul",
+    "bogeys.mul",
+    "dir_ahead.mul",
+    "dir_behind.mul",
+    "dir_side.mul"
+  ],
+  "ranges": [
+    {
+      "prefix": "digit_",
+      "start": 0,
+      "end": 9,
+      "width": 1,
+      "suffix": ".mul"
+    },
+    {
+      "prefix": "tens_",
+      "start": 0,
+      "end": 99,
+      "width": 2,
+      "suffix": ".mul"
+    }
+  ]
+}

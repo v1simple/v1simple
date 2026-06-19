@@ -1,0 +1,11 @@
+# Main loop call-order contract (required relative sequence)
+
+processLoopConnectionEarlyPhase
+shouldReturnEarlyFromLoopPowerTouchPhase
+processLoopIngestPhase
+obdRuntimeModule.update
+speedSourceSelector.update
+processLoopDisplayPreWifiPhase
+processLoopWifiPhase
+loopTelemetryModule.process
+processLoopFinalizePhase

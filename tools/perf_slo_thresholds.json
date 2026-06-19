@@ -1,0 +1,37 @@
+{
+  "profiles": ["drive_wifi_off", "drive_wifi_ap"],
+  "hard_common": [
+    { "metric": "qDrop", "source": "final", "op": "==", "limit": 0 },
+    { "metric": "parseFail", "source": "final", "op": "==", "limit": 0 },
+    { "metric": "oversizeDrops", "source": "final", "op": "==", "limit": 0 },
+    { "metric": "bleMutexTimeout", "source": "final", "op": "==", "limit": 0 },
+    { "metric": "loopMax_us", "source": "max", "op": "<=", "limit": 250000 },
+    { "metric": "bleDrainMax_us", "source": "max", "op": "<=", "limit": 10000 },
+    { "metric": "bleProcessMax_us", "source": "max", "op": "<=", "limit": 120000 },
+    { "metric": "dispPipeMax_us", "source": "max", "op": "<=", "limit": 80000 },
+    { "metric": "flushMax_us", "source": "max", "op": "<=", "limit": 100000 },
+    { "metric": "sdMax_us", "source": "max", "op": "<=", "limit": 75000 },
+    { "metric": "fsMax_us", "source": "max", "op": "<=", "limit": 50000 },
+    { "metric": "queueHighWater", "source": "final", "op": "<=", "limit": 12 },
+    { "metric": "dmaLargestMin", "source": "min", "op": ">=", "limit": 10000 },
+    { "metric": "dmaFreeMin", "source": "min", "op": ">=", "limit": 20000 }
+  ],
+  "hard_computed": [],
+  "hard_profile": {
+    "drive_wifi_off": [
+      { "metric": "wifiConnectDeferred", "source": "final", "op": "==", "limit": 0 },
+      { "metric": "wifiMax_us", "source": "max", "op": "<=", "limit": 1000 }
+    ],
+    "drive_wifi_ap": [
+      { "metric": "wifiConnectDeferred", "source": "final", "op": "<=", "limit": 5 },
+      { "metric": "wifiMax_us", "source": "max", "op": "<=", "limit": 6000 }
+    ]
+  },
+  "advisory": [
+    { "metric": "cmdPaceNotYetPerMin", "source": "computed", "op": "<=", "limit": 25 },
+    { "metric": "displaySkipPct", "source": "computed", "op": "<=", "limit": 20 },
+    { "metric": "displaySkipsPerMin", "source": "computed", "op": "<=", "limit": 120 },
+    { "metric": "reconn", "source": "final", "op": "<=", "limit": 2 },
+    { "metric": "disc", "source": "final", "op": "<=", "limit": 2 }
+  ]
+}

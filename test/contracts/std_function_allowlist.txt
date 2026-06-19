@@ -1,0 +1,15 @@
+# std::function allowlist for production source (include/, src/).
+#
+# Format: one entry per line, "path/from/repo/root.ext:line_number"
+# Lines starting with '#' are comments.
+#
+# This file intentionally empty. Project guardrails prohibit std::function for
+# module wiring because it carries heap-allocation overhead unacceptable on ESP32-S3.
+# If you find yourself adding an entry here, pause and reconsider — most
+# motivating cases should instead use:
+#   - begin() direct pointer injection, or
+#   - a Providers struct with plain function pointers, or
+#   - ProviderCallbackBindings::member<T, &T::method> (see
+#     include/provider_callback_bindings.h) for static-member trampolines.
+#
+# If you still need an entry, include an inline '# reason:' comment above it.

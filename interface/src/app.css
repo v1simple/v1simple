@@ -1,0 +1,423 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+	themes: false;
+	logs: false;
+}
+
+@plugin "daisyui/theme" {
+	name: "v1dark";
+	default: true;
+	prefersdark: true;
+	color-scheme: dark;
+	--color-base-100: #0f0f1a;
+	--color-base-200: #16213e;
+	--color-base-300: #1a1a2e;
+	--color-base-content: #e6edf7;
+	--color-primary: #00d4ff;
+	--color-primary-content: #001014;
+	--color-secondary: #ff6b35;
+	--color-secondary-content: #170600;
+	--color-accent: #00ff88;
+	--color-accent-content: #00160c;
+	--color-neutral: #1a1a2e;
+	--color-neutral-content: #e9edf5;
+	--color-info: #00d4ff;
+	--color-info-content: #001014;
+	--color-success: #00ff88;
+	--color-success-content: #00160c;
+	--color-warning: #ffcc00;
+	--color-warning-content: #1a1200;
+	--color-error: #ff4444;
+	--color-error-content: #210000;
+	--radius-selector: 0.5rem;
+	--radius-field: 0.5rem;
+	--radius-box: 1rem;
+	--size-selector: 0.25rem;
+	--size-field: 0.25rem;
+	--border: 1px;
+	--depth: 1;
+	--noise: 0;
+}
+
+/* Custom styles for V1 Gen2 Display */
+:root {
+	--v1-cyan: #00d4ff;
+	--v1-red: #ff4444;
+	--v1-orange: #ff6b35;
+	--v1-green: #00ff88;
+	--v1-yellow: #ffcc00;
+	--v1-steel: #8e97a3;
+	--v1-charcoal: #1f2733;
+	--app-radius-md: 0.75rem;
+	--app-radius-lg: 1rem;
+	--app-border-color: color-mix(in oklab, var(--color-base-content) 42%, transparent);
+	--app-border-color-soft: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+	--app-border-color-muted: color-mix(in oklab, var(--color-base-content) 38%, transparent);
+	--app-border-color-subtle: color-mix(in oklab, var(--color-base-content) 36%, transparent);
+	--app-border-color-strong: color-mix(in oklab, var(--color-base-content) 46%, transparent);
+	--app-border-color-stronger: color-mix(in oklab, var(--color-base-content) 48%, transparent);
+	--app-shadow: 0 8px 22px oklch(0% 0 0 / 0.2);
+}
+
+/* Smooth scrolling */
+html {
+	scroll-behavior: smooth;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--color-base-200);
+}
+
+::-webkit-scrollbar-thumb {
+	background: color-mix(in oklab, var(--color-base-content) 30%, transparent);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+}
+
+@layer components {
+	.app-shell {
+		@apply min-h-screen;
+		background:
+			radial-gradient(120% 85% at 0% 0%, color-mix(in oklab, var(--v1-red) 24%, transparent 76%) 0%, transparent 58%),
+			radial-gradient(95% 75% at 100% 0%, color-mix(in oklab, var(--v1-cyan) 16%, transparent 84%) 0%, transparent 62%),
+			linear-gradient(180deg, var(--color-base-100) 0%, color-mix(in oklab, var(--color-base-100) 96%, transparent) 100%);
+	}
+
+	.app-main {
+		@apply container mx-auto max-w-6xl p-4;
+	}
+
+	.page-stack {
+		@apply space-y-6;
+	}
+
+	.page-header {
+		@apply flex flex-wrap items-center justify-between gap-3;
+	}
+
+	.page-header-copy {
+		@apply min-w-0;
+	}
+
+	.page-eyebrow {
+		@apply mb-1 inline-flex items-center gap-2 text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-base-content/55;
+	}
+
+	.page-eyebrow::before,
+	.page-eyebrow::after {
+		content: '';
+		display: inline-block;
+		width: 0.58rem;
+		height: 0.48rem;
+		clip-path: polygon(50% 0, 100% 62%, 64% 62%, 64% 100%, 36% 100%, 36% 62%, 0 62%);
+		filter: drop-shadow(0 1px 2px oklch(0% 0 0 / 0.28));
+	}
+
+	.page-eyebrow::before {
+		background: linear-gradient(180deg, #ff5f5f 0%, #d12626 100%);
+	}
+
+	.page-eyebrow::after {
+		background: linear-gradient(180deg, #bbc2cd 0%, #767f8d 100%);
+		transform: rotate(180deg);
+	}
+
+	.page-title {
+		@apply text-2xl font-bold tracking-tight;
+	}
+
+	.page-subtitle {
+		@apply text-sm text-base-content/70;
+	}
+
+	.copy-subtle {
+		@apply text-sm text-base-content/70;
+	}
+
+	.copy-caption {
+		@apply text-xs text-base-content/60;
+	}
+
+	.copy-caption-soft {
+		@apply text-xs text-base-content/70;
+	}
+
+	.copy-warning {
+		@apply text-xs text-warning;
+	}
+
+	.copy-muted {
+		@apply text-sm text-base-content/60;
+	}
+
+	.copy-micro {
+		@apply text-xs text-base-content/40;
+	}
+
+	.copy-mini-title {
+		@apply mb-2 text-sm font-medium;
+	}
+
+	.copy-subheading {
+		@apply text-sm font-semibold;
+	}
+
+	.label {
+		@apply flex items-center justify-between gap-2 py-2;
+	}
+
+	.field-control {
+		@apply flex flex-col gap-1;
+	}
+
+	.field-label {
+		@apply text-sm font-medium text-base-content/80;
+	}
+
+	.field-label-inline {
+		@apply text-sm font-medium text-base-content/80;
+	}
+
+	.field-hint {
+		@apply text-xs text-base-content/50;
+	}
+
+	.status-heading-muted {
+		@apply text-xl font-bold text-base-content/70;
+	}
+
+	.status-heading {
+		@apply text-xl font-bold;
+	}
+
+	.status-heading-success {
+		@apply text-xl font-bold text-success;
+	}
+
+	.status-heading-warning {
+		@apply text-xl font-bold text-warning;
+	}
+
+	.status-heading-info {
+		@apply text-xl font-bold text-info;
+	}
+
+	.page-header-actions {
+		@apply flex items-center gap-2;
+	}
+
+	.section-head {
+		@apply flex flex-wrap items-center justify-between gap-3;
+	}
+
+	.nav-link {
+		@apply rounded-md transition-colors duration-150;
+	}
+
+	.nav-link:hover {
+		background: color-mix(in oklab, var(--color-primary) 12%, transparent);
+		color: var(--color-primary);
+	}
+
+	.nav-link.active {
+		background: linear-gradient(180deg, color-mix(in oklab, var(--color-primary) 20%, transparent) 0%, color-mix(in oklab, var(--color-primary) 10%, transparent) 100%);
+		color: var(--color-primary);
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-primary) 32%, transparent);
+	}
+
+	.nav-link.advanced {
+		color: var(--color-warning);
+	}
+
+	.nav-link.advanced:hover {
+		background: color-mix(in oklab, var(--color-warning) 14%, transparent);
+		color: var(--color-warning);
+	}
+
+	.nav-link.advanced.active {
+		background: linear-gradient(180deg, color-mix(in oklab, var(--color-warning) 20%, transparent) 0%, color-mix(in oklab, var(--color-warning) 10%, transparent) 100%);
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-warning) 34%, transparent);
+	}
+
+	.state-loading {
+		@apply flex justify-center p-8;
+	}
+
+	.state-loading.tight {
+		@apply p-6;
+	}
+
+	.state-loading.tall {
+		@apply items-center p-0 py-12;
+	}
+
+	.state-loading.compact {
+		@apply p-4;
+	}
+
+	.state-loading.inline {
+		@apply items-center p-0 py-4;
+	}
+
+	.state-loading.stack {
+		@apply flex-col items-center p-0 py-8;
+	}
+
+	.state-empty {
+		@apply text-sm text-base-content/70;
+	}
+
+	.state-empty.center {
+		@apply py-4 text-center;
+	}
+
+	.surface-card {
+		@apply card bg-base-200;
+		border: 1px solid var(--app-border-color);
+		border-radius: var(--app-radius-lg);
+		box-shadow: var(--app-shadow);
+	}
+
+	.surface-card > .card-body {
+		@apply p-4;
+	}
+
+	.surface-alert {
+		@apply alert border;
+		border-color: var(--app-border-color-soft);
+		border-radius: var(--app-radius-md);
+	}
+
+	.surface-alert.warning-strong {
+		@apply border-warning/40;
+	}
+
+	.surface-alert.banner {
+		@apply rounded-none border-y shadow-sm;
+	}
+
+	.surface-chrome {
+		border-color: var(--app-border-color-muted);
+		background: linear-gradient(180deg, color-mix(in oklab, var(--color-base-200) 92%, transparent) 0%, color-mix(in oklab, var(--color-base-100) 78%, transparent) 100%);
+		box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-base-content) 7%, transparent);
+	}
+
+	.surface-note {
+		@apply text-sm text-base-content/60 p-3;
+		border: 1px solid var(--app-border-color);
+		border-radius: var(--app-radius-md);
+		background: color-mix(in oklab, var(--color-base-200) 45%, transparent);
+	}
+
+	.surface-hero {
+		@apply rounded-box p-4;
+		border: 1px solid var(--app-border-color);
+		background: linear-gradient(160deg, color-mix(in oklab, var(--color-base-200) 90%, transparent) 0%, color-mix(in oklab, var(--color-base-100) 55%, transparent) 100%);
+		box-shadow: var(--app-shadow);
+	}
+
+	.surface-panel {
+		@apply rounded-lg p-3;
+		border: 1px solid var(--app-border-color-subtle);
+		background: color-mix(in oklab, var(--color-base-200) 48%, transparent);
+	}
+
+	.surface-panel.subtle {
+		background: color-mix(in oklab, var(--color-base-100) 42%, transparent);
+	}
+
+	.surface-subsection {
+		@apply ml-4 space-y-4 rounded-md py-2 pl-4 pr-3;
+		border-left: 2px solid var(--app-border-color-strong);
+		background: color-mix(in oklab, var(--color-base-100) 34%, transparent);
+	}
+
+	.surface-subsection.tight {
+		@apply space-y-2;
+	}
+
+	.surface-table-wrap {
+		@apply overflow-x-auto rounded-lg p-1;
+		border: 1px solid var(--app-border-color-subtle);
+		background: color-mix(in oklab, var(--color-base-200) 42%, transparent);
+	}
+
+	.surface-menu {
+		@apply rounded-box p-2;
+		border: 1px solid var(--app-border-color-muted);
+		background: linear-gradient(165deg, color-mix(in oklab, var(--color-base-200) 94%, transparent) 0%, color-mix(in oklab, var(--color-base-100) 72%, transparent) 100%);
+		box-shadow: var(--app-shadow);
+	}
+
+	.surface-modal {
+		border: 1px solid var(--app-border-color-soft);
+		border-radius: var(--app-radius-lg);
+		background: linear-gradient(165deg, color-mix(in oklab, var(--color-base-200) 95%, transparent) 0%, color-mix(in oklab, var(--color-base-100) 74%, transparent) 100%);
+		box-shadow: var(--app-shadow);
+	}
+
+	.surface-stats {
+		@apply stats stats-vertical md:stats-horizontal;
+		border: 1px solid var(--app-border-color-subtle);
+		border-radius: var(--app-radius-md);
+		background: color-mix(in oklab, var(--color-base-200) 42%, transparent);
+	}
+
+	.surface-collapse {
+		@apply collapse collapse-arrow rounded-lg;
+		border: 1px solid var(--app-border-color-subtle);
+		background: color-mix(in oklab, var(--color-base-200) 46%, transparent);
+	}
+
+	.color-swatch-btn {
+		@apply cursor-pointer rounded border-2 border-base-300;
+	}
+
+	.color-swatch-btn.lg {
+		@apply h-10 w-12;
+	}
+
+	.color-swatch-btn.md {
+		@apply h-10 w-10;
+	}
+
+	.color-swatch-btn.sm {
+		@apply h-8 w-10;
+	}
+
+	.color-swatch-btn:disabled {
+		@apply cursor-not-allowed opacity-50;
+	}
+
+	.surface-color-preview {
+		@apply mb-4 h-20 w-full rounded-lg border-2;
+		border-color: var(--app-border-color-stronger);
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-base-100) 35%, transparent);
+	}
+
+	.brand-lockup {
+		--brand-logo-width: 11.5rem;
+		@apply inline-flex items-center;
+	}
+
+	.brand-lockup.compact {
+		--brand-logo-width: 8.75rem;
+	}
+
+	.brand-logo {
+		display: block;
+		width: var(--brand-logo-width);
+		height: auto;
+		filter: drop-shadow(0 2px 6px oklch(0% 0 0 / 0.32));
+	}
+}

@@ -1,0 +1,5 @@
+# WiFi API route contract (extracted ApiService endpoints)
+
+HTTP_GET /api/settings/backup
+HTTP_POST /api/settings/backup-now
+HTTP_POST /api/settings/restore

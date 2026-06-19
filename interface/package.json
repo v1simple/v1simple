@@ -1,0 +1,42 @@
+{
+  "name": "v1simple-interface",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && bash ../tools/compress_web_assets.sh",
+    "preview": "vite preview",
+    "deploy": "npm run build && node scripts/deploy.js",
+    "deploy:built": "node scripts/deploy.js",
+    "prepare": "svelte-kit sync",
+    "lint": "svelte-check",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.0",
+    "@sveltejs/kit": "^2.61.0",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tailwindcss/vite": "^4.3.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.3.1",
+    "@types/node": "^22.19.19",
+    "@vitest/coverage-v8": "^4.1.7",
+    "daisyui": "^5.5.20",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.4.32",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.4.8",
+    "tailwindcss": "^4.3.0",
+    "vite": "^8.0.14",
+    "vitest": "^4.1.7"
+  },
+  "type": "module",
+  "overrides": {
+    "cookie": "0.7.2"
+  }
+}

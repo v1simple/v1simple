@@ -1,0 +1,5 @@
+# WiFi API route policy contract (ApiService endpoint lambdas)
+
+route=HTTP_GET /api/settings/backup rate_limit=0 ui_activity=1 delegates=BackupApiService::handleApiBackup
+route=HTTP_POST /api/settings/backup-now rate_limit=1 ui_activity=1 delegates=BackupApiService::handleApiBackupNow
+route=HTTP_POST /api/settings/restore rate_limit=1 ui_activity=1 delegates=BackupApiService::handleApiRestore

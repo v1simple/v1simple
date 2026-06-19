@@ -1,0 +1,2 @@
+# WiFi API shim absence contract (handle* methods must not delegate to ApiService)
+

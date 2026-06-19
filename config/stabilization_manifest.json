@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "required_artifacts": [
+    {
+      "id": "stabilization_manifest",
+      "path": "config/stabilization_manifest.json",
+      "purpose": "Wave-level stabilization inventory, protective cleanup inventory, and cleanup review ledger."
+    },
+    {
+      "id": "stabilization_manifest_check",
+      "path": "scripts/check_stabilization_manifest.py",
+      "purpose": "Repo-enforced semantic check that fails CI when required stabilization inventory or ledger fields drift."
+    },
+    {
+      "id": "main_loop_phases_harness",
+      "path": "test/test_main_loop_phases/test_main_loop_phases.cpp",
+      "purpose": "Repo-level integration harness that locks main_loop_phases.cpp ordering and phase data-flow expectations."
+    },
+    {
+      "id": "tap_gesture_production_test",
+      "path": "test/test_tap_gesture_module/test_tap_gesture_module.cpp",
+      "purpose": "Direct production-path touch gesture coverage for alert mute behavior and idle profile-cycle ordering."
+    },
+    {
+      "id": "power_module_production_test",
+      "path": "test/test_power_module/test_power_module.cpp",
+      "purpose": "Production-path characterization coverage for power module warning, shutdown, and auto power-off behavior."
+    }
+  ],
+  "remaining_gaps": [
+    {
+      "id": "native_test_lane_determinism",
+      "wave": 0,
+      "status": "resolved",
+      "description": "Native suites now run one-at-a-time with isolated PlatformIO build roots instead of reusing a shared .pio/build/native artifact tree."
+    },
+    {
+      "id": "post_api_settings_route_cleanup",
+      "wave": 5,
+      "status": "resolved",
+      "description": "Legacy POST /api/settings has been removed. Device/AP/proxy/dev writes remain on POST /api/device/settings, the UI helper no longer defaults to /api/settings, and the route/doc contracts fail CI if the catch-all surface returns."
+    },
+    {
+      "id": "wrapper_primary_risky_seam_tests",
+      "wave": 1,
+      "status": "resolved",
+      "description": "Risky seams previously covered only by wrappers or extracted harnesses now execute production code directly for power, touch, and main-loop phase ordering."
+    },
+    {
+      "id": "main_loop_phases_harness",
+      "wave": 1,
+      "status": "resolved",
+      "description": "A repo-level integration harness now exercises main_loop_phases.cpp and fails on ordering or phase contract drift."
+    },
+    {
+      "id": "tap_gesture_production_coverage",
+      "wave": 1,
+      "status": "resolved",
+      "description": "Tap gesture behavior is covered through the real TapGestureModule path, including alert mute and idle triple-tap profile cycling."
+    },
+    {
+      "id": "duplicate_owner_inventory",
+      "wave": 4,
+      "status": "resolved",
+      "description": "Wave 4 duplicate-owner consolidations are recorded in this manifest and enforced by CI; the targeted auto-push, alert-volume, Wi-Fi lifecycle, and speed-arbitration ownership cleanups are now landed and tracked here."
+    },
+    {
+      "id": "phase_context_override_paths",
+      "wave": 2,
+      "status": "resolved",
+      "description": "Loop phase context structs for connection-early, settings-prep, pre-ingest, ingest, display, post-display, runtime-snapshot, power-touch, and Wi-Fi runtime are now data-only; duplicate per-call callback override paths were removed in favor of begin()-configured provider ownership."
+    }
+  ],
+  "protective_cleanup_inventory": [
+    {
+      "id": "wifi_fail_open_paths",
+      "current_owner": "WifiRuntimeModule and WiFi control/runtime services",
+      "preserved_negative_semantics": "Wi-Fi auto-start and lifecycle paths must keep attempted-versus-started semantics explicit and must not silently report success on degraded or blocked transitions.",
+      "tests": [
+        "test/test_wifi_auto_start_module/test_wifi_auto_start_module.cpp",
+        "test/test_wifi_runtime_module/test_wifi_runtime_module.cpp"
+      ]
+    },
+    {
+      "id": "runtime_null_guards",
+      "current_owner": "Runtime entrypoints and API services with shared-state dependencies",
+      "preserved_negative_semantics": "Null or unavailable runtime dependencies continue to reject or short-circuit explicitly instead of dereferencing or silently mutating partial state.",
+      "tests": [
+        "test/test_obd_api_service/test_obd_api_service.cpp",
+        "test/test_wifi_autopush_api_service/test_wifi_autopush_api_service.cpp"
+      ]
+    },
+    {
+      "id": "busy_mutation_rejections",
+      "current_owner": "Mutation endpoints and maintenance services with active resource ownership",
+      "preserved_negative_semantics": "Destructive or stateful operations continue to reject when logging, backup, restore, or storage ownership is active; cleanup may not weaken busy/in-progress semantics.",
+      "tests": [
+        "test/test_backup_api_service/test_backup_api_service.cpp"
+      ]
+    }
+  ],
+  "duplicate_owner_inventory": [
+    {
+      "id": "auto_push_execution",
+      "wave": 4,
+      "classification": "duplicate",
+      "consolidation_status": "resolved",
+      "behavior": "Auto-push execution across connect-time, profile-triggered, and explicit push-now requests.",
+      "current_owner_candidates": [
+        "src/main_setup_helpers.cpp onV1Connected callback -> autoPushModule.start(selection.selectedSlotIndex)",
+        "src/modules/wifi/wifi_orchestrator_module.cpp profile-push callback -> autoPushModule.start(activeSlot)",
+        "src/wifi_runtimes.cpp and src/modules/wifi/wifi_autopush_api_service.cpp push-now path -> autoPushModule.queuePushNow(request)",
+        "src/modules/system/loop_post_display_module.cpp loop-tail executor -> autoPushModule.process(nowMs)"
+      ],
+      "intended_single_owner": "AutoPushModule::process() owns all auto-push execution and retry state; every trigger must enter through AutoPushModule request/start APIs instead of duplicating execution logic elsewhere.",
+      "preserved_negative_semantics": "Connect-time and manual push-now retries, perf counters, active profile selection, and BLE volume staging remain centralized; no trigger path may bypass the shared retry/error-reporting behavior or silently succeed.",
+      "tests": [
+        "test/test_auto_push_module/test_auto_push_module.cpp",
+        "test/test_loop_post_display_module/test_loop_post_display_module.cpp",
+        "test/test_tap_gesture_module/test_tap_gesture_module.cpp",
+        "test/test_wifi_autopush_api_service/test_wifi_autopush_api_service.cpp"
+      ]
+    },
+    {
+      "id": "alert_time_volume_execution",
+      "wave": 4,
+      "classification": "duplicate",
+      "consolidation_status": "resolved",
+      "behavior": "Alert-time BLE volume transitions for alert fade/restore decisions.",
+      "current_owner_candidates": [
+        "src/modules/volume_fade/volume_fade_module.cpp emits alert fade and restore actions",
+        "src/modules/display/display_orchestration_module.cpp executes BLE setVolume() for volume fade decisions"
+      ],
+      "intended_single_owner": "DisplayOrchestrationModule remains the sole BLE volume executor; VolumeFadeModule may only emit explicit decisions for it to arbitrate and execute.",
+      "preserved_negative_semantics": "Alert fade/recovery semantics stay explicit, BLE pacing failures remain visible, and the loop must not issue competing or duplicate setVolume() commands in the same alert path.",
+      "tests": [
+        "test/test_display_orchestration_module/test_display_orchestration_module.cpp"
+      ]
+    },
+    {
+      "id": "wifi_start_reenable_lifecycle",
+      "wave": 4,
+      "classification": "duplicate",
+      "consolidation_status": "resolved",
+      "behavior": "Wi-Fi AP/STA/AP+STA start, re-enable, and reconnect lifecycle transitions.",
+      "current_owner_candidates": [
+        "src/modules/wifi/wifi_auto_start_module.cpp deferred boot gate -> WiFiManager::startSetupMode(autoStarted)",
+        "src/main.cpp touch/manual Wi-Fi start callback -> WiFiManager::startSetupMode(false)",
+        "src/modules/wifi/wifi_orchestrator_module.cpp callback binding only via ensureCallbacksConfigured()",
+        "src/wifi_manager_lifecycle.cpp WiFiManager::startSetupMode()/stopSetupModeImmediate() lifecycle state machine",
+        "src/wifi_client.cpp WiFiManager::processWifiClientConnectPhase() STA reconnect and AP+STA transition path"
+      ],
+      "intended_single_owner": "WiFiManager lifecycle state owns AP/STA/AP+STA transitions; WifiAutoStartModule and touch/manual requesters call WiFiManager::startSetupMode(...), while WifiOrchestratorModule is limited to callback binding and must not implement parallel lifecycle mutations.",
+      "preserved_negative_semantics": "Attempted-versus-started reporting, blocked transition visibility, AP client grace behavior, and fail-open safety remain explicit; callback binding still occurs even when Wi-Fi was already started elsewhere, and cleanup does not silently collapse blocked or degraded Wi-Fi transitions into success.",
+      "tests": [
+        "test/test_wifi_orchestrator_module/test_wifi_orchestrator_module.cpp",
+        "test/test_wifi_auto_start_module/test_wifi_auto_start_module.cpp",
+        "test/test_wifi_runtime_module/test_wifi_runtime_module.cpp",
+        "test/test_wifi_boot_policy/test_wifi_boot_policy.cpp",
+        "test/test_wifi_manager/test_wifi_manager.cpp"
+      ]
+    },
+    {
+      "id": "speed_arbitration",
+      "wave": 4,
+      "classification": "duplicate",
+      "consolidation_status": "resolved",
+      "behavior": "Selection of the committed current-loop speed source (OBD only) and status consumed by display and Wi-Fi surfaces.",
+      "current_owner_candidates": [
+        "src/main.cpp loop() -> speedSourceSelector.update(now)",
+        "src/modules/obd/obd_api_service.cpp and src/modules/wifi/backup_api_service.cpp sync selector enable inputs only via speedSourceSelector.syncEnabledInputs(obdEnabled)",
+        "Downstream consumers such as display and Wi-Fi modules may only read selectedSpeed()/snapshot() and must not reinterpret raw OBD runtime state as a fallback selector"
+      ],
+      "intended_single_owner": "speedSourceSelector.update(now) remains the sole mutating speed-selection owner; config and restore writes may only sync selector enable inputs through speedSourceSelector.syncEnabledInputs(obdEnabled), and downstream modules consume selectedSpeed()/snapshot() or pure snapshotAt(nowMs) reads without reinterpreting source state.",
+      "preserved_negative_semantics": "Current-loop selection still happens before every consumer read, unavailable speed stays explicit instead of falling back to stale raw runtime data, and config/restore writes update the selector input without re-arbitrating committed selection in-place.",
+      "tests": [
+        "test/test_obd_speed_source/test_obd_speed_source.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp",
+        "test/test_obd_api_service/test_obd_api_service.cpp",
+        "test/test_wifi_settings_api_service/test_wifi_settings_api_service.cpp"
+      ]
+    }
+  ],
+  "cleanup_review_ledger": [
+    {
+      "path": "src/modules/system/loop_connection_early_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopConnectionEarlyModule Providers",
+      "replacement_or_deadness_proof": "Production main_loop_phases always drove early-loop execution through begin()-configured providers, so the per-call callback fields in LoopConnectionEarlyContext were duplicate behavior channels with no production owner.",
+      "preserved_negative_semantics": "Missing providers still leave the phase in a safe zeroed state, and request-show scanning semantics remain explicit even when no show handler is configured.",
+      "tests": [
+        "test/test_loop_connection_early_module/test_loop_connection_early_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_settings_prep_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopSettingsPrepModule Providers",
+      "replacement_or_deadness_proof": "Tap gesture execution and settings snapshot reads are now owned solely by the module's configured providers; main_loop_phases never set per-call overrides in LoopSettingsPrepContext.",
+      "preserved_negative_semantics": "An absent tap or settings provider remains safe: tap work is skipped and the settings snapshot falls back to conservative defaults.",
+      "tests": [
+        "test/test_loop_settings_prep_module/test_loop_settings_prep_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_pre_ingest_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopPreIngestModule Providers",
+      "replacement_or_deadness_proof": "Boot-ready gate opening, Wi-Fi priority application, and debug API ticks are now dispatched only through begin()-configured providers; the per-call override fields in LoopPreIngestContext were a duplicate path not used by production.",
+      "preserved_negative_semantics": "Replay mode still suppresses boot-open and Wi-Fi progression while preserving debug processing, and empty handlers still short-circuit safely.",
+      "tests": [
+        "test/test_loop_pre_ingest_module/test_loop_pre_ingest_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_runtime_snapshot_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopRuntimeSnapshotModule Providers",
+      "replacement_or_deadness_proof": "LoopRuntimeSnapshotContext is now a pure phase marker while BLE/DMA/preview reads come only from the configured providers, matching the production main_loop_phases contract.",
+      "preserved_negative_semantics": "Missing snapshot providers still yield explicit false/default values instead of re-reading or mutating hidden fallback state.",
+      "tests": [
+        "test/test_loop_runtime_snapshot_module/test_loop_runtime_snapshot_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_power_touch_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopPowerTouchModule Providers",
+      "replacement_or_deadness_proof": "Power processing and touch UI evaluation are now owned only by begin()-configured providers; the per-call callback fields in LoopPowerTouchContext duplicated production behavior without adding a distinct owner.",
+      "preserved_negative_semantics": "Settings-mode early return, wrap-safe timing, DMA refresh, and heap-stat capture remain explicit and test-covered, while missing providers still no-op safely.",
+      "tests": [
+        "test/test_loop_power_touch_module/test_loop_power_touch_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_ingest_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopIngestModule Providers",
+      "replacement_or_deadness_proof": "BLE process and queue drain execution are now provider-owned through begin()-configured hooks; the per-call runBleProcess and runBleDrain fields in LoopIngestContext duplicated production execution without a separate owner.",
+      "preserved_negative_semantics": "Disabling BLE process for a loop still skips only the process step while drain and backpressure merge behavior remain explicit and test-covered.",
+      "tests": [
+        "test/test_loop_ingest_module/test_loop_ingest_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_display_module.h",
+      "classification": "dead",
+      "current_owner": "LoopDisplayModule Providers",
+      "replacement_or_deadness_proof": "Display pipeline dispatch is owned solely by begin()-configured providers, and the former LoopDisplayResult.signalPriorityActive output had no production consumer after processLoopDisplayPreWifiPhase stopped exporting mutable phase state. The module now exposes only its owned side effects.",
+      "preserved_negative_semantics": "Parsed-frame gating still controls whether the pipeline runs, lightweight refresh still receives the pipeline-ran signal, and missing providers still no-op safely without exporting a test-only result channel.",
+      "tests": [
+        "test/test_loop_display_module/test_loop_display_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/system/loop_post_display_module.h",
+      "classification": "duplicate",
+      "current_owner": "LoopPostDisplayModule Providers",
+      "replacement_or_deadness_proof": "Auto-push execution and connection-state dispatch are now owned only by the module's configured providers; the per-call callback fields in LoopPostDisplayContext were dead duplicate behavior channels in production.",
+      "preserved_negative_semantics": "Context fallback data for dispatch timing and BLE connection state remains intact when read providers are absent, and enableAutoPush/runSpeedAndDispatch still gate the side effects explicitly.",
+      "tests": [
+        "test/test_loop_post_display_module/test_loop_post_display_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/wifi/wifi_runtime_module.h",
+      "classification": "duplicate",
+      "current_owner": "WifiRuntimeModule Providers",
+      "replacement_or_deadness_proof": "Wi-Fi manager processing is now owned only by begin()-configured providers; the per-call runWifiManagerProcess field in WifiRuntimeContext duplicated the production Wi-Fi progression path without a distinct owner.",
+      "preserved_negative_semantics": "Skip-late-non-core, policy gating, cadence throttling, and visual sync remain explicit and test-covered, while missing providers still short-circuit safely without silently reporting Wi-Fi processing success.",
+      "tests": [
+        "test/test_wifi_runtime_module/test_wifi_runtime_module.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/wifi/wifi_orchestrator_module.h",
+      "classification": "duplicate",
+      "current_owner": "AutoPushModule queueSlotPush()/queuePushNow() request path plus AutoPushModule::process() executor",
+      "replacement_or_deadness_proof": "Connect-time selection, tap-triggered slot cycling, manual profile pushes, and explicit push-now requests now all queue through AutoPushModule request APIs before the shared AutoPushModule::process() executor runs. The injected profilePushFn/manual start path was removed, and start() no longer arms state independently of the shared queue rules.",
+      "preserved_negative_semantics": "Connect-time default-slot pushes, tap-triggered slot changes, display progress indicators, explicit push-now retry metrics, and active in-progress rejection remain explicit; new requests can no longer clobber an in-flight push.",
+      "tests": [
+        "test/test_auto_push_module/test_auto_push_module.cpp",
+        "test/test_tap_gesture_module/test_tap_gesture_module.cpp",
+        "test/test_wifi_autopush_api_service/test_wifi_autopush_api_service.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/display/display_orchestration_module.cpp",
+      "classification": "duplicate",
+      "current_owner": "DisplayOrchestrationModule parsed-frame volume arbitration",
+      "replacement_or_deadness_proof": "Alert volume-fade decisions flow into DisplayOrchestrationModule for BLE volume execution. DisplayOrchestrationModule remains the sole BLE volume executor.",
+      "preserved_negative_semantics": "Fade/restore logic remains explicit and independent, and the alert path can no longer issue duplicate BLE volume writes in the same parsed-frame pass.",
+      "tests": [
+        "test/test_display_orchestration_module/test_display_orchestration_module.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/wifi/wifi_orchestrator_module.cpp",
+      "classification": "duplicate",
+      "current_owner": "WiFiManager lifecycle state with boot-time callback binding via WifiOrchestrator::ensureCallbacksConfigured()",
+      "replacement_or_deadness_proof": "WifiOrchestrator::startWifi() was removed. Boot auto-start and touch/manual entrypoints now request WiFiManager::startSetupMode(...) directly, while WifiOrchestrator only binds Wi-Fi callbacks exactly once through ensureCallbacksConfigured(). This deletes the duplicate lifecycle mutation path without replacing the manager state machine.",
+      "preserved_negative_semantics": "Auto-start still distinguishes attempted from started-successfully, manual/touch re-enable still goes through the real WiFiManager admission checks, and callback binding remains explicit and idempotent even if Wi-Fi was already started elsewhere before the orchestrator runs.",
+      "tests": [
+        "test/test_wifi_orchestrator_module/test_wifi_orchestrator_module.cpp",
+        "test/test_wifi_auto_start_module/test_wifi_auto_start_module.cpp",
+        "test/test_wifi_runtime_module/test_wifi_runtime_module.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/speed/speed_source_selector.h",
+      "classification": "duplicate",
+      "current_owner": "SpeedSourceSelector enabled-input sync via syncEnabledInputs() plus SpeedSourceSelector::update() committed selection",
+      "replacement_or_deadness_proof": "Production write paths now only sync OBD selector input. OBD config and backup restore now sync the selector input through speedSourceSelector.syncEnabledInputs(obdEnabled), while speedSourceSelector.update(now) remains the only committed arbitration step.",
+      "preserved_negative_semantics": "Config and restore writes still update enable inputs immediately for pure snapshotAt/status reads, but they do not re-arbitrate the committed source in-place; consumers still see committed selection only after the loop-owned update() pass and may not fall back to raw OBD runtime data.",
+      "tests": [
+        "test/test_obd_speed_source/test_obd_speed_source.cpp",
+        "test/test_obd_api_service/test_obd_api_service.cpp",
+        "test/test_wifi_settings_api_service/test_wifi_settings_api_service.cpp",
+        "test/test_main_loop_phases/test_main_loop_phases.cpp"
+      ]
+    },
+    {
+      "path": "src/modules/wifi/wifi_settings_api_service.cpp",
+      "classification": "duplicate",
+      "current_owner": "WifiSettingsApiService::handleApiDeviceSettingsSave() for AP/proxy/power/dev writes",
+      "replacement_or_deadness_proof": "The legacy POST /api/settings catch-all route and WifiSettingsApiService::handleApiSettingsSave() have been removed. Existing Svelte clients already saved device settings through POST /api/device/settings. The shared UI helper no longer defaults to /api/settings, and the WiFi route contracts/docs are updated to reject drift back to the catch-all surface.",
+      "preserved_negative_semantics": "AP credential validation and device-setting persistence remain under WifiSettingsApiService::handleApiDeviceSettingsSave(); cleanup does not silently drop writes or weaken protected rejection behavior.",
+      "tests": [
+        "test/test_wifi_settings_api_service/test_wifi_settings_api_service.cpp",
+        "interface/src/routes/obd/page.test.js",
+        "interface/src/routes/settings/page.test.js"
+      ]
+    }
+  ]
+}

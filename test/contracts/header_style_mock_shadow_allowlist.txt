@@ -1,0 +1,14 @@
+# Temporary native-test mock-shadow guards.
+# Production headers must still carry #pragma once. These file guards remain only
+# where same-name test/mocks headers currently suppress production headers while
+# native suites include production .cpp files through host shims.
+file=src/battery_manager.h macro=BATTERY_MANAGER_H
+file=src/ble_client.h macro=BLE_CLIENT_H
+file=src/display.h macro=DISPLAY_H
+file=src/modules/gps/gps_runtime_module.h macro=GPS_RUNTIME_MODULE_H
+file=src/packet_parser.h macro=PACKET_PARSER_H
+file=src/settings.h macro=SETTINGS_H
+file=src/storage_manager.h macro=STORAGE_MANAGER_H
+file=src/touch_handler.h macro=TOUCH_HANDLER_H
+file=src/v1_profiles.h macro=V1_PROFILES_H
+file=src/wifi_manager.h macro=WIFI_MANAGER_H

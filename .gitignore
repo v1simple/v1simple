@@ -1,0 +1,133 @@
+# PlatformIO
+.pio/
+.vscode/
+compile_commands.json
+road_map.bin
+# Build artifacts under release/ are ignored individually.
+release/*
+# Defense in depth: never track private key material.
+release/keys/*priv*
+release/keys/*.seed
+release/keys/*.secret
+*.priv.key
+*private*.key
+*_private.key
+*.seed
+id_ed25519
+id_rsa
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+.netrc
+.npmrc
+.pypirc
+credentials*.json
+*credentials*.json
+secrets*.json
+*secret*.json
+*.pem
+*.p12
+*.pfx
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Build artifacts
+*.o
+*.bin
+*.elf
+*.zip
+*.log
+!test/fixtures/debug_base_stable.log
+artifacts/
+.artifacts/
+
+# Font files (source fonts, converted to headers)
+/*.ttf
+
+# IDE
+.idea/
+*.iml
+.clangd
+
+# Temporary/development files
+RDF_POST*
+*.tmp
+*~
+*.bak
+
+# Local planning/review docs (not tracked)
+docs/plans/
+docs/reviews/
+PRODUCTION_READINESS_REVIEW.md
+FEATURE_MIGRATION_PLAN.md
+BACKUP_SALVAGE_GUIDE.md
+AUDIO_RESTORE_STATUS.md
+
+# Web UI build/cache (Svelte/Vite)
+/interface/node_modules/
+/interface/.svelte-kit/
+/interface/build/
+/interface/.vite/
+/interface/.DS_Store
+
+# Deployed web UI (generated from interface/)
+/data/
+
+# Large files (schematics, datasheets)
+*.pdf
+
+# Images (unless needed for docs)
+*.png
+!docs/*.png
+!interface/static/branding/*.png
+
+# Audio source files (keep generated headers, not source audio)
+*.aiff
+*.raw
+*.wav
+*.mp3
+
+# Local reference repos
+ESP32-S3-Touch-LCD-3.49/
+AndroidESPLibrary2/
+.scratch/
+
+# Local test captures / caches
+r8/
+bench_testing/
+.road_map_cache/
+.vite/
+*.sr
+*.pvs
+alp_captures/
+
+# Local research docs (not tracked)
+docs/CODEBASE_LEARNING_BRIEF.local.md
+docs/FUNCTION_PRIORITY.local.md
+# docs/ALP_*.md — ALP protocol reference + manual extracts.
+#   ALP_MANUAL_EXTRACTS.md contains copyrighted manual content and MUST NOT
+#   be committed. ALP_PROTOCOL_REFERENCE.md is our own analysis but stays
+#   local. Only the sanitized evidence summary below is tracked.
+docs/ALP_*.md
+!docs/ALP_PROTOCOL_EVIDENCE.md
+docs/CONSTITUTIONAL_FAILURES.md
+# Local AI assistant instructions stay out of the repo.
+.github/instructions/
+.github/instrictions/
+*.docx
+.~lock.*
+CLAUDE.md
+
+# Local hardware lab config (template checked in, local values are not)
+test/device/board_inventory.local.json
+node_modules

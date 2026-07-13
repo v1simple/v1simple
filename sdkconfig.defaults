@@ -1,0 +1,43 @@
+# ============================================================
+# v1simple — ESP-IDF configuration overrides
+# Focus: IRAM recovery, heap resilience, safe defaults
+# ============================================================
+
+# --- IRAM Recovery ---
+# Move heap management functions from IRAM to flash.
+# Saves ~6 KiB IRAM. Safe: heap functions are not ISR-critical.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+
+# Move FreeRTOS scheduler internals from IRAM to flash.
+# Saves ~4 KiB IRAM. Minor scheduler latency increase (sub-µs).
+# Safe for our use case: no hard-realtime ISR→task transitions.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+
+# Move ringbuffer functions from IRAM to flash.
+# Saves ~2 KiB IRAM. Only matters if ringbufs are used from ISRs
+# (they aren't in this project — BLE queue uses FreeRTOS queues).
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+
+# --- Heap Safety ---
+# Enable poisoning of freed heap blocks in debug builds.
+# Catches use-after-free by filling freed memory with 0xFE.
+# Overhead: ~2% heap throughput. Disable for release if needed.
+# CONFIG_HEAP_POISONING_COMPREHENSIVE=y  # Uncomment for debug
+CONFIG_HEAP_POISONING_LIGHT=y
+
+# --- Watchdog ---
+# The IDF task watchdog starts at boot and watches the Core-0 idle task.
+# Application setup explicitly subscribes Arduino's Core-1 loopTask and feeds
+# it only after a healthy loop path completes.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# --- Flash Performance ---
+# These should already be set via platformio.ini board_build,
+# but belt-and-suspenders:
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y

@@ -1,0 +1,205 @@
+{
+  "catalog_version": 1,
+  "modes": {
+    "critical": [
+      {
+        "id": "critical-002",
+        "module": "battery_manager",
+        "description": "- EMPTY -> + EMPTY percentage math",
+        "impact": "Battery percentage becomes nonsensical and masks low-battery shutdown risk",
+        "file": "include/battery_math.h",
+        "search": "    return static_cast<uint8_t>(\n        (static_cast<uint32_t>(voltageMV - kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
+        "replace": "    return static_cast<uint8_t>(\n        (static_cast<uint32_t>(voltageMV + kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
+        "tests": [
+          "test_battery_manager"
+        ]
+      },
+      {
+        "id": "critical-003",
+        "module": "packet_parser",
+        "description": "min length 8 -> 6 in validatePacket",
+        "impact": "Corrupt BLE frames pass validation for payload-bearing packets",
+        "file": "src/packet_parser.cpp",
+        "search": "bool PacketParser::validatePacket(const uint8_t* data, size_t length) {\n    if (length < 8) {\n        return false;\n    }\n",
+        "replace": "bool PacketParser::validatePacket(const uint8_t* data, size_t length) {\n    if (length < 6) {\n        return false;\n    }\n",
+        "tests": [
+          "test_packet_parser"
+        ]
+      },
+      {
+        "id": "critical-005",
+        "module": "wifi_boot_policy",
+        "description": ">= -> > BLE settle boundary",
+        "impact": "WiFi auto-start slips one loop past the settle threshold",
+        "file": "src/modules/wifi/wifi_boot_policy.h",
+        "search": "    bool bleSettled = bleConnected && (msSinceV1Connect >= settleMs);\n",
+        "replace": "    bool bleSettled = bleConnected && (msSinceV1Connect > settleMs);\n",
+        "tests": [
+          "test_wifi_boot_policy"
+        ]
+      },
+      {
+        "id": "critical-008",
+        "module": "volume_fade",
+        "description": ">= -> > fade delay boundary",
+        "impact": "Fade-down command fires one poll late",
+        "file": "src/modules/volume_fade/volume_fade_module.cpp",
+        "search": "    if (!commandSent_ && (now - alertStartMs_) >= fadeDelayMs) {\n",
+        "replace": "    if (!commandSent_ && (now - alertStartMs_) > fadeDelayMs) {\n",
+        "tests": [
+          "test_volume_fade"
+        ]
+      },
+      {
+        "id": "critical-011",
+        "module": "display_signal_bars",
+        "description": "> barCount clamp drops exact max by one",
+        "impact": "Signal bar strength off-by-one causes visual glitch at max bars",
+        "file": "src/display_bands.cpp",
+        "search": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength > barCount) strength = barCount;",
+        "replace": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength >= barCount) strength = barCount - 1;",
+        "tests": [
+          "test_display_rendering_bands",
+          "test_display"
+        ]
+      },
+      {
+        "id": "critical-012",
+        "module": "wifi_auto_timeout",
+        "description": ">= -> > inactivity grace timeout",
+        "impact": "WiFi timeout fires one poll early on inactivity threshold",
+        "file": "src/modules/wifi/wifi_auto_timeout_module.cpp",
+        "search": "    result.inactiveEnough = (result.lastActivityMs == 0)\n                                ? ((input.nowMs - input.setupModeStartMs) >= input.inactivityGraceMs)\n                                : ((input.nowMs - result.lastActivityMs) >= input.inactivityGraceMs);",
+        "replace": "    result.inactiveEnough = (result.lastActivityMs == 0)\n                                ? ((input.nowMs - input.setupModeStartMs) > input.inactivityGraceMs)\n                                : ((input.nowMs - result.lastActivityMs) > input.inactivityGraceMs);",
+        "tests": [
+          "test_wifi_auto_timeout_module"
+        ]
+      },
+      {
+        "id": "critical-013",
+        "module": "battery_critical_boundary",
+        "description": "< -> <= critical voltage boundary check",
+        "impact": "Voltage at exact critical threshold incorrectly flagged as critical, premature shutdown warning",
+        "file": "include/battery_math.h",
+        "search": "    return voltageMV < kCriticalMv && voltageMV > 0;",
+        "replace": "    return voltageMV <= kCriticalMv && voltageMV > 0;",
+        "tests": [
+          "test_battery_manager"
+        ]
+      },
+      {
+        "id": "critical-014",
+        "module": "battery_low_warning",
+        "description": "< -> <= warning voltage boundary",
+        "impact": "Battery at exact warning threshold misses low-battery warning",
+        "file": "include/battery_math.h",
+        "search": "    return voltageMV < kWarningMv && voltageMV > 0;",
+        "replace": "    return voltageMV <= kWarningMv && voltageMV > 0;",
+        "tests": [
+          "test_battery_manager"
+        ]
+      },
+      {
+        "id": "critical-015",
+        "module": "display_scan_dwell",
+        "description": "< -> <= scan screen dwell timeout",
+        "impact": "Scan dwell exits one poll early, missing brief reconnect grace period",
+        "file": "src/modules/ble/connection_state_cadence_module.cpp",
+        "search": "    if (scanScreenDwellActive_ && ctx.bleConnectedNow) {\n        const unsigned long scanDwellMs = ctx.nowMs - scanScreenEnteredMs_;\n        decision.holdScanDwell = scanDwellMs < ctx.scanScreenDwellMs;",
+        "replace": "    if (scanScreenDwellActive_ && ctx.bleConnectedNow) {\n        const unsigned long scanDwellMs = ctx.nowMs - scanScreenEnteredMs_;\n        decision.holdScanDwell = scanDwellMs <= ctx.scanScreenDwellMs;",
+        "tests": [
+          "test_connection_state_cadence_module"
+        ]
+      },
+      {
+        "id": "critical-016",
+        "module": "speed_mute_unmute_boundary",
+        "description": ">= -> > unmute threshold hysteresis",
+        "impact": "Speed mute unmutes one tick early, causing audible glitches near threshold",
+        "file": "src/modules/speed_mute/speed_mute_module.cpp",
+        "search": "    bool wantMute = state.muteActive;\n    if (!state.muteActive && ctx.speedMph < muteBelow) {\n        wantMute = true;\n    } else if (state.muteActive && ctx.speedMph >= unmuteAbove) {\n        wantMute = false;\n    }",
+        "replace": "    bool wantMute = state.muteActive;\n    if (!state.muteActive && ctx.speedMph < muteBelow) {\n        wantMute = true;\n    } else if (state.muteActive && ctx.speedMph > unmuteAbove) {\n        wantMute = false;\n    }",
+        "tests": [
+          "test_speed_mute"
+        ]
+      },
+      {
+        "id": "critical-017",
+        "module": "display_bar_position",
+        "description": "signal bar startY 10 -> 9 pixel offset",
+        "impact": "Signal bars render one pixel higher, misaligned with the arrow cluster and dirty-region math",
+        "file": "include/display_layout.h",
+        "search": "    constexpr int kStartY = 10;",
+        "replace": "    constexpr int kStartY = 9;",
+        "tests": [
+          "test_display_rendering_bands"
+        ]
+      },
+      {
+        "id": "critical-018",
+        "module": "display_update_interval",
+        "description": "< -> <= display update cadence boundary",
+        "impact": "Display updates one cycle late when elapsed time exactly equals interval",
+        "file": "src/modules/ble/connection_state_cadence_module.cpp",
+        "search": "    if ((ctx.nowMs - lastDisplayUpdateMs_) < ctx.displayUpdateIntervalMs) {\n        return decision;\n",
+        "replace": "    if ((ctx.nowMs - lastDisplayUpdateMs_) <= ctx.displayUpdateIntervalMs) {\n        return decision;\n",
+        "tests": [
+          "test_connection_state_cadence_module"
+        ]
+      },
+      {
+        "id": "critical-019",
+        "module": "touch_release_debounce",
+        "description": "release debounce 100ms -> 99ms constant",
+        "impact": "Touch release bouncing not fully debounced, rapid re-triggers possible",
+        "file": "src/touch_handler.cpp",
+        "search": "    , releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register",
+        "replace": "    , releaseDebounceMs_(99) // 100ms of no-touch required before new tap can register",
+        "tests": [
+          "test_touch_handler"
+        ]
+      },
+      {
+        "id": "critical-020",
+        "module": "ble_data_request_interval",
+        "description": "> -> >= data stale check boundary",
+        "impact": "BLE data request fires one poll too early when stale threshold exactly met",
+        "file": "src/modules/ble/connection_state_module.cpp",
+        "search": "    if (isConnected && bleQueue_) {\n        unsigned long lastRx = bleQueue_->getLastRxMillis();\n        bool dataStale = (nowMs - lastRx) > DATA_STALE_MS;",
+        "replace": "    if (isConnected && bleQueue_) {\n        unsigned long lastRx = bleQueue_->getLastRxMillis();\n        bool dataStale = (nowMs - lastRx) >= DATA_STALE_MS;",
+        "tests": [
+          "test_connection_state"
+        ]
+      },
+      {
+        "id": "critical-021",
+        "module": "packet_parser",
+        "file": "src/packet_parser.cpp",
+        "description": "LED bitmap 0x3F decodes to 6 instead of full local 8 bars",
+        "impact": "Signal meter under-reports V1G2 source full-scale as only six of this display's eight bars",
+        "search": "        case 63:  return 8;\n        case 127: return 8;",
+        "replace": "        case 63:  return 6;\n        case 127: return 8;",
+        "tests": [
+          "test_protocol_spec_conformance"
+        ]
+      }
+    ],
+    "full": [
+      "critical-002",
+      "critical-003",
+      "critical-005",
+      "critical-008",
+      "critical-011",
+      "critical-012",
+      "critical-013",
+      "critical-014",
+      "critical-015",
+      "critical-016",
+      "critical-017",
+      "critical-018",
+      "critical-019",
+      "critical-020",
+      "critical-021"
+    ]
+  }
+}

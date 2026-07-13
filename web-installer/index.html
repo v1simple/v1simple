@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>V1-Simple Installer</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --card-bg: #1a1a1a;
+      --accent: #22c55e;
+      --accent-hover: #16a34a;
+      --text: #ffffff;
+      --text-muted: #a1a1aa;
+      --border: #2a2a2a;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+
+    .container {
+      max-width: 600px;
+      width: 100%;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .logo {
+      font-size: 3rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent) 0%, #4ade80 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.5rem;
+    }
+
+    .tagline {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .card h2 {
+      font-size: 1.25rem;
+      margin-bottom: 1rem;
+    }
+
+    .steps {
+      list-style: none;
+      counter-reset: step;
+    }
+
+    .steps li {
+      counter-increment: step;
+      padding: 0.75rem 0;
+      padding-left: 2.5rem;
+      position: relative;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .steps li:last-child {
+      border-bottom: none;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+
+    .install-section {
+      text-align: center;
+      padding: 2.5rem;
+    }
+
+    esp-web-install-button {
+      display: inline-block;
+    }
+
+    esp-web-install-button button {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      padding: 1rem 2.5rem;
+      font-size: 1.25rem;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    esp-web-install-button button:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    esp-web-install-button button:active {
+      transform: translateY(0);
+    }
+
+    .version {
+      margin-top: 1rem;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .requirements {
+      background: #1c1c1e;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+
+    .requirements h3 {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .requirements ul {
+      list-style: none;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .requirements li {
+      padding: 0.25rem 0;
+    }
+
+    .requirements li::before {
+      content: "•";
+      color: var(--accent);
+      margin-right: 0.5rem;
+    }
+
+    .warning {
+      background: rgba(234, 179, 8, 0.1);
+      border: 1px solid rgba(234, 179, 8, 0.3);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+      color: #fbbf24;
+    }
+
+    .footer {
+      margin-top: 2rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 1rem;
+      }
+
+      .card {
+        padding: 1.5rem;
+      }
+
+      .logo {
+        font-size: 2.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="logo">V1-Simple</h1>
+      <p class="tagline">Display for Valentine One Gen2</p>
+    </header>
+
+    <div class="card">
+      <h2>📋 Web Install Steps</h2>
+      <ol class="steps">
+        <li>Have a <strong>data-capable</strong> USB-C cable ready (not charge-only)</li>
+        <li>Close any serial monitors or other apps that may use the port</li>
+        <li>Put device in <strong>bootloader mode</strong> (instructions below)</li>
+        <li>Click <strong>Install</strong> on this page and select your device</li>
+      </ol>
+
+      <div class="warning" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171; margin-top: 1rem;">
+        <strong>⚠️ IMPORTANT: Bootloader Mode Required</strong>
+        <div style="margin-top: 0.5rem; font-size: 0.9rem; opacity: 0.9;">
+          If you're on battery power and already have Simple installed: hold the power button until the device says "Goodbye", then proceed with the steps below.
+        </div>
+      </div>
+
+      <div class="warning" style="background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #60a5fa; margin-top: 0.75rem;">
+        <strong>🔌 Bootloader Mode (USB Plug-In Method)</strong>
+        <div style="margin-top: 0.75rem; font-size: 0.95rem;">
+          1. Press and hold the <strong>Power</strong> button and <strong>GEAR</strong> button at the same time<br>
+          2. While holding them, plug the USB-C cable into the device<br>
+          3. The screen will look "fuzzy" / "pixelated" — <strong>this is normal</strong>
+        </div>
+      </div>
+
+      <div class="requirements">
+        <h3>Requirements</h3>
+        <ul>
+          <li>Chrome, Edge, or Opera browser (Firefox not supported)</li>
+          <li>Waveshare ESP32-S3-Touch-LCD-3.49</li>
+          <li>USB-C data cable</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card install-section">
+      <div class="warning" style="background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #60a5fa; margin-bottom: 1rem;">
+        Release installer. This page is published over HTTPS with its matching release manifest and merged firmware image.
+      </div>
+
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Install V1-Simple</button>
+        <span slot="unsupported">
+          <p style="color: #ef4444;">Your browser doesn't support Web Serial.</p>
+          <p style="color: var(--text-muted); margin-top: 0.5rem;">Please use Chrome, Edge, or Opera.</p>
+        </span>
+        <span slot="not-allowed">
+          <p style="color: #ef4444;">Serial access not allowed.</p>
+          <p style="color: var(--text-muted); margin-top: 0.5rem;">Make sure this private installer is served from localhost or HTTPS and that you granted permission.</p>
+        </span>
+      </esp-web-install-button>
+      <p class="version">Version: <span id="version">loading...</span></p>
+
+      <div class="warning">
+        ⚠️ Install takes a few minutes. Don't disconnect!
+      </div>
+      <div class="warning" style="background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3); color: #22c55e; margin-top: 0.5rem;">
+        ✅ When complete, <strong>press the RESET button</strong> on your device to boot.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🚀 After Installation</h2>
+      <ol class="steps">
+        <li><strong>Press RESET button</strong> on the device to boot the firmware</li>
+        <li>Device will show the "SCAN" animation — <strong>plug in your V1 Gen2</strong> and it will pair automatically</li>
+        <li><strong>Hold the GEAR button</strong> until the WiFi icon appears</li>
+        <li>Connect to WiFi: <strong>V1-Simple</strong> (password: <strong>setupv1simple</strong>)</li>
+        <li>Open <strong>http://192.168.35.5</strong> to configure settings and change the AP password</li>
+      </ol>
+    </div>
+
+    <footer class="footer">
+      <p>Release assets are generated by the GitHub release workflow and published with the installer.</p>
+      <p style="margin-top: 0.5rem;">
+        <a href="THIRD_PARTY_NOTICES.md">Third-party notices</a>
+        · <a href="licenses/ArduinoJson-LICENSE.txt">ArduinoJson license</a>
+        · <a href="licenses/NimBLE-Arduino-LICENSE.txt">NimBLE-Arduino license</a>
+        · <a href="licenses/NimBLE-Arduino-NOTICE.txt">NimBLE-Arduino notice</a>
+        · <a href="licenses/Arduino-GFX-LICENSE.txt">Arduino GFX license</a>
+        · <a href="licenses/OpenFontRender-LICENSE.txt">OpenFontRender license</a>
+        · <a href="licenses/FreeType-FTL.txt">FreeType license</a>
+        · <a href="licenses/Svelte-LICENSE.md">Svelte license</a>
+        · <a href="licenses/SvelteKit-LICENSE.txt">SvelteKit license</a>
+        · <a href="licenses/daisyUI-LICENSE.txt">daisyUI license</a>
+        · <a href="licenses/Tailwind-CSS-LICENSE.txt">Tailwind CSS license</a>
+      </p>
+    </footer>
+  </div>
+
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js?module"
+    integrity="sha384-2Ea4WL8tjFb0qQKUqBoX45KlPVoUgL+Z3zUqsD0MHmtJ3faDbfNyZulLg/LfYDUZ"
+    crossorigin="anonymous"
+  ></script>
+  <script>
+    // Fetch version from manifest
+    fetch('manifest.json')
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('version').textContent = data.version || 'unknown';
+      })
+      .catch(() => {
+        document.getElementById('version').textContent = 'unknown';
+      });
+  </script>
+</body>
+</html>

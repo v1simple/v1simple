@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Pre-push guardrail for v1simple.
+#
+# main is APPEND-ONLY after 1.0.1. The single-root squash was a one-time reset,
+# not a per-release ritual. Every incident in the 1.0.0 release (stale tag at the
+# wrong commit, orphaned release, old history nearly republished) traced back to
+# rewriting already-published history. This hook makes that class of mistake
+# impossible by accident.
+#
+# It blocks:
+#   1. non-fast-forward (force) pushes to any branch
+#   2. ref deletions
+#   3. pushing local-only history branches (backup/*, pre-squash-*, refs/codex/*)
+#
+# It is a GUARDRAIL, not enforcement: `--no-verify` bypasses it, and it does not
+# exist for anyone who clones the repo. The real enforcement is the GitHub
+# ruleset on `main` (see docs/RELEASE_CHECKLIST.md). Both, on purpose.
+#
+# Install:  ./scripts/setup-hooks.sh
+
+set -uo pipefail
+
+remote_name="$1"
+ZERO='0000000000000000000000000000000000000000'
+
+RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
+fail() { printf "${RED}✗ push blocked:${NC} %s\n" "$1" >&2; }
+
+blocked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+
+  short_ref="${remote_ref#refs/heads/}"
+  short_ref="${short_ref#refs/tags/}"
+
+  # --- 1. never push local-only history -----------------------------------
+  case "$local_ref" in
+    refs/heads/backup/*|refs/heads/pre-squash-*|refs/codex/*)
+      fail "'$local_ref' is local-only history and must never be published."
+      echo "    These branches hold the pre-1.0.1 development history you" >&2
+      echo "    deliberately squashed away. Push 'main' explicitly instead." >&2
+      blocked=1
+      continue
+      ;;
+  esac
+
+  # --- 2. never delete a published ref -------------------------------------
+  if [ "$local_sha" = "$ZERO" ]; then
+    fail "deleting '$remote_ref' on '$remote_name'."
+    echo "    Deleting published refs is how a release gets orphaned." >&2
+    echo "    If you truly mean it: git push --no-verify --delete $remote_name $short_ref" >&2
+    blocked=1
+    continue
+  fi
+
+  # --- 3. new ref (tag or branch creation) is fine --------------------------
+  if [ "$remote_sha" = "$ZERO" ]; then
+    continue
+  fi
+
+  # --- 4. non-fast-forward = force push = the thing that hurt you -----------
+  if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    fail "non-fast-forward (force) push to '$remote_ref'."
+    echo "" >&2
+    echo "    Remote $remote_sha is not an ancestor of your $local_sha." >&2
+    echo "    This would REWRITE published history." >&2
+    echo "" >&2
+    echo "    main is append-only. If the remote has something you don't:" >&2
+    echo "        git pull --rebase origin main" >&2
+    echo "" >&2
+    echo "    A force-push is only ever correct for a deliberate, one-time" >&2
+    echo "    re-baseline. If that is genuinely what you are doing:" >&2
+    echo "        git bundle create ~/v1simple-safety-\$(date +%Y%m%d).bundle --all" >&2
+    echo "        git push --no-verify --force origin main" >&2
+    blocked=1
+    continue
+  fi
+done
+
+if [ "$blocked" -ne 0 ]; then
+  printf "\n${YEL}Nothing was pushed.${NC}\n" >&2
+  exit 1
+fi
+
+exit 0

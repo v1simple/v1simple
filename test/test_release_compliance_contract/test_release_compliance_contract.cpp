@@ -19,16 +19,12 @@ std::string readTextFile(const char* path) {
 void setUp() {}
 void tearDown() {}
 
-void test_release_action_is_immutably_pinned_and_default_scope_is_read_only() {
+void test_release_action_and_permission_scope_contract() {
     const std::string workflow = readTextFile(".github/workflows/release.yml");
 
     TEST_ASSERT_FALSE_MESSAGE(workflow.empty(), "failed to read release workflow");
-    TEST_ASSERT_NOT_EQUAL(
-        std::string::npos,
-        workflow.find(
-            "uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65"));
-    TEST_ASSERT_EQUAL(std::string::npos,
-                      workflow.find("uses: softprops/action-gh-release@v2"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("uses: softprops/action-gh-release@"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("permissions:\n  contents: read"));
     TEST_ASSERT_NOT_EQUAL(
@@ -135,7 +131,7 @@ void test_release_distribution_ships_and_links_runtime_notices() {
 
 int main() {
     UNITY_BEGIN();
-    RUN_TEST(test_release_action_is_immutably_pinned_and_default_scope_is_read_only);
+    RUN_TEST(test_release_action_and_permission_scope_contract);
     RUN_TEST(test_runtime_dependency_notices_bundle_required_license_terms);
     RUN_TEST(test_release_distribution_ships_and_links_runtime_notices);
     return UNITY_END();

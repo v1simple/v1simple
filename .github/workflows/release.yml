@@ -1,11 +1,11 @@
 name: Release
 
-# One-click manual release workflow. Keep this off push-to-main so creating or
-# updating the public repository cannot publish a release accidentally.
+# Every green PR merge publishes the next patch release automatically. Recover
+# an interrupted publication by rerunning the original Actions run.
 #
 # Steps:
-#   1. Verify the selected source lineage passed the authoritative main CI gate
-#   2. Calculate, validate, and commit the selected semantic-version bump locally
+#   1. Select the merged main commit (or the same run's recorded release on retry)
+#   2. Calculate, validate, and commit the semantic-version bump locally
 #   3. Build the exact production artifacts once
 #   4. Merge binaries and stage the GitHub Pages web installer
 #   5. Atomically push the release commit and its immutable tag
@@ -13,17 +13,8 @@ name: Release
 #   7. Deploy the web installer to GitHub Pages
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: Semantic version bump
-        required: true
-        default: patch
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -36,8 +27,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      deploy_pages: ${{ steps.publish.outputs.deploy_pages }}
     permissions:
-      actions: read
       contents: write
       pages: write
 
@@ -50,8 +43,8 @@ jobs:
 
       - name: Refresh repository refs
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Releases must be dispatched from main."
+          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Releases must run from main."
             exit 1
           fi
           git fetch --force origin main
@@ -66,6 +59,7 @@ jobs:
       - name: Select release base
         id: base
         env:
+          EVENT_SHA: ${{ github.sha }}
           RESUME_SHA: ${{ steps.resume.outputs.resume_sha }}
           RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
         run: |
@@ -81,27 +75,18 @@ jobs:
             git checkout --detach "$RESUME_SHA"
             echo "Resuming $RESUME_TAG at $RESUME_SHA for this workflow run."
           else
-            git checkout --detach origin/main
+            if ! git merge-base --is-ancestor "$EVENT_SHA" origin/main; then
+              echo "::error::Merged commit $EVENT_SHA is no longer in main history."
+              exit 1
+            fi
+            git checkout --detach "$EVENT_SHA"
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Require successful CI evidence for release base
-        id: ci_evidence
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/check_ci_evidence.py \
-            --base-sha "$BASE_SHA" \
-            --repository "$GITHUB_REPOSITORY" \
-            --main-ref origin/main \
-            --wait-seconds 1500 \
-            --poll-seconds 15
 
       - name: Prepare release version
         id: version
         env:
-          RELEASE_BUMP: ${{ inputs.bump }}
+          RELEASE_BUMP: patch
           RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
         run: |
           python3 scripts/prepare_release.py \
@@ -269,18 +254,6 @@ jobs:
         with:
           path: release/pages
 
-      - name: Reconfirm CI evidence before publication
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/check_ci_evidence.py \
-            --base-sha "$BASE_SHA" \
-            --repository "$GITHUB_REPOSITORY" \
-            --main-ref origin/main \
-            --wait-seconds 0 \
-            --poll-seconds 1
-
       - name: Publish release commit and tag
         id: publish
         env:
@@ -312,21 +285,54 @@ jobs:
           else
             REMOTE_MAIN_SHA="$(git rev-parse origin/main)"
             if [ "$REMOTE_MAIN_SHA" != "$BASE_SHA" ]; then
-              echo "::error::main advanced from $BASE_SHA to $REMOTE_MAIN_SHA during the release. Rerun from current main."
-              exit 1
+              echo "::notice::main advanced from $BASE_SHA to $REMOTE_MAIN_SHA; the newer merge has its own queued release."
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
             git tag -a "$RELEASE_TAG" "$RELEASE_SHA" \
               -m "Release $RELEASE_TAG" \
               -m "Release-Run-ID: $RELEASE_RUN_ID"
             AUTH_VALUE="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_VALUE" \
+            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_VALUE" \
               push --atomic origin \
               HEAD:refs/heads/main \
-              "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+              "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
+              git fetch --force origin main
+              git fetch --force --tags origin
+              UPDATED_MAIN_SHA="$(git rev-parse origin/main)"
+              UPDATED_TAG_SHA="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" \
+                | awk 'NR == 1 { print $1 }')"
+              if [ "$UPDATED_TAG_SHA" = "$RELEASE_SHA" ] \
+                && git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+                if ! git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" \
+                  | grep -Fxq "Release-Run-ID: $RELEASE_RUN_ID"; then
+                  echo "::error::$RELEASE_TAG reached the expected commit without this run's publication marker."
+                  exit 1
+                fi
+                echo "::notice::Recovered successful atomic publication after the client lost its response; main is at $UPDATED_MAIN_SHA."
+              elif [ "$UPDATED_MAIN_SHA" != "$BASE_SHA" ]; then
+                echo "::notice::main advanced from $BASE_SHA to $UPDATED_MAIN_SHA during publication; the newer merge has its own queued release."
+                echo "published=false" >> "$GITHUB_OUTPUT"
+                echo "deploy_pages=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                echo "::error::Atomic release publication failed while main remained at $BASE_SHA."
+                exit 1
+              fi
+            fi
+          fi
+          LATEST_RELEASE_TAG="$(python3 scripts/prepare_release.py --latest-tag)"
+          if [ "$LATEST_RELEASE_TAG" = "$RELEASE_TAG" ]; then
+            echo "deploy_pages=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Repairing $RELEASE_TAG assets without replacing the newer $LATEST_RELEASE_TAG Pages installer."
+            echo "deploy_pages=false" >> "$GITHUB_OUTPUT"
           fi
           echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: steps.publish.outputs.published == 'true'
         # v3.0.2, pinned so a mutable tag cannot change code running with contents:write.
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
@@ -351,21 +357,28 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Summary
+        if: steps.publish.outputs.published == 'true'
         run: |
           {
             echo "## Released ${{ steps.version.outputs.tag }}"
             echo ""
+            echo "- Green merged changes published automatically as the next patch"
             echo "- Firmware version and changelog prepared automatically"
             echo "- Tested release commit: ${{ steps.publish.outputs.sha }}"
             echo "- Release commit and tag published atomically or safely reused"
             echo "- GitHub Release published with firmware, filesystem, merged installer binary, and ESP Web Tools manifest"
             echo "- Third-party notices and runtime license texts published with the release and installer"
             echo "- Image-info report uploaded as workflow evidence"
-            echo "- GitHub Pages installer artifact staged from the same manifest and merged image"
+            if [ "${{ steps.publish.outputs.deploy_pages }}" = "true" ]; then
+              echo "- GitHub Pages installer staged for deployment from the same manifest and merged image"
+            else
+              echo "- Newer GitHub Pages installer left unchanged while this release's assets were repaired"
+            fi
           } >> $GITHUB_STEP_SUMMARY
 
   deploy-pages:
     needs: release
+    if: needs.release.outputs.deploy_pages == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write

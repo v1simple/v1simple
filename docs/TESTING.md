@@ -12,8 +12,8 @@ The repo's test infrastructure has three maintained shell entry points. They del
 
 `scripts/ci-test.sh` remains the only authoritative approval gate and emits
 `.artifacts/test_reports/ci-test/timing.json` for budget enforcement. The
-production-artifact helper is a shared build stage, not a substitute for full
-PR or `main` CI.
+production-artifact helper is a shared build stage, not a substitute for the
+full PR gate.
 
 ## `scripts/ci-test.sh` walkthrough
 
@@ -151,7 +151,8 @@ device-focused suites plus a small set of self-contained shared suites.
 ## Firmware C++ coverage lane (out-of-band)
 
 Coverage of the firmware C++ is measured **outside the PR gate**, by
-`.github/workflows/coverage.yml` on push to `main` and on `workflow_dispatch`.
+`.github/workflows/coverage.yml` on a weekly schedule and on
+`workflow_dispatch`.
 
 ### What the number actually means — read before quoting it
 
@@ -202,8 +203,8 @@ The instrumented suite itself is only ~21% slower — but the gate does not
 second run. That is roughly +231s on a lane that already runs ~531s against a
 1200s budget (`tools/ci_time_budgets.json`), and the budget is calibrated for
 cold GitHub runners, which are slower than the host these numbers came from.
-Spending ~40% of the remaining headroom on a signal that is currently advisory
-is not a good trade, so the PR gate does not carry coverage.
+Spending ~40% of the remaining headroom on a scheduled regression signal is not
+a good trade, so the PR gate does not carry coverage.
 
 ### Running it locally
 
@@ -218,9 +219,9 @@ python3 scripts/check_firmware_coverage.py          # ratchet against the tracke
 clock is deliberately not charged against the 1200s `ci-test` budget — it is not
 part of the authoritative gate.
 
-The ratchet is wired as an **advisory** step (`run_advisory_step`) for now. It is
-promoted to a hard failure once the Track C file splits land and the baseline is
-refreshed against them.
+The scheduled workflow fails when the ratchet drops, but it does not gate a PR,
+merge, or release. Treat a failure as follow-up work rather than a reason to run
+the full suite again during the delivery path.
 
 ## Bench hardware evidence (`./bench.sh`)
 

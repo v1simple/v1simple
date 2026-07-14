@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Prepare an idempotent semantic-version release commit.
 
-The release workflow calls this before its expensive CI and firmware builds.
+The release workflow calls this before its production firmware build.
 It derives the next version from immutable ``vN.N.N`` tags, updates the
 firmware version and changelog, and writes GitHub Actions step outputs.  Only a
-tag positively matched to the same GitHub Actions run may be reused; a fresh
-workflow dispatch from a tagged ``main`` prepares the selected bump.
+tag positively matched to the same GitHub Actions run may be reused. It also
+reports the newest strict semantic-version tag so an older retry cannot roll
+the live installer backward.
 """
 
 from __future__ import annotations
@@ -258,8 +259,6 @@ def prepare_release(
     config_text, current = read_config_version(config_path)
     tags = strict_version_tags(root)
     latest = tags[-1] if tags else None
-    if latest:
-        require_ancestor(root, latest.name, head)
 
     resume_tag = resume_tag.strip()
     if resume_tag:
@@ -284,6 +283,7 @@ def prepare_release(
         target = current
         mode = "initial"
     else:
+        require_ancestor(root, latest.name, head)
         if current != latest.version:
             raise ReleasePreparationError(
                 f"FIRMWARE_VERSION {current} must match latest release tag {latest.name}; "
@@ -339,6 +339,7 @@ def parse_args() -> argparse.Namespace:
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--bump", choices=("patch", "minor", "major"))
     operation.add_argument("--lookup-run-id", metavar="RUN_ID")
+    operation.add_argument("--latest-tag", action="store_true")
     parser.add_argument(
         "--resume-tag",
         default="",
@@ -360,7 +361,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.lookup_run_id:
+        if args.latest_tag:
+            if args.resume_tag:
+                raise ReleasePreparationError(
+                    "--resume-tag is valid only with the --bump operation"
+                )
+            tags = strict_version_tags(args.root.resolve())
+            values = {"latest_tag": tags[-1].name if tags else ""}
+            print(values["latest_tag"])
+        elif args.lookup_run_id:
             if args.resume_tag:
                 raise ReleasePreparationError(
                     "--resume-tag is valid only with the --bump operation"

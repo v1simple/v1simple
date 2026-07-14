@@ -1,11 +1,9 @@
 name: CI
 
-# Push to main or open PR to main → run tests.
-# The manual Release workflow prepares its selected version automatically.
+# One authoritative gate per proposed revision. GitHub's main-branch ruleset
+# requires this check before merge; publishing happens after the merge.
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -54,7 +52,7 @@ jobs:
       - name: Run ci-test.sh
         run: |
           set -o pipefail
-          ./scripts/ci-test.sh 2>&1 | tee ci-test.log
+          bash ./scripts/ci-test.sh 2>&1 | tee ci-test.log
 
       - name: Upload log on failure
         if: failure()

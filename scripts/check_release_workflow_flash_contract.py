@@ -8,10 +8,18 @@ import re
 import sys
 from pathlib import Path
 
+from check_ci_evidence import (
+    DEFAULT_JOB_NAME,
+    DEFAULT_STEP_NAME,
+    DEFAULT_WORKFLOW_NAME,
+    DEFAULT_WORKFLOW_PATH,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORMIO_INI = ROOT / "platformio.ini"
 CI_TEST = ROOT / "scripts" / "ci-test.sh"
+PRODUCTION_BUILD = ROOT / "scripts" / "build_production_artifacts.sh"
 CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_YML = ROOT / ".github" / "workflows" / "release.yml"
 PARTITIONS = ROOT / "partitions_v1.csv"
@@ -102,34 +110,81 @@ def require_contains(text: str, needle: str, label: str, errors: list[str]) -> N
 
 
 def check_production_env_is_tested(errors: list[str]) -> None:
-    """Guard the invariant that release firmware is the firmware CI tests."""
+    """Guard the shared exact-artifact build and full-CI evidence contract."""
 
     ci_test_text = CI_TEST.read_text(encoding="utf-8")
+    production_text = PRODUCTION_BUILD.read_text(encoding="utf-8")
     ci_workflow_text = CI_YML.read_text(encoding="utf-8")
     release_text = RELEASE_YML.read_text(encoding="utf-8")
 
-    require_contains(ci_test_text, f"PIO_BUILD_ARGS=(-e {ENV})", "scripts/ci-test.sh", errors)
     require_contains(ci_workflow_text, "./scripts/ci-test.sh", ".github/workflows/ci.yml", errors)
-    require_contains(release_text, "./scripts/ci-test.sh", ".github/workflows/release.yml", errors)
+    workflow_path = CI_YML.relative_to(ROOT).as_posix()
+    if workflow_path != DEFAULT_WORKFLOW_PATH:
+        errors.append(
+            "CI evidence workflow path does not match the authoritative workflow: "
+            f"{DEFAULT_WORKFLOW_PATH!r} != {workflow_path!r}"
+        )
+    for required in (
+        f"name: {DEFAULT_WORKFLOW_NAME}",
+        f"    name: {DEFAULT_JOB_NAME}",
+        f"      - name: {DEFAULT_STEP_NAME}",
+        "push:",
+        "workflow_dispatch:",
+        "branches: [main]",
+    ):
+        require_contains(
+            ci_workflow_text,
+            required,
+            ".github/workflows/ci.yml CI-evidence identity",
+            errors,
+        )
     require_contains(
-        release_text,
-        f"pio run -e {ENV} -j 1",
-        ".github/workflows/release.yml firmware build",
+        ci_test_text,
+        "./scripts/build_production_artifacts.sh",
+        "scripts/ci-test.sh",
         errors,
     )
     require_contains(
         release_text,
-        f"pio run -e {ENV} -t buildfs -j 1",
-        ".github/workflows/release.yml filesystem build",
+        "./scripts/build_production_artifacts.sh",
+        ".github/workflows/release.yml",
         errors,
     )
+    for required in (
+        f"PIO_BUILD_ARGS=(-e {ENV})",
+        'run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean',
+        'run_step "Firmware build" run_firmware_build_with_memory_log',
+        'run_step "LittleFS image build" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t buildfs',
+        "scripts/check_memory_headroom.py",
+        "scripts/report_flash_package_size.py",
+        "scripts/check_littlefs_image_compatibility.py",
+        "npm run build",
+        "npm run deploy:built",
+    ):
+        require_contains(
+            production_text,
+            required,
+            "scripts/build_production_artifacts.sh",
+            errors,
+        )
 
-    ci_index = release_text.find("./scripts/ci-test.sh")
-    firmware_index = release_text.find(f"pio run -e {ENV} -j 1")
-    if ci_index == -1 or firmware_index == -1:
-        return
-    if ci_index > firmware_index:
-        errors.append("release.yml must run scripts/ci-test.sh before building release firmware")
+    if "./scripts/ci-test.sh" in release_text:
+        errors.append("release.yml must reuse green main CI evidence, not rerun the full gate")
+    if "cd interface && npm ci" in ci_workflow_text:
+        errors.append("ci.yml must not install frontend dependencies before ci-test.sh installs them")
+    require_contains(
+        ci_test_text,
+        'run_step "Frontend dependencies" npm ci',
+        "scripts/ci-test.sh strict frontend dependency install",
+        errors,
+    )
+    if "npm install" in ci_test_text:
+        errors.append("ci-test.sh must not fall back from npm ci to a mutable npm install")
+
+    build_index = release_text.find("./scripts/build_production_artifacts.sh")
+    merge_index = release_text.find("Merge firmware for ESP Web Tools")
+    if -1 not in (build_index, merge_index) and build_index > merge_index:
+        errors.append("release.yml must build production artifacts before packaging them")
 
 
 def check_release_version_automation(errors: list[str]) -> None:
@@ -142,11 +197,20 @@ def check_release_version_automation(errors: list[str]) -> None:
         "- patch",
         "- minor",
         "- major",
+        "actions: read",
         "persist-credentials: false",
         'python3 scripts/prepare_release.py --lookup-run-id "$RELEASE_RUN_ID"',
         'git checkout --detach "$RESUME_SHA"',
-        'python3 scripts/prepare_release.py --bump "$RELEASE_BUMP"',
+        "python3 scripts/check_ci_evidence.py",
+        "--wait-seconds 1500",
+        "--wait-seconds 0",
+        'python3 scripts/prepare_release.py',
+        '--bump "$RELEASE_BUMP"',
+        '--resume-tag "$RESUME_TAG"',
         'git commit -m "chore(release): prepare $RELEASE_TAG"',
+        'git diff --name-only "$BASE_SHA" "$RELEASE_SHA"',
+        "python3 scripts/check_release_config_change.py",
+        "./scripts/build_production_artifacts.sh",
         'EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"',
         "Release-Run-ID: $RELEASE_RUN_ID",
         "push --atomic origin",
@@ -161,21 +225,32 @@ def check_release_version_automation(errors: list[str]) -> None:
         "git push --tags",
         "git push --force",
         "GITHUB_SHA",
+        "run: ./scripts/ci-test.sh",
         "Bump FIRMWARE_VERSION in include/config.h before releasing",
     ):
         if forbidden in release_text:
             errors.append(f"release.yml contains retired release behavior: {forbidden!r}")
 
+    evidence_index = release_text.find("python3 scripts/check_ci_evidence.py")
+    evidence_recheck_index = release_text.rfind("python3 scripts/check_ci_evidence.py")
     prepare_index = release_text.find("--bump \"$RELEASE_BUMP\"")
     resume_index = release_text.find("--lookup-run-id")
-    ci_index = release_text.find("./scripts/ci-test.sh")
+    build_index = release_text.find("./scripts/build_production_artifacts.sh")
     publish_index = release_text.find("Publish release commit and tag")
-    if -1 not in (resume_index, prepare_index, ci_index, publish_index) and not (
-        resume_index < prepare_index < ci_index < publish_index
-    ):
+    ordered = (
+        resume_index,
+        evidence_index,
+        prepare_index,
+        build_index,
+        evidence_recheck_index,
+        publish_index,
+    )
+    if -1 not in ordered and list(ordered) != sorted(ordered):
         errors.append(
-            "release.yml must resolve reruns, prepare the commit, run CI, then publish"
+            "release.yml must resolve reruns, verify CI, prepare, build, recheck, then publish"
         )
+    if release_text.count("python3 scripts/check_ci_evidence.py") != 2:
+        errors.append("release.yml must verify CI evidence before preparation and publication")
 
 
 def main() -> int:

@@ -3,8 +3,9 @@
 
 The release workflow calls this before its expensive CI and firmware builds.
 It derives the next version from immutable ``vN.N.N`` tags, updates the
-firmware version and changelog, and writes GitHub Actions step outputs.  If the
-current commit is already tagged, rerunning the workflow reuses that version.
+firmware version and changelog, and writes GitHub Actions step outputs.  Only a
+tag positively matched to the same GitHub Actions run may be reused; a fresh
+workflow dispatch from a tagged ``main`` prepares the selected bump.
 """
 
 from __future__ import annotations
@@ -232,6 +233,7 @@ def prepare_release(
     bump: str,
     release_date: str,
     repository: str,
+    resume_tag: str = "",
 ) -> dict[str, str]:
     root = root.resolve()
     config_path = root / "include" / "config.h"
@@ -259,9 +261,23 @@ def prepare_release(
     if latest:
         require_ancestor(root, latest.name, head)
 
-    current_tag = f"v{current}"
-    current_tag_commit = resolve_commit(root, current_tag)
-    if current_tag_commit == head:
+    resume_tag = resume_tag.strip()
+    if resume_tag:
+        if not resume_tag.startswith("v") or not SEMVER_RE.fullmatch(resume_tag[1:]):
+            raise ReleasePreparationError(
+                f"invalid resume tag {resume_tag!r}; expected vMAJOR.MINOR.PATCH"
+            )
+        resume_version = Version.parse(resume_tag[1:])
+        resume_commit = resolve_commit(root, resume_tag)
+        if resume_commit != head:
+            found = resume_commit or "missing"
+            raise ReleasePreparationError(
+                f"resume tag {resume_tag} resolves to {found}, expected HEAD {head}"
+            )
+        if resume_version != current:
+            raise ReleasePreparationError(
+                f"resume tag {resume_tag} does not match FIRMWARE_VERSION {current}"
+            )
         target = current
         mode = "rerun"
     elif latest is None:
@@ -323,6 +339,11 @@ def parse_args() -> argparse.Namespace:
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--bump", choices=("patch", "minor", "major"))
     operation.add_argument("--lookup-run-id", metavar="RUN_ID")
+    parser.add_argument(
+        "--resume-tag",
+        default="",
+        help="Reuse this tag only after --lookup-run-id matched the same workflow run",
+    )
     parser.add_argument("--date", default=dt.datetime.now(dt.timezone.utc).date().isoformat())
     parser.add_argument(
         "--repository",
@@ -340,6 +361,10 @@ def main() -> int:
     args = parse_args()
     try:
         if args.lookup_run_id:
+            if args.resume_tag:
+                raise ReleasePreparationError(
+                    "--resume-tag is valid only with the --bump operation"
+                )
             match = release_for_run_id(args.root.resolve(), args.lookup_run_id)
             values = {
                 "resume_tag": match[0].name if match else "",
@@ -353,7 +378,13 @@ def main() -> int:
             else:
                 print(f"No prior publication found for run {args.lookup_run_id}")
         else:
-            values = prepare_release(args.root, args.bump, args.date, args.repository)
+            values = prepare_release(
+                args.root,
+                args.bump,
+                args.date,
+                args.repository,
+                args.resume_tag,
+            )
         write_outputs(args.github_output, values)
     except (OSError, ReleasePreparationError) as exc:
         print(f"[release-version] {exc}", file=sys.stderr)

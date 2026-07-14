@@ -71,24 +71,32 @@ class TempReleaseRepo:
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD")
 
-    def prepare(self, bump: str) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+    def prepare(
+        self,
+        bump: str,
+        *,
+        resume_tag: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
         output_path = self.root / ".git" / "github-output.txt"
         output_path.unlink(missing_ok=True)
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--root",
+            str(self.root),
+            "--bump",
+            bump,
+            "--date",
+            "2026-07-14",
+            "--repository",
+            "v1simple/v1simple",
+            "--github-output",
+            str(output_path),
+        ]
+        if resume_tag is not None:
+            command.extend(("--resume-tag", resume_tag))
         result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--root",
-                str(self.root),
-                "--bump",
-                bump,
-                "--date",
-                "2026-07-14",
-                "--repository",
-                "v1simple/v1simple",
-                "--github-output",
-                str(output_path),
-            ],
+            command,
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -181,7 +189,27 @@ class PrepareReleaseTests(unittest.TestCase):
                 finally:
                     repo.close()
 
-    def test_tagged_head_is_an_idempotent_rerun(self) -> None:
+    def test_fresh_dispatch_from_tagged_head_prepares_selected_bump(self) -> None:
+        self.repo.write_version("1.0.2")
+        changelog = (self.repo.root / "CHANGELOG.md").read_text(encoding="utf-8")
+        changelog = changelog.replace(
+            "## [Unreleased]\n",
+            "## [Unreleased]\n\n## [1.0.2] - 2026-07-14\n",
+            1,
+        )
+        (self.repo.root / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+        self.repo.commit_all("prepared release")
+        self.repo.git("tag", "v1.0.2")
+
+        result, values = self.repo.prepare("patch", resume_tag="")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "1.0.3")
+        self.assertEqual(values["tag"], "v1.0.3")
+        self.assertEqual(values["mode"], "new")
+        self.assertEqual(values["files_changed"], "true")
+
+    def test_tagged_head_is_an_idempotent_rerun_with_explicit_resume_tag(self) -> None:
         self.repo.write_version("1.0.2")
         changelog = (self.repo.root / "CHANGELOG.md").read_text(encoding="utf-8")
         changelog = changelog.replace(
@@ -194,7 +222,7 @@ class PrepareReleaseTests(unittest.TestCase):
         self.repo.git("tag", "v1.0.2")
         before = self.repo.git("status", "--porcelain")
 
-        result, values = self.repo.prepare("patch")
+        result, values = self.repo.prepare("major", resume_tag="v1.0.2")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(values["version"], "1.0.2")
@@ -239,7 +267,9 @@ class PrepareReleaseTests(unittest.TestCase):
         self.assertEqual(resume["resume_sha"], release_sha)
         self.repo.git("checkout", "--detach", resume["resume_sha"])
 
-        rerun, rerun_values = self.repo.prepare("major")
+        rerun, rerun_values = self.repo.prepare(
+            "major", resume_tag=resume["resume_tag"]
+        )
 
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
         self.assertEqual(rerun_values["tag"], "v1.0.2")

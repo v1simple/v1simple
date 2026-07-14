@@ -19,10 +19,6 @@ if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo "Expected a positive integer." >&2
   exit 2
 fi
-PIO_BUILD_ARGS=(-e waveshare-349)
-if [[ -n "$PIO_JOBS" ]]; then
-  PIO_BUILD_ARGS+=(-j "$PIO_JOBS")
-fi
 
 section() {
   echo ""
@@ -48,12 +44,6 @@ run_advisory_step() {
   fi
 }
 
-run_firmware_build_with_memory_log() {
-  local memory_dir="$ROOT_DIR/.artifacts/test_reports/memory-headroom"
-  mkdir -p "$memory_dir"
-  "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" | tee "$memory_dir/waveshare-349-build.log"
-}
-
 PIO_CMD="${PIO_CMD:-pio}"
 if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
@@ -74,6 +64,7 @@ run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
 run_step "Bug pattern scanner regression tests" python3 scripts/test_bug_pattern_scanner.py
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
+run_step "Release CI evidence regression tests" python3 scripts/test_check_ci_evidence.py
 run_step "sdkconfig redefine guard (CONFIG_* -D vs framework header)" python3 scripts/check_sdkconfig_redefines.py
 run_step "BLE deletion semantic guard" python3 scripts/check_ble_deletion_contract.py
 run_step "Frontend HTTP resilience semantic guard" python3 scripts/check_frontend_http_resilience_contract.py
@@ -141,32 +132,16 @@ run_step "Protocol spec tables (doc ↔ fixtures)" python3 scripts/check_protoco
 
 section "Frontend"
 cd interface
-run_step "Frontend dependencies" bash -lc "npm ci --silent 2>/dev/null || npm install --silent"
+run_step "Frontend dependencies" npm ci
 run_step "Frontend lint/type checks" npm run lint
 run_step "Frontend unit tests with coverage" npm run test:coverage
-run_step "Frontend build" npm run build
-run_step "Frontend deploy" npm run deploy:built
 cd "$ROOT_DIR"
 
-section "Frontend Packaging"
-run_step "Web asset guardrails" python3 scripts/check_web_asset_budget.py
-run_step "Audio asset manifest (source + deployed)" python3 scripts/check_audio_asset_manifest.py
-
-section "Firmware Build"
+section "Firmware Static Analysis"
 run_step "Firmware static analysis" ./scripts/pio-check.sh
-run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean
-run_step "Firmware build" run_firmware_build_with_memory_log
-run_step "Firmware memory headroom" python3 scripts/check_memory_headroom.py \
-  --env waveshare-349 \
-  --no-build \
-  --build-log .artifacts/test_reports/memory-headroom/waveshare-349-build.log \
-  --warn-iram-zero
-run_step "LittleFS image build" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t buildfs
-run_step "Flash package truth report" python3 scripts/report_flash_package_size.py \
-  --max-firmware-bytes 5570560 \
-  --expect-littlefs-bytes 2424832
-run_step "LittleFS image/runtime compatibility" python3 scripts/check_littlefs_image_compatibility.py \
-  --candidate .pio/build/waveshare-349/littlefs.bin
+
+section "Production Artifact Build"
+run_step "Shared production artifact build" ./scripts/build_production_artifacts.sh
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
@@ -181,13 +156,6 @@ run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TI
 
 echo ""
 echo -e "${GREEN}All gates passed in ${ELAPSED}s${NC}"
-
-section "Size Report"
-echo "waveshare-349:"
-"$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t size 2>/dev/null | grep -E "(RAM|Flash|used|bytes)"
-
-END_TIME=$(date +%s)
-ELAPSED=$((END_TIME - START_TIME))
 
 echo ""
 echo "============================================"

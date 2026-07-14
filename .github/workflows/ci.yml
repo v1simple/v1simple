@@ -48,10 +48,8 @@ jobs:
           key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
           restore-keys: ${{ runner.os }}-pio-
 
-      - name: Install toolchain
-        run: |
-          pip install "platformio>=6.1.19,<7" "cryptography>=41" "Pillow>=10.4,<13"
-          cd interface && npm ci
+      - name: Install Python toolchain
+        run: pip install "platformio>=6.1.19,<7" "cryptography>=41" "Pillow>=10.4,<13"
 
       - name: Run ci-test.sh
         run: |

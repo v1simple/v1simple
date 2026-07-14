@@ -1,6 +1,6 @@
 # Testing & CI
 
-The repo's test infrastructure has two maintained shell entry points. They delegate to `pio`, the bench runner, and a fleet of Python gates under `scripts/`. The Python gates are the load-bearing part — they encode invariants that compile-time checks and unit tests can't catch on their own.
+The repo's test infrastructure has three maintained shell entry points. They delegate to `pio`, the bench runner, and a fleet of Python gates under `scripts/`. The Python gates are the load-bearing part — they encode invariants that compile-time checks and unit tests can't catch on their own.
 
 ## Entry points
 
@@ -8,8 +8,12 @@ The repo's test infrastructure has two maintained shell entry points. They deleg
 |---|---|---|
 | `./bench.sh` | Bench hardware evidence | Runs core and display SD/serial metric windows only. No OBD/proxy coverage or release-qualification language; optional promoted baselines are local comparison aids. |
 | `scripts/ci-test.sh` | Every PR / local pre-push | Authoritative repo gate. 40+ run-step gates across semantic checks, contracts, perf, frontend, and firmware build. Fail = block merge. |
+| `scripts/build_production_artifacts.sh` | Final stage of full CI and focused Release | Builds/deploys the frontend, then clean-builds and validates the production firmware and LittleFS artifacts exactly once. It assumes frontend dependencies are already installed. |
 
-`scripts/ci-test.sh` is the only maintained CI lane; it emits `.artifacts/test_reports/ci-test/timing.json` for budget enforcement.
+`scripts/ci-test.sh` remains the only authoritative approval gate and emits
+`.artifacts/test_reports/ci-test/timing.json` for budget enforcement. The
+production-artifact helper is a shared build stage, not a substitute for full
+PR or `main` CI.
 
 ## `scripts/ci-test.sh` walkthrough
 
@@ -77,24 +81,27 @@ Contracts that pin specific patterns. Failing one of these is the most common re
 
 `cd interface` then `npm`-driven steps:
 
-- `npm ci` (or `npm install` fallback) — install deps.
+- `npm ci` — install the exact lockfile dependency graph; failures do not fall
+  back to a mutable install.
 - `npm run lint` — lint + type checks.
 - `npm run test:coverage` — frontend unit tests with coverage.
-- `npm run build` — production build.
-- `npm run deploy:built` — copy an already-built `interface/build` tree to `data/` for LittleFS packaging.
+- `npm run build` — production build, run by the shared production-artifact helper after the full frontend tests pass.
+- `npm run deploy:built` — copy that already-built `interface/build` tree to `data/` for LittleFS packaging.
 - `npm run deploy` — build first, then copy artifacts to `data/` for manual LittleFS packaging.
 
-### Frontend Packaging
+### Shared Production Artifact Build
 
+- `build_production_artifacts.sh` is called by both full CI and Release so the
+  published binaries follow the same production build path.
 - `check_web_asset_budget.py` — total web asset size cap.
+- `check_audio_asset_manifest.py` — source and deployed audio clips must match.
 
 ### Firmware Build
 
-- `pio-check.sh` — `cppcheck` static analysis.
-- `pio run -t clean` — fresh build.
-- `pio run` — firmware build (`waveshare-349` env by default).
-- `pio run -t buildfs` — LittleFS image.
-- `report_flash_package_size.py` — verifies firmware ≤ 5,570,560 bytes and LittleFS == 2,424,832 bytes. Mismatch fails CI.
+- `pio-check.sh` — `cppcheck` static analysis in the full CI gate only.
+- The shared helper runs `pio run -t clean`, builds the `waveshare-349`
+  firmware, checks memory headroom, builds LittleFS, validates package sizes,
+  and mounts/lists the candidate LittleFS image.
 
 `waveshare-349` is both the production firmware environment and the firmware
 environment validated by CI/release. Do not introduce a lean release-only env:

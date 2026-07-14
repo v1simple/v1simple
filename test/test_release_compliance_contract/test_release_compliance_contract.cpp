@@ -29,7 +29,7 @@ void test_release_action_and_permission_scope_contract() {
                           workflow.find("permissions:\n  contents: read"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
-        workflow.find("timeout-minutes: 45\n    permissions:\n      contents: write\n      pages: write"));
+        workflow.find("timeout-minutes: 45\n    permissions:\n      actions: read\n      contents: write\n      pages: write"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("persist-credentials: false"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
@@ -39,20 +39,41 @@ void test_release_action_and_permission_scope_contract() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("git checkout --detach \"$RESUME_SHA\""));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("--resume-tag \"$RESUME_TAG\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("python3 scripts/check_ci_evidence.py"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        workflow.find("python3 scripts/check_release_config_change.py"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("./scripts/build_production_artifacts.sh"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("git diff --name-only \"$BASE_SHA\" \"$RELEASE_SHA\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("push --atomic origin"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("generate_release_notes: true"));
     TEST_ASSERT_EQUAL(std::string::npos,
                       workflow.find("body_path: RELEASE_NOTES.md"));
     TEST_ASSERT_EQUAL(std::string::npos, workflow.find("GITHUB_SHA"));
+    TEST_ASSERT_EQUAL(std::string::npos,
+                      workflow.find("run: ./scripts/ci-test.sh"));
 
-    const std::string::size_type prepare =
-        workflow.find("python3 scripts/prepare_release.py");
-    const std::string::size_type ci = workflow.find("./scripts/ci-test.sh");
+    const std::string::size_type resume = workflow.find("--lookup-run-id");
+    const std::string::size_type evidence =
+        workflow.find("python3 scripts/check_ci_evidence.py");
+    const std::string::size_type prepare = workflow.find("--bump \"$RELEASE_BUMP\"");
+    const std::string::size_type build =
+        workflow.find("./scripts/build_production_artifacts.sh");
+    const std::string::size_type evidenceRecheck =
+        workflow.rfind("python3 scripts/check_ci_evidence.py");
     const std::string::size_type publish =
         workflow.find("Publish release commit and tag");
-    TEST_ASSERT_TRUE(prepare < ci);
-    TEST_ASSERT_TRUE(ci < publish);
+    TEST_ASSERT_TRUE(resume < evidence);
+    TEST_ASSERT_TRUE(evidence < prepare);
+    TEST_ASSERT_TRUE(prepare < build);
+    TEST_ASSERT_TRUE(build < evidenceRecheck);
+    TEST_ASSERT_TRUE(evidenceRecheck < publish);
 }
 
 void test_runtime_dependency_notices_bundle_required_license_terms() {

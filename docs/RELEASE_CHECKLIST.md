@@ -127,14 +127,19 @@ only when that investigation is documented.
 - After the merge is on `main`, manually run `.github/workflows/release.yml`
   (`workflow_dispatch`) and select the semantic-version bump. The workflow:
   1. refreshes current `main` and immutable version tags
-  2. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
-  3. runs `scripts/ci-test.sh` on that exact commit
-  4. performs the web build and asset checks
-  5. builds the firmware and filesystem
-  6. validates the ESP Web Tools merged image with the DIO/80m/16MB policy
-  7. stages the GitHub Pages installer, notices, and runtime licenses
-  8. uploads image-info evidence
-  9. atomically pushes the fast-forward release commit and its single tag
+  2. validates successful authoritative CI evidence for the selected source
+     lineage, safely peeling only annotated two-file release commits
+  3. applies the selected bump on a fresh dispatch (even when `main` is already
+     tagged); only the same recorded workflow run may reuse an existing tag
+  4. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
+  5. requires that commit to be a direct child changing exactly those two files,
+     with `FIRMWARE_VERSION` the only changed configuration value
+  6. builds and validates the frontend, firmware, and filesystem once through
+     `scripts/build_production_artifacts.sh`
+  7. validates the ESP Web Tools merged image with the DIO/80m/16MB policy
+  8. stages the GitHub Pages installer, notices, and runtime licenses
+  9. reconfirms the CI evidence, then atomically pushes the fast-forward release
+     commit and its single tag
   10. publishes generated GitHub release notes and binary assets
   11. deploys the GitHub Pages installer
 

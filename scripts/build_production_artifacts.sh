@@ -78,6 +78,8 @@ echo "============================================"
 section "Toolchain"
 run_step "PlatformIO Core version" \
   python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
+run_step "PlatformIO project dependencies" \
+  "$PIO_CMD" pkg install -e waveshare-349
 
 section "Frontend"
 (

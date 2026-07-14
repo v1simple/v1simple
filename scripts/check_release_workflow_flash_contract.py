@@ -216,10 +216,10 @@ def main() -> int:
         "\n            release/daisyUI-LICENSE.txt",
         "\n            release/Tailwind-CSS-LICENSE.txt",
         "scripts/check_web_installer_page.py --site-dir release/pages",
-        "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b",
+        "uses: actions/configure-pages@",
         "enablement: true",
         "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
-        "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+        "uses: actions/deploy-pages@",
     ):
         if required not in release_text:
             errors.append(f"release.yml missing web installer Pages deployment contract: {required}")

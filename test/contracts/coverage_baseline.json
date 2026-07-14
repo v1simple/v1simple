@@ -174,8 +174,8 @@
   "tolerance_pp": 0.5,
   "overall": {
     "line_percent": 73.7,
-    "line_total": 23427,
-    "line_covered": 17265
+    "line_total": 23436,
+    "line_covered": 17277
   },
   "files": {
     "include/audio_i2c_utils.h": {
@@ -369,9 +369,9 @@
       "line_covered": 67
     },
     "src/display_arrow.cpp": {
-      "line_percent": 88.4,
+      "line_percent": 87.1,
       "line_total": 147,
-      "line_covered": 130
+      "line_covered": 128
     },
     "src/display_bands.cpp": {
       "line_percent": 98.7,

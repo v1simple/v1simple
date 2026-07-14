@@ -137,6 +137,32 @@ class TempReleaseRepo:
                 values[key] = value
         return result, values
 
+    def latest_tag(self) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        output_path = self.root / ".git" / "latest-tag-output.txt"
+        output_path.unlink(missing_ok=True)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(self.root),
+                "--latest-tag",
+                "--github-output",
+                str(output_path),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={key: value for key, value in os.environ.items() if key != "GITHUB_OUTPUT"},
+        )
+        values: dict[str, str] = {}
+        if output_path.exists():
+            for line in output_path.read_text(encoding="utf-8").splitlines():
+                key, value = line.split("=", 1)
+                values[key] = value
+        return result, values
+
 
 class PrepareReleaseTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -259,6 +285,7 @@ class PrepareReleaseTests(unittest.TestCase):
             "Release-Run-ID: 29336081336",
         )
         advanced_main_sha = self.repo.add_change("main advanced after publication")
+        self.repo.git("tag", "v1.0.3", advanced_main_sha)
 
         lookup, resume = self.repo.lookup_run("29336081336")
 
@@ -292,6 +319,18 @@ class PrepareReleaseTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not an ancestor", result.stderr)
+
+    def test_latest_tag_reports_highest_strict_semver(self) -> None:
+        self.repo.commit_all("baseline")
+        self.repo.git("tag", "v1.0.2")
+        self.repo.git("tag", "v1.10.0")
+        self.repo.git("tag", "vnot-a-release")
+
+        result, values = self.repo.latest_tag()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "v1.10.0")
+        self.assertEqual(values["latest_tag"], "v1.10.0")
 
     def test_empty_unreleased_section_gets_a_release_summary(self) -> None:
         self.repo.commit_all("baseline")

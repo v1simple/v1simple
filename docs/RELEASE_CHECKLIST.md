@@ -3,11 +3,12 @@
 > Status: Active
 > Date: 2026-05-27
 
-Use this before merging a release-ready branch to `main`, then run the manual
-release workflow from `main` after the merge. Select a `patch`, `minor`, or
-`major` bump; the workflow prepares the version commit automatically and
-publishes both the GitHub Release assets and the GitHub Pages ESP Web Tools
-installer from the same generated manifest and merged firmware image.
+Use this before merging a release-ready branch to `main`. Every green merge
+automatically publishes the next patch release.
+The workflow prepares the version commit and publishes both the GitHub Release
+assets and the GitHub Pages ESP Web Tools installer from the same generated
+manifest and merged firmware image. There is no second release button or
+version choice in the normal path.
 
 ## 1. Branch and version
 
@@ -15,9 +16,10 @@ installer from the same generated manifest and merged firmware image.
 - Working tree clean before the final gate.
 - Do not manually reuse or move a published version tag. The Release workflow
   derives the next stable semver from immutable tags.
-- Choose `patch`, `minor`, or `major` in the workflow UI. The default is
-  `patch`; the workflow updates `include/config.h`, opens the new changelog
-  section, and rotates changelog links automatically.
+- Every merge uses a `patch` bump automatically. The workflow updates
+  `include/config.h`, opens the new changelog section, and rotates changelog
+  links automatically. A future minor/major policy should be added through a
+  normal reviewed PR rather than an extra publication path.
 
 ## 2. Documentation gates
 
@@ -124,13 +126,14 @@ only when that investigation is documented.
 - Push the release-ready branch only when explicitly intended.
 - Open a PR from the release-ready branch to `main`.
 - Merge with a merge commit, not squash, to avoid release/version history conflicts.
-- After the merge is on `main`, manually run `.github/workflows/release.yml`
-  (`workflow_dispatch`) and select the semantic-version bump. The workflow:
+- After the required PR check passes, merge to `main`. Every merge starts
+  `.github/workflows/release.yml` automatically with a patch bump. The
+  workflow:
   1. refreshes current `main` and immutable version tags
-  2. validates successful authoritative CI evidence for the selected source
-     lineage, safely peeling only annotated two-file release commits
-  3. applies the selected bump on a fresh dispatch (even when `main` is already
-     tagged); only the same recorded workflow run may reuse an existing tag
+  2. selects the exact merged commit, safely peeling only annotated two-file
+     release commits when resuming the same run
+  3. applies the next patch bump; only the same recorded workflow run may reuse
+     an existing tag
   4. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
   5. requires that commit to be a direct child changing exactly those two files,
      with `FIRMWARE_VERSION` the only changed configuration value
@@ -138,16 +141,18 @@ only when that investigation is documented.
      `scripts/build_production_artifacts.sh`
   7. validates the ESP Web Tools merged image with the DIO/80m/16MB policy
   8. stages the GitHub Pages installer, notices, and runtime licenses
-  9. reconfirms the CI evidence, then atomically pushes the fast-forward release
-     commit and its single tag
+  9. atomically pushes the fast-forward release commit and its single tag
   10. publishes generated GitHub release notes and binary assets
   11. deploys the GitHub Pages installer
 
-If a run fails before publication, rerun it; the same version is prepared
-again. If publication already pushed the release commit and tag, a rerun finds
-that run's annotated tag and resumes the exact tested commit even if `main` has
-advanced. If `main` advances during a release build, the atomic push refuses
-the race and the workflow must be rerun from current `main`.
+If a run fails, use **Re-run jobs** on that original Actions run so its run ID
+is preserved. The same version is prepared again. If publication already
+pushed the release commit and tag, the rerun finds that run's annotated tag and
+resumes the exact tested commit. It may repair that release's missing assets,
+but it deploys Pages only when its tag is still the newest release, so a retry
+cannot roll the live installer backward. If `main` advances during a release
+build or publication, the older run refuses the race; the newer merge has its
+own queued release run.
 
 ## 6. Release assets
 

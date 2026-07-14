@@ -36,6 +36,7 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 #include "../../src/settings.cpp"
 #include "../../src/settings_nvs.cpp"
 #include "../../src/settings_backup.cpp"
+#include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
 
 namespace {

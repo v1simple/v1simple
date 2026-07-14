@@ -9,27 +9,31 @@ void applyCaptivePortalNoStoreHeaders(WebServer& server) {
     server.sendHeader("Pragma", "no-cache");
 }
 
-}  // namespace
+} // namespace
 
 void handleApiPing(WebServer& server, void (*markUiActivity)(void*), void* ctx) {
-    if (markUiActivity) markUiActivity(ctx);
+    if (markUiActivity)
+        markUiActivity(ctx);
     server.send(200, "text/plain", "OK");
 }
 
 void handleApiGenerate204(WebServer& server, void (*markUiActivity)(void*), void* ctx) {
-    if (markUiActivity) markUiActivity(ctx);
+    if (markUiActivity)
+        markUiActivity(ctx);
     applyCaptivePortalNoStoreHeaders(server);
     server.send(204, "text/plain", "");
 }
 
 void handleApiGen204(WebServer& server, void (*markUiActivity)(void*), void* ctx) {
-    if (markUiActivity) markUiActivity(ctx);
+    if (markUiActivity)
+        markUiActivity(ctx);
     applyCaptivePortalNoStoreHeaders(server);
     server.send(204, "text/plain", "");
 }
 
 void handleApiHotspotDetect(WebServer& server, void (*markUiActivity)(void*), void* ctx) {
-    if (markUiActivity) markUiActivity(ctx);
+    if (markUiActivity)
+        markUiActivity(ctx);
     applyCaptivePortalNoStoreHeaders(server);
     server.sendHeader("Location", "/settings", true);
     server.send(302, "text/html", "");
@@ -46,4 +50,4 @@ void handleApiNcsiTxt(WebServer& server) {
     server.send(200, "text/plain", "Microsoft NCSI");
 }
 
-}  // namespace WifiPortalApiService
+} // namespace WifiPortalApiService

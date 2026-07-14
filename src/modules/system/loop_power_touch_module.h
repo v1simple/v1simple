@@ -15,7 +15,7 @@ struct LoopPowerTouchResult {
 
 // Orchestrates power/touch runtime and settings-mode early return telemetry.
 class LoopPowerTouchModule {
-public:
+  public:
     struct Providers {
         uint32_t (*timestampUs)(void* ctx) = nullptr;
         void* timestampContext = nullptr;
@@ -44,12 +44,8 @@ public:
         uint32_t (*readCachedLargestDma)(void* ctx) = nullptr;
         void* cachedLargestDmaContext = nullptr;
 
-        void (*recordHeapStats)(
-            void* ctx,
-            uint32_t freeHeap,
-            uint32_t largestHeapBlock,
-            uint32_t cachedFreeDma,
-            uint32_t cachedLargestDma) = nullptr;
+        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock, uint32_t cachedFreeDma,
+                                uint32_t cachedLargestDma) = nullptr;
         void* heapStatsContext = nullptr;
     };
 
@@ -60,7 +56,7 @@ public:
     // LoopTelemetryModule's cadence because normal telemetry is skipped there.
     static constexpr uint8_t HEAP_SAMPLE_DIVISOR = 8;
 
-private:
+  private:
     Providers providers{};
-    uint8_t heapSampleSkip_ = HEAP_SAMPLE_DIVISOR - 1;  // sample on first settings early-return
+    uint8_t heapSampleSkip_ = HEAP_SAMPLE_DIVISOR - 1; // sample on first settings early-return
 };

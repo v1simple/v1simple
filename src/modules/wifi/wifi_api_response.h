@@ -16,5 +16,4 @@ inline void setErrorAndMessage(JsonDocument& doc, const char* text) {
     doc["message"] = value;
 }
 
-}  // namespace WifiApiResponse
-
+} // namespace WifiApiResponse

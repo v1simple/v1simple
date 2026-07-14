@@ -55,26 +55,20 @@ struct StatusRuntime {
 
     bool (*v1Connected)(void* ctx) = nullptr;
     void* v1ConnectedCtx = nullptr;
-    void (*mergeStatus)(JsonObject, void* ctx) = nullptr;   // Write fields directly into root doc
+    void (*mergeStatus)(JsonObject, void* ctx) = nullptr; // Write fields directly into root doc
     void* mergeStatusCtx = nullptr;
-    void (*mergeStatus2)(JsonObject, void* ctx) = nullptr;  // optional second contributor
+    void (*mergeStatus2)(JsonObject, void* ctx) = nullptr; // optional second contributor
     void* mergeStatus2Ctx = nullptr;
-    void (*mergeAlert)(JsonObject, void* ctx) = nullptr;    // Write fields into alert sub-object
+    void (*mergeAlert)(JsonObject, void* ctx) = nullptr; // Write fields into alert sub-object
     void* mergeAlertCtx = nullptr;
 };
 
-void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson,
-                               unsigned long& lastStatusJsonTime);
+void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime);
 
-void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson,
-                            unsigned long& lastStatusJsonTime);
+void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime);
 
-void handleApiStatus(WebServer& server,
-                     const StatusRuntime& runtime,
-                     StatusJsonCache& cachedStatusJson,
-                     unsigned long& lastStatusJsonTime,
-                     unsigned long cacheTtlMs,
-                     unsigned long (*millisFn)(void* ctx), void* millisCtx,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,
+                     unsigned long& lastStatusJsonTime, unsigned long cacheTtlMs, unsigned long (*millisFn)(void* ctx),
+                     void* millisCtx, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-}  // namespace WifiStatusApiService
+} // namespace WifiStatusApiService

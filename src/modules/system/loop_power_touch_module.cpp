@@ -15,14 +15,11 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
     if (providers.runTouchUiProcess) {
         if (providers.timestampUs && providers.recordTouchUs) {
             const uint32_t startUs = providers.timestampUs(providers.timestampContext);
-            result.inSettings =
-                providers.runTouchUiProcess(providers.touchUiContext, ctx.nowMs, ctx.bootButtonPressed);
-            providers.recordTouchUs(
-                providers.touchPerfContext,
-                providers.timestampUs(providers.timestampContext) - startUs);
+            result.inSettings = providers.runTouchUiProcess(providers.touchUiContext, ctx.nowMs, ctx.bootButtonPressed);
+            providers.recordTouchUs(providers.touchPerfContext,
+                                    providers.timestampUs(providers.timestampContext) - startUs);
         } else {
-            result.inSettings =
-                providers.runTouchUiProcess(providers.touchUiContext, ctx.nowMs, ctx.bootButtonPressed);
+            result.inSettings = providers.runTouchUiProcess(providers.touchUiContext, ctx.nowMs, ctx.bootButtonPressed);
         }
     }
 
@@ -33,9 +30,8 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
     result.shouldReturnEarly = true;
 
     if (providers.recordLoopJitterUs && providers.microsNow) {
-        providers.recordLoopJitterUs(
-            providers.loopJitterContext,
-            providers.microsNow(providers.microsContext) - ctx.loopStartUs);
+        providers.recordLoopJitterUs(providers.loopJitterContext,
+                                     providers.microsNow(providers.microsContext) - ctx.loopStartUs);
     }
 
     // The normal telemetry phase is skipped by the settings-mode early return.
@@ -51,21 +47,15 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
     }
 
     if (providers.recordHeapStats) {
-        const uint32_t freeHeap =
-            providers.readFreeHeap ? providers.readFreeHeap(providers.freeHeapContext) : 0;
+        const uint32_t freeHeap = providers.readFreeHeap ? providers.readFreeHeap(providers.freeHeapContext) : 0;
         const uint32_t largestHeapBlock =
             providers.readLargestHeapBlock ? providers.readLargestHeapBlock(providers.largestHeapBlockContext) : 0;
         const uint32_t cachedFreeDma =
             providers.readCachedFreeDma ? providers.readCachedFreeDma(providers.cachedFreeDmaContext) : 0;
-        const uint32_t cachedLargestDma = providers.readCachedLargestDma
-                                              ? providers.readCachedLargestDma(providers.cachedLargestDmaContext)
-                                              : 0;
-        providers.recordHeapStats(
-            providers.heapStatsContext,
-            freeHeap,
-            largestHeapBlock,
-            cachedFreeDma,
-            cachedLargestDma);
+        const uint32_t cachedLargestDma =
+            providers.readCachedLargestDma ? providers.readCachedLargestDma(providers.cachedLargestDmaContext) : 0;
+        providers.recordHeapStats(providers.heapStatsContext, freeHeap, largestHeapBlock, cachedFreeDma,
+                                  cachedLargestDma);
     }
 
     return result;

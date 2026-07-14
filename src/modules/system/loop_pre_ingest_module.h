@@ -16,7 +16,7 @@ struct LoopPreIngestResult {
 
 // Orchestrates pre-ingest boot-ready timeout handling and runtime policy ticks.
 class LoopPreIngestModule {
-public:
+  public:
     struct Providers {
         void (*openBootReadyGate)(void* ctx, uint32_t nowMs) = nullptr;
         void* bootReadyContext = nullptr;
@@ -28,6 +28,6 @@ public:
     void begin(const Providers& hooks);
     LoopPreIngestResult process(const LoopPreIngestContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

@@ -27,16 +27,12 @@ struct LoopConnectionEarlyResult {
 
 // Orchestrates early loop connection/runtime state and display early sync.
 class LoopConnectionEarlyModule {
-public:
+  public:
     struct Providers {
-        ConnectionRuntimeSnapshot (*runConnectionRuntime)(
-            void* ctx,
-            uint32_t nowMs,
-            uint32_t nowUs,
-            uint32_t lastLoopUs,
-            bool bootSplashHoldActive,
-            uint32_t bootSplashHoldUntilMs,
-            bool initialScanningScreenShown) = nullptr;
+        ConnectionRuntimeSnapshot (*runConnectionRuntime)(void* ctx, uint32_t nowMs, uint32_t nowUs,
+                                                          uint32_t lastLoopUs, bool bootSplashHoldActive,
+                                                          uint32_t bootSplashHoldUntilMs,
+                                                          bool initialScanningScreenShown) = nullptr;
         void* connectionRuntimeContext = nullptr;
 
         void (*showInitialScanning)(void* ctx) = nullptr;
@@ -56,6 +52,6 @@ public:
     void begin(const Providers& hooks);
     LoopConnectionEarlyResult process(const LoopConnectionEarlyContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

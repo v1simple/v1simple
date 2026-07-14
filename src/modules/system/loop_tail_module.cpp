@@ -16,8 +16,8 @@ uint32_t LoopTailModule::process(bool bleBackpressure, uint32_t loopStartUs, boo
         }
 
         if (providers.recordBleDrainUs && providers.perfTimestampUs) {
-            const uint32_t elapsedUs = static_cast<uint32_t>(
-                providers.perfTimestampUs(providers.perfTimestampContext) - drainStartUs);
+            const uint32_t elapsedUs =
+                static_cast<uint32_t>(providers.perfTimestampUs(providers.perfTimestampContext) - drainStartUs);
             providers.recordBleDrainUs(providers.bleDrainRecordContext, elapsedUs);
         }
     }

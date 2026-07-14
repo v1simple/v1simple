@@ -6,8 +6,7 @@ void LoopRuntimeSnapshotModule::begin(const Providers& hooks) {
     cachedCanStartDma_ = false;
 }
 
-LoopRuntimeSnapshotValues LoopRuntimeSnapshotModule::process(
-    const LoopRuntimeSnapshotContext& ctx) {
+LoopRuntimeSnapshotValues LoopRuntimeSnapshotModule::process(const LoopRuntimeSnapshotContext& ctx) {
     (void)ctx;
     LoopRuntimeSnapshotValues values;
 
@@ -26,8 +25,7 @@ LoopRuntimeSnapshotValues LoopRuntimeSnapshotModule::process(
     }
 
     if (providers.readDisplayPreviewRunning) {
-        values.displayPreviewRunning =
-            providers.readDisplayPreviewRunning(providers.displayPreviewContext);
+        values.displayPreviewRunning = providers.readDisplayPreviewRunning(providers.displayPreviewContext);
     }
 
     return values;

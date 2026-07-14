@@ -4,17 +4,13 @@
 
 // Owns WiFi icon refresh cadence/state so main loop keeps no static UI state.
 class WifiVisualSyncModule {
-public:
+  public:
     void reset();
 
-    void process(unsigned long nowMs,
-                 bool wifiVisualActiveNow,
-                 bool displayPreviewRunning,
-                 bool bootSplashHoldActive,
-                 void (*drawAndFlush)(void* ctx),
-                 void* ctx);
+    void process(unsigned long nowMs, bool wifiVisualActiveNow, bool displayPreviewRunning, bool bootSplashHoldActive,
+                 void (*drawAndFlush)(void* ctx), void* ctx);
 
-private:
+  private:
     bool lastWifiVisualActive_ = false;
     unsigned long lastWifiIconRefreshMs_ = 0;
 };

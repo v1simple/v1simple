@@ -26,7 +26,7 @@ struct SystemEvent {
 };
 
 class SystemEventBus {
-public:
+  public:
     static constexpr size_t kCapacity = 64;
 
     void reset() {
@@ -55,7 +55,7 @@ public:
         if (count_ == kCapacity) {
             uint8_t dropOffset = 0;
             if (!findOldestFrameOffset(dropOffset)) {
-                dropOffset = 0;  // No frame events present, drop oldest control event
+                dropOffset = 0; // No frame events present, drop oldest control event
             }
             removeAtOffset(dropOffset, nullptr);
             dropCount_++;
@@ -121,7 +121,7 @@ public:
         return count_;
     }
 
-private:
+  private:
     void lock() const {
 #ifdef UNIT_TEST
         while (lockFlag_.test_and_set(std::memory_order_acquire)) {
@@ -140,22 +140,14 @@ private:
     }
 
     struct LockGuard {
-        explicit LockGuard(const SystemEventBus& ownerRef) : owner(ownerRef) {
-            owner.lock();
-        }
-        ~LockGuard() {
-            owner.unlock();
-        }
+        explicit LockGuard(const SystemEventBus& ownerRef) : owner(ownerRef) { owner.lock(); }
+        ~LockGuard() { owner.unlock(); }
         const SystemEventBus& owner;
     };
 
-    static bool isFrameEventType(SystemEventType type) {
-        return type == SystemEventType::BLE_FRAME_PARSED;
-    }
+    static bool isFrameEventType(SystemEventType type) { return type == SystemEventType::BLE_FRAME_PARSED; }
 
-    static uint8_t nextIndex(uint8_t i) {
-        return static_cast<uint8_t>((i + 1u) % kCapacity);
-    }
+    static uint8_t nextIndex(uint8_t i) { return static_cast<uint8_t>((i + 1u) % kCapacity); }
 
     bool removeAtOffset(uint8_t offset, SystemEvent* removed) {
         if (offset >= count_) {

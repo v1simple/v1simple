@@ -11,8 +11,6 @@ struct ParsedFrameSignal {
 
 // Merges queue parsed-signal state with BLE_FRAME_PARSED events from SystemEventBus.
 class ParsedFrameEventModule {
-public:
-    static ParsedFrameSignal collect(bool queueParsedReady,
-                                     uint32_t queueParsedTsMs,
-                                     SystemEventBus& eventBus);
+  public:
+    static ParsedFrameSignal collect(bool queueParsedReady, uint32_t queueParsedTsMs, SystemEventBus& eventBus);
 };

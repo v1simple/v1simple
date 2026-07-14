@@ -28,12 +28,8 @@ struct Runtime {
     void* loadProfileSettingsCtx = nullptr;
     bool (*parseSettingsJson)(const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) = nullptr;
     void* parseSettingsJsonCtx = nullptr;
-    bool (*saveProfile)(const String& name,
-                        const String& description,
-                        bool displayOn,
-                        const uint8_t inBytes[6],
-                        String& error,
-                        void* ctx) = nullptr;
+    bool (*saveProfile)(const String& name, const String& description, bool displayOn, const uint8_t inBytes[6],
+                        String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     bool (*deleteProfile)(const String& name, void* ctx) = nullptr;
     void* deleteProfileCtx = nullptr;
@@ -60,22 +56,18 @@ void handleApiProfilesList(WebServer& server, const Runtime& runtime);
 
 void handleApiProfileGet(WebServer& server, const Runtime& runtime);
 
-void handleApiProfileSave(WebServer& server,
-                          const Runtime& runtime,
-                          bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                          void* rateLimitCtx);
 
-void handleApiProfileDelete(WebServer& server,
-                            const Runtime& runtime,
-                            bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                            void* rateLimitCtx);
 
 void handleApiCurrentSettings(WebServer& server, const Runtime& runtime);
 
-void handleApiSettingsPull(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiSettingsPull(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx);
 
-void handleApiSettingsPush(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx);
 
-}  // namespace WifiV1ProfileApiService
+} // namespace WifiV1ProfileApiService

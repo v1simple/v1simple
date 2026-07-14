@@ -14,9 +14,8 @@ LoopPostDisplayResult LoopPostDisplayModule::process(const LoopPostDisplayContex
     }
 
     if (ctx.runSpeedAndDispatch) {
-        const uint32_t dispatchNowMs = providers.readDispatchNowMs
-                                           ? providers.readDispatchNowMs(providers.dispatchNowContext)
-                                           : ctx.nowMs;
+        const uint32_t dispatchNowMs =
+            providers.readDispatchNowMs ? providers.readDispatchNowMs(providers.dispatchNowContext) : ctx.nowMs;
         const bool bleConnectedNow = providers.readBleConnectedNow
                                          ? providers.readBleConnectedNow(providers.bleConnectedContext)
                                          : ctx.bleConnectedNow;

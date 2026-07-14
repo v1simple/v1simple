@@ -91,9 +91,7 @@ struct Runtime {
 
     std::vector<SavedNetworkSlotPayload> (*getSavedNetworks)(void* ctx) = nullptr;
     void* getSavedNetworksCtx = nullptr;
-    bool (*upsertSavedNetwork)(const SavedNetworkUpsertPayload& request,
-                               size_t& indexOut,
-                               void* ctx) = nullptr;
+    bool (*upsertSavedNetwork)(const SavedNetworkUpsertPayload& request, size_t& indexOut, void* ctx) = nullptr;
     void* upsertSavedNetworkCtx = nullptr;
     bool (*deleteSavedNetwork)(size_t index, void* ctx) = nullptr;
     void* deleteSavedNetworkCtx = nullptr;
@@ -101,51 +99,33 @@ struct Runtime {
     void* testSavedNetworkCtx = nullptr;
 };
 
-void handleApiStatus(WebServer& server,
-                     const Runtime& runtime,
-                     void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiStatus(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiScan(WebServer& server,
-                   const Runtime& runtime,
-                   bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiScan(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                    void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiScanStatus(WebServer& server,
-                         const Runtime& runtime,
-                         void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiScanStatus(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),
+                         void* uiActivityCtx);
 
-void handleApiDisconnect(WebServer& server,
-                         const Runtime& runtime,
-                         bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                         void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiDisconnect(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                         void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiForget(WebServer& server,
-                     const Runtime& runtime,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiForget(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                      void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiEnable(WebServer& server,
-                     const Runtime& runtime,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiEnable(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                      void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiNetworks(WebServer& server,
-                       const Runtime& runtime,
-                       void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiNetworks(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),
+                       void* uiActivityCtx);
 
-void handleApiNetworksSave(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                           void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiNetworksSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiNetworksDelete(WebServer& server,
-                             const Runtime& runtime,
-                             bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                             void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiNetworksDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                             void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-void handleApiNetworksTest(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                           void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiNetworksTest(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-}  // namespace WifiClientApiService
+} // namespace WifiClientApiService

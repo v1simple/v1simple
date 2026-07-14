@@ -28,17 +28,11 @@ struct WifiRuntimeResult {
 
 // Orchestrates deferred WiFi auto-start, process cadence, and visual sync.
 class WifiRuntimeModule {
-public:
+  public:
     struct Providers {
-        void (*runWifiAutoStartProcess)(void* ctx,
-                                        uint32_t nowMs,
-                                        uint32_t v1ConnectedAtMs,
-                                        bool enableWifi,
-                                        bool bleConnected,
-                                        bool canStartDma,
-                                        bool wifiAutoStartAllowed,
-                                        bool& wifiManualStartIntentLatched,
-                                        bool& wifiAutoStartDone) = nullptr;
+        void (*runWifiAutoStartProcess)(void* ctx, uint32_t nowMs, uint32_t v1ConnectedAtMs, bool enableWifi,
+                                        bool bleConnected, bool canStartDma, bool wifiAutoStartAllowed,
+                                        bool& wifiManualStartIntentLatched, bool& wifiAutoStartDone) = nullptr;
         void* wifiAutoStartContext = nullptr;
 
         bool (*shouldRunWifiProcessingPolicy)(void* ctx) = nullptr;
@@ -48,8 +42,7 @@ public:
 
         uint32_t (*perfTimestampUs)(void* ctx) = nullptr;
         void* perfContext = nullptr;
-        WifiProcessCadenceDecision (*runWifiCadence)(
-            void* ctx, const WifiProcessCadenceContext& cadenceCtx) = nullptr;
+        WifiProcessCadenceDecision (*runWifiCadence)(void* ctx, const WifiProcessCadenceContext& cadenceCtx) = nullptr;
         void* wifiCadenceContext = nullptr;
         void (*setWifiTransitionAdmission)(void* ctx, bool allowTransitionWork) = nullptr;
         void* wifiTransitionAdmissionContext = nullptr;
@@ -64,10 +57,7 @@ public:
         void* wifiConnectedContext = nullptr;
         uint32_t (*readVisualNowMs)(void* ctx) = nullptr;
         void* visualNowContext = nullptr;
-        void (*runWifiVisualSync)(void* ctx,
-                                  uint32_t nowMs,
-                                  bool wifiVisualActiveNow,
-                                  bool displayPreviewRunning,
+        void (*runWifiVisualSync)(void* ctx, uint32_t nowMs, bool wifiVisualActiveNow, bool displayPreviewRunning,
                                   bool bootSplashHoldActive) = nullptr;
         void* wifiVisualSyncContext = nullptr;
     };
@@ -75,7 +65,7 @@ public:
     void begin(const Providers& hooks);
     WifiRuntimeResult process(const WifiRuntimeContext& ctx);
 
-private:
+  private:
     static constexpr uint32_t WIFI_PROCESS_MIN_INTERVAL_US = 2000;
     Providers providers{};
 };

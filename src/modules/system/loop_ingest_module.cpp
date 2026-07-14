@@ -11,9 +11,8 @@ LoopIngestResult LoopIngestModule::process(const LoopIngestContext& ctx) {
         if (providers.timestampUs && providers.recordBleProcessUs) {
             const uint32_t startUs = providers.timestampUs(providers.timestampContext);
             providers.runBleProcess(providers.bleProcessContext);
-            providers.recordBleProcessUs(
-                providers.bleProcessPerfContext,
-                providers.timestampUs(providers.timestampContext) - startUs);
+            providers.recordBleProcessUs(providers.bleProcessPerfContext,
+                                         providers.timestampUs(providers.timestampContext) - startUs);
         } else {
             providers.runBleProcess(providers.bleProcessContext);
         }
@@ -23,9 +22,8 @@ LoopIngestResult LoopIngestModule::process(const LoopIngestContext& ctx) {
         if (providers.timestampUs && providers.recordBleDrainUs) {
             const uint32_t startUs = providers.timestampUs(providers.timestampContext);
             providers.runBleDrain(providers.bleDrainContext);
-            providers.recordBleDrainUs(
-                providers.bleDrainPerfContext,
-                providers.timestampUs(providers.timestampContext) - startUs);
+            providers.recordBleDrainUs(providers.bleDrainPerfContext,
+                                       providers.timestampUs(providers.timestampContext) - startUs);
         } else {
             providers.runBleDrain(providers.bleDrainContext);
         }

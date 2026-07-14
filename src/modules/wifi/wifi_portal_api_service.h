@@ -16,4 +16,4 @@ void handleApiFwlink(WebServer& server);
 
 void handleApiNcsiTxt(WebServer& server);
 
-}  // namespace WifiPortalApiService
+} // namespace WifiPortalApiService

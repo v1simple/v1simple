@@ -20,11 +20,9 @@ struct Runtime {
 
 void handleSteps(WebServer& server, const Runtime& runtime);
 void handleLayout(WebServer& server, const Runtime& runtime);
-void handlePin(WebServer& server,
-               const Runtime& runtime,
-               bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handlePin(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 void handleFramebuffer(WebServer& server, const Runtime& runtime);
 void handleFlushShadow(WebServer& server, const Runtime& runtime);
 void handleClear(WebServer& server, const Runtime& runtime);
 
-}  // namespace WifiDisplayVisualApiService
+} // namespace WifiDisplayVisualApiService

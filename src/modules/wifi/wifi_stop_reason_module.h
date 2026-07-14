@@ -15,7 +15,7 @@ enum class WifiStopReason : uint8_t {
 
 // Classifies and records WiFi stop/ap-drop telemetry without owning WiFi behavior.
 class WifiStopReasonModule {
-public:
+  public:
     explicit WifiStopReasonModule(PerfCounters* counters = nullptr);
 
     void setCounters(PerfCounters* counters);
@@ -24,6 +24,6 @@ public:
     void recordApDropLowDma() const;
     void recordApDropIdleSta() const;
 
-private:
+  private:
     PerfCounters* counters_ = nullptr;
 };

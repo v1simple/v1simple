@@ -12,29 +12,28 @@ bool hasElapsed(const uint32_t nowMs, const uint32_t startMs, const uint32_t dur
     return static_cast<int32_t>(nowMs - startMs) >= static_cast<int32_t>(durationMs);
 }
 
-
 bool isObdConnectingState(const ObdConnectionState state) {
     switch (state) {
-        case ObdConnectionState::CONNECTING:
-        case ObdConnectionState::SECURING:
-        case ObdConnectionState::DISCOVERING:
-        case ObdConnectionState::AT_INIT:
-            return true;
-        default:
-            return false;
+    case ObdConnectionState::CONNECTING:
+    case ObdConnectionState::SECURING:
+    case ObdConnectionState::DISCOVERING:
+    case ObdConnectionState::AT_INIT:
+        return true;
+    default:
+        return false;
     }
 }
 
 bool isObdConnectFailureState(const ObdConnectionState state) {
     switch (state) {
-        case ObdConnectionState::IDLE:
-        case ObdConnectionState::WAIT_BOOT:
-        case ObdConnectionState::DISCONNECTED:
-        case ObdConnectionState::ERROR_BACKOFF:
-        case ObdConnectionState::ECU_IDLE:
-            return true;
-        default:
-            return false;
+    case ObdConnectionState::IDLE:
+    case ObdConnectionState::WAIT_BOOT:
+    case ObdConnectionState::DISCONNECTED:
+    case ObdConnectionState::ERROR_BACKOFF:
+    case ObdConnectionState::ECU_IDLE:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -71,7 +70,7 @@ CycleState nextPostObdState(const CycleContext& ctx) {
     return CycleState::STEADY;
 }
 
-}  // namespace
+} // namespace
 
 void ConnectionCycleCoordinatorModule::begin(const Providers& hooks) {
     providers = hooks;
@@ -128,118 +127,106 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
     }
 
     const uint32_t v1QuietAnchorMs =
-        (v1VerifyPushMatchedAtMs_ > ctx.v1LastEventMs) ? v1VerifyPushMatchedAtMs_
-                                                       : ctx.v1LastEventMs;
+        (v1VerifyPushMatchedAtMs_ > ctx.v1LastEventMs) ? v1VerifyPushMatchedAtMs_ : ctx.v1LastEventMs;
     // Explicit Proxy / App mode must open its phone-advertising window in
     // drive mode even if auto-push is globally enabled; there may be no profile
     // write/readback edge to wait for, and OBD is intentionally disabled.
     const bool autoPushBlocksV1Settle = ctx.autoPushEnabled && !isExplicitProxyAppMode(ctx);
     const bool v1SettledByVerifyPush =
-        ctx.v1GattConnected &&
-        v1VerifyPushMatched_ &&
-        hasElapsed(ctx.nowMs, v1QuietAnchorMs, v1SettleQuietMs_);
+        ctx.v1GattConnected && v1VerifyPushMatched_ && hasElapsed(ctx.nowMs, v1QuietAnchorMs, v1SettleQuietMs_);
     const bool v1SettledByFallback =
-        ctx.v1GattConnected &&
-        !autoPushBlocksV1Settle &&
-        hasElapsed(ctx.nowMs, ctx.v1LastEventMs, v1SettleFallbackMs_);
+        ctx.v1GattConnected && !autoPushBlocksV1Settle && hasElapsed(ctx.nowMs, ctx.v1LastEventMs, v1SettleFallbackMs_);
     const bool v1Settled = v1SettledByVerifyPush || v1SettledByFallback;
     const bool obdSettled =
-        ctx.obdConnected &&
-        ctx.obdState == ObdConnectionState::POLLING &&
-        ctx.obdHasValidSpeedSample;
+        ctx.obdConnected && ctx.obdState == ObdConnectionState::POLLING && ctx.obdHasValidSpeedSample;
 
     switch (state_) {
-        case CycleState::SCAN_V1:
-            if (ctx.v1GattConnected) {
-                transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
-            } else if (ctx.wifiManualStartIntentLatched) {
-                transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
-            } else if (ctx.bootReady &&
-                       hasElapsed(ctx.nowMs, stateEnteredMs_, kScanV1FallbackMs)) {
-                transitionTo(CycleState::STEADY, ctx.nowMs);
-            }
-            break;
+    case CycleState::SCAN_V1:
+        if (ctx.v1GattConnected) {
+            transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
+        } else if (ctx.wifiManualStartIntentLatched) {
+            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
+        } else if (ctx.bootReady && hasElapsed(ctx.nowMs, stateEnteredMs_, kScanV1FallbackMs)) {
+            transitionTo(CycleState::STEADY, ctx.nowMs);
+        }
+        break;
 
-        case CycleState::V1_SETTLING:
-            if (v1Settled) {
-                transitionTo(ctx.obdEnabled ? CycleState::OBD_SCAN : nextPostObdState(ctx),
-                             ctx.nowMs);
-            }
-            break;
+    case CycleState::V1_SETTLING:
+        if (v1Settled) {
+            transitionTo(ctx.obdEnabled ? CycleState::OBD_SCAN : nextPostObdState(ctx), ctx.nowMs);
+        }
+        break;
 
-        case CycleState::OBD_SCAN:
-            if (obdSettled) {
-                transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
-            } else if (isObdConnectingState(ctx.obdState)) {
-                transitionTo(CycleState::OBD_CONNECT, ctx.nowMs);
-            } else if (hasElapsed(ctx.nowMs, stateEnteredMs_, obdScanWindowMs_)) {
-                if (providers.stopObdScan) {
-                    providers.stopObdScan(providers.stopObdScanContext);
-                }
-                transitionTo(nextPostObdState(ctx), ctx.nowMs);
+    case CycleState::OBD_SCAN:
+        if (obdSettled) {
+            transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
+        } else if (isObdConnectingState(ctx.obdState)) {
+            transitionTo(CycleState::OBD_CONNECT, ctx.nowMs);
+        } else if (hasElapsed(ctx.nowMs, stateEnteredMs_, obdScanWindowMs_)) {
+            if (providers.stopObdScan) {
+                providers.stopObdScan(providers.stopObdScanContext);
             }
-            break;
-
-        case CycleState::OBD_CONNECT:
-            if (obdSettled) {
-                transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
-            } else if (isObdConnectFailureState(ctx.obdState)) {
-                if (providers.cancelObdConnect) {
-                    providers.cancelObdConnect(providers.cancelObdConnectContext);
-                }
-                transitionTo(nextPostObdState(ctx), ctx.nowMs);
-            }
-            break;
-
-        case CycleState::OBD_SETTLED:
             transitionTo(nextPostObdState(ctx), ctx.nowMs);
-            break;
+        }
+        break;
 
-        case CycleState::PROXY_OPEN:
-            if (ctx.wifiManualStartIntentLatched) {
-                manualWifiPreemptRequested_ = ctx.proxyClientConnected;
-                if (ctx.proxyClientConnected) {
-                    totalWifiManualPhoneKicks_++;
-                }
-                if (providers.stopProxyAdvertising) {
-                    providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-                }
-                if (ctx.proxyClientConnected && providers.disconnectProxyPhone) {
-                    providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-                }
-                transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
-            } else if (!isExplicitProxyAppMode(ctx) &&
-                       !ctx.proxyClientConnected &&
-                       hasElapsed(ctx.nowMs,
-                                  stateEnteredMs_,
-                                  proxyOpenWindowMs_)) {
-                if (providers.stopProxyAdvertising) {
-                    providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-                }
-                transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
+    case CycleState::OBD_CONNECT:
+        if (obdSettled) {
+            transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
+        } else if (isObdConnectFailureState(ctx.obdState)) {
+            if (providers.cancelObdConnect) {
+                providers.cancelObdConnect(providers.cancelObdConnectContext);
             }
-            break;
+            transitionTo(nextPostObdState(ctx), ctx.nowMs);
+        }
+        break;
 
-        case CycleState::WIFI_OPEN:
-            if (ctx.wifiActive || hasElapsed(ctx.nowMs, stateEnteredMs_, wifiOpenTimeoutMs_)) {
-                transitionTo(CycleState::STEADY, ctx.nowMs);
-            }
-            break;
+    case CycleState::OBD_SETTLED:
+        transitionTo(nextPostObdState(ctx), ctx.nowMs);
+        break;
 
-        case CycleState::STEADY:
-            if (ctx.wifiManualStartIntentLatched && ctx.proxyClientConnected) {
-                manualWifiPreemptRequested_ = true;
+    case CycleState::PROXY_OPEN:
+        if (ctx.wifiManualStartIntentLatched) {
+            manualWifiPreemptRequested_ = ctx.proxyClientConnected;
+            if (ctx.proxyClientConnected) {
                 totalWifiManualPhoneKicks_++;
-                if (providers.disconnectProxyPhone) {
-                    providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-                }
-                transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
             }
-            break;
+            if (providers.stopProxyAdvertising) {
+                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
+            }
+            if (ctx.proxyClientConnected && providers.disconnectProxyPhone) {
+                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
+            }
+            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
+        } else if (!isExplicitProxyAppMode(ctx) && !ctx.proxyClientConnected &&
+                   hasElapsed(ctx.nowMs, stateEnteredMs_, proxyOpenWindowMs_)) {
+            if (providers.stopProxyAdvertising) {
+                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
+            }
+            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
+        }
+        break;
 
-        case CycleState::TEARDOWN:
-            updateTeardown(ctx.nowMs);
-            break;
+    case CycleState::WIFI_OPEN:
+        if (ctx.wifiActive || hasElapsed(ctx.nowMs, stateEnteredMs_, wifiOpenTimeoutMs_)) {
+            transitionTo(CycleState::STEADY, ctx.nowMs);
+        }
+        break;
+
+    case CycleState::STEADY:
+        if (ctx.wifiManualStartIntentLatched && ctx.proxyClientConnected) {
+            manualWifiPreemptRequested_ = true;
+            totalWifiManualPhoneKicks_++;
+            if (providers.disconnectProxyPhone) {
+                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
+            }
+            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
+        }
+        break;
+
+    case CycleState::TEARDOWN:
+        updateTeardown(ctx.nowMs);
+        break;
     }
 
     wasV1Connected_ = ctx.v1GattConnected;
@@ -259,10 +246,8 @@ bool ConnectionCycleCoordinatorModule::obdRetryAllowed(const uint32_t nowMs) con
     // Auto-retry only makes sense after this cycle has actually attempted OBD.
     // A mid-session OBD re-enable restores WAIT_BOOT/IDLE in the OBD runtime,
     // but does not seed retry cadence until the next coordinator-owned attempt.
-    return (state_ == CycleState::PROXY_OPEN || state_ == CycleState::STEADY) &&
-           lastV1Connected_ &&
-           !lastProxyClientConnected_ &&
-           lastObdAttemptMs_ != 0 &&
+    return (state_ == CycleState::PROXY_OPEN || state_ == CycleState::STEADY) && lastV1Connected_ &&
+           !lastProxyClientConnected_ && lastObdAttemptMs_ != 0 &&
            hasElapsed(nowMs, lastObdAttemptMs_, obdRetryIntervalMs_);
 }
 
@@ -281,8 +266,7 @@ bool ConnectionCycleCoordinatorModule::wifiAutoStartAllowed() const {
     if (state_ != CycleState::WIFI_OPEN && state_ != CycleState::STEADY) {
         return false;
     }
-    return !providers.isProxyFullyStopped ||
-           providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
+    return !providers.isProxyFullyStopped || providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
 }
 
 bool ConnectionCycleCoordinatorModule::shouldPreemptProxyForManualWifiStart() const {
@@ -291,12 +275,12 @@ bool ConnectionCycleCoordinatorModule::shouldPreemptProxyForManualWifiStart() co
 
 ObdBleArbitrationRequest ConnectionCycleCoordinatorModule::arbitrationRequest() const {
     switch (state_) {
-        case CycleState::V1_SETTLING:
-        case CycleState::OBD_SCAN:
-        case CycleState::OBD_CONNECT:
-            return ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
-        default:
-            return ObdBleArbitrationRequest::NONE;
+    case CycleState::V1_SETTLING:
+    case CycleState::OBD_SCAN:
+    case CycleState::OBD_CONNECT:
+        return ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
+    default:
+        return ObdBleArbitrationRequest::NONE;
     }
 }
 
@@ -314,20 +298,18 @@ void ConnectionCycleCoordinatorModule::recordObdRetryAttempt(const uint32_t nowM
 
 void ConnectionCycleCoordinatorModule::updateTimingConfig(const CycleContext& ctx) {
     obdScanWindowMs_ = clampConnectionCycleObdScanWindowMsValue(
-        ctx.obdScanWindowMs == 0 ? kConnectionCycleObdScanWindowMsDefault
-                                 : static_cast<int64_t>(ctx.obdScanWindowMs));
+        ctx.obdScanWindowMs == 0 ? kConnectionCycleObdScanWindowMsDefault : static_cast<int64_t>(ctx.obdScanWindowMs));
     obdRetryIntervalMs_ = clampConnectionCycleObdRetryIntervalMsValue(
         ctx.obdRetryIntervalMs == 0 ? kConnectionCycleObdRetryIntervalMsDefault
                                     : static_cast<int64_t>(ctx.obdRetryIntervalMs));
-    proxyOpenWindowMs_ = clampConnectionCycleProxyOpenWindowMsValue(
-        ctx.proxyOpenWindowMs == 0 ? kConnectionCycleProxyOpenWindowMsDefault
-                                   : static_cast<int64_t>(ctx.proxyOpenWindowMs));
-    wifiOpenTimeoutMs_ = clampConnectionCycleWifiOpenTimeoutMsValue(
-        ctx.wifiOpenTimeoutMs == 0 ? kConnectionCycleWifiOpenTimeoutMsDefault
-                                   : static_cast<int64_t>(ctx.wifiOpenTimeoutMs));
+    proxyOpenWindowMs_ = clampConnectionCycleProxyOpenWindowMsValue(ctx.proxyOpenWindowMs == 0
+                                                                        ? kConnectionCycleProxyOpenWindowMsDefault
+                                                                        : static_cast<int64_t>(ctx.proxyOpenWindowMs));
+    wifiOpenTimeoutMs_ = clampConnectionCycleWifiOpenTimeoutMsValue(ctx.wifiOpenTimeoutMs == 0
+                                                                        ? kConnectionCycleWifiOpenTimeoutMsDefault
+                                                                        : static_cast<int64_t>(ctx.wifiOpenTimeoutMs));
     v1SettleQuietMs_ = clampConnectionCycleV1SettleQuietMsValue(
-        ctx.v1SettleQuietMs == 0 ? kConnectionCycleV1SettleQuietMsDefault
-                                 : static_cast<int64_t>(ctx.v1SettleQuietMs));
+        ctx.v1SettleQuietMs == 0 ? kConnectionCycleV1SettleQuietMsDefault : static_cast<int64_t>(ctx.v1SettleQuietMs));
     v1SettleFallbackMs_ = clampConnectionCycleV1SettleFallbackMsValue(
         ctx.v1SettleFallbackMs == 0 ? kConnectionCycleV1SettleFallbackMsDefault
                                     : static_cast<int64_t>(ctx.v1SettleFallbackMs));
@@ -351,27 +333,27 @@ void ConnectionCycleCoordinatorModule::transitionTo(const CycleState newState, c
     totalTransitionCount_++;
 
     switch (newState) {
-        case CycleState::V1_SETTLING:
-            v1VerifyPushMatched_ = false;
-            v1VerifyPushMatchedAtMs_ = 0;
-            break;
+    case CycleState::V1_SETTLING:
+        v1VerifyPushMatched_ = false;
+        v1VerifyPushMatchedAtMs_ = 0;
+        break;
 
-        case CycleState::OBD_SCAN:
-        case CycleState::OBD_CONNECT:
-            lastObdAttemptMs_ = nowMs;
-            break;
+    case CycleState::OBD_SCAN:
+    case CycleState::OBD_CONNECT:
+        lastObdAttemptMs_ = nowMs;
+        break;
 
-        case CycleState::TEARDOWN:
-            teardownStep_ = TeardownStep::WaitObdStop;
-            teardownStepStartedMs_ = nowMs;
-            break;
+    case CycleState::TEARDOWN:
+        teardownStep_ = TeardownStep::WaitObdStop;
+        teardownStepStartedMs_ = nowMs;
+        break;
 
-        default:
-            if (newState != CycleState::TEARDOWN) {
-                teardownStep_ = TeardownStep::Idle;
-                teardownStepStartedMs_ = 0;
-            }
-            break;
+    default:
+        if (newState != CycleState::TEARDOWN) {
+            teardownStep_ = TeardownStep::Idle;
+            teardownStepStartedMs_ = 0;
+        }
+        break;
     }
 }
 
@@ -390,40 +372,36 @@ void ConnectionCycleCoordinatorModule::enterTeardown(const uint32_t nowMs) {
 
 void ConnectionCycleCoordinatorModule::updateTeardown(const uint32_t nowMs) {
     switch (teardownStep_) {
-        case TeardownStep::Idle:
+    case TeardownStep::Idle:
+        transitionTo(CycleState::SCAN_V1, nowMs);
+        return;
+
+    case TeardownStep::WaitObdStop: {
+        const bool obdScanStopped =
+            !providers.isObdScanStopped || providers.isObdScanStopped(providers.isObdScanStoppedContext);
+        const bool obdConnectIdle =
+            !providers.isObdConnectIdle || providers.isObdConnectIdle(providers.isObdConnectIdleContext);
+        if ((obdScanStopped && obdConnectIdle) || hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
+            if (providers.stopProxyAdvertising) {
+                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
+            }
+            if (providers.disconnectProxyPhone) {
+                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
+            }
+            teardownStep_ = TeardownStep::WaitProxyStop;
+            teardownStepStartedMs_ = nowMs;
+        }
+        return;
+    }
+
+    case TeardownStep::WaitProxyStop: {
+        const bool proxyStopped =
+            !providers.isProxyFullyStopped || providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
+        if (proxyStopped || hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
+            teardownStep_ = TeardownStep::Idle;
             transitionTo(CycleState::SCAN_V1, nowMs);
-            return;
-
-        case TeardownStep::WaitObdStop: {
-            const bool obdScanStopped =
-                !providers.isObdScanStopped ||
-                providers.isObdScanStopped(providers.isObdScanStoppedContext);
-            const bool obdConnectIdle =
-                !providers.isObdConnectIdle ||
-                providers.isObdConnectIdle(providers.isObdConnectIdleContext);
-            if ((obdScanStopped && obdConnectIdle) ||
-                hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
-                if (providers.stopProxyAdvertising) {
-                    providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-                }
-                if (providers.disconnectProxyPhone) {
-                    providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-                }
-                teardownStep_ = TeardownStep::WaitProxyStop;
-                teardownStepStartedMs_ = nowMs;
-            }
-            return;
         }
-
-        case TeardownStep::WaitProxyStop: {
-            const bool proxyStopped =
-                !providers.isProxyFullyStopped ||
-                providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
-            if (proxyStopped || hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
-                teardownStep_ = TeardownStep::Idle;
-                transitionTo(CycleState::SCAN_V1, nowMs);
-            }
-            return;
-        }
+        return;
+    }
     }
 }

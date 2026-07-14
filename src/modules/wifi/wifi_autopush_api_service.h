@@ -114,16 +114,12 @@ void handleApiSlots(WebServer& server, const Runtime& runtime);
 
 void handleApiStatus(WebServer& server, const Runtime& runtime);
 
-void handleApiSlotSave(WebServer& server,
-                       const Runtime& runtime,
-                       bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx);
 
-void handleApiActivate(WebServer& server,
-                       const Runtime& runtime,
-                       bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx);
 
-void handleApiPushNow(WebServer& server,
-                      const Runtime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiPushNow(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-}  // namespace WifiAutoPushApiService
+} // namespace WifiAutoPushApiService

@@ -11,53 +11,25 @@ namespace WifiDisplayColorsApiService {
 namespace {
 
 bool updateTouchesRenderedVisuals(const DisplaySettingsUpdate& update) {
-    return update.hasColorBogey ||
-           update.hasColorFrequency ||
-           update.hasColorArrowFront ||
-           update.hasColorArrowSide ||
-           update.hasColorArrowRear ||
-           update.hasColorBandL ||
-           update.hasColorBandKa ||
-           update.hasColorBandK ||
-           update.hasColorBandX ||
-           update.hasColorBandPhoto ||
-           update.hasColorWiFiIcon ||
-           update.hasColorWiFiConnected ||
-           update.hasColorBleConnected ||
-           update.hasColorBleDisconnected ||
-           update.hasColorBar1 ||
-           update.hasColorBar2 ||
-           update.hasColorBar3 ||
-           update.hasColorBar4 ||
-           update.hasColorBar5 ||
-           update.hasColorBar6 ||
-           update.hasColorMuted ||
-           update.hasColorPersisted ||
-           update.hasColorVolumeMain ||
-           update.hasColorVolumeMute ||
-           update.hasColorRssiV1 ||
-           update.hasColorRssiProxy ||
-           update.hasColorObd ||
-           update.hasColorAlpConnected ||
-           update.hasColorAlpDli ||
-           update.hasColorAlpLidActive ||
-           update.hasColorAlpAlert ||
-           update.hasFreqUseBandColor ||
-           update.hasHideWifiIcon ||
-           update.hasHideProfileIndicator ||
-           update.hasHideBatteryIcon ||
-           update.hasShowBatteryPercent ||
-           update.hasHideBleIcon ||
-           update.hasHideVolumeIndicator ||
+    return update.hasColorBogey || update.hasColorFrequency || update.hasColorArrowFront || update.hasColorArrowSide ||
+           update.hasColorArrowRear || update.hasColorBandL || update.hasColorBandKa || update.hasColorBandK ||
+           update.hasColorBandX || update.hasColorBandPhoto || update.hasColorWiFiIcon ||
+           update.hasColorWiFiConnected || update.hasColorBleConnected || update.hasColorBleDisconnected ||
+           update.hasColorBar1 || update.hasColorBar2 || update.hasColorBar3 || update.hasColorBar4 ||
+           update.hasColorBar5 || update.hasColorBar6 || update.hasColorMuted || update.hasColorPersisted ||
+           update.hasColorVolumeMain || update.hasColorVolumeMute || update.hasColorRssiV1 ||
+           update.hasColorRssiProxy || update.hasColorObd || update.hasColorAlpConnected || update.hasColorAlpDli ||
+           update.hasColorAlpLidActive || update.hasColorAlpAlert || update.hasFreqUseBandColor ||
+           update.hasHideWifiIcon || update.hasHideProfileIndicator || update.hasHideBatteryIcon ||
+           update.hasShowBatteryPercent || update.hasHideBleIcon || update.hasHideVolumeIndicator ||
            update.hasHideRssiIndicator;
 }
 
-}  // namespace
+} // namespace
 
-void handleApiSave(WebServer& server,
-                   const Runtime& runtime,
-                   bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!runtime.getSettings || !runtime.applySettingsUpdate) {
         server.send(500, "application/json", "{\"error\":\"Settings unavailable\"}");
@@ -78,14 +50,15 @@ void handleApiSave(WebServer& server,
     uint8_t nextBrightness = s.brightness;
 
     auto argBool = [&server](const char* key, bool fallback) -> bool {
-        if (!server.hasArg(key)) return fallback;
+        if (!server.hasArg(key))
+            return fallback;
         return server.arg(key) == "true" || server.arg(key) == "1";
     };
 
     // Main display colors
-    if (server.hasArg("bogey") || server.hasArg("freq") || server.hasArg("arrowFront") ||
-        server.hasArg("arrowSide") || server.hasArg("arrowRear") || server.hasArg("bandL") ||
-        server.hasArg("bandKa") || server.hasArg("bandK") || server.hasArg("bandX")) {
+    if (server.hasArg("bogey") || server.hasArg("freq") || server.hasArg("arrowFront") || server.hasArg("arrowSide") ||
+        server.hasArg("arrowRear") || server.hasArg("bandL") || server.hasArg("bandKa") || server.hasArg("bandK") ||
+        server.hasArg("bandX")) {
         if (server.hasArg("bogey")) {
             update.hasColorBogey = true;
             update.colorBogey = server.arg("bogey").toInt();
@@ -132,38 +105,128 @@ void handleApiSave(WebServer& server,
     }
 
     // Color groups
-    if (server.hasArg("wifiIcon")) { update.hasColorWiFiIcon = true; update.colorWiFiIcon = server.arg("wifiIcon").toInt(); }
-    if (server.hasArg("wifiConnected")) { update.hasColorWiFiConnected = true; update.colorWiFiConnected = server.arg("wifiConnected").toInt(); }
-    if (server.hasArg("bleConnected")) { update.hasColorBleConnected = true; update.colorBleConnected = server.arg("bleConnected").toInt(); }
-    if (server.hasArg("bleDisconnected")) { update.hasColorBleDisconnected = true; update.colorBleDisconnected = server.arg("bleDisconnected").toInt(); }
-    if (server.hasArg("bar1")) { update.hasColorBar1 = true; update.colorBar1 = server.arg("bar1").toInt(); }
-    if (server.hasArg("bar2")) { update.hasColorBar2 = true; update.colorBar2 = server.arg("bar2").toInt(); }
-    if (server.hasArg("bar3")) { update.hasColorBar3 = true; update.colorBar3 = server.arg("bar3").toInt(); }
-    if (server.hasArg("bar4")) { update.hasColorBar4 = true; update.colorBar4 = server.arg("bar4").toInt(); }
-    if (server.hasArg("bar5")) { update.hasColorBar5 = true; update.colorBar5 = server.arg("bar5").toInt(); }
-    if (server.hasArg("bar6")) { update.hasColorBar6 = true; update.colorBar6 = server.arg("bar6").toInt(); }
-    if (server.hasArg("muted")) { update.hasColorMuted = true; update.colorMuted = server.arg("muted").toInt(); }
-    if (server.hasArg("bandPhoto")) { update.hasColorBandPhoto = true; update.colorBandPhoto = server.arg("bandPhoto").toInt(); }
-    if (server.hasArg("persisted")) { update.hasColorPersisted = true; update.colorPersisted = server.arg("persisted").toInt(); }
-    if (server.hasArg("volumeMain")) { update.hasColorVolumeMain = true; update.colorVolumeMain = server.arg("volumeMain").toInt(); }
-    if (server.hasArg("volumeMute")) { update.hasColorVolumeMute = true; update.colorVolumeMute = server.arg("volumeMute").toInt(); }
-    if (server.hasArg("rssiV1")) { update.hasColorRssiV1 = true; update.colorRssiV1 = server.arg("rssiV1").toInt(); }
-    if (server.hasArg("rssiProxy")) { update.hasColorRssiProxy = true; update.colorRssiProxy = server.arg("rssiProxy").toInt(); }
-    if (server.hasArg("obd")) { update.hasColorObd = true; update.colorObd = server.arg("obd").toInt(); }
-    if (server.hasArg("alpConnected")) { update.hasColorAlpConnected = true; update.colorAlpConnected = server.arg("alpConnected").toInt(); }
-    if (server.hasArg("alpDli")) { update.hasColorAlpDli = true; update.colorAlpDli = server.arg("alpDli").toInt(); }
-    if (server.hasArg("alpLidActive")) { update.hasColorAlpLidActive = true; update.colorAlpLidActive = server.arg("alpLidActive").toInt(); }
-    if (server.hasArg("alpAlert")) { update.hasColorAlpAlert = true; update.colorAlpAlert = server.arg("alpAlert").toInt(); }
+    if (server.hasArg("wifiIcon")) {
+        update.hasColorWiFiIcon = true;
+        update.colorWiFiIcon = server.arg("wifiIcon").toInt();
+    }
+    if (server.hasArg("wifiConnected")) {
+        update.hasColorWiFiConnected = true;
+        update.colorWiFiConnected = server.arg("wifiConnected").toInt();
+    }
+    if (server.hasArg("bleConnected")) {
+        update.hasColorBleConnected = true;
+        update.colorBleConnected = server.arg("bleConnected").toInt();
+    }
+    if (server.hasArg("bleDisconnected")) {
+        update.hasColorBleDisconnected = true;
+        update.colorBleDisconnected = server.arg("bleDisconnected").toInt();
+    }
+    if (server.hasArg("bar1")) {
+        update.hasColorBar1 = true;
+        update.colorBar1 = server.arg("bar1").toInt();
+    }
+    if (server.hasArg("bar2")) {
+        update.hasColorBar2 = true;
+        update.colorBar2 = server.arg("bar2").toInt();
+    }
+    if (server.hasArg("bar3")) {
+        update.hasColorBar3 = true;
+        update.colorBar3 = server.arg("bar3").toInt();
+    }
+    if (server.hasArg("bar4")) {
+        update.hasColorBar4 = true;
+        update.colorBar4 = server.arg("bar4").toInt();
+    }
+    if (server.hasArg("bar5")) {
+        update.hasColorBar5 = true;
+        update.colorBar5 = server.arg("bar5").toInt();
+    }
+    if (server.hasArg("bar6")) {
+        update.hasColorBar6 = true;
+        update.colorBar6 = server.arg("bar6").toInt();
+    }
+    if (server.hasArg("muted")) {
+        update.hasColorMuted = true;
+        update.colorMuted = server.arg("muted").toInt();
+    }
+    if (server.hasArg("bandPhoto")) {
+        update.hasColorBandPhoto = true;
+        update.colorBandPhoto = server.arg("bandPhoto").toInt();
+    }
+    if (server.hasArg("persisted")) {
+        update.hasColorPersisted = true;
+        update.colorPersisted = server.arg("persisted").toInt();
+    }
+    if (server.hasArg("volumeMain")) {
+        update.hasColorVolumeMain = true;
+        update.colorVolumeMain = server.arg("volumeMain").toInt();
+    }
+    if (server.hasArg("volumeMute")) {
+        update.hasColorVolumeMute = true;
+        update.colorVolumeMute = server.arg("volumeMute").toInt();
+    }
+    if (server.hasArg("rssiV1")) {
+        update.hasColorRssiV1 = true;
+        update.colorRssiV1 = server.arg("rssiV1").toInt();
+    }
+    if (server.hasArg("rssiProxy")) {
+        update.hasColorRssiProxy = true;
+        update.colorRssiProxy = server.arg("rssiProxy").toInt();
+    }
+    if (server.hasArg("obd")) {
+        update.hasColorObd = true;
+        update.colorObd = server.arg("obd").toInt();
+    }
+    if (server.hasArg("alpConnected")) {
+        update.hasColorAlpConnected = true;
+        update.colorAlpConnected = server.arg("alpConnected").toInt();
+    }
+    if (server.hasArg("alpDli")) {
+        update.hasColorAlpDli = true;
+        update.colorAlpDli = server.arg("alpDli").toInt();
+    }
+    if (server.hasArg("alpLidActive")) {
+        update.hasColorAlpLidActive = true;
+        update.colorAlpLidActive = server.arg("alpLidActive").toInt();
+    }
+    if (server.hasArg("alpAlert")) {
+        update.hasColorAlpAlert = true;
+        update.colorAlpAlert = server.arg("alpAlert").toInt();
+    }
 
     // Display toggles
-    if (server.hasArg("freqUseBandColor")) { update.hasFreqUseBandColor = true; update.freqUseBandColor = argBool("freqUseBandColor", s.freqUseBandColor); }
-    if (server.hasArg("hideWifiIcon")) { update.hasHideWifiIcon = true; update.hideWifiIcon = argBool("hideWifiIcon", s.hideWifiIcon); }
-    if (server.hasArg("hideProfileIndicator")) { update.hasHideProfileIndicator = true; update.hideProfileIndicator = argBool("hideProfileIndicator", s.hideProfileIndicator); }
-    if (server.hasArg("hideBatteryIcon")) { update.hasHideBatteryIcon = true; update.hideBatteryIcon = argBool("hideBatteryIcon", s.hideBatteryIcon); }
-    if (server.hasArg("showBatteryPercent")) { update.hasShowBatteryPercent = true; update.showBatteryPercent = argBool("showBatteryPercent", s.showBatteryPercent); }
-    if (server.hasArg("hideBleIcon")) { update.hasHideBleIcon = true; update.hideBleIcon = argBool("hideBleIcon", s.hideBleIcon); }
-    if (server.hasArg("hideVolumeIndicator")) { update.hasHideVolumeIndicator = true; update.hideVolumeIndicator = argBool("hideVolumeIndicator", s.hideVolumeIndicator); }
-    if (server.hasArg("hideRssiIndicator")) { update.hasHideRssiIndicator = true; update.hideRssiIndicator = argBool("hideRssiIndicator", s.hideRssiIndicator); }
+    if (server.hasArg("freqUseBandColor")) {
+        update.hasFreqUseBandColor = true;
+        update.freqUseBandColor = argBool("freqUseBandColor", s.freqUseBandColor);
+    }
+    if (server.hasArg("hideWifiIcon")) {
+        update.hasHideWifiIcon = true;
+        update.hideWifiIcon = argBool("hideWifiIcon", s.hideWifiIcon);
+    }
+    if (server.hasArg("hideProfileIndicator")) {
+        update.hasHideProfileIndicator = true;
+        update.hideProfileIndicator = argBool("hideProfileIndicator", s.hideProfileIndicator);
+    }
+    if (server.hasArg("hideBatteryIcon")) {
+        update.hasHideBatteryIcon = true;
+        update.hideBatteryIcon = argBool("hideBatteryIcon", s.hideBatteryIcon);
+    }
+    if (server.hasArg("showBatteryPercent")) {
+        update.hasShowBatteryPercent = true;
+        update.showBatteryPercent = argBool("showBatteryPercent", s.showBatteryPercent);
+    }
+    if (server.hasArg("hideBleIcon")) {
+        update.hasHideBleIcon = true;
+        update.hideBleIcon = argBool("hideBleIcon", s.hideBleIcon);
+    }
+    if (server.hasArg("hideVolumeIndicator")) {
+        update.hasHideVolumeIndicator = true;
+        update.hideVolumeIndicator = argBool("hideVolumeIndicator", s.hideVolumeIndicator);
+    }
+    if (server.hasArg("hideRssiIndicator")) {
+        update.hasHideRssiIndicator = true;
+        update.hideRssiIndicator = argBool("hideRssiIndicator", s.hideRssiIndicator);
+    }
 
     // Misc sliders
     if (server.hasArg("brightness")) {
@@ -185,20 +248,19 @@ void handleApiSave(WebServer& server,
     }
 
     // Trigger immediate display preview to show new colors (skip if requested)
-    if (!server.hasArg("skipPreview") ||
-        (server.arg("skipPreview") != "true" && server.arg("skipPreview") != "1")) {
+    if (!server.hasArg("skipPreview") || (server.arg("skipPreview") != "true" && server.arg("skipPreview") != "1")) {
         if (runtime.requestColorPreviewHoldMs) {
-            runtime.requestColorPreviewHoldMs(5500, runtime.requestColorPreviewHoldMsCtx);  // Hold ~5.5s and cycle bands during preview.
+            runtime.requestColorPreviewHoldMs(
+                5500, runtime.requestColorPreviewHoldMsCtx); // Hold ~5.5s and cycle bands during preview.
         }
     }
 
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiReset(WebServer& server,
-                    const Runtime& runtime,
-                    bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiReset(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!runtime.resetDisplaySettings) {
         server.send(500, "application/json", "{\"error\":\"Settings unavailable\"}");
@@ -242,10 +304,10 @@ static void handlePreviewImpl(WebServer& server, const Runtime& runtime) {
     server.send(200, "application/json", "{\"success\":true,\"active\":true}");
 }
 
-void handleApiPreview(WebServer& server,
-                      const Runtime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiPreview(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                      void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     handlePreviewImpl(server, runtime);
 }
 
@@ -257,10 +319,9 @@ static void handleClearImpl(WebServer& server, const Runtime& runtime) {
     server.send(200, "application/json", "{\"success\":true,\"active\":false}");
 }
 
-void handleApiClear(WebServer& server,
-                    const Runtime& runtime,
-                    bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiClear(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     handleClearImpl(server, runtime);
 }
 
@@ -317,4 +378,4 @@ void handleApiGet(WebServer& server, const Runtime& runtime) {
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-}  // namespace WifiDisplayColorsApiService
+} // namespace WifiDisplayColorsApiService

@@ -28,10 +28,10 @@ void handleApiDevicesList(WebServer& server, const Runtime& runtime) {
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiDeviceNameSave(WebServer& server,
-                             const Runtime& runtime,
-                             bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiDeviceNameSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                             void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("address")) {
         server.send(400, "application/json", "{\"error\":\"Missing address\"}");
@@ -54,10 +54,10 @@ void handleApiDeviceNameSave(WebServer& server,
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiDeviceProfileSave(WebServer& server,
-                                const Runtime& runtime,
-                                bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiDeviceProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                                void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("address") || !server.hasArg("profile")) {
         server.send(400, "application/json", "{\"error\":\"Missing address or profile\"}");
@@ -84,10 +84,10 @@ void handleApiDeviceProfileSave(WebServer& server,
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiDeviceDelete(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiDeviceDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("address")) {
         server.send(400, "application/json", "{\"error\":\"Missing address\"}");
@@ -108,4 +108,4 @@ void handleApiDeviceDelete(WebServer& server,
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-}  // namespace WifiV1DevicesApiService
+} // namespace WifiV1DevicesApiService

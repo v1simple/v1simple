@@ -19,20 +19,17 @@ inline void sendBackupNowResponse(WebServer& server, const BackupNowRuntime& run
     const bool storageReady = runtime.isStorageReady && runtime.isStorageReady(runtime.isStorageReadyCtx);
     const bool sdCard = runtime.isSDCard && runtime.isSDCard(runtime.isSDCardCtx);
     if (!storageReady || !sdCard) {
-        server.send(503, "application/json",
-                    "{\"success\":false,\"error\":\"SD card unavailable\"}");
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"SD card unavailable\"}");
         return;
     }
 
     const bool backupOk = runtime.backupToSD && runtime.backupToSD(runtime.backupToSDCtx);
     if (!backupOk) {
-        server.send(500, "application/json",
-                    "{\"success\":false,\"error\":\"Backup write failed\"}");
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"Backup write failed\"}");
         return;
     }
 
-    server.send(200, "application/json",
-                "{\"success\":true,\"message\":\"Backup written to SD\"}");
+    server.send(200, "application/json", "{\"success\":true,\"message\":\"Backup written to SD\"}");
 }
 
 /// Injected dependencies for all backup/restore handlers.
@@ -51,32 +48,24 @@ struct BackupRuntime {
 
     // POST /api/settings/restore — handleRestore dependencies
     /// Apply a backup document. Returns true on success; sets profilesRestored.
-    bool (*applyBackup)(const JsonDocument& doc, bool fullRestore,
-                        int& profilesRestored, void* ctx) = nullptr;
+    bool (*applyBackup)(const JsonDocument& doc, bool fullRestore, int& profilesRestored, void* ctx) = nullptr;
     /// Post-restore runtime sync (OBD, speed source, etc.).
     void (*syncAfterRestore)(void* ctx) = nullptr;
 
     void* ctx = nullptr;
-
 };
 
 /// GET /api/settings/backup handler with route-level UI activity callback.
-void handleApiBackup(WebServer& server,
-                     BackupSnapshotCache& cachedSnapshot,
-                     const BackupRuntime& runtime,
-                     void (*markUiActivity)(void* ctx), void* uiActivityCtx,
-                     uint32_t (*millisFn)(void* ctx) = nullptr, void* millisCtx = nullptr);
+void handleApiBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
+                     void (*markUiActivity)(void* ctx), void* uiActivityCtx, uint32_t (*millisFn)(void* ctx) = nullptr,
+                     void* millisCtx = nullptr);
 
 /// POST /api/settings/backup-now handler to force a backup to SD.
-void handleApiBackupNow(WebServer& server,
-                        const BackupRuntime& runtime,
-                        bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                        void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiBackupNow(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
+                        void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
 /// POST /api/settings/restore handler with route-level policy callbacks.
-void handleApiRestore(WebServer& server,
-                      const BackupRuntime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                      void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiRestore(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
+                      void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
-}  // namespace BackupApiService
+} // namespace BackupApiService

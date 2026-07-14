@@ -37,8 +37,7 @@ static void sendScanIdle(WebServer& server) {
     server.send(200, "application/json", "{\"scanning\":false,\"networks\":[]}");
 }
 
-static void sendScanResults(WebServer& server,
-                            const std::vector<ScannedNetworkPayload>& networks) {
+static void sendScanResults(WebServer& server, const std::vector<ScannedNetworkPayload>& networks) {
     WifiJson::Document doc;
     doc["scanning"] = false;
     JsonArray arr = doc["networks"].to<JsonArray>();
@@ -96,8 +95,7 @@ static void sendEnableResult(WebServer& server, bool enabled) {
 }
 
 static void sendEnableConnectFailed(WebServer& server) {
-    server.send(500, "application/json",
-                "{\"success\":false,\"message\":\"Failed to start connection\"}");
+    server.send(500, "application/json", "{\"success\":false,\"message\":\"Failed to start connection\"}");
 }
 
 static void sendDisconnected(WebServer& server) {
@@ -108,8 +106,7 @@ static void sendForgotten(WebServer& server) {
     server.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi credentials forgotten\"}");
 }
 
-static void sendSavedNetworks(WebServer& server,
-                              const std::vector<SavedNetworkSlotPayload>& slots) {
+static void sendSavedNetworks(WebServer& server, const std::vector<SavedNetworkSlotPayload>& slots) {
     WifiJson::Document doc;
     JsonArray arr = doc["slots"].to<JsonArray>();
     for (const SavedNetworkSlotPayload& slot : slots) {
@@ -137,8 +134,7 @@ static bool parseIndexValue(JsonVariantConst value, size_t& indexOut) {
     return true;
 }
 
-static bool parseNetworksSaveRequest(WebServer& server,
-                                     SavedNetworkUpsertPayload& request,
+static bool parseNetworksSaveRequest(WebServer& server, SavedNetworkUpsertPayload& request,
                                      const char*& errorMessageOut) {
     request = SavedNetworkUpsertPayload();
     errorMessageOut = nullptr;
@@ -192,9 +188,7 @@ static bool parseNetworksSaveRequest(WebServer& server,
     return true;
 }
 
-static bool parseSlotIndexRequest(WebServer& server,
-                                  size_t& indexOut,
-                                  const char*& errorMessageOut) {
+static bool parseSlotIndexRequest(WebServer& server, size_t& indexOut, const char*& errorMessageOut) {
     indexOut = 0;
     errorMessageOut = nullptr;
     if (!server.hasArg("plain")) {
@@ -271,11 +265,11 @@ static void sendNetworkTestFailed(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 404, doc);
 }
 
-}  // namespace
+} // namespace
 
 static void handleStatusImpl(WebServer& server, const Runtime& runtime) {
-    if (!runtime.isEnabled || !runtime.getSavedSsid || !runtime.getStateName ||
-        !runtime.isScanRunning || !runtime.isConnected) {
+    if (!runtime.isEnabled || !runtime.getSavedSsid || !runtime.getStateName || !runtime.isScanRunning ||
+        !runtime.isConnected) {
         sendRuntimeUnavailable(server);
         return;
     }
@@ -299,9 +293,8 @@ static void handleStatusImpl(WebServer& server, const Runtime& runtime) {
 }
 
 static void handleScanImpl(WebServer& server, const Runtime& runtime, bool startIfIdle) {
-    if (!runtime.isScanRunning || !runtime.isScanInProgress ||
-        !runtime.hasCompletedScanResults || !runtime.getScannedNetworks ||
-        (startIfIdle && !runtime.startScan)) {
+    if (!runtime.isScanRunning || !runtime.isScanInProgress || !runtime.hasCompletedScanResults ||
+        !runtime.getScannedNetworks || (startIfIdle && !runtime.startScan)) {
         sendRuntimeUnavailable(server);
         return;
     }
@@ -469,108 +462,98 @@ static void handleNetworksTestImpl(WebServer& server, const Runtime& runtime) {
     sendNetworkTestStarted(server, index);
 }
 
-void handleApiStatus(WebServer& server,
-                     const Runtime& runtime,
-                     void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+void handleApiStatus(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),
+                     void* uiActivityCtx) {
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleStatusImpl(server, runtime);
 }
 
-void handleApiScan(WebServer& server,
-                   const Runtime& runtime,
-                   bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiScan(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                    void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleScanImpl(server, runtime, true);
 }
 
-void handleApiScanStatus(WebServer& server,
-                         const Runtime& runtime,
-                         void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+void handleApiScanStatus(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),
+                         void* uiActivityCtx) {
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleScanImpl(server, runtime, false);
 }
 
-void handleApiDisconnect(WebServer& server,
-                         const Runtime& runtime,
-                         bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                         void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiDisconnect(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                         void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleDisconnectImpl(server, runtime);
 }
 
-void handleApiForget(WebServer& server,
-                     const Runtime& runtime,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiForget(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                      void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleForgetImpl(server, runtime);
 }
 
-void handleApiEnable(WebServer& server,
-                     const Runtime& runtime,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+void handleApiEnable(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                      void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleEnableImpl(server, runtime);
 }
 
-void handleApiNetworks(WebServer& server,
-                       const Runtime& runtime,
-                       void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+void handleApiNetworks(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),
+                       void* uiActivityCtx) {
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleNetworksImpl(server, runtime);
 }
 
-void handleApiNetworksSave(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                           void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiNetworksSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleNetworksSaveImpl(server, runtime);
 }
 
-void handleApiNetworksDelete(WebServer& server,
-                             const Runtime& runtime,
-                             bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                             void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiNetworksDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                             void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleNetworksDeleteImpl(server, runtime);
 }
 
-void handleApiNetworksTest(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                           void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiNetworksTest(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleNetworksTestImpl(server, runtime);
 }
 
-}  // namespace WifiClientApiService
+} // namespace WifiClientApiService

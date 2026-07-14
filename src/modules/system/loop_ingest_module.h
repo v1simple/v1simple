@@ -17,7 +17,7 @@ struct LoopIngestResult {
 
 // Orchestrates BLE ingest and backpressure merge.
 class LoopIngestModule {
-public:
+  public:
     struct Providers {
         uint32_t (*timestampUs)(void* ctx) = nullptr;
         void* timestampContext = nullptr;
@@ -38,6 +38,6 @@ public:
     void begin(const Providers& hooks);
     LoopIngestResult process(const LoopIngestContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

@@ -19,14 +19,10 @@ namespace WifiBootPolicy {
 ///
 /// Caller is responsible for tracking the "done" flag and ensuring
 /// this is called at most once per loop iteration.
-inline bool shouldAutoStartWifi(bool alreadyStarted,
-                                bool bleConnected,
-                                uint32_t msSinceV1Connect,
-                                uint32_t settleMs,
-                                uint32_t msSinceBoot,
-                                uint32_t bootTimeoutMs,
-                                bool canStartDma) {
-    if (alreadyStarted) return false;
+inline bool shouldAutoStartWifi(bool alreadyStarted, bool bleConnected, uint32_t msSinceV1Connect, uint32_t settleMs,
+                                uint32_t msSinceBoot, uint32_t bootTimeoutMs, bool canStartDma) {
+    if (alreadyStarted)
+        return false;
 
     // BLE connected path: wait for settle window.
     bool bleSettled = bleConnected && (msSinceV1Connect >= settleMs);
@@ -34,7 +30,8 @@ inline bool shouldAutoStartWifi(bool alreadyStarted,
     // Timeout path: allow WiFi even without BLE after bootTimeoutMs.
     bool timeout = (msSinceBoot >= bootTimeoutMs);
 
-    if (!bleSettled && !timeout) return false;
+    if (!bleSettled && !timeout)
+        return false;
 
     return canStartDma;
 }
@@ -45,16 +42,16 @@ inline bool shouldAutoStartWifi(bool alreadyStarted,
 /// Returns false when WiFi is entirely off — prevents stray work that
 /// shows up as wifiMax_us / wifiConnectDeferred in wifi-off profiles.
 /// NOTE: Not called in production code; retained for test coverage.
-inline bool shouldProcessWifi(bool setupModeActive,
-                              bool wifiClientConnected,
-                              bool wifiAutoStartDone) {
+inline bool shouldProcessWifi(bool setupModeActive, bool wifiClientConnected, bool wifiAutoStartDone) {
     (void)wifiAutoStartDone;
     // If AP or STA is active, always process.
-    if (setupModeActive) return true;
-    if (wifiClientConnected) return true;
+    if (setupModeActive)
+        return true;
+    if (wifiClientConnected)
+        return true;
 
     return false;
 }
 #endif // UNIT_TEST
 
-}  // namespace WifiBootPolicy
+} // namespace WifiBootPolicy

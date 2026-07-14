@@ -14,7 +14,7 @@ struct LoopDisplayContext {
 // Orchestrates parsed-frame signal collection, display pipeline dispatch, and
 // lightweight refresh/priority propagation.
 class LoopDisplayModule {
-public:
+  public:
     struct Providers {
         uint32_t (*readDisplayNowMs)(void* ctx) = nullptr;
         void* displayNowContext = nullptr;
@@ -23,13 +23,11 @@ public:
         void* parsedSignalContext = nullptr;
 
         DisplayOrchestrationParsedResult (*runParsedFrame)(
-            void* ctx,
-            const DisplayOrchestrationParsedContext& parsedCtx) = nullptr;
+            void* ctx, const DisplayOrchestrationParsedContext& parsedCtx) = nullptr;
         void* parsedFrameContext = nullptr;
 
         DisplayOrchestrationRefreshResult (*runLightweightRefresh)(
-            void* ctx,
-            const DisplayOrchestrationRefreshContext& refreshCtx) = nullptr;
+            void* ctx, const DisplayOrchestrationRefreshContext& refreshCtx) = nullptr;
         void* lightweightRefreshContext = nullptr;
 
         // D2 fix: dispatched after runLightweightRefresh() when the orchestrator
@@ -55,6 +53,6 @@ public:
     void begin(const Providers& hooks);
     void process(const LoopDisplayContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

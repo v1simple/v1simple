@@ -10,14 +10,12 @@ bool isWifiProcessingEnabledPolicy(const WiFiManager& wifiManager);
 
 // Manages BLE WiFi-priority transitions with hysteresis/hold semantics.
 class WifiPriorityPolicyModule {
-public:
+  public:
     void reset();
 
-    void apply(unsigned long nowMs,
-               V1BLEClient& bleClient,
-               WiFiManager& wifiManager);
+    void apply(unsigned long nowMs, V1BLEClient& bleClient, WiFiManager& wifiManager);
 
-private:
+  private:
     unsigned long wifiPriorityLastTransitionMs_ = 0;
     bool pendingPriorityValid_ = false;
     bool pendingPriorityState_ = false;

@@ -12,7 +12,7 @@ struct LoopSettingsPrepContext {
 
 // Orchestrates tap-gesture processing and loop settings snapshot reads.
 class LoopSettingsPrepModule {
-public:
+  public:
     struct Providers {
         void (*runTapGesture)(void* ctx, uint32_t nowMs) = nullptr;
         void* tapGestureContext = nullptr;
@@ -24,6 +24,6 @@ public:
     void begin(const Providers& hooks);
     LoopSettingsPrepValues process(const LoopSettingsPrepContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

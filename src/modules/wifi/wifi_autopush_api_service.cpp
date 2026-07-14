@@ -45,10 +45,10 @@ void handleApiStatus(WebServer& server, const Runtime& runtime) {
     server.send(500, "application/json", "{\"error\":\"Push status not available\"}");
 }
 
-void handleApiSlotSave(WebServer& server,
-                       const Runtime& runtime,
-                       bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("slot") || !server.hasArg("profile") || !server.hasArg("mode")) {
         server.send(400, "application/json", "{\"error\":\"Missing parameters\"}");
@@ -110,7 +110,8 @@ void handleApiSlotSave(WebServer& server,
         }
 
         uint8_t existingVol = runtime.getSlotVolume ? runtime.getSlotVolume(slot, runtime.getSlotVolumeCtx) : 0;
-        uint8_t existingMute = runtime.getSlotMuteVolume ? runtime.getSlotMuteVolume(slot, runtime.getSlotMuteVolumeCtx) : 0;
+        uint8_t existingMute =
+            runtime.getSlotMuteVolume ? runtime.getSlotMuteVolume(slot, runtime.getSlotMuteVolumeCtx) : 0;
         uint8_t vol = (volume >= 0) ? static_cast<uint8_t>(volume) : existingVol;
         uint8_t mute = (muteVol >= 0) ? static_cast<uint8_t>(muteVol) : existingMute;
 
@@ -154,10 +155,10 @@ void handleApiSlotSave(WebServer& server,
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiActivate(WebServer& server,
-                       const Runtime& runtime,
-                       bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("slot")) {
         server.send(400, "application/json", "{\"error\":\"Missing slot parameter\"}");
@@ -189,10 +190,10 @@ void handleApiActivate(WebServer& server,
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiPushNow(WebServer& server,
-                      const Runtime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiPushNow(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                      void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("slot")) {
         server.send(400, "application/json", "{\"error\":\"Missing slot parameter\"}");
@@ -222,23 +223,23 @@ void handleApiPushNow(WebServer& server,
     }
 
     switch (runtime.queuePushNow(request, runtime.queuePushNowCtx)) {
-        case PushNowQueueResult::QUEUED:
-            server.send(200, "application/json", "{\"success\":true,\"queued\":true}");
-            return;
-        case PushNowQueueResult::V1_NOT_CONNECTED:
-            server.send(503, "application/json", "{\"error\":\"V1 not connected\"}");
-            return;
-        case PushNowQueueResult::ALREADY_IN_PROGRESS:
-            server.send(409, "application/json", "{\"error\":\"Push already in progress\"}");
-            return;
-        case PushNowQueueResult::NO_PROFILE_CONFIGURED:
-            server.send(400, "application/json", "{\"error\":\"No profile configured for this slot\"}");
-            return;
-        case PushNowQueueResult::PROFILE_LOAD_FAILED:
-        default:
-            server.send(500, "application/json", "{\"error\":\"Failed to load profile\"}");
-            return;
+    case PushNowQueueResult::QUEUED:
+        server.send(200, "application/json", "{\"success\":true,\"queued\":true}");
+        return;
+    case PushNowQueueResult::V1_NOT_CONNECTED:
+        server.send(503, "application/json", "{\"error\":\"V1 not connected\"}");
+        return;
+    case PushNowQueueResult::ALREADY_IN_PROGRESS:
+        server.send(409, "application/json", "{\"error\":\"Push already in progress\"}");
+        return;
+    case PushNowQueueResult::NO_PROFILE_CONFIGURED:
+        server.send(400, "application/json", "{\"error\":\"No profile configured for this slot\"}");
+        return;
+    case PushNowQueueResult::PROFILE_LOAD_FAILED:
+    default:
+        server.send(500, "application/json", "{\"error\":\"Failed to load profile\"}");
+        return;
     }
 }
 
-}  // namespace WifiAutoPushApiService
+} // namespace WifiAutoPushApiService

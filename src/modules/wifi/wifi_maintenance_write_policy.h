@@ -20,4 +20,4 @@ inline Decision evaluate(bool maintenanceBootMode, bool hasValidWriteHeader) {
     return Decision::Allow;
 }
 
-}  // namespace WifiMaintenanceWritePolicy
+} // namespace WifiMaintenanceWritePolicy

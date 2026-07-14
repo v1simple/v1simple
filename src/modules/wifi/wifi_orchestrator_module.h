@@ -10,16 +10,13 @@
 #include "modules/auto_push/auto_push_module.h"
 
 class WifiOrchestrator {
-public:
-    WifiOrchestrator(WiFiManager& wifiManager,
-                     V1BLEClient& bleClient,
-                     PacketParser& parser,
-                     StorageManager& storageManager,
-                     AutoPushModule& autoPushModule);
+  public:
+    WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser,
+                     StorageManager& storageManager, AutoPushModule& autoPushModule);
 
     void ensureCallbacksConfigured();
 
-private:
+  private:
     void configureCallbacks();
 
     WiFiManager& wifiManager;

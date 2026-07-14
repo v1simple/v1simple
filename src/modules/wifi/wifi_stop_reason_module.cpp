@@ -4,8 +4,7 @@
 
 #include "../../perf_metrics.h"
 
-WifiStopReasonModule::WifiStopReasonModule(PerfCounters* counters)
-    : counters_(counters) {}
+WifiStopReasonModule::WifiStopReasonModule(PerfCounters* counters) : counters_(counters) {}
 
 void WifiStopReasonModule::setCounters(PerfCounters* counters) {
     counters_ = counters;
@@ -48,25 +47,25 @@ void WifiStopReasonModule::recordStopRequest(const char* stopReason, bool manual
     }
 
     switch (classify(stopReason)) {
-        case WifiStopReason::Timeout:
-            counters_->wifiStopTimeout++;
-            break;
-        case WifiStopReason::NoClients:
-            counters_->wifiStopNoClients++;
-            break;
-        case WifiStopReason::NoClientsAuto:
-            counters_->wifiStopNoClientsAuto++;
-            break;
-        case WifiStopReason::LowDma:
-            counters_->wifiStopLowDma++;
-            break;
-        case WifiStopReason::Poweroff:
-            counters_->wifiStopPoweroff++;
-            break;
-        case WifiStopReason::Other:
-        default:
-            counters_->wifiStopOther++;
-            break;
+    case WifiStopReason::Timeout:
+        counters_->wifiStopTimeout++;
+        break;
+    case WifiStopReason::NoClients:
+        counters_->wifiStopNoClients++;
+        break;
+    case WifiStopReason::NoClientsAuto:
+        counters_->wifiStopNoClientsAuto++;
+        break;
+    case WifiStopReason::LowDma:
+        counters_->wifiStopLowDma++;
+        break;
+    case WifiStopReason::Poweroff:
+        counters_->wifiStopPoweroff++;
+        break;
+    case WifiStopReason::Other:
+    default:
+        counters_->wifiStopOther++;
+        break;
     }
 }
 

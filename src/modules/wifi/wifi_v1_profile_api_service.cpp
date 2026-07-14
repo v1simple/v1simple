@@ -58,10 +58,10 @@ void handleApiProfileGet(WebServer& server, const Runtime& runtime) {
     server.send(200, "application/json", profileJson);
 }
 
-void handleApiProfileSave(WebServer& server,
-                          const Runtime& runtime,
-                          bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                          void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
@@ -95,7 +95,7 @@ void handleApiProfileSave(WebServer& server,
     }
 
     const String description = doc["description"] | "";
-    const bool displayOn = doc["displayOn"] | true;  // Default to on
+    const bool displayOn = doc["displayOn"] | true; // Default to on
     uint8_t settingsBytes[6];
     memset(settingsBytes, 0xFF, sizeof(settingsBytes));
 
@@ -129,10 +129,10 @@ void handleApiProfileSave(WebServer& server,
     }
 }
 
-void handleApiProfileDelete(WebServer& server,
-                            const Runtime& runtime,
-                            bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                            void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
@@ -196,10 +196,10 @@ void handleApiCurrentSettings(WebServer& server, const Runtime& runtime) {
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiSettingsPull(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiSettingsPull(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
@@ -217,16 +217,17 @@ void handleApiSettingsPull(WebServer& server,
     }
     if (requested) {
         // Response will come async via BLE callback
-        server.send(200, "application/json", "{\"success\":true,\"message\":\"Request sent. Check current settings.\"}");
+        server.send(200, "application/json",
+                    "{\"success\":true,\"message\":\"Request sent. Check current settings.\"}");
     } else {
         server.send(500, "application/json", "{\"error\":\"Failed to send request\"}");
     }
 }
 
-void handleApiSettingsPush(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
 
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
@@ -268,14 +269,8 @@ void handleApiSettingsPush(WebServer& server,
             server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
             return;
         }
-        Serial.printf("[V1Settings] Pushing profile '%s': %02X %02X %02X %02X %02X %02X\n",
-                      profileName.c_str(),
-                      bytes[0],
-                      bytes[1],
-                      bytes[2],
-                      bytes[3],
-                      bytes[4],
-                      bytes[5]);
+        Serial.printf("[V1Settings] Pushing profile '%s': %02X %02X %02X %02X %02X %02X\n", profileName.c_str(),
+                      bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
     }
     // Check for bytes array
     else if (doc["bytes"].is<JsonArray>()) {
@@ -296,18 +291,14 @@ void handleApiSettingsPush(WebServer& server,
         if (settingsObj.isNull()) {
             settingsObj = doc.as<JsonObject>();
         }
-        if (!runtime.parseSettingsJson || !runtime.parseSettingsJson(settingsObj, bytes, runtime.parseSettingsJsonCtx)) {
+        if (!runtime.parseSettingsJson ||
+            !runtime.parseSettingsJson(settingsObj, bytes, runtime.parseSettingsJsonCtx)) {
             server.send(400, "application/json", "{\"error\":\"Invalid settings\"}");
             return;
         }
         displayOn = doc["displayOn"] | true;
-        Serial.printf("[V1Settings] Built bytes from settings: %02X %02X %02X %02X %02X %02X\n",
-                      bytes[0],
-                      bytes[1],
-                      bytes[2],
-                      bytes[3],
-                      bytes[4],
-                      bytes[5]);
+        Serial.printf("[V1Settings] Built bytes from settings: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1],
+                      bytes[2], bytes[3], bytes[4], bytes[5]);
     }
 
     bool writeOk = false;
@@ -329,4 +320,4 @@ void handleApiSettingsPush(WebServer& server,
     }
 }
 
-}  // namespace WifiV1ProfileApiService
+} // namespace WifiV1ProfileApiService

@@ -45,55 +45,34 @@ struct LoopFinalizePhaseValues {
     unsigned long lastLoopUs = 0;
 };
 
-LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(
-    unsigned long nowMs,
-    unsigned long nowUs,
-    unsigned long lastLoopUs,
-    bool currentBootSplashHoldActive,
-    unsigned long currentBootSplashHoldUntilMs,
-    bool currentInitialScanningScreenShown);
+LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(unsigned long nowMs, unsigned long nowUs,
+                                                               unsigned long lastLoopUs,
+                                                               bool currentBootSplashHoldActive,
+                                                               unsigned long currentBootSplashHoldUntilMs,
+                                                               bool currentInitialScanningScreenShown);
 
-LoopIngestPhaseValues processLoopIngestPhase(
-    unsigned long nowMs,
-    bool currentBootReady,
-    unsigned long bootReadyDeadlineMs,
-    bool skipNonCoreThisLoop,
-    bool overloadThisLoop);
+LoopIngestPhaseValues processLoopIngestPhase(unsigned long nowMs, bool currentBootReady,
+                                             unsigned long bootReadyDeadlineMs, bool skipNonCoreThisLoop,
+                                             bool overloadThisLoop);
 
 // Loop ownership contract:
 // - Ingest phase mutates BLE runtime and returns the settings snapshot.
 // - loop() owns the OBD runtime refresh and speed selection update.
 // - Display/Wi-Fi/finalize phases consume snapshots and run only their owned side effects.
-void processLoopDisplayPreWifiPhase(
-    unsigned long nowMs,
-    bool bootSplashHoldActive,
-    bool overloadLateThisLoop);
+void processLoopDisplayPreWifiPhase(unsigned long nowMs, bool bootSplashHoldActive, bool overloadLateThisLoop);
 
-LoopWifiPhaseValues processLoopWifiPhase(
-    unsigned long nowMs,
-    unsigned long v1ConnectedAtMs,
-    bool enableWifi,
-    bool wifiAutoStartAllowed,
-    bool currentWifiAutoStartDone,
-    bool wifiManualStartIntentLatched,
-    bool skipLateNonCoreThisLoop,
-    bool bleBackpressure,
-    bool overloadLateThisLoop,
-    bool bleConnectBurstSettling,
-    bool bootSplashHoldActive);
+LoopWifiPhaseValues processLoopWifiPhase(unsigned long nowMs, unsigned long v1ConnectedAtMs, bool enableWifi,
+                                         bool wifiAutoStartAllowed, bool currentWifiAutoStartDone,
+                                         bool wifiManualStartIntentLatched, bool skipLateNonCoreThisLoop,
+                                         bool bleBackpressure, bool overloadLateThisLoop, bool bleConnectBurstSettling,
+                                         bool bootSplashHoldActive);
 
-LoopFinalizePhaseValues processLoopFinalizePhase(
-    unsigned long nowMs,
-    bool bootSplashHoldActive,
-    bool displayPreviewRunning,
-    bool bleBackpressure,
-    bool overloadLateThisLoop,
-    unsigned long scanScreenDwellMs,
-    unsigned long connectionStateProcessMaxGapMs,
-    unsigned long loopStartUs);
+LoopFinalizePhaseValues processLoopFinalizePhase(unsigned long nowMs, bool bootSplashHoldActive,
+                                                 bool displayPreviewRunning, bool bleBackpressure,
+                                                 bool overloadLateThisLoop, unsigned long scanScreenDwellMs,
+                                                 unsigned long connectionStateProcessMaxGapMs,
+                                                 unsigned long loopStartUs);
 
-unsigned long processLoopSettingsEarlyReturnPhase(unsigned long nowMs,
-                                                  unsigned long loopStartUs);
+unsigned long processLoopSettingsEarlyReturnPhase(unsigned long nowMs, unsigned long loopStartUs);
 
-bool shouldReturnEarlyFromLoopPowerTouchPhase(unsigned long nowMs,
-                                              unsigned long loopStartUs);
+bool shouldReturnEarlyFromLoopPowerTouchPhase(unsigned long nowMs, unsigned long loopStartUs);

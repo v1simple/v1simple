@@ -6,8 +6,8 @@
  * need an `extern V1BLEClient` dependency.
  */
 struct DisplayBleContext {
-    bool v1Connected      = false;
-    bool proxyConnected   = false;
-    int  v1Rssi           = 0;
-    int  proxyRssi        = 0;
+    bool v1Connected = false;
+    bool proxyConnected = false;
+    int v1Rssi = 0;
+    int proxyRssi = 0;
 };

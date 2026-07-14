@@ -10,7 +10,7 @@ struct SlidingWindowRateLimitDecision {
 };
 
 class SlidingWindowRateLimiter {
-public:
+  public:
     static constexpr uint32_t WINDOW_MS = 60000;
     static constexpr size_t MAX_REQUESTS = 120;
 
@@ -42,10 +42,8 @@ public:
         return decision;
     }
 
-private:
-    static uint32_t elapsedMs(uint32_t nowMs, uint32_t startMs) {
-        return static_cast<uint32_t>(nowMs - startMs);
-    }
+  private:
+    static uint32_t elapsedMs(uint32_t nowMs, uint32_t startMs) { return static_cast<uint32_t>(nowMs - startMs); }
 
     void evictExpired(uint32_t nowMs) {
         while (count_ > 0 && elapsedMs(nowMs, timestamps_[head_]) >= WINDOW_MS) {
@@ -58,4 +56,3 @@ private:
     size_t head_ = 0;
     size_t count_ = 0;
 };
-

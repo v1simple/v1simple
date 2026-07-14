@@ -10,7 +10,7 @@
 
 #include <Arduino.h>
 #include <algorithm>
-#include "settings.h"   // V1Mode enum
+#include "settings.h" // V1Mode enum
 
 // ── Length limits ────────────────────────────────────────────────────────────
 
@@ -88,45 +88,31 @@ inline constexpr uint32_t kConnectionCycleTeardownAckTimeoutMsMax = 1000;
 #endif
 
 inline uint32_t clampConnectionCycleObdScanWindowMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleObdScanWindowMsMin,
-                    kConnectionCycleObdScanWindowMsMax);
+    return clampU32(value, kConnectionCycleObdScanWindowMsMin, kConnectionCycleObdScanWindowMsMax);
 }
 
 inline uint32_t clampConnectionCycleObdRetryIntervalMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleObdRetryIntervalMsMin,
-                    kConnectionCycleObdRetryIntervalMsMax);
+    return clampU32(value, kConnectionCycleObdRetryIntervalMsMin, kConnectionCycleObdRetryIntervalMsMax);
 }
 
 inline uint32_t clampConnectionCycleProxyOpenWindowMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleProxyOpenWindowMsMin,
-                    kConnectionCycleProxyOpenWindowMsMax);
+    return clampU32(value, kConnectionCycleProxyOpenWindowMsMin, kConnectionCycleProxyOpenWindowMsMax);
 }
 
 inline uint32_t clampConnectionCycleWifiOpenTimeoutMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleWifiOpenTimeoutMsMin,
-                    kConnectionCycleWifiOpenTimeoutMsMax);
+    return clampU32(value, kConnectionCycleWifiOpenTimeoutMsMin, kConnectionCycleWifiOpenTimeoutMsMax);
 }
 
 inline uint32_t clampConnectionCycleV1SettleQuietMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleV1SettleQuietMsMin,
-                    kConnectionCycleV1SettleQuietMsMax);
+    return clampU32(value, kConnectionCycleV1SettleQuietMsMin, kConnectionCycleV1SettleQuietMsMax);
 }
 
 inline uint32_t clampConnectionCycleV1SettleFallbackMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleV1SettleFallbackMsMin,
-                    kConnectionCycleV1SettleFallbackMsMax);
+    return clampU32(value, kConnectionCycleV1SettleFallbackMsMin, kConnectionCycleV1SettleFallbackMsMax);
 }
 
 inline uint32_t clampConnectionCycleTeardownAckTimeoutMsValue(int64_t value) {
-    return clampU32(value,
-                    kConnectionCycleTeardownAckTimeoutMsMin,
-                    kConnectionCycleTeardownAckTimeoutMsMax);
+    return clampU32(value, kConnectionCycleTeardownAckTimeoutMsMin, kConnectionCycleTeardownAckTimeoutMsMax);
 }
 
 inline uint32_t sanitizeGpsBaudValue(uint32_t raw) {
@@ -134,18 +120,18 @@ inline uint32_t sanitizeGpsBaudValue(uint32_t raw) {
     if (raw == 9600 || raw == 38400 || raw == 115200) {
         return raw;
     }
-    return 9600;  // Default to standard GPS baud on invalid value.
+    return 9600; // Default to standard GPS baud on invalid value.
 }
 
 inline V1Mode normalizeV1ModeValue(int raw) {
     switch (raw) {
-        case V1_MODE_UNKNOWN:
-        case V1_MODE_ALL_BOGEYS:
-        case V1_MODE_LOGIC:
-        case V1_MODE_ADVANCED_LOGIC:
-            return static_cast<V1Mode>(raw);
-        default:
-            return V1_MODE_UNKNOWN;
+    case V1_MODE_UNKNOWN:
+    case V1_MODE_ALL_BOGEYS:
+    case V1_MODE_LOGIC:
+    case V1_MODE_ADVANCED_LOGIC:
+        return static_cast<V1Mode>(raw);
+    default:
+        return V1_MODE_UNKNOWN;
     }
 }
 
@@ -216,7 +202,7 @@ inline String sanitizeProfileDescriptionValue(const String& raw) {
  */
 inline bool isValidBleAddress(const String& address) {
     if (address.length() == 0) {
-        return true;  // Empty means "no saved device" — valid state
+        return true; // Empty means "no saved device" — valid state
     }
     if (address.length() != 17) {
         return false;
@@ -224,9 +210,11 @@ inline bool isValidBleAddress(const String& address) {
     for (int i = 0; i < 17; ++i) {
         const char c = address[i];
         if ((i + 1) % 3 == 0) {
-            if (c != ':') return false;
+            if (c != ':')
+                return false;
         } else {
-            if (!isxdigit(static_cast<unsigned char>(c))) return false;
+            if (!isxdigit(static_cast<unsigned char>(c)))
+                return false;
         }
     }
     return true;

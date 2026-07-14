@@ -1,6 +1,3 @@
 #pragma once
 
-enum class DisplayMode {
-    IDLE,
-    LIVE
-};
+enum class DisplayMode { IDLE, LIVE };

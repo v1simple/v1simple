@@ -9,7 +9,7 @@
 
 #include "audio_internals.h"
 #include "audio_task_utils.h"
-#include "battery_manager.h"  // For tca9554Wire (shared I2C bus)
+#include "battery_manager.h" // For tca9554Wire (shared I2C bus)
 #include <Arduino.h>
 #include <Wire.h>
 #include "driver/gpio.h"
@@ -25,18 +25,18 @@
 // I2S pins (from Waveshare board_cfg.txt for S3_LCD_3_49)
 #define I2S_MCLK_PIN GPIO_NUM_7
 #define I2S_BCLK_PIN GPIO_NUM_15
-#define I2S_WS_PIN   GPIO_NUM_46
-#define I2S_DOUT_PIN GPIO_NUM_45   // Data OUT for playback (not DIN=6 which is for recording)
+#define I2S_WS_PIN GPIO_NUM_46
+#define I2S_DOUT_PIN GPIO_NUM_45 // Data OUT for playback (not DIN=6 which is for recording)
 
 // Audio parameters
-#define SAMPLE_RATE 22050  // Match Waveshare BSP default (22.05kHz)
+#define SAMPLE_RATE 22050 // Match Waveshare BSP default (22.05kHz)
 
 // Use battery manager's TwoWire instance (already initialized on SDA=47, SCL=48)
 // ES8311 codec and TCA9554 IO expander are both on this bus
 static TwoWire& audioWire = tca9554Wire;
 bool es8311_initialized = false;
 bool i2s_initialized = false;
-i2s_chan_handle_t i2s_tx_chan = nullptr;  // New I2S driver handle
+i2s_chan_handle_t i2s_tx_chan = nullptr; // New I2S driver handle
 
 // Current volume level (0-100%) - must be declared before es8311_init() uses it
 static uint8_t current_volume_percent = 75;
@@ -48,15 +48,14 @@ unsigned long lastAudioI2cErrorLogMs = 0;
 
 bool shouldLogAudioI2cFailureNow() {
     const unsigned long now = millis();
-    if (lastAudioI2cErrorLogMs != 0 &&
-        now - lastAudioI2cErrorLogMs < AUDIO_I2C_LOG_MIN_INTERVAL_MS) {
+    if (lastAudioI2cErrorLogMs != 0 && now - lastAudioI2cErrorLogMs < AUDIO_I2C_LOG_MIN_INTERVAL_MS) {
         return false;
     }
     lastAudioI2cErrorLogMs = now;
     return true;
 }
 
-}  // namespace
+} // namespace
 
 void audio_log_i2c_failure(const char* context, AudioI2cResult result) {
     if (!context || result == AudioI2cResult::Ok || !shouldLogAudioI2cFailureNow()) {
@@ -67,9 +66,7 @@ void audio_log_i2c_failure(const char* context, AudioI2cResult result) {
 }
 
 // Write a register to ES8311
-static AudioI2cResult es8311_write_reg(uint8_t reg,
-                                       uint8_t val,
-                                       TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
+static AudioI2cResult es8311_write_reg(uint8_t reg, uint8_t val, TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
     AudioI2cLockGuard lock(tca9554WireMutex, timeoutTicks);
     if (!lock.ok()) {
         return lock.result();
@@ -88,59 +85,49 @@ AudioI2cResult set_speaker_amp(bool enable, TickType_t timeoutTicks) {
 
     uint8_t nextConfig = 0;
     uint8_t nextOutput = 0;
-    const AudioI2cResult result = audioI2cSetTca9554Pin(audioWire,
-                                                        TCA9554_ADDR,
-                                                        TCA9554_CONFIG_PORT,
-                                                        TCA9554_OUTPUT_PORT,
-                                                        TCA9554_SPK_AMP_PIN,
-                                                        enable,
-                                                        &nextConfig,
-                                                        &nextOutput);
-    AUDIO_LOGF("[AUDIO] Speaker amp %s config=0x%02X output=0x%02X result=%s\n",
-               enable ? "ENABLED" : "DISABLED",
-               nextConfig,
-               nextOutput,
-               audioI2cResultToString(result));
+    const AudioI2cResult result =
+        audioI2cSetTca9554Pin(audioWire, TCA9554_ADDR, TCA9554_CONFIG_PORT, TCA9554_OUTPUT_PORT, TCA9554_SPK_AMP_PIN,
+                              enable, &nextConfig, &nextOutput);
+    AUDIO_LOGF("[AUDIO] Speaker amp %s config=0x%02X output=0x%02X result=%s\n", enable ? "ENABLED" : "DISABLED",
+               nextConfig, nextOutput, audioI2cResultToString(result));
     return result;
 }
 
 // ES8311 Register definitions (from ESP-ADF)
-#define ES8311_RESET_REG00        0x00
-#define ES8311_CLK_MANAGER_REG01  0x01
-#define ES8311_CLK_MANAGER_REG02  0x02
-#define ES8311_CLK_MANAGER_REG03  0x03
-#define ES8311_CLK_MANAGER_REG04  0x04
-#define ES8311_CLK_MANAGER_REG05  0x05
-#define ES8311_CLK_MANAGER_REG06  0x06
-#define ES8311_CLK_MANAGER_REG07  0x07
-#define ES8311_CLK_MANAGER_REG08  0x08
-#define ES8311_SDPIN_REG09        0x09
-#define ES8311_SDPOUT_REG0A       0x0A
-#define ES8311_SYSTEM_REG0B       0x0B
-#define ES8311_SYSTEM_REG0C       0x0C
-#define ES8311_SYSTEM_REG0D       0x0D
-#define ES8311_SYSTEM_REG0E       0x0E
-#define ES8311_SYSTEM_REG0F       0x0F
-#define ES8311_SYSTEM_REG10       0x10
-#define ES8311_SYSTEM_REG11       0x11
-#define ES8311_SYSTEM_REG12       0x12
-#define ES8311_SYSTEM_REG13       0x13
-#define ES8311_SYSTEM_REG14       0x14
-#define ES8311_ADC_REG15          0x15
-#define ES8311_ADC_REG16          0x16
-#define ES8311_ADC_REG17          0x17
-#define ES8311_ADC_REG1B          0x1B
-#define ES8311_ADC_REG1C          0x1C
-#define ES8311_DAC_REG31          0x31
-#define ES8311_DAC_REG32          0x32
-#define ES8311_DAC_REG37          0x37
-#define ES8311_GPIO_REG44         0x44
-#define ES8311_GP_REG45           0x45
+#define ES8311_RESET_REG00 0x00
+#define ES8311_CLK_MANAGER_REG01 0x01
+#define ES8311_CLK_MANAGER_REG02 0x02
+#define ES8311_CLK_MANAGER_REG03 0x03
+#define ES8311_CLK_MANAGER_REG04 0x04
+#define ES8311_CLK_MANAGER_REG05 0x05
+#define ES8311_CLK_MANAGER_REG06 0x06
+#define ES8311_CLK_MANAGER_REG07 0x07
+#define ES8311_CLK_MANAGER_REG08 0x08
+#define ES8311_SDPIN_REG09 0x09
+#define ES8311_SDPOUT_REG0A 0x0A
+#define ES8311_SYSTEM_REG0B 0x0B
+#define ES8311_SYSTEM_REG0C 0x0C
+#define ES8311_SYSTEM_REG0D 0x0D
+#define ES8311_SYSTEM_REG0E 0x0E
+#define ES8311_SYSTEM_REG0F 0x0F
+#define ES8311_SYSTEM_REG10 0x10
+#define ES8311_SYSTEM_REG11 0x11
+#define ES8311_SYSTEM_REG12 0x12
+#define ES8311_SYSTEM_REG13 0x13
+#define ES8311_SYSTEM_REG14 0x14
+#define ES8311_ADC_REG15 0x15
+#define ES8311_ADC_REG16 0x16
+#define ES8311_ADC_REG17 0x17
+#define ES8311_ADC_REG1B 0x1B
+#define ES8311_ADC_REG1C 0x1C
+#define ES8311_DAC_REG31 0x31
+#define ES8311_DAC_REG32 0x32
+#define ES8311_DAC_REG37 0x37
+#define ES8311_GPIO_REG44 0x44
+#define ES8311_GP_REG45 0x45
 
 // Read a register from ES8311
-static AudioI2cResult es8311_read_reg(uint8_t reg,
-                                      uint8_t& value,
-                                      TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
+static AudioI2cResult es8311_read_reg(uint8_t reg, uint8_t& value, TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
     AudioI2cLockGuard lock(tca9554WireMutex, timeoutTicks);
     if (!lock.ok()) {
         return lock.result();
@@ -151,7 +138,8 @@ static AudioI2cResult es8311_read_reg(uint8_t reg,
 // Full ES8311 initialization - exact copy of ESP-ADF es8311_codec_init
 // For 24kHz, MCLK=6.144MHz (256*fs), slave mode, DAC output
 bool es8311_init() {
-    if (es8311_initialized) return true;
+    if (es8311_initialized)
+        return true;
 
     AUDIO_LOGLN("[AUDIO] ES8311 init (ESP-ADF pattern)");
 
@@ -175,74 +163,110 @@ bool es8311_init() {
 
     // Coefficient for 24kHz with 6.144MHz MCLK from coeff_div table:
     // {6144000 , 24000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10}
-    // pre_div=1, pre_multi=1, adc_div=1, dac_div=1, fs_mode=0, lrck_h=0, lrck_l=0xff, bclk_div=4, adc_osr=0x10, dac_osr=0x10
+    // pre_div=1, pre_multi=1, adc_div=1, dac_div=1, fs_mode=0, lrck_h=0, lrck_l=0xff, bclk_div=4, adc_osr=0x10,
+    // dac_osr=0x10
 
     // Step 1: Enhance I2C noise immunity (write twice per ESP-ADF)
-    if (!writeOrFail("es8311_init gpio44 noise immunity 1", ES8311_GPIO_REG44, 0x08)) return false;
-    if (!writeOrFail("es8311_init gpio44 noise immunity 2", ES8311_GPIO_REG44, 0x08)) return false;
+    if (!writeOrFail("es8311_init gpio44 noise immunity 1", ES8311_GPIO_REG44, 0x08))
+        return false;
+    if (!writeOrFail("es8311_init gpio44 noise immunity 2", ES8311_GPIO_REG44, 0x08))
+        return false;
 
     // Step 2: Initial clock setup
-    if (!writeOrFail("es8311_init reg01", ES8311_CLK_MANAGER_REG01, 0x30)) return false;
-    if (!writeOrFail("es8311_init reg02", ES8311_CLK_MANAGER_REG02, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg03", ES8311_CLK_MANAGER_REG03, 0x10)) return false;
-    if (!writeOrFail("es8311_init reg16", ES8311_ADC_REG16, 0x24)) return false;
-    if (!writeOrFail("es8311_init reg04", ES8311_CLK_MANAGER_REG04, 0x10)) return false;
-    if (!writeOrFail("es8311_init reg05", ES8311_CLK_MANAGER_REG05, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg0b", ES8311_SYSTEM_REG0B, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg0c", ES8311_SYSTEM_REG0C, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg10", ES8311_SYSTEM_REG10, 0x1F)) return false;
-    if (!writeOrFail("es8311_init reg11", ES8311_SYSTEM_REG11, 0x7F)) return false;
+    if (!writeOrFail("es8311_init reg01", ES8311_CLK_MANAGER_REG01, 0x30))
+        return false;
+    if (!writeOrFail("es8311_init reg02", ES8311_CLK_MANAGER_REG02, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg03", ES8311_CLK_MANAGER_REG03, 0x10))
+        return false;
+    if (!writeOrFail("es8311_init reg16", ES8311_ADC_REG16, 0x24))
+        return false;
+    if (!writeOrFail("es8311_init reg04", ES8311_CLK_MANAGER_REG04, 0x10))
+        return false;
+    if (!writeOrFail("es8311_init reg05", ES8311_CLK_MANAGER_REG05, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg0b", ES8311_SYSTEM_REG0B, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg0c", ES8311_SYSTEM_REG0C, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg10", ES8311_SYSTEM_REG10, 0x1F))
+        return false;
+    if (!writeOrFail("es8311_init reg11", ES8311_SYSTEM_REG11, 0x7F))
+        return false;
 
     // Step 3: Enable CSM (clock state machine) in slave mode
-    if (!writeOrFail("es8311_init reset", ES8311_RESET_REG00, 0x80)) return false;
+    if (!writeOrFail("es8311_init reset", ES8311_RESET_REG00, 0x80))
+        return false;
 
     // Step 4: Enable all clocks, MCLK from external pin
-    if (!writeOrFail("es8311_init reg01 enable clocks", ES8311_CLK_MANAGER_REG01, 0x3F)) return false;
+    if (!writeOrFail("es8311_init reg01 enable clocks", ES8311_CLK_MANAGER_REG01, 0x3F))
+        return false;
 
     // Step 5: Configure clock dividers for 24kHz @ 6.144MHz MCLK
     // pre_div=1, pre_multi=1 => REG02 = ((1-1)<<5) | (0<<3) = 0x00
-    if (!writeOrFail("es8311_init reg02 dividers", ES8311_CLK_MANAGER_REG02, 0x00)) return false;
+    if (!writeOrFail("es8311_init reg02 dividers", ES8311_CLK_MANAGER_REG02, 0x00))
+        return false;
 
     // adc_div=1, dac_div=1 => REG05 = ((1-1)<<4) | ((1-1)<<0) = 0x00
-    if (!writeOrFail("es8311_init reg05 dividers", ES8311_CLK_MANAGER_REG05, 0x00)) return false;
+    if (!writeOrFail("es8311_init reg05 dividers", ES8311_CLK_MANAGER_REG05, 0x00))
+        return false;
 
     // fs_mode=0, adc_osr=0x10 => REG03 = (0<<6) | 0x10 = 0x10
-    if (!writeOrFail("es8311_init reg03 osr", ES8311_CLK_MANAGER_REG03, 0x10)) return false;
+    if (!writeOrFail("es8311_init reg03 osr", ES8311_CLK_MANAGER_REG03, 0x10))
+        return false;
 
     // dac_osr=0x10 => REG04 = 0x10
-    if (!writeOrFail("es8311_init reg04 osr", ES8311_CLK_MANAGER_REG04, 0x10)) return false;
+    if (!writeOrFail("es8311_init reg04 osr", ES8311_CLK_MANAGER_REG04, 0x10))
+        return false;
 
     // lrck_h=0x00, lrck_l=0xff => LRCK divider = 256
-    if (!writeOrFail("es8311_init reg07", ES8311_CLK_MANAGER_REG07, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg08", ES8311_CLK_MANAGER_REG08, 0xFF)) return false;
+    if (!writeOrFail("es8311_init reg07", ES8311_CLK_MANAGER_REG07, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg08", ES8311_CLK_MANAGER_REG08, 0xFF))
+        return false;
 
     // bclk_div=4 => REG06 = (4-1)<<0 = 0x03
-    if (!writeOrFail("es8311_init reg06", ES8311_CLK_MANAGER_REG06, 0x03)) return false;
+    if (!writeOrFail("es8311_init reg06", ES8311_CLK_MANAGER_REG06, 0x03))
+        return false;
 
     // Step 6: Additional setup from ESP-ADF
-    if (!writeOrFail("es8311_init reg13", ES8311_SYSTEM_REG13, 0x10)) return false;
-    if (!writeOrFail("es8311_init reg1b", ES8311_ADC_REG1B, 0x0A)) return false;
-    if (!writeOrFail("es8311_init reg1c", ES8311_ADC_REG1C, 0x6A)) return false;
+    if (!writeOrFail("es8311_init reg13", ES8311_SYSTEM_REG13, 0x10))
+        return false;
+    if (!writeOrFail("es8311_init reg1b", ES8311_ADC_REG1B, 0x0A))
+        return false;
+    if (!writeOrFail("es8311_init reg1c", ES8311_ADC_REG1C, 0x6A))
+        return false;
 
     // Step 7: START the DAC (from es8311_start)
     // REG09: DAC input config - bit6=0 for DAC enabled
     uint8_t dac_iface = 0;
-    if (!readOrFail("es8311_init read reg09", ES8311_SDPIN_REG09, dac_iface)) return false;
-    dac_iface &= 0xBF;  // Clear bit 6 to enable
-    dac_iface |= 0x0C;  // 16-bit samples (bits 4:2 = 0b11)
-    if (!writeOrFail("es8311_init write reg09", ES8311_SDPIN_REG09, dac_iface)) return false;
+    if (!readOrFail("es8311_init read reg09", ES8311_SDPIN_REG09, dac_iface))
+        return false;
+    dac_iface &= 0xBF; // Clear bit 6 to enable
+    dac_iface |= 0x0C; // 16-bit samples (bits 4:2 = 0b11)
+    if (!writeOrFail("es8311_init write reg09", ES8311_SDPIN_REG09, dac_iface))
+        return false;
 
-    if (!writeOrFail("es8311_init reg17", ES8311_ADC_REG17, 0xBF)) return false;
-    if (!writeOrFail("es8311_init reg0e", ES8311_SYSTEM_REG0E, 0x02)) return false;
-    if (!writeOrFail("es8311_init reg12", ES8311_SYSTEM_REG12, 0x00)) return false;
-    if (!writeOrFail("es8311_init reg14", ES8311_SYSTEM_REG14, 0x1A)) return false;
-    if (!writeOrFail("es8311_init reg0d", ES8311_SYSTEM_REG0D, 0x01)) return false;
-    if (!writeOrFail("es8311_init reg15", ES8311_ADC_REG15, 0x40)) return false;
-    if (!writeOrFail("es8311_init reg37", ES8311_DAC_REG37, 0x08)) return false;
-    if (!writeOrFail("es8311_init reg45", ES8311_GP_REG45, 0x00)) return false;
+    if (!writeOrFail("es8311_init reg17", ES8311_ADC_REG17, 0xBF))
+        return false;
+    if (!writeOrFail("es8311_init reg0e", ES8311_SYSTEM_REG0E, 0x02))
+        return false;
+    if (!writeOrFail("es8311_init reg12", ES8311_SYSTEM_REG12, 0x00))
+        return false;
+    if (!writeOrFail("es8311_init reg14", ES8311_SYSTEM_REG14, 0x1A))
+        return false;
+    if (!writeOrFail("es8311_init reg0d", ES8311_SYSTEM_REG0D, 0x01))
+        return false;
+    if (!writeOrFail("es8311_init reg15", ES8311_ADC_REG15, 0x40))
+        return false;
+    if (!writeOrFail("es8311_init reg37", ES8311_DAC_REG37, 0x08))
+        return false;
+    if (!writeOrFail("es8311_init reg45", ES8311_GP_REG45, 0x00))
+        return false;
 
     // Step 8: Set internal reference signal
-    if (!writeOrFail("es8311_init gpio44 ref signal", ES8311_GPIO_REG44, 0x58)) return false;
+    if (!writeOrFail("es8311_init gpio44 ref signal", ES8311_GPIO_REG44, 0x58))
+        return false;
 
     // Step 9: Set DAC volume based on saved setting
     // Use same mapping as audio_set_volume(): 0%=mute, 1-100%=0x90-0xBF
@@ -252,17 +276,20 @@ bool es8311_init() {
     } else {
         volReg = 0x90 + ((current_volume_percent - 1) * (0xBF - 0x90)) / 99;
     }
-    if (!writeOrFail("es8311_init reg32 volume", ES8311_DAC_REG32, volReg)) return false;
+    if (!writeOrFail("es8311_init reg32 volume", ES8311_DAC_REG32, volReg))
+        return false;
 
     // Step 10: Unmute DAC (clear bits 6:5 of REG31)
     uint8_t regv = 0;
-    if (!readOrFail("es8311_init read reg31", ES8311_DAC_REG31, regv)) return false;
+    if (!readOrFail("es8311_init read reg31", ES8311_DAC_REG31, regv))
+        return false;
     regv &= 0x9F;
-    if (!writeOrFail("es8311_init write reg31", ES8311_DAC_REG31, regv)) return false;
+    if (!writeOrFail("es8311_init write reg31", ES8311_DAC_REG31, regv))
+        return false;
 
     es8311_initialized = true;
 
-    delay(50);  // Let clocks stabilize
+    delay(50); // Let clocks stabilize
 
     // Debug: Dump key registers (only when debug logging enabled)
     if (AUDIO_DEBUG_LOGS) {
@@ -292,12 +319,13 @@ bool es8311_init() {
 //   0% = 0x00 (mute)
 //   1-100% = 0x90-0xBF (usable range: ~-24dB to 0dB)
 void audio_set_volume(uint8_t volumePercent) {
-    if (volumePercent > 100) volumePercent = 100;
+    if (volumePercent > 100)
+        volumePercent = 100;
     current_volume_percent = volumePercent;
 
     uint8_t regVal;
     if (volumePercent == 0) {
-        regVal = 0x00;  // Mute
+        regVal = 0x00; // Mute
     } else {
         // Map 1-100% to 0x90-0xBF (144-191, a 47-step usable range)
         // This gives audible volume across the full slider
@@ -316,16 +344,16 @@ void audio_set_volume(uint8_t volumePercent) {
 
 // I2S init for playback using NEW I2S STD driver (like Waveshare BSP)
 void i2s_init() {
-    if (i2s_initialized) return;
+    if (i2s_initialized)
+        return;
 
     AUDIO_LOGLN("[AUDIO] Initializing I2S (new STD driver)...");
 
-
     // Step 1: Create I2S channel
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;  // Auto clear legacy data in DMA buffer
+    chan_cfg.auto_clear = true; // Auto clear legacy data in DMA buffer
 
-    esp_err_t err = i2s_new_channel(&chan_cfg, &i2s_tx_chan, nullptr);  // TX only, no RX
+    esp_err_t err = i2s_new_channel(&chan_cfg, &i2s_tx_chan, nullptr); // TX only, no RX
     if (err != ESP_OK) {
         AUDIO_LOGF("[AUDIO] i2s_new_channel failed: %d\\n", err);
         return;
@@ -336,18 +364,20 @@ void i2s_init() {
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_MCLK_PIN,
-            .bclk = I2S_BCLK_PIN,
-            .ws = I2S_WS_PIN,
-            .dout = I2S_DOUT_PIN,
-            .din = GPIO_NUM_NC,  // Not using input
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
+        .gpio_cfg =
+            {
+                .mclk = I2S_MCLK_PIN,
+                .bclk = I2S_BCLK_PIN,
+                .ws = I2S_WS_PIN,
+                .dout = I2S_DOUT_PIN,
+                .din = GPIO_NUM_NC, // Not using input
+                .invert_flags =
+                    {
+                        .mclk_inv = false,
+                        .bclk_inv = false,
+                        .ws_inv = false,
+                    },
             },
-        },
     };
 
     err = i2s_channel_init_std_mode(i2s_tx_chan, &std_cfg);
@@ -368,8 +398,8 @@ void i2s_init() {
     }
 
     i2s_initialized = true;
-    AUDIO_LOGF("[AUDIO] I2S initialized: %dHz, MCLK=%d BCLK=%d WS=%d DOUT=%d\\n",
-               SAMPLE_RATE, I2S_MCLK_PIN, I2S_BCLK_PIN, I2S_WS_PIN, I2S_DOUT_PIN);
+    AUDIO_LOGF("[AUDIO] I2S initialized: %dHz, MCLK=%d BCLK=%d WS=%d DOUT=%d\\n", SAMPLE_RATE, I2S_MCLK_PIN,
+               I2S_BCLK_PIN, I2S_WS_PIN, I2S_DOUT_PIN);
 }
 
 // Include pre-recorded volume-zero warning audio
@@ -398,11 +428,9 @@ uint8_t* g_mulawChunkBuffer = nullptr;
 // --- PSRAM buffer allocation (call once from setup, before audio_init_sd) ---
 void audio_init_buffers() {
     g_stereoChunkBuffer = static_cast<int16_t*>(
-        heap_caps_malloc(AUDIO_STEREO_CHUNK_SIZE * sizeof(int16_t),
-                         MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+        heap_caps_malloc(AUDIO_STEREO_CHUNK_SIZE * sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     g_mulawChunkBuffer = static_cast<uint8_t*>(
-        heap_caps_malloc(AUDIO_CHUNK_SAMPLES * sizeof(uint8_t),
-                         MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+        heap_caps_malloc(AUDIO_CHUNK_SAMPLES * sizeof(uint8_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     if (!g_stereoChunkBuffer || !g_mulawChunkBuffer) {
         Serial.println("[AUDIO] FATAL: PSRAM buffer alloc failed");
     }
@@ -460,7 +488,7 @@ static void audio_playback_task(void* pvParameters) {
     const int16_t* pcm_data = g_pcmTaskParams.pcm_data;
     int num_samples = g_pcmTaskParams.num_samples;
     int duration_ms = g_pcmTaskParams.duration_ms;
-    (void)pvParameters;  // Unused - params are in global struct
+    (void)pvParameters; // Unused - params are in global struct
 
     if (!g_stereoChunkBuffer) {
         Serial.println("[AUDIO] ERROR: PSRAM buffers not allocated!");
@@ -471,7 +499,7 @@ static void audio_playback_task(void* pvParameters) {
     if (i2s_tx_chan == nullptr) {
         // CRITICAL: Start I2S FIRST so MCLK is running before ES8311 init
         i2s_init();
-        vTaskDelay(pdMS_TO_TICKS(50));  // Let clocks stabilize
+        vTaskDelay(pdMS_TO_TICKS(50)); // Let clocks stabilize
     }
 
     if (!i2s_initialized) {
@@ -484,7 +512,7 @@ static void audio_playback_task(void* pvParameters) {
         finish_pcm_audio_task();
         return;
     }
-    vTaskDelay(pdMS_TO_TICKS(50));  // Let ES8311 lock to MCLK
+    vTaskDelay(pdMS_TO_TICKS(50)); // Let ES8311 lock to MCLK
 
     // Enable speaker amp - let it fully stabilize
     const AudioI2cResult ampEnableResult = set_speaker_amp(true);
@@ -501,29 +529,24 @@ static void audio_playback_task(void* pvParameters) {
     int sample_offset = 0;
 
     while (samples_remaining > 0) {
-        int chunk_samples = (samples_remaining > AUDIO_CHUNK_SAMPLES)
-                          ? AUDIO_CHUNK_SAMPLES : samples_remaining;
+        int chunk_samples = (samples_remaining > AUDIO_CHUNK_SAMPLES) ? AUDIO_CHUNK_SAMPLES : samples_remaining;
 
         // Convert chunk from mono to stereo using pre-allocated buffer
         for (int i = 0; i < chunk_samples; ++i) {
             int16_t sample = pgm_read_word(&pcm_data[sample_offset + i]);
-            g_stereoChunkBuffer[i * 2] = sample;       // Left channel
-            g_stereoChunkBuffer[i * 2 + 1] = sample;   // Right channel
+            g_stereoChunkBuffer[i * 2] = sample;     // Left channel
+            g_stereoChunkBuffer[i * 2 + 1] = sample; // Right channel
         }
 
         size_t bytes_written = 0;
         const AudioWriteResult writeResult = audioWriteWithTimeout([&](TickType_t timeoutTicks) {
-            return i2s_channel_write(i2s_tx_chan,
-                                     g_stereoChunkBuffer,
-                                     chunk_samples * 2 * sizeof(int16_t),
-                                     &bytes_written,
-                                     timeoutTicks);
+            return i2s_channel_write(i2s_tx_chan, g_stereoChunkBuffer, chunk_samples * 2 * sizeof(int16_t),
+                                     &bytes_written, timeoutTicks);
         });
 
         if (writeResult.status != AudioWriteStatus::Ok) {
             AUDIO_LOGF("[AUDIO] i2s_channel_write %s: %d\\n",
-                       writeResult.status == AudioWriteStatus::Timeout ? "timed out" : "failed",
-                       writeResult.error);
+                       writeResult.status == AudioWriteStatus::Timeout ? "timed out" : "failed", writeResult.error);
             break;
         }
 
@@ -564,16 +587,13 @@ static void play_pcm_audio(const int16_t* pcm_data, int num_samples, int duratio
     // Stack allocated in PSRAM via WithCaps API to reduce internal SRAM fragmentation.
     // Task params are passed via g_pcmTaskParams global (no malloc needed)
     TaskHandle_t tempHandle;
-    BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
-        audio_playback_task,
-        "audio_play",
-        4096,           // Stack size
-        nullptr,        // Params passed via global struct
-        1,              // Priority (low)
-        &tempHandle,
-        1,              // Core 1
-        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM
-    );
+    BaseType_t result = xTaskCreatePinnedToCoreWithCaps(audio_playback_task, "audio_play",
+                                                        4096,    // Stack size
+                                                        nullptr, // Params passed via global struct
+                                                        1,       // Priority (low)
+                                                        &tempHandle,
+                                                        1, // Core 1
+                                                        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
     if (result == pdPASS) {
         audioTaskHandle.store(tempHandle);
     }

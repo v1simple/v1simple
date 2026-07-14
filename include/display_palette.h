@@ -8,7 +8,7 @@
 // resolve colours without depending on display.cpp-local state.
 // ============================================================================
 
-#include "color_themes.h"  // ColorPalette, ColorThemes
+#include "color_themes.h" // ColorPalette, ColorThemes
 
 // Forward-declare V1Display (full definition not needed for the pointer)
 class V1Display;
@@ -29,16 +29,15 @@ inline const ColorPalette& getColorPalette() {
 }
 
 // Convenience macros — evaluate to the live palette / user colours.
-#define PALETTE_BG        getColorPalette().bg
-#define PALETTE_TEXT      getColorPalette().text
-#define PALETTE_GRAY      getColorPalette().colorGray
-#define PALETTE_MUTED     getColorPalette().colorMuted
+#define PALETTE_BG getColorPalette().bg
+#define PALETTE_TEXT getColorPalette().text
+#define PALETTE_GRAY getColorPalette().colorGray
+#define PALETTE_MUTED getColorPalette().colorMuted
 #define PALETTE_PERSISTED getColorPalette().colorPersisted
 
 // Returns PALETTE_PERSISTED when in persisted-alert mode, else PALETTE_MUTED.
-#define PALETTE_MUTED_OR_PERSISTED \
-    (g_displayInstance && g_displayInstance->isPersistedMode() \
-     ? PALETTE_PERSISTED : PALETTE_MUTED)
+#define PALETTE_MUTED_OR_PERSISTED                                                                                     \
+    (g_displayInstance && g_displayInstance->isPersistedMode() ? PALETTE_PERSISTED : PALETTE_MUTED)
 
 // --- RGB565 → RGB888 helper ----------------------------------------------
 // OpenFontRender's setFontColor / setBackgroundColor take 8-bit components.
@@ -55,9 +54,6 @@ struct Rgb888 {
 };
 
 inline constexpr Rgb888 rgb565ToRgb888(uint16_t c) {
-    return Rgb888{
-        static_cast<uint8_t>((c >> 11) << 3),
-        static_cast<uint8_t>(((c >> 5) & 0x3F) << 2),
-        static_cast<uint8_t>((c & 0x1F) << 3)
-    };
+    return Rgb888{static_cast<uint8_t>((c >> 11) << 3), static_cast<uint8_t>(((c >> 5) & 0x3F) << 2),
+                  static_cast<uint8_t>((c & 0x1F) << 3)};
 }

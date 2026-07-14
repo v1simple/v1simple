@@ -26,7 +26,7 @@ void appendProfile(JsonArray profilesArr, const V1Profile& profile) {
     }
 }
 
-}  // namespace
+} // namespace
 
 const char* backupTypeForTransport(BackupTransport transport) {
     return transport == BackupTransport::SdBackup ? SD_BACKUP_TYPE : HTTP_BACKUP_TYPE;
@@ -39,11 +39,8 @@ bool isRecognizedBackupType(const char* type) {
     return strcmp(type, HTTP_BACKUP_TYPE) == 0 || strcmp(type, SD_BACKUP_TYPE) == 0;
 }
 
-BuildResult buildBackupDocument(JsonDocument& doc,
-                                const V1Settings& settings,
-                                const V1ProfileManager& profileManager,
-                                BackupTransport transport,
-                                uint32_t snapshotMs) {
+BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, const V1ProfileManager& profileManager,
+                                BackupTransport transport, uint32_t snapshotMs) {
     doc.clear();
 
     doc["_type"] = backupTypeForTransport(transport);
@@ -66,8 +63,7 @@ BuildResult buildBackupDocument(JsonDocument& doc,
     bool wroteStaSlot = false;
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         const WifiStaSlot& slot = settings.wifiStaSlots[i];
-        if (!slot.isConfigured() && slot.label.length() == 0 &&
-            slot.lastConnectedAtSec == 0 && slot.priority == 0) {
+        if (!slot.isConfigured() && slot.label.length() == 0 && slot.lastConnectedAtSec == 0 && slot.priority == 0) {
             continue;
         }
         JsonObject slotObj = staSlots.add<JsonObject>();
@@ -247,4 +243,4 @@ uint32_t computeBackupCrc32(const JsonDocument& doc) {
     return computeCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
 }
 
-}  // namespace BackupPayloadBuilder
+} // namespace BackupPayloadBuilder

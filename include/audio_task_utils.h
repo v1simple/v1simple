@@ -20,8 +20,7 @@ struct AudioWriteResult {
 
 static constexpr TickType_t AUDIO_I2S_WRITE_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
 
-template <typename WriteFn>
-inline AudioWriteResult audioWriteWithTimeout(WriteFn&& writeFn) {
+template <typename WriteFn> inline AudioWriteResult audioWriteWithTimeout(WriteFn&& writeFn) {
     const esp_err_t err = writeFn(AUDIO_I2S_WRITE_TIMEOUT_TICKS);
     if (err == ESP_OK) {
         return {AudioWriteStatus::Ok, err};
@@ -40,13 +39,10 @@ inline void audioResetTaskState(std::atomic<bool>& audioPlaying, std::atomic<Tas
     audioPlaying.store(false);
 }
 
-inline void audioRecordStackHighWater(std::atomic<uint32_t>& minimumBytes,
-                                      uint32_t observedBytes) {
+inline void audioRecordStackHighWater(std::atomic<uint32_t>& minimumBytes, uint32_t observedBytes) {
     uint32_t current = minimumBytes.load(std::memory_order_relaxed);
     while (observedBytes < current &&
-           !minimumBytes.compare_exchange_weak(current,
-                                               observedBytes,
-                                               std::memory_order_relaxed,
+           !minimumBytes.compare_exchange_weak(current, observedBytes, std::memory_order_relaxed,
                                                std::memory_order_relaxed)) {
     }
 }

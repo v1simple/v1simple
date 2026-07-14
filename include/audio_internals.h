@@ -20,8 +20,12 @@
 // --- Debug / logging infrastructure ---
 inline constexpr bool AUDIO_DEBUG_LOGS = false;
 
-#define AUDIO_LOGF(...) do { } while(0)
-#define AUDIO_LOGLN(msg) do { } while(0)
+#define AUDIO_LOGF(...)                                                                                                \
+    do {                                                                                                               \
+    } while (0)
+#define AUDIO_LOGLN(msg)                                                                                               \
+    do {                                                                                                               \
+    } while (0)
 
 // --- Shared constants ---
 inline constexpr int AUDIO_CHUNK_SAMPLES = 1024;

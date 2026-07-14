@@ -26,7 +26,7 @@ struct FrequencyRasterKey {
 };
 
 class DisplayFrequencyRasterCache {
-public:
+  public:
     static constexpr uint8_t kMaxEntries = 8;
 
     DisplayFrequencyRasterCache() = default;
@@ -49,7 +49,7 @@ public:
     bool restore(const FrequencyRasterKey& key, uint16_t* framebuffer, int16_t rawStride);
     bool store(const FrequencyRasterKey& key, const uint16_t* framebuffer, int16_t rawStride);
 
-private:
+  private:
     struct Entry {
         bool valid = false;
         FrequencyRasterKey key{};
@@ -59,11 +59,7 @@ private:
     static bool keyEquals(const FrequencyRasterKey& a, const FrequencyRasterKey& b);
     int findEntry(const FrequencyRasterKey& key) const;
     int chooseStoreSlot();
-    bool copyGeometry(const FrequencyRasterKey& key,
-                      int16_t rawStride,
-                      int16_t& physX,
-                      int16_t& physY,
-                      int16_t& physW,
+    bool copyGeometry(const FrequencyRasterKey& key, int16_t rawStride, int16_t& physX, int16_t& physY, int16_t& physW,
                       int16_t& physH) const;
     uint16_t* pixelsFor(uint8_t slot) const;
 

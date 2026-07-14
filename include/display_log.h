@@ -5,5 +5,6 @@
 
 #pragma once
 
-#define DISPLAY_LOG(...) do { } while(0)
-
+#define DISPLAY_LOG(...)                                                                                               \
+    do {                                                                                                               \
+    } while (0)

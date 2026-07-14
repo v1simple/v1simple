@@ -15,4 +15,4 @@ inline constexpr char kPartitionLabel[] = "storage";
 // the panic path mounts before normal storage init and must release it itself.
 bool mountStorage();
 
-}  // namespace fsmount
+} // namespace fsmount

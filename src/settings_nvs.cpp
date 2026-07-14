@@ -91,9 +91,7 @@ String passwordFromWifiClientSdSecret(JsonObjectConst entry) {
     return entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].as<String>();
 }
 
-bool wifiClientSdSecretMatches(JsonObjectConst entry,
-                               const String& expectedSsid,
-                               size_t expectedSlotIndex,
+bool wifiClientSdSecretMatches(JsonObjectConst entry, const String& expectedSsid, size_t expectedSlotIndex,
                                bool requireSlotMatch) {
     const String savedSsid = ssidFromWifiClientSdSecret(entry);
     if (savedSsid.length() == 0) {
@@ -105,17 +103,13 @@ bool wifiClientSdSecretMatches(JsonObjectConst entry,
     if (!requireSlotMatch) {
         return true;
     }
-    if (!validWifiStaSlotIndex(expectedSlotIndex) ||
-        !entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].is<int>()) {
+    if (!validWifiStaSlotIndex(expectedSlotIndex) || !entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].is<int>()) {
         return false;
     }
-    return entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].as<int>() ==
-           static_cast<int>(expectedSlotIndex);
+    return entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].as<int>() == static_cast<int>(expectedSlotIndex);
 }
 
-String findWifiClientSdSecretInArray(const JsonDocument& doc,
-                                     const String& expectedSsid,
-                                     size_t expectedSlotIndex,
+String findWifiClientSdSecretInArray(const JsonDocument& doc, const String& expectedSsid, size_t expectedSlotIndex,
                                      bool requireSlotMatch) {
     if (!doc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>()) {
         return "";
@@ -131,8 +125,7 @@ String findWifiClientSdSecretInArray(const JsonDocument& doc,
     return "";
 }
 
-bool readWifiClientSdSecretEntries(const JsonDocument& doc,
-                                   WifiClientSdSecretEntry entries[kWifiStaSlotCount]) {
+bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEntry entries[kWifiStaSlotCount]) {
     if (!wifiClientSdSecretTypeMatches(doc)) {
         return false;
     }
@@ -171,8 +164,7 @@ bool readWifiClientSdSecretEntries(const JsonDocument& doc,
     // Legacy v1 file shape had one top-level SSID/password pair.  Preserve it
     // under the first free slot so upgraded firmware can merge another saved
     // network without discarding the only old recovery copy.
-    const String legacySsid =
-        sanitizeWifiClientSsidValue(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "");
+    const String legacySsid = sanitizeWifiClientSsidValue(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "");
     if (legacySsid.length() > 0) {
         bool alreadyPresent = false;
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
@@ -224,8 +216,7 @@ bool loadWifiClientSdSecretDocument(fs::FS* fs, JsonDocument& doc) {
     return wifiClientSdSecretTypeMatches(doc);
 }
 
-bool writeWifiClientSdSecretEntries(fs::FS* fs,
-                                    const WifiClientSdSecretEntry entries[kWifiStaSlotCount],
+bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry entries[kWifiStaSlotCount],
                                     size_t preferredLegacyIndex) {
     if (!fs) {
         return false;
@@ -298,7 +289,7 @@ String loadWifiClientPasswordObfFromSettingsBackup(fs::FS* fs, const String& exp
     return wifiClientPasswordObfFromBackupDoc(backupDoc, expectedSsid);
 }
 
-}  // namespace
+} // namespace
 
 // NVS recovery: clear unused namespace when NVS is full
 // Returns true if space was freed
@@ -354,11 +345,8 @@ bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String
     }
 
     const String sanitizedSsid = sanitizeWifiClientSsidValue(ssid);
-    if (!existingDoc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>() &&
-        validWifiStaSlotIndex(slotIndex) &&
-        entries[slotIndex].used &&
-        sanitizedSsid.length() > 0 &&
-        entries[slotIndex].ssid != sanitizedSsid) {
+    if (!existingDoc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>() && validWifiStaSlotIndex(slotIndex) &&
+        entries[slotIndex].used && sanitizedSsid.length() > 0 && entries[slotIndex].ssid != sanitizedSsid) {
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
             if (i == slotIndex || entries[i].used) {
                 continue;
@@ -402,9 +390,7 @@ String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlo
         return "";
     }
 
-    auto backupFallback = [&]() -> String {
-        return loadWifiClientPasswordObfFromSettingsBackup(fs, expectedSsid);
-    };
+    auto backupFallback = [&]() -> String { return loadWifiClientPasswordObfFromSettingsBackup(fs, expectedSsid); };
 
     if (!fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
         return backupFallback();
@@ -416,23 +402,20 @@ String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlo
     }
 
     if (validWifiStaSlotIndex(expectedSlotIndex)) {
-        const String slotEncoded =
-            findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, true);
+        const String slotEncoded = findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, true);
         if (slotEncoded.length() > 0) {
             return slotEncoded;
         }
     }
 
-    const String matchingEncoded =
-        findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, false);
+    const String matchingEncoded = findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, false);
     if (matchingEncoded.length() > 0) {
         return matchingEncoded;
     }
 
     String savedSsid = doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "";
     if (expectedSsid.length() > 0 && savedSsid.length() > 0 && savedSsid != expectedSsid) {
-        Serial.printf("[Settings] WARN: SD WiFi secret SSID mismatch (want='%s' got='%s')\n",
-                      expectedSsid.c_str(),
+        Serial.printf("[Settings] WARN: SD WiFi secret SSID mismatch (want='%s' got='%s')\n", expectedSsid.c_str(),
                       savedSsid.c_str());
         return backupFallback();
     }
@@ -458,8 +441,7 @@ void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid) {
 
     WifiClientSdSecretEntry entries[kWifiStaSlotCount];
     JsonDocument existingDoc;
-    if (!loadWifiClientSdSecretDocument(fs, existingDoc) ||
-        !readWifiClientSdSecretEntries(existingDoc, entries)) {
+    if (!loadWifiClientSdSecretDocument(fs, existingDoc) || !readWifiClientSdSecretEntries(existingDoc, entries)) {
         return;
     }
 
@@ -501,8 +483,7 @@ void clearWifiClientSecretFromSD() {
 }
 
 bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex) {
-    if (encodedPassword.length() == 0 ||
-        decodeObfuscatedFromStorage(encodedPassword).length() == 0) {
+    if (encodedPassword.length() == 0 || decodeObfuscatedFromStorage(encodedPassword).length() == 0) {
         return false;
     }
     const char* passwordKey = wifiStaSlotPasswordKey(slotIndex);
@@ -534,15 +515,12 @@ int namespaceHealthScore(const char* ns) {
     int score = 0;
 
     // Validity marker is the strongest signal that a namespace is current.
-    if (nvsMarker > 0) score += 1000;
-    if (settingsVer > 0) score += settingsVer * 10;
+    if (nvsMarker > 0)
+        score += 1000;
+    if (settingsVer > 0)
+        score += settingsVer * 10;
 
-    static constexpr const char* kCriticalKeys[] = {
-        kNvsProxyBle,
-        kNvsProxyName,
-        kNvsBrightness,
-        kNvsAutoPush
-    };
+    static constexpr const char* kCriticalKeys[] = {kNvsProxyBle, kNvsProxyName, kNvsBrightness, kNvsAutoPush};
     for (const char* key : kCriticalKeys) {
         if (prefs.isKey(key)) {
             score += 5;
@@ -575,8 +553,8 @@ String SettingsManager::getActiveNamespace() {
             }
             // Meta points to an unhealthy namespace — fall through to
             // health-scoring so we pick the best surviving copy.
-            Serial.printf("[Settings] WARN: Meta namespace '%s' unhealthy (score=%d), recovering\n",
-                          active.c_str(), activeScore);
+            Serial.printf("[Settings] WARN: Meta namespace '%s' unhealthy (score=%d), recovering\n", active.c_str(),
+                          activeScore);
         }
     }
 
@@ -614,8 +592,10 @@ String SettingsManager::getActiveNamespace() {
 }
 
 String SettingsManager::getStagingNamespace(const String& activeNamespace) {
-    if (activeNamespace == SETTINGS_NS_A) return String(SETTINGS_NS_B);
-    if (activeNamespace == SETTINGS_NS_B) return String(SETTINGS_NS_A);
+    if (activeNamespace == SETTINGS_NS_A)
+        return String(SETTINGS_NS_B);
+    if (activeNamespace == SETTINGS_NS_B)
+        return String(SETTINGS_NS_A);
     return String(SETTINGS_NS_A);
 }
 
@@ -766,8 +746,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     // ALP settings
     written += prefs.putBool(kNvsAlpEnabled, settings_.alpEnabled);
     written += prefs.putBool(kNvsAlpSdLog, settings_.alpSdLogEnabled);
-    written += prefs.putUChar(kNvsAlpPersistSec,
-                              std::min<uint8_t>(5, settings_.alpAlertPersistSec));
+    written += prefs.putUChar(kNvsAlpPersistSec, std::min<uint8_t>(5, settings_.alpAlertPersistSec));
     written += prefs.putBool(kNvsAlpNoV1Laser, settings_.alpDisableV1LaserOnPush);
 
     // Debug / diagnostics
@@ -791,8 +770,8 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     prefs.end();
 
     if (verifyMarker != SETTINGS_VERSION) {
-        Serial.printf("[Settings] ERROR: nvsValid verify failed in %s (expected %d, got %d) — written=%d\n",
-                      ns, SETTINGS_VERSION, verifyMarker, (int)written);
+        Serial.printf("[Settings] ERROR: nvsValid verify failed in %s (expected %d, got %d) — written=%d\n", ns,
+                      SETTINGS_VERSION, verifyMarker, (int)written);
         return false;
     }
 
@@ -861,7 +840,7 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
     String storedPwd;
     bool legacyKeyPresent = false;
     String legacyStoredPwd;
-    if (!prefs.begin(WIFI_CLIENT_NS, true)) {  // Read-only
+    if (!prefs.begin(WIFI_CLIENT_NS, true)) { // Read-only
         storedPwd = "";
     } else {
         hasNvsKey = prefs.isKey(passwordKey);
@@ -890,7 +869,8 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
         // Password is stored as obfuscated hex payload (legacy raw XOR still supported).
         String decoded = decodeObfuscatedFromStorage(storedPwd);
         if (decoded.length() == 0) {
-            Serial.println("[Settings] WARN: WiFi password decode returned empty for non-empty stored value — possible NVS corruption");
+            Serial.println("[Settings] WARN: WiFi password decode returned empty for non-empty stored value — possible "
+                           "NVS corruption");
         }
         return decoded;
     }
@@ -930,11 +910,8 @@ void SettingsManager::setWifiClientEnabled(bool enabled) {
     save();
 }
 
-void SettingsManager::setWifiStaSlotCredentials(size_t index,
-                                                const String& ssid,
-                                                const String& password,
-                                                const String& label,
-                                                uint8_t priority) {
+void SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password,
+                                                const String& label, uint8_t priority) {
     if (!validWifiStaSlotIndex(index)) {
         return;
     }
@@ -961,7 +938,7 @@ void SettingsManager::setWifiStaSlotCredentials(size_t index,
 
     // Store password in separate namespace with obfuscation
     Preferences prefs;
-    if (passwordKey && prefs.begin(WIFI_CLIENT_NS, false)) {  // Read-write
+    if (passwordKey && prefs.begin(WIFI_CLIENT_NS, false)) { // Read-write
         size_t written = 0;
         if (sanitizedPassword.length() == 0) {
             // Open network: no password required.

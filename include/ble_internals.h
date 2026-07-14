@@ -22,13 +22,12 @@ class V1BLEClient;
 // Default = 0 (try-lock) so HOT paths are safe-by-default
 // COLD paths must explicitly pass pdMS_TO_TICKS(20)
 class SemaphoreGuard {
-public:
+  public:
     // timeout: 0 = try-lock (non-blocking, default), >0 = bounded wait
     // HOT paths: use default (0) — safe-by-default, never blocks
     // COLD paths: use SemaphoreGuard(sem, pdMS_TO_TICKS(20)) explicitly
     // Increments appropriate counter on failure for monitoring
-    explicit SemaphoreGuard(SemaphoreHandle_t sem, TickType_t timeout = 0)
-        : sem_(sem), locked_(false) {
+    explicit SemaphoreGuard(SemaphoreHandle_t sem, TickType_t timeout = 0) : sem_(sem), locked_(false) {
         if (sem_) {
             locked_ = xSemaphoreTake(sem_, timeout) == pdTRUE;
             if (!locked_) {
@@ -47,7 +46,8 @@ public:
         }
     }
     bool locked() const { return locked_; }
-private:
+
+  private:
     SemaphoreHandle_t sem_;
     bool locked_;
 };
@@ -68,9 +68,8 @@ inline bool extractV1ShortUuidFrom128(const NimBLEUUID& uuid, uint16_t& out) {
 
     // NimBLE stores UUID128 in little-endian form.
     // V1 base UUID suffix is "-9E05-11E2-AA59-F23C91AEC05E" => first 12 bytes below.
-    static constexpr uint8_t kV1UuidBaseLePrefix[12] = {
-        0x5E, 0xC0, 0xAE, 0x91, 0x3C, 0xF2, 0x59, 0xAA, 0xE2, 0x11, 0x05, 0x9E
-    };
+    static constexpr uint8_t kV1UuidBaseLePrefix[12] = {0x5E, 0xC0, 0xAE, 0x91, 0x3C, 0xF2,
+                                                        0x59, 0xAA, 0xE2, 0x11, 0x05, 0x9E};
     if (memcmp(raw, kV1UuidBaseLePrefix, sizeof(kV1UuidBaseLePrefix)) != 0) {
         return false;
     }

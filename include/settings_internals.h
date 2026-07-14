@@ -27,18 +27,18 @@ extern const size_t SETTINGS_BACKUP_MAX_BYTES;
 extern const char* WIFI_CLIENT_NS;
 extern const char* WIFI_CLIENT_SD_SECRET_PATH;
 extern const char* WIFI_CLIENT_SD_SECRET_TYPE;
-extern const int   WIFI_CLIENT_SD_SECRET_VERSION;
+extern const int WIFI_CLIENT_SD_SECRET_VERSION;
 extern const char* const SETTINGS_BACKUP_CANDIDATES[];
-extern const size_t      SETTINGS_BACKUP_CANDIDATES_COUNT;
+extern const size_t SETTINGS_BACKUP_CANDIDATES_COUNT;
 
-extern const char  XOR_KEY[];
+extern const char XOR_KEY[];
 inline constexpr int SETTINGS_VERSION = 10;
 extern const char* OBFUSCATION_HEX_PREFIX;
 
 // ── Static helpers promoted to internal-linkage-free functions ──────────────
 
 WiFiModeSetting clampWifiModeValue(int raw);
-VoiceAlertMode  clampVoiceAlertModeValue(int raw);
+VoiceAlertMode clampVoiceAlertModeValue(int raw);
 String sanitizeApPasswordValue(const String& raw);
 String sanitizeLastV1AddressValue(const String& raw);
 String sanitizeObdSavedNameValue(const String& raw);
@@ -47,11 +47,11 @@ String sanitizeObdSavedNameValue(const String& raw);
 bool isSupportedBackupType(const JsonDocument& doc);
 bool hasBackupSignature(const JsonDocument& doc);
 bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verboseErrors = true);
-int  backupDocumentVersion(const JsonDocument& doc);
-int  backupCriticalFieldScore(const JsonDocument& doc);
-int  backupCandidateScore(const JsonDocument& doc);
-bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc,
-                            const char** outPath = nullptr, bool verboseErrors = false);
+int backupDocumentVersion(const JsonDocument& doc);
+int backupCriticalFieldScore(const JsonDocument& doc);
+int backupCandidateScore(const JsonDocument& doc);
+bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPath = nullptr,
+                            bool verboseErrors = false);
 bool parseBoolVariant(const JsonVariantConst& value, bool& out);
 
 struct SerializedSettingsBackupPayload {
@@ -64,10 +64,8 @@ struct SerializedSettingsBackupPayload {
     int profilesBackedUp = 0;
 };
 
-bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload,
-                                    const V1Settings& settings,
-                                    const V1ProfileManager& profileManager,
-                                    uint32_t snapshotMs);
+bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, const V1Settings& settings,
+                                    const V1ProfileManager& profileManager, uint32_t snapshotMs);
 void releaseSerializedSettingsBackupPayload(SerializedSettingsBackupPayload& payload);
 bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& payload);
 
@@ -87,9 +85,9 @@ bool deferredSettingsBackupPendingForTest();
 #endif
 
 // NVS helpers
-bool   attemptNvsRecovery(const char* activeNs);
-int    namespaceHealthScore(const char* ns);
-bool   isKnownSettingsNamespace(const String& ns);
+bool attemptNvsRecovery(const char* activeNs);
+int namespaceHealthScore(const char* ns);
+bool isKnownSettingsNamespace(const String& ns);
 
 struct SettingsNamespaceCleanupPlan {
     bool shouldCleanup = false;
@@ -97,9 +95,8 @@ struct SettingsNamespaceCleanupPlan {
     bool clearLegacyNamespace = false;
 };
 
-inline SettingsNamespaceCleanupPlan buildSettingsNamespaceCleanupPlan(uint32_t usedPct,
-                                                                     const String& activeNs,
-                                                                     bool hasSdBackup) {
+inline SettingsNamespaceCleanupPlan buildSettingsNamespaceCleanupPlan(uint32_t usedPct, const String& activeNs,
+                                                                      bool hasSdBackup) {
     SettingsNamespaceCleanupPlan plan;
     if (usedPct <= 80) {
         return plan;
@@ -124,10 +121,10 @@ inline SettingsNamespaceCleanupPlan buildSettingsNamespaceCleanupPlan(uint32_t u
 
 // Crypto / obfuscation
 String xorObfuscate(const String& input);
-char   hexDigit(uint8_t nibble);
-int    hexNibble(char c);
+char hexDigit(uint8_t nibble);
+int hexNibble(char c);
 String bytesToHex(const String& input);
-bool   hexToBytes(const String& input, String& out);
+bool hexToBytes(const String& input, String& out);
 String encodeObfuscatedForStorage(const String& plainText);
 String decodeObfuscatedFromStorage(const String& stored);
 
@@ -136,8 +133,8 @@ String decodeObfuscatedFromStorage(const String& stored);
 uint32_t computeCrc32(const uint8_t* data, size_t length);
 
 // WiFi client SD secret helpers
-bool   saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String& encodedPassword);
+bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String& encodedPassword);
 String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlotIndex = kWifiStaSlotCount);
-void   removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid);
-void   clearWifiClientSecretFromSD();
-bool   storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex = 0);
+void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid);
+void clearWifiClientSecretFromSD();
+bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex = 0);

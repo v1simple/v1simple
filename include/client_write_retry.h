@@ -14,10 +14,10 @@ struct Config {
 };
 
 inline constexpr Config kDefaultConfig{
-    2,     // maxZeroWriteRetries
-    2500,  // maxWriteWindowMs
-    1,     // backoffStartMs
-    16     // backoffMaxMs
+    2,    // maxZeroWriteRetries
+    2500, // maxWriteWindowMs
+    1,    // backoffStartMs
+    16    // backoffMaxMs
 };
 
 inline uint32_t nowMs() {
@@ -46,10 +46,7 @@ inline void service(uint16_t backoffMs = 0) {
 }
 
 template <typename ClientT>
-bool writeAll(ClientT& client,
-              const uint8_t* data,
-              size_t size,
-              const Config& cfg = kDefaultConfig) {
+bool writeAll(ClientT& client, const uint8_t* data, size_t size, const Config& cfg = kDefaultConfig) {
     if (size == 0) {
         return true;
     }
@@ -100,9 +97,7 @@ bool writeAll(ClientT& client,
             service();
         }
 
-        if (cfg.maxWriteWindowMs > 0 &&
-            offset < size &&
-            elapsedMs(startMs) >= cfg.maxWriteWindowMs) {
+        if (cfg.maxWriteWindowMs > 0 && offset < size && elapsedMs(startMs) >= cfg.maxWriteWindowMs) {
             return false;
         }
     }
@@ -110,4 +105,4 @@ bool writeAll(ClientT& client,
     return true;
 }
 
-}  // namespace client_write_retry
+} // namespace client_write_retry

@@ -7,8 +7,7 @@
 #include <nvs.h>
 #include "settings_backup_doc.h"
 
-bool shouldSkipProfileReferenceValidation(size_t availableProfileCount,
-                                          bool hasConfiguredSlotReferences) {
+bool shouldSkipProfileReferenceValidation(size_t availableProfileCount, bool hasConfiguredSlotReferences) {
     return availableProfileCount == 0 && hasConfiguredSlotReferences;
 }
 
@@ -114,50 +113,78 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 restoreLegacyStationPasswordFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
                 // Recover UI hide-flags
                 bool boolVal = false;
-                if (parseBoolVariant(bestBackupDoc["hideWifiIcon"], boolVal)) settings_.hideWifiIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideProfileIndicator"], boolVal)) settings_.hideProfileIndicator = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideBatteryIcon"], boolVal)) settings_.hideBatteryIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["showBatteryPercent"], boolVal)) settings_.showBatteryPercent = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideBleIcon"], boolVal)) settings_.hideBleIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideVolumeIndicator"], boolVal)) settings_.hideVolumeIndicator = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideRssiIndicator"], boolVal)) settings_.hideRssiIndicator = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideWifiIcon"], boolVal))
+                    settings_.hideWifiIcon = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideProfileIndicator"], boolVal))
+                    settings_.hideProfileIndicator = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideBatteryIcon"], boolVal))
+                    settings_.hideBatteryIcon = boolVal;
+                if (parseBoolVariant(bestBackupDoc["showBatteryPercent"], boolVal))
+                    settings_.showBatteryPercent = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideBleIcon"], boolVal))
+                    settings_.hideBleIcon = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideVolumeIndicator"], boolVal))
+                    settings_.hideVolumeIndicator = boolVal;
+                if (parseBoolVariant(bestBackupDoc["hideRssiIndicator"], boolVal))
+                    settings_.hideRssiIndicator = boolVal;
                 // Recover colors
-                if (bestBackupDoc["colorBogey"].is<int>()) settings_.colorBogey = sanitizeRgb565Color(bestBackupDoc["colorBogey"], 0xF800);
-                if (bestBackupDoc["colorFrequency"].is<int>()) settings_.colorFrequency = sanitizeRgb565Color(bestBackupDoc["colorFrequency"], 0xF800);
-                if (bestBackupDoc["colorArrowFront"].is<int>()) settings_.colorArrowFront = sanitizeRgb565Color(bestBackupDoc["colorArrowFront"], 0xF800);
-                if (bestBackupDoc["colorArrowSide"].is<int>()) settings_.colorArrowSide = sanitizeRgb565Color(bestBackupDoc["colorArrowSide"], 0xF800);
-                if (bestBackupDoc["colorArrowRear"].is<int>()) settings_.colorArrowRear = sanitizeRgb565Color(bestBackupDoc["colorArrowRear"], 0xF800);
-                if (bestBackupDoc["colorBandL"].is<int>()) settings_.colorBandL = sanitizeRgb565Color(bestBackupDoc["colorBandL"], 0x001F);
-                if (bestBackupDoc["colorBandKa"].is<int>()) settings_.colorBandKa = sanitizeRgb565Color(bestBackupDoc["colorBandKa"], 0xF800);
-                if (bestBackupDoc["colorBandK"].is<int>()) settings_.colorBandK = sanitizeRgb565Color(bestBackupDoc["colorBandK"], 0x001F);
-                if (bestBackupDoc["colorBandX"].is<int>()) settings_.colorBandX = sanitizeRgb565Color(bestBackupDoc["colorBandX"], 0x07E0);
-                if (bestBackupDoc["colorBandPhoto"].is<int>()) settings_.colorBandPhoto = sanitizeRgb565Color(bestBackupDoc["colorBandPhoto"], 0x780F);
-                if (bestBackupDoc["colorAlpConnected"].is<int>()) settings_.colorAlpConnected = sanitizeRgb565Color(bestBackupDoc["colorAlpConnected"], 0x07E0);
-                if (bestBackupDoc["colorAlpDli"].is<int>()) settings_.colorAlpDli = sanitizeRgb565Color(bestBackupDoc["colorAlpDli"], 0xFD20);
-                if (bestBackupDoc["colorAlpLidActive"].is<int>()) settings_.colorAlpLidActive = sanitizeRgb565Color(bestBackupDoc["colorAlpLidActive"], 0x001F);
-                if (bestBackupDoc["colorAlpAlert"].is<int>()) settings_.colorAlpAlert = sanitizeRgb565Color(bestBackupDoc["colorAlpAlert"], 0xF800);
-                if (bestBackupDoc["colorObd"].is<int>()) settings_.colorObd = sanitizeRgb565Color(bestBackupDoc["colorObd"], 0x001F);
+                if (bestBackupDoc["colorBogey"].is<int>())
+                    settings_.colorBogey = sanitizeRgb565Color(bestBackupDoc["colorBogey"], 0xF800);
+                if (bestBackupDoc["colorFrequency"].is<int>())
+                    settings_.colorFrequency = sanitizeRgb565Color(bestBackupDoc["colorFrequency"], 0xF800);
+                if (bestBackupDoc["colorArrowFront"].is<int>())
+                    settings_.colorArrowFront = sanitizeRgb565Color(bestBackupDoc["colorArrowFront"], 0xF800);
+                if (bestBackupDoc["colorArrowSide"].is<int>())
+                    settings_.colorArrowSide = sanitizeRgb565Color(bestBackupDoc["colorArrowSide"], 0xF800);
+                if (bestBackupDoc["colorArrowRear"].is<int>())
+                    settings_.colorArrowRear = sanitizeRgb565Color(bestBackupDoc["colorArrowRear"], 0xF800);
+                if (bestBackupDoc["colorBandL"].is<int>())
+                    settings_.colorBandL = sanitizeRgb565Color(bestBackupDoc["colorBandL"], 0x001F);
+                if (bestBackupDoc["colorBandKa"].is<int>())
+                    settings_.colorBandKa = sanitizeRgb565Color(bestBackupDoc["colorBandKa"], 0xF800);
+                if (bestBackupDoc["colorBandK"].is<int>())
+                    settings_.colorBandK = sanitizeRgb565Color(bestBackupDoc["colorBandK"], 0x001F);
+                if (bestBackupDoc["colorBandX"].is<int>())
+                    settings_.colorBandX = sanitizeRgb565Color(bestBackupDoc["colorBandX"], 0x07E0);
+                if (bestBackupDoc["colorBandPhoto"].is<int>())
+                    settings_.colorBandPhoto = sanitizeRgb565Color(bestBackupDoc["colorBandPhoto"], 0x780F);
+                if (bestBackupDoc["colorAlpConnected"].is<int>())
+                    settings_.colorAlpConnected = sanitizeRgb565Color(bestBackupDoc["colorAlpConnected"], 0x07E0);
+                if (bestBackupDoc["colorAlpDli"].is<int>())
+                    settings_.colorAlpDli = sanitizeRgb565Color(bestBackupDoc["colorAlpDli"], 0xFD20);
+                if (bestBackupDoc["colorAlpLidActive"].is<int>())
+                    settings_.colorAlpLidActive = sanitizeRgb565Color(bestBackupDoc["colorAlpLidActive"], 0x001F);
+                if (bestBackupDoc["colorAlpAlert"].is<int>())
+                    settings_.colorAlpAlert = sanitizeRgb565Color(bestBackupDoc["colorAlpAlert"], 0xF800);
+                if (bestBackupDoc["colorObd"].is<int>())
+                    settings_.colorObd = sanitizeRgb565Color(bestBackupDoc["colorObd"], 0x001F);
                 // Recover speed-mute settings
-                if (parseBoolVariant(bestBackupDoc["speedMuteEnabled"], boolVal)) settings_.speedMuteEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["speedMuteEnabled"], boolVal))
+                    settings_.speedMuteEnabled = boolVal;
                 if (bestBackupDoc["speedMuteThresholdMph"].is<int>()) {
                     settings_.speedMuteThresholdMph = clampU8(bestBackupDoc["speedMuteThresholdMph"].as<int>(), 5, 60);
                 }
                 if (bestBackupDoc["speedMuteHysteresisMph"].is<int>()) {
-                    settings_.speedMuteHysteresisMph = clampU8(bestBackupDoc["speedMuteHysteresisMph"].as<int>(), 1, 10);
+                    settings_.speedMuteHysteresisMph =
+                        clampU8(bestBackupDoc["speedMuteHysteresisMph"].as<int>(), 1, 10);
                 }
                 if (bestBackupDoc["speedMuteVolume"].is<int>()) {
                     const int raw = bestBackupDoc["speedMuteVolume"].as<int>();
                     settings_.speedMuteVolume = (raw >= 0 && raw <= 9) ? static_cast<uint8_t>(raw) : 0;
                 }
-                if (parseBoolVariant(bestBackupDoc["stealthEnabled"], boolVal)) settings_.stealthEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["stealthEnabled"], boolVal))
+                    settings_.stealthEnabled = boolVal;
                 // Recover OBD settings
-                if (parseBoolVariant(bestBackupDoc["obdEnabled"], boolVal)) settings_.obdEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["obdEnabled"], boolVal))
+                    settings_.obdEnabled = boolVal;
                 if (bestBackupDoc["obdSavedName"].is<const char*>()) {
                     settings_.obdSavedName = sanitizeObdSavedNameValue(bestBackupDoc["obdSavedName"].as<String>());
                 }
                 // Recover ALP settings
-                if (parseBoolVariant(bestBackupDoc["alpEnabled"], boolVal)) settings_.alpEnabled = boolVal;
-                if (parseBoolVariant(bestBackupDoc["alpSdLogEnabled"], boolVal)) settings_.alpSdLogEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["alpEnabled"], boolVal))
+                    settings_.alpEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["alpSdLogEnabled"], boolVal))
+                    settings_.alpSdLogEnabled = boolVal;
                 if (bestBackupDoc["alpAlertPersistSec"].is<int>()) {
                     settings_.alpAlertPersistSec = clampU8(bestBackupDoc["alpAlertPersistSec"].as<int>(), 0, 5);
                 }
@@ -165,14 +192,16 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.alpDisableV1LaserOnPush = boolVal;
                 }
                 // Recover GPS settings
-                if (parseBoolVariant(bestBackupDoc["gpsEnabled"], boolVal)) settings_.gpsEnabled = boolVal;
+                if (parseBoolVariant(bestBackupDoc["gpsEnabled"], boolVal))
+                    settings_.gpsEnabled = boolVal;
                 if (bestBackupDoc["gpsBaud"].is<int>()) {
-                    settings_.gpsBaud = sanitizeGpsBaudValue(
-                        static_cast<uint32_t>(bestBackupDoc["gpsBaud"].as<int>()));
+                    settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(bestBackupDoc["gpsBaud"].as<int>()));
                 }
                 settings_.gpsEnablePinActiveHigh = true;
-                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToPerf"], boolVal)) settings_.gpsLogUtcToPerf = boolVal;
-                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToAlp"], boolVal)) settings_.gpsLogUtcToAlp = boolVal;
+                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToPerf"], boolVal))
+                    settings_.gpsLogUtcToPerf = boolVal;
+                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToAlp"], boolVal))
+                    settings_.gpsLogUtcToAlp = boolVal;
                 if (settings_.proxyBLE && settings_.obdEnabled) {
                     Serial.println("[Settings] HEAL: recovered proxyBLE+obdEnabled — keeping OBD, disabling proxy");
                     settings_.proxyBLE = false;
@@ -207,10 +236,8 @@ bool SettingsManager::checkAndRestoreFromSD() {
     }
 
     if (!needsRestore && storageManager.isReady() && storageManager.isSDCard()) {
-        const WifiClientKeyPresence wifiKeyPresence =
-            readWifiClientKeyPresence(getActiveNamespace().c_str());
-        const bool wifiKeysMissing =
-            !wifiKeyPresence.enabledKeyPresent || !wifiKeyPresence.ssidKeyPresent;
+        const WifiClientKeyPresence wifiKeyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
+        const bool wifiKeysMissing = !wifiKeyPresence.enabledKeyPresent || !wifiKeyPresence.ssidKeyPresent;
         const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
 
         if (wifiKeysMissing && !missingCurrentSsid) {
@@ -222,13 +249,10 @@ bool SettingsManager::checkAndRestoreFromSD() {
         } else if (missingCurrentSsid) {
             bool backupWifiClientEnabled = false;
             const bool backupEnabledKnown =
-                hasSdBackup &&
-                parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
-            const String backupSsid =
-                hasSdBackup ? legacyWifiClientSsidFromBackupDoc(bestBackupDoc) : "";
+                hasSdBackup && parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
+            const String backupSsid = hasSdBackup ? legacyWifiClientSsidFromBackupDoc(bestBackupDoc) : "";
             const bool backupHasSsid = backupSsid.length() > 0;
-            const bool backupHasStaSlots =
-                hasSdBackup && bestBackupDoc["wifiStaSlots"].is<JsonArrayConst>();
+            const bool backupHasStaSlots = hasSdBackup && bestBackupDoc["wifiStaSlots"].is<JsonArrayConst>();
 
             const WifiClientSecretPresence secretPresence = readWifiClientSecretPresence(fs);
             const bool secretHasSsid = secretPresence.valid && secretPresence.ssid.length() > 0;
@@ -253,11 +277,8 @@ bool SettingsManager::checkAndRestoreFromSD() {
             // - partial-key case: WiFi client keys missing from NVS
             // - backup-missing case: recover SSID from SD WiFi secret metadata
             const bool shouldRecoverWifiClient =
-                recoveredSsid.length() > 0 &&
-                (settings_.wifiClientEnabled ||
-                 wifiKeysMissing ||
-                 (backupEnabledKnown && backupWifiClientEnabled) ||
-                 secretHasSsid);
+                recoveredSsid.length() > 0 && (settings_.wifiClientEnabled || wifiKeysMissing ||
+                                               (backupEnabledKnown && backupWifiClientEnabled) || secretHasSsid);
 
             if (shouldRecoverWifiClient) {
                 settings_.wifiClientEnabled = true;
@@ -267,9 +288,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 }
                 settings_.wifiMode = V1_WIFI_APSTA;
                 Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (ssid='%s', keysMissing=%s)\n",
-                              recoveredFrom,
-                              settings_.wifiClientSSID.c_str(),
-                              wifiKeysMissing ? "yes" : "no");
+                              recoveredFrom, settings_.wifiClientSSID.c_str(), wifiKeysMissing ? "yes" : "no");
                 if (backupHasSsid) {
                     restoreWifiClientPasswordObfFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
                     restoreLegacyStationPasswordFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
@@ -294,13 +313,11 @@ bool SettingsManager::checkAndRestoreFromSD() {
             backupToSD();
         } else {
             const int backupVersion = backupDocumentVersion(bestBackupDoc);
-            const bool missingCoreFields =
-                bestBackupDoc["brightness"].isNull();
+            const bool missingCoreFields = bestBackupDoc["brightness"].isNull();
             const bool backupOutOfSync = !backupAppearsInSyncWithNvs(bestBackupDoc, settings_);
             if (backupVersion < SD_BACKUP_VERSION || missingCoreFields || backupOutOfSync) {
                 Serial.printf("[Settings] Refreshing SD backup schema (path=%s version=%d)\n",
-                              bestBackupPath ? bestBackupPath : "(unknown)",
-                              backupVersion);
+                              bestBackupPath ? bestBackupPath : "(unknown)", backupVersion);
                 if (backupOutOfSync) {
                     Serial.println("[Settings] SD backup differs from healthy NVS; refreshing backup content");
                 }
@@ -320,15 +337,12 @@ void SettingsManager::cleanupNamespacesIfNeeded(bool hasSdBackup) {
 
     const uint32_t usedPct = (stats.used_entries * 100u) / stats.total_entries;
     const String activeNs = getActiveNamespace();
-    const SettingsNamespaceCleanupPlan plan =
-        buildSettingsNamespaceCleanupPlan(usedPct, activeNs, hasSdBackup);
+    const SettingsNamespaceCleanupPlan plan = buildSettingsNamespaceCleanupPlan(usedPct, activeNs, hasSdBackup);
 
     if (!plan.shouldCleanup) {
         if (usedPct > 80) {
             Serial.printf("[Settings] NVS high usage (%lu%%); deferring cleanup (active=%s backup=%s)\n",
-                          static_cast<unsigned long>(usedPct),
-                          activeNs.c_str(),
-                          hasSdBackup ? "yes" : "no");
+                          static_cast<unsigned long>(usedPct), activeNs.c_str(), hasSdBackup ? "yes" : "no");
         }
         return;
     }
@@ -346,8 +360,7 @@ void SettingsManager::cleanupNamespacesIfNeeded(bool hasSdBackup) {
     };
 
     Serial.printf("[Settings] NVS high usage (%lu%%); cleaning stale namespaces after active resolution (active=%s)\n",
-                  static_cast<unsigned long>(usedPct),
-                  activeNs.c_str());
+                  static_cast<unsigned long>(usedPct), activeNs.c_str());
     clearNamespaceIfPresent(plan.inactiveNamespace, "inactive");
     if (plan.clearLegacyNamespace) {
         clearNamespaceIfPresent(SETTINGS_NS_LEGACY, "legacy");
@@ -376,12 +389,7 @@ bool SettingsManager::checkNeedsRestore() {
     const bool persistedRestorePending = checkPrefs.getBool(kNvsRestorePending, false);
     bool missingCriticalKey = false;
     // These keys exist in all modern schemas and should never disappear in a healthy namespace.
-    static constexpr const char* kCriticalKeys[] = {
-        kNvsProxyBle,
-        kNvsProxyName,
-        kNvsBrightness,
-        kNvsAutoPush
-    };
+    static constexpr const char* kCriticalKeys[] = {kNvsProxyBle, kNvsProxyName, kNvsBrightness, kNvsAutoPush};
     for (const char* key : kCriticalKeys) {
         if (!checkPrefs.isKey(key)) {
             missingCriticalKey = true;
@@ -451,7 +459,8 @@ bool SettingsManager::restoreFromSD() {
     }
 
     fs::FS* fs = storageManager.getFilesystem();
-    if (!fs) return false;
+    if (!fs)
+        return false;
 
     const char* backupPath = nullptr;
     JsonDocument doc;
@@ -470,27 +479,24 @@ bool SettingsManager::restoreFromSD() {
     Serial.printf("[Settings] Restoring from SD backup (version %d)\n", backupVersion);
     bool backupAutoPush = false;
     const bool hasAutoPush = parseBoolVariant(doc["autoPushEnabled"], backupAutoPush);
-    const char* backupSlot0 = doc["slot0ProfileName"].is<const char*>()
-        ? doc["slot0ProfileName"].as<const char*>() : "";
+    const char* backupSlot0 =
+        doc["slot0ProfileName"].is<const char*>() ? doc["slot0ProfileName"].as<const char*>() : "";
     const int backupSlot0Mode = doc["slot0Mode"].is<int>() ? doc["slot0Mode"].as<int>() : -1;
     Serial.printf("[Settings] Backup fields: autoPush=%s slot0Profile='%s' slot0Mode=%d\n",
-                  hasAutoPush ? (backupAutoPush ? "true" : "false") : "missing",
-                  backupSlot0,
-                  backupSlot0Mode);
+                  hasAutoPush ? (backupAutoPush ? "true" : "false") : "missing", backupSlot0, backupSlot0Mode);
 
     const SettingsBackupApplyResult applyResult = applyBackupDocument(doc, false);
     if (!applyResult.success) {
         return false;
     }
-    Serial.printf("[Settings] Restored modes from backup: slot0Mode=%d (in json: %s), slot1Mode=%d (in json: %s), slot2Mode=%d (in json: %s)\n",
-                  settings_.slot0_default.mode, doc["slot0Mode"].is<int>() ? "yes" : "NO",
-                  settings_.slot1_highway.mode, doc["slot1Mode"].is<int>() ? "yes" : "NO",
-                  settings_.slot2_comfort.mode, doc["slot2Mode"].is<int>() ? "yes" : "NO");
-    Serial.printf("[Settings] ✅ Full restore from SD backup complete (%d profiles)\n",
-                  applyResult.profilesRestored);
+    Serial.printf("[Settings] Restored modes from backup: slot0Mode=%d (in json: %s), slot1Mode=%d (in json: %s), "
+                  "slot2Mode=%d (in json: %s)\n",
+                  settings_.slot0_default.mode, doc["slot0Mode"].is<int>() ? "yes" : "NO", settings_.slot1_highway.mode,
+                  doc["slot1Mode"].is<int>() ? "yes" : "NO", settings_.slot2_comfort.mode,
+                  doc["slot2Mode"].is<int>() ? "yes" : "NO");
+    Serial.printf("[Settings] ✅ Full restore from SD backup complete (%d profiles)\n", applyResult.profilesRestored);
     return true;
 }
-
 
 void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
     if (!profileMgr.isReady()) {
@@ -498,13 +504,11 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
         return;
     }
 
-    const bool hasConfiguredSlotReferences =
-        settings_.slot0_default.profileName.length() > 0 ||
-        settings_.slot1_highway.profileName.length() > 0 ||
-        settings_.slot2_comfort.profileName.length() > 0;
+    const bool hasConfiguredSlotReferences = settings_.slot0_default.profileName.length() > 0 ||
+                                             settings_.slot1_highway.profileName.length() > 0 ||
+                                             settings_.slot2_comfort.profileName.length() > 0;
     const size_t availableProfileCount = profileMgr.listProfiles().size();
-    if (shouldSkipProfileReferenceValidation(availableProfileCount,
-                                             hasConfiguredSlotReferences)) {
+    if (shouldSkipProfileReferenceValidation(availableProfileCount, hasConfiguredSlotReferences)) {
         Serial.println("[Settings] Profile catalog empty; preserving slot profile references");
         return;
     }
@@ -518,12 +522,11 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
             V1Profile testProfile;
             if (!profileMgr.loadProfile(slot.profileName, testProfile)) {
                 Serial.printf("[Settings] WARN: Profile '%s' for %s does not exist - clearing reference\n",
-                             slot.profileName.c_str(), slotName);
+                              slot.profileName.c_str(), slotName);
                 slot.profileName = "";
                 needsSave = true;
             } else {
-                Serial.printf("[Settings] Profile '%s' for %s validated OK\n",
-                             slot.profileName.c_str(), slotName);
+                Serial.printf("[Settings] Profile '%s' for %s validated OK\n", slot.profileName.c_str(), slotName);
             }
         }
     };

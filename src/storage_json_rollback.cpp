@@ -4,11 +4,7 @@
 
 namespace {
 
-bool loadJsonDocumentAtPath(fs::FS& fs,
-                            const char* path,
-                            size_t maxBytes,
-                            JsonDocument& outDoc,
-                            String* errorMessage) {
+bool loadJsonDocumentAtPath(fs::FS& fs, const char* path, size_t maxBytes, JsonDocument& outDoc, String* errorMessage) {
     if (errorMessage) {
         *errorMessage = "";
     }
@@ -51,14 +47,10 @@ bool loadJsonDocumentAtPath(fs::FS& fs,
     return true;
 }
 
-}  // namespace
+} // namespace
 
-JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs,
-                                                    const char* livePath,
-                                                    size_t maxBytes,
-                                                    JsonDocument& outDoc,
-                                                    String* errorMessage,
-                                                    String* loadedPath) {
+JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* livePath, size_t maxBytes,
+                                                    JsonDocument& outDoc, String* errorMessage, String* loadedPath) {
     if (loadedPath) {
         *loadedPath = "";
     }
@@ -81,14 +73,12 @@ JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs,
         return JsonRollbackLoadResult::LoadedLive;
     }
 
-    if (rollbackExists &&
-        loadJsonDocumentAtPath(fs, rollbackPath.c_str(), maxBytes, outDoc, errorMessage)) {
+    if (rollbackExists && loadJsonDocumentAtPath(fs, rollbackPath.c_str(), maxBytes, outDoc, errorMessage)) {
         if (loadedPath) {
             *loadedPath = rollbackPath;
         }
         return JsonRollbackLoadResult::LoadedRollback;
     }
 
-    return (liveExists || rollbackExists) ? JsonRollbackLoadResult::Invalid
-                                          : JsonRollbackLoadResult::Missing;
+    return (liveExists || rollbackExists) ? JsonRollbackLoadResult::Invalid : JsonRollbackLoadResult::Missing;
 }

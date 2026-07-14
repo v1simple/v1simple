@@ -16,12 +16,7 @@ uint32_t V1ProfileManager::calculateCRC32(const uint8_t* data, size_t length) {
     return computeCrc32(data, length);
 }
 
-V1ProfileManager::V1ProfileManager()
-    : fs_(nullptr)
-    , ready_(false)
-    , profileDir_("/v1profiles")
-    , currentValid_(false) {
-}
+V1ProfileManager::V1ProfileManager() : fs_(nullptr), ready_(false), profileDir_("/v1profiles"), currentValid_(false) {}
 
 void V1ProfileManager::bumpCatalogRevision() {
     if (catalogRevisionCounter_ == UINT32_MAX) {
@@ -78,7 +73,7 @@ void V1ProfileManager::recoverInterruptedSaves() {
     // Check for orphaned .bak files (main file missing after rename)
     for (const String& bak : bakFiles) {
         // Get the corresponding .json filename
-        String jsonName = bak.substring(0, bak.length() - 4);  // Remove .bak
+        String jsonName = bak.substring(0, bak.length() - 4); // Remove .bak
 
         // Check if the main .json file exists
         bool hasJson = false;
@@ -94,7 +89,7 @@ void V1ProfileManager::recoverInterruptedSaves() {
             String bakPath = profileDir_ + "/" + bak;
             String jsonPath = profileDir_ + "/" + jsonName;
             Serial.printf("[V1Profiles] RECOVERY: Main file missing, restoring from backup: %s -> %s\n",
-                bakPath.c_str(), jsonPath.c_str());
+                          bakPath.c_str(), jsonPath.c_str());
             if (fs_->rename(bakPath, jsonPath)) {
                 Serial.println("[V1Profiles] Recovery successful!");
             } else {
@@ -106,7 +101,8 @@ void V1ProfileManager::recoverInterruptedSaves() {
 
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     if (!filesystem) {
-        Serial.println("[V1Profiles] No filesystem provided");;
+        Serial.println("[V1Profiles] No filesystem provided");
+        ;
         return false;
     }
 
@@ -245,7 +241,7 @@ std::vector<String> V1ProfileManager::listProfiles() const {
             if (lastSlash >= 0) {
                 name = name.substring(lastSlash + 1);
             }
-            name = name.substring(0, name.length() - 5);  // Remove .json
+            name = name.substring(0, name.length() - 5); // Remove .json
 
             // Filter out system files that aren't user profiles
             if (name.startsWith("_") || name.startsWith(".")) {
@@ -302,9 +298,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
         const size_t bytesRead = file.read(fileContent.data(), fileSize);
         if (bytesRead != fileSize) {
             lastError_ = "Failed to read complete profile file";
-            Serial.printf("[V1Profiles] %s (%u/%u bytes)\n",
-                          lastError_.c_str(),
-                          static_cast<unsigned>(bytesRead),
+            Serial.printf("[V1Profiles] %s (%u/%u bytes)\n", lastError_.c_str(), static_cast<unsigned>(bytesRead),
                           static_cast<unsigned>(fileSize));
             file.close();
             return false;
@@ -335,10 +329,8 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
             uint32_t computedCrc = calculateCRC32(settingsBytes, 6);
             if (storedCrc != computedCrc) {
                 lastError_ = "CRC mismatch - profile file corrupted";
-                Serial.printf("[V1Profiles] %s (stored: %08lX, computed: %08lX)\n",
-                    lastError_.c_str(),
-                    static_cast<unsigned long>(storedCrc),
-                    static_cast<unsigned long>(computedCrc));
+                Serial.printf("[V1Profiles] %s (stored: %08lX, computed: %08lX)\n", lastError_.c_str(),
+                              static_cast<unsigned long>(storedCrc), static_cast<unsigned long>(computedCrc));
                 return false;
             }
             Serial.println("[V1Profiles] CRC32 validated OK");
@@ -347,9 +339,9 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
 
     profile.name = name;
     profile.description = doc["description"] | "";
-    profile.displayOn = doc["displayOn"] | true;  // Default to on
-    profile.mainVolume = doc["mainVolume"] | 0xFF;  // 0xFF = don't change
-    profile.mutedVolume = doc["mutedVolume"] | 0xFF;  // 0xFF = don't change
+    profile.displayOn = doc["displayOn"] | true;     // Default to on
+    profile.mainVolume = doc["mainVolume"] | 0xFF;   // 0xFF = don't change
+    profile.mutedVolume = doc["mutedVolume"] | 0xFF; // 0xFF = don't change
 
     // Parse settings bytes
     JsonArray bytes = doc["bytes"];
@@ -362,28 +354,50 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
         V1UserSettings& s = profile.settings;
         s.setDefaults();
 
-        if (!doc["xBand"].isNull()) s.setXBandEnabled(doc["xBand"]);
-        if (!doc["kBand"].isNull()) s.setKBandEnabled(doc["kBand"]);
-        if (!doc["kaBand"].isNull()) s.setKaBandEnabled(doc["kaBand"]);
-        if (!doc["laser"].isNull()) s.setLaserEnabled(doc["laser"]);
-        if (!doc["kuBand"].isNull()) s.setKuBandEnabled(doc["kuBand"]);
-        if (!doc["euro"].isNull()) s.setEuroMode(doc["euro"]);
-        if (!doc["kVerifier"].isNull()) s.setKVerifier(doc["kVerifier"]);
-        if (!doc["laserRear"].isNull()) s.setLaserRear(doc["laserRear"]);
-        if (!doc["customFreqs"].isNull()) s.setCustomFreqs(doc["customFreqs"]);
-        if (!doc["kaAlwaysPriority"].isNull()) s.setKaAlwaysPriority(doc["kaAlwaysPriority"]);
-        if (!doc["fastLaserDetect"].isNull()) s.setFastLaserDetect(doc["fastLaserDetect"]);
-        if (!doc["kaSensitivity"].isNull()) s.setKaSensitivity(doc["kaSensitivity"]);
-        if (!doc["kSensitivity"].isNull()) s.setKSensitivity(doc["kSensitivity"]);
-        if (!doc["xSensitivity"].isNull()) s.setXSensitivity(doc["xSensitivity"]);
-        if (!doc["autoMute"].isNull()) s.setAutoMute(doc["autoMute"]);
-        if (!doc["muteToMuteVolume"].isNull()) s.setMuteToMuteVolume(doc["muteToMuteVolume"]);
-        if (!doc["bogeyLockLoud"].isNull()) s.setBogeyLockLoud(doc["bogeyLockLoud"]);
-        if (!doc["muteXKRear"].isNull()) s.setMuteXKRear(doc["muteXKRear"]);
-        if (!doc["startupSequence"].isNull()) s.setStartupSequence(doc["startupSequence"]);
-        if (!doc["restingDisplay"].isNull()) s.setRestingDisplay(doc["restingDisplay"]);
-        if (!doc["bsmPlus"].isNull()) s.setBsmPlus(doc["bsmPlus"]);
-        if (!doc["mrct"].isNull()) s.setMrct(doc["mrct"]);
+        if (!doc["xBand"].isNull())
+            s.setXBandEnabled(doc["xBand"]);
+        if (!doc["kBand"].isNull())
+            s.setKBandEnabled(doc["kBand"]);
+        if (!doc["kaBand"].isNull())
+            s.setKaBandEnabled(doc["kaBand"]);
+        if (!doc["laser"].isNull())
+            s.setLaserEnabled(doc["laser"]);
+        if (!doc["kuBand"].isNull())
+            s.setKuBandEnabled(doc["kuBand"]);
+        if (!doc["euro"].isNull())
+            s.setEuroMode(doc["euro"]);
+        if (!doc["kVerifier"].isNull())
+            s.setKVerifier(doc["kVerifier"]);
+        if (!doc["laserRear"].isNull())
+            s.setLaserRear(doc["laserRear"]);
+        if (!doc["customFreqs"].isNull())
+            s.setCustomFreqs(doc["customFreqs"]);
+        if (!doc["kaAlwaysPriority"].isNull())
+            s.setKaAlwaysPriority(doc["kaAlwaysPriority"]);
+        if (!doc["fastLaserDetect"].isNull())
+            s.setFastLaserDetect(doc["fastLaserDetect"]);
+        if (!doc["kaSensitivity"].isNull())
+            s.setKaSensitivity(doc["kaSensitivity"]);
+        if (!doc["kSensitivity"].isNull())
+            s.setKSensitivity(doc["kSensitivity"]);
+        if (!doc["xSensitivity"].isNull())
+            s.setXSensitivity(doc["xSensitivity"]);
+        if (!doc["autoMute"].isNull())
+            s.setAutoMute(doc["autoMute"]);
+        if (!doc["muteToMuteVolume"].isNull())
+            s.setMuteToMuteVolume(doc["muteToMuteVolume"]);
+        if (!doc["bogeyLockLoud"].isNull())
+            s.setBogeyLockLoud(doc["bogeyLockLoud"]);
+        if (!doc["muteXKRear"].isNull())
+            s.setMuteXKRear(doc["muteXKRear"]);
+        if (!doc["startupSequence"].isNull())
+            s.setStartupSequence(doc["startupSequence"]);
+        if (!doc["restingDisplay"].isNull())
+            s.setRestingDisplay(doc["restingDisplay"]);
+        if (!doc["bsmPlus"].isNull())
+            s.setBsmPlus(doc["bsmPlus"]);
+        if (!doc["mrct"].isNull())
+            s.setMrct(doc["mrct"]);
     }
 
     Serial.printf("[V1Profiles] Loaded profile: %s\n", name.c_str());
@@ -424,7 +438,6 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
     for (int i = 0; i < 6; i++) {
         bytes.add(s.bytes[i]);
     }
-
 
     // Also store human-readable settings
     doc["xBand"] = s.xBandEnabled();
@@ -475,10 +488,8 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
         return ProfileSaveResult(false, lastError_);
     }
     if (written != expectedPrettyBytes) {
-        lastError_ = "Partial write detected: expected " +
-                    String(static_cast<unsigned long>(expectedPrettyBytes)) +
-                    " bytes, wrote " +
-                    String(static_cast<unsigned long>(written));
+        lastError_ = "Partial write detected: expected " + String(static_cast<unsigned long>(expectedPrettyBytes)) +
+                     " bytes, wrote " + String(static_cast<unsigned long>(written));
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
         fs_->remove(tmpPath);
         return ProfileSaveResult(false, lastError_);
@@ -533,8 +544,8 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
 
     // Step 6: Remove backup after successful save (optional - keep for extra safety)
 
-    Serial.printf("[V1Profiles] Saved profile: %s (%u bytes, CRC: %08lX)\n",
-        profile.name.c_str(), written, static_cast<unsigned long>(crc));
+    Serial.printf("[V1Profiles] Saved profile: %s (%u bytes, CRC: %08lX)\n", profile.name.c_str(), written,
+                  static_cast<unsigned long>(crc));
     bumpCatalogRevision();
     return ProfileSaveResult(true);
 }
@@ -754,34 +765,118 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
     Serial.println("[V1Profiles] Parsing individual settings");
     bool anyField = false;
 
-    if (!settingsObj["xBand"].isNull()) { settings.setXBandEnabled(settingsObj["xBand"]); anyField = true; }
-    if (!settingsObj["kBand"].isNull()) { settings.setKBandEnabled(settingsObj["kBand"]); anyField = true; }
-    if (!settingsObj["kaBand"].isNull()) { settings.setKaBandEnabled(settingsObj["kaBand"]); anyField = true; }
-    if (!settingsObj["laser"].isNull()) { settings.setLaserEnabled(settingsObj["laser"]); anyField = true; }
-    if (!settingsObj["kuBand"].isNull()) { settings.setKuBandEnabled(settingsObj["kuBand"]); anyField = true; }
-    if (!settingsObj["euro"].isNull()) { settings.setEuroMode(settingsObj["euro"]); anyField = true; }
-    if (!settingsObj["kVerifier"].isNull()) { settings.setKVerifier(settingsObj["kVerifier"]); anyField = true; }
-    if (!settingsObj["laserRear"].isNull()) { settings.setLaserRear(settingsObj["laserRear"]); anyField = true; }
-    if (!settingsObj["customFreqs"].isNull()) { settings.setCustomFreqs(settingsObj["customFreqs"]); anyField = true; }
-    if (!settingsObj["kaAlwaysPriority"].isNull()) { settings.setKaAlwaysPriority(settingsObj["kaAlwaysPriority"]); anyField = true; }
-    if (!settingsObj["fastLaserDetect"].isNull()) { settings.setFastLaserDetect(settingsObj["fastLaserDetect"]); anyField = true; }
-    if (!settingsObj["kaSensitivity"].isNull()) { settings.setKaSensitivity(settingsObj["kaSensitivity"]); anyField = true; }
-    if (!settingsObj["kSensitivity"].isNull()) { settings.setKSensitivity(settingsObj["kSensitivity"]); anyField = true; }
-    if (!settingsObj["xSensitivity"].isNull()) { settings.setXSensitivity(settingsObj["xSensitivity"]); anyField = true; }
-    if (!settingsObj["autoMute"].isNull()) { settings.setAutoMute(settingsObj["autoMute"]); anyField = true; }
-    if (!settingsObj["muteToMuteVolume"].isNull()) { settings.setMuteToMuteVolume(settingsObj["muteToMuteVolume"]); anyField = true; }
-    if (!settingsObj["bogeyLockLoud"].isNull()) { settings.setBogeyLockLoud(settingsObj["bogeyLockLoud"]); anyField = true; }
-    if (!settingsObj["muteXKRear"].isNull()) { settings.setMuteXKRear(settingsObj["muteXKRear"]); anyField = true; }
-    if (!settingsObj["startupSequence"].isNull()) { settings.setStartupSequence(settingsObj["startupSequence"]); anyField = true; }
-    if (!settingsObj["restingDisplay"].isNull()) { settings.setRestingDisplay(settingsObj["restingDisplay"]); anyField = true; }
-    if (!settingsObj["bsmPlus"].isNull()) { settings.setBsmPlus(settingsObj["bsmPlus"]); anyField = true; }
-    if (!settingsObj["mrct"].isNull()) { settings.setMrct(settingsObj["mrct"]); anyField = true; }
-    if (!settingsObj["driveSafe3D"].isNull()) { settings.setDriveSafe3D(settingsObj["driveSafe3D"]); anyField = true; }
-    if (!settingsObj["driveSafe3DHD"].isNull()) { settings.setDriveSafe3DHD(settingsObj["driveSafe3DHD"]); anyField = true; }
-    if (!settingsObj["redflexHalo"].isNull()) { settings.setRedflexHalo(settingsObj["redflexHalo"]); anyField = true; }
-    if (!settingsObj["redflexNK7"].isNull()) { settings.setRedflexNK7(settingsObj["redflexNK7"]); anyField = true; }
-    if (!settingsObj["ekin"].isNull()) { settings.setEkin(settingsObj["ekin"]); anyField = true; }
-    if (!settingsObj["photoVerifier"].isNull()) { settings.setPhotoVerifier(settingsObj["photoVerifier"]); anyField = true; }
+    if (!settingsObj["xBand"].isNull()) {
+        settings.setXBandEnabled(settingsObj["xBand"]);
+        anyField = true;
+    }
+    if (!settingsObj["kBand"].isNull()) {
+        settings.setKBandEnabled(settingsObj["kBand"]);
+        anyField = true;
+    }
+    if (!settingsObj["kaBand"].isNull()) {
+        settings.setKaBandEnabled(settingsObj["kaBand"]);
+        anyField = true;
+    }
+    if (!settingsObj["laser"].isNull()) {
+        settings.setLaserEnabled(settingsObj["laser"]);
+        anyField = true;
+    }
+    if (!settingsObj["kuBand"].isNull()) {
+        settings.setKuBandEnabled(settingsObj["kuBand"]);
+        anyField = true;
+    }
+    if (!settingsObj["euro"].isNull()) {
+        settings.setEuroMode(settingsObj["euro"]);
+        anyField = true;
+    }
+    if (!settingsObj["kVerifier"].isNull()) {
+        settings.setKVerifier(settingsObj["kVerifier"]);
+        anyField = true;
+    }
+    if (!settingsObj["laserRear"].isNull()) {
+        settings.setLaserRear(settingsObj["laserRear"]);
+        anyField = true;
+    }
+    if (!settingsObj["customFreqs"].isNull()) {
+        settings.setCustomFreqs(settingsObj["customFreqs"]);
+        anyField = true;
+    }
+    if (!settingsObj["kaAlwaysPriority"].isNull()) {
+        settings.setKaAlwaysPriority(settingsObj["kaAlwaysPriority"]);
+        anyField = true;
+    }
+    if (!settingsObj["fastLaserDetect"].isNull()) {
+        settings.setFastLaserDetect(settingsObj["fastLaserDetect"]);
+        anyField = true;
+    }
+    if (!settingsObj["kaSensitivity"].isNull()) {
+        settings.setKaSensitivity(settingsObj["kaSensitivity"]);
+        anyField = true;
+    }
+    if (!settingsObj["kSensitivity"].isNull()) {
+        settings.setKSensitivity(settingsObj["kSensitivity"]);
+        anyField = true;
+    }
+    if (!settingsObj["xSensitivity"].isNull()) {
+        settings.setXSensitivity(settingsObj["xSensitivity"]);
+        anyField = true;
+    }
+    if (!settingsObj["autoMute"].isNull()) {
+        settings.setAutoMute(settingsObj["autoMute"]);
+        anyField = true;
+    }
+    if (!settingsObj["muteToMuteVolume"].isNull()) {
+        settings.setMuteToMuteVolume(settingsObj["muteToMuteVolume"]);
+        anyField = true;
+    }
+    if (!settingsObj["bogeyLockLoud"].isNull()) {
+        settings.setBogeyLockLoud(settingsObj["bogeyLockLoud"]);
+        anyField = true;
+    }
+    if (!settingsObj["muteXKRear"].isNull()) {
+        settings.setMuteXKRear(settingsObj["muteXKRear"]);
+        anyField = true;
+    }
+    if (!settingsObj["startupSequence"].isNull()) {
+        settings.setStartupSequence(settingsObj["startupSequence"]);
+        anyField = true;
+    }
+    if (!settingsObj["restingDisplay"].isNull()) {
+        settings.setRestingDisplay(settingsObj["restingDisplay"]);
+        anyField = true;
+    }
+    if (!settingsObj["bsmPlus"].isNull()) {
+        settings.setBsmPlus(settingsObj["bsmPlus"]);
+        anyField = true;
+    }
+    if (!settingsObj["mrct"].isNull()) {
+        settings.setMrct(settingsObj["mrct"]);
+        anyField = true;
+    }
+    if (!settingsObj["driveSafe3D"].isNull()) {
+        settings.setDriveSafe3D(settingsObj["driveSafe3D"]);
+        anyField = true;
+    }
+    if (!settingsObj["driveSafe3DHD"].isNull()) {
+        settings.setDriveSafe3DHD(settingsObj["driveSafe3DHD"]);
+        anyField = true;
+    }
+    if (!settingsObj["redflexHalo"].isNull()) {
+        settings.setRedflexHalo(settingsObj["redflexHalo"]);
+        anyField = true;
+    }
+    if (!settingsObj["redflexNK7"].isNull()) {
+        settings.setRedflexNK7(settingsObj["redflexNK7"]);
+        anyField = true;
+    }
+    if (!settingsObj["ekin"].isNull()) {
+        settings.setEkin(settingsObj["ekin"]);
+        anyField = true;
+    }
+    if (!settingsObj["photoVerifier"].isNull()) {
+        settings.setPhotoVerifier(settingsObj["photoVerifier"]);
+        anyField = true;
+    }
 
     if (!anyField) {
         Serial.println("[V1Profiles] No settings provided");
@@ -789,8 +884,8 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
     }
 
     Serial.printf("[V1Profiles] After parse - byte0=%02X byte2=%02X\n", settings.bytes[0], settings.bytes[2]);
-    Serial.printf("[V1Profiles]   xBand=%d, restingDisplay=%d, bsmPlus=%d\n",
-        settings.xBandEnabled(), settings.restingDisplay(), settings.bsmPlus());
+    Serial.printf("[V1Profiles]   xBand=%d, restingDisplay=%d, bsmPlus=%d\n", settings.xBandEnabled(),
+                  settings.restingDisplay(), settings.bsmPlus());
 
     return true;
 }

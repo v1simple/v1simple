@@ -11,9 +11,6 @@ enum class JsonRollbackLoadResult {
     Invalid,
 };
 
-JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs,
-                                                    const char* livePath,
-                                                    size_t maxBytes,
-                                                    JsonDocument& outDoc,
-                                                    String* errorMessage = nullptr,
+JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* livePath, size_t maxBytes,
+                                                    JsonDocument& outDoc, String* errorMessage = nullptr,
                                                     String* loadedPath = nullptr);

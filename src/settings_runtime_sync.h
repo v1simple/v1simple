@@ -15,24 +15,21 @@
 namespace SettingsRuntimeSync {
 
 template <typename TObdRuntimeModule>
-inline void syncObdRuntimeSettings(const V1Settings& settings,
-                                   TObdRuntimeModule& obdRuntimeModule) {
+inline void syncObdRuntimeSettings(const V1Settings& settings, TObdRuntimeModule& obdRuntimeModule) {
     obdRuntimeModule.setEnabled(settings.obdEnabled);
     obdRuntimeModule.setMinRssi(settings.obdMinRssi);
 }
 
 template <typename TSpeedSourceSelector>
-inline void syncSpeedSourceSelectorInputs(const V1Settings& settings,
-                                          TSpeedSourceSelector& speedSourceSelector) {
+inline void syncSpeedSourceSelectorInputs(const V1Settings& settings, TSpeedSourceSelector& speedSourceSelector) {
     speedSourceSelector.syncEnabledInputs(settings.obdEnabled, settings.gpsEnabled);
 }
 
 template <typename TObdRuntimeModule, typename TSpeedSourceSelector>
-inline void syncObdVehicleRuntimeSettings(const V1Settings& settings,
-                                          TObdRuntimeModule& obdRuntimeModule,
+inline void syncObdVehicleRuntimeSettings(const V1Settings& settings, TObdRuntimeModule& obdRuntimeModule,
                                           TSpeedSourceSelector& speedSourceSelector) {
     syncObdRuntimeSettings(settings, obdRuntimeModule);
     syncSpeedSourceSelectorInputs(settings, speedSourceSelector);
 }
 
-}  // namespace SettingsRuntimeSync
+} // namespace SettingsRuntimeSync

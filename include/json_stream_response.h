@@ -28,9 +28,8 @@
 namespace json_stream_detail {
 
 // Buffered Print adapter to avoid byte-at-a-time TCP writes from serializeJson().
-template <typename ClientT, size_t kBufferSize = 512>
-class BufferedClientPrint final : public Print {
-public:
+template <typename ClientT, size_t kBufferSize = 512> class BufferedClientPrint final : public Print {
+  public:
     explicit BufferedClientPrint(ClientT& client) : client_(client) {}
 
     size_t write(uint8_t c) override { return write(&c, 1); }
@@ -73,14 +72,14 @@ public:
         return !failed_;
     }
 
-private:
+  private:
     ClientT& client_;
     uint8_t buffer_[kBufferSize] = {};
     size_t used_ = 0;
     bool failed_ = false;
 };
 
-}  // namespace json_stream_detail
+} // namespace json_stream_detail
 #endif
 
 inline void sendJsonStream(WebServer& server, const JsonDocument& doc, int code = 200) {

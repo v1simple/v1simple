@@ -15,7 +15,7 @@
 struct V1DeviceRecord {
     String address;
     String name;
-    uint8_t defaultProfile = 0;  // 0=none/global slot, 1..3=auto-push slot override
+    uint8_t defaultProfile = 0; // 0=none/global slot, 1..3=auto-push slot override
     uint32_t lastSeenMs = 0;
 };
 
@@ -24,7 +24,7 @@ struct V1DeviceRecord {
 String normalizeV1DeviceAddress(const String& rawAddress);
 
 class V1DeviceStore {
-public:
+  public:
     V1DeviceStore();
 
     bool begin(fs::FS* filesystem, fs::FS* importFilesystem = nullptr);
@@ -42,7 +42,7 @@ public:
 
     uint8_t getDeviceDefaultProfile(const String& address) const;
 
-private:
+  private:
     static constexpr size_t MAX_DEVICES = 16;
     static constexpr size_t MAX_NAME_LEN = 32;
     static constexpr size_t MAX_STORE_BYTES = 4096;
@@ -69,4 +69,3 @@ private:
 };
 
 extern V1DeviceStore v1DeviceStore;
-

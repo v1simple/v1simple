@@ -16,8 +16,7 @@ inline uint8_t voltageToPercent(uint16_t voltageMV) {
     if (voltageMV <= kEmptyMv) {
         return 0;
     }
-    return static_cast<uint8_t>(
-        (static_cast<uint32_t>(voltageMV - kEmptyMv) * 100U) / (kFullMv - kEmptyMv));
+    return static_cast<uint8_t>((static_cast<uint32_t>(voltageMV - kEmptyMv) * 100U) / (kFullMv - kEmptyMv));
 }
 
 inline bool isLow(uint16_t voltageMV) {
@@ -28,4 +27,4 @@ inline bool isCritical(uint16_t voltageMV) {
     return voltageMV < kCriticalMv && voltageMV > 0;
 }
 
-}  // namespace battery_math
+} // namespace battery_math

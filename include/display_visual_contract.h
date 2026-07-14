@@ -9,7 +9,8 @@
 namespace DisplayVisualContract {
 
 inline uint8_t scalePreviewBarsToMainMeter(uint8_t previewBars) {
-    if (previewBars > 6) previewBars = 6;
+    if (previewBars > 6)
+        previewBars = 6;
     return static_cast<uint8_t>((previewBars * 8u + 3u) / 6u);
 }
 
@@ -33,8 +34,7 @@ inline void buildMainMeterRamp(const uint16_t configured[6], uint16_t out[8]) {
         const int rem = scaled % 7;
         out[i] = (rem == 0 || idx >= 5)
                      ? configured[idx]
-                     : lerpRgb565(configured[idx], configured[idx + 1],
-                                  static_cast<uint8_t>(rem), 7);
+                     : lerpRgb565(configured[idx], configured[idx + 1], static_cast<uint8_t>(rem), 7);
     }
 }
 
@@ -52,10 +52,7 @@ inline const char* bandCellLabel(uint8_t activeBandMask, int index) {
     return (index == 0) ? "L" : ((index == 1) ? "Ka" : ((index == 2) ? "K" : "X"));
 }
 
-inline const char* frequencyTextForAlert(Band band,
-                                         uint32_t freqMHz,
-                                         const char* alpGunAbbrev,
-                                         char* buffer,
+inline const char* frequencyTextForAlert(Band band, uint32_t freqMHz, const char* alpGunAbbrev, char* buffer,
                                          size_t bufferSize) {
     if (alpGunAbbrev && alpGunAbbrev[0] != '\0') {
         return alpGunAbbrev;
@@ -75,4 +72,4 @@ inline const char* frequencyTextForAlert(Band band,
     return buffer;
 }
 
-}  // namespace DisplayVisualContract
+} // namespace DisplayVisualContract

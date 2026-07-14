@@ -6,10 +6,7 @@
 
 #include "settings_backup_doc.h"
 
-bool loadBestBackupDocument(fs::FS* fs,
-                                   JsonDocument& outDoc,
-                                   const char** outPath,
-                                   bool verboseErrors) {
+bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPath, bool verboseErrors) {
     if (!fs) {
         return false;
     }
@@ -50,9 +47,7 @@ bool loadBestBackupDocument(fs::FS* fs,
     DeserializationError err = deserializeJson(outDoc, bestJson);
     if (err) {
         if (verboseErrors) {
-            Serial.printf("[Settings] Failed to parse selected backup '%s': %s\n",
-                          bestPath,
-                          err.c_str());
+            Serial.printf("[Settings] Failed to parse selected backup '%s': %s\n", bestPath, err.c_str());
         }
         return false;
     }
@@ -103,14 +98,12 @@ bool restoreWifiClientPasswordObfFromBackupDoc(const JsonDocument& doc, const St
     const String backupSsid = doc["wifiClientSSID"] | "";
     if (backupSsid.length() > 0 && backupSsid != expectedSsid) {
         Serial.printf("[Settings] WARN: Skipping WiFi client password restore; SSID mismatch (want='%s' got='%s')\n",
-                      expectedSsid.c_str(),
-                      backupSsid.c_str());
+                      expectedSsid.c_str(), backupSsid.c_str());
         return false;
     }
 
     const String encoded = doc[WIFI_CLIENT_BACKUP_PASSWORD_KEY].as<String>();
-    if (encoded.length() == 0 ||
-        decodeObfuscatedFromStorage(encoded).length() == 0) {
+    if (encoded.length() == 0 || decodeObfuscatedFromStorage(encoded).length() == 0) {
         Serial.println("[Settings] WARN: Skipping corrupt WiFi client password in backup");
         return false;
     }
@@ -149,13 +142,11 @@ bool restoreLegacyStationPasswordFromBackupDoc(const JsonDocument& doc, const St
     const String backupSsid = legacyWifiClientSsidFromBackupDoc(doc);
     if (backupSsid.length() > 0 && backupSsid != expectedSsid) {
         Serial.printf("[Settings] WARN: Skipping legacy station password restore; SSID mismatch (want='%s' got='%s')\n",
-                      expectedSsid.c_str(),
-                      backupSsid.c_str());
+                      expectedSsid.c_str(), backupSsid.c_str());
         return false;
     }
 
-    const String sanitizedPassword =
-        sanitizeWifiClientPasswordValue(doc[LEGACY_STATION_PASSWORD_KEY].as<String>());
+    const String sanitizedPassword = sanitizeWifiClientPasswordValue(doc[LEGACY_STATION_PASSWORD_KEY].as<String>());
     if (sanitizedPassword.length() == 0) {
         return false;
     }
@@ -188,8 +179,7 @@ bool restoreWifiStaSlotPasswordObfFromBackupSlot(JsonObjectConst slotObj, size_t
         return false;
     }
 
-    Serial.printf("[Settings] Restored WiFi STA slot %u password from settings backup\n",
-                  static_cast<unsigned>(index));
+    Serial.printf("[Settings] Restored WiFi STA slot %u password from settings backup\n", static_cast<unsigned>(index));
     return true;
 }
 
@@ -218,8 +208,7 @@ void snapshotWifiStaSlotPasswords(const V1Settings& settings,
     }
 }
 
-bool preserveStoredPasswordForMatchingSsid(const String& ssid,
-                                           size_t targetIndex,
+bool preserveStoredPasswordForMatchingSsid(const String& ssid, size_t targetIndex,
                                            const StoredSlotPasswordSnapshot (&snapshot)[kWifiStaSlotCount]) {
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         if (snapshot[i].passwordObf.length() == 0 || snapshot[i].ssid != ssid) {
@@ -249,15 +238,12 @@ void clearWifiStaSlotPasswordsForRestore(bool clearSdSecret) {
     }
 }
 
-bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc,
-                                      V1Settings& settings,
-                                      bool clearSdSecret) {
+bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, bool clearSdSecret) {
     if (!doc["wifiStaSlots"].is<JsonArrayConst>()) {
         return false;
     }
     bool parsedWifiClientEnabled = false;
-    const bool wifiClientEnabledExplicit =
-        parseBoolVariant(doc["wifiClientEnabled"], parsedWifiClientEnabled);
+    const bool wifiClientEnabledExplicit = parseBoolVariant(doc["wifiClientEnabled"], parsedWifiClientEnabled);
 
     StoredSlotPasswordSnapshot storedPasswords[kWifiStaSlotCount];
     snapshotWifiStaSlotPasswords(settings, storedPasswords);
@@ -289,22 +275,19 @@ bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc,
         if (slot.label.length() == 0) {
             slot.label = (index == 0) ? "Saved" : slot.ssid;
         }
-        slot.priority = slotObj["priority"].is<int>()
-            ? clampU8(slotObj["priority"].as<int>(), 0, 255)
-            : static_cast<uint8_t>(index);
+        slot.priority = slotObj["priority"].is<int>() ? clampU8(slotObj["priority"].as<int>(), 0, 255)
+                                                      : static_cast<uint8_t>(index);
         if (slotObj["lastConnectedAtSec"].is<uint32_t>()) {
             slot.lastConnectedAtSec = slotObj["lastConnectedAtSec"].as<uint32_t>();
         } else if (slotObj["lastConnectedAtSec"].is<int>()) {
-            slot.lastConnectedAtSec =
-                static_cast<uint32_t>(std::max(0, slotObj["lastConnectedAtSec"].as<int>()));
+            slot.lastConnectedAtSec = static_cast<uint32_t>(std::max(0, slotObj["lastConnectedAtSec"].as<int>()));
         } else {
             slot.lastConnectedAtSec = 0;
         }
         if (!restoreWifiStaSlotPasswordObfFromBackupSlot(slotObj, static_cast<size_t>(index))) {
             // Sanitized backup (no passwordObf): keep the stored password when
             // the incoming slot names a network we already have credentials for.
-            preserveStoredPasswordForMatchingSsid(slot.ssid, static_cast<size_t>(index),
-                                                  storedPasswords);
+            preserveStoredPasswordForMatchingSsid(slot.ssid, static_cast<size_t>(index), storedPasswords);
         }
         restoredAny = true;
     }
@@ -316,8 +299,7 @@ bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc,
     return true;
 }
 
-SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc,
-                                                              bool deferBackupRewrite) {
+SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite) {
     SettingsBackupApplyResult result;
 
     auto restoreBool = [&](const char* key, bool& target) {
@@ -341,15 +323,14 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         // else: decoded value is too short / corrupt — keep existing
     }
     restoreBool("enableWifi", settings_.enableWifi);
-    if (doc["apSSID"].is<const char*>()) settings_.apSSID = sanitizeApSsidValue(doc["apSSID"].as<String>());
+    if (doc["apSSID"].is<const char*>())
+        settings_.apSSID = sanitizeApSsidValue(doc["apSSID"].as<String>());
     bool parsedWifiClientEnabled = false;
-    const bool wifiClientEnabledExplicit =
-        parseBoolVariant(doc["wifiClientEnabled"], parsedWifiClientEnabled);
+    const bool wifiClientEnabledExplicit = parseBoolVariant(doc["wifiClientEnabled"], parsedWifiClientEnabled);
     if (wifiClientEnabledExplicit) {
         settings_.wifiClientEnabled = parsedWifiClientEnabled;
     }
-    const bool restoredWifiStaSlots =
-        restoreWifiStaSlotsFromBackupDoc(doc, settings_, deferBackupRewrite);
+    const bool restoredWifiStaSlots = restoreWifiStaSlotsFromBackupDoc(doc, settings_, deferBackupRewrite);
     const String legacyWifiClientSsid = legacyWifiClientSsidFromBackupDoc(doc);
     if (!restoredWifiStaSlots && legacyWifiClientSsid.length() > 0) {
         clearWifiStaSlotPasswordsForRestore(deferBackupRewrite);
@@ -363,9 +344,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         settings_.wifiStaSlots[0].priority = 0;
         settings_.refreshWifiClientAliasFromSlots();
     }
-    if (!settings_.wifiClientEnabled &&
-        settings_.hasConfiguredWifiStaSlot() &&
-        !wifiClientEnabledExplicit) {
+    if (!settings_.wifiClientEnabled && settings_.hasConfiguredWifiStaSlot() && !wifiClientEnabledExplicit) {
         settings_.wifiClientEnabled = true;
     }
     settings_.refreshWifiClientAliasFromSlots();
@@ -388,43 +367,75 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     // ============================================================================
     // Display Settings
     // ============================================================================
-    if (doc["brightness"].is<int>()) settings_.brightness = clampU8(doc["brightness"].as<int>(), 1, 255);
+    if (doc["brightness"].is<int>())
+        settings_.brightness = clampU8(doc["brightness"].as<int>(), 1, 255);
     restoreBool("turnOffDisplay", settings_.turnOffDisplay);
 
     // ============================================================================
     // All Colors (sanitized identically to the NVS-load path in settings.cpp)
     // ============================================================================
-    if (doc["colorBogey"].is<int>()) settings_.colorBogey = sanitizeRgb565Color(doc["colorBogey"], 0xF800);
-    if (doc["colorFrequency"].is<int>()) settings_.colorFrequency = sanitizeRgb565Color(doc["colorFrequency"], 0xF800);
-    if (doc["colorArrowFront"].is<int>()) settings_.colorArrowFront = sanitizeRgb565Color(doc["colorArrowFront"], 0xF800);
-    if (doc["colorArrowSide"].is<int>()) settings_.colorArrowSide = sanitizeRgb565Color(doc["colorArrowSide"], 0xF800);
-    if (doc["colorArrowRear"].is<int>()) settings_.colorArrowRear = sanitizeRgb565Color(doc["colorArrowRear"], 0xF800);
-    if (doc["colorBandL"].is<int>()) settings_.colorBandL = sanitizeRgb565Color(doc["colorBandL"], 0x001F);
-    if (doc["colorBandKa"].is<int>()) settings_.colorBandKa = sanitizeRgb565Color(doc["colorBandKa"], 0xF800);
-    if (doc["colorBandK"].is<int>()) settings_.colorBandK = sanitizeRgb565Color(doc["colorBandK"], 0x001F);
-    if (doc["colorBandX"].is<int>()) settings_.colorBandX = sanitizeRgb565Color(doc["colorBandX"], 0x07E0);
-    if (doc["colorBandPhoto"].is<int>()) settings_.colorBandPhoto = sanitizeRgb565Color(doc["colorBandPhoto"], 0x780F);
-    if (doc["colorWiFiIcon"].is<int>()) settings_.colorWiFiIcon = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07FF);
-    if (doc["colorWiFiConnected"].is<int>()) settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiConnected"], 0x07E0);
-    if (doc["colorBleConnected"].is<int>()) settings_.colorBleConnected = sanitizeRgb565Color(doc["colorBleConnected"], 0x07E0);
-    if (doc["colorBleDisconnected"].is<int>()) settings_.colorBleDisconnected = sanitizeRgb565Color(doc["colorBleDisconnected"], 0x001F);
-    if (doc["colorBar1"].is<int>()) settings_.colorBar1 = sanitizeRgb565Color(doc["colorBar1"], 0x07E0);
-    if (doc["colorBar2"].is<int>()) settings_.colorBar2 = sanitizeRgb565Color(doc["colorBar2"], 0x07E0);
-    if (doc["colorBar3"].is<int>()) settings_.colorBar3 = sanitizeRgb565Color(doc["colorBar3"], 0xFFE0);
-    if (doc["colorBar4"].is<int>()) settings_.colorBar4 = sanitizeRgb565Color(doc["colorBar4"], 0xFFE0);
-    if (doc["colorBar5"].is<int>()) settings_.colorBar5 = sanitizeRgb565Color(doc["colorBar5"], 0xF800);
-    if (doc["colorBar6"].is<int>()) settings_.colorBar6 = sanitizeRgb565Color(doc["colorBar6"], 0xF800);
-    if (doc["colorMuted"].is<int>()) settings_.colorMuted = sanitizeRgb565Color(doc["colorMuted"], 0x3186);
-    if (doc["colorPersisted"].is<int>()) settings_.colorPersisted = sanitizeRgb565Color(doc["colorPersisted"], 0x18C3);
-    if (doc["colorVolumeMain"].is<int>()) settings_.colorVolumeMain = sanitizeRgb565Color(doc["colorVolumeMain"], 0xF800);
-    if (doc["colorVolumeMute"].is<int>()) settings_.colorVolumeMute = sanitizeRgb565Color(doc["colorVolumeMute"], 0x7BEF);
-    if (doc["colorRssiV1"].is<int>()) settings_.colorRssiV1 = sanitizeRgb565Color(doc["colorRssiV1"], 0x07E0);
-    if (doc["colorRssiProxy"].is<int>()) settings_.colorRssiProxy = sanitizeRgb565Color(doc["colorRssiProxy"], 0x001F);
-    if (doc["colorObd"].is<int>()) settings_.colorObd = sanitizeRgb565Color(doc["colorObd"], 0x001F);
-    if (doc["colorAlpConnected"].is<int>()) settings_.colorAlpConnected = sanitizeRgb565Color(doc["colorAlpConnected"], 0x07E0);
-    if (doc["colorAlpDli"].is<int>()) settings_.colorAlpDli = sanitizeRgb565Color(doc["colorAlpDli"], 0xFD20);
-    if (doc["colorAlpLidActive"].is<int>()) settings_.colorAlpLidActive = sanitizeRgb565Color(doc["colorAlpLidActive"], 0x001F);
-    if (doc["colorAlpAlert"].is<int>()) settings_.colorAlpAlert = sanitizeRgb565Color(doc["colorAlpAlert"], 0xF800);
+    if (doc["colorBogey"].is<int>())
+        settings_.colorBogey = sanitizeRgb565Color(doc["colorBogey"], 0xF800);
+    if (doc["colorFrequency"].is<int>())
+        settings_.colorFrequency = sanitizeRgb565Color(doc["colorFrequency"], 0xF800);
+    if (doc["colorArrowFront"].is<int>())
+        settings_.colorArrowFront = sanitizeRgb565Color(doc["colorArrowFront"], 0xF800);
+    if (doc["colorArrowSide"].is<int>())
+        settings_.colorArrowSide = sanitizeRgb565Color(doc["colorArrowSide"], 0xF800);
+    if (doc["colorArrowRear"].is<int>())
+        settings_.colorArrowRear = sanitizeRgb565Color(doc["colorArrowRear"], 0xF800);
+    if (doc["colorBandL"].is<int>())
+        settings_.colorBandL = sanitizeRgb565Color(doc["colorBandL"], 0x001F);
+    if (doc["colorBandKa"].is<int>())
+        settings_.colorBandKa = sanitizeRgb565Color(doc["colorBandKa"], 0xF800);
+    if (doc["colorBandK"].is<int>())
+        settings_.colorBandK = sanitizeRgb565Color(doc["colorBandK"], 0x001F);
+    if (doc["colorBandX"].is<int>())
+        settings_.colorBandX = sanitizeRgb565Color(doc["colorBandX"], 0x07E0);
+    if (doc["colorBandPhoto"].is<int>())
+        settings_.colorBandPhoto = sanitizeRgb565Color(doc["colorBandPhoto"], 0x780F);
+    if (doc["colorWiFiIcon"].is<int>())
+        settings_.colorWiFiIcon = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07FF);
+    if (doc["colorWiFiConnected"].is<int>())
+        settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiConnected"], 0x07E0);
+    if (doc["colorBleConnected"].is<int>())
+        settings_.colorBleConnected = sanitizeRgb565Color(doc["colorBleConnected"], 0x07E0);
+    if (doc["colorBleDisconnected"].is<int>())
+        settings_.colorBleDisconnected = sanitizeRgb565Color(doc["colorBleDisconnected"], 0x001F);
+    if (doc["colorBar1"].is<int>())
+        settings_.colorBar1 = sanitizeRgb565Color(doc["colorBar1"], 0x07E0);
+    if (doc["colorBar2"].is<int>())
+        settings_.colorBar2 = sanitizeRgb565Color(doc["colorBar2"], 0x07E0);
+    if (doc["colorBar3"].is<int>())
+        settings_.colorBar3 = sanitizeRgb565Color(doc["colorBar3"], 0xFFE0);
+    if (doc["colorBar4"].is<int>())
+        settings_.colorBar4 = sanitizeRgb565Color(doc["colorBar4"], 0xFFE0);
+    if (doc["colorBar5"].is<int>())
+        settings_.colorBar5 = sanitizeRgb565Color(doc["colorBar5"], 0xF800);
+    if (doc["colorBar6"].is<int>())
+        settings_.colorBar6 = sanitizeRgb565Color(doc["colorBar6"], 0xF800);
+    if (doc["colorMuted"].is<int>())
+        settings_.colorMuted = sanitizeRgb565Color(doc["colorMuted"], 0x3186);
+    if (doc["colorPersisted"].is<int>())
+        settings_.colorPersisted = sanitizeRgb565Color(doc["colorPersisted"], 0x18C3);
+    if (doc["colorVolumeMain"].is<int>())
+        settings_.colorVolumeMain = sanitizeRgb565Color(doc["colorVolumeMain"], 0xF800);
+    if (doc["colorVolumeMute"].is<int>())
+        settings_.colorVolumeMute = sanitizeRgb565Color(doc["colorVolumeMute"], 0x7BEF);
+    if (doc["colorRssiV1"].is<int>())
+        settings_.colorRssiV1 = sanitizeRgb565Color(doc["colorRssiV1"], 0x07E0);
+    if (doc["colorRssiProxy"].is<int>())
+        settings_.colorRssiProxy = sanitizeRgb565Color(doc["colorRssiProxy"], 0x001F);
+    if (doc["colorObd"].is<int>())
+        settings_.colorObd = sanitizeRgb565Color(doc["colorObd"], 0x001F);
+    if (doc["colorAlpConnected"].is<int>())
+        settings_.colorAlpConnected = sanitizeRgb565Color(doc["colorAlpConnected"], 0x07E0);
+    if (doc["colorAlpDli"].is<int>())
+        settings_.colorAlpDli = sanitizeRgb565Color(doc["colorAlpDli"], 0xFD20);
+    if (doc["colorAlpLidActive"].is<int>())
+        settings_.colorAlpLidActive = sanitizeRgb565Color(doc["colorAlpLidActive"], 0x001F);
+    if (doc["colorAlpAlert"].is<int>())
+        settings_.colorAlpAlert = sanitizeRgb565Color(doc["colorAlpAlert"], 0xF800);
     restoreBool("freqUseBandColor", settings_.freqUseBandColor);
 
     // ============================================================================
@@ -465,40 +476,62 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     // Auto-Push Settings
     // ============================================================================
     restoreBool("autoPushEnabled", settings_.autoPushEnabled);
-    if (doc["activeSlot"].is<int>()) settings_.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
+    if (doc["activeSlot"].is<int>())
+        settings_.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
 
-    if (doc["slot0Name"].is<const char*>()) settings_.slot0Name = sanitizeSlotNameValue(doc["slot0Name"].as<String>());
-    if (doc["slot0Color"].is<int>()) settings_.slot0Color = sanitizeRgb565Color(doc["slot0Color"], 0x400A);
-    if (doc["slot0Volume"].is<int>()) settings_.slot0Volume = clampSlotVolumeValue(doc["slot0Volume"].as<int>());
-    if (doc["slot0MuteVolume"].is<int>()) settings_.slot0MuteVolume = clampSlotVolumeValue(doc["slot0MuteVolume"].as<int>());
+    if (doc["slot0Name"].is<const char*>())
+        settings_.slot0Name = sanitizeSlotNameValue(doc["slot0Name"].as<String>());
+    if (doc["slot0Color"].is<int>())
+        settings_.slot0Color = sanitizeRgb565Color(doc["slot0Color"], 0x400A);
+    if (doc["slot0Volume"].is<int>())
+        settings_.slot0Volume = clampSlotVolumeValue(doc["slot0Volume"].as<int>());
+    if (doc["slot0MuteVolume"].is<int>())
+        settings_.slot0MuteVolume = clampSlotVolumeValue(doc["slot0MuteVolume"].as<int>());
     restoreBool("slot0DarkMode", settings_.slot0DarkMode);
     restoreBool("slot0MuteToZero", settings_.slot0MuteToZero);
-    if (doc["slot0AlertPersist"].is<int>()) settings_.slot0AlertPersist = clampU8(doc["slot0AlertPersist"].as<int>(), 0, 5);
+    if (doc["slot0AlertPersist"].is<int>())
+        settings_.slot0AlertPersist = clampU8(doc["slot0AlertPersist"].as<int>(), 0, 5);
     restoreBool("slot0PriorityArrow", settings_.slot0PriorityArrow);
-    if (doc["slot0ProfileName"].is<const char*>()) settings_.slot0_default.profileName = sanitizeProfileNameValue(doc["slot0ProfileName"].as<String>());
-    if (doc["slot0Mode"].is<int>()) settings_.slot0_default.mode = normalizeV1ModeValue(doc["slot0Mode"].as<int>());
+    if (doc["slot0ProfileName"].is<const char*>())
+        settings_.slot0_default.profileName = sanitizeProfileNameValue(doc["slot0ProfileName"].as<String>());
+    if (doc["slot0Mode"].is<int>())
+        settings_.slot0_default.mode = normalizeV1ModeValue(doc["slot0Mode"].as<int>());
 
-    if (doc["slot1Name"].is<const char*>()) settings_.slot1Name = sanitizeSlotNameValue(doc["slot1Name"].as<String>());
-    if (doc["slot1Color"].is<int>()) settings_.slot1Color = sanitizeRgb565Color(doc["slot1Color"], 0x07E0);
-    if (doc["slot1Volume"].is<int>()) settings_.slot1Volume = clampSlotVolumeValue(doc["slot1Volume"].as<int>());
-    if (doc["slot1MuteVolume"].is<int>()) settings_.slot1MuteVolume = clampSlotVolumeValue(doc["slot1MuteVolume"].as<int>());
+    if (doc["slot1Name"].is<const char*>())
+        settings_.slot1Name = sanitizeSlotNameValue(doc["slot1Name"].as<String>());
+    if (doc["slot1Color"].is<int>())
+        settings_.slot1Color = sanitizeRgb565Color(doc["slot1Color"], 0x07E0);
+    if (doc["slot1Volume"].is<int>())
+        settings_.slot1Volume = clampSlotVolumeValue(doc["slot1Volume"].as<int>());
+    if (doc["slot1MuteVolume"].is<int>())
+        settings_.slot1MuteVolume = clampSlotVolumeValue(doc["slot1MuteVolume"].as<int>());
     restoreBool("slot1DarkMode", settings_.slot1DarkMode);
     restoreBool("slot1MuteToZero", settings_.slot1MuteToZero);
-    if (doc["slot1AlertPersist"].is<int>()) settings_.slot1AlertPersist = clampU8(doc["slot1AlertPersist"].as<int>(), 0, 5);
+    if (doc["slot1AlertPersist"].is<int>())
+        settings_.slot1AlertPersist = clampU8(doc["slot1AlertPersist"].as<int>(), 0, 5);
     restoreBool("slot1PriorityArrow", settings_.slot1PriorityArrow);
-    if (doc["slot1ProfileName"].is<const char*>()) settings_.slot1_highway.profileName = sanitizeProfileNameValue(doc["slot1ProfileName"].as<String>());
-    if (doc["slot1Mode"].is<int>()) settings_.slot1_highway.mode = normalizeV1ModeValue(doc["slot1Mode"].as<int>());
+    if (doc["slot1ProfileName"].is<const char*>())
+        settings_.slot1_highway.profileName = sanitizeProfileNameValue(doc["slot1ProfileName"].as<String>());
+    if (doc["slot1Mode"].is<int>())
+        settings_.slot1_highway.mode = normalizeV1ModeValue(doc["slot1Mode"].as<int>());
 
-    if (doc["slot2Name"].is<const char*>()) settings_.slot2Name = sanitizeSlotNameValue(doc["slot2Name"].as<String>());
-    if (doc["slot2Color"].is<int>()) settings_.slot2Color = sanitizeRgb565Color(doc["slot2Color"], 0x8410);
-    if (doc["slot2Volume"].is<int>()) settings_.slot2Volume = clampSlotVolumeValue(doc["slot2Volume"].as<int>());
-    if (doc["slot2MuteVolume"].is<int>()) settings_.slot2MuteVolume = clampSlotVolumeValue(doc["slot2MuteVolume"].as<int>());
+    if (doc["slot2Name"].is<const char*>())
+        settings_.slot2Name = sanitizeSlotNameValue(doc["slot2Name"].as<String>());
+    if (doc["slot2Color"].is<int>())
+        settings_.slot2Color = sanitizeRgb565Color(doc["slot2Color"], 0x8410);
+    if (doc["slot2Volume"].is<int>())
+        settings_.slot2Volume = clampSlotVolumeValue(doc["slot2Volume"].as<int>());
+    if (doc["slot2MuteVolume"].is<int>())
+        settings_.slot2MuteVolume = clampSlotVolumeValue(doc["slot2MuteVolume"].as<int>());
     restoreBool("slot2DarkMode", settings_.slot2DarkMode);
     restoreBool("slot2MuteToZero", settings_.slot2MuteToZero);
-    if (doc["slot2AlertPersist"].is<int>()) settings_.slot2AlertPersist = clampU8(doc["slot2AlertPersist"].as<int>(), 0, 5);
+    if (doc["slot2AlertPersist"].is<int>())
+        settings_.slot2AlertPersist = clampU8(doc["slot2AlertPersist"].as<int>(), 0, 5);
     restoreBool("slot2PriorityArrow", settings_.slot2PriorityArrow);
-    if (doc["slot2ProfileName"].is<const char*>()) settings_.slot2_comfort.profileName = sanitizeProfileNameValue(doc["slot2ProfileName"].as<String>());
-    if (doc["slot2Mode"].is<int>()) settings_.slot2_comfort.mode = normalizeV1ModeValue(doc["slot2Mode"].as<int>());
+    if (doc["slot2ProfileName"].is<const char*>())
+        settings_.slot2_comfort.profileName = sanitizeProfileNameValue(doc["slot2ProfileName"].as<String>());
+    if (doc["slot2Mode"].is<int>())
+        settings_.slot2_comfort.mode = normalizeV1ModeValue(doc["slot2Mode"].as<int>());
 
     // ============================================================================
     // OBD Settings
@@ -513,7 +546,8 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             settings_.obdSavedAddress = "";
         }
     }
-    if (doc["obdSavedName"].is<const char*>()) settings_.obdSavedName = sanitizeObdSavedNameValue(doc["obdSavedName"].as<String>());
+    if (doc["obdSavedName"].is<const char*>())
+        settings_.obdSavedName = sanitizeObdSavedNameValue(doc["obdSavedName"].as<String>());
     if (doc["obdSavedAddrType"].is<int>()) {
         settings_.obdSavedAddrType = static_cast<uint8_t>(std::max(0, std::min(doc["obdSavedAddrType"].as<int>(), 1)));
     }
@@ -524,32 +558,26 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         settings_.obdMinRssi = static_cast<int8_t>(std::max(-90, std::min(rssi, -40)));
     }
     if (doc["obdScanWindowMs"].is<int>()) {
-        settings_.obdScanWindowMs =
-            clampConnectionCycleObdScanWindowMsValue(doc["obdScanWindowMs"].as<int>());
+        settings_.obdScanWindowMs = clampConnectionCycleObdScanWindowMsValue(doc["obdScanWindowMs"].as<int>());
     }
     if (doc["obdRetryIntervalMs"].is<int>()) {
-        settings_.obdRetryIntervalMs =
-            clampConnectionCycleObdRetryIntervalMsValue(doc["obdRetryIntervalMs"].as<int>());
+        settings_.obdRetryIntervalMs = clampConnectionCycleObdRetryIntervalMsValue(doc["obdRetryIntervalMs"].as<int>());
     }
     if (doc["proxyOpenWindowMs"].is<int>()) {
-        settings_.proxyOpenWindowMs =
-            clampConnectionCycleProxyOpenWindowMsValue(doc["proxyOpenWindowMs"].as<int>());
+        settings_.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(doc["proxyOpenWindowMs"].as<int>());
     }
     if (doc["wifiOpenTimeoutMs"].is<int>()) {
-        settings_.wifiOpenTimeoutMs =
-            clampConnectionCycleWifiOpenTimeoutMsValue(doc["wifiOpenTimeoutMs"].as<int>());
+        settings_.wifiOpenTimeoutMs = clampConnectionCycleWifiOpenTimeoutMsValue(doc["wifiOpenTimeoutMs"].as<int>());
     }
     if (doc["v1SettleQuietMs"].is<int>()) {
-        settings_.v1SettleQuietMs =
-            clampConnectionCycleV1SettleQuietMsValue(doc["v1SettleQuietMs"].as<int>());
+        settings_.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(doc["v1SettleQuietMs"].as<int>());
     }
     if (doc["v1SettleFallbackMs"].is<int>()) {
-        settings_.v1SettleFallbackMs =
-            clampConnectionCycleV1SettleFallbackMsValue(doc["v1SettleFallbackMs"].as<int>());
+        settings_.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(doc["v1SettleFallbackMs"].as<int>());
     }
     if (doc["cycleTeardownAckTimeoutMs"].is<int>()) {
-        settings_.cycleTeardownAckTimeoutMs = clampConnectionCycleTeardownAckTimeoutMsValue(
-            doc["cycleTeardownAckTimeoutMs"].as<int>());
+        settings_.cycleTeardownAckTimeoutMs =
+            clampConnectionCycleTeardownAckTimeoutMsValue(doc["cycleTeardownAckTimeoutMs"].as<int>());
     }
 
     // ALP Settings
@@ -608,8 +636,10 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             if (parseBoolVariant(p["displayOn"], profileDisplayOn)) {
                 profile.displayOn = profileDisplayOn;
             }
-            if (p["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(p["mainVolume"].as<int>());
-            if (p["mutedVolume"].is<int>()) profile.mutedVolume = clampSlotVolumeValue(p["mutedVolume"].as<int>());
+            if (p["mainVolume"].is<int>())
+                profile.mainVolume = clampSlotVolumeValue(p["mainVolume"].as<int>());
+            if (p["mutedVolume"].is<int>())
+                profile.mutedVolume = clampSlotVolumeValue(p["mutedVolume"].as<int>());
 
             for (int i = 0; i < 6; i++) {
                 profile.settings.bytes[i] = bytes[i].as<uint8_t>();
@@ -619,8 +649,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             if (saveResult.success) {
                 profilesRestored++;
             } else {
-                Serial.printf("[Settings] Failed to restore profile '%s': %s\n",
-                              profile.name.c_str(),
+                Serial.printf("[Settings] Failed to restore profile '%s': %s\n", profile.name.c_str(),
                               saveResult.error.c_str());
             }
         }
@@ -664,34 +693,27 @@ bool backupFieldMatchesString(const JsonDocument& doc, const char* key, const St
 
 bool backupAppearsInSyncWithNvs(const JsonDocument& doc, const V1Settings& current) {
     // Core fields that should track one-for-one between healthy NVS and SD backup.
-    return
-        backupFieldMatchesBool(doc, "enableWifi", current.enableWifi) &&
-        backupFieldMatchesBool(doc, "wifiClientEnabled", current.wifiClientEnabled) &&
-        backupFieldMatchesString(doc, "wifiClientSSID", current.wifiClientSSID) &&
-        backupFieldMatchesBool(doc, "proxyBLE", current.proxyBLE) &&
-        backupFieldMatchesString(doc, "proxyName", current.proxyName) &&
-        backupFieldMatchesInt(doc, "brightness", current.brightness) &&
-        backupFieldMatchesBool(doc, "autoPushEnabled", current.autoPushEnabled) &&
-        backupFieldMatchesInt(doc, "activeSlot", current.activeSlot) &&
-        backupFieldMatchesString(doc, "slot0ProfileName", current.slot0_default.profileName) &&
-        backupFieldMatchesInt(doc, "slot0Mode", current.slot0_default.mode) &&
-        backupFieldMatchesString(doc, "slot1ProfileName", current.slot1_highway.profileName) &&
-        backupFieldMatchesInt(doc, "slot1Mode", current.slot1_highway.mode) &&
-        backupFieldMatchesString(doc, "slot2ProfileName", current.slot2_comfort.profileName) &&
-        backupFieldMatchesInt(doc, "slot2Mode", current.slot2_comfort.mode) &&
-        backupFieldMatchesInt(doc, "obdScanWindowMs", static_cast<int>(current.obdScanWindowMs)) &&
-        backupFieldMatchesInt(doc, "obdRetryIntervalMs",
-                      static_cast<int>(current.obdRetryIntervalMs)) &&
-        backupFieldMatchesInt(doc, "proxyOpenWindowMs",
-                      static_cast<int>(current.proxyOpenWindowMs)) &&
-        backupFieldMatchesInt(doc, "wifiOpenTimeoutMs",
-                  static_cast<int>(current.wifiOpenTimeoutMs)) &&
-        backupFieldMatchesInt(doc, "v1SettleQuietMs",
-                      static_cast<int>(current.v1SettleQuietMs)) &&
-        backupFieldMatchesInt(doc, "v1SettleFallbackMs",
-                      static_cast<int>(current.v1SettleFallbackMs)) &&
-        backupFieldMatchesInt(doc, "cycleTeardownAckTimeoutMs",
-                      static_cast<int>(current.cycleTeardownAckTimeoutMs));
+    return backupFieldMatchesBool(doc, "enableWifi", current.enableWifi) &&
+           backupFieldMatchesBool(doc, "wifiClientEnabled", current.wifiClientEnabled) &&
+           backupFieldMatchesString(doc, "wifiClientSSID", current.wifiClientSSID) &&
+           backupFieldMatchesBool(doc, "proxyBLE", current.proxyBLE) &&
+           backupFieldMatchesString(doc, "proxyName", current.proxyName) &&
+           backupFieldMatchesInt(doc, "brightness", current.brightness) &&
+           backupFieldMatchesBool(doc, "autoPushEnabled", current.autoPushEnabled) &&
+           backupFieldMatchesInt(doc, "activeSlot", current.activeSlot) &&
+           backupFieldMatchesString(doc, "slot0ProfileName", current.slot0_default.profileName) &&
+           backupFieldMatchesInt(doc, "slot0Mode", current.slot0_default.mode) &&
+           backupFieldMatchesString(doc, "slot1ProfileName", current.slot1_highway.profileName) &&
+           backupFieldMatchesInt(doc, "slot1Mode", current.slot1_highway.mode) &&
+           backupFieldMatchesString(doc, "slot2ProfileName", current.slot2_comfort.profileName) &&
+           backupFieldMatchesInt(doc, "slot2Mode", current.slot2_comfort.mode) &&
+           backupFieldMatchesInt(doc, "obdScanWindowMs", static_cast<int>(current.obdScanWindowMs)) &&
+           backupFieldMatchesInt(doc, "obdRetryIntervalMs", static_cast<int>(current.obdRetryIntervalMs)) &&
+           backupFieldMatchesInt(doc, "proxyOpenWindowMs", static_cast<int>(current.proxyOpenWindowMs)) &&
+           backupFieldMatchesInt(doc, "wifiOpenTimeoutMs", static_cast<int>(current.wifiOpenTimeoutMs)) &&
+           backupFieldMatchesInt(doc, "v1SettleQuietMs", static_cast<int>(current.v1SettleQuietMs)) &&
+           backupFieldMatchesInt(doc, "v1SettleFallbackMs", static_cast<int>(current.v1SettleFallbackMs)) &&
+           backupFieldMatchesInt(doc, "cycleTeardownAckTimeoutMs", static_cast<int>(current.cycleTeardownAckTimeoutMs));
 }
 
 WifiClientKeyPresence readWifiClientKeyPresence(const char* settingsNamespace) {
@@ -725,8 +747,7 @@ WifiClientSecretPresence readWifiClientSecretPresence(fs::FS* fs) {
     DeserializationError err = deserializeJson(doc, file);
     file.close();
     if (err) {
-        Serial.printf("[Settings] WARN: Failed to parse WiFi secret '%s': %s\n",
-                      WIFI_CLIENT_SD_SECRET_PATH,
+        Serial.printf("[Settings] WARN: Failed to parse WiFi secret '%s': %s\n", WIFI_CLIENT_SD_SECRET_PATH,
                       err.c_str());
         return presence;
     }

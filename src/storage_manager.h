@@ -19,18 +19,18 @@
 #include <esp_heap_caps.h>
 
 // Waveshare 3.49 SD card pins (SDMMC interface)
-    #ifndef SD_MMC_CLK_PIN
-    #define SD_MMC_CLK_PIN 41
-    #endif
-    #ifndef SD_MMC_CMD_PIN
-    #define SD_MMC_CMD_PIN 39
-    #endif
-    #ifndef SD_MMC_D0_PIN
-    #define SD_MMC_D0_PIN 40
-    #endif
+#ifndef SD_MMC_CLK_PIN
+#define SD_MMC_CLK_PIN 41
+#endif
+#ifndef SD_MMC_CMD_PIN
+#define SD_MMC_CMD_PIN 39
+#endif
+#ifndef SD_MMC_D0_PIN
+#define SD_MMC_D0_PIN 40
+#endif
 
 class StorageManager {
-public:
+  public:
     StorageManager();
 
     // Mount storage (SD card preferred, LittleFS fallback)
@@ -63,9 +63,9 @@ public:
     // - WiFi uses ~50-80KB of DMA-capable internal SRAM
     // - SD_MMC needs contiguous DMA buffers for each operation
     // - Fragmentation can cause failures even with "enough" total free
-    static constexpr uint32_t MIN_DMA_FREE_FOR_SD = 16384;    // 16KB total free
-    static constexpr uint32_t MIN_DMA_BLOCK_FOR_SD = 2048;    // 2KB largest block
-    static constexpr uint32_t DMA_CHECK_CACHE_MS = 100;       // Cache check for 100ms
+    static constexpr uint32_t MIN_DMA_FREE_FOR_SD = 16384; // 16KB total free
+    static constexpr uint32_t MIN_DMA_BLOCK_FOR_SD = 2048; // 2KB largest block
+    static constexpr uint32_t DMA_CHECK_CACHE_MS = 100;    // Cache check for 100ms
 
     // Cached DMA heap state (avoid repeated API calls in hot paths)
     struct DmaHeapCache {
@@ -93,8 +93,7 @@ public:
             updateDmaHeapCache();
         }
 
-        bool ok = (dmaCache_.freeDma >= MIN_DMA_FREE_FOR_SD) &&
-                  (dmaCache_.largestDma >= MIN_DMA_BLOCK_FOR_SD);
+        bool ok = (dmaCache_.freeDma >= MIN_DMA_FREE_FOR_SD) && (dmaCache_.largestDma >= MIN_DMA_BLOCK_FOR_SD);
         if (!ok) {
             sdDmaStarvationCount.fetch_add(1, std::memory_order_relaxed);
         }
@@ -127,13 +126,13 @@ public:
     // Always blocks forever (portMAX_DELAY) - no timed option
     // Fails fast if DMA heap is too low (WiFi active) - use SDLockBootRetry for boot
     class SDLockBlocking {
-    public:
+      public:
         explicit SDLockBlocking(SemaphoreHandle_t mutex, bool checkDmaHeap = true)
             : mutex_(mutex), acquired_(false), dmaStarved_(false) {
             // Check DMA heap first - fail fast if WiFi has starved internal SRAM
             if (checkDmaHeap && !hasDmaHeapForSD()) {
                 dmaStarved_ = true;
-                return;  // Don't even try to acquire mutex
+                return; // Don't even try to acquire mutex
             }
             if (mutex_) {
                 acquired_ = (xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE);
@@ -150,7 +149,8 @@ public:
                 acquired_ = false;
             }
         }
-    private:
+
+      private:
         SemaphoreHandle_t mutex_;
         bool acquired_;
         bool dmaStarved_;
@@ -160,12 +160,11 @@ public:
     // Retries with backoff if DMA heap is starved (e.g., WiFi starting in parallel)
     // Use sparingly - this blocks the calling task
     class SDLockBootRetry {
-    public:
+      public:
         static constexpr int MAX_RETRIES = 5;
-        static constexpr int BACKOFF_MS = 100;  // 100ms between retries
+        static constexpr int BACKOFF_MS = 100; // 100ms between retries
 
-        explicit SDLockBootRetry(SemaphoreHandle_t mutex)
-            : mutex_(mutex), acquired_(false), retryCount_(0) {
+        explicit SDLockBootRetry(SemaphoreHandle_t mutex) : mutex_(mutex), acquired_(false), retryCount_(0) {
             for (int i = 0; i < MAX_RETRIES; ++i) {
                 if (hasDmaHeapForSD()) {
                     if (mutex_ && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
@@ -190,7 +189,8 @@ public:
                 acquired_ = false;
             }
         }
-    private:
+
+      private:
         SemaphoreHandle_t mutex_;
         bool acquired_;
         int retryCount_;
@@ -204,13 +204,13 @@ public:
     // Use this from main loop to enforce the "no blocking" invariant
     // Fails fast if DMA heap is too low (WiFi active)
     class SDTryLock {
-    public:
+      public:
         explicit SDTryLock(SemaphoreHandle_t mutex, bool checkDmaHeap = true)
             : mutex_(mutex), acquired_(false), dmaStarved_(false) {
             // Check DMA heap first - fail fast if WiFi has starved internal SRAM
             if (checkDmaHeap && !hasDmaHeapForSD()) {
                 dmaStarved_ = true;
-                return;  // Don't even try to acquire mutex
+                return; // Don't even try to acquire mutex
             }
             if (mutex_) {
                 acquired_ = (xSemaphoreTake(mutex_, 0) == pdTRUE);
@@ -230,7 +230,8 @@ public:
                 acquired_ = false;
             }
         }
-    private:
+
+      private:
         SemaphoreHandle_t mutex_;
         bool acquired_;
         bool dmaStarved_;
@@ -245,9 +246,7 @@ public:
         return String(livePath) + ".prev";
     }
 
-    static bool promoteTempFileWithRollback(fs::FS& fs_,
-                                            const char* tempPath,
-                                            const char* livePath,
+    static bool promoteTempFileWithRollback(fs::FS& fs_, const char* tempPath, const char* livePath,
                                             const char* backupPath = nullptr) {
         if (!tempPath || tempPath[0] == '\0' || !livePath || livePath[0] == '\0') {
             return false;
@@ -274,8 +273,7 @@ public:
         if (!fs_.rename(tempPath, livePath)) {
             if (liveExists && fs_.exists(backupPathToUse) && !fs_.exists(livePath)) {
                 if (!fs_.rename(backupPathToUse, livePath)) {
-                    Serial.printf("[Storage] promoteTempFileWithRollback: rollback failed %s -> %s\n",
-                                  backupPathToUse,
+                    Serial.printf("[Storage] promoteTempFileWithRollback: rollback failed %s -> %s\n", backupPathToUse,
                                   livePath);
                 }
             }
@@ -294,7 +292,7 @@ public:
     // Returns true on success.
     static bool writeJsonFileAtomic(fs::FS& fs_, const char* path, JsonDocument& doc);
 
-private:
+  private:
     fs::FS* fs_;
     bool ready_;
     bool usingSDMMC_;
@@ -304,4 +302,4 @@ private:
 
 // Global instance
 extern StorageManager storageManager;
-#endif  // STORAGE_MANAGER_H
+#endif // STORAGE_MANAGER_H

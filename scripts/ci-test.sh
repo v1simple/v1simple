@@ -110,6 +110,8 @@ run_step "Main loop semantic guard" python3 scripts/check_main_loop_semantic_gua
 run_step "Module const-correctness semantic guard" python3 scripts/check_module_const_correctness.py
 run_step "Extern-escape semantic guard" python3 scripts/check_extern_escape.py
 run_step "Header style contract" python3 scripts/check_header_style_contract.py
+run_step "clang-format ratchet" python3 scripts/check_clang_format.py
+run_step "clang-format ratchet regression tests" python3 scripts/test_check_clang_format.py
 run_step "Modified font reserved-name contract" python3 scripts/check_modified_font_names.py
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py

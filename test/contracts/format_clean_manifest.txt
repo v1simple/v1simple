@@ -1,0 +1,56 @@
+# clang-format ratchet manifest for production firmware sources (src/, include/).
+#
+# Format: one repo-relative path per line, sorted. Lines starting with '#' are
+# comments. Blank lines are ignored.
+#
+# WHAT THIS IS
+# Every file listed here MUST be byte-identical to `clang-format` output.
+# scripts/check_clang_format.py runs `clang-format --dry-run --Werror` over
+# exactly these paths and fails the build on any drift. Files NOT listed here
+# are not gated -- yet.
+#
+# WHY A RATCHET INSTEAD OF A REPO-WIDE SWEEP
+# When this gate was introduced, 277 of 294 non-generated firmware files drifted
+# from clang-format output. A big-bang reformat was rejected: it would rewrite
+# nearly every line in the codebase, invalidate the tracked mutation-test
+# anchors wholesale, and produce a diff no human could review. So the gate
+# starts from the 17 files that were ALREADY clean and grows one file at a time.
+#
+# HOW IT ADVANCES -- ENTRIES ARE ONLY EVER ADDED, NEVER REMOVED
+# 1. Format a file you are already touching:
+#        clang-format -i path/to/file.cpp
+# 2. Build and run the tests: formatting is not supposed to change behavior, but
+#    macro-heavy and NOLINT-adjacent code can surprise you. Prove it.
+# 3. Add the path here (keep the list sorted) and commit the reformat and the
+#    manifest entry together, separate from behavior changes.
+# `python3 scripts/check_clang_format.py` prints a ready-made list of every
+# non-manifest file that is already clean and could be added for free.
+#
+# Removing a path is a regression, not a fix. If a listed file no longer
+# formats clean, reformat it -- do not delete the line. The checker also fails
+# if a listed path does not exist, so a rename must carry its entry along
+# rather than silently dropping out of the ratchet.
+#
+# Generated / vendored data headers (include/v1simple_logo.h,
+# include/warning_audio.h, include/Segment7Font.h, include/FreeSans*.h) are
+# excluded from formatting in .clang-format-ignore and MUST NOT be listed here;
+# the checker rejects them.
+#
+# Pinned formatter: clang-format==22.1.8 (PyPI wheel). See CONTRIBUTING.md.
+include/display_preview_api.h
+include/display_slider_math.h
+include/main_loop_wiring.h
+include/main_runtime_state.h
+include/main_runtime_wiring.h
+include/render_frame.h
+include/settings_keys.h
+src/battery_manager_button.cpp
+src/ble_bond_backup_store.h
+src/ble_bond_backup_writer.h
+src/build_metadata.cpp
+src/modules/alp/alp_laser_event.h
+src/modules/display/display_edge_log.h
+src/modules/gps/gps_observation_log.cpp
+src/modules/obd/obd_ble_arbitration.h
+src/modules/system/loop_settings_prep_module.cpp
+src/modules/wifi/wifi_auto_timeout_module.cpp

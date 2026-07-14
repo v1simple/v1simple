@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 API_DOC = ROOT / "docs" / "API.md"
 WIFI_ROUTES = ROOT / "src" / "wifi_routes.cpp"
 
-ROUTE_REGISTRATION_RE = re.compile(r'server_\.on\("([^"]+)",\s*(HTTP_[A-Z]+),')
+# Whitespace-tolerant: clang-format may re-wrap the registration across lines.
+# A missed route here would silently drop it from the docs-coverage comparison.
+ROUTE_REGISTRATION_RE = re.compile(r'server_\.on\(\s*"([^"]+)"\s*,\s*(HTTP_[A-Z]+)\s*,')
 DOC_ROUTE_RE = re.compile(r"^###\s+(GET|POST|PUT|PATCH|DELETE)\s+`([^`]+)`", re.MULTILINE)
 STALE_SOURCE_RE = re.compile(r"^\*\*Source:\*\*.*\b[\w./-]+:\d+\b", re.MULTILINE)
 MODULE_SOURCE_RE = re.compile(r"^\*\*Source:\*\*\s+`([^`]+)`", re.MULTILINE)

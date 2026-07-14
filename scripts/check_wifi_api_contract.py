@@ -101,11 +101,16 @@ LOCAL_HANDLER_ROUTE_KEYS: Tuple[str, ...] = (
     "HTTP_GET /api/gps/status",
 )
 
-ROUTE_SIGNATURE_RE = re.compile(r'server_\.on\("([^"]+)",\s*(HTTP_[A-Z]+),')
+# NOTE: every literal delimiter below is followed by \s* so that clang-format is
+# free to re-wrap a route registration across lines (breaking after `server_.on(`,
+# after the path string, or before the lambda) without the route silently
+# disappearing from the contract. A route that stops matching here would skip the
+# POST write-guard check entirely, so these must stay whitespace-insensitive.
+ROUTE_SIGNATURE_RE = re.compile(r'server_\.on\(\s*"([^"]+)"\s*,\s*(HTTP_[A-Z]+)\s*,')
 ROUTE_LAMBDA_START_RE = re.compile(
-    r'server_\.on\("([^"]+)",\s*(HTTP_[A-Z]+),\s*\[[^\]]*\]\(\)\s*\{'
+    r'server_\.on\(\s*"([^"]+)"\s*,\s*(HTTP_[A-Z]+)\s*,\s*\[[^\]]*\]\s*\(\s*\)\s*\{'
 )
-HANDLE_METHOD_START_RE = re.compile(r"void\s+WiFiManager::(handle[A-Za-z0-9_]+)\s*\(\)\s*\{")
+HANDLE_METHOD_START_RE = re.compile(r"void\s+WiFiManager::(handle[A-Za-z0-9_]+)\s*\(\s*\)\s*\{")
 METHOD_START_RE = re.compile(r"(?:void|bool)\s+WiFiManager::([A-Za-z0-9_]+)\s*\([^)]*\)\s*\{")
 DELEGATE_RE = re.compile(r"([A-Za-z0-9_]+ApiService::[A-Za-z0-9_]+)\s*\(")
 HANDLE_CALL_RE = re.compile(r"(?<!::)\b(handle[A-Za-z0-9_]+)\s*\(")

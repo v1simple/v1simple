@@ -17,7 +17,9 @@ SRC_ROOT = ROOT / "src"
 ALLOWED_FILES = {
     "src/modules/quiet/quiet_coordinator_module.cpp",
 }
-CALL_RE = re.compile(r"(?:->|\.)set(?:Mute|Volume)\(")
+# Whitespace-tolerant so clang-format cannot hide a call by wrapping the member
+# access (e.g. `audio\n    ->setMute(`) or the argument list.
+CALL_RE = re.compile(r"(?:->|\.)\s*set(?:Mute|Volume)\s*\(")
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 
 
@@ -35,9 +37,14 @@ def find_violations() -> list[str]:
         relative = path.relative_to(ROOT).as_posix()
         if relative in ALLOWED_FILES:
             continue
-        for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if CALL_RE.search(raw_line):
-                violations.append(f"{relative}:{line_no}: {raw_line.strip()}")
+        text = path.read_text(encoding="utf-8")
+        # Scan the whole file rather than line-by-line: a line-scoped search cannot
+        # see a call that clang-format has wrapped across a newline.
+        lines = text.splitlines()
+        for match in CALL_RE.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            raw_line = lines[line_no - 1] if line_no - 1 < len(lines) else ""
+            violations.append(f"{relative}:{line_no}: {raw_line.strip()}")
     return violations
 
 

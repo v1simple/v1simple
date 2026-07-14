@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Release workflow now reuses successful authoritative CI evidence from
+  the selected `main` lineage and runs a focused exact-artifact build instead
+  of repeating the full native, sanitizer, mutation, frontend-test, and static
+  analysis gate on a generated two-file version commit.
+- Full CI and Release now share one production frontend, firmware, memory,
+  package-size, and LittleFS build path, eliminating duplicate dependency and
+  same-worktree artifact builds.
+- A fresh release dispatched from tagged `main` now applies the selected bump;
+  tag reuse is allowed only when resuming the same recorded workflow run.
+- Release commits are rejected if `include/config.h` changes anything beyond
+  the `FIRMWARE_VERSION` value, and CI now keeps npm installs lockfile-strict.
 
 ## [1.0.2] - 2026-07-14
 

@@ -63,10 +63,10 @@ jobs:
           set -o pipefail
           python3 scripts/run_firmware_coverage.py 2>&1 | tee coverage.log
 
-      # Advisory until the Track C file splits land and the baseline is
-      # refreshed against them. Promote to a hard failure after that.
+      # Blocking. The Track C splits have landed and the baseline was
+      # regenerated from a full 149-suite instrumented run against the
+      # reformatted tree, so a drop here is a real regression.
       - name: Coverage ratchet
-        continue-on-error: true
         run: python3 scripts/check_firmware_coverage.py
 
       - name: Upload coverage report

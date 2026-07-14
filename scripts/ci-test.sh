@@ -68,17 +68,6 @@ run_step() {
   echo -e "${GREEN}[pass] ${label}${NC}"
 }
 
-run_advisory_step() {
-  local label="$1"
-  shift
-  echo -e "${YELLOW}[advisory] ${label}${NC}"
-  if "$@"; then
-    echo -e "${GREEN}[pass] ${label}${NC}"
-  else
-    echo -e "${YELLOW}[warn] ${label} failed (advisory)${NC}"
-  fi
-}
-
 PIO_CMD="${PIO_CMD:-pio}"
 if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
@@ -110,8 +99,8 @@ run_step "Main loop semantic guard" python3 scripts/check_main_loop_semantic_gua
 run_step "Module const-correctness semantic guard" python3 scripts/check_module_const_correctness.py
 run_step "Extern-escape semantic guard" python3 scripts/check_extern_escape.py
 run_step "Header style contract" python3 scripts/check_header_style_contract.py
-run_step "clang-format ratchet" python3 scripts/check_clang_format.py
-run_step "clang-format ratchet regression tests" python3 scripts/test_check_clang_format.py
+run_step "clang-format check" python3 scripts/check_clang_format.py
+run_step "clang-format check regression tests" python3 scripts/test_check_clang_format.py
 run_step "Modified font reserved-name contract" python3 scripts/check_modified_font_names.py
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py
@@ -200,8 +189,9 @@ if [[ "$WITH_COVERAGE" -eq 1 ]]; then
   COVERAGE_START=$(date +%s)
   run_step "Firmware coverage ratchet regression tests" python3 scripts/test_check_firmware_coverage.py
   run_step "Firmware coverage measurement" python3 scripts/run_firmware_coverage.py
-  # Advisory until the Track C file splits land and the baseline is refreshed.
-  run_advisory_step "Firmware coverage ratchet" python3 scripts/check_firmware_coverage.py
+  # Blocking: the Track C splits have landed and the baseline was regenerated
+  # from a full 149-suite instrumented run against the reformatted tree.
+  run_step "Firmware coverage ratchet" python3 scripts/check_firmware_coverage.py
   COVERAGE_ELAPSED=$(($(date +%s) - COVERAGE_START))
   echo -e "${YELLOW}[info] coverage lane took ${COVERAGE_ELAPSED}s (not charged to the ci-test budget)${NC}"
 fi

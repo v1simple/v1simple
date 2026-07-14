@@ -43,7 +43,7 @@ namespace {
 constexpr uint32_t OBD_RSSI_REFRESH_MS = 2000;
 #endif
 
-}  // namespace
+} // namespace
 
 // ======================================================================
 // SINGLETON — file-scope module instance
@@ -149,10 +149,7 @@ void ObdRuntimeModule::resetForBegin() {
 #endif
 }
 
-void ObdRuntimeModule::begin(ObdBleClient* bleClient,
-                             bool enabled,
-                             const char* savedAddress,
-                             uint8_t savedAddrType,
+void ObdRuntimeModule::begin(ObdBleClient* bleClient, bool enabled, const char* savedAddress, uint8_t savedAddrType,
                              int8_t minRssi) {
     bleClient_ = bleClient;
     enabled_ = enabled;
@@ -203,7 +200,8 @@ void ObdRuntimeModule::resetInitState(bool preferWarmInit) {
 // ======================================================================
 
 void ObdRuntimeModule::setEnabled(bool enabled) {
-    if (enabled_ == enabled) return;
+    if (enabled_ == enabled)
+        return;
     enabled_ = enabled;
 
     if (!enabled_) {
@@ -243,8 +241,10 @@ void ObdRuntimeModule::setEnabled(bool enabled) {
 }
 
 void ObdRuntimeModule::setMinRssi(int8_t minRssi) {
-    if (minRssi < -90) minRssi = -90;
-    if (minRssi > -40) minRssi = -40;
+    if (minRssi < -90)
+        minRssi = -90;
+    if (minRssi > -40)
+        minRssi = -40;
     minRssi_ = minRssi;
 }
 
@@ -261,12 +261,12 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
         handled = false;
     } else {
         switch (kind) {
-            case ObdCommandKind::SPEED:
-                handled = handleSpeedResponse(nowMs);
-                break;
-            default:
-                handled = false;
-                break;
+        case ObdCommandKind::SPEED:
+            handled = handleSpeedResponse(nowMs);
+            break;
+        default:
+            handled = false;
+            break;
         }
     }
 
@@ -283,10 +283,8 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
     if (bufferOverflowCount_ >= obd::BUFFER_OVERFLOWS_BEFORE_DISCONNECT) {
         handlePollingError(nowMs, false, ObdFailureReason::BUFFER_OVERFLOW);
     } else {
-        handlePollingError(nowMs,
-                           false,
-                           bleOverflowed_ ? ObdFailureReason::BUFFER_OVERFLOW
-                                          : ObdFailureReason::COMMAND_RESPONSE);
+        handlePollingError(nowMs, false,
+                           bleOverflowed_ ? ObdFailureReason::BUFFER_OVERFLOW : ObdFailureReason::COMMAND_RESPONSE);
     }
 }
 
@@ -295,7 +293,8 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
 // ======================================================================
 
 void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyContext) {
-    if (!enabled_) return;
+    if (!enabled_)
+        return;
 
     drainBleEventQueue();
 
@@ -354,279 +353,262 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     }
 
     switch (state_) {
-        case ObdConnectionState::IDLE:
-            if (manualScanPreemptProxy_ && (proxyAdvertising || proxyClientConnected)) {
-                break;
-            }
-            if (scanRequested_ &&
-                (manualScanPending_ || obdScanAllowed) &&
-                bleScanIdle &&
-                !v1ConnectInProgress) {
-                if (startBleScan()) {
-                    scanRequested_ = false;
-                    transitionTo(ObdConnectionState::SCANNING, nowMs);
-                }
-            }
+    case ObdConnectionState::IDLE:
+        if (manualScanPreemptProxy_ && (proxyAdvertising || proxyClientConnected)) {
             break;
-
-        case ObdConnectionState::WAIT_BOOT: {
-            if (!bootReady) {
-                break;
+        }
+        if (scanRequested_ && (manualScanPending_ || obdScanAllowed) && bleScanIdle && !v1ConnectInProgress) {
+            if (startBleScan()) {
+                scanRequested_ = false;
+                transitionTo(ObdConnectionState::SCANNING, nowMs);
             }
-            if (!obdConnectAllowed) {
-                break;
-            }
+        }
+        break;
 
-            setConnectTargetFromSaved();
+    case ObdConnectionState::WAIT_BOOT: {
+        if (!bootReady) {
+            break;
+        }
+        if (!obdConnectAllowed) {
+            break;
+        }
+
+        setConnectTargetFromSaved();
+        transitionTo(ObdConnectionState::CONNECTING, nowMs);
+        break;
+    }
+
+    case ObdConnectionState::SCANNING: {
+        if (pendingDeviceFound_) {
+            pendingDeviceFound_ = false;
+            rssi_ = pendingRssi_;
+            connectAttempts_ = 0;
+            preferWarmReconnect_ = false;
+            if (manualScanPending_) {
+                copyString(manualCandidateAddress_, sizeof(manualCandidateAddress_), pendingAddress_);
+                manualCandidateAddrType_ = pendingAddrType_;
+                manualCandidateValid_ = true;
+                setConnectTarget(manualCandidateAddress_, manualCandidateAddrType_, true);
+                manualScanPreemptProxy_ = false;
+            } else {
+                setSavedAddressFromBuffer(pendingAddress_);
+                savedAddrType_ = pendingAddrType_;
+                setConnectTargetFromSaved();
+            }
             transitionTo(ObdConnectionState::CONNECTING, nowMs);
             break;
         }
+        if ((nowMs - stateEnteredMs_) >= obd::SCAN_DURATION_MS) {
+            if (manualScanPending_) {
+                clearManualScanState();
+            }
+            transitionTo(ObdConnectionState::IDLE, nowMs);
+        }
+        break;
+    }
 
-        case ObdConnectionState::SCANNING: {
-            if (pendingDeviceFound_) {
-                pendingDeviceFound_ = false;
-                rssi_ = pendingRssi_;
-                connectAttempts_ = 0;
-                preferWarmReconnect_ = false;
-                if (manualScanPending_) {
-                    copyString(manualCandidateAddress_, sizeof(manualCandidateAddress_), pendingAddress_);
-                    manualCandidateAddrType_ = pendingAddrType_;
-                    manualCandidateValid_ = true;
-                    setConnectTarget(manualCandidateAddress_, manualCandidateAddrType_, true);
-                    manualScanPreemptProxy_ = false;
-                } else {
-                    setSavedAddressFromBuffer(pendingAddress_);
-                    savedAddrType_ = pendingAddrType_;
-                    setConnectTargetFromSaved();
-                }
-                transitionTo(ObdConnectionState::CONNECTING, nowMs);
-                break;
-            }
-            if ((nowMs - stateEnteredMs_) >= obd::SCAN_DURATION_MS) {
-                if (manualScanPending_) {
-                    clearManualScanState();
-                }
-                transitionTo(ObdConnectionState::IDLE, nowMs);
-            }
+    case ObdConnectionState::CONNECTING:
+        if (bleDisconnected_) {
+            handleConnectFailure(nowMs, ObdFailureReason::CONNECT_START, bleDisconnectReason_);
             break;
         }
-
-        case ObdConnectionState::CONNECTING:
-            if (bleDisconnected_) {
-                handleConnectFailure(nowMs,
-                                     ObdFailureReason::CONNECT_START,
-                                     bleDisconnectReason_);
-                break;
-            }
-            {
-                ObdTransportResult transportResult{};
-                if (takeTransportResult(ObdTransportOp::CONNECT, transportResult)) {
-                    if (!transportResult.success || transportResult.timedOut) {
-                        handleConnectFailure(nowMs,
-                                             transportResult.timedOut
-                                                 ? ObdFailureReason::CONNECT_TIMEOUT
-                                                 : ObdFailureReason::CONNECT_START);
-                        break;
-                    }
-                }
-            }
-            if (justEntered) {
-                bleDisconnectReason_ = 0;
-                lastConnectStartMs_ = nowMs;
-                const bool preferCachedAttributes = preferWarmReconnect_ && savedAddress_[0] != '\0';
-                if (!beginTransportRequest(ObdTransportOp::CONNECT,
-                                           nowMs,
-                                           obd::CONNECT_TIMEOUT_MS,
-                                           nullptr,
-                                           false,
-                                           preferCachedAttributes)) {
-                    handleConnectFailure(nowMs, ObdFailureReason::CONNECT_START);
+        {
+            ObdTransportResult transportResult{};
+            if (takeTransportResult(ObdTransportOp::CONNECT, transportResult)) {
+                if (!transportResult.success || transportResult.timedOut) {
+                    handleConnectFailure(nowMs, transportResult.timedOut ? ObdFailureReason::CONNECT_TIMEOUT
+                                                                         : ObdFailureReason::CONNECT_START);
                     break;
                 }
             }
-            if (isBleConnected()) {
-                connectAttempts_ = 0;
-                connectSuccesses_++;
-                lastConnectSuccessMs_ = nowMs;
-                if (pendingTransportOp_ == ObdTransportOp::CONNECT ||
-                    readyTransportResult_.op == ObdTransportOp::CONNECT) {
-                    clearTransportRequest();
-                    readyTransportResult_ = {};
-                }
-                transitionTo(ObdConnectionState::DISCOVERING, nowMs);
+        }
+        if (justEntered) {
+            bleDisconnectReason_ = 0;
+            lastConnectStartMs_ = nowMs;
+            const bool preferCachedAttributes = preferWarmReconnect_ && savedAddress_[0] != '\0';
+            if (!beginTransportRequest(ObdTransportOp::CONNECT, nowMs, obd::CONNECT_TIMEOUT_MS, nullptr, false,
+                                       preferCachedAttributes)) {
+                handleConnectFailure(nowMs, ObdFailureReason::CONNECT_START);
                 break;
             }
-            if ((nowMs - stateEnteredMs_) >= obd::CONNECT_TIMEOUT_MS) {
+        }
+        if (isBleConnected()) {
+            connectAttempts_ = 0;
+            connectSuccesses_++;
+            lastConnectSuccessMs_ = nowMs;
+            if (pendingTransportOp_ == ObdTransportOp::CONNECT || readyTransportResult_.op == ObdTransportOp::CONNECT) {
                 clearTransportRequest();
                 readyTransportResult_ = {};
-                disconnectBle();
-                handleConnectFailure(nowMs, ObdFailureReason::CONNECT_TIMEOUT);
-                break;
             }
+            transitionTo(ObdConnectionState::DISCOVERING, nowMs);
             break;
-
-        case ObdConnectionState::SECURING:
-            updateSecuring(nowMs);
+        }
+        if ((nowMs - stateEnteredMs_) >= obd::CONNECT_TIMEOUT_MS) {
+            clearTransportRequest();
+            readyTransportResult_ = {};
+            disconnectBle();
+            handleConnectFailure(nowMs, ObdFailureReason::CONNECT_TIMEOUT);
             break;
+        }
+        break;
 
-        case ObdConnectionState::DISCOVERING:
-            if (bleDisconnected_) {
+    case ObdConnectionState::SECURING:
+        updateSecuring(nowMs);
+        break;
+
+    case ObdConnectionState::DISCOVERING:
+        if (bleDisconnected_) {
 #ifndef UNIT_TEST
-                Serial.printf("[OBD] lost connection during discovery (ble reason=%d %s)\n",
-                              bleDisconnectReason_,
-                              bleReasonName(bleDisconnectReason_));
+            Serial.printf("[OBD] lost connection during discovery (ble reason=%d %s)\n", bleDisconnectReason_,
+                          bleReasonName(bleDisconnectReason_));
 #endif
-                bleDisconnected_ = false;
-                if (autoHealBondIfAllowed(nowMs, "discovering_disconnect")) {
-                    break;
-                }
-                if (manualScanPending_) {
-                    clearManualScanState();
-                    transitionTo(ObdConnectionState::IDLE, nowMs);
-                    break;
-                }
-                transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
+            bleDisconnected_ = false;
+            if (autoHealBondIfAllowed(nowMs, "discovering_disconnect")) {
                 break;
             }
-            // DA14531 BLE 4.2 needs time after connect before GATT ops
-            if ((nowMs - stateEnteredMs_) < obd::POST_CONNECT_SETTLE_MS) {
+            if (manualScanPending_) {
+                clearManualScanState();
+                transitionTo(ObdConnectionState::IDLE, nowMs);
                 break;
             }
-            {
-                ObdTransportResult transportResult{};
-                if (takeTransportResult(ObdTransportOp::DISCOVER, transportResult)) {
-                    if (!transportResult.success || transportResult.timedOut) {
-                        disconnectBle();
-                        handleConnectFailure(nowMs, ObdFailureReason::DISCOVERY);
-                        break;
-                    }
-                    if (bleDisconnected_) {
-#ifndef UNIT_TEST
-                        Serial.printf("[OBD] lost connection after discovery (ble reason=%d %s)\n",
-                                      bleDisconnectReason_,
-                                      bleReasonName(bleDisconnectReason_));
-#endif
-                        bleDisconnected_ = false;
-                        if (autoHealBondIfAllowed(nowMs, "post_discover_disconnect")) {
-                            break;
-                        }
-                        if (manualScanPending_) {
-                            clearManualScanState();
-                            transitionTo(ObdConnectionState::IDLE, nowMs);
-                            break;
-                        }
-                        transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
-                        break;
-                    }
-                    if (!beginTransportRequest(ObdTransportOp::SUBSCRIBE, nowMs, obd::CONNECT_TIMEOUT_MS)) {
-                        disconnectBle();
-                        handleConnectFailure(nowMs, ObdFailureReason::SUBSCRIBE);
-                        break;
-                    }
-                    break;
-                }
-                if (takeTransportResult(ObdTransportOp::SUBSCRIBE, transportResult)) {
-                    if (!transportResult.success || transportResult.timedOut) {
-                        disconnectBle();
-                        handleConnectFailure(nowMs, ObdFailureReason::SUBSCRIBE);
-                        break;
-                    }
-                    resetInitState(preferWarmReconnect_);
-                    preferWarmReconnect_ = true;
-                    transitionTo(ObdConnectionState::AT_INIT, nowMs);
-                    break;
-                }
-                if (!transportRequestActive_ && !readyTransportResult_.ready &&
-                    !beginTransportRequest(ObdTransportOp::DISCOVER, nowMs, obd::CONNECT_TIMEOUT_MS)) {
+            transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
+            break;
+        }
+        // DA14531 BLE 4.2 needs time after connect before GATT ops
+        if ((nowMs - stateEnteredMs_) < obd::POST_CONNECT_SETTLE_MS) {
+            break;
+        }
+        {
+            ObdTransportResult transportResult{};
+            if (takeTransportResult(ObdTransportOp::DISCOVER, transportResult)) {
+                if (!transportResult.success || transportResult.timedOut) {
                     disconnectBle();
                     handleConnectFailure(nowMs, ObdFailureReason::DISCOVERY);
                     break;
                 }
-            }
-            break;
-
-        case ObdConnectionState::AT_INIT:
-            updateAtInit(nowMs);
-            break;
-
-        case ObdConnectionState::POLLING:
-            updatePolling(nowMs);
-            break;
-
-        case ObdConnectionState::ERROR_BACKOFF:
-            if ((nowMs - stateEnteredMs_) >= obd::ERROR_PAUSE_MS) {
-                if (shouldDisconnectAfterPollingError(lastFailure_) &&
-                    consecutiveErrors_ >= obd::ERRORS_BEFORE_DISCONNECT) {
-                    disconnectBle();
+                if (bleDisconnected_) {
+#ifndef UNIT_TEST
+                    Serial.printf("[OBD] lost connection after discovery (ble reason=%d %s)\n", bleDisconnectReason_,
+                                  bleReasonName(bleDisconnectReason_));
+#endif
+                    bleDisconnected_ = false;
+                    if (autoHealBondIfAllowed(nowMs, "post_discover_disconnect")) {
+                        break;
+                    }
+                    if (manualScanPending_) {
+                        clearManualScanState();
+                        transitionTo(ObdConnectionState::IDLE, nowMs);
+                        break;
+                    }
                     transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
-                } else {
-                    backoffCycles_++;
-                    if (!shouldDisconnectAfterPollingError(lastFailure_)) {
-                        consecutiveErrors_ = 0;
-                    }
-                    if (backoffCycles_ >= obd::ECU_IDLE_BACKOFF_THRESHOLD) {
-                        v1WasConnectedAtEcuIdle_ = v1Connected;
-                        disconnectBle();
-                        clearSpeedState();
-                        transitionTo(ObdConnectionState::ECU_IDLE, nowMs);
-                    } else {
-                        transitionTo(ObdConnectionState::POLLING, nowMs);
-                    }
-                }
-            }
-            break;
-
-        case ObdConnectionState::DISCONNECTED:
-            if (justEntered) {
-                clearBleResponseState();
-                resetCommandState();
-                disconnectBle();
-            }
-            if (scanRequested_ &&
-                (manualScanPending_ || obdScanAllowed) &&
-                bleScanIdle &&
-                !v1ConnectInProgress) {
-                if (startBleScan()) {
-                    scanRequested_ = false;
-                    transitionTo(ObdConnectionState::SCANNING, nowMs);
                     break;
                 }
-            }
-            if (obdRetryAllowed || connectTargetFromManualCandidate_) {
-                if (savedAddress_[0] != '\0') {
-                    setConnectTargetFromSaved();
-                    transitionTo(ObdConnectionState::CONNECTING, nowMs);
-                } else if (connectAddress_[0] != '\0') {
-                    // Auto-heal recovery: connectAddress_ still set from prior attempt
-                    transitionTo(ObdConnectionState::CONNECTING, nowMs);
-                } else {
-                    transitionTo(ObdConnectionState::IDLE, nowMs);
+                if (!beginTransportRequest(ObdTransportOp::SUBSCRIBE, nowMs, obd::CONNECT_TIMEOUT_MS)) {
+                    disconnectBle();
+                    handleConnectFailure(nowMs, ObdFailureReason::SUBSCRIBE);
+                    break;
                 }
-            }
-            break;
-
-        case ObdConnectionState::ECU_IDLE:
-            if (justEntered) {
-                clearBleResponseState();
-                resetCommandState();
-            }
-
-            // Resume path 1: V1 reconnected (was disconnected when we entered ECU_IDLE)
-            if (!v1WasConnectedAtEcuIdle_ && v1Connected) {
-                backoffCycles_ = 0;
-                transitionTo(ObdConnectionState::WAIT_BOOT, nowMs);
                 break;
             }
+            if (takeTransportResult(ObdTransportOp::SUBSCRIBE, transportResult)) {
+                if (!transportResult.success || transportResult.timedOut) {
+                    disconnectBle();
+                    handleConnectFailure(nowMs, ObdFailureReason::SUBSCRIBE);
+                    break;
+                }
+                resetInitState(preferWarmReconnect_);
+                preferWarmReconnect_ = true;
+                transitionTo(ObdConnectionState::AT_INIT, nowMs);
+                break;
+            }
+            if (!transportRequestActive_ && !readyTransportResult_.ready &&
+                !beginTransportRequest(ObdTransportOp::DISCOVER, nowMs, obd::CONNECT_TIMEOUT_MS)) {
+                disconnectBle();
+                handleConnectFailure(nowMs, ObdFailureReason::DISCOVERY);
+                break;
+            }
+        }
+        break;
 
-            // Retry cadence is now coordinator-owned. Re-enter connect only when allowed.
-            if (obdRetryAllowed) {
-                if (savedAddress_[0] != '\0') {
-                    setConnectTargetFromSaved();
-                    preferWarmReconnect_ = true;
-                    transitionTo(ObdConnectionState::CONNECTING, nowMs);
+    case ObdConnectionState::AT_INIT:
+        updateAtInit(nowMs);
+        break;
+
+    case ObdConnectionState::POLLING:
+        updatePolling(nowMs);
+        break;
+
+    case ObdConnectionState::ERROR_BACKOFF:
+        if ((nowMs - stateEnteredMs_) >= obd::ERROR_PAUSE_MS) {
+            if (shouldDisconnectAfterPollingError(lastFailure_) &&
+                consecutiveErrors_ >= obd::ERRORS_BEFORE_DISCONNECT) {
+                disconnectBle();
+                transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
+            } else {
+                backoffCycles_++;
+                if (!shouldDisconnectAfterPollingError(lastFailure_)) {
+                    consecutiveErrors_ = 0;
+                }
+                if (backoffCycles_ >= obd::ECU_IDLE_BACKOFF_THRESHOLD) {
+                    v1WasConnectedAtEcuIdle_ = v1Connected;
+                    disconnectBle();
+                    clearSpeedState();
+                    transitionTo(ObdConnectionState::ECU_IDLE, nowMs);
+                } else {
+                    transitionTo(ObdConnectionState::POLLING, nowMs);
                 }
             }
+        }
+        break;
+
+    case ObdConnectionState::DISCONNECTED:
+        if (justEntered) {
+            clearBleResponseState();
+            resetCommandState();
+            disconnectBle();
+        }
+        if (scanRequested_ && (manualScanPending_ || obdScanAllowed) && bleScanIdle && !v1ConnectInProgress) {
+            if (startBleScan()) {
+                scanRequested_ = false;
+                transitionTo(ObdConnectionState::SCANNING, nowMs);
+                break;
+            }
+        }
+        if (obdRetryAllowed || connectTargetFromManualCandidate_) {
+            if (savedAddress_[0] != '\0') {
+                setConnectTargetFromSaved();
+                transitionTo(ObdConnectionState::CONNECTING, nowMs);
+            } else if (connectAddress_[0] != '\0') {
+                // Auto-heal recovery: connectAddress_ still set from prior attempt
+                transitionTo(ObdConnectionState::CONNECTING, nowMs);
+            } else {
+                transitionTo(ObdConnectionState::IDLE, nowMs);
+            }
+        }
+        break;
+
+    case ObdConnectionState::ECU_IDLE:
+        if (justEntered) {
+            clearBleResponseState();
+            resetCommandState();
+        }
+
+        // Resume path 1: V1 reconnected (was disconnected when we entered ECU_IDLE)
+        if (!v1WasConnectedAtEcuIdle_ && v1Connected) {
+            backoffCycles_ = 0;
+            transitionTo(ObdConnectionState::WAIT_BOOT, nowMs);
             break;
+        }
+
+        // Retry cadence is now coordinator-owned. Re-enter connect only when allowed.
+        if (obdRetryAllowed) {
+            if (savedAddress_[0] != '\0') {
+                setConnectTargetFromSaved();
+                preferWarmReconnect_ = true;
+                transitionTo(ObdConnectionState::CONNECTING, nowMs);
+            }
+        }
+        break;
     }
 }
 
@@ -637,16 +619,16 @@ ObdBleArbitrationRequest ObdRuntimeModule::getBleArbitrationRequest() const {
     }
 
     switch (state_) {
-        case ObdConnectionState::WAIT_BOOT:
-        case ObdConnectionState::CONNECTING:
-        case ObdConnectionState::SECURING:
-        case ObdConnectionState::DISCOVERING:
-        case ObdConnectionState::AT_INIT:
-            return (savedAddress_[0] != '\0' || connectAddress_[0] != '\0')
-                       ? ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD
-                       : ObdBleArbitrationRequest::NONE;
-        default:
-            return ObdBleArbitrationRequest::NONE;
+    case ObdConnectionState::WAIT_BOOT:
+    case ObdConnectionState::CONNECTING:
+    case ObdConnectionState::SECURING:
+    case ObdConnectionState::DISCOVERING:
+    case ObdConnectionState::AT_INIT:
+        return (savedAddress_[0] != '\0' || connectAddress_[0] != '\0')
+                   ? ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD
+                   : ObdBleArbitrationRequest::NONE;
+    default:
+        return ObdBleArbitrationRequest::NONE;
     }
 }
 #endif
@@ -659,18 +641,16 @@ ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t nowMs) const {
 #ifndef UNIT_TEST
     // Guard against calls before begin() — bleClient_ is still nullptr and
     // the helper methods (isBleConnected, etc.) would dereference it.
-    if (!bleClient_) return ObdRuntimeStatus{};
+    if (!bleClient_)
+        return ObdRuntimeStatus{};
 #endif
 
     ObdRuntimeStatus status;
     status.enabled = enabled_;
     status.state = state_;
-    status.connected = isBleConnected() ||
-                       state_ == ObdConnectionState::SECURING ||
-                       state_ == ObdConnectionState::DISCOVERING ||
-                       state_ == ObdConnectionState::AT_INIT ||
-                       state_ == ObdConnectionState::POLLING ||
-                       state_ == ObdConnectionState::ERROR_BACKOFF;
+    status.connected = isBleConnected() || state_ == ObdConnectionState::SECURING ||
+                       state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT ||
+                       state_ == ObdConnectionState::POLLING || state_ == ObdConnectionState::ERROR_BACKOFF;
     status.securityReady = isBleSecurityReady();
     status.encrypted = isBleEncrypted();
     status.bonded = isBleBonded();
@@ -703,10 +683,9 @@ ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t nowMs) const {
     return status;
 }
 
-bool ObdRuntimeModule::getFreshSpeed(uint32_t nowMs,
-                                     float& speedMphOut,
-                                     uint32_t& tsMsOut) const {
-    if (!isSpeedFresh(nowMs)) return false;
+bool ObdRuntimeModule::getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const {
+    if (!isSpeedFresh(nowMs))
+        return false;
     speedMphOut = speedMph_;
     tsMsOut = speedSampleTsMs_;
     return true;
@@ -717,7 +696,8 @@ bool ObdRuntimeModule::getFreshSpeed(uint32_t nowMs,
 // ======================================================================
 
 bool ObdRuntimeModule::startScan() {
-    if (!enabled_ || state_ == ObdConnectionState::SCANNING || scanRequested_) return false;
+    if (!enabled_ || state_ == ObdConnectionState::SCANNING || scanRequested_)
+        return false;
     scanRequested_ = true;
     return true;
 }
@@ -767,17 +747,13 @@ bool ObdRuntimeModule::requestManualPairScan(uint32_t nowMs) {
 }
 
 void ObdRuntimeModule::cancelPendingConnect() {
-    const bool connectStateActive =
-        state_ == ObdConnectionState::CONNECTING ||
-        state_ == ObdConnectionState::SECURING ||
-        state_ == ObdConnectionState::DISCOVERING ||
-        state_ == ObdConnectionState::AT_INIT;
+    const bool connectStateActive = state_ == ObdConnectionState::CONNECTING ||
+                                    state_ == ObdConnectionState::SECURING ||
+                                    state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT;
     const bool connectTransportActive =
         transportRequestActive_ &&
-        (pendingTransportOp_ == ObdTransportOp::CONNECT ||
-         pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
-         pendingTransportOp_ == ObdTransportOp::DISCOVER ||
-         pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
+        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
+         pendingTransportOp_ == ObdTransportOp::DISCOVER || pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
     if (!connectStateActive && !connectTransportActive && !isBleConnected()) {
         return;
     }
@@ -800,17 +776,13 @@ bool ObdRuntimeModule::isScanStopped() const {
 }
 
 bool ObdRuntimeModule::isConnectIdle() const {
-    const bool connectStateActive =
-        state_ == ObdConnectionState::CONNECTING ||
-        state_ == ObdConnectionState::SECURING ||
-        state_ == ObdConnectionState::DISCOVERING ||
-        state_ == ObdConnectionState::AT_INIT;
+    const bool connectStateActive = state_ == ObdConnectionState::CONNECTING ||
+                                    state_ == ObdConnectionState::SECURING ||
+                                    state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT;
     const bool connectTransportActive =
         transportRequestActive_ &&
-        (pendingTransportOp_ == ObdTransportOp::CONNECT ||
-         pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
-         pendingTransportOp_ == ObdTransportOp::DISCOVER ||
-         pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
+        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
+         pendingTransportOp_ == ObdTransportOp::DISCOVER || pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
     return !connectStateActive && !connectTransportActive && !isBleConnected();
 }
 

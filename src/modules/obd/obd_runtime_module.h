@@ -79,8 +79,6 @@ struct ObdRuntimeStatus {
     uint32_t speedAgeMs = UINT32_MAX;
     uint32_t speedSampleTsMs = 0;
 
-
-
     int8_t rssi = 0;
     uint8_t connectAttempts = 0;
     uint32_t connectSuccesses = 0;
@@ -124,11 +122,8 @@ struct ObdBleContext {
 };
 
 class ObdRuntimeModule {
-public:
-    void begin(class ObdBleClient* bleClient,
-               bool enabled,
-               const char* savedAddress,
-               uint8_t savedAddrType,
+  public:
+    void begin(class ObdBleClient* bleClient, bool enabled, const char* savedAddress, uint8_t savedAddrType,
                int8_t minRssi);
     void update(uint32_t nowMs, const ObdBleContext& bootReadyContext);
     void update(uint32_t nowMs, bool bootReady, bool v1Connected, bool bleScanIdle) {
@@ -203,7 +198,7 @@ public:
     ObdBleArbitrationRequest getBleArbitrationRequest() const;
 #endif
 
-private:
+  private:
     static constexpr size_t ADDR_BUF_LEN = 18;
     static constexpr size_t CMD_BUF_LEN = 16;
     static constexpr size_t BLE_BUF_LEN = 256;
@@ -270,15 +265,8 @@ private:
     int8_t readBleRssi(uint32_t nowMs);
 
     bool validateAtResponse(const char* command, const char* response, size_t len) const;
-    bool startCommand(ObdCommandKind kind,
-                      ParserKind parser,
-                      const char* tx,
-                      uint8_t expectedService,
-                      uint8_t expectedPid,
-                      uint16_t expectedDid,
-                      uint32_t timeoutMs,
-                      uint8_t retries,
-                      uint32_t nowMs);
+    bool startCommand(ObdCommandKind kind, ParserKind parser, const char* tx, uint8_t expectedService,
+                      uint8_t expectedPid, uint16_t expectedDid, uint32_t timeoutMs, uint8_t retries, uint32_t nowMs);
     bool retryActiveCommand(uint32_t nowMs);
     bool retryActiveCommandWithAlternateWriteMode(uint32_t nowMs);
     void completeActiveCommand();
@@ -294,10 +282,7 @@ private:
     bool startSpeedCommand(uint32_t nowMs);
 
     bool handleSpeedResponse(uint32_t nowMs);
-    bool validateSimpleResponse(uint8_t expectedService,
-                                uint8_t expectedPid,
-                                const char* response,
-                                size_t len) const;
+    bool validateSimpleResponse(uint8_t expectedService, uint8_t expectedPid, const char* response, size_t len) const;
 
     static const char* bleReasonName(int reason);
     static bool isSecurityBleError(int error);
@@ -305,12 +290,8 @@ private:
     bool canAutoHealBond() const;
     bool autoHealBondIfAllowed(uint32_t nowMs, const char* context);
     void pumpTransportResults();
-    bool beginTransportRequest(ObdTransportOp op,
-                               uint32_t nowMs,
-                               uint32_t timeoutMs,
-                               const char* cmd = nullptr,
-                               bool withResponse = false,
-                               bool preferCachedAttributes = false);
+    bool beginTransportRequest(ObdTransportOp op, uint32_t nowMs, uint32_t timeoutMs, const char* cmd = nullptr,
+                               bool withResponse = false, bool preferCachedAttributes = false);
     bool pendingTransportTimedOut(uint32_t nowMs) const;
     bool takeTransportResult(ObdTransportOp op, ObdTransportResult& result);
     void clearTransportRequest();
@@ -355,8 +336,6 @@ private:
     float speedMph_ = 0.0f;
     uint32_t speedSampleTsMs_ = 0;
     bool speedValid_ = false;
-
-
 
     char savedAddress_[ADDR_BUF_LEN] = {};
     char connectAddress_[ADDR_BUF_LEN] = {};

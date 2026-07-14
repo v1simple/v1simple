@@ -7,12 +7,10 @@
 #include "settings.h"
 
 class PowerModule {
-public:
+  public:
     using ShutdownPreparationCallback = void (*)(void*);
 
-    void begin(BatteryManager* batteryMgr,
-               V1Display* disp,
-               SettingsManager* settings);
+    void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings);
 
     void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context);
 
@@ -41,7 +39,7 @@ public:
     void performShutdownRequestForTest() { performShutdownRequest(); }
 #endif
 
-private:
+  private:
     void performShutdownRequest();
     void reevaluateAutoPowerOffTimer(const V1Settings& settings, unsigned long nowMs);
 
@@ -54,7 +52,7 @@ private:
     bool lowBatteryWarningShown_ = false;
     unsigned long criticalBatteryTime_ = 0;
 
-    unsigned long autoPowerOffTimerStart_ = 0;  // 0 = timer not running
+    unsigned long autoPowerOffTimerStart_ = 0; // 0 = timer not running
     bool autoPowerOffArmed_ = false;
     bool v1SignalPresent_ = false;
     bool alpSignalPresent_ = false;

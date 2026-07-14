@@ -14,7 +14,8 @@ AlertPersistenceModule::AlertPersistenceModule() {
     // Dependencies set in begin()
 }
 
-void AlertPersistenceModule::begin(V1BLEClient* ble, PacketParser* pParser, V1Display* disp, SettingsManager* settings) {
+void AlertPersistenceModule::begin(V1BLEClient* ble, PacketParser* pParser, V1Display* disp,
+                                   SettingsManager* settings) {
     bleClient_ = ble;
     parser_ = pParser;
     display_ = disp;

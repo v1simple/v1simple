@@ -28,14 +28,12 @@
 #include "obd_string_utils.h"
 #include "../../perf_metrics.h"
 
-
 // ======================================================================
 // FILE-SCOPE HELPERS — string utilities for command parsing
 // ======================================================================
 
 using ObdStringUtils::copyString;
 using ObdStringUtils::stringContainsCI;
-
 
 // ======================================================================
 // SPEED STATE RESET — clear speed polling state on transition
@@ -56,14 +54,11 @@ void ObdRuntimeModule::resetCommandState() {
     activeCommand_ = ActiveObdCommand{};
 }
 
-
 // ======================================================================
 // RESPONSE VALIDATION — parse + interpret AT/speed responses
 // ======================================================================
 
-bool ObdRuntimeModule::validateAtResponse(const char* command,
-                                          const char* response,
-                                          size_t len) const {
+bool ObdRuntimeModule::validateAtResponse(const char* command, const char* response, size_t len) const {
     if (!command || !response || len == 0) {
         return false;
     }
@@ -72,34 +67,24 @@ bool ObdRuntimeModule::validateAtResponse(const char* command,
         return validateSimpleResponse(0x41, 0x00, response, len);
     }
     if (strncmp(command, "ATZ", 3) == 0 || strncmp(command, "ATI", 3) == 0) {
-        return stringContainsCI(response, "OBDLINK") ||
-               stringContainsCI(response, "STN") ||
+        return stringContainsCI(response, "OBDLINK") || stringContainsCI(response, "STN") ||
                stringContainsCI(response, "ELM327");
     }
     return stringContainsCI(response, "OK");
 }
 
-bool ObdRuntimeModule::validateSimpleResponse(uint8_t expectedService,
-                                              uint8_t expectedPid,
-                                              const char* response,
+bool ObdRuntimeModule::validateSimpleResponse(uint8_t expectedService, uint8_t expectedPid, const char* response,
                                               size_t len) const {
     Elm327ParseResult result = parseElm327Response(response, len);
     return result.valid && result.service == expectedService && result.pid == expectedPid;
 }
 
-
 // ======================================================================
 // COMMAND LIFECYCLE — start/retry/complete command sequence
 // ======================================================================
 
-bool ObdRuntimeModule::startCommand(ObdCommandKind kind,
-                                    ParserKind parser,
-                                    const char* tx,
-                                    uint8_t expectedService,
-                                    uint8_t expectedPid,
-                                    uint16_t expectedDid,
-                                    uint32_t timeoutMs,
-                                    uint8_t retries,
+bool ObdRuntimeModule::startCommand(ObdCommandKind kind, ParserKind parser, const char* tx, uint8_t expectedService,
+                                    uint8_t expectedPid, uint16_t expectedDid, uint32_t timeoutMs, uint8_t retries,
                                     uint32_t nowMs) {
     if (!tx || tx[0] == '\0') {
         return false;
@@ -120,11 +105,7 @@ bool ObdRuntimeModule::startCommand(ObdCommandKind kind,
     copyString(activeCommand_.tx, sizeof(activeCommand_.tx), tx);
 
     activeCommand_.sentMs = 0;
-    if (!beginTransportRequest(ObdTransportOp::WRITE,
-                               nowMs,
-                               0,
-                               activeCommand_.tx,
-                               activeCommand_.writeWithResponse)) {
+    if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         resetCommandState();
         return false;
     }
@@ -140,20 +121,14 @@ bool ObdRuntimeModule::retryActiveCommand(uint32_t nowMs) {
     initRetries_++;
     clearBleResponseState();
     activeCommand_.sentMs = 0;
-    if (!beginTransportRequest(ObdTransportOp::WRITE,
-                               nowMs,
-                               0,
-                               activeCommand_.tx,
-                               activeCommand_.writeWithResponse)) {
+    if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         return false;
     }
     return true;
 }
 
 bool ObdRuntimeModule::retryActiveCommandWithAlternateWriteMode(uint32_t nowMs) {
-    if (!activeCommand_.active ||
-        activeCommand_.retriesRemaining == 0 ||
-        activeCommand_.alternateWriteModeTried) {
+    if (!activeCommand_.active || activeCommand_.retriesRemaining == 0 || activeCommand_.alternateWriteModeTried) {
         return false;
     }
 
@@ -163,11 +138,7 @@ bool ObdRuntimeModule::retryActiveCommandWithAlternateWriteMode(uint32_t nowMs) 
     initRetries_++;
     clearBleResponseState();
     activeCommand_.sentMs = 0;
-    if (!beginTransportRequest(ObdTransportOp::WRITE,
-                               nowMs,
-                               0,
-                               activeCommand_.tx,
-                               activeCommand_.writeWithResponse)) {
+    if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         return false;
     }
     return true;
@@ -177,7 +148,6 @@ void ObdRuntimeModule::completeActiveCommand() {
     resetCommandState();
 }
 
-
 // ======================================================================
 // RESPONSE HANDLERS — handleAtInitResponse + handleSpeedResponse
 // ======================================================================
@@ -186,8 +156,7 @@ void ObdRuntimeModule::handleAtInitResponse(uint32_t nowMs) {
     if (!activeCommand_.active) {
         return;
     }
-    const bool valid = !bleOverflowed_ &&
-                       validateAtResponse(activeCommand_.tx, bleBuf_, bleBufLen_);
+    const bool valid = !bleOverflowed_ && validateAtResponse(activeCommand_.tx, bleBuf_, bleBufLen_);
     clearBleResponseState();
 
     if (valid) {
@@ -245,14 +214,12 @@ bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
     return true;
 }
 
-
 // ======================================================================
 // SPEED POLLING — scheduling and freshness checks
 // ======================================================================
 
 bool ObdRuntimeModule::isSpeedFresh(uint32_t nowMs) const {
-    return speedValid_ && speedSampleTsMs_ != 0 &&
-           (nowMs - speedSampleTsMs_) <= obd::SPEED_MAX_AGE_MS;
+    return speedValid_ && speedSampleTsMs_ != 0 && (nowMs - speedSampleTsMs_) <= obd::SPEED_MAX_AGE_MS;
 }
 
 bool ObdRuntimeModule::speedDue(uint32_t nowMs) const {
@@ -260,15 +227,8 @@ bool ObdRuntimeModule::speedDue(uint32_t nowMs) const {
 }
 
 bool ObdRuntimeModule::startSpeedCommand(uint32_t nowMs) {
-    if (!startCommand(ObdCommandKind::SPEED,
-                      ParserKind::SIMPLE,
-                      obd::SPEED_POLL_CMD,
-                      0x41,
-                      0x0D,
-                      0x0000,
-                      obd::POLL_TIMEOUT_MS,
-                      obd::POLL_COMMAND_RETRIES,
-                      nowMs)) {
+    if (!startCommand(ObdCommandKind::SPEED, ParserKind::SIMPLE, obd::SPEED_POLL_CMD, 0x41, 0x0D, 0x0000,
+                      obd::POLL_TIMEOUT_MS, obd::POLL_COMMAND_RETRIES, nowMs)) {
         handlePollingError(nowMs, false, ObdFailureReason::WRITE);
         return false;
     }
@@ -290,60 +250,71 @@ namespace {
 #define OBD_STATENAME_DEFINED
 const char* obdStateName(ObdConnectionState s) {
     switch (s) {
-        case ObdConnectionState::IDLE:          return "IDLE";
-        case ObdConnectionState::WAIT_BOOT:     return "WAIT_BOOT";
-        case ObdConnectionState::SCANNING:      return "SCANNING";
-        case ObdConnectionState::CONNECTING:    return "CONNECTING";
-        case ObdConnectionState::SECURING:      return "SECURING";
-        case ObdConnectionState::DISCOVERING:   return "DISCOVERING";
-        case ObdConnectionState::AT_INIT:       return "AT_INIT";
-        case ObdConnectionState::POLLING:       return "POLLING";
-        case ObdConnectionState::ERROR_BACKOFF: return "ERROR_BACKOFF";
-        case ObdConnectionState::DISCONNECTED:  return "DISCONNECTED";
-        case ObdConnectionState::ECU_IDLE:      return "ECU_IDLE";
-        default:                                return "?";
+    case ObdConnectionState::IDLE:
+        return "IDLE";
+    case ObdConnectionState::WAIT_BOOT:
+        return "WAIT_BOOT";
+    case ObdConnectionState::SCANNING:
+        return "SCANNING";
+    case ObdConnectionState::CONNECTING:
+        return "CONNECTING";
+    case ObdConnectionState::SECURING:
+        return "SECURING";
+    case ObdConnectionState::DISCOVERING:
+        return "DISCOVERING";
+    case ObdConnectionState::AT_INIT:
+        return "AT_INIT";
+    case ObdConnectionState::POLLING:
+        return "POLLING";
+    case ObdConnectionState::ERROR_BACKOFF:
+        return "ERROR_BACKOFF";
+    case ObdConnectionState::DISCONNECTED:
+        return "DISCONNECTED";
+    case ObdConnectionState::ECU_IDLE:
+        return "ECU_IDLE";
+    default:
+        return "?";
     }
 }
-#endif  // OBD_STATENAME_DEFINED
+#endif // OBD_STATENAME_DEFINED
 
 #ifndef OBD_FAILURE_REASON_NAME_DEFINED
 #define OBD_FAILURE_REASON_NAME_DEFINED
 const char* obdFailureReasonName(ObdFailureReason reason) {
     switch (reason) {
-        case ObdFailureReason::NONE:
-            return "NONE";
-        case ObdFailureReason::CONNECT_START:
-            return "CONNECT_START";
-        case ObdFailureReason::CONNECT_TIMEOUT:
-            return "CONNECT_TIMEOUT";
-        case ObdFailureReason::DISCOVERY:
-            return "DISCOVERY";
-        case ObdFailureReason::SUBSCRIBE:
-            return "SUBSCRIBE";
-        case ObdFailureReason::INIT_TIMEOUT:
-            return "INIT_TIMEOUT";
-        case ObdFailureReason::INIT_RESPONSE:
-            return "INIT_RESPONSE";
-        case ObdFailureReason::COMMAND_TIMEOUT:
-            return "COMMAND_TIMEOUT";
-        case ObdFailureReason::COMMAND_RESPONSE:
-            return "COMMAND_RESPONSE";
-        case ObdFailureReason::WRITE:
-            return "WRITE";
-        case ObdFailureReason::BUFFER_OVERFLOW:
-            return "BUFFER_OVERFLOW";
-        case ObdFailureReason::SECURITY_START:
-            return "SECURITY_START";
-        case ObdFailureReason::SECURITY_TIMEOUT:
-            return "SECURITY_TIMEOUT";
-        default:
-            return "UNKNOWN";
+    case ObdFailureReason::NONE:
+        return "NONE";
+    case ObdFailureReason::CONNECT_START:
+        return "CONNECT_START";
+    case ObdFailureReason::CONNECT_TIMEOUT:
+        return "CONNECT_TIMEOUT";
+    case ObdFailureReason::DISCOVERY:
+        return "DISCOVERY";
+    case ObdFailureReason::SUBSCRIBE:
+        return "SUBSCRIBE";
+    case ObdFailureReason::INIT_TIMEOUT:
+        return "INIT_TIMEOUT";
+    case ObdFailureReason::INIT_RESPONSE:
+        return "INIT_RESPONSE";
+    case ObdFailureReason::COMMAND_TIMEOUT:
+        return "COMMAND_TIMEOUT";
+    case ObdFailureReason::COMMAND_RESPONSE:
+        return "COMMAND_RESPONSE";
+    case ObdFailureReason::WRITE:
+        return "WRITE";
+    case ObdFailureReason::BUFFER_OVERFLOW:
+        return "BUFFER_OVERFLOW";
+    case ObdFailureReason::SECURITY_START:
+        return "SECURITY_START";
+    case ObdFailureReason::SECURITY_TIMEOUT:
+        return "SECURITY_TIMEOUT";
+    default:
+        return "UNKNOWN";
     }
 }
-#endif  // OBD_FAILURE_REASON_NAME_DEFINED
+#endif // OBD_FAILURE_REASON_NAME_DEFINED
 
-}  // namespace
-
+} // namespace
 
 // ======================================================================
 // ERROR RECOVERY — failure marking, backoff, connection failure handlers
@@ -354,9 +325,7 @@ void ObdRuntimeModule::markFailure(ObdFailureReason reason, uint32_t nowMs) {
     lastFailureMs_ = nowMs;
 }
 
-void ObdRuntimeModule::handleConnectFailure(uint32_t nowMs,
-                                            ObdFailureReason reason,
-                                            int bleReason) {
+void ObdRuntimeModule::handleConnectFailure(uint32_t nowMs, ObdFailureReason reason, int bleReason) {
     markFailure(reason, nowMs);
     connectFailures_++;
     connectAttempts_++;
@@ -364,32 +333,22 @@ void ObdRuntimeModule::handleConnectFailure(uint32_t nowMs,
     resetCommandState();
     bleDisconnected_ = false;
     const uint32_t obdStateMs = stateEnteredMs_ == 0 ? 0 : (nowMs - stateEnteredMs_);
-    const bool directAttemptsExhausted =
-        !manualScanPending_ && connectAttempts_ >= obd::MAX_DIRECT_CONNECT_FAILURES;
+    const bool directAttemptsExhausted = !manualScanPending_ && connectAttempts_ >= obd::MAX_DIRECT_CONNECT_FAILURES;
 #ifndef UNIT_TEST
-    Serial.printf(
-        "[OBD] connect failure reason=%s cycle=%s cycleMs=%lu obdState=%s obdStateMs=%lu attempt=%u/%u proxyAdv=%d proxyClient=%d retryAllowed=%d bleReason=%d (%s) next=%s\n",
-        obdFailureReasonName(reason),
-        perfConnectionCycleStateName(connectionCycleStateCode_),
-        static_cast<unsigned long>(connectionCycleTimeInStateMs_),
-        obdStateName(state_),
-        static_cast<unsigned long>(obdStateMs),
-        static_cast<unsigned int>(connectAttempts_),
-        static_cast<unsigned int>(obd::MAX_DIRECT_CONNECT_FAILURES),
-        lastProxyAdvertising_ ? 1 : 0,
-        lastProxyClientConnected_ ? 1 : 0,
-        lastObdRetryAllowed_ ? 1 : 0,
-        bleReason,
-        bleReasonName(bleReason),
-        manualScanPending_ ? "IDLE" : (directAttemptsExhausted ? "IDLE" : "DISCONNECTED"));
+    Serial.printf("[OBD] connect failure reason=%s cycle=%s cycleMs=%lu obdState=%s obdStateMs=%lu attempt=%u/%u "
+                  "proxyAdv=%d proxyClient=%d retryAllowed=%d bleReason=%d (%s) next=%s\n",
+                  obdFailureReasonName(reason), perfConnectionCycleStateName(connectionCycleStateCode_),
+                  static_cast<unsigned long>(connectionCycleTimeInStateMs_), obdStateName(state_),
+                  static_cast<unsigned long>(obdStateMs), static_cast<unsigned int>(connectAttempts_),
+                  static_cast<unsigned int>(obd::MAX_DIRECT_CONNECT_FAILURES), lastProxyAdvertising_ ? 1 : 0,
+                  lastProxyClientConnected_ ? 1 : 0, lastObdRetryAllowed_ ? 1 : 0, bleReason, bleReasonName(bleReason),
+                  manualScanPending_ ? "IDLE" : (directAttemptsExhausted ? "IDLE" : "DISCONNECTED"));
 #endif
     if (manualScanPending_) {
         // Auto-heal only for post-connection failures where a stale bond
         // could be the cause. Connect failures are not bond-related.
-        if ((reason == ObdFailureReason::DISCOVERY ||
-             reason == ObdFailureReason::SUBSCRIBE ||
-             reason == ObdFailureReason::WRITE ||
-             reason == ObdFailureReason::INIT_TIMEOUT) &&
+        if ((reason == ObdFailureReason::DISCOVERY || reason == ObdFailureReason::SUBSCRIBE ||
+             reason == ObdFailureReason::WRITE || reason == ObdFailureReason::INIT_TIMEOUT) &&
             autoHealBondIfAllowed(nowMs, "manual_pair_failure")) {
             return;
         }
@@ -406,9 +365,7 @@ void ObdRuntimeModule::handleConnectFailure(uint32_t nowMs,
     transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
 }
 
-void ObdRuntimeModule::handlePollingError(uint32_t nowMs,
-                                          bool disconnectBleNow,
-                                          ObdFailureReason reason) {
+void ObdRuntimeModule::handlePollingError(uint32_t nowMs, bool disconnectBleNow, ObdFailureReason reason) {
     markFailure(reason, nowMs);
     pollErrors_++;
     consecutiveErrors_++;
@@ -418,8 +375,7 @@ void ObdRuntimeModule::handlePollingError(uint32_t nowMs,
     if (disconnectBleNow) {
         disconnectBle();
     }
-    if (consecutiveErrors_ >= obd::ERRORS_BEFORE_DISCONNECT &&
-        shouldDisconnectAfterPollingError(reason)) {
+    if (consecutiveErrors_ >= obd::ERRORS_BEFORE_DISCONNECT && shouldDisconnectAfterPollingError(reason)) {
         transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
         return;
     }
@@ -428,33 +384,30 @@ void ObdRuntimeModule::handlePollingError(uint32_t nowMs,
     }
 }
 
-void ObdRuntimeModule::handleCommandFailure(uint32_t nowMs,
-                                            ObdFailureReason reason,
-                                            bool disconnectBleNow) {
+void ObdRuntimeModule::handleCommandFailure(uint32_t nowMs, ObdFailureReason reason, bool disconnectBleNow) {
     handlePollingError(nowMs, disconnectBleNow, reason);
 }
 
 bool ObdRuntimeModule::shouldDisconnectAfterPollingError(ObdFailureReason reason) {
     switch (reason) {
-        case ObdFailureReason::WRITE:
-        case ObdFailureReason::BUFFER_OVERFLOW:
-            return true;
-        case ObdFailureReason::NONE:
-        case ObdFailureReason::CONNECT_START:
-        case ObdFailureReason::CONNECT_TIMEOUT:
-        case ObdFailureReason::DISCOVERY:
-        case ObdFailureReason::SUBSCRIBE:
-        case ObdFailureReason::INIT_TIMEOUT:
-        case ObdFailureReason::INIT_RESPONSE:
-        case ObdFailureReason::COMMAND_TIMEOUT:
-        case ObdFailureReason::COMMAND_RESPONSE:
-        case ObdFailureReason::SECURITY_START:
-        case ObdFailureReason::SECURITY_TIMEOUT:
-        default:
-            return false;
+    case ObdFailureReason::WRITE:
+    case ObdFailureReason::BUFFER_OVERFLOW:
+        return true;
+    case ObdFailureReason::NONE:
+    case ObdFailureReason::CONNECT_START:
+    case ObdFailureReason::CONNECT_TIMEOUT:
+    case ObdFailureReason::DISCOVERY:
+    case ObdFailureReason::SUBSCRIBE:
+    case ObdFailureReason::INIT_TIMEOUT:
+    case ObdFailureReason::INIT_RESPONSE:
+    case ObdFailureReason::COMMAND_TIMEOUT:
+    case ObdFailureReason::COMMAND_RESPONSE:
+    case ObdFailureReason::SECURITY_START:
+    case ObdFailureReason::SECURITY_TIMEOUT:
+    default:
+        return false;
     }
 }
-
 
 // ======================================================================
 // BOND AUTO-HEAL — failure recovery, auto-heal decision + retry
@@ -462,8 +415,7 @@ bool ObdRuntimeModule::shouldDisconnectAfterPollingError(ObdFailureReason reason
 
 bool ObdRuntimeModule::canAutoHealBond() const {
     const char* const addr = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
-    return addr[0] != '\0' &&
-           strcmp(repairedBondAddress_, addr) != 0;
+    return addr[0] != '\0' && strcmp(repairedBondAddress_, addr) != 0;
 }
 
 bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context) {
@@ -477,12 +429,8 @@ bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context
 
 #ifndef UNIT_TEST
     Serial.printf("[OBD] auto-heal bond during %s addr=%s lastBleError=%d (%s) lastSecurityError=%d (%s)\n",
-                  context ? context : "unknown",
-                  savedAddress_,
-                  getBleLastError(),
-                  bleReasonName(getBleLastError()),
-                  getBleSecurityFailure(),
-                  bleReasonName(getBleSecurityFailure()));
+                  context ? context : "unknown", savedAddress_, getBleLastError(), bleReasonName(getBleLastError()),
+                  getBleSecurityFailure(), bleReasonName(getBleSecurityFailure()));
 #endif
 
     disconnectBle();

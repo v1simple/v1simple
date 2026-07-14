@@ -70,11 +70,11 @@ UART pinning, framing, and timing constants are public `static constexpr` member
 
 #### `void begin(bool enabled, AlpSdLogger* sdLogger = nullptr)`
 Initializes the UART listener and state machine. SD logger is optional; pass `nullptr` to disable structured logging.
-**Source:** `alp_runtime_module.h:272`.
+**Source:** `alp_runtime_module.h:273`.
 
 #### `void setEventBus(SystemEventBus* bus)`
 Wires the system event bus for cross-module event publication (e.g. `ALP_STATE_CHANGED` for display wake).
-**Source:** `alp_runtime_module.h:277`.
+**Source:** `alp_runtime_module.h:278`.
 
 #### `void process(uint32_t nowMs)`
 Pump method. Call once per main-loop tick. Drains the UART buffer, advances the state machine, fires events.
@@ -192,11 +192,11 @@ Stamps log entries with a boot identifier so multi-boot logs can be partitioned.
 
 #### `void setEnabled(bool enabled)` / `bool isEnabled() const`
 Runtime enable/disable; effective only when `sdReady_` is also true.
-**Source:** `alp_sd_logger.h:115`, `alp_sd_logger.h:109`.
+**Source:** `alp_sd_logger.h:107`, `alp_sd_logger.h:109`.
 
 #### `void drainAndClose(uint32_t timeoutMs)`
 Flushes pending writes and closes the file. Called on power-off.
-**Source:** `alp_sd_logger.h:118`.
+**Source:** `alp_sd_logger.h:110`.
 
 ### Log methods
 
@@ -214,7 +214,7 @@ The class exposes typed log methods rather than a generic write — each capture
 
 #### `void testClearLastLine()`
 **Test only.** Resets internal de-duplication buffer for native tests.
-**Source:** `alp_sd_logger.h:122`.
+**Source:** `alp_sd_logger.h:114`.
 
 ## Namespace: `AlpApiService`
 

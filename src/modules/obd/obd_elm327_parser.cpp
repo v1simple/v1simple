@@ -29,25 +29,29 @@ const char* trimResponse(const char* response, size_t len, size_t& trimmedLen) {
 }
 
 int hexDigit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
     return -1;
 }
 
 int hexByte(const char* s) {
     const int hi = hexDigit(s[0]);
     const int lo = hexDigit(s[1]);
-    if (hi < 0 || lo < 0) return -1;
+    if (hi < 0 || lo < 0)
+        return -1;
     return (hi << 4) | lo;
 }
 
 bool startsWithCI(const char* s, size_t sLen, const char* prefix) {
     const size_t pLen = strlen(prefix);
-    if (sLen < pLen) return false;
+    if (sLen < pLen)
+        return false;
     for (size_t i = 0; i < pLen; ++i) {
-        if (toupper(static_cast<unsigned char>(s[i])) !=
-            toupper(static_cast<unsigned char>(prefix[i]))) {
+        if (toupper(static_cast<unsigned char>(s[i])) != toupper(static_cast<unsigned char>(prefix[i]))) {
             return false;
         }
     }
@@ -55,10 +59,10 @@ bool startsWithCI(const char* s, size_t sLen, const char* prefix) {
 }
 
 bool equalsCI(const char* a, const char* b) {
-    if (!a || !b) return false;
+    if (!a || !b)
+        return false;
     while (*a && *b) {
-        if (toupper(static_cast<unsigned char>(*a)) !=
-            toupper(static_cast<unsigned char>(*b))) {
+        if (toupper(static_cast<unsigned char>(*a)) != toupper(static_cast<unsigned char>(*b))) {
             return false;
         }
         ++a;
@@ -68,7 +72,8 @@ bool equalsCI(const char* a, const char* b) {
 }
 
 void trimLineInPlace(char* line) {
-    if (!line) return;
+    if (!line)
+        return;
 
     size_t len = strlen(line);
     size_t start = 0;
@@ -89,7 +94,8 @@ void trimLineInPlace(char* line) {
 }
 
 bool containsDigit(const char* s) {
-    if (!s) return false;
+    if (!s)
+        return false;
     for (; *s; ++s) {
         if (isdigit(static_cast<unsigned char>(*s))) {
             return true;
@@ -99,16 +105,22 @@ bool containsDigit(const char* s) {
 }
 
 bool isLikelyEchoLine(const char* line) {
-    if (!line || line[0] == '\0') return false;
-    if (startsWithCI(line, strlen(line), "AT")) return true;
-    if (startsWithCI(line, strlen(line), "ST")) return true;
+    if (!line || line[0] == '\0')
+        return false;
+    if (startsWithCI(line, strlen(line), "AT"))
+        return true;
+    if (startsWithCI(line, strlen(line), "ST"))
+        return true;
 
     char compact[kMaxLineLength] = {};
     size_t compactLen = 0;
     for (const char* p = line; *p; ++p) {
-        if (*p == ' ') continue;
-        if (!isxdigit(static_cast<unsigned char>(*p))) return false;
-        if (compactLen + 1 >= sizeof(compact)) return false;
+        if (*p == ' ')
+            continue;
+        if (!isxdigit(static_cast<unsigned char>(*p)))
+            return false;
+        if (compactLen + 1 >= sizeof(compact))
+            return false;
         compact[compactLen++] = *p;
     }
     if (compactLen < 2 || (compactLen % 2) != 0) {
@@ -121,39 +133,35 @@ bool isLikelyEchoLine(const char* line) {
     }
 
     switch (firstByte) {
-        case 0x41:
-        case 0x49:
-        case 0x61:
-        case 0x62:
-            return false;
-        case 0x01:
-        case 0x09:
-        case 0x21:
-        case 0x22:
-            return true;
-        default:
-            return compactLen <= 8;
+    case 0x41:
+    case 0x49:
+    case 0x61:
+    case 0x62:
+        return false;
+    case 0x01:
+    case 0x09:
+    case 0x21:
+    case 0x22:
+        return true;
+    default:
+        return compactLen <= 8;
     }
 }
 
 bool isStatusLine(const char* line) {
-    if (!line || line[0] == '\0') return false;
-    return startsWithCI(line, strlen(line), "SEARCHING") ||
-           startsWithCI(line, strlen(line), "BUS INIT") ||
-           startsWithCI(line, strlen(line), "OK") ||
-           startsWithCI(line, strlen(line), "ELM327") ||
-           startsWithCI(line, strlen(line), "OBDLINK") ||
-           startsWithCI(line, strlen(line), "STN");
+    if (!line || line[0] == '\0')
+        return false;
+    return startsWithCI(line, strlen(line), "SEARCHING") || startsWithCI(line, strlen(line), "BUS INIT") ||
+           startsWithCI(line, strlen(line), "OK") || startsWithCI(line, strlen(line), "ELM327") ||
+           startsWithCI(line, strlen(line), "OBDLINK") || startsWithCI(line, strlen(line), "STN");
 }
 
 bool isErrorLine(const char* line) {
-    if (!line || line[0] == '\0') return false;
-    return equalsCI(line, "?") ||
-           startsWithCI(line, strlen(line), "UNABLE TO CONNECT") ||
-           startsWithCI(line, strlen(line), "CAN ERROR") ||
-           startsWithCI(line, strlen(line), "BUFFER FULL") ||
-           startsWithCI(line, strlen(line), "BUS ERROR") ||
-           startsWithCI(line, strlen(line), "ERROR") ||
+    if (!line || line[0] == '\0')
+        return false;
+    return equalsCI(line, "?") || startsWithCI(line, strlen(line), "UNABLE TO CONNECT") ||
+           startsWithCI(line, strlen(line), "CAN ERROR") || startsWithCI(line, strlen(line), "BUFFER FULL") ||
+           startsWithCI(line, strlen(line), "BUS ERROR") || startsWithCI(line, strlen(line), "ERROR") ||
            startsWithCI(line, strlen(line), "STOPPED");
 }
 
@@ -161,11 +169,7 @@ bool isNoDataLine(const char* line) {
     return line && startsWithCI(line, strlen(line), "NO DATA");
 }
 
-bool nextRawLine(const char* trimmed,
-                 size_t trimmedLen,
-                 size_t& cursor,
-                 const char*& lineStart,
-                 size_t& lineLen) {
+bool nextRawLine(const char* trimmed, size_t trimmedLen, size_t& cursor, const char*& lineStart, size_t& lineLen) {
     if (!trimmed || cursor >= trimmedLen) {
         return false;
     }
@@ -218,10 +222,7 @@ bool hasNormalizedLineOverflow(const char* trimmed, size_t trimmedLen) {
 
 // Normalize one line at a time so the OBD update path avoids a large stack
 // resident line matrix while preserving the existing line filtering semantics.
-bool nextNormalizedLine(const char* trimmed,
-                        size_t trimmedLen,
-                        size_t& cursor,
-                        char line[kMaxLineLength]) {
+bool nextNormalizedLine(const char* trimmed, size_t trimmedLen, size_t& cursor, char line[kMaxLineLength]) {
     while (cursor < trimmedLen) {
         const char* rawLine = nullptr;
         size_t rawLen = 0;
@@ -238,12 +239,9 @@ bool nextNormalizedLine(const char* trimmed,
     return false;
 }
 
-bool collectHexBytesFromLine(const char* rawLine,
-                             uint8_t* out,
-                             size_t outCap,
-                             size_t& outLen,
-                             bool allowColonPrefix) {
-    if (!rawLine || !out || outCap == 0) return false;
+bool collectHexBytesFromLine(const char* rawLine, uint8_t* out, size_t outCap, size_t& outLen, bool allowColonPrefix) {
+    if (!rawLine || !out || outCap == 0)
+        return false;
 
     const char* line = rawLine;
     if (allowColonPrefix) {
@@ -291,14 +289,8 @@ bool collectHexBytesFromLine(const char* rawLine,
     return true;
 }
 
-bool collectNormalizedHexPayload(const char* trimmed,
-                                 size_t trimmedLen,
-                                 uint8_t* out,
-                                 size_t outCap,
-                                 size_t& outLen,
-                                 bool& sawBusInit,
-                                 bool& sawNoData,
-                                 bool& sawError) {
+bool collectNormalizedHexPayload(const char* trimmed, size_t trimmedLen, uint8_t* out, size_t outCap, size_t& outLen,
+                                 bool& sawBusInit, bool& sawNoData, bool& sawError) {
     outLen = 0;
     sawBusInit = false;
     sawNoData = false;
@@ -320,8 +312,7 @@ bool collectNormalizedHexPayload(const char* trimmed,
             sawError = true;
             continue;
         }
-        if (startsWithCI(line, strlen(line), "SEARCHING") ||
-            startsWithCI(line, strlen(line), "BUS INIT")) {
+        if (startsWithCI(line, strlen(line), "SEARCHING") || startsWithCI(line, strlen(line), "BUS INIT")) {
             sawBusInit = true;
             continue;
         }
@@ -347,8 +338,10 @@ bool collectNormalizedHexPayload(const char* trimmed,
 }
 
 bool decodePrintableVin(const uint8_t* bytes, size_t len, char vin[18]) {
-    if (!bytes || !vin) return false;
-    if (len != 17) return false;
+    if (!bytes || !vin)
+        return false;
+    if (len != 17)
+        return false;
 
     for (size_t i = 0; i < len; ++i) {
         const uint8_t c = bytes[i];
@@ -361,7 +354,7 @@ bool decodePrintableVin(const uint8_t* bytes, size_t len, char vin[18]) {
     return true;
 }
 
-}  // namespace
+} // namespace
 
 Elm327ParseResult parseElm327Response(const char* response, size_t len) {
     Elm327ParseResult result;
@@ -384,8 +377,8 @@ Elm327ParseResult parseElm327Response(const char* response, size_t len) {
     bool sawNoData = false;
     bool sawError = false;
 
-    const bool hasPayload = collectNormalizedHexPayload(
-        trimmed, trimmedLen, bytes, sizeof(bytes), byteCount, sawBusInit, sawNoData, sawError);
+    const bool hasPayload = collectNormalizedHexPayload(trimmed, trimmedLen, bytes, sizeof(bytes), byteCount,
+                                                        sawBusInit, sawNoData, sawError);
 
     result.busInit = sawBusInit;
     if (sawBusInit && !hasPayload && !sawNoData && !sawError) {
@@ -420,9 +413,7 @@ Elm327ParseResult parseElm327Response(const char* response, size_t len) {
         result.did = static_cast<uint16_t>((bytes[1] << 8) | bytes[2]);
         result.pid = bytes[2];
         result.dataLen = static_cast<uint8_t>((byteCount > 3) ? (byteCount - 3) : 0);
-        const size_t copyLen = (result.dataLen < sizeof(result.dataBytes))
-                                   ? result.dataLen
-                                   : sizeof(result.dataBytes);
+        const size_t copyLen = (result.dataLen < sizeof(result.dataBytes)) ? result.dataLen : sizeof(result.dataBytes);
         if (copyLen > 0) {
             memcpy(result.dataBytes, bytes + 3, copyLen);
         }
@@ -431,9 +422,7 @@ Elm327ParseResult parseElm327Response(const char* response, size_t len) {
 
     result.pid = bytes[1];
     result.dataLen = static_cast<uint8_t>((byteCount > 2) ? (byteCount - 2) : 0);
-    const size_t copyLen = (result.dataLen < sizeof(result.dataBytes))
-                               ? result.dataLen
-                               : sizeof(result.dataBytes);
+    const size_t copyLen = (result.dataLen < sizeof(result.dataBytes)) ? result.dataLen : sizeof(result.dataBytes);
     if (copyLen > 0) {
         memcpy(result.dataBytes, bytes + 2, copyLen);
     }
@@ -475,16 +464,14 @@ Elm327VinParseResult parseVinResponse(const char* response, size_t len) {
             result.error = true;
             continue;
         }
-        if (startsWithCI(line, strlen(line), "SEARCHING") ||
-            startsWithCI(line, strlen(line), "BUS INIT") ||
+        if (startsWithCI(line, strlen(line), "SEARCHING") || startsWithCI(line, strlen(line), "BUS INIT") ||
             isStatusLine(line)) {
             continue;
         }
 
         uint8_t bytes[kMaxPayloadBytes] = {};
         size_t byteCount = 0;
-        if (!collectHexBytesFromLine(line, bytes, sizeof(bytes), byteCount, true) ||
-            byteCount == 0) {
+        if (!collectHexBytesFromLine(line, bytes, sizeof(bytes), byteCount, true) || byteCount == 0) {
             result.error = true;
             continue;
         }
@@ -530,30 +517,31 @@ float decodeSpeedKmh(const Elm327ParseResult& result) {
     return static_cast<float>(result.dataBytes[0]);
 }
 
-bool decodeTempC_x10(const Elm327ParseResult& result,
-                     Elm327TempDecodeFormat format,
-                     int16_t& tempC_x10Out) {
+bool decodeTempC_x10(const Elm327ParseResult& result, Elm327TempDecodeFormat format, int16_t& tempC_x10Out) {
     if (!result.valid) {
         return false;
     }
 
     int32_t value = 0;
     switch (format) {
-        case Elm327TempDecodeFormat::U8_OFFSET40:
-            if (result.dataLen < 1) return false;
-            value = static_cast<int32_t>(result.dataBytes[0]) * 10 - 400;
-            break;
+    case Elm327TempDecodeFormat::U8_OFFSET40:
+        if (result.dataLen < 1)
+            return false;
+        value = static_cast<int32_t>(result.dataBytes[0]) * 10 - 400;
+        break;
 
-        case Elm327TempDecodeFormat::U16_DIV10_OFFSET40:
-            if (result.dataLen < 2) return false;
-            value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]);
-            value = value / 10 - 400;
-            break;
+    case Elm327TempDecodeFormat::U16_DIV10_OFFSET40:
+        if (result.dataLen < 2)
+            return false;
+        value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]);
+        value = value / 10 - 400;
+        break;
 
-        case Elm327TempDecodeFormat::U16_RAW_OFFSET40:
-            if (result.dataLen < 2) return false;
-            value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]) - 400;
-            break;
+    case Elm327TempDecodeFormat::U16_RAW_OFFSET40:
+        if (result.dataLen < 2)
+            return false;
+        value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]) - 400;
+        break;
     }
 
     if (value < INT16_MIN || value > INT16_MAX) {

@@ -18,17 +18,17 @@ Function-pointer signature for shutdown preparation hooks.
 
 #### `void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings)`
 Wires dependencies. Call once from `setup()`.
-**Source:** `power_module.h:13-15`.
+**Source:** `power_module.h:13`.
 
 #### `void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context)`
 Registers a hook that runs before `performShutdown()` actually drops power. Use for last-second cleanup (flush logs, save state, etc.).
-**Source:** `power_module.h:17`.
+**Source:** `power_module.h:15`.
 
 ### Shutdown control
 
 #### `void performShutdown()`
 Graceful shutdown — fires the preparation callback, then drops the latch.
-**Source:** `power_module.h:20`.
+**Source:** `power_module.h:18`.
 
 In `CAR_MODE_PWR_SHORT` builds, this is a no-op (`docs/HARDWARE_NOTES.md`).
 
@@ -36,25 +36,25 @@ In `CAR_MODE_PWR_SHORT` builds, this is a no-op (`docs/HARDWARE_NOTES.md`).
 
 #### `void logStartupStatus()`
 Logs initial battery status. Call once after display init.
-**Source:** `power_module.h:23`.
+**Source:** `power_module.h:21`.
 
 #### `void onV1DataReceived()`
 Mark that real V1 data has been seen. Arms auto-power-off on subsequent V1 disconnect.
-**Source:** `power_module.h:26`.
+**Source:** `power_module.h:24`.
 
 #### `void onV1ConnectionChange(bool connected)`
 Notifies of V1 BLE connect/disconnect. Drives the auto-power-off timer.
-**Source:** `power_module.h:29`.
+**Source:** `power_module.h:27`.
 
 #### `void onAlpSignalChange(bool active)`
 Notifies of ALP heartbeat presence. ALP heartbeats also count as "device in use" for auto-power-off purposes — losing both V1 and ALP signal triggers the timer.
-**Source:** `power_module.h:32`.
+**Source:** `power_module.h:30`.
 
 ### Pump
 
 #### `void process(unsigned long nowMs)`
 Per-tick: battery polling, critical-shutdown check, auto-power-off timer evaluation.
-**Source:** `power_module.h:35`.
+**Source:** `power_module.h:33`.
 
 ### Test seams (UNIT_TEST only)
 
@@ -63,7 +63,7 @@ Per-tick: battery polling, critical-shutdown check, auto-power-off timer evaluat
 - `bool autoPowerOffArmedForTest() const`
 - `void performShutdownRequestForTest()` — bypasses platform shutdown to exercise the request path.
 
-**Source:** `power_module.h:38-42`.
+**Source:** `power_module.h:36-40`.
 
 ## Dependencies
 

@@ -3,10 +3,17 @@
 #ifndef UNIT_TEST
 #include "perf_metrics.h"
 #define POWER_PERF_INC(counter) PERF_INC(counter)
-#define POWER_PERF_FLUSH_NOW() do { (void)perfMetricsEnqueueSnapshotNow(); } while (0)
+#define POWER_PERF_FLUSH_NOW()                                                                                         \
+    do {                                                                                                               \
+        (void)perfMetricsEnqueueSnapshotNow();                                                                         \
+    } while (0)
 #else
-#define POWER_PERF_INC(counter) do { } while (0)
-#define POWER_PERF_FLUSH_NOW() do { } while (0)
+#define POWER_PERF_INC(counter)                                                                                        \
+    do {                                                                                                               \
+    } while (0)
+#define POWER_PERF_FLUSH_NOW()                                                                                         \
+    do {                                                                                                               \
+    } while (0)
 #endif
 
 void PowerModule::performShutdownRequest() {
@@ -30,9 +37,7 @@ void PowerModule::performShutdown() {
     }
 }
 
-void PowerModule::begin(BatteryManager* batteryMgr,
-                        V1Display* disp,
-                        SettingsManager* settings) {
+void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings) {
     battery_ = batteryMgr;
     display_ = disp;
     settings_ = settings;
@@ -44,15 +49,12 @@ void PowerModule::setShutdownPreparationCallback(ShutdownPreparationCallback cal
 }
 
 void PowerModule::logStartupStatus() {
-    if (!battery_) return;
-    Serial.printf("[Battery] Power source: %s\n",
-                  battery_->isOnBattery() ? "BATTERY" : "USB");
-    Serial.printf("[Battery] Icon display: %s\n",
-                  battery_->hasBattery() ? "YES" : "NO");
+    if (!battery_)
+        return;
+    Serial.printf("[Battery] Power source: %s\n", battery_->isOnBattery() ? "BATTERY" : "USB");
+    Serial.printf("[Battery] Icon display: %s\n", battery_->hasBattery() ? "YES" : "NO");
     if (battery_->hasBattery()) {
-        Serial.printf("[Battery] Voltage: %dmV (%d%%)\n",
-                      battery_->getVoltageMillivolts(),
-                      battery_->getPercentage());
+        Serial.printf("[Battery] Voltage: %dmV (%d%%)\n", battery_->getVoltageMillivolts(), battery_->getPercentage());
     }
 }
 
@@ -65,7 +67,8 @@ void PowerModule::onV1DataReceived() {
 }
 
 void PowerModule::onV1ConnectionChange(bool connected) {
-    if (!battery_ || !settings_) return;
+    if (!battery_ || !settings_)
+        return;
 
     const V1Settings& s = settings_->get();
     v1SignalPresent_ = connected;
@@ -74,7 +77,8 @@ void PowerModule::onV1ConnectionChange(bool connected) {
 }
 
 void PowerModule::onAlpSignalChange(bool active) {
-    if (!battery_ || !settings_) return;
+    if (!battery_ || !settings_)
+        return;
 
     const V1Settings& s = settings_->get();
 
@@ -107,7 +111,8 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
 }
 
 void PowerModule::process(unsigned long nowMs) {
-    if (!battery_ || !display_ || !settings_) return;
+    if (!battery_ || !display_ || !settings_)
+        return;
 
     const V1Settings& s = settings_->get();
 

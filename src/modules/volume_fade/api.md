@@ -10,12 +10,12 @@ Per the header at lines 4-15:
 ## Public types
 
 ### `struct VolumeFadeContext`
-**Source:** `volume_fade_module.h:23-37`.
+**Source:** `volume_fade_module.h:23-36`.
 
 Per-decision input — `hasAlert`, `alertMuted`, `alertSuppressed`, `currentVolume`, `currentMuteVolume`, `currentFrequency` (for dedup), `now`. Default-constructs to zero/false for safe fall-through.
 
 ### `struct VolumeFadeAction`
-**Source:** `volume_fade_module.h:42-58`.
+**Source:** `volume_fade_module.h:41-58`.
 
 Decision output. `Type` enum:
 - `NONE` — no action.
@@ -32,17 +32,17 @@ Decision output. `Type` enum:
 
 #### `VolumeFadeModule()`
 Default constructor.
-**Source:** `volume_fade_module.h:66`.
+**Source:** `volume_fade_module.h:64`.
 
 #### `void begin(SettingsManager* settings)`
 Wires settings dependency.
-**Source:** `volume_fade_module.h:68`.
+**Source:** `volume_fade_module.h:67`.
 
 ### Decision
 
 #### `VolumeFadeAction process(const VolumeFadeContext& ctx)`
 Main decision method.
-**Source:** `volume_fade_module.h:71`.
+**Source:** `volume_fade_module.h:69`.
 
 ### Cross-module hint
 
@@ -50,7 +50,7 @@ Main decision method.
 Injects a one-shot baseline hint from another volume owner (typically the quiet coordinator after a SpeedVolume RESTORE). Used when a new alert arrives before V1 echoes back the true volume — without the hint, the module would capture the *faded* volume as the baseline and "restore" to that lower value.
 
 The hint is cleared after first use or after `HINT_WINDOW_MS` (1500 ms).
-**Source:** `volume_fade_module.h:78`.
+**Source:** `volume_fade_module.h:76`.
 
 ## Internal state (informational)
 
@@ -61,7 +61,7 @@ Selected constants:
 - `RESTORE_RETRY_MIN_INTERVAL_MS = 75` — minimum gap between RESTORE retries (matches quiet coordinator's speed-vol retry cadence).
 - `HINT_WINDOW_MS = 1500` — baseline-hint validity window.
 
-**Source:** `volume_fade_module.h:85-101`.
+**Source:** `volume_fade_module.h:83-99`.
 
 The pending-restore carry-over is the load-bearing fix for a previous defect: if a new alert arrived during the BLE round-trip of a RESTORE command, the module would see the faded volume as the current state and capture that as the new "original." On the next RESTORE, V1 would be left at the faded value.
 

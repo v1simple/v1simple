@@ -49,7 +49,8 @@ void formatHexByte(char* dest, size_t destSize, uint8_t value) {
 // dest must hold at least 25 bytes (YYYY-MM-DDTHH:MM:SS.sssZ + NUL).
 void formatUtcField(char* dest, size_t destSize, GpsTimePublisher* timePub, uint32_t nowMs) {
     if (!timePub || destSize < 2) {
-        if (destSize > 0) dest[0] = '\0';
+        if (destSize > 0)
+            dest[0] = '\0';
         return;
     }
     uint64_t utcMs = 0;
@@ -58,66 +59,46 @@ void formatUtcField(char* dest, size_t destSize, GpsTimePublisher* timePub, uint
         return;
     }
     const uint64_t totalSec = utcMs / 1000;
-    const uint32_t ms       = static_cast<uint32_t>(utcMs % 1000);
-    uint32_t sec  = static_cast<uint32_t>(totalSec % 60);
-    uint32_t min  = static_cast<uint32_t>((totalSec / 60) % 60);
+    const uint32_t ms = static_cast<uint32_t>(utcMs % 1000);
+    uint32_t sec = static_cast<uint32_t>(totalSec % 60);
+    uint32_t min = static_cast<uint32_t>((totalSec / 60) % 60);
     uint32_t hour = static_cast<uint32_t>((totalSec / 3600) % 24);
     uint32_t days = static_cast<uint32_t>(totalSec / 86400);
     uint32_t y = 1970;
     while (true) {
         bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
         uint32_t diy = leap ? 366u : 365u;
-        if (days < diy) break;
+        if (days < diy)
+            break;
         days -= diy;
         y++;
     }
-    static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
     uint32_t mo = 1;
     for (uint32_t m = 0; m < 12; m++) {
         uint32_t md = mdays[m] + ((m == 1 && leap) ? 1u : 0u);
-        if (days < md) { mo = m + 1; break; }
+        if (days < md) {
+            mo = m + 1;
+            break;
+        }
         days -= md;
     }
-    snprintf(dest, destSize, "%04lu-%02lu-%02luT%02lu:%02lu:%02lu.%03luZ",
-             static_cast<unsigned long>(y),
-             static_cast<unsigned long>(mo),
-             static_cast<unsigned long>(days + 1),
-             static_cast<unsigned long>(hour),
-             static_cast<unsigned long>(min),
-             static_cast<unsigned long>(sec),
-             static_cast<unsigned long>(ms));
+    snprintf(dest, destSize, "%04lu-%02lu-%02luT%02lu:%02lu:%02lu.%03luZ", static_cast<unsigned long>(y),
+             static_cast<unsigned long>(mo), static_cast<unsigned long>(days + 1), static_cast<unsigned long>(hour),
+             static_cast<unsigned long>(min), static_cast<unsigned long>(sec), static_cast<unsigned long>(ms));
 }
 
-void formatCsvRow(char* dest, size_t destSize,
-                  uint32_t nowMs,
-                  const char* utcStr,
-                  const char* event,
-                  const char* fromState,
-                  const char* toState,
-                  const char* byte0,
-                  const char* byte1,
-                  const char* byte2,
-                  const char* checksum,
-                  const char* direction,
-                  const char* gun,
-                  const char* extra) {
-    snprintf(dest, destSize, "%lu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-             static_cast<unsigned long>(nowMs),
-             utcStr ? utcStr : "",
-             event ? event : "",
-             fromState ? fromState : "",
-             toState ? toState : "",
-             byte0 ? byte0 : "",
-             byte1 ? byte1 : "",
-             byte2 ? byte2 : "",
-             checksum ? checksum : "",
-             direction ? direction : "",
-             gun ? gun : "",
-             extra ? extra : "");
+void formatCsvRow(char* dest, size_t destSize, uint32_t nowMs, const char* utcStr, const char* event,
+                  const char* fromState, const char* toState, const char* byte0, const char* byte1, const char* byte2,
+                  const char* checksum, const char* direction, const char* gun, const char* extra) {
+    snprintf(dest, destSize, "%lu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", static_cast<unsigned long>(nowMs),
+             utcStr ? utcStr : "", event ? event : "", fromState ? fromState : "", toState ? toState : "",
+             byte0 ? byte0 : "", byte1 ? byte1 : "", byte2 ? byte2 : "", checksum ? checksum : "",
+             direction ? direction : "", gun ? gun : "", extra ? extra : "");
 }
 
-}  // namespace
+} // namespace
 
 // ── begin() ──────────────────────────────────────────────────────────
 
@@ -146,12 +127,10 @@ void AlpSdLogger::setBootId(uint32_t id, uint32_t bootToken) {
     // New format: /alp/alp_<bootId>-<token8>.csv (unique per boot).
     // Legacy fallback when no token: /alp/alp_<bootId>.csv.
     if (bootToken != 0) {
-        snprintf(csvPathBuf_, sizeof(csvPathBuf_), "/alp/alp_%lu-%08lx.csv",
-                 static_cast<unsigned long>(id),
+        snprintf(csvPathBuf_, sizeof(csvPathBuf_), "/alp/alp_%lu-%08lx.csv", static_cast<unsigned long>(id),
                  static_cast<unsigned long>(bootToken));
     } else {
-        snprintf(csvPathBuf_, sizeof(csvPathBuf_), "/alp/alp_%lu.csv",
-                 static_cast<unsigned long>(id));
+        snprintf(csvPathBuf_, sizeof(csvPathBuf_), "/alp/alp_%lu.csv", static_cast<unsigned long>(id));
     }
     // Reset header state when boot ID changes
     headerWritten_ = false;
@@ -164,12 +143,13 @@ void AlpSdLogger::setBootId(uint32_t id, uint32_t bootToken) {
 }
 
 void AlpSdLogger::setEnabled(bool enabled) {
-    if (enabled_ == enabled) return;
+    if (enabled_ == enabled)
+        return;
     enabled_ = enabled;
     if (!enabled) {
 #ifndef UNIT_TEST
-        Serial.printf("[ALP_SD] disabled (wrote %lu lines, dropped %lu)\n",
-                      (unsigned long)linesWritten_, (unsigned long)dropCount_);
+        Serial.printf("[ALP_SD] disabled (wrote %lu lines, dropped %lu)\n", (unsigned long)linesWritten_,
+                      (unsigned long)dropCount_);
 #endif
     } else {
 #ifndef UNIT_TEST
@@ -194,16 +174,14 @@ uint32_t AlpSdLogger::writerStackHighWaterBytes() const {
 void AlpSdLogger::drainAndClose(uint32_t timeoutMs) {
 #ifndef UNIT_TEST
     Serial.printf("[ALP_SD] Drain requested (car power mode, wrote %lu lines, queued %lu)\n",
-                  (unsigned long)linesWritten_,
-                  queue_ ? (unsigned long)uxQueueMessagesWaiting(queue_) : 0UL);
+                  (unsigned long)linesWritten_, queue_ ? (unsigned long)uxQueueMessagesWaiting(queue_) : 0UL);
     if (!queue_ || !writerTask_) {
         return;
     }
     const uint32_t startMs = millis();
     while (uxQueueMessagesWaiting(queue_) > 0) {
         if (millis() - startMs > timeoutMs) {
-            Serial.printf("[ALP_SD] Drain timeout after %lums, %lu items remaining\n",
-                          (unsigned long)timeoutMs,
+            Serial.printf("[ALP_SD] Drain timeout after %lums, %lu items remaining\n", (unsigned long)timeoutMs,
                           (unsigned long)uxQueueMessagesWaiting(queue_));
             break;
         }
@@ -227,26 +205,22 @@ void AlpSdLogger::drainAndClose(uint32_t timeoutMs) {
 
 // ── Logging methods ──────────────────────────────────────────────────
 
-void AlpSdLogger::logStateTransition(uint32_t nowMs, AlpState from, AlpState to,
-                                     const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logStateTransition(uint32_t nowMs, AlpState from, AlpState to, const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     char line[160];
     char utcBuf[26] = {};
     formatUtcField(utcBuf, sizeof(utcBuf), timePub_, nowMs);
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 "STATE",
-                 alpStateName(from),
-                 alpStateName(to),
-                 "", "", "", "", direction, "", "");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, "STATE", alpStateName(from), alpStateName(to), "", "", "", "",
+                 direction, "", "");
     appendLine(line);
 }
 
-void AlpSdLogger::logHeartbeatByte1(uint32_t nowMs, uint8_t prevByte1, uint8_t newByte1,
-                                     AlpState currentState, const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logHeartbeatByte1(uint32_t nowMs, uint8_t prevByte1, uint8_t newByte1, AlpState currentState,
+                                    const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     char prevByteBuf[3];
     char newByteBuf[3];
@@ -255,26 +229,15 @@ void AlpSdLogger::logHeartbeatByte1(uint32_t nowMs, uint8_t prevByte1, uint8_t n
     formatUtcField(utcBuf, sizeof(utcBuf), timePub_, nowMs);
     formatHexByte(prevByteBuf, sizeof(prevByteBuf), prevByte1);
     formatHexByte(newByteBuf, sizeof(newByteBuf), newByte1);
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 "HB_BYTE1",
-                 alpStateName(currentState),
-                 "",
-                 prevByteBuf,
-                 newByteBuf,
-                 "",
-                 "",
-                 direction,
-                 "",
-                 newByte1 == 0x01 ? "ALERT" : "IDLE");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, "HB_BYTE1", alpStateName(currentState), "", prevByteBuf, newByteBuf,
+                 "", "", direction, "", newByte1 == 0x01 ? "ALERT" : "IDLE");
     appendLine(line);
 }
 
-void AlpSdLogger::logGunIdentified(uint32_t nowMs, AlpGunType gun, uint8_t byte0,
-                                    uint8_t byte1or2, bool isDetectTrigger,
-                                    AlpState currentState, const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logGunIdentified(uint32_t nowMs, AlpGunType gun, uint8_t byte0, uint8_t byte1or2,
+                                   bool isDetectTrigger, AlpState currentState, const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     const uint8_t frameByte1 = isDetectTrigger ? byte1or2 : 0x00;
     const uint8_t frameByte2 = isDetectTrigger ? 0x00 : byte1or2;
@@ -289,26 +252,15 @@ void AlpSdLogger::logGunIdentified(uint32_t nowMs, AlpGunType gun, uint8_t byte0
     formatHexByte(byte1Buf, sizeof(byte1Buf), frameByte1);
     formatHexByte(byte2Buf, sizeof(byte2Buf), frameByte2);
     formatHexByte(checksumBuf, sizeof(checksumBuf), alpChecksum(byte0, frameByte1, frameByte2));
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 "GUN_ID",
-                 alpStateName(currentState),
-                 "",
-                 byte0Buf,
-                 byte1Buf,
-                 byte2Buf,
-                 checksumBuf,
-                 direction,
-                 alpGunName(gun),
-                 isDetectTrigger ? "detect" : "lid_deploy");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, "GUN_ID", alpStateName(currentState), "", byte0Buf, byte1Buf,
+                 byte2Buf, checksumBuf, direction, alpGunName(gun), isDetectTrigger ? "detect" : "lid_deploy");
     appendLine(line);
 }
 
-void AlpSdLogger::logFrame(uint32_t nowMs, const char* frameType,
-                            uint8_t b0, uint8_t b1, uint8_t b2, uint8_t cs,
-                            AlpState currentState, const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logFrame(uint32_t nowMs, const char* frameType, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t cs,
+                           AlpState currentState, const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     char byte0Buf[3];
     char byte1Buf[3];
@@ -321,29 +273,18 @@ void AlpSdLogger::logFrame(uint32_t nowMs, const char* frameType,
     formatHexByte(byte1Buf, sizeof(byte1Buf), b1);
     formatHexByte(byte2Buf, sizeof(byte2Buf), b2);
     formatHexByte(checksumBuf, sizeof(checksumBuf), cs);
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 frameType,
-                 alpStateName(currentState),
-                 "",
-                 byte0Buf,
-                 byte1Buf,
-                 byte2Buf,
-                 checksumBuf,
-                 direction,
-                 "",
-                 "");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, frameType, alpStateName(currentState), "", byte0Buf, byte1Buf,
+                 byte2Buf, checksumBuf, direction, "", "");
     appendLine(line);
 }
 
-void AlpSdLogger::logHeartbeat(uint32_t nowMs, uint8_t b0, uint8_t b1, uint8_t b2,
-                                AlpState currentState, const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logHeartbeat(uint32_t nowMs, uint8_t b0, uint8_t b1, uint8_t b2, AlpState currentState,
+                               const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     // Rate-limit if configured (0 = log every heartbeat)
-    if (HEARTBEAT_LOG_INTERVAL_MS > 0 &&
-        (nowMs - lastHeartbeatLogMs_) < HEARTBEAT_LOG_INTERVAL_MS) {
+    if (HEARTBEAT_LOG_INTERVAL_MS > 0 && (nowMs - lastHeartbeatLogMs_) < HEARTBEAT_LOG_INTERVAL_MS) {
         return;
     }
     lastHeartbeatLogMs_ = nowMs;
@@ -359,59 +300,36 @@ void AlpSdLogger::logHeartbeat(uint32_t nowMs, uint8_t b0, uint8_t b1, uint8_t b
     formatHexByte(byte1Buf, sizeof(byte1Buf), b1);
     formatHexByte(byte2Buf, sizeof(byte2Buf), b2);
     formatHexByte(checksumBuf, sizeof(checksumBuf), alpChecksum(b0, b1, b2));
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 "HEARTBEAT",
-                 alpStateName(currentState),
-                 "",
-                 byte0Buf,
-                 byte1Buf,
-                 byte2Buf,
-                 checksumBuf,
-                 direction,
-                 "",
-                 "");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, "HEARTBEAT", alpStateName(currentState), "", byte0Buf, byte1Buf,
+                 byte2Buf, checksumBuf, direction, "", "");
     appendLine(line);
 }
 
-void AlpSdLogger::logEvent(uint32_t nowMs, const char* event, AlpState currentState,
-                            uint32_t extraValue, const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logEvent(uint32_t nowMs, const char* event, AlpState currentState, uint32_t extraValue,
+                           const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     char extraBuf[16];
     char line[160];
     char utcBuf[26] = {};
     formatUtcField(utcBuf, sizeof(utcBuf), timePub_, nowMs);
     snprintf(extraBuf, sizeof(extraBuf), "%lu", static_cast<unsigned long>(extraValue));
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 event,
-                 alpStateName(currentState),
-                 "",
-                 "", "", "", "", direction, "", extraBuf);
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, event, alpStateName(currentState), "", "", "", "", "", direction,
+                 "", extraBuf);
     appendLine(line);
 }
 
-void AlpSdLogger::logSessionEvent(uint32_t nowMs, const char* event, AlpState currentState,
-                                   AlpGunType gun, const char* extra,
-                                   const char* direction) {
-    if (!enabled_ || !sdReady_) return;
+void AlpSdLogger::logSessionEvent(uint32_t nowMs, const char* event, AlpState currentState, AlpGunType gun,
+                                  const char* extra, const char* direction) {
+    if (!enabled_ || !sdReady_)
+        return;
 
     char line[220];
     char utcBuf[26] = {};
     formatUtcField(utcBuf, sizeof(utcBuf), timePub_, nowMs);
-    formatCsvRow(line, sizeof(line),
-                 nowMs,
-                 utcBuf,
-                 event,
-                 alpStateName(currentState),
-                 "",
-                 "", "", "", "",
-                 direction,
-                 (gun != AlpGunType::UNKNOWN) ? alpGunName(gun) : "",
-                 extra ? extra : "");
+    formatCsvRow(line, sizeof(line), nowMs, utcBuf, event, alpStateName(currentState), "", "", "", "", "", direction,
+                 (gun != AlpGunType::UNKNOWN) ? alpGunName(gun) : "", extra ? extra : "");
     appendLine(line);
 }
 
@@ -423,10 +341,7 @@ bool AlpSdLogger::ensureAsyncWriter() {
         return false;
     }
     if (!queue_) {
-        queue_ = createQueuePreferPsram(ALP_SD_QUEUE_DEPTH,
-                                        sizeof(LogItem),
-                                        queueAllocation_,
-                                        &queueInPsram_);
+        queue_ = createQueuePreferPsram(ALP_SD_QUEUE_DEPTH, sizeof(LogItem), queueAllocation_, &queueInPsram_);
         if (!queue_) {
             return false;
         }
@@ -435,13 +350,8 @@ bool AlpSdLogger::ensureAsyncWriter() {
         }
     }
     if (!writerTask_) {
-        BaseType_t rc = createTaskPinnedToCoreInternalStack(writerTaskEntry,
-                                                            "AlpSdWriter",
-                                                            ALP_SD_WRITER_STACK_SIZE,
-                                                            this,
-                                                            ALP_SD_WRITER_PRIORITY,
-                                                            &writerTask_,
-                                                            0);
+        BaseType_t rc = createTaskPinnedToCoreInternalStack(writerTaskEntry, "AlpSdWriter", ALP_SD_WRITER_STACK_SIZE,
+                                                            this, ALP_SD_WRITER_PRIORITY, &writerTask_, 0);
         if (rc != pdPASS) {
             return false;
         }
@@ -473,10 +383,12 @@ void AlpSdLogger::writerTaskLoop() {
 
 bool AlpSdLogger::ensureDirectory() {
 #ifndef UNIT_TEST
-    if (dirReady_) return true;
+    if (dirReady_)
+        return true;
 
     fs::FS* fs = storageManager.getFilesystem();
-    if (!fs) return false;
+    if (!fs)
+        return false;
 
     // Try to create /alp directory
     if (!fs->exists(ALP_DIR_PATH)) {
@@ -494,11 +406,14 @@ bool AlpSdLogger::ensureDirectory() {
 
 bool AlpSdLogger::ensureHeader() {
 #ifndef UNIT_TEST
-    if (headerWritten_) return true;
-    if (csvPathBuf_[0] == '\0') return false;
+    if (headerWritten_)
+        return true;
+    if (csvPathBuf_[0] == '\0')
+        return false;
 
     fs::FS* fs = storageManager.getFilesystem();
-    if (!fs) return false;
+    if (!fs)
+        return false;
 
     // Check if file already exists and has content
     if (fs->exists(csvPathBuf_)) {
@@ -508,12 +423,14 @@ bool AlpSdLogger::ensureHeader() {
             headerWritten_ = true;
             return true;
         }
-        if (f) f.close();
+        if (f)
+            f.close();
     }
 
     // Write header to new file
     File f = fs->open(csvPathBuf_, FILE_APPEND, true);
-    if (!f) return false;
+    if (!f)
+        return false;
     f.print(ALP_CSV_HEADER);
     f.close();
     headerWritten_ = true;

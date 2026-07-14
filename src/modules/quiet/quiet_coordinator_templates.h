@@ -4,8 +4,7 @@
 
 template <typename SpeedMuteLike>
 void QuietCoordinatorModule::updateSpeedVolPresentation(const SpeedMuteLike* speedMute) {
-    presentation_.speedVolZeroActive =
-        speedVolActive_ && speedMute && speedMute->getSettings().v1Volume == 0;
+    presentation_.speedVolZeroActive = speedVolActive_ && speedMute && speedMute->getSettings().v1Volume == 0;
     if (speedVolActive_ || pendingSpeedVolRestoreVol_ != 0xFF) {
         presentation_.activeVolumeOwner = QuietOwner::SpeedVolume;
     } else if (presentation_.activeVolumeOwner == QuietOwner::SpeedVolume) {
@@ -14,8 +13,7 @@ void QuietCoordinatorModule::updateSpeedVolPresentation(const SpeedMuteLike* spe
 }
 
 template <typename SpeedMuteLike, typename VolumeFadeLike>
-bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs,
-                                                const SpeedMuteLike& speedMute,
+bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const SpeedMuteLike& speedMute,
                                                 VolumeFadeLike* volumeFade) {
     syncCommittedState();
 
@@ -92,8 +90,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs,
 }
 
 template <typename VolumeFadeLike>
-bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs,
-                                               VolumeFadeLike* volumeFade) {
+bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeLike* volumeFade) {
     syncCommittedState();
     if (!volumeFade || !parser_) {
         return false;
@@ -101,8 +98,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs,
 
     const bool hasAlerts = parser_->hasAlerts();
     AlertData priority;
-    const bool hasRenderablePriority =
-        hasAlerts && parser_->getRenderablePriorityAlert(priority);
+    const bool hasRenderablePriority = hasAlerts && parser_->getRenderablePriorityAlert(priority);
 
     VolumeFadeContext fadeCtx;
     fadeCtx.hasAlert = hasAlerts;
@@ -112,8 +108,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs,
     if (hasAlerts) {
         fadeCtx.alertMuted = committed_.muted;
         fadeCtx.alertSuppressed = false;
-        fadeCtx.currentFrequency =
-            hasRenderablePriority ? static_cast<uint16_t>(priority.frequency) : 0;
+        fadeCtx.currentFrequency = hasRenderablePriority ? static_cast<uint16_t>(priority.frequency) : 0;
     }
 
     const VolumeFadeAction fadeAction = volumeFade->process(fadeCtx);
@@ -122,15 +117,11 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs,
     }
 
     if (fadeAction.type == VolumeFadeAction::Type::FADE_DOWN) {
-        sendVolume(QuietOwner::VolumeFade,
-                   fadeAction.targetVolume,
-                   fadeAction.targetMuteVolume);
+        sendVolume(QuietOwner::VolumeFade, fadeAction.targetVolume, fadeAction.targetMuteVolume);
         return true;
     }
     if (fadeAction.type == VolumeFadeAction::Type::RESTORE) {
-        sendVolume(QuietOwner::VolumeFade,
-                   fadeAction.restoreVolume,
-                   fadeAction.restoreMuteVolume);
+        sendVolume(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
         return true;
     }
     return false;

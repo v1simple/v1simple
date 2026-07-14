@@ -34,28 +34,45 @@ AlpRuntimeModule alpRuntimeModule;
 
 const char* alpStateName(AlpState s) {
     switch (s) {
-        case AlpState::OFF:           return "OFF";
-        case AlpState::IDLE:          return "IDLE";
-        case AlpState::LISTENING:     return "LISTENING";
-        case AlpState::ALERT_ACTIVE:  return "ALERT_ACTIVE";
-        case AlpState::NOISE_WINDOW:  return "NOISE_WINDOW";
-        case AlpState::TEARDOWN:      return "TEARDOWN";
-        default:                      return "UNKNOWN_STATE";
+    case AlpState::OFF:
+        return "OFF";
+    case AlpState::IDLE:
+        return "IDLE";
+    case AlpState::LISTENING:
+        return "LISTENING";
+    case AlpState::ALERT_ACTIVE:
+        return "ALERT_ACTIVE";
+    case AlpState::NOISE_WINDOW:
+        return "NOISE_WINDOW";
+    case AlpState::TEARDOWN:
+        return "TEARDOWN";
+    default:
+        return "UNKNOWN_STATE";
     }
 }
 
 const char* alpGunName(AlpGunType gun) {
     switch (gun) {
-        case AlpGunType::UNKNOWN:           return "Unknown";
-        case AlpGunType::PL3_PROLITE:       return "PL3 ProLite";
-        case AlpGunType::DRAGONEYE_COMPACT: return "DragonEye Compact";
-        case AlpGunType::LTI_TRUSPEED_LR:  return "LTI TruSpeed LR";
-        case AlpGunType::LASER_ATLANTA_PL2: return "Laser Atlanta PL2";
-        case AlpGunType::MARKSMAN_ULTRALYTE:return "Marksman Ultralyte";
-        case AlpGunType::STALKER_LZ1:       return "Stalker LZ1";
-        case AlpGunType::LASER_ALLY:        return "Laser Ally";
-        case AlpGunType::ATLANTA_STEALTH:   return "Atlanta Stealth";
-        default:                            return "INVALID_GUN";
+    case AlpGunType::UNKNOWN:
+        return "Unknown";
+    case AlpGunType::PL3_PROLITE:
+        return "PL3 ProLite";
+    case AlpGunType::DRAGONEYE_COMPACT:
+        return "DragonEye Compact";
+    case AlpGunType::LTI_TRUSPEED_LR:
+        return "LTI TruSpeed LR";
+    case AlpGunType::LASER_ATLANTA_PL2:
+        return "Laser Atlanta PL2";
+    case AlpGunType::MARKSMAN_ULTRALYTE:
+        return "Marksman Ultralyte";
+    case AlpGunType::STALKER_LZ1:
+        return "Stalker LZ1";
+    case AlpGunType::LASER_ALLY:
+        return "Laser Ally";
+    case AlpGunType::ATLANTA_STEALTH:
+        return "Atlanta Stealth";
+    default:
+        return "INVALID_GUN";
     }
 }
 
@@ -63,24 +80,37 @@ const char* alpGunName(AlpGunType gun) {
 // Only uses glyphs that render well on 7-seg: A b C d E F G H I J L n O P r S t U Y
 const char* alpGunAbbrev(AlpGunType gun) {
     switch (gun) {
-        case AlpGunType::PL3_PROLITE:       return "PL3";
-        case AlpGunType::DRAGONEYE_COMPACT: return "drgEYE";
-        case AlpGunType::LTI_TRUSPEED_LR:  return "truSPd";
-        case AlpGunType::LASER_ATLANTA_PL2: return "PL2";
-        case AlpGunType::MARKSMAN_ULTRALYTE:return "ULtrLt";
-        case AlpGunType::STALKER_LZ1:       return "StLr";
-        case AlpGunType::LASER_ALLY:        return "LALLY";
-        case AlpGunType::ATLANTA_STEALTH:   return "StLtH";
-        default:                            return "LASER";
+    case AlpGunType::PL3_PROLITE:
+        return "PL3";
+    case AlpGunType::DRAGONEYE_COMPACT:
+        return "drgEYE";
+    case AlpGunType::LTI_TRUSPEED_LR:
+        return "truSPd";
+    case AlpGunType::LASER_ATLANTA_PL2:
+        return "PL2";
+    case AlpGunType::MARKSMAN_ULTRALYTE:
+        return "ULtrLt";
+    case AlpGunType::STALKER_LZ1:
+        return "StLr";
+    case AlpGunType::LASER_ALLY:
+        return "LALLY";
+    case AlpGunType::ATLANTA_STEALTH:
+        return "StLtH";
+    default:
+        return "LASER";
     }
 }
 
 const char* alpLaserDirectionName(AlpLaserDirection direction) {
     switch (direction) {
-        case AlpLaserDirection::UNKNOWN: return "UNKNOWN";
-        case AlpLaserDirection::FRONT:   return "FRONT";
-        case AlpLaserDirection::REAR:    return "REAR";
-        default:                         return "UNKNOWN";
+    case AlpLaserDirection::UNKNOWN:
+        return "UNKNOWN";
+    case AlpLaserDirection::FRONT:
+        return "FRONT";
+    case AlpLaserDirection::REAR:
+        return "REAR";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -96,22 +126,21 @@ bool isUnconfirmedDetectOpenMode(uint8_t byte1) {
 
 AlpLaserDirection classifyLaserDirectionFromHeartbeatByte1(uint8_t byte1) {
     switch (byte1) {
-        case 0x01:
-            return AlpLaserDirection::FRONT;
-        case 0x03:
-        case 0x04:
-            return AlpLaserDirection::REAR;
-        default:
-            return AlpLaserDirection::UNKNOWN;
+    case 0x01:
+        return AlpLaserDirection::FRONT;
+    case 0x03:
+    case 0x04:
+        return AlpLaserDirection::REAR;
+    default:
+        return AlpLaserDirection::UNKNOWN;
     }
 }
 
 const char* sessionDirectionName(const AlertSession& session) {
-    return alpLaserDirectionName(session.active ? session.direction
-                                                : AlpLaserDirection::UNKNOWN);
+    return alpLaserDirectionName(session.active ? session.direction : AlpLaserDirection::UNKNOWN);
 }
 
-}  // namespace
+} // namespace
 
 // ── Gun code lookup table ────────────────────────────────────────────
 // Sources: docs/ALP_PROTOCOL_EVIDENCE.md (gun-code fingerprints) + live captures.
@@ -126,14 +155,10 @@ const char* sessionDirectionName(const AlertSession& session) {
 // C8 00 04 is a generic "laser detected" trigger common to all guns in Detect mode.
 
 static constexpr AlpGunCode GUN_TABLE[] = {
-    { 0xC8, 0xD5, AlpGunType::PL3_PROLITE },
-    { 0xC8, 0xD6, AlpGunType::DRAGONEYE_COMPACT },
-    { 0xC9, 0xF5, AlpGunType::LTI_TRUSPEED_LR },
-    { 0xCB, 0xEB, AlpGunType::LASER_ATLANTA_PL2 },
-    { 0xCD, 0xD6, AlpGunType::MARKSMAN_ULTRALYTE },
-    { 0xCD, 0xEB, AlpGunType::STALKER_LZ1 },
-    { 0xCD, 0xD7, AlpGunType::LASER_ALLY },
-    { 0xCE, 0xEB, AlpGunType::ATLANTA_STEALTH },
+    {0xC8, 0xD5, AlpGunType::PL3_PROLITE},        {0xC8, 0xD6, AlpGunType::DRAGONEYE_COMPACT},
+    {0xC9, 0xF5, AlpGunType::LTI_TRUSPEED_LR},    {0xCB, 0xEB, AlpGunType::LASER_ATLANTA_PL2},
+    {0xCD, 0xD6, AlpGunType::MARKSMAN_ULTRALYTE}, {0xCD, 0xEB, AlpGunType::STALKER_LZ1},
+    {0xCD, 0xD7, AlpGunType::LASER_ALLY},         {0xCE, 0xEB, AlpGunType::ATLANTA_STEALTH},
 };
 static constexpr size_t GUN_TABLE_SIZE = sizeof(GUN_TABLE) / sizeof(GUN_TABLE[0]);
 
@@ -152,14 +177,14 @@ AlpGunType alpLookupGun(uint8_t byte0, uint8_t gunCode) {
 // byte0 matches the LID-deploy gun family for the same physical gun.
 
 static constexpr AlpGunCode DETECT_GUN_TABLE[] = {
-    { 0xC8, 0x0D, AlpGunType::PL3_PROLITE },          // live capture: PL3 ProLite
-    { 0xC8, 0x11, AlpGunType::DRAGONEYE_COMPACT },    // live capture: DragonEye Compact
-    { 0xC9, 0x0E, AlpGunType::LTI_TRUSPEED_LR },     // live capture: TruSpeed LR
-    { 0xCB, 0x10, AlpGunType::LASER_ATLANTA_PL2 },    // live capture: Laser Atlanta PL2
-    { 0xCD, 0x0C, AlpGunType::MARKSMAN_ULTRALYTE },   // live capture: Ultralyte
-    { 0xCD, 0x0D, AlpGunType::STALKER_LZ1 },          // live capture: Stalker LZ1
-    { 0xCD, 0x10, AlpGunType::LASER_ALLY },            // live capture: Laser Ally
-    { 0xCE, 0x0C, AlpGunType::ATLANTA_STEALTH },      // live capture: Atlanta Stealth
+    {0xC8, 0x0D, AlpGunType::PL3_PROLITE},        // live capture: PL3 ProLite
+    {0xC8, 0x11, AlpGunType::DRAGONEYE_COMPACT},  // live capture: DragonEye Compact
+    {0xC9, 0x0E, AlpGunType::LTI_TRUSPEED_LR},    // live capture: TruSpeed LR
+    {0xCB, 0x10, AlpGunType::LASER_ATLANTA_PL2},  // live capture: Laser Atlanta PL2
+    {0xCD, 0x0C, AlpGunType::MARKSMAN_ULTRALYTE}, // live capture: Ultralyte
+    {0xCD, 0x0D, AlpGunType::STALKER_LZ1},        // live capture: Stalker LZ1
+    {0xCD, 0x10, AlpGunType::LASER_ALLY},         // live capture: Laser Ally
+    {0xCE, 0x0C, AlpGunType::ATLANTA_STEALTH},    // live capture: Atlanta Stealth
 };
 static constexpr size_t DETECT_GUN_TABLE_SIZE = sizeof(DETECT_GUN_TABLE) / sizeof(DETECT_GUN_TABLE[0]);
 
@@ -223,12 +248,12 @@ void AlpRuntimeModule::begin(bool enabled, AlpSdLogger* sdLogger) {
 
     Serial2.setRxBufferSize(UART_RX_BUFFER_SIZE);
     Serial2.begin(ALP_BAUD, SERIAL_8N1, ALP_RX_PIN, -1);
-    ALP_LOG("begin: UART2 open baud=%lu RX=%d (TX=none) bufSize=%u",
-            (unsigned long)ALP_BAUD, ALP_RX_PIN,
+    ALP_LOG("begin: UART2 open baud=%lu RX=%d (TX=none) bufSize=%u", (unsigned long)ALP_BAUD, ALP_RX_PIN,
             (unsigned)UART_RX_BUFFER_SIZE);
 
     // Drain any bytes that arrived during UART peripheral init itself.
-    while (Serial2.available()) Serial2.read();
+    while (Serial2.available())
+        Serial2.read();
 
     // GPIO glitch filter on RX pin — rejects sub-10µs I2S crosstalk
     // during active LID deploy while passing valid 52.1µs UART bits.
@@ -253,7 +278,8 @@ void AlpRuntimeModule::begin(bool enabled, AlpSdLogger* sdLogger) {
 // ── process() — main loop entry ──────────────────────────────────────
 
 void AlpRuntimeModule::process(uint32_t nowMs) {
-    if (!begun_ || !enabled_) return;
+    if (!begun_ || !enabled_)
+        return;
 
     // TEARDOWN timeout runs before parseRingBuffer(). If it returns us to
     // LISTENING, any queued housekeeping heartbeats still sitting in the
@@ -268,20 +294,20 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
 
     // Timeout checks (state-dependent)
     switch (state_) {
-        case AlpState::LISTENING:
-            handleHeartbeatTimeout(nowMs);
-            break;
-        case AlpState::ALERT_ACTIVE:
-            handleAlertActiveTimeout(nowMs);
-            break;
-        case AlpState::NOISE_WINDOW:
-            handleNoiseWindowTimeout(nowMs);
-            break;
-        case AlpState::TEARDOWN:
-            handleTeardownTimeout(nowMs);
-            break;
-        default:
-            break;
+    case AlpState::LISTENING:
+        handleHeartbeatTimeout(nowMs);
+        break;
+    case AlpState::ALERT_ACTIVE:
+        handleAlertActiveTimeout(nowMs);
+        break;
+    case AlpState::NOISE_WINDOW:
+        handleNoiseWindowTimeout(nowMs);
+        break;
+    case AlpState::TEARDOWN:
+        handleTeardownTimeout(nowMs);
+        break;
+    default:
+        break;
     }
 
     // Parse whatever is in the ring buffer
@@ -307,10 +333,8 @@ AlpStatus AlpRuntimeModule::snapshot() const {
     s.frameErrors = frameErrors_;
     s.noiseWindowCount = noiseWindowCount_;
     s.lastHbByte1 = lastHbByte1_;
-    s.laserDirection = currentEvent_.active ? currentEvent_.direction
-                                            : AlpLaserDirection::UNKNOWN;
-    s.directionSampleByte1 = currentEvent_.active ? session_.directionSampleByte1
-                                                  : 0x00;
+    s.laserDirection = currentEvent_.active ? currentEvent_.direction : AlpLaserDirection::UNKNOWN;
+    s.directionSampleByte1 = currentEvent_.active ? session_.directionSampleByte1 : 0x00;
     s.uartActive = uartHasReceivedData_;
     s.hasLaserEvent = currentEvent_.active;
     return s;
@@ -339,14 +363,9 @@ bool AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     // timeout (evidence: alp_6-61aa53a8.csv @ 48531 ms — mode=01 session
     // opens, flips ALERT_ACTIVE→TEARDOWN in ~0 ms, no gun ever identified,
     // would otherwise display for 5 s with the unconditional TEARDOWN gate).
-    const bool teardownDisplayable =
-        (state_ == AlpState::TEARDOWN) &&
-        (session_.gun != AlpGunType::UNKNOWN);
-    next.active = session_.active &&
-                  !session_.isWarmUp &&
-                  (state_ == AlpState::ALERT_ACTIVE ||
-                   state_ == AlpState::NOISE_WINDOW ||
-                   teardownDisplayable);
+    const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
+    next.active = session_.active && !session_.isWarmUp &&
+                  (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
     next.gun = next.active ? session_.gun : AlpGunType::UNKNOWN;
     next.direction = next.active ? session_.direction : AlpLaserDirection::UNKNOWN;
     next.lidActive = (lastHbByte1_ == 0x04);
@@ -363,10 +382,8 @@ bool AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     }
 
     // Check if anything relevant changed
-    const bool changed = (next.active != currentEvent_.active) ||
-                         (next.gun != currentEvent_.gun) ||
-                         (next.direction != currentEvent_.direction) ||
-                         (next.lidActive != currentEvent_.lidActive);
+    const bool changed = (next.active != currentEvent_.active) || (next.gun != currentEvent_.gun) ||
+                         (next.direction != currentEvent_.direction) || (next.lidActive != currentEvent_.lidActive);
 
     currentEvent_ = next;
     return changed;
@@ -375,7 +392,8 @@ bool AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
 // ── Event bus publishing ──────────────────────────────────────────────
 
 void AlpRuntimeModule::publishStateChangeEvent(uint32_t nowMs, uint16_t detail) {
-    if (!bus_) return;
+    if (!bus_)
+        return;
     SystemEvent e;
     e.type = SystemEventType::ALP_STATE_CHANGED;
     e.tsMs = nowMs;
@@ -396,12 +414,9 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     lastDisplayLogEvent_[0] = '\0';
     lastDisplayLogDetail_[0] = '\0';
 
-    ALP_LOG("state: %s -> %s at %lu ms",
-            alpStateName(state_), alpStateName(newState),
-            (unsigned long)nowMs);
+    ALP_LOG("state: %s -> %s at %lu ms", alpStateName(state_), alpStateName(newState), (unsigned long)nowMs);
     if (sdLogger_) {
-        sdLogger_->logStateTransition(nowMs, state_, newState,
-            sessionDirectionName(session_));
+        sdLogger_->logStateTransition(nowMs, state_, newState, sessionDirectionName(session_));
     }
 
     // Clear stale gun ID only on a genuinely fresh engagement — one that
@@ -419,8 +434,7 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     // "previous alert must not bleed through" guarantee (see
     // test_new_alert_clears_stale_gun_via_98_trigger etc.) while fixing
     // the in-engagement case (test_gun_persists_through_teardown_rearm).
-    if (newState == AlpState::ALERT_ACTIVE &&
-        (state_ == AlpState::LISTENING || state_ == AlpState::IDLE)) {
+    if (newState == AlpState::ALERT_ACTIVE && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE)) {
         lastGun_ = AlpGunType::UNKNOWN;
         lastGunTimestampMs_ = 0;
     }
@@ -439,12 +453,10 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     //
     // NOISE_WINDOW entries/exits do not alter session state — the session
     // straddles noise as part of a single engagement.
-    const bool freshEngagement = (newState == AlpState::ALERT_ACTIVE) &&
-        (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
-    const bool midEngagementRearm = (newState == AlpState::ALERT_ACTIVE) &&
-        (state_ == AlpState::TEARDOWN);
-    const bool engagementEnd = (newState == AlpState::LISTENING) &&
-        (state_ == AlpState::TEARDOWN);
+    const bool freshEngagement =
+        (newState == AlpState::ALERT_ACTIVE) && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
+    const bool midEngagementRearm = (newState == AlpState::ALERT_ACTIVE) && (state_ == AlpState::TEARDOWN);
+    const bool engagementEnd = (newState == AlpState::LISTENING) && (state_ == AlpState::TEARDOWN);
     const bool silentReset = (newState == AlpState::IDLE);
 
     if (freshEngagement) {
@@ -458,10 +470,8 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
         // the 35s envelope, all wrongly flagged, all dark for the
         // driver. Spec backs this: Warm-Up never emits a CX gun-ID,
         // so lastGun identification is proof Warm-Up has ended.
-        const bool inEnvelope = (warmUpPreambleMs_ != 0) &&
-            (firstFrameMs_ != 0) &&
-            (nowMs - firstFrameMs_) < WARM_UP_ENVELOPE_MS &&
-            !bootGunConfirmed_;
+        const bool inEnvelope = (warmUpPreambleMs_ != 0) && (firstFrameMs_ != 0) &&
+                                (nowMs - firstFrameMs_) < WARM_UP_ENVELOPE_MS && !bootGunConfirmed_;
         // Pre-heartbeat clause: if the ALP has never sent a B0 heartbeat,
         // the session cannot be a real engagement. Real engagements require
         // the ALP to have already completed enough boot sequencing to emit
@@ -485,57 +495,49 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
         session_.startMs = nowMs;
         session_.isWarmUp = flagWarmUp;
         session_.modeAtOpen = lastHbByte1_;
-        const char* warmUpReason = inEnvelope ? "preamble_envelope"
-                                              : (noHeartbeatYet ? "no_heartbeat_yet"
-                                    : (unconfirmedDetectMode ? "unconfirmed_detect_mode" : nullptr));
+        const char* warmUpReason =
+            inEnvelope
+                ? "preamble_envelope"
+                : (noHeartbeatYet ? "no_heartbeat_yet" : (unconfirmedDetectMode ? "unconfirmed_detect_mode" : nullptr));
         if (flagWarmUp) {
             ALP_LOG("SESSION: open at +%lu ms — flagged WARM_UP (%s, suppressed from display)",
                     (unsigned long)(firstFrameMs_ != 0 ? nowMs - firstFrameMs_ : 0),
                     warmUpReason ? warmUpReason : "unknown");
         } else {
-            ALP_LOG("SESSION: open at %lu ms — real engagement",
-                    (unsigned long)nowMs);
+            ALP_LOG("SESSION: open at %lu ms — real engagement", (unsigned long)nowMs);
         }
         if (sdLogger_) {
             char openExtra[64];
-            snprintf(openExtra, sizeof(openExtra), "warmUp=%d mode=%02X",
-                     flagWarmUp ? 1 : 0, lastHbByte1_);
-            sdLogger_->logSessionEvent(nowMs, "SESSION_OPEN", state_,
-                AlpGunType::UNKNOWN, openExtra, sessionDirectionName(session_));
+            snprintf(openExtra, sizeof(openExtra), "warmUp=%d mode=%02X", flagWarmUp ? 1 : 0, lastHbByte1_);
+            sdLogger_->logSessionEvent(nowMs, "SESSION_OPEN", state_, AlpGunType::UNKNOWN, openExtra,
+                                       sessionDirectionName(session_));
         }
         if (flagWarmUp && sdLogger_) {
-            sdLogger_->logSessionEvent(nowMs, "WARMUP_FLAG", state_,
-                AlpGunType::UNKNOWN,
-                warmUpReason ? warmUpReason : "unknown",
-                sessionDirectionName(session_));
+            sdLogger_->logSessionEvent(nowMs, "WARMUP_FLAG", state_, AlpGunType::UNKNOWN,
+                                       warmUpReason ? warmUpReason : "unknown", sessionDirectionName(session_));
         }
     }
     if (midEngagementRearm && session_.active) {
         session_.rearmCount++;
         if (sdLogger_) {
             char extra[48];
-            snprintf(extra, sizeof(extra), "rearm=%lu gun=%s",
-                     (unsigned long)session_.rearmCount, alpGunName(session_.gun));
-            sdLogger_->logSessionEvent(nowMs, "SESSION_REARM", state_,
-                session_.gun, extra, sessionDirectionName(session_));
+            snprintf(extra, sizeof(extra), "rearm=%lu gun=%s", (unsigned long)session_.rearmCount,
+                     alpGunName(session_.gun));
+            sdLogger_->logSessionEvent(nowMs, "SESSION_REARM", state_, session_.gun, extra,
+                                       sessionDirectionName(session_));
         }
     }
     if ((engagementEnd || silentReset) && session_.active) {
         ALP_LOG("SESSION: close at %lu ms  gun=%s  dur=%lu ms  triggers=%lu  rearms=%lu  warmUp=%d",
-                (unsigned long)nowMs, alpGunName(session_.gun),
-                (unsigned long)(nowMs - session_.startMs),
-                (unsigned long)session_.triggerCount,
-                (unsigned long)session_.rearmCount,
-                session_.isWarmUp ? 1 : 0);
+                (unsigned long)nowMs, alpGunName(session_.gun), (unsigned long)(nowMs - session_.startMs),
+                (unsigned long)session_.triggerCount, (unsigned long)session_.rearmCount, session_.isWarmUp ? 1 : 0);
         if (sdLogger_) {
             char extra[96];
             snprintf(extra, sizeof(extra), "dur=%lu trig=%lu rearm=%lu warmUp=%d",
-                     (unsigned long)(nowMs - session_.startMs),
-                     (unsigned long)session_.triggerCount,
-                     (unsigned long)session_.rearmCount,
-                     session_.isWarmUp ? 1 : 0);
-            sdLogger_->logSessionEvent(nowMs, "SESSION_CLOSE", state_,
-                session_.gun, extra, sessionDirectionName(session_));
+                     (unsigned long)(nowMs - session_.startMs), (unsigned long)session_.triggerCount,
+                     (unsigned long)session_.rearmCount, session_.isWarmUp ? 1 : 0);
+            sdLogger_->logSessionEvent(nowMs, "SESSION_CLOSE", state_, session_.gun, extra,
+                                       sessionDirectionName(session_));
         }
         session_.active = false;
         updateCurrentEvent(nowMs);
@@ -565,13 +567,13 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
 void AlpRuntimeModule::drainUart(uint32_t nowMs) {
 #ifndef UNIT_TEST
     const int available = Serial2.available();
-    if (available <= 0) return;
+    if (available <= 0)
+        return;
 
     // First data ever — log it
     if (!uartHasReceivedData_) {
         uartHasReceivedData_ = true;
-        ALP_LOG("UART first data at %lu ms (%d bytes available)",
-                (unsigned long)nowMs, available);
+        ALP_LOG("UART first data at %lu ms (%d bytes available)", (unsigned long)nowMs, available);
     }
 
     // Read into ring buffer, up to remaining capacity
@@ -607,7 +609,8 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
 
     while (ringLen_ >= FRAME_LEN && maxIterations-- > 0) {
         // Try to parse a valid 4-byte frame at current position
-        if (tryParseFrame(nowMs)) continue;
+        if (tryParseFrame(nowMs))
+            continue;
 
         // Checksum failed — noise or misalignment
         consecutiveBadChecksums_++;
@@ -617,8 +620,7 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
         // LID (I2S speaker crosstalk during deploy). Enter NOISE_WINDOW from
         // ALERT_ACTIVE or LISTENING (if we've seen alert-mode heartbeats)
         // after enough consecutive failures.
-        if (consecutiveBadChecksums_ >= NOISE_CHECKSUM_THRESHOLD &&
-            state_ != AlpState::NOISE_WINDOW) {
+        if (consecutiveBadChecksums_ >= NOISE_CHECKSUM_THRESHOLD && state_ != AlpState::NOISE_WINDOW) {
             bool enterNoise = false;
             if (state_ == AlpState::ALERT_ACTIVE) {
                 enterNoise = true;
@@ -633,7 +635,8 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
             if (enterNoise) {
                 ALP_LOG("NOISE: %lu consecutive bad checksums — entering NOISE_WINDOW",
                         (unsigned long)consecutiveBadChecksums_);
-                if (sdLogger_) sdLogger_->logEvent(nowMs, "NOISE_ENTER", state_, consecutiveBadChecksums_);
+                if (sdLogger_)
+                    sdLogger_->logEvent(nowMs, "NOISE_ENTER", state_, consecutiveBadChecksums_);
                 transitionTo(AlpState::NOISE_WINDOW, nowMs);
                 noiseWindowEntryMs_ = nowMs;
                 noiseWindowCount_++;
@@ -655,11 +658,9 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
         }
 
         // Not in noise window — throttled RESYNC logging
-        if (consecutiveBadChecksums_ <= 3 ||
-            (consecutiveBadChecksums_ % RESYNC_LOG_INTERVAL) == 0) {
-            ALP_TRACE("RESYNC: bad checksum at 0x%02X %02X %02X %02X (err#%lu)",
-                    ringBuf_[0], ringBuf_[1], ringBuf_[2], ringBuf_[3],
-                    (unsigned long)consecutiveBadChecksums_);
+        if (consecutiveBadChecksums_ <= 3 || (consecutiveBadChecksums_ % RESYNC_LOG_INTERVAL) == 0) {
+            ALP_TRACE("RESYNC: bad checksum at 0x%02X %02X %02X %02X (err#%lu)", ringBuf_[0], ringBuf_[1], ringBuf_[2],
+                      ringBuf_[3], (unsigned long)consecutiveBadChecksums_);
         }
         consumeBytes(1);
     }
@@ -668,7 +669,8 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
 // ── Frame parser (checksum-validated dispatch) ───────────────────────
 
 bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
-    if (ringLen_ < FRAME_LEN) return false;
+    if (ringLen_ < FRAME_LEN)
+        return false;
 
     const uint8_t b0 = ringBuf_[0];
     const uint8_t b1 = ringBuf_[1];
@@ -676,7 +678,8 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     const uint8_t cs = ringBuf_[3];
 
     // Validate checksum — the core integrity check
-    if (!alpValidateChecksum(b0, b1, b2, cs)) return false;
+    if (!alpValidateChecksum(b0, b1, b2, cs))
+        return false;
 
     // Valid frame — reset bad checksum counter
     consecutiveBadChecksums_ = 0;
@@ -689,8 +692,8 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
 
     // If we were in NOISE_WINDOW, first valid frame = teardown
     if (state_ == AlpState::NOISE_WINDOW) {
-        ALP_LOG("NOISE_WINDOW ended — first valid frame %02X %02X %02X %02X after %lu ms",
-                b0, b1, b2, cs, (unsigned long)(nowMs - noiseWindowEntryMs_));
+        ALP_LOG("NOISE_WINDOW ended — first valid frame %02X %02X %02X %02X after %lu ms", b0, b1, b2, cs,
+                (unsigned long)(nowMs - noiseWindowEntryMs_));
         transitionTo(AlpState::TEARDOWN, nowMs);
         teardownEntryMs_ = nowMs;
     }
@@ -698,9 +701,8 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     // Dispatch by byte0 range
     if (b0 == ALERT_BYTE0) {
         handleAlertFrame(b1, b2, nowMs);
-    } else if (b0 == HEARTBEAT_SINGLE_0 || b0 == HEARTBEAT_PAIRED_0 ||
-               b0 == HEARTBEAT_TRIPLE_0 || b0 == SETUP_BYTE0_A8 ||
-               b0 == SETUP_BYTE0_F0) {
+    } else if (b0 == HEARTBEAT_SINGLE_0 || b0 == HEARTBEAT_PAIRED_0 || b0 == HEARTBEAT_TRIPLE_0 ||
+               b0 == SETUP_BYTE0_A8 || b0 == SETUP_BYTE0_F0) {
         handleHeartbeatFrame(b0, b1, b2, nowMs);
     } else if (b0 >= 0xC8 && b0 <= 0xCE) {
         handleGunCandidate(b0, b1, b2, nowMs);
@@ -737,16 +739,16 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
         // limit and a real laser hit is detected. Rare in daily driving.
         statusBurstCount_++;
         lastAlertTriggerMs_ = nowMs;
-        ALP_LOG("ALERT_TRIGGER: 98 00 E3 (LID deploy) — burst #%lu",
-                (unsigned long)statusBurstCount_);
-        if (sdLogger_) sdLogger_->logFrame(nowMs, "ALERT_LID_DEPLOY", ALERT_BYTE0, b1, b2,
-                     alpChecksum(ALERT_BYTE0, b1, b2), state_,
-                     sessionDirectionName(session_));
+        ALP_LOG("ALERT_TRIGGER: 98 00 E3 (LID deploy) — burst #%lu", (unsigned long)statusBurstCount_);
+        if (sdLogger_)
+            sdLogger_->logFrame(nowMs, "ALERT_LID_DEPLOY", ALERT_BYTE0, b1, b2, alpChecksum(ALERT_BYTE0, b1, b2),
+                                state_, sessionDirectionName(session_));
 
         if (state_ != AlpState::ALERT_ACTIVE) {
             transitionTo(AlpState::ALERT_ACTIVE, nowMs);
         }
-        if (session_.active) session_.triggerCount++;
+        if (session_.active)
+            session_.triggerCount++;
 
         // LID deploy is the ALP actively firing countermeasures — an
         // unambiguous real engagement. Any Warm-Up flag that was speculatively
@@ -761,9 +763,8 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
             updateCurrentEvent(nowMs);
             publishStateChangeEvent(nowMs, 0x01);
             if (sdLogger_) {
-                sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_,
-                    session_.gun, "lid_deploy",
-                    sessionDirectionName(session_));
+                sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, session_.gun, "lid_deploy",
+                                           sessionDirectionName(session_));
             }
         }
     } else if (b1 == 0x02 && b2 == 0x00) {
@@ -771,16 +772,16 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
         // in all operational states (DLI, LID pre-deploy, LID post-deploy).
         statusBurstCount_++;
         lastAlertTriggerMs_ = nowMs;
-        ALP_LOG("ALERT_TRIGGER: 98 02 00 (Detect) — burst #%lu",
-                (unsigned long)statusBurstCount_);
-        if (sdLogger_) sdLogger_->logFrame(nowMs, "ALERT_DETECT", ALERT_BYTE0, b1, b2,
-                     alpChecksum(ALERT_BYTE0, b1, b2), state_,
-                     sessionDirectionName(session_));
+        ALP_LOG("ALERT_TRIGGER: 98 02 00 (Detect) — burst #%lu", (unsigned long)statusBurstCount_);
+        if (sdLogger_)
+            sdLogger_->logFrame(nowMs, "ALERT_DETECT", ALERT_BYTE0, b1, b2, alpChecksum(ALERT_BYTE0, b1, b2), state_,
+                                sessionDirectionName(session_));
 
         if (state_ != AlpState::ALERT_ACTIVE) {
             transitionTo(AlpState::ALERT_ACTIVE, nowMs);
         }
-        if (session_.active) session_.triggerCount++;
+        if (session_.active)
+            session_.triggerCount++;
 
         // NOTE: Earlier revisions released Warm-Up on triggerCount>=2 as a
         // "sustained detect" heuristic. That heuristic was wrong in both
@@ -795,8 +796,7 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
         // trigger-frame counting.
     } else {
         // Other 98 XX YY frames (status/config)
-        ALP_TRACE("STATUS_FRAME: 98 %02X %02X  state=%s",
-                b1, b2, alpStateName(state_));
+        ALP_TRACE("STATUS_FRAME: 98 %02X %02X  state=%s", b1, b2, alpStateName(state_));
 
         if (state_ == AlpState::IDLE) {
             transitionTo(AlpState::LISTENING, nowMs);
@@ -813,16 +813,14 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
     // first 5 seconds of module uptime mark the boot Warm-Up envelope.
     // We latch the first occurrence; later F0/A8 frames (which per spec
     // only arrive at cold boot anyway) are ignored.
-    if ((b0 == SETUP_BYTE0_F0 || b0 == SETUP_BYTE0_A8) &&
-        firstFrameMs_ != 0 && warmUpPreambleMs_ == 0 &&
+    if ((b0 == SETUP_BYTE0_F0 || b0 == SETUP_BYTE0_A8) && firstFrameMs_ != 0 && warmUpPreambleMs_ == 0 &&
         (nowMs - firstFrameMs_) < WARM_UP_PREAMBLE_WINDOW_MS) {
         warmUpPreambleMs_ = nowMs;
-        ALP_LOG("WARM_UP: %02X preamble at +%lu ms — Warm-Up envelope captured",
-                b0, (unsigned long)(nowMs - firstFrameMs_));
+        ALP_LOG("WARM_UP: %02X preamble at +%lu ms — Warm-Up envelope captured", b0,
+                (unsigned long)(nowMs - firstFrameMs_));
     }
 
-    ALP_TRACE("HEARTBEAT: %02X %02X %02X  state=%s  hb#=%lu",
-              b0, b1, b2, alpStateName(state_),
+    ALP_TRACE("HEARTBEAT: %02X %02X %02X  state=%s  hb#=%lu", b0, b1, b2, alpStateName(state_),
               (unsigned long)heartbeatCount_);
 
     // ── Heartbeat byte1 alert detection (B0 frames only) ────────────
@@ -840,16 +838,14 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
     if (b0 == HEARTBEAT_SINGLE_0) {
         uint8_t prevByte1 = lastHbByte1_;
         lastHbByte1_ = b1;
-        const bool pastBootEnvelope = (firstFrameMs_ != 0) &&
-            (nowMs - firstFrameMs_) >= WARM_UP_ENVELOPE_MS;
+        const bool pastBootEnvelope = (firstFrameMs_ != 0) && (nowMs - firstFrameMs_) >= WARM_UP_ENVELOPE_MS;
 
         // Targeted heartbeat release: byte1=01 is the ALP's universal
         // "laser detected" signal in steady-state operation. Boot Warm-Up
         // also emits a single ~800 ms byte1=01 blip inside the Warm-Up
         // envelope, so do not release speculative sessions on 01 until the
         // boot envelope has elapsed unless a real gun already identified.
-        const bool targetedHeartbeatReleaseConfirmed =
-            pastBootEnvelope || session_.gun != AlpGunType::UNKNOWN;
+        const bool targetedHeartbeatReleaseConfirmed = pastBootEnvelope || session_.gun != AlpGunType::UNKNOWN;
         if (session_.active && session_.isWarmUp && b1 == HB_BYTE1_ALERT) {
             if (targetedHeartbeatReleaseConfirmed) {
                 ALP_LOG("WARM_UP: heartbeat -> 01 (Targeted) — unmarking session as real");
@@ -857,9 +853,8 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
                 updateCurrentEvent(nowMs);
                 publishStateChangeEvent(nowMs, 0x01);
                 if (sdLogger_) {
-                    sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_,
-                        session_.gun, "hb_targeted",
-                        sessionDirectionName(session_));
+                    sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, session_.gun, "hb_targeted",
+                                               sessionDirectionName(session_));
                 }
             } else {
                 ALP_LOG("WARM_UP: heartbeat -> 01 inside boot envelope — keeping session suppressed");
@@ -890,22 +885,17 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
         // flagged for their entire duration (alp_6-61aa53a8.csv
         // session #1: 23.4s engagement, zero display output).
         const bool prevWasResting = (prevByte1 == 0x02 || prevByte1 == 0x06);
-        const bool heartbeatReleaseConfirmed =
-            (b1 == 0x04) || (b1 == 0x03 && session_.gun != AlpGunType::UNKNOWN);
-        if (session_.active && session_.isWarmUp && pastBootEnvelope &&
-            prevWasResting && heartbeatReleaseConfirmed) {
-            ALP_LOG("WARM_UP: heartbeat %02X -> %02X (DLI/LID engage) — unmarking session as real",
-                    prevByte1, b1);
+        const bool heartbeatReleaseConfirmed = (b1 == 0x04) || (b1 == 0x03 && session_.gun != AlpGunType::UNKNOWN);
+        if (session_.active && session_.isWarmUp && pastBootEnvelope && prevWasResting && heartbeatReleaseConfirmed) {
+            ALP_LOG("WARM_UP: heartbeat %02X -> %02X (DLI/LID engage) — unmarking session as real", prevByte1, b1);
             session_.isWarmUp = false;
             updateCurrentEvent(nowMs);
             publishStateChangeEvent(nowMs, 0x01);
             if (sdLogger_) {
                 char reason[24];
-                snprintf(reason, sizeof(reason), "hb_%02X_to_%02X",
-                         prevByte1, b1);
-                sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_,
-                    session_.gun, reason,
-                    sessionDirectionName(session_));
+                snprintf(reason, sizeof(reason), "hb_%02X_to_%02X", prevByte1, b1);
+                sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, session_.gun, reason,
+                                           sessionDirectionName(session_));
             }
         }
 
@@ -918,15 +908,12 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
         // blocks heartbeat-driven reopen for this process() pass only.
         if (state_ != AlpState::TEARDOWN) {
             const bool suppressSameProcessHeartbeatAlert =
-                suppressHeartbeatResumeThisProcess_ &&
-                (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
+                suppressHeartbeatResumeThisProcess_ && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
             const bool heartbeatAlertEdge =
-                (b1 == HB_BYTE1_ALERT && prevByte1 != HB_BYTE1_ALERT &&
-                 !suppressSameProcessHeartbeatAlert);
+                (b1 == HB_BYTE1_ALERT && prevByte1 != HB_BYTE1_ALERT && !suppressSameProcessHeartbeatAlert);
             const bool heartbeatAlertResume =
                 (b1 == HB_BYTE1_ALERT && prevByte1 == HB_BYTE1_ALERT &&
-                 (state_ == AlpState::LISTENING || state_ == AlpState::IDLE) &&
-                 !suppressSameProcessHeartbeatAlert &&
+                 (state_ == AlpState::LISTENING || state_ == AlpState::IDLE) && !suppressSameProcessHeartbeatAlert &&
                  !suppressHeartbeatResumeThisProcess_);
 
             if (heartbeatAlertEdge || heartbeatAlertResume) {
@@ -934,12 +921,11 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
                 // remained at 01 across a TEARDOWN timeout back to LISTENING.
                 alertDetectedViaHb_ = true;
                 if (heartbeatAlertEdge) {
-                    ALP_LOG("HB ALERT: byte1 %02X -> 01 — laser detected via heartbeat",
-                            prevByte1);
+                    ALP_LOG("HB ALERT: byte1 %02X -> 01 — laser detected via heartbeat", prevByte1);
                     if (sdLogger_) {
-                        sdLogger_->logHeartbeatByte1(nowMs, prevByte1, b1, state_,
-                            alpLaserDirectionName(
-                                classifyLaserDirectionFromHeartbeatByte1(b1)));
+                        sdLogger_->logHeartbeatByte1(
+                            nowMs, prevByte1, b1, state_,
+                            alpLaserDirectionName(classifyLaserDirectionFromHeartbeatByte1(b1)));
                     }
                 } else {
                     ALP_LOG("HB ALERT RESUME: byte1 stayed at 01 after teardown — reopening alert");
@@ -954,8 +940,7 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
                 alertDetectedViaHb_ = false;
                 ALP_LOG("HB IDLE: byte1 01 -> %02X — alert resolved via heartbeat", b1);
                 if (sdLogger_) {
-                    sdLogger_->logHeartbeatByte1(nowMs, prevByte1, b1, state_,
-                        sessionDirectionName(session_));
+                    sdLogger_->logHeartbeatByte1(nowMs, prevByte1, b1, state_, sessionDirectionName(session_));
                 }
 
                 if (state_ == AlpState::ALERT_ACTIVE) {
@@ -978,8 +963,7 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
     // SD trace: log every heartbeat frame to capture the raw byte1
     // cycling pattern alongside the runtime's current direction view.
     if (sdLogger_) {
-        sdLogger_->logHeartbeat(nowMs, b0, b1, b2, state_,
-            sessionDirectionName(session_));
+        sdLogger_->logHeartbeat(nowMs, b0, b1, b2, state_, sessionDirectionName(session_));
     }
 }
 
@@ -995,22 +979,18 @@ void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, ui
     if (b1 == 0x00) {
         gun = alpLookupGun(b0, b2);
         if (gun != AlpGunType::UNKNOWN) {
-            ALP_LOG("GUN IDENTIFIED (LID-deploy): byte0=0x%02X gunCode=0x%02X -> %s",
-                    b0, b2, alpGunName(gun));
+            ALP_LOG("GUN IDENTIFIED (LID-deploy): byte0=0x%02X gunCode=0x%02X -> %s", b0, b2, alpGunName(gun));
             if (sdLogger_) {
-                sdLogger_->logGunIdentified(nowMs, gun, b0, b2, false, state_,
-                    sessionDirectionName(session_));
+                sdLogger_->logGunIdentified(nowMs, gun, b0, b2, false, state_, sessionDirectionName(session_));
             }
         }
     }
     if (gun == AlpGunType::UNKNOWN && b2 == 0x00 && b1 != 0x00) {
         gun = alpLookupGunDetect(b0, b1);
         if (gun != AlpGunType::UNKNOWN) {
-            ALP_LOG("GUN IDENTIFIED (Detect): byte0=0x%02X byte1=0x%02X -> %s",
-                    b0, b1, alpGunName(gun));
+            ALP_LOG("GUN IDENTIFIED (Detect): byte0=0x%02X byte1=0x%02X -> %s", b0, b1, alpGunName(gun));
             if (sdLogger_) {
-                sdLogger_->logGunIdentified(nowMs, gun, b0, b1, true, state_,
-                    sessionDirectionName(session_));
+                sdLogger_->logGunIdentified(nowMs, gun, b0, b1, true, state_, sessionDirectionName(session_));
             }
         }
     }
@@ -1031,16 +1011,14 @@ void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, ui
             session_.gun = gun;
             session_.gunIdentifiedMs = nowMs;
             if (sdLogger_) {
-                sdLogger_->logSessionEvent(nowMs, "SESSION_GUN", state_,
-                    gun, nullptr, sessionDirectionName(session_));
+                sdLogger_->logSessionEvent(nowMs, "SESSION_GUN", state_, gun, nullptr, sessionDirectionName(session_));
             }
             if (session_.isWarmUp) {
-                ALP_LOG("WARM_UP: gun %s identified — unmarking session as real",
-                        alpGunName(gun));
+                ALP_LOG("WARM_UP: gun %s identified — unmarking session as real", alpGunName(gun));
                 session_.isWarmUp = false;
                 if (sdLogger_) {
-                    sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_,
-                        gun, "gun_identified", sessionDirectionName(session_));
+                    sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, gun, "gun_identified",
+                                               sessionDirectionName(session_));
                 }
             }
         }
@@ -1101,10 +1079,10 @@ void AlpRuntimeModule::consumeBytes(size_t count) {
 // ── Timeout handlers ─────────────────────────────────────────────────
 
 void AlpRuntimeModule::handleHeartbeatTimeout(uint32_t nowMs) {
-    if (lastHeartbeatMs_ == 0) return;
+    if (lastHeartbeatMs_ == 0)
+        return;
     if (nowMs - lastHeartbeatMs_ > HEARTBEAT_TIMEOUT_MS) {
-        ALP_LOG("HEARTBEAT TIMEOUT: no frame for %lu ms — ALP CPU silent",
-                (unsigned long)(nowMs - lastHeartbeatMs_));
+        ALP_LOG("HEARTBEAT TIMEOUT: no frame for %lu ms — ALP CPU silent", (unsigned long)(nowMs - lastHeartbeatMs_));
         transitionTo(AlpState::IDLE, nowMs);
         lastHeartbeatMs_ = 0;
     }
@@ -1121,8 +1099,7 @@ void AlpRuntimeModule::handleNoiseWindowTimeout(uint32_t nowMs) {
 
 void AlpRuntimeModule::handleTeardownTimeout(uint32_t nowMs) {
     if (nowMs - teardownEntryMs_ > TEARDOWN_TIMEOUT_MS) {
-        ALP_LOG("TEARDOWN complete: returning to LISTENING after %lu ms",
-                (unsigned long)(nowMs - teardownEntryMs_));
+        ALP_LOG("TEARDOWN complete: returning to LISTENING after %lu ms", (unsigned long)(nowMs - teardownEntryMs_));
         alertDetectedViaHb_ = false;
         // Block any queued heartbeat housekeeping frames from reopening
         // the session in this same process() pass. Real reopen still works
@@ -1133,8 +1110,7 @@ void AlpRuntimeModule::handleTeardownTimeout(uint32_t nowMs) {
 }
 
 void AlpRuntimeModule::handleAlertActiveTimeout(uint32_t nowMs) {
-    if (lastAlertTriggerMs_ != 0 &&
-        nowMs - lastAlertTriggerMs_ > ALERT_ACTIVE_TIMEOUT_MS) {
+    if (lastAlertTriggerMs_ != 0 && nowMs - lastAlertTriggerMs_ > ALERT_ACTIVE_TIMEOUT_MS) {
         ALP_LOG("ALERT_ACTIVE timeout: no 98 trigger rearm in %lu ms — teardown",
                 (unsigned long)(nowMs - lastAlertTriggerMs_));
         transitionTo(AlpState::TEARDOWN, nowMs);
@@ -1149,8 +1125,7 @@ void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t n
         return;
     }
 
-    const AlpLaserDirection sampled =
-        classifyLaserDirectionFromHeartbeatByte1(heartbeatByte1);
+    const AlpLaserDirection sampled = classifyLaserDirectionFromHeartbeatByte1(heartbeatByte1);
     if (sampled == AlpLaserDirection::UNKNOWN) {
         return;
     }
@@ -1185,10 +1160,8 @@ void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t n
     // REAR→REAR and FRONT→REAR re-sampling is a no-op (REAR is sticky
     // except against Targeted).
     if (session_.direction != AlpLaserDirection::UNKNOWN) {
-        if (sampled == AlpLaserDirection::FRONT &&
-            session_.direction == AlpLaserDirection::REAR) {
-            ALP_LOG("SESSION: direction re-latched FRONT via B0 byte1=01 at %lu ms (was REAR)",
-                    (unsigned long)nowMs);
+        if (sampled == AlpLaserDirection::FRONT && session_.direction == AlpLaserDirection::REAR) {
+            ALP_LOG("SESSION: direction re-latched FRONT via B0 byte1=01 at %lu ms (was REAR)", (unsigned long)nowMs);
             session_.direction = sampled;
             session_.directionSampleByte1 = heartbeatByte1;
         }
@@ -1197,13 +1170,13 @@ void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t n
 
     session_.direction = sampled;
     session_.directionSampleByte1 = heartbeatByte1;
-    ALP_LOG("SESSION: direction latched %s via B0 byte1=%02X at %lu ms",
-            alpLaserDirectionName(sampled), heartbeatByte1,
+    ALP_LOG("SESSION: direction latched %s via B0 byte1=%02X at %lu ms", alpLaserDirectionName(sampled), heartbeatByte1,
             (unsigned long)nowMs);
 }
 
 void AlpRuntimeModule::logDisplayDecision(uint32_t nowMs, const char* event, const char* detail) {
-    if (!event) return;  // defensive — all current callers pass a literal
+    if (!event)
+        return; // defensive — all current callers pass a literal
 
     // Strict last-event/detail dedup. All current callers (display_indicators,
     // display_pipeline_module, display_edge_log) are individually edge-gated,
@@ -1223,9 +1196,8 @@ void AlpRuntimeModule::logDisplayDecision(uint32_t nowMs, const char* event, con
 
     ALP_LOG("DISPLAY: %s  %s", event, detailStr);
     if (sdLogger_) {
-        sdLogger_->logSessionEvent(nowMs, event, state_,
-            session_.active ? session_.gun : AlpGunType::UNKNOWN,
-            detail, sessionDirectionName(session_));
+        sdLogger_->logSessionEvent(nowMs, event, state_, session_.active ? session_.gun : AlpGunType::UNKNOWN, detail,
+                                   sessionDirectionName(session_));
     }
 }
 
@@ -1238,18 +1210,11 @@ void AlpRuntimeModule::maybeLogDisplayWindowEdge(uint32_t nowMs) {
         // Log to SD via existing infrastructure
         if (sdLogger_) {
             char detail[64];
-            snprintf(detail, sizeof(detail),
-                    "state=%s session=%d isWarmUp=%d byte1=%02X",
-                    alpStateName(state_),
-                    session_.active ? 1 : 0,
-                    session_.isWarmUp ? 1 : 0,
-                    lastHbByte1_);
-            sdLogger_->logSessionEvent(nowMs,
-                laserEventActive ? "SESSION_DISPLAY_WINDOW_OPEN" : "SESSION_DISPLAY_WINDOW_CLOSE",
-                state_,
-                session_.active ? session_.gun : AlpGunType::UNKNOWN,
-                detail,
-                sessionDirectionName(session_));
+            snprintf(detail, sizeof(detail), "state=%s session=%d isWarmUp=%d byte1=%02X", alpStateName(state_),
+                     session_.active ? 1 : 0, session_.isWarmUp ? 1 : 0, lastHbByte1_);
+            sdLogger_->logSessionEvent(
+                nowMs, laserEventActive ? "SESSION_DISPLAY_WINDOW_OPEN" : "SESSION_DISPLAY_WINDOW_CLOSE", state_,
+                session_.active ? session_.gun : AlpGunType::UNKNOWN, detail, sessionDirectionName(session_));
         }
     }
 }

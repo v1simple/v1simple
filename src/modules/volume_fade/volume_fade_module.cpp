@@ -8,18 +8,9 @@
 #include "settings.h"
 
 VolumeFadeModule::VolumeFadeModule()
-    : settings_(nullptr)
-    , alertStartMs_(0)
-    , originalVolume_(0xFF)
-    , originalMuteVolume_(0)
-    , fadeActive_(false)
-    , commandSent_(false)
-    , restoreLogEmitted_(false)
-    , seenCount_(0)
-    , pendingRestoreVolume_(0xFF)
-    , pendingRestoreMuteVolume_(0)
-    , pendingRestoreSetMs_(0)
-    , lastRestoreAttemptMs_(0) {
+    : settings_(nullptr), alertStartMs_(0), originalVolume_(0xFF), originalMuteVolume_(0), fadeActive_(false),
+      commandSent_(false), restoreLogEmitted_(false), seenCount_(0), pendingRestoreVolume_(0xFF),
+      pendingRestoreMuteVolume_(0), pendingRestoreSetMs_(0), lastRestoreAttemptMs_(0) {
     memset(seenFreqs_, 0, sizeof(seenFreqs_));
 }
 
@@ -30,7 +21,8 @@ void VolumeFadeModule::begin(SettingsManager* settings) {
 VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     VolumeFadeAction action;
 
-    if (!settings_) return action;
+    if (!settings_)
+        return action;
     const V1Settings& s = settings_->get();
 
     // Pending-restore window: keep a short baseline carry-over if a new alert starts
@@ -48,8 +40,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
 
     // External baseline hint expiry.
     if (hintBaselineVolume_ != 0xFF) {
-        if (ctx.currentVolume == hintBaselineVolume_ ||
-            (ctx.now - hintSetMs_) > HINT_WINDOW_MS) {
+        if (ctx.currentVolume == hintBaselineVolume_ || (ctx.now - hintSetMs_) > HINT_WINDOW_MS) {
             hintBaselineVolume_ = 0xFF;
             hintBaselineMuteVolume_ = 0;
             hintSetMs_ = 0;
@@ -67,13 +58,10 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         const bool restoreInFlight = (pendingRestoreVolume_ != 0xFF);
         const bool firstRestoreAttempt = fadeActive_ && !restoreInFlight;
         const bool retryRestore = restoreInFlight && (ctx.currentVolume != originalVolume_);
-        const bool shouldRestore =
-            (originalVolume_ != 0xFF) &&
-            (firstRestoreAttempt || retryRestore);
+        const bool shouldRestore = (originalVolume_ != 0xFF) && (firstRestoreAttempt || retryRestore);
         if (shouldRestore) {
             const bool retryWindowOpen =
-                (lastRestoreAttemptMs_ == 0) ||
-                ((ctx.now - lastRestoreAttemptMs_) >= RESTORE_RETRY_MIN_INTERVAL_MS);
+                (lastRestoreAttemptMs_ == 0) || ((ctx.now - lastRestoreAttemptMs_) >= RESTORE_RETRY_MIN_INTERVAL_MS);
             if (!retryWindowOpen) {
                 return action;
             }
@@ -87,13 +75,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
                 pendingRestoreSetMs_ = ctx.now;
             }
             if (!restoreLogEmitted_) {
-                perfRecordVolumeFadeDecision(
-                    PerfFadeDecision::RestoreApplied,
-                    ctx.currentVolume,
-                    originalVolume_,
-                    ctx.now);
-                Serial.printf("[VolumeFade] RESTORE: current=%d -> original=%d\n",
-                              ctx.currentVolume, originalVolume_);
+                perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreApplied, ctx.currentVolume, originalVolume_,
+                                             ctx.now);
+                Serial.printf("[VolumeFade] RESTORE: current=%d -> original=%d\n", ctx.currentVolume, originalVolume_);
                 restoreLogEmitted_ = true;
             }
             // Keep state — retry until V1 confirms volume restored.
@@ -102,21 +86,15 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         }
         if (originalVolume_ != 0xFF) {
             if (ctx.currentVolume == originalVolume_) {
-                perfRecordVolumeFadeDecision(
-                    PerfFadeDecision::RestoreSkippedEqual,
-                    ctx.currentVolume,
-                    originalVolume_,
-                    ctx.now);
-                Serial.printf("[VolumeFade] Restore confirmed: current=%d == original=%d\n",
-                              ctx.currentVolume, originalVolume_);
+                perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreSkippedEqual, ctx.currentVolume, originalVolume_,
+                                             ctx.now);
+                Serial.printf("[VolumeFade] Restore confirmed: current=%d == original=%d\n", ctx.currentVolume,
+                              originalVolume_);
             } else if (!fadeActive_ && !restoreInFlight) {
                 // No fade was active and no restore was pending; treat this as external/manual
                 // ownership and drop our baseline instead of forcing a stale restore.
-                perfRecordVolumeFadeDecision(
-                    PerfFadeDecision::RestoreSkippedNotFaded,
-                    ctx.currentVolume,
-                    originalVolume_,
-                    ctx.now);
+                perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreSkippedNotFaded, ctx.currentVolume,
+                                             originalVolume_, ctx.now);
             }
         }
         resetSessionState();
@@ -134,8 +112,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         const bool retryRestore = restoreInFlight && (ctx.currentVolume != originalVolume_);
         if (originalVolume_ != 0xFF && (firstRestoreAttempt || retryRestore)) {
             const bool retryWindowOpen =
-                (lastRestoreAttemptMs_ == 0) ||
-                ((ctx.now - lastRestoreAttemptMs_) >= RESTORE_RETRY_MIN_INTERVAL_MS);
+                (lastRestoreAttemptMs_ == 0) || ((ctx.now - lastRestoreAttemptMs_) >= RESTORE_RETRY_MIN_INTERVAL_MS);
             if (!retryWindowOpen) {
                 return action;
             }
@@ -149,28 +126,19 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
                 pendingRestoreSetMs_ = ctx.now;
             }
             if (!restoreLogEmitted_) {
-                perfRecordVolumeFadeDecision(
-                    PerfFadeDecision::RestoreApplied,
-                    ctx.currentVolume,
-                    originalVolume_,
-                    ctx.now);
+                perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreApplied, ctx.currentVolume, originalVolume_,
+                                             ctx.now);
                 restoreLogEmitted_ = true;
             }
             // Keep state — retry until V1 confirms volume restored.
             return action;
         }
         if (originalVolume_ == 0xFF) {
-            perfRecordVolumeFadeDecision(
-                PerfFadeDecision::RestoreSkippedNoBaseline,
-                ctx.currentVolume,
-                originalVolume_,
-                ctx.now);
+            perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreSkippedNoBaseline, ctx.currentVolume, originalVolume_,
+                                         ctx.now);
         } else {
-            perfRecordVolumeFadeDecision(
-                PerfFadeDecision::RestoreSkippedNotFaded,
-                ctx.currentVolume,
-                originalVolume_,
-                ctx.now);
+            perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreSkippedNotFaded, ctx.currentVolume, originalVolume_,
+                                         ctx.now);
         }
         resetSessionState();
         return action;
@@ -199,17 +167,10 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             pendingRestoreVolume_ = originalVolume_;
             pendingRestoreMuteVolume_ = originalMuteVolume_;
             pendingRestoreSetMs_ = ctx.now;
-            perfRecordVolumeFadeDecision(
-                PerfFadeDecision::RestoreApplied,
-                ctx.currentVolume,
-                originalVolume_,
-                ctx.now);
+            perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreApplied, ctx.currentVolume, originalVolume_, ctx.now);
         } else {
-            perfRecordVolumeFadeDecision(
-                PerfFadeDecision::RestoreSkippedNoBaseline,
-                ctx.currentVolume,
-                originalVolume_,
-                ctx.now);
+            perfRecordVolumeFadeDecision(PerfFadeDecision::RestoreSkippedNoBaseline, ctx.currentVolume, originalVolume_,
+                                         ctx.now);
         }
         alertStartMs_ = now;
         fadeActive_ = false;
@@ -264,13 +225,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.targetVolume = fadeVol;
             action.targetMuteVolume = originalMuteVolume_;
             fadeActive_ = true;
-            perfRecordVolumeFadeDecision(
-                PerfFadeDecision::FadeDown,
-                ctx.currentVolume,
-                originalVolume_,
-                ctx.now);
+            perfRecordVolumeFadeDecision(PerfFadeDecision::FadeDown, ctx.currentVolume, originalVolume_, ctx.now);
         }
-        commandSent_ = true;  // Do not retry if it fails; mirrors prior behavior
+        commandSent_ = true; // Do not retry if it fails; mirrors prior behavior
         return action;
     }
 

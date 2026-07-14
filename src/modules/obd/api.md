@@ -69,72 +69,72 @@ Wires the OBD-owned BLE client and any other dependencies.
 
 #### `void setEnabled(bool enabled)` / `bool isEnabled() const`
 Runtime enable/disable.
-**Source:** `obd_runtime_module.h:142-144`.
+**Source:** `obd_runtime_module.h:137-139`.
 
 #### `void setMinRssi(int8_t minRssi)`
 Adjusts the RSSI gate used by the scan callback (default `-80` per `obd_ble_client.h:21`).
-**Source:** `obd_runtime_module.h:143`.
+**Source:** `obd_runtime_module.h:138`.
 
 ### Pump
 
 #### `void update(uint32_t nowMs, const ObdBleContext& bootReadyContext)`
 Main pump. Drives the state machine using BLE / V1 / proxy context.
 If `bootReadyContext.proxyClientConnected` is true, the pump treats the companion app as the authority and drops all OBD work to idle before any scan/connect/poll transition can run.
-**Source:** `obd_runtime_module.h:136`.
+**Source:** `obd_runtime_module.h:131`.
 
 #### `void update(uint32_t nowMs, bool bootReady, bool v1Connected, bool bleScanIdle)`
 Convenience overload.
-**Source:** `obd_runtime_module.h:137`.
+**Source:** `obd_runtime_module.h:132`.
 
 ### Scan / connect control
 
 #### `bool startScan()` / `void stopActiveScan()`
 Programmatic scan start/stop.
-**Source:** `obd_runtime_module.h:151-152`.
+**Source:** `obd_runtime_module.h:146-147`.
 
 #### `bool requestManualPairScan(uint32_t nowMs)`
 User-requested scan via `/api/obd/scan`. Returns false if already in progress / disabled.
-**Source:** `obd_runtime_module.h:153`.
+**Source:** `obd_runtime_module.h:151`.
 
 #### `void cancelPendingConnect()` / `void forgetDevice()`
 Cancel outstanding connect attempt; forget saved device.
-**Source:** `obd_runtime_module.h:154-155`.
+**Source:** `obd_runtime_module.h:149-150`.
 
 #### `bool isScanStopped() const` / `bool isConnectIdle() const`
 State predicates.
-**Source:** `obd_runtime_module.h:156-157`.
+**Source:** `obd_runtime_module.h:151-152`.
 
 ### Status
 
 #### `ObdRuntimeStatus snapshot(uint32_t nowMs) const`
 Builds the JSON-ready status snapshot. Used by `/api/obd/status`.
-**Source:** `obd_runtime_module.h:140`.
+**Source:** `obd_runtime_module.h:135`.
 
 #### `bool getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const`
 Latest speed if younger than `obd::SPEED_MAX_AGE_MS` (3000 ms). Used by speed-mute.
-**Source:** `obd_runtime_module.h:146`.
+**Source:** `obd_runtime_module.h:141`.
 
 #### `const char* getSavedAddress() const` / `uint8_t getSavedAddrType() const`
 Saved device address + type (BLE address-type byte).
-**Source:** `obd_runtime_module.h:148-149`.
+**Source:** `obd_runtime_module.h:144`.
 
 #### `ObdConnectionState getState() const`
 Current state-machine state.
-**Source:** `obd_runtime_module.h:171`.
+**Source:** `obd_runtime_module.h:166`.
 
 ### BLE callbacks (called from `ObdBleClient` callbacks)
 
 #### `void onDeviceFound(const char* name, const char* address, int rssi, uint8_t addrType = 0)`
 Scan callback hit — the OBD scan callback found a candidate.
-**Source:** `obd_runtime_module.h:159`.
+**Source:** `obd_runtime_module.h:154`.
 
 #### `void onBleDisconnect(int reason = 0)`
 BLE link dropped. Triggers state-machine transition to `DISCONNECTED`.
-**Source:** `obd_runtime_module.h:160`.
+**Source:** `obd_runtime_module.h:155`.
 
 #### `void onBleData(const uint8_t* data, size_t len)`
 Data received from ELM327. Forwarded to the parser path.
-**Source:** `obd_runtime_module.h:161`.
+**Source:** `obd_runtime_module.h:159`.
 
 ### Test seams (UNIT_TEST only)
 
@@ -153,14 +153,14 @@ The test surface is unusually large because the state machine has many failure p
 OBD-owned `NimBLEClient` plus scan/disconnect callbacks. **Created once at boot, never deleted** — the comment at line 5 calls out the heap-safety rule. NimBLE does not handle client teardown gracefully; recreating it leaks resources or crashes on some firmware versions.
 
 ### `class ObdScanCallback : public NimBLEScanCallbacks`
-**Source:** `obd_ble_client.h:14`.
+**Source:** `obd_ble_client.h:13`.
 
 - `void configure(ObdRuntimeModule* parent, int8_t minRssi)`
 - `void onResult(const NimBLEAdvertisedDevice* device) override` — filters for `OBDLink CX` name + RSSI gate.
 - `void onScanEnd(const NimBLEScanResults& results, int reason) override`.
 
 ### `class ObdClientCallback : public NimBLEClientCallbacks`
-**Source:** `obd_ble_client.h:26`.
+**Source:** `obd_ble_client.h:25`.
 
 - `void configure(ObdBleClient* owner, ObdRuntimeModule* parent)`
 - `void onConnect(NimBLEClient*) override`
@@ -193,7 +193,7 @@ Per-tick poll. Detects changes via in-memory `Snapshot` comparison; debounces ov
 
 ### Constants
 - `ADDR_BUF_LEN = 18`, `STABILITY_WINDOW_MS = 5000`.
-**Source:** `obd_settings_sync_module.h:21-22`.
+**Source:** `obd_settings_sync_module.h:20-21`.
 
 ## Constants — `obd_scan_policy.h`
 

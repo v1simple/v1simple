@@ -9,7 +9,9 @@
 #include "perf_metrics.h"
 #define VOICE_PERF_INC(counter) PERF_INC(counter)
 #else
-#define VOICE_PERF_INC(counter) do { } while (0)
+#define VOICE_PERF_INC(counter)                                                                                        \
+    do {                                                                                                               \
+    } while (0)
 #endif
 
 // ============================================================================
@@ -32,8 +34,10 @@ void VoiceModule::begin(SettingsManager* settings, V1BLEClient* ble) {
 // ============================================================================
 
 uint8_t VoiceModule::getAlertBars(const AlertData& a) {
-    if (a.direction & DIR_FRONT) return a.frontStrength;
-    if (a.direction & DIR_REAR) return a.rearStrength;
+    if (a.direction & DIR_FRONT)
+        return a.frontStrength;
+    if (a.direction & DIR_REAR)
+        return a.rearStrength;
     return (a.frontStrength > a.rearStrength) ? a.frontStrength : a.rearStrength;
 }
 
@@ -43,12 +47,18 @@ uint32_t VoiceModule::makeAlertId(Band band, uint16_t freq) {
 
 bool VoiceModule::isBandEnabledForSecondary(Band band, const V1Settings& settings) {
     switch (band) {
-        case BAND_LASER: return settings.secondaryLaser;
-        case BAND_KA:    return settings.secondaryKa;
-        case BAND_K:     return settings.secondaryK;
-        case BAND_KU:    return settings.secondaryK;  // Ku reuses K's secondary toggle.
-        case BAND_X:     return settings.secondaryX;
-        default:         return false;
+    case BAND_LASER:
+        return settings.secondaryLaser;
+    case BAND_KA:
+        return settings.secondaryKa;
+    case BAND_K:
+        return settings.secondaryK;
+    case BAND_KU:
+        return settings.secondaryK; // Ku reuses K's secondary toggle.
+    case BAND_X:
+        return settings.secondaryX;
+    default:
+        return false;
     }
 }
 
@@ -68,18 +78,23 @@ AlertDirection VoiceModule::toAudioDirection(Direction dir) {
 
 static AlertBand toAudioBand(Band band) {
     switch (band) {
-        case BAND_LASER: return AlertBand::LASER;
-        case BAND_KA:    return AlertBand::KA;
-        case BAND_K:     return AlertBand::K;
-        case BAND_KU:    return AlertBand::K;  // No Ku audio asset; speak as K.
-        case BAND_X:     return AlertBand::X;
-        default:         return AlertBand::KA;
+    case BAND_LASER:
+        return AlertBand::LASER;
+    case BAND_KA:
+        return AlertBand::KA;
+    case BAND_K:
+        return AlertBand::K;
+    case BAND_KU:
+        return AlertBand::K; // No Ku audio asset; speak as K.
+    case BAND_X:
+        return AlertBand::X;
+    default:
+        return AlertBand::KA;
     }
 }
 
 static bool isValidAnnounceBand(Band band) {
-    return band == BAND_LASER || band == BAND_KA || band == BAND_K ||
-           band == BAND_KU || band == BAND_X;
+    return band == BAND_LASER || band == BAND_KA || band == BAND_K || band == BAND_KU || band == BAND_X;
 }
 
 // ============================================================================
@@ -87,32 +102,39 @@ static bool isValidAnnounceBand(Band band) {
 // ============================================================================
 
 VoiceAction VoiceModule::process(const VoiceContext& ctx) {
-    VoiceAction action;  // Default = NONE
+    VoiceAction action; // Default = NONE
 
     // --- Early Exit Checks ---
 
-    if (!settings_) return action;
+    if (!settings_)
+        return action;
     const V1Settings& s = settings_->get();
 
     // Voice alerts disabled
-    if (s.voiceAlertMode == VOICE_MODE_DISABLED) return action;
+    if (s.voiceAlertMode == VOICE_MODE_DISABLED)
+        return action;
 
     // Mute voice if V1 volume is zero (optional setting)
-    if (s.muteVoiceIfVolZero && ctx.mainVolume == 0) return action;
+    if (s.muteVoiceIfVolZero && ctx.mainVolume == 0)
+        return action;
 
     // V1 audio is soft-muted (aux0 bit 0 — spec-correct "should I make noise?" gate).
     // Was previously ctx.isMuted (LED bit), which is debounced and lags / can disagree
     // with V1's own audio gate.  See V1 secondary audit B2.
-    if (ctx.isSoftMuted) return action;
+    if (ctx.isSoftMuted)
+        return action;
 
     // Alert is in a suppression zone
-    if (ctx.isSuppressed) return action;
+    if (ctx.isSuppressed)
+        return action;
 
     // Phone app is connected - let app handle voice
-    if (ctx.isProxyConnected) return action;
+    if (ctx.isProxyConnected)
+        return action;
 
     // No valid priority alert
-    if (!ctx.priority || ctx.priority->band == BAND_NONE) return action;
+    if (!ctx.priority || ctx.priority->band == BAND_NONE)
+        return action;
 
     // V1 audit R1: photo-radar alerts ride on the K band on the wire (V1
     // synthesizes AlertBand.Photo = 0xFE only when band==K AND photoType!=0;
@@ -120,7 +142,8 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     // asset, and announcing photo-radar enforcement cameras as plain "K" is
     // misleading — the user already sees the Photo card and 'P' on the bogey
     // counter. Suppress voice for any priority alert flagged as photo-type.
-    if (ctx.priority->photoType != 0) return action;
+    if (ctx.priority->photoType != 0)
+        return action;
 
     // --- Priority Alert Logic ---
 
@@ -155,7 +178,8 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
 
     // Case 1: New Alert (band or frequency changed)
     if (alertChanged && cooldownPassed) {
-        if (!isValidAnnounceBand(priority.band)) return action;
+        if (!isValidAnnounceBand(priority.band))
+            return action;
 
         resetDirectionThrottle(ctx.now);
 
@@ -177,8 +201,8 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     // Ignore transient DIR_NONE direction drops to avoid noisy "side" chatter.
     // F: also gate on countStable so we don't announce direction while V1 is
     // still shuffling priority during a count flutter.
-    if (!alertChanged && directionChanged && cooldownPassed && s.voiceDirectionEnabled &&
-        directionKnown && countStable) {
+    if (!alertChanged && directionChanged && cooldownPassed && s.voiceDirectionEnabled && directionKnown &&
+        countStable) {
         bool throttled = shouldThrottleDirectionChange(ctx.now);
         updateLastAnnouncedDirection(priority.direction, (uint8_t)ctx.alertCount);
 
@@ -210,20 +234,25 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     if (s.announceSecondaryAlerts && ctx.alertCount > 1 && canAnnounceSecondary(ctx.now)) {
         for (int i = 0; i < ctx.alertCount; i++) {
             const AlertData& alert = ctx.alerts[i];
-            if (!alert.isValid || alert.band == BAND_NONE) continue;
+            if (!alert.isValid || alert.band == BAND_NONE)
+                continue;
 
             uint16_t alertFreq = (uint16_t)alert.frequency;
 
             // Skip priority alert
-            if (alert.band == priority.band && alertFreq == currentFreq) continue;
+            if (alert.band == priority.band && alertFreq == currentFreq)
+                continue;
 
             // Skip if already announced
-            if (isAlertAnnounced(alert.band, alertFreq)) continue;
+            if (isAlertAnnounced(alert.band, alertFreq))
+                continue;
 
             // Check band filter
-            if (!isBandEnabledForSecondary(alert.band, s)) continue;
+            if (!isBandEnabledForSecondary(alert.band, s))
+                continue;
 
-            if (!isValidAnnounceBand(alert.band)) continue;
+            if (!isValidAnnounceBand(alert.band))
+                continue;
 
             action.type = VoiceAction::Type::ANNOUNCE_SECONDARY;
             action.band = toAudioBand(alert.band);
@@ -245,8 +274,10 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         // Update all alert histories
         for (int i = 0; i < ctx.alertCount; i++) {
             const AlertData& alert = ctx.alerts[i];
-            if (!alert.isValid || alert.band == BAND_NONE) continue;
-            if (alert.band == BAND_LASER) continue;
+            if (!alert.isValid || alert.band == BAND_NONE)
+                continue;
+            if (alert.band == BAND_LASER)
+                continue;
 
             uint16_t alertFreq = (uint16_t)alert.frequency;
             uint8_t bars = getAlertBars(alert);
@@ -259,31 +290,42 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         if (hasBogeyCountCooldownPassed(ctx.now)) {
             for (int i = 0; i < ctx.alertCount; i++) {
                 const AlertData& alert = ctx.alerts[i];
-                if (!alert.isValid || alert.band == BAND_NONE) continue;
-                if (alert.band == BAND_LASER) continue;
+                if (!alert.isValid || alert.band == BAND_NONE)
+                    continue;
+                if (alert.band == BAND_LASER)
+                    continue;
 
                 uint16_t alertFreq = (uint16_t)alert.frequency;
 
                 // Skip priority alert
-                if (alert.band == priority.band && alertFreq == currentFreq) continue;
-                if (ctx.isSoftMuted) continue;  // V1 audio mute (audit B2)
-                if (alert.photoType != 0) continue;  // V1 audit R1: never speak photo-radar
-                if (!isBandEnabledForSecondary(alert.band, s)) continue;
+                if (alert.band == priority.band && alertFreq == currentFreq)
+                    continue;
+                if (ctx.isSoftMuted)
+                    continue; // V1 audio mute (audit B2)
+                if (alert.photoType != 0)
+                    continue; // V1 audit R1: never speak photo-radar
+                if (!isBandEnabledForSecondary(alert.band, s))
+                    continue;
 
                 if (shouldAnnounceThreatEscalation(alert.band, alertFreq, (uint8_t)ctx.alertCount, ctx.now)) {
                     markThreatEscalationAnnounced(alert.band, alertFreq);
 
-                    if (!isValidAnnounceBand(alert.band)) continue;
+                    if (!isValidAnnounceBand(alert.band))
+                        continue;
 
                     // Count direction breakdown
                     uint8_t aheadCount = 0, behindCount = 0, sideCount = 0;
                     for (int j = 0; j < ctx.alertCount; j++) {
                         const AlertData& a = ctx.alerts[j];
-                        if (!a.isValid || a.band == BAND_NONE) continue;
+                        if (!a.isValid || a.band == BAND_NONE)
+                            continue;
 
-                        if (a.direction & DIR_FRONT) aheadCount++;
-                        else if (a.direction & DIR_REAR) behindCount++;
-                        else sideCount++;
+                        if (a.direction & DIR_FRONT)
+                            aheadCount++;
+                        else if (a.direction & DIR_REAR)
+                            behindCount++;
+                        else
+                            sideCount++;
                     }
 
                     uint8_t total = aheadCount + behindCount + sideCount;
@@ -306,7 +348,7 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         }
     }
 
-    return action;  // NONE
+    return action; // NONE
 }
 
 // ============================================================================
@@ -327,7 +369,8 @@ void VoiceModule::clearAllState() {
 bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq) {
     uint32_t id = makeAlertId(band, freq);
     for (int i = 0; i < announcedAlertCount_; i++) {
-        if (announcedAlertIds_[i] == id) return true;
+        if (announcedAlertIds_[i] == id)
+            return true;
     }
     return false;
 }
@@ -359,7 +402,8 @@ VoiceModule::AlertHistory* VoiceModule::findAlertHistory(uint32_t alertId) {
 
 VoiceModule::AlertHistory* VoiceModule::getOrCreateAlertHistory(uint32_t alertId, unsigned long now) {
     AlertHistory* h = findAlertHistory(alertId);
-    if (h) return h;
+    if (h)
+        return h;
 
     if (alertHistoryCount_ < MAX_ALERT_HISTORIES) {
         h = &alertHistories_[alertHistoryCount_++];
@@ -397,16 +441,20 @@ VoiceModule::AlertHistory* VoiceModule::getOrCreateAlertHistory(uint32_t alertId
 }
 
 void VoiceModule::updateAlertHistory(Band band, uint16_t freq, uint8_t bars, unsigned long now) {
-    if (band == BAND_LASER) return;
+    if (band == BAND_LASER)
+        return;
 
     uint32_t alertId = makeAlertId(band, freq);
     AlertHistory* h = getOrCreateAlertHistory(alertId, now);
-    if (!h) return;
+    if (!h)
+        return;
 
-    if (bars <= WEAK_THRESHOLD) h->wasWeak = true;
+    if (bars <= WEAK_THRESHOLD)
+        h->wasWeak = true;
 
     if (bars >= STRONG_THRESHOLD) {
-        if (h->strongSinceMs == 0) h->strongSinceMs = now;
+        if (h->strongSinceMs == 0)
+            h->strongSinceMs = now;
     } else {
         h->strongSinceMs = 0;
     }
@@ -427,11 +475,13 @@ void VoiceModule::cleanupStaleHistories(unsigned long now) {
 }
 
 bool VoiceModule::shouldAnnounceThreatEscalation(Band band, uint16_t freq, uint8_t totalBogeys, unsigned long now) {
-    if (band == BAND_LASER) return false;
+    if (band == BAND_LASER)
+        return false;
 
     uint32_t alertId = makeAlertId(band, freq);
     AlertHistory* h = findAlertHistory(alertId);
-    if (!h) return false;
+    if (!h)
+        return false;
 
     bool wasWeak = h->wasWeak;
     bool nowStrong = (h->currentBars >= STRONG_THRESHOLD);
@@ -448,7 +498,8 @@ bool VoiceModule::shouldAnnounceThreatEscalation(Band band, uint16_t freq, uint8
 void VoiceModule::markThreatEscalationAnnounced(Band band, uint16_t freq) {
     uint32_t alertId = makeAlertId(band, freq);
     AlertHistory* h = findAlertHistory(alertId);
-    if (h) h->escalationAnnounced = true;
+    if (h)
+        h->escalationAnnounced = true;
 }
 
 void VoiceModule::clearAlertHistories() {
@@ -495,8 +546,7 @@ void VoiceModule::resetPriorityStability() {
 }
 
 bool VoiceModule::canAnnounceSecondary(unsigned long now) const {
-    return (priorityStableSince_ > 0) &&
-           (now - priorityStableSince_ >= PRIORITY_STABILITY_MS) &&
+    return (priorityStableSince_ > 0) && (now - priorityStableSince_ >= PRIORITY_STABILITY_MS) &&
            (now - lastPriorityAnnouncementTime_ >= POST_PRIORITY_GAP_MS);
 }
 
@@ -515,12 +565,14 @@ bool VoiceModule::hasDirectionChanged(Direction dir) const {
 bool VoiceModule::hasCooldownPassed(unsigned long now) const {
     // Before the first announcement there is nothing to cool down from — the
     // 0-initialized timestamp must not suppress the boot-window announcement.
-    if (!hasAnnouncedOnce_) return true;
+    if (!hasAnnouncedOnce_)
+        return true;
     return (now - lastVoiceAlertTime_ >= VOICE_ALERT_COOLDOWN_MS);
 }
 
 bool VoiceModule::hasBogeyCountCooldownPassed(unsigned long now) const {
-    if (!hasAnnouncedOnce_) return true;
+    if (!hasAnnouncedOnce_)
+        return true;
     return (now - lastVoiceAlertTime_ >= BOGEY_COUNT_COOLDOWN_MS);
 }
 

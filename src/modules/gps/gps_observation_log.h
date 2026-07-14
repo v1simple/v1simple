@@ -28,7 +28,7 @@ struct GpsObservationLogStats {
 };
 
 class GpsObservationLog {
-public:
+  public:
     static constexpr size_t kCapacity = 64;
 
     void reset();
@@ -36,26 +36,18 @@ public:
     size_t copyRecent(GpsObservation* out, size_t maxCount) const;
     GpsObservationLogStats stats() const;
 
-private:
+  private:
     void lock() const;
     void unlock() const;
 
     struct LockGuard {
-        explicit LockGuard(const GpsObservationLog& ownerRef) : owner(ownerRef) {
-            owner.lock();
-        }
-        ~LockGuard() {
-            owner.unlock();
-        }
+        explicit LockGuard(const GpsObservationLog& ownerRef) : owner(ownerRef) { owner.lock(); }
+        ~LockGuard() { owner.unlock(); }
         const GpsObservationLog& owner;
     };
 
-    static uint8_t nextIndex(uint8_t idx) {
-        return static_cast<uint8_t>((idx + 1u) % kCapacity);
-    }
-    static uint8_t prevIndex(uint8_t idx) {
-        return static_cast<uint8_t>((idx + kCapacity - 1u) % kCapacity);
-    }
+    static uint8_t nextIndex(uint8_t idx) { return static_cast<uint8_t>((idx + 1u) % kCapacity); }
+    static uint8_t prevIndex(uint8_t idx) { return static_cast<uint8_t>((idx + kCapacity - 1u) % kCapacity); }
 
     GpsObservation ring_[kCapacity] = {};
     uint8_t head_ = 0;

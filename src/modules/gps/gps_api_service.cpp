@@ -20,27 +20,25 @@ void sendMaintenanceModeError(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
-}  // namespace
+} // namespace
 
-void handleApiConfigGet(WebServer& server,
-                        SettingsManager& settings,
-                        const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
     const V1Settings& s = settings.get();
     JsonDocument doc;
-    doc["gpsEnabled"]             = s.gpsEnabled;
-    doc["gpsBaud"]                = s.gpsBaud;
+    doc["gpsEnabled"] = s.gpsEnabled;
+    doc["gpsBaud"] = s.gpsBaud;
     doc["gpsEnablePinActiveHigh"] = s.gpsEnablePinActiveHigh;
-    doc["gpsLogUtcToPerf"]        = s.gpsLogUtcToPerf;
-    doc["gpsLogUtcToAlp"]         = s.gpsLogUtcToAlp;
+    doc["gpsLogUtcToPerf"] = s.gpsLogUtcToPerf;
+    doc["gpsLogUtcToAlp"] = s.gpsLogUtcToAlp;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiConfigSave(WebServer& server,
-                         SettingsManager& settings,
-                         GpsRuntimeModule& gpsRuntime,
+void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule& gpsRuntime,
                          const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
 
     JsonDocument body;
     if (server.hasArg("plain")) {
@@ -75,10 +73,9 @@ void handleApiConfigSave(WebServer& server,
         update.gpsLogUtcToAlp = body["gpsLogUtcToAlp"].as<bool>();
     }
 
-    settings.applyDeviceSettingsUpdate(
-        update,
-        runtime.maintenanceBootActive ? SettingsPersistMode::Immediate
-                                      : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    settings.applyDeviceSettingsUpdate(update, runtime.maintenanceBootActive
+                                                   ? SettingsPersistMode::Immediate
+                                                   : SettingsPersistMode::ImmediateNvsDeferredBackup);
 
     // Maintenance boot intentionally skips GPS runtime init, so saving still
     // persists the new values to NVS (above) but we must not bring the UART
@@ -115,10 +112,9 @@ void handleApiConfigSave(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, ok);
 }
 
-void handleApiStatus(WebServer& server,
-                     GpsRuntimeModule& gpsRuntime,
-                     const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+void handleApiStatus(WebServer& server, GpsRuntimeModule& gpsRuntime, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
@@ -129,35 +125,35 @@ void handleApiStatus(WebServer& server,
 
     JsonDocument doc;
 
-    doc["enabled"]           = s.enabled;
-    doc["moduleDetected"]    = s.moduleDetected;
+    doc["enabled"] = s.enabled;
+    doc["moduleDetected"] = s.moduleDetected;
     doc["detectionTimedOut"] = s.detectionTimedOut;
-    doc["parserActive"]      = s.parserActive;
+    doc["parserActive"] = s.parserActive;
 
-    doc["hasFix"]            = s.hasFix;
-    doc["stableHasFix"]      = s.stableHasFix;
-    doc["satellites"]        = s.satellites;
-    doc["stableSatellites"]  = s.stableSatellites;
-    doc["hdop"]              = (isnan(s.hdop) ? -1.0f : s.hdop);
-    doc["speedMph"]          = s.speedMph;
-    doc["locationValid"]     = s.locationValid;
+    doc["hasFix"] = s.hasFix;
+    doc["stableHasFix"] = s.stableHasFix;
+    doc["satellites"] = s.satellites;
+    doc["stableSatellites"] = s.stableSatellites;
+    doc["hdop"] = (isnan(s.hdop) ? -1.0f : s.hdop);
+    doc["speedMph"] = s.speedMph;
+    doc["locationValid"] = s.locationValid;
 
-    doc["fixAgeMs"]          = (s.fixAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.fixAgeMs));
-    doc["stableFixAgeMs"]    = (s.stableFixAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.stableFixAgeMs));
-    doc["sampleAgeMs"]       = (s.sampleAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.sampleAgeMs));
+    doc["fixAgeMs"] = (s.fixAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.fixAgeMs));
+    doc["stableFixAgeMs"] = (s.stableFixAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.stableFixAgeMs));
+    doc["sampleAgeMs"] = (s.sampleAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.sampleAgeMs));
     doc["lastSentenceAgeMs"] = (s.lastSentenceAgeMs == UINT32_MAX ? -1 : static_cast<int32_t>(s.lastSentenceAgeMs));
-    doc["firstFixMs"]        = s.firstFixMs;
+    doc["firstFixMs"] = s.firstFixMs;
 
     JsonObject counters = doc["counters"].to<JsonObject>();
-    counters["sentencesParsed"]    = s.sentencesParsed;
-    counters["parseFailures"]      = s.parseFailures;
-    counters["checksumFailures"]   = s.checksumFailures;
-    counters["sentencesUnknown"]   = s.sentencesUnknown;
-    counters["bufferOverruns"]     = s.bufferOverruns;
-    counters["bytesRead"]          = s.bytesRead;
-    counters["enableTransitions"]  = s.enableTransitions;
+    counters["sentencesParsed"] = s.sentencesParsed;
+    counters["parseFailures"] = s.parseFailures;
+    counters["checksumFailures"] = s.checksumFailures;
+    counters["sentencesUnknown"] = s.sentencesUnknown;
+    counters["bufferOverruns"] = s.bufferOverruns;
+    counters["bytesRead"] = s.bytesRead;
+    counters["enableTransitions"] = s.enableTransitions;
 
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-}  // namespace GpsApiService
+} // namespace GpsApiService

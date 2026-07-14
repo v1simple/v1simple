@@ -31,54 +31,54 @@ From `gps_runtime_module.h:54-59`:
 
 #### `void begin(bool enabled, bool enablePinActiveHigh = true, uint32_t baud = 9600, GpsTimePublisher* timePub = nullptr, GpsGeoPublisher* geoPub = nullptr)`
 Wires publishers (optional) and sets baud. `enablePinActiveHigh` is retained for compatibility but is ignored because GPS EN is not driven.
-**Source:** `gps_runtime_module.h:14-18`.
+**Source:** `gps_runtime_module.h:14-16`.
 
 #### `void setEnabled(bool enabled)` / `bool isEnabled() const`
 Runtime enable/disable. Each transition increments the `enableTransitions` counter in the status snapshot.
-**Source:** `gps_runtime_module.h:19, 22`.
+**Source:** `gps_runtime_module.h:17, 20`.
 
 #### `void setBaud(uint32_t baud)`
 Updates stored baud; takes effect on the next `setEnabled(true)` cycle (does not re-init the running UART).
-**Source:** `gps_runtime_module.h:20`.
+**Source:** `gps_runtime_module.h:18`.
 
 #### `void setEnablePinActiveHigh(bool activeHigh)`
 Deprecated no-op compatibility setter. Supported wiring leaves GPS EN on its pull-up.
-**Source:** `gps_runtime_module.h:21`.
+**Source:** `gps_runtime_module.h:19`.
 
 ### Pump
 
 #### `void update(uint32_t nowMs)`
 Non-blocking UART/NMEA ingest with bounded per-loop processing. Call once per main-loop tick.
-**Source:** `gps_runtime_module.h:25`.
+**Source:** `gps_runtime_module.h:23`.
 
 ### Sample injection
 
 #### `void setScaffoldSample(float speedMph, bool hasFix, uint8_t satellites, float hdop, uint32_t timestampMs, float latitudeDeg = NAN, float longitudeDeg = NAN, float courseDeg = NAN)`
 Manual sample injection — used by API/tools and test scaffolding.
-**Source:** `gps_runtime_module.h:28-34`.
+**Source:** `gps_runtime_module.h:26-28`.
 
 ### Queries
 
 #### `bool getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const`
 Returns true with the latest speed if the most recent sample is younger than `SAMPLE_MAX_AGE_MS` (3000 ms).
-**Source:** `gps_runtime_module.h:35`.
+**Source:** `gps_runtime_module.h:29`.
 
 #### `GpsRuntimeStatus snapshot(uint32_t nowMs) const`
 Builds a full `GpsRuntimeStatus` snapshot. Used by `/api/gps/status`.
-**Source:** `gps_runtime_module.h:36`.
+**Source:** `gps_runtime_module.h:30`.
 
 ### Static helpers
 
 #### `static bool parseRmcDateTime(const char* timeField, const char* dateField, int64_t& epochMsOut)`
 Parses RMC UTC time + date into Unix epoch ms. Public + static for direct test coverage.
-**Source:** `gps_runtime_module.h:40`.
+**Source:** `gps_runtime_module.h:32`.
 
 ### Test seams (UNIT_TEST only)
 
 #### `void clearSample()` — clears all GPS sample state to simulate fix drop.
 #### `bool injectNmeaSentenceForTest(const char* nmeaSentence, uint32_t nowMs)` — feeds raw NMEA into the parser without UART.
 
-**Source:** `gps_runtime_module.h:44-49`.
+**Source:** `gps_runtime_module.h:36-41`.
 
 ### Constants
 
@@ -86,7 +86,7 @@ Parses RMC UTC time + date into Unix epoch ms. Public + static for direct test c
 - `DETECTION_TIMEOUT_MS = 60000` — module-detection timeout.
 - `GPS_BAUD = 9600` — default baud rate.
 
-**Source:** `gps_runtime_module.h:13, 65`.
+**Source:** `gps_runtime_module.h:13, 57`.
 
 ## Struct: `GpsRuntimeStatus`
 
@@ -202,7 +202,7 @@ Callbacks/context: `void (*markUiActivity)(void* ctx)` for keep-alive signaling,
 
 All three call `markUiActivity` on entry.
 
-**Source:** `gps_api_service.h:15-32`.
+**Source:** `gps_api_service.h:16-26`.
 
 ## Dependencies
 

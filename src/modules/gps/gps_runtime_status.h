@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <math.h>   // NAN, UINT32_MAX
+#include <math.h> // NAN, UINT32_MAX
 
 /**
  * Snapshot of GPS runtime state returned by GpsRuntimeModule::snapshot().
@@ -47,10 +47,10 @@ struct GpsRuntimeStatus {
     uint32_t sentencesParsed = 0;
     uint32_t parseFailures = 0;
     uint32_t checksumFailures = 0;
-    uint32_t sentencesUnknown = 0;   // NMEA sentences with valid checksum but unrecognized type
+    uint32_t sentencesUnknown = 0; // NMEA sentences with valid checksum but unrecognized type
     uint32_t bufferOverruns = 0;
     uint32_t lastSentenceTsMs = 0;
-    uint32_t lastSentenceAgeMs = UINT32_MAX;  // UINT32_MAX = no sentence yet
-    uint32_t firstFixMs = 0;         // millis() at first stable fix; 0 = not yet received
-    uint32_t enableTransitions = 0;  // Number of enable/disable transitions
+    uint32_t lastSentenceAgeMs = UINT32_MAX; // UINT32_MAX = no sentence yet
+    uint32_t firstFixMs = 0;                 // millis() at first stable fix; 0 = not yet received
+    uint32_t enableTransitions = 0;          // Number of enable/disable transitions
 };

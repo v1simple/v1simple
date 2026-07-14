@@ -3,10 +3,8 @@
 #include "quiet_coordinator_module.h"
 
 template <typename SpeedMuteLike>
-void QuietCoordinatorModule::applyVoicePresentation(VoiceContext& voiceCtx,
-                                                    const SpeedMuteLike* speedMute,
-                                                    const bool hasRenderablePriority,
-                                                    const uint8_t priorityBand) {
+void QuietCoordinatorModule::applyVoicePresentation(VoiceContext& voiceCtx, const SpeedMuteLike* speedMute,
+                                                    const bool hasRenderablePriority, const uint8_t priorityBand) {
     syncCommittedState();
 
     presentation_.voiceSuppressed = false;
@@ -27,7 +25,7 @@ void QuietCoordinatorModule::applyVoicePresentation(VoiceContext& voiceCtx,
     if (speedMute && hasRenderablePriority) {
         if (speedVolActive_ && speedMute->isBandOverridden(priorityBand)) {
             voiceCtx.isMuted = false;
-            voiceCtx.isSoftMuted = false;  // also bypass audio-mute gate (audit B2)
+            voiceCtx.isSoftMuted = false; // also bypass audio-mute gate (audit B2)
             if (voiceCtx.mainVolume == 0) {
                 voiceCtx.mainVolume = 1;
             }

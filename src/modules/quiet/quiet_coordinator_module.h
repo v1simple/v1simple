@@ -56,7 +56,7 @@ struct QuietPresentationState {
 };
 
 class QuietCoordinatorModule {
-public:
+  public:
     void begin(V1BLEClient* bleClient, PacketParser* parser);
 
     bool sendMute(QuietOwner owner, bool muted);
@@ -65,31 +65,24 @@ public:
     bool retryPendingSpeedVolRestore(uint32_t nowMs);
 
     template <typename SpeedMuteLike, typename VolumeFadeLike>
-    bool processSpeedVolume(uint32_t nowMs,
-                            const SpeedMuteLike& speedMute,
-                            VolumeFadeLike* volumeFade);
+    bool processSpeedVolume(uint32_t nowMs, const SpeedMuteLike& speedMute, VolumeFadeLike* volumeFade);
 
-    template <typename VolumeFadeLike>
-    bool executeVolumeFade(uint32_t nowMs,
-                           VolumeFadeLike* volumeFade);
+    template <typename VolumeFadeLike> bool executeVolumeFade(uint32_t nowMs, VolumeFadeLike* volumeFade);
 
     template <typename SpeedMuteLike>
-    void applyVoicePresentation(VoiceContext& voiceCtx,
-                                const SpeedMuteLike* speedMute,
-                                bool hasRenderablePriority,
+    void applyVoicePresentation(VoiceContext& voiceCtx, const SpeedMuteLike* speedMute, bool hasRenderablePriority,
                                 uint8_t priorityBand);
 
     const QuietDesiredState& getDesiredState() const { return desired_; }
     QuietCommittedState getCommittedState();
     const QuietPresentationState& getPresentationState() const { return presentation_; }
 
-private:
+  private:
     void reset();
     void syncCommittedState();
     void refreshPendingState();
 
-    template <typename SpeedMuteLike>
-    void updateSpeedVolPresentation(const SpeedMuteLike* speedMute);
+    template <typename SpeedMuteLike> void updateSpeedVolPresentation(const SpeedMuteLike* speedMute);
 
     V1BLEClient* ble_ = nullptr;
     PacketParser* parser_ = nullptr;

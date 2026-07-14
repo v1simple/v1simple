@@ -13,7 +13,7 @@
 #include "alp_laser_event.h"
 
 class AlpEventLatch {
-public:
+  public:
     void setEvent(const AlpLaserEvent& ev);
     void startPersistence(uint32_t nowMs);
     bool shouldShowPersisted(uint32_t nowMs, uint32_t windowMs) const;
@@ -22,7 +22,7 @@ public:
     const AlpLaserEvent& latchedEvent() const { return latched_; }
     bool isLatched() const { return latched_.active; }
 
-private:
+  private:
     AlpLaserEvent latched_{};
     uint32_t persistStartMs_ = 0;
     bool persisting_ = false;

@@ -28,7 +28,7 @@ void copyString(char* dst, size_t dstLen, const char* src) {
     }
     snprintf(dst, dstLen, "%s", src);
 }
-}  // namespace
+} // namespace
 
 void QualificationSerialModule::begin(Stream* io, const Providers& providers) {
     io_ = io;
@@ -67,29 +67,40 @@ uint32_t QualificationSerialModule::nowMs() const {
 
 const char* QualificationSerialModule::stateName() const {
     switch (state_) {
-        case State::Idle: return "idle";
-        case State::Running: return "running";
-        case State::Finalizing: return "finalizing";
-        case State::Done: return "done";
-        case State::Error: return "error";
+    case State::Idle:
+        return "idle";
+    case State::Running:
+        return "running";
+    case State::Finalizing:
+        return "finalizing";
+    case State::Done:
+        return "done";
+    case State::Error:
+        return "error";
     }
     return "unknown";
 }
 
 const char* QualificationSerialModule::suiteName() const {
     switch (suite_) {
-        case Suite::Core: return "core";
-        case Suite::Display: return "display";
+    case Suite::Core:
+        return "core";
+    case Suite::Display:
+        return "display";
     }
     return "unknown";
 }
 
 const char* QualificationSerialModule::modeName() const {
     switch (mode_) {
-        case Mode::Current: return "current";
-        case Mode::Proxy: return "proxy";
-        case Mode::Obd: return "obd";
-        case Mode::V1Only: return "v1";
+    case Mode::Current:
+        return "current";
+    case Mode::Proxy:
+        return "proxy";
+    case Mode::Obd:
+        return "obd";
+    case Mode::V1Only:
+        return "v1";
     }
     return "unknown";
 }
@@ -306,10 +317,7 @@ void QualificationSerialModule::handleAbort() {
     clearQualificationModeOverride();
 }
 
-bool QualificationSerialModule::parseStartArgs(char* args,
-                                               Suite& suite,
-                                               uint32_t& durationSeconds,
-                                               Mode& mode) const {
+bool QualificationSerialModule::parseStartArgs(char* args, Suite& suite, uint32_t& durationSeconds, Mode& mode) const {
     char* cursor = trim(args);
     if (!cursor || cursor[0] == '\0') {
         return false;
@@ -347,8 +355,7 @@ bool QualificationSerialModule::parseStartArgs(char* args,
         mode = Mode::Proxy;
     } else if (strcmp(modeToken, "obd") == 0) {
         mode = Mode::Obd;
-    } else if (strcmp(modeToken, "v1") == 0 || strcmp(modeToken, "v1_only") == 0 ||
-               strcmp(modeToken, "v1-only") == 0) {
+    } else if (strcmp(modeToken, "v1") == 0 || strcmp(modeToken, "v1_only") == 0 || strcmp(modeToken, "v1-only") == 0) {
         mode = Mode::V1Only;
     } else {
         return false;
@@ -366,9 +373,8 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
         setError("perf_sd_disabled");
         return false;
     }
-    if (!providers_.perfCsvPath || !providers_.startPerfSession ||
-        !providers_.enqueueSnapshotNow || !providers_.tryDrainPerf ||
-        !providers_.setSdCapturePaused) {
+    if (!providers_.perfCsvPath || !providers_.startPerfSession || !providers_.enqueueSnapshotNow ||
+        !providers_.tryDrainPerf || !providers_.setSdCapturePaused) {
         setError("providers_missing");
         return false;
     }

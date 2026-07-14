@@ -41,23 +41,35 @@ namespace {
 #define OBD_STATENAME_DEFINED
 const char* obdStateName(ObdConnectionState s) {
     switch (s) {
-        case ObdConnectionState::IDLE:          return "IDLE";
-        case ObdConnectionState::WAIT_BOOT:     return "WAIT_BOOT";
-        case ObdConnectionState::SCANNING:      return "SCANNING";
-        case ObdConnectionState::CONNECTING:    return "CONNECTING";
-        case ObdConnectionState::SECURING:      return "SECURING";
-        case ObdConnectionState::DISCOVERING:   return "DISCOVERING";
-        case ObdConnectionState::AT_INIT:       return "AT_INIT";
-        case ObdConnectionState::POLLING:       return "POLLING";
-        case ObdConnectionState::ERROR_BACKOFF: return "ERROR_BACKOFF";
-        case ObdConnectionState::DISCONNECTED:  return "DISCONNECTED";
-        case ObdConnectionState::ECU_IDLE:      return "ECU_IDLE";
-        default:                                return "?";
+    case ObdConnectionState::IDLE:
+        return "IDLE";
+    case ObdConnectionState::WAIT_BOOT:
+        return "WAIT_BOOT";
+    case ObdConnectionState::SCANNING:
+        return "SCANNING";
+    case ObdConnectionState::CONNECTING:
+        return "CONNECTING";
+    case ObdConnectionState::SECURING:
+        return "SECURING";
+    case ObdConnectionState::DISCOVERING:
+        return "DISCOVERING";
+    case ObdConnectionState::AT_INIT:
+        return "AT_INIT";
+    case ObdConnectionState::POLLING:
+        return "POLLING";
+    case ObdConnectionState::ERROR_BACKOFF:
+        return "ERROR_BACKOFF";
+    case ObdConnectionState::DISCONNECTED:
+        return "DISCONNECTED";
+    case ObdConnectionState::ECU_IDLE:
+        return "ECU_IDLE";
+    default:
+        return "?";
     }
 }
-#endif  // OBD_STATENAME_DEFINED
+#endif // OBD_STATENAME_DEFINED
 
-}  // namespace
+} // namespace
 
 void ObdRuntimeModule::transitionTo(ObdConnectionState newState, uint32_t nowMs) {
     if (newState == ObdConnectionState::POLLING) {
@@ -76,9 +88,7 @@ void ObdRuntimeModule::setSavedAddressFromBuffer(const char* address) {
     copyString(savedAddress_, sizeof(savedAddress_), address);
 }
 
-void ObdRuntimeModule::setConnectTarget(const char* address,
-                                        uint8_t addrType,
-                                        bool fromManualCandidate) {
+void ObdRuntimeModule::setConnectTarget(const char* address, uint8_t addrType, bool fromManualCandidate) {
     copyString(connectAddress_, sizeof(connectAddress_), address);
     connectAddrType_ = addrType;
     connectTargetFromManualCandidate_ = fromManualCandidate && connectAddress_[0] != '\0';
@@ -128,8 +138,7 @@ void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
 
     if (bleDisconnected_) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] lost connection during securing (ble reason=%d %s)\n",
-                      bleDisconnectReason_,
+        Serial.printf("[OBD] lost connection during securing (ble reason=%d %s)\n", bleDisconnectReason_,
                       bleReasonName(bleDisconnectReason_));
 #endif
         bleDisconnected_ = false;
@@ -152,8 +161,7 @@ void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
     if (takeTransportResult(ObdTransportOp::SECURITY_START, transportResult) &&
         (!transportResult.success || transportResult.timedOut)) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] secureConnection start failed rc=%d (%s)\n",
-                      transportResult.securityError,
+        Serial.printf("[OBD] secureConnection start failed rc=%d (%s)\n", transportResult.securityError,
                       bleReasonName(transportResult.securityError));
 #endif
         if (autoHealBondIfAllowed(nowMs, "securing_start")) {
@@ -164,12 +172,10 @@ void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
         return;
     }
 
-    if (!transportRequestActive_ &&
-        !readyTransportResult_.ready &&
+    if (!transportRequestActive_ && !readyTransportResult_.ready &&
         !beginTransportRequest(ObdTransportOp::SECURITY_START, nowMs, obd::SECURITY_TIMEOUT_MS)) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] secureConnection request queue failed rc=%d (%s)\n",
-                      getBleSecurityFailure(),
+        Serial.printf("[OBD] secureConnection request queue failed rc=%d (%s)\n", getBleSecurityFailure(),
                       bleReasonName(getBleSecurityFailure()));
 #endif
         if (autoHealBondIfAllowed(nowMs, "securing_start")) {
@@ -182,10 +188,8 @@ void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
 
     if ((nowMs - stateEnteredMs_) >= (obd::POST_CONNECT_SETTLE_MS + obd::SECURITY_TIMEOUT_MS)) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] securing timed out bleError=%d (%s) securityError=%d (%s)\n",
-                      getBleLastError(),
-                      bleReasonName(getBleLastError()),
-                      getBleSecurityFailure(),
+        Serial.printf("[OBD] securing timed out bleError=%d (%s) securityError=%d (%s)\n", getBleLastError(),
+                      bleReasonName(getBleLastError()), getBleSecurityFailure(),
                       bleReasonName(getBleSecurityFailure()));
 #endif
         if (autoHealBondIfAllowed(nowMs, "securing_timeout")) {
@@ -201,8 +205,7 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
 
     if (bleDisconnected_) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] lost connection during AT init (ble reason=%d %s)\n",
-                      bleDisconnectReason_,
+        Serial.printf("[OBD] lost connection during AT init (ble reason=%d %s)\n", bleDisconnectReason_,
                       bleReasonName(bleDisconnectReason_));
 #endif
         bleDisconnected_ = false;
@@ -226,22 +229,17 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
             if (!transportResult.success || transportResult.timedOut) {
                 const int cmdLen = static_cast<int>(commandDisplayLen(activeCommand_.tx));
 #ifndef UNIT_TEST
-                Serial.printf("[OBD] AT init write failed cmd=%.*s writeMode=%s rc=%d (%s) timedOut=%d\n",
-                              cmdLen,
-                              activeCommand_.tx,
-                              activeCommand_.writeWithResponse ? "with_response" : "no_response",
-                              transportResult.bleError,
-                              bleReasonName(transportResult.bleError),
+                Serial.printf("[OBD] AT init write failed cmd=%.*s writeMode=%s rc=%d (%s) timedOut=%d\n", cmdLen,
+                              activeCommand_.tx, activeCommand_.writeWithResponse ? "with_response" : "no_response",
+                              transportResult.bleError, bleReasonName(transportResult.bleError),
                               transportResult.timedOut ? 1 : 0);
 #endif
                 if (initIndex_ == 0 && autoHealBondIfAllowed(nowMs, "at_init_write")) {
                     return;
                 }
                 disconnectBle();
-                handleConnectFailure(nowMs,
-                                     transportResult.timedOut
-                                         ? ObdFailureReason::INIT_TIMEOUT
-                                         : ObdFailureReason::WRITE);
+                handleConnectFailure(nowMs, transportResult.timedOut ? ObdFailureReason::INIT_TIMEOUT
+                                                                     : ObdFailureReason::WRITE);
                 return;
             }
             activeCommand_.sentMs = transportResult.issuedMs;
@@ -254,20 +252,12 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
         if (nowMs - activeCommand_.sentMs >= activeCommand_.timeoutMs) {
             const int cmdLen = static_cast<int>(commandDisplayLen(activeCommand_.tx));
 #ifndef UNIT_TEST
-            Serial.printf("[OBD] AT init response timed out cmd=%.*s writeMode=%s rxBytes=%u raw=[%.*s] securityReady=%d enc=%d bond=%d auth=%d lastBleError=%d (%s) disconnectReason=%d (%s)\n",
-                          cmdLen,
-                          activeCommand_.tx,
-                          activeCommand_.writeWithResponse ? "with_response" : "no_response",
-                          static_cast<unsigned>(bleBufLen_),
-                          static_cast<int>(bleBufLen_),
-                          bleBuf_,
-                          isBleSecurityReady(),
-                          isBleEncrypted(),
-                          isBleBonded(),
-                          isBleAuthenticated(),
-                          getBleLastError(),
-                          bleReasonName(getBleLastError()),
-                          bleDisconnectReason_,
+            Serial.printf("[OBD] AT init response timed out cmd=%.*s writeMode=%s rxBytes=%u raw=[%.*s] "
+                          "securityReady=%d enc=%d bond=%d auth=%d lastBleError=%d (%s) disconnectReason=%d (%s)\n",
+                          cmdLen, activeCommand_.tx, activeCommand_.writeWithResponse ? "with_response" : "no_response",
+                          static_cast<unsigned>(bleBufLen_), static_cast<int>(bleBufLen_), bleBuf_,
+                          isBleSecurityReady(), isBleEncrypted(), isBleBonded(), isBleAuthenticated(),
+                          getBleLastError(), bleReasonName(getBleLastError()), bleDisconnectReason_,
                           bleReasonName(bleDisconnectReason_));
 #endif
             // 0100 (sanity) times out when vehicle isn't running - non-fatal.
@@ -284,8 +274,7 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
             if (bleBufLen_ == 0 && retryActiveCommandWithAlternateWriteMode(nowMs)) {
 #ifndef UNIT_TEST
                 Serial.printf("[OBD] AT init retrying cmd=%.*s with alternate write mode=%s after empty timeout\n",
-                              cmdLen,
-                              activeCommand_.tx,
+                              cmdLen, activeCommand_.tx,
                               activeCommand_.writeWithResponse ? "with_response" : "no_response");
 #endif
                 return;
@@ -321,28 +310,15 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
     const char* command = commands[initIndex_];
     const bool isSanity = strncmp(command, "0100", 4) == 0;
     if (!startCommand(isSanity ? ObdCommandKind::SANITY : ObdCommandKind::AT_INIT,
-                      isSanity ? ParserKind::SIMPLE : ParserKind::AT_TEXT,
-                      command,
-                      isSanity ? 0x41 : 0x00,
-                      0x00,
-                      0x0000,
-                      obd::AT_INIT_RESPONSE_TIMEOUT_MS,
-                      obd::AT_INIT_RETRIES,
-                      nowMs)) {
+                      isSanity ? ParserKind::SIMPLE : ParserKind::AT_TEXT, command, isSanity ? 0x41 : 0x00, 0x00,
+                      0x0000, obd::AT_INIT_RESPONSE_TIMEOUT_MS, obd::AT_INIT_RETRIES, nowMs)) {
 #ifndef UNIT_TEST
         const int cmdLen = static_cast<int>(commandDisplayLen(command));
-        Serial.printf("[OBD] AT init write failed cmd=%.*s writeMode=%s rc=%d (%s) securityReady=%d enc=%d bond=%d auth=%d bleReason=%d (%s)\n",
-                      cmdLen,
-                      command,
-                      preferWriteWithResponse_ ? "with_response" : "no_response",
-                      getBleLastError(),
-                      bleReasonName(getBleLastError()),
-                      isBleSecurityReady(),
-                      isBleEncrypted(),
-                      isBleBonded(),
-                      isBleAuthenticated(),
-                      bleDisconnectReason_,
-                      bleReasonName(bleDisconnectReason_));
+        Serial.printf("[OBD] AT init write failed cmd=%.*s writeMode=%s rc=%d (%s) securityReady=%d enc=%d bond=%d "
+                      "auth=%d bleReason=%d (%s)\n",
+                      cmdLen, command, preferWriteWithResponse_ ? "with_response" : "no_response", getBleLastError(),
+                      bleReasonName(getBleLastError()), isBleSecurityReady(), isBleEncrypted(), isBleBonded(),
+                      isBleAuthenticated(), bleDisconnectReason_, bleReasonName(bleDisconnectReason_));
 #endif
         if (initIndex_ == 0 && autoHealBondIfAllowed(nowMs, "at_init_write")) {
             return;
@@ -357,8 +333,7 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
 
     if (bleDisconnected_) {
 #ifndef UNIT_TEST
-        Serial.printf("[OBD] lost connection during polling (ble reason=%d %s)\n",
-                      bleDisconnectReason_,
+        Serial.printf("[OBD] lost connection during polling (ble reason=%d %s)\n", bleDisconnectReason_,
                       bleReasonName(bleDisconnectReason_));
 #endif
         bleDisconnected_ = false;
@@ -377,11 +352,9 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
             if (!transportResult.success || transportResult.timedOut) {
                 clearBleResponseState();
                 completeActiveCommand();
-                handlePollingError(nowMs,
-                                   false,
-                                   transportResult.timedOut
-                                       ? ObdFailureReason::COMMAND_TIMEOUT
-                                       : ObdFailureReason::WRITE);
+                handlePollingError(nowMs, false,
+                                   transportResult.timedOut ? ObdFailureReason::COMMAND_TIMEOUT
+                                                            : ObdFailureReason::WRITE);
                 return;
             }
             activeCommand_.sentMs = transportResult.issuedMs;
@@ -395,14 +368,12 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
         } else if (nowMs - activeCommand_.sentMs >= activeCommand_.timeoutMs) {
             // CX sends "SEARCHING..." while probing OBD protocols (up to ~10s).
             // Extend timeout so we don't retry mid-search and collide.
-            if (activeCommand_.kind == ObdCommandKind::SPEED &&
-                bleBufLen_ >= 9 &&
+            if (activeCommand_.kind == ObdCommandKind::SPEED && bleBufLen_ >= 9 &&
                 strstr(bleBuf_, "SEARCHING") != nullptr &&
                 (nowMs - activeCommand_.sentMs) < obd::SEARCH_EXTENDED_TIMEOUT_MS) {
                 return;
             }
-            if (activeCommand_.kind == ObdCommandKind::SPEED &&
-                bleBufLen_ == 0 &&
+            if (activeCommand_.kind == ObdCommandKind::SPEED && bleBufLen_ == 0 &&
                 retryActiveCommandWithAlternateWriteMode(nowMs)) {
 #ifndef UNIT_TEST
                 Serial.printf("[OBD] speed timeout retrying with alternate write mode=%s\n",
@@ -412,10 +383,8 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
             }
 #ifndef UNIT_TEST
             if (activeCommand_.kind == ObdCommandKind::SPEED && bleBufLen_ > 0) {
-                Serial.printf("[OBD] speed timeout rxBytes=%u raw=[%.*s]\n",
-                              static_cast<unsigned>(bleBufLen_),
-                              static_cast<int>(bleBufLen_),
-                              bleBuf_);
+                Serial.printf("[OBD] speed timeout rxBytes=%u raw=[%.*s]\n", static_cast<unsigned>(bleBufLen_),
+                              static_cast<int>(bleBufLen_), bleBuf_);
             }
 #endif
             clearBleResponseState();
@@ -432,8 +401,7 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
     if (takeTransportResult(ObdTransportOp::RSSI_READ, transportResult)) {
         rssi_ = transportResult.rssi;
         lastRssiMs_ = nowMs;
-    } else if (!transportRequestActive_ &&
-               !readyTransportResult_.ready &&
+    } else if (!transportRequestActive_ && !readyTransportResult_.ready &&
                !(activeCommand_.active && activeCommand_.sentMs == 0) &&
                static_cast<int32_t>(nowMs - lastRssiMs_) >= static_cast<int32_t>(OBD_RSSI_REFRESH_MS)) {
         if (beginTransportRequest(ObdTransportOp::RSSI_READ, nowMs, 0)) {

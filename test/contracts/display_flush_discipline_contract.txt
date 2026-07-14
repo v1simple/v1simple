@@ -18,4 +18,4 @@ kind=DISPLAY_FLUSH file=src/display_update.cpp line=1146 function=update
 kind=DISPLAY_FLUSH file=src/display_update.cpp line=792 function=update
 kind=DISPLAY_FLUSH file=src/display_update.cpp line=915 function=updatePersisted
 kind=POINTER_FLUSH file=include/display_flush.h line=11 function=<global>
-kind=POINTER_FLUSH file=src/modules/touch/touch_ui_module.cpp line=72 function=process
+kind=POINTER_FLUSH file=src/modules/touch/touch_ui_module.cpp line=70 function=process

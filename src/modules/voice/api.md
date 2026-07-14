@@ -10,12 +10,12 @@ Per the header at lines 6-15:
 ## Public types
 
 ### `struct VoiceContext`
-**Source:** `voice_module.h:34-55`.
+**Source:** `voice_module.h:32-56`.
 
 Per-decision input — alerts array, priority alert, V1 mute state, proxy-connected flag, main volume, suppressed flag, current `nowMs`. Default constructor zeros everything for safe fall-through.
 
 ### `struct VoiceAction`
-**Source:** `voice_module.h:64-99`.
+**Source:** `voice_module.h:63-98`.
 
 Decision output. `Type` enum:
 - `NONE`
@@ -34,23 +34,23 @@ Payload fields are interpreted per type. `hasAction()` returns true unless `type
 
 #### `VoiceModule()`
 Default constructor.
-**Source:** `voice_module.h:107`.
+**Source:** `voice_module.h:106`.
 
 #### `void begin(SettingsManager* settings, V1BLEClient* ble = nullptr)`
 Wires dependencies. BLE pointer is optional — the module reads V1Settings primarily; BLE is for state queries that might be needed in future.
-**Source:** `voice_module.h:110`.
+**Source:** `voice_module.h:109`.
 
 ### Decision
 
 #### `VoiceAction process(const VoiceContext& ctx)`
 Main decision method. Returns the action to take (if any).
-**Source:** `voice_module.h:113`.
+**Source:** `voice_module.h:112`.
 
 ### State management
 
 #### `void reset()` / `void clearAllState()`
 Clears all tracking state (announced IDs, history, cooldowns). Called on connection cycle reset.
-**Source:** `voice_module.h:116-117`.
+**Source:** `voice_module.h:109-110`.
 
 ### Static utilities
 
@@ -66,7 +66,7 @@ Whether a band is enabled for secondary-alert announcements (per audio settings)
 #### `static AlertDirection toAudioDirection(Direction dir)`
 Convert V1 direction bitmask to the audio-module direction enum.
 
-**Source:** `voice_module.h:124-133`.
+**Source:** `voice_module.h:123-132`.
 
 ### Speed helpers
 
@@ -78,7 +78,7 @@ Convert V1 direction bitmask to the audio-module direction enum.
 
 Speed-aware voice features (e.g. dropping bogey-count announcements at low speed) need an arbitrated speed source. The module caches a speed sample with `SPEED_CACHE_MAX_AGE_MS` (5 s) freshness.
 
-**Source:** `voice_module.h:136-140`.
+**Source:** `voice_module.h:128-133`.
 
 ## Internal tracking (informational)
 
@@ -105,7 +105,7 @@ Direct access to internal alert history for tests.
 #### `void testUpdateAlertHistory(...)`
 Exposes the private update method.
 
-**Source:** `voice_module.h:225-235`.
+**Source:** `voice_module.h:235-244`.
 
 ## Dependencies
 

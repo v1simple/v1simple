@@ -6,14 +6,14 @@
 #include <Arduino.h>
 #include <algorithm>
 
-#include "settings.h"          // AutoPushSlot
-#include "v1_profiles.h"       // V1ProfileManager, V1Profile
-#include "ble_client.h"        // V1BLEClient
-#include "display.h"           // V1Display
+#include "settings.h"    // AutoPushSlot
+#include "v1_profiles.h" // V1ProfileManager, V1Profile
+#include "ble_client.h"  // V1BLEClient
+#include "display.h"     // V1Display
 class QuietCoordinatorModule;
 
 class AutoPushModule {
-public:
+  public:
     enum class QueueResult : uint8_t {
         QUEUED = 0,
         V1_NOT_CONNECTED,
@@ -33,16 +33,11 @@ public:
 
     AutoPushModule() = default;
 
-    void begin(SettingsManager* settings,
-               V1ProfileManager* profileMgr,
-               V1BLEClient* ble,
-               V1Display* disp,
+    void begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble, V1Display* disp,
                QuietCoordinatorModule* quietCoordinator);
 
     // Queue a slot-driven auto-push through the shared executor.
-    QueueResult queueSlotPush(int slotIndex,
-                              bool activateSlot = false,
-                              bool updateProfileIndicator = true);
+    QueueResult queueSlotPush(int slotIndex, bool activateSlot = false, bool updateProfileIndicator = true);
 
     // Queue an explicit push-now request through the shared executor.
     QueueResult queuePushNow(const PushNowRequest& request);
@@ -55,7 +50,7 @@ public:
 
     bool isActive() const { return state_.step != Step::Idle; }
 
-private:
+  private:
     static constexpr uint8_t kMaxProfileWriteRetries = 5;
     static constexpr uint8_t kMaxPushNowCommandRetries = 8;
 
@@ -82,19 +77,10 @@ private:
     };
 
     void applySlotMuteToZero(V1UserSettings& settings, bool slotMuteToZero);
-    QueueResult queuePreparedSlot(int slotIndex,
-                                  const AutoPushSlot& slot,
-                                  bool profileLoaded,
-                                  const V1Profile& profile,
-                                  bool isPushNow,
-                                  bool activateSlot,
-                                  bool countAutoPushStart,
+    QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile,
+                                  bool isPushNow, bool activateSlot, bool countAutoPushStart,
                                   bool updateProfileIndicator);
-    void armState(int slotIndex,
-                  const AutoPushSlot& slot,
-                  bool profileLoaded,
-                  const V1Profile& profile,
-                  bool isPushNow,
+    void armState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile, bool isPushNow,
                   bool updateProfileIndicator);
 
     SettingsManager* settings_ = nullptr;

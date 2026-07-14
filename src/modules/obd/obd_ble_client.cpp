@@ -15,8 +15,8 @@
 // ble_hs_pvcy_set_resolve_enabled is compiled when BLE_HOST_BASED_PRIVACY==0
 // (ESP32-S3 with controller-based privacy).
 extern "C" {
-    int ble_hs_pvcy_set_resolve_enabled(int enable);
-    #include "nimble/nimble/host/include/host/ble_hs.h"
+int ble_hs_pvcy_set_resolve_enabled(int enable);
+#include "nimble/nimble/host/include/host/ble_hs.h"
 }
 
 #include "obd_runtime_module.h"
@@ -32,7 +32,7 @@ bool stringEquals(const std::string& lhs, const char* rhs) {
     return rhs != nullptr && lhs == rhs;
 }
 
-}  // namespace
+} // namespace
 
 ObdBleClient obdBleClient;
 
@@ -42,7 +42,8 @@ void ObdScanCallback::configure(ObdRuntimeModule* parent, int8_t minRssi) {
 }
 
 void ObdScanCallback::onResult(const NimBLEAdvertisedDevice* device) {
-    if (!device || !parent_ || !device->haveName()) return;
+    if (!device || !parent_ || !device->haveName())
+        return;
 
     const std::string name = device->getName();
     if (!stringEquals(name, obd::DEVICE_NAME_CX)) {
@@ -56,7 +57,7 @@ void ObdScanCallback::onResult(const NimBLEAdvertisedDevice* device) {
 
     const NimBLEAddress& addr = device->getAddress();
     if (addr.isNull()) {
-        return;  // Identity resolution produced a null address — skip
+        return; // Identity resolution produced a null address — skip
     }
 
     // NimBLE may return identity types (PUBLIC_ID=2, RANDOM_ID=3) when it
@@ -64,7 +65,7 @@ void ObdScanCallback::onResult(const NimBLEAdvertisedDevice* device) {
     // PUBLIC(0) or RANDOM(1), so strip the identity bit.
     uint8_t addrType = addr.getType();
     if (addrType >= 2) {
-        addrType = addrType & 0x01;  // PUBLIC_ID→PUBLIC, RANDOM_ID→RANDOM
+        addrType = addrType & 0x01; // PUBLIC_ID→PUBLIC, RANDOM_ID→RANDOM
     }
 
     parent_->onDeviceFound(name.c_str(), addr.toString().c_str(), rssi, addrType);
@@ -187,7 +188,8 @@ void ObdBleClient::handleIdentityResolved(const NimBLEConnInfo& connInfo) {
 }
 
 void ObdBleClient::init(ObdRuntimeModule* parent) {
-    if (pClient_ != nullptr) return;
+    if (pClient_ != nullptr)
+        return;
 
     pClient_ = NimBLEDevice::createClient();
     clientCallback_.configure(this, parent);
@@ -201,7 +203,8 @@ void ObdBleClient::init(ObdRuntimeModule* parent) {
 
 bool ObdBleClient::startScan(ObdRuntimeModule* parent, int8_t minRssi) {
     NimBLEScan* pScan = NimBLEDevice::getScan();
-    if (pScan->isScanning()) return false;
+    if (pScan->isScanning())
+        return false;
 
     ble_hs_pvcy_set_resolve_enabled(0);
 
@@ -231,8 +234,10 @@ void ObdBleClient::stopScan() {
 }
 
 bool ObdBleClient::connect(const char* address, uint8_t addrType, uint32_t timeoutMs, bool preferCachedAttributes) {
-    if (!pClient_ || !address || address[0] == '\0') return false;
-    if (pClient_->isConnected()) return true;
+    if (!pClient_ || !address || address[0] == '\0')
+        return false;
+    if (pClient_->isConnected())
+        return true;
 
     clearLinkState(true);
 
@@ -375,8 +380,7 @@ bool ObdBleClient::discoverServices() {
     pTxChar_ = svc->getCharacteristic(kCxNotifyUuid);
     pRxChar_ = svc->getCharacteristic(kCxWriteUuid);
     if (!pTxChar_ || !pRxChar_) {
-        Serial.printf("[OBD] discoverServices: char missing tx=%d rx=%d\n",
-                      pTxChar_ != nullptr, pRxChar_ != nullptr);
+        Serial.printf("[OBD] discoverServices: char missing tx=%d rx=%d\n", pTxChar_ != nullptr, pRxChar_ != nullptr);
         lastBleError_ = pClient_->getLastError();
         pTxChar_ = nullptr;
         pRxChar_ = nullptr;
@@ -396,7 +400,8 @@ bool ObdBleClient::discoverServices() {
 }
 
 bool ObdBleClient::writeCommand(const char* cmd, bool withResponse) {
-    if (!pRxChar_ || !pClient_ || !pClient_->isConnected() || !cmd) return false;
+    if (!pRxChar_ || !pClient_ || !pClient_->isConnected() || !cmd)
+        return false;
     syncSecurityStateFromConnInfo();
     const bool ok = pRxChar_->writeValue(reinterpret_cast<const uint8_t*>(cmd), strlen(cmd), withResponse);
     lastBleError_ = ok ? 0 : pClient_->getLastError();
@@ -404,7 +409,8 @@ bool ObdBleClient::writeCommand(const char* cmd, bool withResponse) {
 }
 
 bool ObdBleClient::subscribeNotify(void (*callback)(const uint8_t* data, size_t len)) {
-    if (!pTxChar_) return false;
+    if (!pTxChar_)
+        return false;
     if (!pClient_ || !pClient_->isConnected()) {
         Serial.println("[OBD] subscribeNotify: connection lost before subscribe");
         return false;
@@ -416,8 +422,7 @@ bool ObdBleClient::subscribeNotify(void (*callback)(const uint8_t* data, size_t 
     // write-with-response for CCCD, and trying it first can leave the GATT
     // state machine confused, so match main exactly.
     const bool ok = pTxChar_->subscribe(
-        true,
-        [callback](NimBLERemoteCharacteristic* /*chr*/, uint8_t* data, size_t length, bool /*isNotify*/) {
+        true, [callback](NimBLERemoteCharacteristic* /*chr*/, uint8_t* data, size_t length, bool /*isNotify*/) {
             if (callback && data && length > 0) {
                 callback(data, length);
             }
@@ -430,7 +435,8 @@ bool ObdBleClient::subscribeNotify(void (*callback)(const uint8_t* data, size_t 
 }
 
 int8_t ObdBleClient::getRssi(uint32_t nowMs) {
-    if (!pClient_ || !pClient_->isConnected()) return 0;
+    if (!pClient_ || !pClient_->isConnected())
+        return 0;
 
     if (nowMs - lastRssiQueryMs_ >= RSSI_QUERY_INTERVAL_MS) {
         lastRssiQueryMs_ = nowMs;
@@ -439,4 +445,4 @@ int8_t ObdBleClient::getRssi(uint32_t nowMs) {
     return cachedRssi_;
 }
 
-#endif  // UNIT_TEST
+#endif // UNIT_TEST

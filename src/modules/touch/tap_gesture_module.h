@@ -14,7 +14,7 @@ class AlertPersistenceModule;
 class QuietCoordinatorModule;
 
 class TapGestureModule {
-public:
+  public:
     struct WifiCallbacks {
         bool (*isWifiActive)(void* ctx);
         void* isWifiActiveCtx;
@@ -24,20 +24,14 @@ public:
         void* requestMaintenanceBootCtx;
     };
 
-    void begin(TouchHandler* touchHandler,
-               SettingsManager* settings,
-               V1Display* display,
-               V1BLEClient* bleClient,
-               PacketParser* parser,
-               AutoPushModule* autoPushModule,
-               AlertPersistenceModule* alertPersistenceModule,
-               DisplayMode* displayModePtr,
-               QuietCoordinatorModule* quietCoordinator,
+    void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
+               PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
+               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator,
                const WifiCallbacks& wifiCbs = {});
 
     void process(unsigned long nowMs);
 
-private:
+  private:
     TouchHandler* touch_ = nullptr;
     SettingsManager* settings_ = nullptr;
     V1Display* display_ = nullptr;

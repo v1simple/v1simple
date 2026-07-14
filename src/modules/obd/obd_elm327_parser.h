@@ -41,9 +41,7 @@ Elm327VinParseResult parseVinResponse(const char* response, size_t len);
 /// Returns speed in km/h, or -1.0f if the result is not a valid speed response.
 float decodeSpeedKmh(const Elm327ParseResult& result);
 
-bool decodeTempC_x10(const Elm327ParseResult& result,
-                     Elm327TempDecodeFormat format,
-                     int16_t& tempC_x10Out);
+bool decodeTempC_x10(const Elm327ParseResult& result, Elm327TempDecodeFormat format, int16_t& tempC_x10Out);
 
 /// Convert km/h to mph.
 inline float kmhToMph(float kmh) {

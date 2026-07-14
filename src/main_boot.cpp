@@ -11,7 +11,7 @@
 #include "settings.h"
 #include "settings_keys.h"
 #include "littlefs_mount.h"
-#include "modules/perf/debug_macros.h"  // SerialLog
+#include "modules/perf/debug_macros.h" // SerialLog
 #include "esp_heap_caps.h"
 #include "esp_core_dump.h"
 #include <Arduino.h>
@@ -27,16 +27,26 @@ extern V1Display display;
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
     switch (reason) {
-        case ESP_RST_POWERON: return "POWERON";
-        case ESP_RST_SW: return "SW";
-        case ESP_RST_PANIC: return "PANIC";
-        case ESP_RST_INT_WDT: return "WDT_INT";
-        case ESP_RST_TASK_WDT: return "WDT_TASK";
-        case ESP_RST_WDT: return "WDT";
-        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-        case ESP_RST_BROWNOUT: return "BROWNOUT";
-        case ESP_RST_SDIO: return "SDIO";
-        default: return "UNKNOWN";
+    case ESP_RST_POWERON:
+        return "POWERON";
+    case ESP_RST_SW:
+        return "SW";
+    case ESP_RST_PANIC:
+        return "PANIC";
+    case ESP_RST_INT_WDT:
+        return "WDT_INT";
+    case ESP_RST_TASK_WDT:
+        return "WDT_TASK";
+    case ESP_RST_WDT:
+        return "WDT";
+    case ESP_RST_DEEPSLEEP:
+        return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+        return "BROWNOUT";
+    case ESP_RST_SDIO:
+        return "SDIO";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -45,12 +55,11 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
 // PANIC BREADCRUMBS: Log heap stats + coredump info on crash recovery
 void logPanicBreadcrumbs() {
     esp_reset_reason_t reason = esp_reset_reason();
-    bool isCrash = (reason == ESP_RST_PANIC ||
-                    reason == ESP_RST_INT_WDT ||
-                    reason == ESP_RST_TASK_WDT ||
-                    reason == ESP_RST_WDT);
+    bool isCrash =
+        (reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT);
 
-    if (!isCrash) return;
+    if (!isCrash)
+        return;
 
     Serial.println("\n!!! CRASH RECOVERY DETECTED !!!");
     Serial.printf("Reset reason: %s\n", resetReasonToString(reason));
@@ -59,8 +68,8 @@ void logPanicBreadcrumbs() {
     uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
     uint32_t minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
-    Serial.printf("Heap now: free=%lu, largest=%lu, minEver=%lu\n",
-                  (unsigned long)freeHeap, (unsigned long)largestBlock, (unsigned long)minFreeHeap);
+    Serial.printf("Heap now: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap,
+                  (unsigned long)largestBlock, (unsigned long)minFreeHeap);
 
     // Check for coredump
     esp_core_dump_summary_t summary;
@@ -87,13 +96,13 @@ void logPanicBreadcrumbs() {
 
     // Best-effort: Try to write panic.txt to LittleFS (SD not mounted yet)
     // This runs BEFORE storage init, so we use LittleFS directly
-    if (fsmount::mountStorage()) {  // never auto-format during panic logging
+    if (fsmount::mountStorage()) { // never auto-format during panic logging
         File f = LittleFS.open("/panic.txt", FILE_WRITE);
         if (f) {
             f.printf("CRASH at boot (millis=%lu)\n", millis());
             f.printf("Reset reason: %s\n", resetReasonToString(reason));
-            f.printf("Heap: free=%lu, largest=%lu, minEver=%lu\n",
-                     (unsigned long)freeHeap, (unsigned long)largestBlock, (unsigned long)minFreeHeap);
+            f.printf("Heap: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap, (unsigned long)largestBlock,
+                     (unsigned long)minFreeHeap);
 
             if (err == ESP_OK) {
                 f.printf("Task: %s\n", summary.exc_task);
@@ -109,7 +118,7 @@ void logPanicBreadcrumbs() {
             f.close();
             Serial.println("[PANIC] Wrote /panic.txt to LittleFS");
         }
-        LittleFS.end();  // Release mount before storage manager takes ownership
+        LittleFS.end(); // Release mount before storage manager takes ownership
     }
 }
 
@@ -125,14 +134,12 @@ void nvsHealthCheck() {
         }
         uint32_t usedPct = (stats.used_entries * 100) / stats.total_entries;
         Serial.printf("[NVS] Entries: %lu/%lu used (%lu%%), namespaces: %lu, free: %lu\n",
-                      (unsigned long)stats.used_entries,
-                      (unsigned long)stats.total_entries,
-                      (unsigned long)usedPct,
-                      (unsigned long)stats.namespace_count,
-                      (unsigned long)stats.free_entries);
+                      (unsigned long)stats.used_entries, (unsigned long)stats.total_entries, (unsigned long)usedPct,
+                      (unsigned long)stats.namespace_count, (unsigned long)stats.free_entries);
 
         if (usedPct > 80) {
-            Serial.println("[NVS] WARN: NVS >80% full; deferring namespace cleanup until settings load resolves the active namespace");
+            Serial.println("[NVS] WARN: NVS >80% full; deferring namespace cleanup until settings load resolves the "
+                           "active namespace");
         }
     } else {
         Serial.println("[NVS] WARN: Could not get NVS stats");
@@ -169,7 +176,7 @@ uint32_t nextBootId() {
 bool readAndResetCleanShutdownMarker() {
     Preferences prefs;
     if (!prefs.begin("v1boot", false)) {
-        return false;  // assume unclean if NVS is unreachable
+        return false; // assume unclean if NVS is unreachable
     }
     const bool prev = prefs.getBool(kNvsCleanShutdn, false);
     prefs.putBool(kNvsCleanShutdn, false);
@@ -223,7 +230,7 @@ void fatalBootError(const char* message, bool displayAvailable) {
 
     if (displayAvailable) {
         // Show error on screen with countdown
-        display.showDisconnected();  // Clear screen with base frame
+        display.showDisconnected(); // Clear screen with base frame
         // Draw error message (red text, centered)
         // Note: Using drawStatusText-like approach
         SerialLog.println("Showing error on display, will restart in 10 seconds...");

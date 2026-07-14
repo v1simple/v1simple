@@ -11,7 +11,7 @@
 
 #include "packet_parser.h"
 #include "config.h"
-#include "perf_metrics.h"  // perfRecordV1FirmwareVersion
+#include "perf_metrics.h" // perfRecordV1FirmwareVersion
 
 namespace {
 struct BandArrowData {
@@ -28,13 +28,13 @@ struct BandArrowData {
 BandArrowData processBandArrow(uint8_t v) {
     BandArrowData d;
     d.laser = (v & 0b00000001) != 0;
-    d.ka    = (v & 0b00000010) != 0;
-    d.k     = (v & 0b00000100) != 0;
-    d.x     = (v & 0b00001000) != 0;
-    d.mute  = (v & 0b00010000) != 0;
+    d.ka = (v & 0b00000010) != 0;
+    d.k = (v & 0b00000100) != 0;
+    d.x = (v & 0b00001000) != 0;
+    d.mute = (v & 0b00010000) != 0;
     d.front = (v & 0b00100000) != 0;
-    d.side  = (v & 0b01000000) != 0;
-    d.rear  = (v & 0b10000000) != 0;
+    d.side = (v & 0b01000000) != 0;
+    d.rear = (v & 0b10000000) != 0;
     return d;
 }
 
@@ -43,34 +43,59 @@ BandArrowData processBandArrow(uint8_t v) {
 // Bit 7 = decimal point (returned separately)
 // Returns: character to display, hasDot = true if decimal point should show
 char decodeBogeyCounterByte(uint8_t bogeyImage, bool& hasDot) {
-    hasDot = (bogeyImage & 0x80) != 0;  // Bit 7 = decimal point
+    hasDot = (bogeyImage & 0x80) != 0; // Bit 7 = decimal point
 
     switch (bogeyImage & 0x7F) {
-        case 6:   return '1';
-        case 7:   return '7';
-        case 24:  return '&';  // Little L (logic mode)
-        case 28:  return 'u';
-        case 30:  return 'J';  // Junk
-        case 56:  return 'L';  // Logic
-        case 57:  return 'C';
-        case 62:  return 'U';
-        case 63:  return '0';
-        case 73:  return '#';  // LASER bars
-        case 79:  return '3';
-        case 88:  return 'c';
-        case 91:  return '2';
-        case 94:  return 'd';
-        case 102: return '4';
-        case 109: return '5';
-        case 111: return '9';
-        case 113: return 'F';
-        case 115: return 'P';  // Photo radar
-        case 119: return 'A';
-        case 121: return 'E';
-        case 124: return 'b';
-        case 125: return '6';
-        case 127: return '8';
-        default:  return ' ';  // Blank/unknown
+    case 6:
+        return '1';
+    case 7:
+        return '7';
+    case 24:
+        return '&'; // Little L (logic mode)
+    case 28:
+        return 'u';
+    case 30:
+        return 'J'; // Junk
+    case 56:
+        return 'L'; // Logic
+    case 57:
+        return 'C';
+    case 62:
+        return 'U';
+    case 63:
+        return '0';
+    case 73:
+        return '#'; // LASER bars
+    case 79:
+        return '3';
+    case 88:
+        return 'c';
+    case 91:
+        return '2';
+    case 94:
+        return 'd';
+    case 102:
+        return '4';
+    case 109:
+        return '5';
+    case 111:
+        return '9';
+    case 113:
+        return 'F';
+    case 115:
+        return 'P'; // Photo radar
+    case 119:
+        return 'A';
+    case 121:
+        return 'E';
+    case 124:
+        return 'b';
+    case 125:
+        return '6';
+    case 127:
+        return '8';
+    default:
+        return ' '; // Blank/unknown
     }
 }
 
@@ -80,8 +105,7 @@ bool isAsciiDigit(uint8_t v) {
 
 } // namespace
 
-PacketParser::PacketParser()
-    : alertCount_(0) {
+PacketParser::PacketParser() : alertCount_(0) {
     alertChunkPresent_.fill(false);
     alertChunkCountTag_.fill(0);
     alertChunkRxMs_.fill(0);
@@ -106,150 +130,142 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
 
     uint8_t packetId = data[3];
     switch (packetId) {
-        case PACKET_ID_WRITE_USER_BYTES:
-        case PACKET_ID_TURN_OFF_DISPLAY:
-        case PACKET_ID_TURN_ON_DISPLAY:
-        case PACKET_ID_MUTE_ON:
-        case PACKET_ID_MUTE_OFF:
-        case 0x36:
-        case PACKET_ID_REQ_WRITE_VOLUME:
-        case PACKET_ID_RESP_USER_BYTES:
-        case PACKET_ID_VERSION:
-            break;
-        default:
-            if (!validatePacket(data, length)) {
-                return false;
-            }
-            break;
+    case PACKET_ID_WRITE_USER_BYTES:
+    case PACKET_ID_TURN_OFF_DISPLAY:
+    case PACKET_ID_TURN_ON_DISPLAY:
+    case PACKET_ID_MUTE_ON:
+    case PACKET_ID_MUTE_OFF:
+    case 0x36:
+    case PACKET_ID_REQ_WRITE_VOLUME:
+    case PACKET_ID_RESP_USER_BYTES:
+    case PACKET_ID_VERSION:
+        break;
+    default:
+        if (!validatePacket(data, length)) {
+            return false;
+        }
+        break;
     }
 
     const uint8_t* payload = (length > 5) ? &data[5] : nullptr;
     size_t payloadLen = (length > 6) ? length - 6 : 0; // drop start/dest/src/id/len/end
 
     switch (packetId) {
-        case PACKET_ID_DISPLAY_DATA:
-            return parseDisplayData(payload, payloadLen);
-        case PACKET_ID_ALERT_DATA: {
-            const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
-            return parseAlertData(payload, payloadLen, alertNowMs);
-        }
+    case PACKET_ID_DISPLAY_DATA:
+        return parseDisplayData(payload, payloadLen);
+    case PACKET_ID_ALERT_DATA: {
+        const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
+        return parseAlertData(payload, payloadLen, alertNowMs);
+    }
 
-        // ACK responses from V1 to our commands - silently ignore
-        case PACKET_ID_WRITE_USER_BYTES:    // 0x13 - ACK for profile write
-            return true;  // Acknowledged, no further processing needed
-        case PACKET_ID_TURN_OFF_DISPLAY:    // 0x32 - ACK for display off
-            // Update display power state (dark mode enabled)
-            displayState_.displayOn = false;
-            displayState_.hasDisplayOn = true;
-            return true;
-        case PACKET_ID_TURN_ON_DISPLAY:     // 0x33 - ACK for display on
-            // Update display power state (dark mode disabled)
-            displayState_.displayOn = true;
-            displayState_.hasDisplayOn = true;
-            return true;
-        case PACKET_ID_MUTE_ON:             // 0x34 - ACK for mute on
-        case PACKET_ID_MUTE_OFF:            // 0x35 - ACK for mute off
-        case 0x36:                          // ACK for mode change (reqChangeMode)
-        case PACKET_ID_REQ_WRITE_VOLUME:    // 0x39 - ACK for volume change
-        case PACKET_ID_RESP_USER_BYTES:     // 0x12 - User bytes response
-            return true;  // Acknowledged, no further processing needed
+    // ACK responses from V1 to our commands - silently ignore
+    case PACKET_ID_WRITE_USER_BYTES: // 0x13 - ACK for profile write
+        return true;                 // Acknowledged, no further processing needed
+    case PACKET_ID_TURN_OFF_DISPLAY: // 0x32 - ACK for display off
+        // Update display power state (dark mode enabled)
+        displayState_.displayOn = false;
+        displayState_.hasDisplayOn = true;
+        return true;
+    case PACKET_ID_TURN_ON_DISPLAY: // 0x33 - ACK for display on
+        // Update display power state (dark mode disabled)
+        displayState_.displayOn = true;
+        displayState_.hasDisplayOn = true;
+        return true;
+    case PACKET_ID_MUTE_ON:          // 0x34 - ACK for mute on
+    case PACKET_ID_MUTE_OFF:         // 0x35 - ACK for mute off
+    case 0x36:                       // ACK for mode change (reqChangeMode)
+    case PACKET_ID_REQ_WRITE_VOLUME: // 0x39 - ACK for volume change
+    case PACKET_ID_RESP_USER_BYTES:  // 0x12 - User bytes response
+        return true;                 // Acknowledged, no further processing needed
 
-        case PACKET_ID_RESP_VERSION: {      // 0x02 - respVersion (reply from V1)
-            // V1 protocol summary: docs/V1_PROTOCOL_REFERENCES.md#version-response.
-            // The response payload is exactly 7 ASCII bytes:
-            //   [0] = device letter ('v'=V1, 'C'=Concealed Display,
-            //                        'R'=Remote Audio, 'S'=Savvy)
-            //   [1] = major version digit
-            //   [2] = literal '.'
-            //   [3] = minor version digit
-            //   [4] = revision digit 1
-            //   [5] = revision digit 2
-            //   [6] = engineering control number digit
-            // Example bytes: 'v','4','.','1','0','2','8' → "v4.1028" → 41028.
-            const size_t declaredPayloadLen = data[4];
-            if (payload && payloadLen >= 7 && declaredPayloadLen >= 7) {
-                const uint8_t letter = payload[0];
-                const bool letterAlphabetic = (letter >= 'A' && letter <= 'Z') ||
-                                              (letter >= 'a' && letter <= 'z');
-                if (letterAlphabetic &&
-                    isAsciiDigit(payload[1]) &&
-                    payload[2] == '.' &&
-                    isAsciiDigit(payload[3]) &&
-                    isAsciiDigit(payload[4]) &&
-                    isAsciiDigit(payload[5]) &&
-                    isAsciiDigit(payload[6])) {
-                    char major = static_cast<char>(payload[1]);
-                    char minor = static_cast<char>(payload[3]);
-                    char rev1 = static_cast<char>(payload[4]);
-                    char rev2 = static_cast<char>(payload[5]);
-                    char ctrl = static_cast<char>(payload[6]);
+    case PACKET_ID_RESP_VERSION: { // 0x02 - respVersion (reply from V1)
+        // V1 protocol summary: docs/V1_PROTOCOL_REFERENCES.md#version-response.
+        // The response payload is exactly 7 ASCII bytes:
+        //   [0] = device letter ('v'=V1, 'C'=Concealed Display,
+        //                        'R'=Remote Audio, 'S'=Savvy)
+        //   [1] = major version digit
+        //   [2] = literal '.'
+        //   [3] = minor version digit
+        //   [4] = revision digit 1
+        //   [5] = revision digit 2
+        //   [6] = engineering control number digit
+        // Example bytes: 'v','4','.','1','0','2','8' → "v4.1028" → 41028.
+        const size_t declaredPayloadLen = data[4];
+        if (payload && payloadLen >= 7 && declaredPayloadLen >= 7) {
+            const uint8_t letter = payload[0];
+            const bool letterAlphabetic = (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z');
+            if (letterAlphabetic && isAsciiDigit(payload[1]) && payload[2] == '.' && isAsciiDigit(payload[3]) &&
+                isAsciiDigit(payload[4]) && isAsciiDigit(payload[5]) && isAsciiDigit(payload[6])) {
+                char major = static_cast<char>(payload[1]);
+                char minor = static_cast<char>(payload[3]);
+                char rev1 = static_cast<char>(payload[4]);
+                char rev2 = static_cast<char>(payload[5]);
+                char ctrl = static_cast<char>(payload[6]);
 
-                    uint32_t version = static_cast<uint32_t>(major - '0') * 10000u +
-                                       static_cast<uint32_t>(minor - '0') * 1000u +
-                                       static_cast<uint32_t>(rev1 - '0') * 100u +
-                                       static_cast<uint32_t>(rev2 - '0') * 10u +
-                                       static_cast<uint32_t>(ctrl - '0');
+                uint32_t version = static_cast<uint32_t>(major - '0') * 10000u +
+                                   static_cast<uint32_t>(minor - '0') * 1000u +
+                                   static_cast<uint32_t>(rev1 - '0') * 100u + static_cast<uint32_t>(rev2 - '0') * 10u +
+                                   static_cast<uint32_t>(ctrl - '0');
 
-                    // Only record main V1 firmware versions; ignore replies
-                    // from other ESP devices on the bus (Concealed Display,
-                    // Remote Audio, Savvy).
-                    if (letter == 'v' || letter == 'V') {
-                        // Log only when this is the first observation OR the
-                        // reported version actually changed. V1 firmware does
-                        // not hot-swap mid-session, so the steady-state cost
-                        // of repeated 0x02 replies must be zero — a blocking
-                        // Serial.printf on every reply adds tail-latency on
-                        // the BLE-notify hot path (sd_max_peak_us /
-                        // wifi_p95_us regressions).
-                        const bool versionChanged =
-                            !displayState_.hasV1Version ||
-                            displayState_.v1FirmwareVersion != version;
-                        displayState_.v1FirmwareVersion = version;
-                        displayState_.hasV1Version = true;
-                        // Surface the V1 firmware version through the perf-metrics channel
-                        // for SD perf logs and serial diagnostics.
-                        perfRecordV1FirmwareVersion(version);
-                        if (versionChanged) {
-                            Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n",
-                                          major, minor, rev1, rev2, ctrl, version);
-                        }
+                // Only record main V1 firmware versions; ignore replies
+                // from other ESP devices on the bus (Concealed Display,
+                // Remote Audio, Savvy).
+                if (letter == 'v' || letter == 'V') {
+                    // Log only when this is the first observation OR the
+                    // reported version actually changed. V1 firmware does
+                    // not hot-swap mid-session, so the steady-state cost
+                    // of repeated 0x02 replies must be zero — a blocking
+                    // Serial.printf on every reply adds tail-latency on
+                    // the BLE-notify hot path (sd_max_peak_us /
+                    // wifi_p95_us regressions).
+                    const bool versionChanged =
+                        !displayState_.hasV1Version || displayState_.v1FirmwareVersion != version;
+                    displayState_.v1FirmwareVersion = version;
+                    displayState_.hasV1Version = true;
+                    // Surface the V1 firmware version through the perf-metrics channel
+                    // for SD perf logs and serial diagnostics.
+                    perfRecordV1FirmwareVersion(version);
+                    if (versionChanged) {
+                        Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n", major, minor, rev1,
+                                      rev2, ctrl, version);
                     }
                 }
             }
-            return true;
         }
-        case PACKET_ID_RESP_ALL_VOLUME: {   // 0x3D - respAllVolume
-            // Per Valentine AndroidESPLibrary2
-            // ResponseAllVolume.java the payload is exactly 4 bytes:
-            //   [0] = current main volume   (0..9)
-            //   [1] = current muted volume  (0..9)
-            //   [2] = saved main volume     (0..9)
-            //   [3] = saved muted volume    (0..9)
-            // This is the authoritative source — overwrite the aux2-derived
-            // mainVolume/muteVolume values from display packets when present.
-            const size_t declaredPayloadLen = data[4];
-            if (payload && payloadLen >= 4 && declaredPayloadLen >= 4) {
-                displayState_.mainVolume      = payload[0] & 0x0F;
-                displayState_.muteVolume      = payload[1] & 0x0F;
-                displayState_.savedMainVolume = payload[2] & 0x0F;
-                displayState_.savedMuteVolume = payload[3] & 0x0F;
-                displayState_.hasVolumeData   = true;
-                displayState_.hasSavedVolume  = true;
-            }
-            return true;
+        return true;
+    }
+    case PACKET_ID_RESP_ALL_VOLUME: { // 0x3D - respAllVolume
+        // Per Valentine AndroidESPLibrary2
+        // ResponseAllVolume.java the payload is exactly 4 bytes:
+        //   [0] = current main volume   (0..9)
+        //   [1] = current muted volume  (0..9)
+        //   [2] = saved main volume     (0..9)
+        //   [3] = saved muted volume    (0..9)
+        // This is the authoritative source — overwrite the aux2-derived
+        // mainVolume/muteVolume values from display packets when present.
+        const size_t declaredPayloadLen = data[4];
+        if (payload && payloadLen >= 4 && declaredPayloadLen >= 4) {
+            displayState_.mainVolume = payload[0] & 0x0F;
+            displayState_.muteVolume = payload[1] & 0x0F;
+            displayState_.savedMainVolume = payload[2] & 0x0F;
+            displayState_.savedMuteVolume = payload[3] & 0x0F;
+            displayState_.hasVolumeData = true;
+            displayState_.hasSavedVolume = true;
         }
-        case PACKET_ID_REQ_ALL_VOLUME:      // 0x3C - outbound request, ignore echoes
-            return true;
+        return true;
+    }
+    case PACKET_ID_REQ_ALL_VOLUME: // 0x3C - outbound request, ignore echoes
+        return true;
 
-        case PACKET_ID_VERSION:             // 0x01 - reqVersion
-            // 0x01 is the OUTBOUND request id. The V1 should never send 0x01
-            // back to us, but if a buggy peer or replay loop produces one we
-            // ignore it silently rather than parsing it as a version reply.
-            return true;
+    case PACKET_ID_VERSION: // 0x01 - reqVersion
+        // 0x01 is the OUTBOUND request id. The V1 should never send 0x01
+        // back to us, but if a buggy peer or replay loop produces one we
+        // ignore it silently rather than parsing it as a version reply.
+        return true;
 
-        default:
-            // Unknown packet - silently ignore in hot path
-            return false;
+    default:
+        // Unknown packet - silently ignore in hot path
+        return false;
     }
 }
 
@@ -344,15 +360,22 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     displayState_.flashBits = flashingBits & 0xE0;
 
     displayState_.activeBands = BAND_NONE;
-    if (arrow.laser) displayState_.activeBands |= BAND_LASER;
-    if (arrow.ka)    displayState_.activeBands |= BAND_KA;
-    if (arrow.k)     displayState_.activeBands |= BAND_K;
-    if (arrow.x)     displayState_.activeBands |= BAND_X;
+    if (arrow.laser)
+        displayState_.activeBands |= BAND_LASER;
+    if (arrow.ka)
+        displayState_.activeBands |= BAND_KA;
+    if (arrow.k)
+        displayState_.activeBands |= BAND_K;
+    if (arrow.x)
+        displayState_.activeBands |= BAND_X;
 
     displayState_.arrows = DIR_NONE;
-    if (arrow.front) displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_FRONT);
-    if (arrow.side)  displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_SIDE);
-    if (arrow.rear)  displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_REAR);
+    if (arrow.front)
+        displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_FRONT);
+    if (arrow.side)
+        displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_SIDE);
+    if (arrow.rear)
+        displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_REAR);
 
     // Per Valentine InfDisplayData.isSystemStatus,
     // band/arrow data is only meaningful while the V1 is actively searching.
@@ -398,7 +421,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
         uint8_t auxData2 = payload[7];
         displayState_.mainVolume = (auxData2 & 0xF0) >> 4;
         displayState_.muteVolume = auxData2 & 0x0F;
-        displayState_.hasVolumeData = true;  // Mark that we've received volume data
+        displayState_.hasVolumeData = true; // Mark that we've received volume data
     }
 
     // V1 sends LED bar state directly in the display packet at payload[2].
@@ -426,23 +449,32 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
 uint8_t PacketParser::decodeLEDBitmap(uint8_t bitmap) const {
     // First try the expected six-bar V1G2 source patterns.
     switch (bitmap) {
-        case 1:   return 1;
-        case 3:   return 3;
-        case 7:   return 4;
-        case 15:  return 5;
-        case 31:  return 7;
-        case 63:  return 8;
-        case 127: return 8;
-        case 255: return 8;
-        case 0:   return 0;
-        default:
-            // VR InfDisplayData.getNumberOfLEDS() returns a full-bar
-            // overflow sentinel for any byte that doesn't match a
-            // standard 0..255 contiguous bar pattern. See VR's
-            // ESPLibrary2.0 packets/InfDisplayData.java lines 648-677. For
-            // Valentine's Law, unknown strength encodings must fail loud, not
-            // understate a possible full-scale threat.
-            return 8;
+    case 1:
+        return 1;
+    case 3:
+        return 3;
+    case 7:
+        return 4;
+    case 15:
+        return 5;
+    case 31:
+        return 7;
+    case 63:
+        return 8;
+    case 127:
+        return 8;
+    case 255:
+        return 8;
+    case 0:
+        return 0;
+    default:
+        // VR InfDisplayData.getNumberOfLEDS() returns a full-bar
+        // overflow sentinel for any byte that doesn't match a
+        // standard 0..255 contiguous bar pattern. See VR's
+        // ESPLibrary2.0 packets/InfDisplayData.java lines 648-677. For
+        // Valentine's Law, unknown strength encodings must fail loud, not
+        // understate a possible full-scale threat.
+        return 8;
     }
 }
 
@@ -472,15 +504,31 @@ void PacketParser::decodeMode(const uint8_t* payload, size_t length) {
     const uint8_t bogeyImage = payload[0] & 0x7F;
     char mode = 0;
     switch (bogeyImage) {
-        case 0x77: mode = 'A'; break;
-        case 0x39: mode = 'C'; break;
-        case 0x3E: mode = 'U'; break;
-        case 0x18: mode = 'l'; break;
-        case 0x1C: mode = 'u'; break;
-        case 0x58: mode = 'c'; break;
-        case 0x38: mode = 'L'; break;
-        default:   mode = 0;   break;  // Bogey shows a digit/other -> alerting,
-                                       // mode not determinable.
+    case 0x77:
+        mode = 'A';
+        break;
+    case 0x39:
+        mode = 'C';
+        break;
+    case 0x3E:
+        mode = 'U';
+        break;
+    case 0x18:
+        mode = 'l';
+        break;
+    case 0x1C:
+        mode = 'u';
+        break;
+    case 0x58:
+        mode = 'c';
+        break;
+    case 0x38:
+        mode = 'L';
+        break;
+    default:
+        mode = 0;
+        break; // Bogey shows a digit/other -> alerting,
+               // mode not determinable.
     }
     displayState_.modeChar = mode;
     displayState_.hasMode = (mode != 0);

@@ -3,11 +3,8 @@
 #include "display_pipeline_module.h"
 #include "perf_metrics.h"
 
-void DisplayRestoreModule::begin(V1Display* disp,
-                                 PacketParser* pktParser,
-                                 V1BLEClient* ble,
-                                 DisplayPreviewModule* preview,
-                                 DisplayPipelineModule* displayPipeline) {
+void DisplayRestoreModule::begin(V1Display* disp, PacketParser* pktParser, V1BLEClient* ble,
+                                 DisplayPreviewModule* preview, DisplayPipelineModule* displayPipeline) {
     display_ = disp;
     parser_ = pktParser;
     bleClient_ = ble;
@@ -16,7 +13,8 @@ void DisplayRestoreModule::begin(V1Display* disp,
 }
 
 bool DisplayRestoreModule::process() {
-    if (!previewModule_) return false;
+    if (!previewModule_)
+        return false;
 
     bool previewEnded = previewModule_->consumeEnded();
 

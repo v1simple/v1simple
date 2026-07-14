@@ -4,7 +4,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include "packet_parser.h"  // For AlertData type
+#include "packet_parser.h" // For AlertData type
 
 // Forward declarations
 class V1BLEClient;
@@ -20,7 +20,7 @@ class PacketParser;
  * - Combined state clearing
  */
 class AlertPersistenceModule {
-public:
+  public:
     AlertPersistenceModule();
 
     // Initialize with dependencies (call from setup())
@@ -34,7 +34,7 @@ public:
     const AlertData& getPersistedAlert() const { return persistedAlert_; }
     bool isPersistenceActive() const { return alertPersistenceActive_; }
 
-private:
+  private:
     // Dependencies
     V1BLEClient* bleClient_ = nullptr;
     PacketParser* parser_ = nullptr;

@@ -52,12 +52,12 @@ class SystemEventBus;
 // ── ALP connection / protocol states ─────────────────────────────────
 
 enum class AlpState : uint8_t {
-    OFF = 0,            // Module off (alpEnabled == false)
-    IDLE,               // UART open, waiting for first valid frame
-    LISTENING,          // Receiving heartbeats — ALP CPU confirmed alive
-    ALERT_ACTIVE,       // Laser detected — heartbeat byte1=01 or 98 trigger
-    NOISE_WINDOW,       // Speaker alert active — UART data is glitch noise
-    TEARDOWN,           // Register cleanup after alert, returning to idle
+    OFF = 0,      // Module off (alpEnabled == false)
+    IDLE,         // UART open, waiting for first valid frame
+    LISTENING,    // Receiving heartbeats — ALP CPU confirmed alive
+    ALERT_ACTIVE, // Laser detected — heartbeat byte1=01 or 98 trigger
+    NOISE_WINDOW, // Speaker alert active — UART data is glitch noise
+    TEARDOWN,     // Register cleanup after alert, returning to idle
 };
 
 const char* alpStateName(AlpState s);
@@ -69,7 +69,7 @@ enum class AlpGunType : uint8_t {
     UNKNOWN = 0,
     PL3_PROLITE,        // byte0=c8 gunCode=d5
     DRAGONEYE_COMPACT,  // byte0=c8 gunCode=d6
-    LTI_TRUSPEED_LR,   // byte0=c9 gunCode=f5
+    LTI_TRUSPEED_LR,    // byte0=c9 gunCode=f5
     LASER_ATLANTA_PL2,  // byte0=cb gunCode=eb  (238 pps)
     MARKSMAN_ULTRALYTE, // LID-deploy: cd/d6 | Detect: cd/0c
     STALKER_LZ1,        // byte0=cd gunCode=eb  (~130 pps)
@@ -95,8 +95,8 @@ void alpLogDisplayDecision(uint32_t nowMs, const char* event, const char* detail
 // ── Gun lookup ───────────────────────────────────────────────────────
 
 struct AlpGunCode {
-    uint8_t byte0;      // Gun family (CX frame byte0)
-    uint8_t gunCode;    // Gun identifier (CX frame byte2)
+    uint8_t byte0;   // Gun family (CX frame byte0)
+    uint8_t gunCode; // Gun identifier (CX frame byte2)
     AlpGunType gun;
 };
 
@@ -119,17 +119,17 @@ static inline bool alpValidateChecksum(uint8_t b0, uint8_t b1, uint8_t b2, uint8
 struct AlpStatus {
     AlpState state;
     AlpGunType lastGun;
-    uint32_t lastGunTimestampMs;    // millis() when gun was identified
-    uint32_t lastHeartbeatMs;       // millis() of most recent valid frame
-    uint32_t statusBurstCount;      // lifetime alert trigger count
-    uint32_t heartbeatCount;        // lifetime heartbeat count
-    uint32_t frameErrors;           // lifetime framing / checksum errors
-    uint32_t noiseWindowCount;      // lifetime noise window entries
-    uint8_t lastHbByte1;            // most recent B0 heartbeat byte1 (01=Targeted, 02=Warm-Up, 03=DLI, 04=LID)
-    AlpLaserDirection laserDirection;  // live-alert front/rear classifier projected for display/API
-    uint8_t directionSampleByte1;      // raw B0 byte1 that latched laserDirection (0 when unknown)
-    bool uartActive;                // true if UART has received any data
-    bool hasLaserEvent;             // mirror of AlpRuntimeModule::hasLaserEvent() — live alert indicator for display
+    uint32_t lastGunTimestampMs;      // millis() when gun was identified
+    uint32_t lastHeartbeatMs;         // millis() of most recent valid frame
+    uint32_t statusBurstCount;        // lifetime alert trigger count
+    uint32_t heartbeatCount;          // lifetime heartbeat count
+    uint32_t frameErrors;             // lifetime framing / checksum errors
+    uint32_t noiseWindowCount;        // lifetime noise window entries
+    uint8_t lastHbByte1;              // most recent B0 heartbeat byte1 (01=Targeted, 02=Warm-Up, 03=DLI, 04=LID)
+    AlpLaserDirection laserDirection; // live-alert front/rear classifier projected for display/API
+    uint8_t directionSampleByte1;     // raw B0 byte1 that latched laserDirection (0 when unknown)
+    bool uartActive;                  // true if UART has received any data
+    bool hasLaserEvent;               // mirror of AlpRuntimeModule::hasLaserEvent() — live alert indicator for display
 };
 
 // ── Alert Session ────────────────────────────────────────────────────
@@ -162,29 +162,30 @@ struct AlpStatus {
 //   Warm-Up runs ~60s at boot and after a LID Time timeout.
 
 struct AlertSession {
-    bool active = false;                            // session open?
-    bool isWarmUp = false;                          // suppressed from display (Warm-Up)
-    uint32_t startMs = 0;                           // session opened
-    uint32_t endMs = 0;                             // 0 while active
-    AlpLaserDirection direction = AlpLaserDirection::UNKNOWN;  // latched from first qualifying B0 byte1 during ALERT_ACTIVE
-    uint8_t directionSampleByte1 = 0x00;            // raw B0 byte1 that latched direction
-    AlpGunType gun = AlpGunType::UNKNOWN;           // session's identified gun
-    uint32_t gunIdentifiedMs = 0;                   // 0 if not yet identified
-    uint32_t triggerCount = 0;                      // 98 frames in this session
-    uint32_t rearmCount = 0;                        // TEARDOWN→ALERT cycles within session
-    uint8_t modeAtOpen = 0xFF;                      // lastHbByte1_ when session opened:
-                                                    //   01 = Targeted (mid-engagement reopen)
-                                                    //   02 = Warm-Up
-                                                    //   03 = DLI active (below LID speed)
-                                                    //   04 = LID active (above LID speed)
-                                                    //   00/06 = transitional / engaged
-                                                    //   0xFF = unknown (default)
+    bool active = false;   // session open?
+    bool isWarmUp = false; // suppressed from display (Warm-Up)
+    uint32_t startMs = 0;  // session opened
+    uint32_t endMs = 0;    // 0 while active
+    AlpLaserDirection direction =
+        AlpLaserDirection::UNKNOWN;       // latched from first qualifying B0 byte1 during ALERT_ACTIVE
+    uint8_t directionSampleByte1 = 0x00;  // raw B0 byte1 that latched direction
+    AlpGunType gun = AlpGunType::UNKNOWN; // session's identified gun
+    uint32_t gunIdentifiedMs = 0;         // 0 if not yet identified
+    uint32_t triggerCount = 0;            // 98 frames in this session
+    uint32_t rearmCount = 0;              // TEARDOWN→ALERT cycles within session
+    uint8_t modeAtOpen = 0xFF;            // lastHbByte1_ when session opened:
+                                          //   01 = Targeted (mid-engagement reopen)
+                                          //   02 = Warm-Up
+                                          //   03 = DLI active (below LID speed)
+                                          //   04 = LID active (above LID speed)
+                                          //   00/06 = transitional / engaged
+                                          //   0xFF = unknown (default)
 };
 
 // ── Module ───────────────────────────────────────────────────────────
 
 class AlpRuntimeModule {
-public:
+  public:
     // GPIO pins — RX only (CPU TX on RJ-45 pin 2 → GPIO 2)
     // GPIO 1 no longer in use for ALP (previous RX assignment)
     // GPIO 3 unassigned (no TX needed — receive-only listener)
@@ -192,7 +193,7 @@ public:
 
     // Protocol constants — all frames are 4 bytes with 7-bit checksum
     static constexpr uint32_t ALP_BAUD = 19200;
-    static constexpr size_t FRAME_LEN = 4;  // byte0 byte1 byte2 checksum
+    static constexpr size_t FRAME_LEN = 4; // byte0 byte1 byte2 checksum
 
     // Alert trigger frame: 98 00 E3 7B
     static constexpr uint8_t ALERT_BYTE0 = 0x98;
@@ -206,14 +207,14 @@ public:
 
     // Other known byte0 values
     static constexpr uint8_t DISCOVERY_BYTE0 = 0x91;
-    static constexpr uint8_t SETUP_BYTE0_A8  = 0xA8;
-    static constexpr uint8_t SETUP_BYTE0_F0  = 0xF0;
+    static constexpr uint8_t SETUP_BYTE0_A8 = 0xA8;
+    static constexpr uint8_t SETUP_BYTE0_F0 = 0xF0;
 
     // Timing thresholds
     static constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 3000;
-    static constexpr uint32_t NOISE_WINDOW_MAX_MS = 35000;  // 31s max + margin
+    static constexpr uint32_t NOISE_WINDOW_MAX_MS = 35000; // 31s max + margin
     static constexpr uint32_t TEARDOWN_TIMEOUT_MS = 5000;
-    static constexpr uint32_t ALERT_ACTIVE_TIMEOUT_MS = 15000;  // no 98 trigger rearm in 15s → teardown
+    static constexpr uint32_t ALERT_ACTIVE_TIMEOUT_MS = 15000; // no 98 trigger rearm in 15s → teardown
     static constexpr size_t UART_RX_BUFFER_SIZE = 512;
 
     // Heartbeat byte1 alert detection: byte1=01 means Targeted (laser hit),
@@ -327,10 +328,7 @@ public:
     uint32_t lastValidFrameMs() const { return lastFrameMs_; }
 
     /** Is an alert currently active (laser event in progress)? */
-    bool isAlertActive() const {
-        return state_ == AlpState::ALERT_ACTIVE ||
-               state_ == AlpState::NOISE_WINDOW;
-    }
+    bool isAlertActive() const { return state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW; }
 
     /** Most recently identified gun (persists across alerts). */
     AlpGunType lastIdentifiedGun() const { return lastGun_; }
@@ -368,14 +366,9 @@ public:
         // TEARDOWN is displayable only when a gun was identified (real
         // engagement); phantom sessions that entered ALERT_ACTIVE from
         // noise never get a gun-ID and must not surface during TEARDOWN.
-        const bool teardownDisplayable =
-            (state_ == AlpState::TEARDOWN) &&
-            (session_.gun != AlpGunType::UNKNOWN);
-        return session_.active &&
-               !session_.isWarmUp &&
-               (state_ == AlpState::ALERT_ACTIVE ||
-                state_ == AlpState::NOISE_WINDOW ||
-                teardownDisplayable);
+        const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
+        return session_.active && !session_.isWarmUp &&
+               (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
     }
 
     /** Full current session for diagnostics / tests. */
@@ -406,24 +399,15 @@ public:
      * after an ALP engagement closed while V1's alert-persistence held
      * a duplicate visual.
      */
-    bool ownsLaserDisplay() const {
-        return enabled_ &&
-               state_ != AlpState::OFF &&
-               state_ != AlpState::IDLE;
-    }
+    bool ownsLaserDisplay() const { return enabled_ && state_ != AlpState::OFF && state_ != AlpState::IDLE; }
 
 #ifdef UNIT_TEST
     // ── Test instrumentation ─────────────────────────────────────────
     void testSyncCurrentEvent(uint32_t nowMs = 0) {
         AlpLaserEvent next;
-        const bool teardownDisplayable =
-            (state_ == AlpState::TEARDOWN) &&
-            (session_.gun != AlpGunType::UNKNOWN);
-        next.active = session_.active &&
-                      !session_.isWarmUp &&
-                      (state_ == AlpState::ALERT_ACTIVE ||
-                       state_ == AlpState::NOISE_WINDOW ||
-                       teardownDisplayable);
+        const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
+        next.active = session_.active && !session_.isWarmUp &&
+                      (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
         next.gun = next.active ? session_.gun : AlpGunType::UNKNOWN;
         next.direction = next.active ? session_.direction : AlpLaserDirection::UNKNOWN;
         next.lidActive = (lastHbByte1_ == 0x04);
@@ -470,8 +454,7 @@ public:
         testSyncCurrentEvent();
     }
     void testOpenSession(AlpGunType gun, bool isWarmUp = false,
-                         AlpLaserDirection direction = AlpLaserDirection::UNKNOWN,
-                         uint32_t nowMs = 0) {
+                         AlpLaserDirection direction = AlpLaserDirection::UNKNOWN, uint32_t nowMs = 0) {
         session_.active = true;
         session_.isWarmUp = isWarmUp;
         session_.direction = direction;
@@ -488,7 +471,7 @@ public:
     const char* testGetLastDisplayLogDetail() const { return lastDisplayLogDetail_; }
 #endif
 
-private:
+  private:
     // ── State ────────────────────────────────────────────────────────
     AlpSdLogger* sdLogger_ = nullptr;
     SystemEventBus* bus_ = nullptr;
@@ -521,9 +504,9 @@ private:
     uint32_t lastFrameMs_ = 0;
     uint32_t noiseWindowEntryMs_ = 0;
     uint32_t teardownEntryMs_ = 0;
-    uint32_t lastAlertTriggerMs_ = 0;   // last 98 XX XX trigger frame timestamp
-    uint8_t lastHbByte1_ = 0xFF;        // most recent B0 heartbeat byte1
-    bool alertDetectedViaHb_ = false;    // true when byte1 transitioned to 01
+    uint32_t lastAlertTriggerMs_ = 0; // last 98 XX XX trigger frame timestamp
+    uint8_t lastHbByte1_ = 0xFF;      // most recent B0 heartbeat byte1
+    bool alertDetectedViaHb_ = false; // true when byte1 transitioned to 01
     // One-process guard after TEARDOWN timeout for heartbeat-driven reopen.
     // Blocks the two known housekeeping shapes from the just-ended alert:
     //   (a) steady B0 01 resume in the same process() pass
@@ -538,8 +521,8 @@ private:
 
     // Session + Warm-Up tracking
     AlertSession session_;
-    uint32_t firstFrameMs_ = 0;          // first valid frame after begin()
-    uint32_t warmUpPreambleMs_ = 0;      // F0/A8 within 5s of firstFrameMs_; 0 = not seen
+    uint32_t firstFrameMs_ = 0;     // first valid frame after begin()
+    uint32_t warmUpPreambleMs_ = 0; // F0/A8 within 5s of firstFrameMs_; 0 = not seen
 
     // Counters
     uint32_t statusBurstCount_ = 0;
@@ -561,9 +544,9 @@ private:
     // the body can drop an exact repeat. Cleared on every transitionTo()
     // so genuinely new state-driven events always re-emit after a state
     // change.
-    char     lastDisplayLogEvent_[32]  = "";
-    char     lastDisplayLogDetail_[96] = "";
-    uint32_t displayLogSuppressedCount_ = 0;   // observability: total drops
+    char lastDisplayLogEvent_[32] = "";
+    char lastDisplayLogDetail_[96] = "";
+    uint32_t displayLogSuppressedCount_ = 0; // observability: total drops
 
     // ── Phase 2: Atomic event snapshot ──────────────────────────────
     AlpLaserEvent currentEvent_{};

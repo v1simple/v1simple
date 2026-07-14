@@ -21,10 +21,7 @@ void AlpEventLatch::startPersistence(uint32_t nowMs) {
 }
 
 bool AlpEventLatch::shouldShowPersisted(uint32_t nowMs, uint32_t windowMs) const {
-    return latched_.active &&
-           persisting_ &&
-           windowMs > 0 &&
-           (nowMs - persistStartMs_) < windowMs;
+    return latched_.active && persisting_ && windowMs > 0 && (nowMs - persistStartMs_) < windowMs;
 }
 
 void AlpEventLatch::clearLatch() {

@@ -12,10 +12,9 @@ JsonObject ensureObject(JsonObject root, const char* key) {
     return obj;
 }
 
-}  // namespace
+} // namespace
 
-void appendStatusObservability(JsonObject root,
-                               const WifiStatusSnapshot& wifiSnapshot) {
+void appendStatusObservability(JsonObject root, const WifiStatusSnapshot& wifiSnapshot) {
     JsonObject wifi = ensureObject(root, "wifi");
     wifi["ap_last_transition_reason_code"] = wifiSnapshot.apLastTransitionReasonCode;
     wifi["ap_last_transition_reason"] = wifiSnapshot.apLastTransitionReason;
@@ -39,4 +38,4 @@ void appendStatusObservability(JsonObject root,
     autoStart["startSucceeded"] = wifiSnapshot.autoStart.startSucceeded;
 }
 
-}  // namespace StatusObservabilityPayload
+} // namespace StatusObservabilityPayload

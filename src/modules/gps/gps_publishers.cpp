@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 GpsTimePublisher gpsTimePublisher;
-GpsGeoPublisher  gpsGeoPublisher;
+GpsGeoPublisher gpsGeoPublisher;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GpsTimePublisher locking
@@ -13,7 +13,8 @@ GpsGeoPublisher  gpsGeoPublisher;
 
 void GpsTimePublisher::lock() const {
 #ifdef UNIT_TEST
-    while (lockFlag_.test_and_set(std::memory_order_acquire)) {}
+    while (lockFlag_.test_and_set(std::memory_order_acquire)) {
+    }
 #else
     portENTER_CRITICAL(&lockMux_);
 #endif
@@ -68,7 +69,8 @@ bool GpsTimePublisher::readUtc(uint32_t nowMs, uint64_t& utcEpochMsOut) const {
 
 void GpsGeoPublisher::lock() const {
 #ifdef UNIT_TEST
-    while (lockFlag_.test_and_set(std::memory_order_acquire)) {}
+    while (lockFlag_.test_and_set(std::memory_order_acquire)) {
+    }
 #else
     portENTER_CRITICAL(&lockMux_);
 #endif

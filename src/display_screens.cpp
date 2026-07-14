@@ -31,7 +31,7 @@ using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
 void V1Display::showDisconnected() {
     drawBaseFrame();
-    drawStatusText("Disconnected", 0xF800);  // Red
+    drawStatusText("Disconnected", 0xF800); // Red
     drawWiFiIndicator();
     drawBatteryIndicator();
 }
@@ -51,7 +51,7 @@ void V1Display::showMaintenanceMode() {
 
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(3);
-    TFT_CALL(setTextColor)(0x07FF, PALETTE_BG);  // Cyan
+    TFT_CALL(setTextColor)(0x07FF, PALETTE_BG); // Cyan
     GFX_drawString(tft_, "MAINTENANCE", SCREEN_WIDTH / 2, 48);
     GFX_drawString(tft_, "MODE", SCREEN_WIDTH / 2, 82);
 
@@ -68,10 +68,7 @@ void V1Display::showMaintenanceMode() {
 
     lastState_ = DisplayState();
     if (currentScreen_ != ScreenMode::Maintenance) {
-        perfRecordDisplayScreenTransition(
-            perfScreenForMode(currentScreen_),
-            PerfDisplayScreen::Unknown,
-            millis());
+        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Unknown, millis());
     }
     currentScreen_ = ScreenMode::Maintenance;
     lastRestingProfileSlot_ = -1;
@@ -155,14 +152,11 @@ void V1Display::showResting(bool forceRedraw) {
         // Log screen mode transition for debugging display refresh issues
         if (currentScreen_ != ScreenMode::Resting) {
             DISPLAY_LOG("[DISP] Screen mode: %d -> Resting (showResting)\n", (int)currentScreen_);
-            perfRecordDisplayScreenTransition(
-                perfScreenForMode(currentScreen_),
-                PerfDisplayScreen::Resting,
-                millis());
+            perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Resting, millis());
         }
         currentScreen_ = ScreenMode::Resting;
 
-    DISPLAY_FLUSH();
+        DISPLAY_FLUSH();
     } else if (profileChanged) {
         perfRecordDisplayRenderPath(restoreRender ? PerfDisplayRenderPath::Restore
                                                   : PerfDisplayRenderPath::RestingIncremental);
@@ -179,14 +173,13 @@ void V1Display::showResting(bool forceRedraw) {
         // panel stale until the next full flush (Valentine's Law: bounded
         // drift — the panel must not stay stale across frames).
         if (!drawnRegion_.empty()) {
-            flushRegion(drawnRegion_.x(), drawnRegion_.y(),
-                        drawnRegion_.w(), drawnRegion_.h());
+            flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
             drawnRegion_.reset();
         }
     }
 
     // Reset lastState_ so next update() detects changes from this "resting" state
-    lastState_ = DisplayState();  // All defaults: bands=0, arrows=0, bars=0, hasMode=false, modeChar=0
+    lastState_ = DisplayState(); // All defaults: bands=0, arrows=0, bars=0, hasMode=false, modeChar=0
 
     if (recordRenderTiming) {
         perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
@@ -252,13 +245,13 @@ void V1Display::showScanning() {
         const int y = DisplayLayout::frequencyOfrY();
         const int maxWidth = DisplayLayout::frequencyOfrMaxWidth();
 
-        FT_BBox bbox = fontMgr_.segment7.calculateBoundingBox(
-            0, 0, fontSize, Align::Left, Layout::Horizontal, text);
+        FT_BBox bbox = fontMgr_.segment7.calculateBoundingBox(0, 0, fontSize, Align::Left, Layout::Horizontal, text);
         const int glyphXMin = static_cast<int>(bbox.xMin);
         const int glyphXMax = static_cast<int>(bbox.xMax);
         const int textWidth = glyphXMax - glyphXMin;
         int x = leftMargin + (maxWidth - textWidth) / 2;
-        if (x < leftMargin) x = leftMargin;
+        if (x < leftMargin)
+            x = leftMargin;
 
         constexpr int kClearPadPx = 12;
         int clearLeft = x + glyphXMin - kClearPadPx;
@@ -267,7 +260,8 @@ void V1Display::showScanning() {
         }
         int clearRight = x + glyphXMax + kClearPadPx;
         const int clearMaxX = DisplayLayout::kFrequencyZoneRect.x + DisplayLayout::kFrequencyZoneRect.w;
-        if (clearRight > clearMaxX) clearRight = clearMaxX;
+        if (clearRight > clearMaxX)
+            clearRight = clearMaxX;
         const int clearY = y - 8;
         int clearH = fontSize + 16;
         if (clearY + clearH > DisplayLayout::CONTENT_BOTTOM_Y) {
@@ -289,12 +283,13 @@ void V1Display::showScanning() {
         const float scale = DisplayLayout::FREQUENCY_FALLBACK_SCALE;
         SegMetrics m = segMetrics(scale);
         const int y = DisplayLayout::frequencyFallbackY(m.digitH);
-        const int width = measureSevenSegmentText(text, scale);  // Same geometry for 14-seg
+        const int width = measureSevenSegmentText(text, scale); // Same geometry for 14-seg
 
         const int leftMargin = DisplayLayout::FREQUENCY_FALLBACK_LEFT_MARGIN;
         const int maxWidth = DisplayLayout::frequencyFallbackMaxWidth();
         int x = leftMargin + (maxWidth - width) / 2;
-        if (x < leftMargin) x = leftMargin;
+        if (x < leftMargin)
+            x = leftMargin;
 
         FILL_RECT(x - 4, y - 4, width + 8, m.digitH + 8, PALETTE_BG);
         draw14SegmentText(text, x, y, scale, s.colorBandKa, PALETTE_BG);
@@ -306,10 +301,7 @@ void V1Display::showScanning() {
     DISPLAY_FLUSH();
 
     if (currentScreen_ != ScreenMode::Scanning) {
-        perfRecordDisplayScreenTransition(
-            perfScreenForMode(currentScreen_),
-            PerfDisplayScreen::Scanning,
-            millis());
+        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Scanning, millis());
     }
     currentScreen_ = ScreenMode::Scanning;
     lastRestingProfileSlot_ = -1;
@@ -333,20 +325,16 @@ void V1Display::showBootSplash() {
     // Boot-path only — the PSRAM buffer is freed before backlight enable.
     const unsigned long logoStartMs = millis();
     constexpr size_t kLogoPixelCount =
-        static_cast<size_t>(V1SIMPLE_LOGO_WIDTH) *
-        static_cast<size_t>(V1SIMPLE_LOGO_HEIGHT);
+        static_cast<size_t>(V1SIMPLE_LOGO_WIDTH) * static_cast<size_t>(V1SIMPLE_LOGO_HEIGHT);
     constexpr size_t kLogoBytes = kLogoPixelCount * sizeof(uint16_t);
-    uint16_t* logoBuffer = static_cast<uint16_t*>(
-        heap_caps_malloc(kLogoBytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+    uint16_t* logoBuffer = static_cast<uint16_t*>(heap_caps_malloc(kLogoBytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     if (logoBuffer) {
         // Decode all rows into the contiguous buffer, then one blit.
         for (int sy = 0; sy < V1SIMPLE_LOGO_HEIGHT; sy++) {
-            decodeV1SimpleLogoRow(
-                static_cast<uint16_t>(sy),
-                logoBuffer + static_cast<size_t>(sy) * V1SIMPLE_LOGO_WIDTH);
+            decodeV1SimpleLogoRow(static_cast<uint16_t>(sy),
+                                  logoBuffer + static_cast<size_t>(sy) * V1SIMPLE_LOGO_WIDTH);
         }
-        TFT_CALL(draw16bitRGBBitmap)(
-            0, 0, logoBuffer, V1SIMPLE_LOGO_WIDTH, V1SIMPLE_LOGO_HEIGHT);
+        TFT_CALL(draw16bitRGBBitmap)(0, 0, logoBuffer, V1SIMPLE_LOGO_WIDTH, V1SIMPLE_LOGO_HEIGHT);
         heap_caps_free(logoBuffer);
     } else {
         // PSRAM allocation failed (shouldn't happen on this board, but keep
@@ -361,9 +349,9 @@ void V1Display::showBootSplash() {
     const unsigned long logoMs = millis() - logoStartMs;
 
     // Draw version number in bottom-right corner
-    GFX_setTextDatum(BR_DATUM);  // Bottom-right alignment
+    GFX_setTextDatum(BR_DATUM); // Bottom-right alignment
     TFT_CALL(setTextSize)(2);
-    TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG);  // Gray text (mid-gray RGB565)
+    TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Gray text (mid-gray RGB565)
     GFX_drawString(tft_, "v" FIRMWARE_VERSION, SCREEN_WIDTH - 8, SCREEN_HEIGHT - 6);
 
     // Flush canvas to display before enabling backlight
@@ -373,12 +361,9 @@ void V1Display::showBootSplash() {
 
     // Turn on backlight now that splash is drawn
     // Waveshare 3.49" has INVERTED backlight: 0=full on, 255=off
-    analogWrite(LCD_BL, 0);  // Full brightness (inverted)
+    analogWrite(LCD_BL, 0); // Full brightness (inverted)
     Serial.println("Backlight ON (post-splash, inverted)");
-    Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n",
-                  millis() - splashStartMs,
-                  logoMs,
-                  flushMs);
+    Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n", millis() - splashStartMs, logoMs, flushMs);
 }
 
 // ============================================================================
@@ -449,8 +434,7 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     persistedMode_ = false;
 
     const bool displaySpeedValid = speedValid && speedMph >= 0.0f;
-    const int roundedSpeedMph =
-        displaySpeedValid ? static_cast<int>(speedMph + 0.5f) : -1;
+    const int roundedSpeedMph = displaySpeedValid ? static_cast<int>(speedMph + 0.5f) : -1;
 
     // External status setters may have drawn into the shared canvas before the
     // pipeline arrives here. Preserve today's safe behavior: any pending draw
@@ -460,11 +444,8 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     drawnRegion_.reset();
     arrowVisibilityForceFullFlush_ = false;
 
-    if (currentScreen_ == ScreenMode::Stealth &&
-        !dirty_.resetTracking &&
-        !hadPendingExternalDraws &&
-        lastStealthPaletteRevision_ == paletteRevision_ &&
-        lastStealthSpeedValid_ == displaySpeedValid &&
+    if (currentScreen_ == ScreenMode::Stealth && !dirty_.resetTracking && !hadPendingExternalDraws &&
+        lastStealthPaletteRevision_ == paletteRevision_ && lastStealthSpeedValid_ == displaySpeedValid &&
         lastStealthRoundedMph_ == roundedSpeedMph) {
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
         return;

@@ -12,7 +12,6 @@
 #include <map>
 #include <vector>
 
-
 String WiFiManager::getAPIPAddress() const {
     if (isSetupModeActive()) {
         return WiFi.softAPIP().toString();
@@ -41,10 +40,11 @@ bool WiFiManager::startWifiScan() {
     }
 
     Serial.println("[WiFiClient] Starting async network scan...");
-    WiFi.scanDelete();  // Clear previous results
+    WiFi.scanDelete(); // Clear previous results
 
     // Start async scan (non-blocking)
-    int result = WiFi.scanNetworks(true, false, false, 300);  // async=true, show_hidden=false, passive=false, max_ms_per_chan=300
+    int result =
+        WiFi.scanNetworks(true, false, false, 300); // async=true, show_hidden=false, passive=false, max_ms_per_chan=300
     if (result == WIFI_SCAN_RUNNING) {
         wifiScanRunning_ = true;
         return true;
@@ -60,7 +60,7 @@ std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
     int16_t scanResult = WiFi.scanComplete();
     if (scanResult == WIFI_SCAN_RUNNING) {
         // Still scanning
-        return networks;  // Empty
+        return networks; // Empty
     }
 
     wifiScanRunning_ = false;
@@ -77,7 +77,8 @@ std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
 
     for (int i = 0; i < scanResult; i++) {
         String ssid = WiFi.SSID(i);
-        if (ssid.length() == 0) continue;  // Skip hidden networks
+        if (ssid.length() == 0)
+            continue; // Skip hidden networks
 
         int32_t rssi = WiFi.RSSI(i);
         uint8_t encType = WiFi.encryptionType(i);
@@ -94,10 +95,10 @@ std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
     }
 
     std::sort(networks.begin(), networks.end(), [](const ScannedNetwork& a, const ScannedNetwork& b) {
-        return a.rssi > b.rssi;  // Strongest first
+        return a.rssi > b.rssi; // Strongest first
     });
 
-    WiFi.scanDelete();  // Free memory
+    WiFi.scanDelete(); // Free memory
     return networks;
 }
 
@@ -128,8 +129,7 @@ int WiFiManager::selectSlotForNetworkConnect(const String& ssid) const {
 
     const V1Settings& settings = settingsManager.get();
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        if (settings.wifiStaSlots[i].isConfigured() &&
-            settings.wifiStaSlots[i].ssid == sanitizedSsid) {
+        if (settings.wifiStaSlots[i].isConfigured() && settings.wifiStaSlots[i].ssid == sanitizedSsid) {
             return static_cast<int>(i);
         }
     }
@@ -149,16 +149,14 @@ int WiFiManager::findConfiguredSlotBySsid(const String& ssid) const {
 
     const V1Settings& settings = settingsManager.get();
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        if (settings.wifiStaSlots[i].isConfigured() &&
-            settings.wifiStaSlots[i].ssid == sanitizedSsid) {
+        if (settings.wifiStaSlots[i].isConfigured() && settings.wifiStaSlots[i].ssid == sanitizedSsid) {
             return static_cast<int>(i);
         }
     }
     return -1;
 }
 
-bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request,
-                                     size_t& indexOut) {
+bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut) {
     const String ssid = sanitizeWifiClientSsidValue(request.ssid);
     if (ssid.length() == 0) {
         return false;
@@ -183,13 +181,11 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
 
     const size_t index = static_cast<size_t>(selectedIndex);
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
-    const String password = request.hasPassword
-        ? request.password
-        : settingsManager.getWifiStaSlotPassword(index);
+    const String password = request.hasPassword ? request.password : settingsManager.getWifiStaSlotPassword(index);
     const String label = request.hasLabel ? request.label : currentSlot.label;
     const uint8_t priority = request.hasPriority
-        ? request.priority
-        : (currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(index));
+                                 ? request.priority
+                                 : (currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(index));
 
     settingsManager.setWifiStaSlotCredentials(index, ssid, password, label, priority);
     indexOut = index;
@@ -222,17 +218,11 @@ bool WiFiManager::testSavedNetwork(size_t index) {
 
     settingsManager.setWifiClientEnabled(true);
     resetReconnectFailures();
-    return connectToNetwork(slot.ssid,
-                            settingsManager.getWifiStaSlotPassword(index),
-                            false,
-                            static_cast<int>(index));
+    return connectToNetwork(slot.ssid, settingsManager.getWifiStaSlotPassword(index), false, static_cast<int>(index));
 }
 
-bool WiFiManager::connectToNetwork(const String& ssid,
-                                   const String& password,
-                                   bool persistCredentialsOnSuccess,
-                                   int persistSlotIndex,
-                                   bool maintenanceAutoConnect) {
+bool WiFiManager::connectToNetwork(const String& ssid, const String& password, bool persistCredentialsOnSuccess,
+                                   int persistSlotIndex, bool maintenanceAutoConnect) {
     if (ssid.length() == 0) {
         Serial.println("[WiFiClient] Cannot connect: empty SSID");
         return false;
@@ -290,7 +280,7 @@ void WiFiManager::disconnectFromNetwork() {
     wifiConnectPhase_ = WifiConnectPhase::IDLE;
     wifiConnectPhaseStartMs_ = 0;
     wifiConnectStartMs_ = 0;
-    WiFi.disconnect(false);  // Don't turn off station mode
+    WiFi.disconnect(false); // Don't turn off station mode
     wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
     currentConnectedSlotIndex_ = -1;
     pendingConnectSSID_ = "";
@@ -322,68 +312,68 @@ void WiFiManager::processWifiClientConnectPhase() {
 
     unsigned long now = millis();
     switch (wifiConnectPhase_) {
-        case WifiConnectPhase::PREPARE_OFF:
-            if (isSetupModeActive()) {
-                // Keep AP online and use a direct STA begin path.
-                // Repeated STA resets in AP+STA mode have proven brittle on some routers.
-                Serial.println("[WiFiClient] Preserving AP, preparing STA connect...");
-                if (WiFi.getMode() != WIFI_AP_STA) {
-                    WiFi.mode(WIFI_AP_STA);
-                    wifiConnectPhaseStartMs_ = now;
-                    wifiConnectPhase_ = WifiConnectPhase::WAIT_AP_STA;
-                } else {
-                    wifiConnectPhase_ = WifiConnectPhase::BEGIN_CONNECT;
-                }
-            } else {
-                if (WiFi.getMode() != WIFI_OFF) {
-                    Serial.println("[WiFiClient] Cleaning up WiFi before reconnect...");
-                    WiFi.disconnect(false, false);  // Graceful release without credential erase
-                    WiFi.mode(WIFI_OFF);          // Fully shut down WiFi driver
-                }
+    case WifiConnectPhase::PREPARE_OFF:
+        if (isSetupModeActive()) {
+            // Keep AP online and use a direct STA begin path.
+            // Repeated STA resets in AP+STA mode have proven brittle on some routers.
+            Serial.println("[WiFiClient] Preserving AP, preparing STA connect...");
+            if (WiFi.getMode() != WIFI_AP_STA) {
+                WiFi.mode(WIFI_AP_STA);
                 wifiConnectPhaseStartMs_ = now;
-                wifiConnectPhase_ = WifiConnectPhase::WAIT_OFF;
-            }
-            break;
-
-        case WifiConnectPhase::WAIT_OFF:
-            if (now - wifiConnectPhaseStartMs_ >= WIFI_MODE_SWITCH_SETTLE_MS) {
-                wifiConnectPhase_ = WifiConnectPhase::ENABLE_AP_STA;
-            }
-            break;
-
-        case WifiConnectPhase::ENABLE_AP_STA:
-            Serial.println("[WiFiClient] Initializing WiFi in AP+STA mode");
-            WiFi.mode(WIFI_AP_STA);
-            wifiConnectPhaseStartMs_ = now;
-            wifiConnectPhase_ = WifiConnectPhase::WAIT_AP_STA;
-            break;
-
-        case WifiConnectPhase::WAIT_AP_STA:
-            if (now - wifiConnectPhaseStartMs_ >= WIFI_MODE_SWITCH_SETTLE_MS) {
+                wifiConnectPhase_ = WifiConnectPhase::WAIT_AP_STA;
+            } else {
                 wifiConnectPhase_ = WifiConnectPhase::BEGIN_CONNECT;
             }
-            break;
-
-        case WifiConnectPhase::BEGIN_CONNECT:
-            if (pendingConnectSSID_.length() == 0) {
-                wifiConnectPhase_ = WifiConnectPhase::IDLE;
-                wifiClientState_ = WIFI_CLIENT_FAILED;
-                pendingConnectSlotIndex_ = -1;
-                currentConnectedSlotIndex_ = -1;
-                break;
+        } else {
+            if (WiFi.getMode() != WIFI_OFF) {
+                Serial.println("[WiFiClient] Cleaning up WiFi before reconnect...");
+                WiFi.disconnect(false, false); // Graceful release without credential erase
+                WiFi.mode(WIFI_OFF);           // Fully shut down WiFi driver
             }
-            // Improve coexistence stability while connecting alongside BLE links.
-            WiFi.setSleep(false);
-            WiFi.setAutoReconnect(true);
-            Serial.printf("[WiFiClient] Connecting to: %s\n", pendingConnectSSID_.c_str());
-            WiFi.begin(pendingConnectSSID_.c_str(), pendingConnectPassword_.c_str());
-            wifiConnectStartMs_ = now;
-            wifiConnectPhase_ = WifiConnectPhase::IDLE;
-            break;
+            wifiConnectPhaseStartMs_ = now;
+            wifiConnectPhase_ = WifiConnectPhase::WAIT_OFF;
+        }
+        break;
 
-        case WifiConnectPhase::IDLE:
-        default:
+    case WifiConnectPhase::WAIT_OFF:
+        if (now - wifiConnectPhaseStartMs_ >= WIFI_MODE_SWITCH_SETTLE_MS) {
+            wifiConnectPhase_ = WifiConnectPhase::ENABLE_AP_STA;
+        }
+        break;
+
+    case WifiConnectPhase::ENABLE_AP_STA:
+        Serial.println("[WiFiClient] Initializing WiFi in AP+STA mode");
+        WiFi.mode(WIFI_AP_STA);
+        wifiConnectPhaseStartMs_ = now;
+        wifiConnectPhase_ = WifiConnectPhase::WAIT_AP_STA;
+        break;
+
+    case WifiConnectPhase::WAIT_AP_STA:
+        if (now - wifiConnectPhaseStartMs_ >= WIFI_MODE_SWITCH_SETTLE_MS) {
+            wifiConnectPhase_ = WifiConnectPhase::BEGIN_CONNECT;
+        }
+        break;
+
+    case WifiConnectPhase::BEGIN_CONNECT:
+        if (pendingConnectSSID_.length() == 0) {
+            wifiConnectPhase_ = WifiConnectPhase::IDLE;
+            wifiClientState_ = WIFI_CLIENT_FAILED;
+            pendingConnectSlotIndex_ = -1;
+            currentConnectedSlotIndex_ = -1;
             break;
+        }
+        // Improve coexistence stability while connecting alongside BLE links.
+        WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
+        Serial.printf("[WiFiClient] Connecting to: %s\n", pendingConnectSSID_.c_str());
+        WiFi.begin(pendingConnectSSID_.c_str(), pendingConnectPassword_.c_str());
+        wifiConnectStartMs_ = now;
+        wifiConnectPhase_ = WifiConnectPhase::IDLE;
+        break;
+
+    case WifiConnectPhase::IDLE:
+    default:
+        break;
     }
 }
 
@@ -451,9 +441,7 @@ void WiFiManager::processMaintenanceAutoConnect() {
 
     const V1Settings& settings = settingsManager.get();
     size_t ordered[kWifiStaSlotCount] = {};
-    const size_t orderedCount = WifiStaSlotPolicy::orderConfiguredSlots(settings,
-                                                                        ordered,
-                                                                        kWifiStaSlotCount);
+    const size_t orderedCount = WifiStaSlotPolicy::orderConfiguredSlots(settings, ordered, kWifiStaSlotCount);
     maintenanceAutoConnectSlotCount_ = 0;
     maintenanceAutoConnectSlotCursor_ = 0;
 
@@ -503,13 +491,9 @@ bool WiFiManager::queueNextMaintenanceAutoConnectSlot() {
         }
 
         Serial.printf("[WiFiClient] Maintenance STA auto-connect trying slot %u SSID '%s'\n",
-                      static_cast<unsigned>(slotIndex),
-                      slot.ssid.c_str());
-        if (connectToNetwork(slot.ssid,
-                             settingsManager.getWifiStaSlotPassword(slotIndex),
-                             false,
-                             static_cast<int>(slotIndex),
-                             true)) {
+                      static_cast<unsigned>(slotIndex), slot.ssid.c_str());
+        if (connectToNetwork(slot.ssid, settingsManager.getWifiStaSlotPassword(slotIndex), false,
+                             static_cast<int>(slotIndex), true)) {
             return true;
         }
 
@@ -531,9 +515,7 @@ void WiFiManager::finishMaintenanceAutoConnect(const char* reason, bool dropStaR
     maintenanceAutoConnectSlotCount_ = 0;
     maintenanceAutoConnectSlotCursor_ = 0;
 
-    if (dropStaRadio &&
-        isSetupModeActive() &&
-        wifiClientState_ != WIFI_CLIENT_CONNECTED &&
+    if (dropStaRadio && isSetupModeActive() && wifiClientState_ != WIFI_CLIENT_CONNECTED &&
         wifiClientState_ != WIFI_CLIENT_CONNECTING) {
         const wifi_mode_t mode = WiFi.getMode();
         if (mode == WIFI_AP_STA || mode == WIFI_STA) {
@@ -571,191 +553,185 @@ void WiFiManager::checkWifiClientStatus() {
     wl_status_t status = WiFi.status();
 
     switch (wifiClientState_) {
-        case WIFI_CLIENT_CONNECTING: {
-            // Non-blocking mode transition is still in progress.
-            if (wifiConnectPhase_ != WifiConnectPhase::IDLE || wifiConnectStartMs_ == 0) {
-                break;
+    case WIFI_CLIENT_CONNECTING: {
+        // Non-blocking mode transition is still in progress.
+        if (wifiConnectPhase_ != WifiConnectPhase::IDLE || wifiConnectStartMs_ == 0) {
+            break;
+        }
+
+        if (status == WL_CONNECTED) {
+            wifiClientState_ = WIFI_CLIENT_CONNECTED;
+            wifiConnectStartMs_ = 0;
+            Serial.printf("[WiFiClient] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            if (isSetupModeActive()) {
+                // Arm AP idle timer from STA connect so setup UI clients have
+                // a full grace window before AP retirement.
+                lastClientSeenMs_ = millis();
+                Serial.println("[WiFiClient] STA connected; AP idle-retire timer armed");
             }
 
-            if (status == WL_CONNECTED) {
-                wifiClientState_ = WIFI_CLIENT_CONNECTED;
-                wifiConnectStartMs_ = 0;
-                Serial.printf("[WiFiClient] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-                if (isSetupModeActive()) {
-                    // Arm AP idle timer from STA connect so setup UI clients have
-                    // a full grace window before AP retirement.
-                    lastClientSeenMs_ = millis();
-                    Serial.println("[WiFiClient] STA connected; AP idle-retire timer armed");
-                }
+            // Reset failure counter on successful connection
+            wifiReconnectFailures_ = 0;
 
-                // Reset failure counter on successful connection
-                wifiReconnectFailures_ = 0;
-
-                // Save credentials on successful connection
-                if (pendingConnectSSID_.length() > 0) {
-                    const bool hasPendingSlot =
-                        pendingConnectSlotIndex_ >= 0 &&
-                        static_cast<size_t>(pendingConnectSlotIndex_) < kWifiStaSlotCount;
-                    if (pendingConnectPersistCredentials_) {
-                        if (hasPendingSlot) {
-                            const size_t slotIndex = static_cast<size_t>(pendingConnectSlotIndex_);
-                            const V1Settings& currentSettings = settingsManager.get();
-                            const WifiStaSlot& currentSlot = currentSettings.wifiStaSlots[slotIndex];
-                            const String label = currentSlot.label;
-                            const uint8_t priority = currentSlot.isConfigured()
-                                ? currentSlot.priority
-                                : static_cast<uint8_t>(slotIndex);
-                            settingsManager.setWifiStaSlotCredentials(slotIndex,
-                                                                       pendingConnectSSID_,
-                                                                       pendingConnectPassword_,
-                                                                       label,
-                                                                       priority);
-                        } else {
-                            const V1Settings& currentSettings = settingsManager.get();
-                            const bool ssidChanged = (pendingConnectSSID_ != currentSettings.wifiClientSSID);
-                            const bool passwordChanged =
-                                (pendingConnectPassword_ != settingsManager.getWifiClientPassword());
-                            if (ssidChanged || passwordChanged) {
-                                settingsManager.setWifiClientCredentials(pendingConnectSSID_, pendingConnectPassword_);
-                            } else {
-                                Serial.println("[WiFiClient] Connected with unchanged credentials; skipping re-save");
-                            }
-                        }
-                    } else {
-                        Serial.println("[WiFiClient] Connected via auto-reconnect; skipping credential re-save");
-                    }
+            // Save credentials on successful connection
+            if (pendingConnectSSID_.length() > 0) {
+                const bool hasPendingSlot =
+                    pendingConnectSlotIndex_ >= 0 && static_cast<size_t>(pendingConnectSlotIndex_) < kWifiStaSlotCount;
+                if (pendingConnectPersistCredentials_) {
                     if (hasPendingSlot) {
-                        currentConnectedSlotIndex_ = pendingConnectSlotIndex_;
-                        settingsManager.markWifiStaSlotConnected(static_cast<size_t>(pendingConnectSlotIndex_),
-                                                                 static_cast<uint32_t>(millis() / 1000UL));
+                        const size_t slotIndex = static_cast<size_t>(pendingConnectSlotIndex_);
+                        const V1Settings& currentSettings = settingsManager.get();
+                        const WifiStaSlot& currentSlot = currentSettings.wifiStaSlots[slotIndex];
+                        const String label = currentSlot.label;
+                        const uint8_t priority =
+                            currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(slotIndex);
+                        settingsManager.setWifiStaSlotCredentials(slotIndex, pendingConnectSSID_,
+                                                                  pendingConnectPassword_, label, priority);
                     } else {
-                        currentConnectedSlotIndex_ = findConfiguredSlotBySsid(pendingConnectSSID_);
+                        const V1Settings& currentSettings = settingsManager.get();
+                        const bool ssidChanged = (pendingConnectSSID_ != currentSettings.wifiClientSSID);
+                        const bool passwordChanged =
+                            (pendingConnectPassword_ != settingsManager.getWifiClientPassword());
+                        if (ssidChanged || passwordChanged) {
+                            settingsManager.setWifiClientCredentials(pendingConnectSSID_, pendingConnectPassword_);
+                        } else {
+                            Serial.println("[WiFiClient] Connected with unchanged credentials; skipping re-save");
+                        }
                     }
-                    if (maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING) {
-                        finishMaintenanceAutoConnect("connected", false);
-                    }
-                    pendingConnectSSID_ = "";
-                    pendingConnectPassword_ = "";
-                    pendingConnectPersistCredentials_ = true;
-                    pendingConnectSlotIndex_ = -1;
+                } else {
+                    Serial.println("[WiFiClient] Connected via auto-reconnect; skipping credential re-save");
                 }
-            } else if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
-                const bool wasMaintenanceAutoConnect =
-                    maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
-                wifiClientState_ = WIFI_CLIENT_FAILED;
-                currentConnectedSlotIndex_ = -1;
-                Serial.printf("[WiFiClient] Connection failed: %d\n", status);
-                wifiConnectStartMs_ = 0;
-
+                if (hasPendingSlot) {
+                    currentConnectedSlotIndex_ = pendingConnectSlotIndex_;
+                    settingsManager.markWifiStaSlotConnected(static_cast<size_t>(pendingConnectSlotIndex_),
+                                                             static_cast<uint32_t>(millis() / 1000UL));
+                } else {
+                    currentConnectedSlotIndex_ = findConfiguredSlotBySsid(pendingConnectSSID_);
+                }
+                if (maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING) {
+                    finishMaintenanceAutoConnect("connected", false);
+                }
                 pendingConnectSSID_ = "";
                 pendingConnectPassword_ = "";
                 pendingConnectPersistCredentials_ = true;
                 pendingConnectSlotIndex_ = -1;
-                if (wasMaintenanceAutoConnect) {
-                    if (queueNextMaintenanceAutoConnectSlot()) {
-                        break;
-                    }
-                    finishMaintenanceAutoConnect("all_candidates_failed", true);
-                }
-            } else if (millis() - wifiConnectStartMs_ > WIFI_CONNECT_TIMEOUT_MS) {
-                const bool wasMaintenanceAutoConnect =
-                    maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
-                wifiClientState_ = WIFI_CLIENT_FAILED;
-                currentConnectedSlotIndex_ = -1;
-                Serial.println("[WiFiClient] Connection timeout");
-                WiFi.disconnect(false);
-                wifiConnectStartMs_ = 0;
-
-                pendingConnectSSID_ = "";
-                pendingConnectPassword_ = "";
-                pendingConnectPersistCredentials_ = true;
-                pendingConnectSlotIndex_ = -1;
-                if (wasMaintenanceAutoConnect) {
-                    if (queueNextMaintenanceAutoConnectSlot()) {
-                        break;
-                    }
-                    finishMaintenanceAutoConnect("all_candidates_timeout", true);
-                }
             }
-            break;
-        }
+        } else if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
+            const bool wasMaintenanceAutoConnect =
+                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+            wifiClientState_ = WIFI_CLIENT_FAILED;
+            currentConnectedSlotIndex_ = -1;
+            Serial.printf("[WiFiClient] Connection failed: %d\n", status);
+            wifiConnectStartMs_ = 0;
 
-        case WIFI_CLIENT_CONNECTED: {
-            if (status != WL_CONNECTED) {
-                wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-                currentConnectedSlotIndex_ = -1;
-                Serial.println("[WiFiClient] Lost connection");
-
-            }
-            break;
-        }
-
-        case WIFI_CLIENT_DISCONNECTED:
-        case WIFI_CLIENT_FAILED: {
-            if (lowDmaCooldownRemainingMs() > 0) {
-                break;
-            }
-
-            if (maintenanceBootMode_) {
-                break;
-            }
-
-            // Defer background STA reconnect attempts during early boot until V1 is
-            // connected. This protects BLE acquisition from AP+STA mode churn.
-            bool v1Connected = isV1Connected_ ? isV1Connected_(isV1ConnectedCtx_) : bleClient.isConnected();
-            bool withinBootGrace = (setupModeStartTime_ != 0) &&
-                                   ((millis() - setupModeStartTime_) < WIFI_RECONNECT_DEFER_NO_V1_MS);
-            if (!v1Connected && withinBootGrace) {
-                if (!wifiReconnectDeferredLogged_) {
-                    Serial.printf("[WiFiClient] Auto-reconnect deferred (waiting for V1 or %lu ms grace)\n",
-                                  (unsigned long)WIFI_RECONNECT_DEFER_NO_V1_MS);
-                    wifiReconnectDeferredLogged_ = true;
-                }
-                break;
-            }
-            if (wifiReconnectDeferredLogged_) {
-                Serial.println("[WiFiClient] Auto-reconnect resumed");
-                wifiReconnectDeferredLogged_ = false;
-            }
-
-            // Auto-reconnect if we have saved credentials (with failure limit)
-            const V1Settings& settings = settingsManager.get();
-            if (settings.wifiClientEnabled && settings.wifiClientSSID.length() > 0) {
-                // When WiFi was auto-started and no AP client has connected,
-                // skip STA reconnect — the initial WiFi.begin() in startSetupMode()
-                // already tried, and the no-client shutdown will reclaim resources.
-                if (wasAutoStarted_ && cachedApStaCount_ == 0 && lastUiActivityMs_ == 0) {
+            pendingConnectSSID_ = "";
+            pendingConnectPassword_ = "";
+            pendingConnectPersistCredentials_ = true;
+            pendingConnectSlotIndex_ = -1;
+            if (wasMaintenanceAutoConnect) {
+                if (queueNextMaintenanceAutoConnectSlot()) {
                     break;
                 }
-                // Check if we've exceeded max failures - prevents memory exhaustion
+                finishMaintenanceAutoConnect("all_candidates_failed", true);
+            }
+        } else if (millis() - wifiConnectStartMs_ > WIFI_CONNECT_TIMEOUT_MS) {
+            const bool wasMaintenanceAutoConnect =
+                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+            wifiClientState_ = WIFI_CLIENT_FAILED;
+            currentConnectedSlotIndex_ = -1;
+            Serial.println("[WiFiClient] Connection timeout");
+            WiFi.disconnect(false);
+            wifiConnectStartMs_ = 0;
+
+            pendingConnectSSID_ = "";
+            pendingConnectPassword_ = "";
+            pendingConnectPersistCredentials_ = true;
+            pendingConnectSlotIndex_ = -1;
+            if (wasMaintenanceAutoConnect) {
+                if (queueNextMaintenanceAutoConnectSlot()) {
+                    break;
+                }
+                finishMaintenanceAutoConnect("all_candidates_timeout", true);
+            }
+        }
+        break;
+    }
+
+    case WIFI_CLIENT_CONNECTED: {
+        if (status != WL_CONNECTED) {
+            wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            currentConnectedSlotIndex_ = -1;
+            Serial.println("[WiFiClient] Lost connection");
+        }
+        break;
+    }
+
+    case WIFI_CLIENT_DISCONNECTED:
+    case WIFI_CLIENT_FAILED: {
+        if (lowDmaCooldownRemainingMs() > 0) {
+            break;
+        }
+
+        if (maintenanceBootMode_) {
+            break;
+        }
+
+        // Defer background STA reconnect attempts during early boot until V1 is
+        // connected. This protects BLE acquisition from AP+STA mode churn.
+        bool v1Connected = isV1Connected_ ? isV1Connected_(isV1ConnectedCtx_) : bleClient.isConnected();
+        bool withinBootGrace =
+            (setupModeStartTime_ != 0) && ((millis() - setupModeStartTime_) < WIFI_RECONNECT_DEFER_NO_V1_MS);
+        if (!v1Connected && withinBootGrace) {
+            if (!wifiReconnectDeferredLogged_) {
+                Serial.printf("[WiFiClient] Auto-reconnect deferred (waiting for V1 or %lu ms grace)\n",
+                              (unsigned long)WIFI_RECONNECT_DEFER_NO_V1_MS);
+                wifiReconnectDeferredLogged_ = true;
+            }
+            break;
+        }
+        if (wifiReconnectDeferredLogged_) {
+            Serial.println("[WiFiClient] Auto-reconnect resumed");
+            wifiReconnectDeferredLogged_ = false;
+        }
+
+        // Auto-reconnect if we have saved credentials (with failure limit)
+        const V1Settings& settings = settingsManager.get();
+        if (settings.wifiClientEnabled && settings.wifiClientSSID.length() > 0) {
+            // When WiFi was auto-started and no AP client has connected,
+            // skip STA reconnect — the initial WiFi.begin() in startSetupMode()
+            // already tried, and the no-client shutdown will reclaim resources.
+            if (wasAutoStarted_ && cachedApStaCount_ == 0 && lastUiActivityMs_ == 0) {
+                break;
+            }
+            // Check if we've exceeded max failures - prevents memory exhaustion
+            if (wifiReconnectFailures_ >= WIFI_MAX_RECONNECT_FAILURES) {
+                // Already gave up - don't log spam, just stay in failed state
+                break;
+            }
+
+            // Only try auto-reconnect every 30 seconds (first attempt is immediate).
+            unsigned long nowMs = millis();
+            if (lastReconnectAttemptMs_ == 0 || (nowMs - lastReconnectAttemptMs_) > WIFI_RECONNECT_INTERVAL_MS) {
+                String savedPassword = settingsManager.getWifiClientPassword();
+                lastReconnectAttemptMs_ = nowMs;
+                wifiReconnectFailures_++;
+
                 if (wifiReconnectFailures_ >= WIFI_MAX_RECONNECT_FAILURES) {
-                    // Already gave up - don't log spam, just stay in failed state
+                    Serial.printf("[WiFiClient] Giving up after %d failed attempts. Use BOOT button to retry.\n",
+                                  wifiReconnectFailures_);
+                    // Stay in FAILED state, user must toggle WiFi to retry
                     break;
                 }
 
-                // Only try auto-reconnect every 30 seconds (first attempt is immediate).
-                unsigned long nowMs = millis();
-                if (lastReconnectAttemptMs_ == 0 || (nowMs - lastReconnectAttemptMs_) > WIFI_RECONNECT_INTERVAL_MS) {
-                    String savedPassword = settingsManager.getWifiClientPassword();
-                    lastReconnectAttemptMs_ = nowMs;
-                    wifiReconnectFailures_++;
-
-                    if (wifiReconnectFailures_ >= WIFI_MAX_RECONNECT_FAILURES) {
-                        Serial.printf("[WiFiClient] Giving up after %d failed attempts. Use BOOT button to retry.\n",
-                                      wifiReconnectFailures_);
-                        // Stay in FAILED state, user must toggle WiFi to retry
-                        break;
-                    }
-
-                    Serial.printf("[WiFiClient] Auto-reconnect attempt %d/%d...\n",
-                                  wifiReconnectFailures_, WIFI_MAX_RECONNECT_FAILURES);
-                    connectToNetwork(settings.wifiClientSSID, savedPassword, false);
-                }
+                Serial.printf("[WiFiClient] Auto-reconnect attempt %d/%d...\n", wifiReconnectFailures_,
+                              WIFI_MAX_RECONNECT_FAILURES);
+                connectToNetwork(settings.wifiClientSSID, savedPassword, false);
             }
-            break;
         }
+        break;
+    }
 
-        default:
-            break;
+    default:
+        break;
     }
 }

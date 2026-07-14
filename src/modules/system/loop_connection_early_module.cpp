@@ -7,14 +7,9 @@ void LoopConnectionEarlyModule::begin(const Providers& hooks) {
 LoopConnectionEarlyResult LoopConnectionEarlyModule::process(const LoopConnectionEarlyContext& ctx) {
     ConnectionRuntimeSnapshot snapshot;
     if (providers.runConnectionRuntime) {
-        snapshot = providers.runConnectionRuntime(
-            providers.connectionRuntimeContext,
-            ctx.nowMs,
-            ctx.nowUs,
-            ctx.lastLoopUs,
-            ctx.bootSplashHoldActive,
-            ctx.bootSplashHoldUntilMs,
-            ctx.initialScanningScreenShown);
+        snapshot = providers.runConnectionRuntime(providers.connectionRuntimeContext, ctx.nowMs, ctx.nowUs,
+                                                  ctx.lastLoopUs, ctx.bootSplashHoldActive, ctx.bootSplashHoldUntilMs,
+                                                  ctx.initialScanningScreenShown);
     }
 
     LoopConnectionEarlyResult result;

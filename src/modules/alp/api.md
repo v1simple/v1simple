@@ -17,15 +17,15 @@ The module is the authoritative source for laser-direction and laser-gun classif
 ## Types
 
 ### `enum class AlpState : uint8_t`
-**Source:** `alp_runtime_module.h:54`.
+**Source:** `alp_runtime_module.h:54-61`.
 ALP runtime state (Idle / Warm-Up / Active / TearDown / NoiseWindow / etc. — see header for full enumeration).
 
 ### `enum class AlpGunType : uint8_t`
-**Source:** `alp_runtime_module.h:68`.
+**Source:** `alp_runtime_module.h:68-78`.
 Identified laser-gun model (Echo, Stealth, Photo, etc.). Forward-declared in `alp_laser_event.h:14` and `alp_sd_logger.h:27` to keep includes light.
 
 ### `enum class AlpLaserDirection : uint8_t`
-**Source:** `alp_runtime_module.h:83`.
+**Source:** `alp_runtime_module.h:83-87`.
 Laser direction (Front / Side / Rear / Unknown).
 
 ### `struct AlpLaserEvent`
@@ -70,11 +70,11 @@ UART pinning, framing, and timing constants are public `static constexpr` member
 
 #### `void begin(bool enabled, AlpSdLogger* sdLogger = nullptr)`
 Initializes the UART listener and state machine. SD logger is optional; pass `nullptr` to disable structured logging.
-**Source:** `alp_runtime_module.h:272`.
+**Source:** `alp_runtime_module.h:273`.
 
 #### `void setEventBus(SystemEventBus* bus)`
 Wires the system event bus for cross-module event publication (e.g. `ALP_STATE_CHANGED` for display wake).
-**Source:** `alp_runtime_module.h:277`.
+**Source:** `alp_runtime_module.h:278`.
 
 #### `void process(uint32_t nowMs)`
 Pump method. Call once per main-loop tick. Drains the UART buffer, advances the state machine, fires events.
@@ -184,19 +184,19 @@ Optional SD-card structured logger. Captures state transitions, heartbeats, fram
 
 #### `void begin(bool enabled, bool sdReady, GpsTimePublisher* timePub = nullptr)`
 Initializes the logger. Optional GPS time source for wall-clock timestamping; otherwise log uses `millis()`.
-**Source:** `alp_sd_logger.h:38`.
+**Source:** `alp_sd_logger.h:45`.
 
 #### `void setBootId(uint32_t id, uint32_t bootToken = 0)`
 Stamps log entries with a boot identifier so multi-boot logs can be partitioned.
-**Source:** `alp_sd_logger.h:43`.
+**Source:** `alp_sd_logger.h:50`.
 
 #### `void setEnabled(bool enabled)` / `bool isEnabled() const`
 Runtime enable/disable; effective only when `sdReady_` is also true.
-**Source:** `alp_sd_logger.h:115`, `alp_sd_logger.h:109`.
+**Source:** `alp_sd_logger.h:120`, `alp_sd_logger.h:109`.
 
 #### `void drainAndClose(uint32_t timeoutMs)`
 Flushes pending writes and closes the file. Called on power-off.
-**Source:** `alp_sd_logger.h:118`.
+**Source:** `alp_sd_logger.h:123`.
 
 ### Log methods
 
@@ -214,7 +214,7 @@ The class exposes typed log methods rather than a generic write — each capture
 
 #### `void testClearLastLine()`
 **Test only.** Resets internal de-duplication buffer for native tests.
-**Source:** `alp_sd_logger.h:122`.
+**Source:** `alp_sd_logger.h:127`.
 
 ## Namespace: `AlpApiService`
 

@@ -148,6 +148,80 @@ native-only suites in `platformio.ini` (`test_ignore`) because they depend on
 host mocks for Arduino, WebServer, Serial, and module shims; it covers only the
 device-focused suites plus a small set of self-contained shared suites.
 
+## Firmware C++ coverage lane (out-of-band)
+
+Coverage of the firmware C++ is measured **outside the PR gate**, by
+`.github/workflows/coverage.yml` on push to `main` and on `workflow_dispatch`.
+
+### What the number actually means — read before quoting it
+
+The native environments set `test_build_src = false`. A native suite compiles
+only the production units and mocks it `#include`s, not the whole firmware
+image. So this lane measures **coverage of the firmware code the native suites
+actually build** — the meaningful denominator for host-testable logic. It is
+**not** whole-firmware coverage and must never be reported as such.
+
+Device-only driver code (Arduino / NimBLE / display-driver bound paths) is
+outside this denominator and remains covered by the critical mutation gate and
+the device suites, exactly as before. Nothing about that changed.
+
+Every run writes an explicit measured-scope file list — the complete
+denominator, file by file — to
+`.artifacts/test_reports/coverage/coverage_scope.txt`, so the headline
+percentage can always be audited against the files it was computed over.
+
+### Pieces
+
+| Piece | Role |
+|---|---|
+| `[env:native-coverage]` in `platformio.ini` | Clone of `[env:native]` plus `--coverage -fprofile-abs-path -O0 -g` (compile) and `-lgcov` (link). PlatformIO routes `build_flags` through SCons `ParseFlags`, which sends bare flags to `CCFLAGS` but only `-l` flags to `LIBS`, so both halves must be named explicitly — dropping `-lgcov` breaks the link. |
+| `run_native_tests_serial.py --env native-coverage` | Runs each suite in its own `PLATFORMIO_BUILD_DIR`, so `.gcno`/`.gcda` stay isolated per suite and never collide. |
+| `run_firmware_coverage.py` | Runs the instrumented suites, aggregates with gcovr filtered to `src/` + `include/`, emits JSON + HTML + the scope list into `.artifacts/test_reports/coverage/`. `--write-baseline` refreshes the tracked baseline (full-suite runs only). |
+| `test/contracts/coverage_baseline.json` | Tracked ratchet baseline: overall line % plus per-file line %. |
+| `check_firmware_coverage.py` | The ratchet. Fails if overall — or any tracked file — drops more than `tolerance_pp` (0.5) below baseline. Prints a suggested baseline bump when coverage rises. |
+| `test_check_firmware_coverage.py` | Regression suite for the ratchet, including synthetic coverage-drop cases that prove the checker fails. |
+
+Excluded from the denominator: tests and mocks (`test/`), library deps
+(`.pio/`), and generated data headers (`v1simple_logo.h`, `warning_audio.h`,
+`Segment7Font.h`, `FreeSans*.h`) — megabytes of constant arrays that would
+dilute the ratchet into noise.
+
+### Why it is not in the PR gate
+
+Measured on one host, over all 149 native suites:
+
+| Lane | Wall clock |
+|---|---|
+| `run_native_tests_serial.py` (`native`, uninstrumented) | 170.7s |
+| `run_native_tests_serial.py --env native-coverage` (instrumented) | 206.6s (1.21x) |
+| gcovr aggregation over the 149 per-suite build dirs | ~24s |
+| **Coverage lane total** | **~231s** |
+
+The instrumented suite itself is only ~21% slower — but the gate does not
+*replace* its native run with the instrumented one, it would have to add a whole
+second run. That is roughly +231s on a lane that already runs ~531s against a
+1200s budget (`tools/ci_time_budgets.json`), and the budget is calibrated for
+cold GitHub runners, which are slower than the host these numbers came from.
+Spending ~40% of the remaining headroom on a signal that is currently advisory
+is not a good trade, so the PR gate does not carry coverage.
+
+### Running it locally
+
+```bash
+python3 scripts/run_firmware_coverage.py            # full suite -> JSON + HTML + scope list
+python3 scripts/check_firmware_coverage.py          # ratchet against the tracked baseline
+./scripts/ci-test.sh --with-coverage                # opt-in: gate, then the coverage lane
+```
+
+`./scripts/ci-test.sh` with no flag is unchanged and does not run coverage. With
+`--with-coverage` the coverage section runs *after* the budget check, so its wall
+clock is deliberately not charged against the 1200s `ci-test` budget — it is not
+part of the authoritative gate.
+
+The ratchet is wired as an **advisory** step (`run_advisory_step`) for now. It is
+promoted to a hard failure once the Track C file splits land and the baseline is
+refreshed against them.
+
 ## Bench hardware evidence (`./bench.sh`)
 
 `./bench.sh` is the only maintained top-level hardware evidence command. It

@@ -13,7 +13,6 @@ struct WifiStatusSnapshot {
     WifiAutoStartDecisionSnapshot autoStart;
 };
 
-void appendStatusObservability(JsonObject root,
-                               const WifiStatusSnapshot& wifi);
+void appendStatusObservability(JsonObject root, const WifiStatusSnapshot& wifi);
 
-}  // namespace StatusObservabilityPayload
+} // namespace StatusObservabilityPayload

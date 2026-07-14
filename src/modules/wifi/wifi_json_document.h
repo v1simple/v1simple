@@ -9,7 +9,7 @@ inline constexpr uint32_t kPsramCaps = MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM;
 inline constexpr uint32_t kInternalCaps = MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL;
 
 class Allocator : public ArduinoJson::Allocator {
-public:
+  public:
     static Allocator& instance() {
         static Allocator allocator;
         return allocator;
@@ -23,9 +23,7 @@ public:
         return heap_caps_malloc(size, kInternalCaps);
     }
 
-    void deallocate(void* ptr) override {
-        heap_caps_free(ptr);
-    }
+    void deallocate(void* ptr) override { heap_caps_free(ptr); }
 
     void* reallocate(void* ptr, size_t newSize) override {
         void* resized = heap_caps_realloc(ptr, newSize, kPsramCaps);
@@ -41,9 +39,8 @@ inline Allocator& allocator() {
 }
 
 class Document : public JsonDocument {
-public:
-    Document()
-        : JsonDocument(&Allocator::instance()) {}
+  public:
+    Document() : JsonDocument(&Allocator::instance()) {}
 };
 
-}  // namespace WifiJson
+} // namespace WifiJson

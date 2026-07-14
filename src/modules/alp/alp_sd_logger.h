@@ -35,7 +35,7 @@ enum class AlpGunType : uint8_t;
 class GpsTimePublisher;
 
 class AlpSdLogger {
-public:
+  public:
     /**
      * Initialize the logger.
      * @param enabled   true if alpSdLogEnabled setting is on
@@ -52,30 +52,25 @@ public:
     /**
      * Log a state transition.
      */
-    void logStateTransition(uint32_t nowMs, AlpState from, AlpState to,
-                            const char* direction = "UNKNOWN");
+    void logStateTransition(uint32_t nowMs, AlpState from, AlpState to, const char* direction = "UNKNOWN");
 
     /**
      * Log a heartbeat byte1 change (alert detection signal).
      */
-    void logHeartbeatByte1(uint32_t nowMs, uint8_t prevByte1, uint8_t newByte1,
-                           AlpState currentState,
+    void logHeartbeatByte1(uint32_t nowMs, uint8_t prevByte1, uint8_t newByte1, AlpState currentState,
                            const char* direction = "UNKNOWN");
 
     /**
      * Log a gun identification event.
      */
-    void logGunIdentified(uint32_t nowMs, AlpGunType gun, uint8_t byte0, uint8_t byte1or2,
-                          bool isDetectTrigger, AlpState currentState,
-                          const char* direction = "UNKNOWN");
+    void logGunIdentified(uint32_t nowMs, AlpGunType gun, uint8_t byte0, uint8_t byte1or2, bool isDetectTrigger,
+                          AlpState currentState, const char* direction = "UNKNOWN");
 
     /**
      * Log a raw frame (for high-value frames like alert triggers, gun candidates).
      */
-    void logFrame(uint32_t nowMs, const char* frameType,
-                  uint8_t b0, uint8_t b1, uint8_t b2, uint8_t cs,
-                  AlpState currentState,
-                  const char* direction = "UNKNOWN");
+    void logFrame(uint32_t nowMs, const char* frameType, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t cs,
+                  AlpState currentState, const char* direction = "UNKNOWN");
 
     /**
      * Log every B0 heartbeat frame (byte0, byte1, byte2) for trace-level
@@ -83,20 +78,18 @@ public:
      * regardless of whether byte1 changed — the cycling pattern within
      * 02/03/04 may encode PDC/DLI/LID state visible on the control pad LED.
      *
-    * Rate-limited: writes at most one row per HEARTBEAT_LOG_INTERVAL_MS.
-    * Targeted/resolve edges are still logged separately via HB_BYTE1 rows,
-    * so sampling here preserves the forensic timeline without writing every
-    * steady-state heartbeat.
+     * Rate-limited: writes at most one row per HEARTBEAT_LOG_INTERVAL_MS.
+     * Targeted/resolve edges are still logged separately via HB_BYTE1 rows,
+     * so sampling here preserves the forensic timeline without writing every
+     * steady-state heartbeat.
      */
-    void logHeartbeat(uint32_t nowMs, uint8_t b0, uint8_t b1, uint8_t b2,
-                      AlpState currentState,
+    void logHeartbeat(uint32_t nowMs, uint8_t b0, uint8_t b1, uint8_t b2, AlpState currentState,
                       const char* direction = "UNKNOWN");
 
     /**
      * Log a noise window entry/exit or teardown event.
      */
-    void logEvent(uint32_t nowMs, const char* event, AlpState currentState,
-                  uint32_t extraValue = 0,
+    void logEvent(uint32_t nowMs, const char* event, AlpState currentState, uint32_t extraValue = 0,
                   const char* direction = "UNKNOWN");
 
     /**
@@ -108,8 +101,7 @@ public:
      *   gun:        gun name (if known)
      *   extra:      freeform detail string (duration, trigger count, etc.)
      */
-    void logSessionEvent(uint32_t nowMs, const char* event, AlpState currentState,
-                         AlpGunType gun, const char* extra,
+    void logSessionEvent(uint32_t nowMs, const char* event, AlpState currentState, AlpGunType gun, const char* extra,
                          const char* direction = "UNKNOWN");
 
     /** Is logging active? */
@@ -135,7 +127,7 @@ public:
     void testClearLastLine() { lastLineBuf_[0] = '\0'; }
 #endif
 
-private:
+  private:
     bool appendLine(const char* line);
 #ifndef UNIT_TEST
     struct LogItem {

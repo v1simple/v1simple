@@ -30,7 +30,7 @@ struct DisplayOrchestrationParsedContext {
 
 struct DisplayOrchestrationParsedResult {
     bool runDisplayPipeline = false;
-    const char* reasonSkipped = nullptr;  // set when runDisplayPipeline == false
+    const char* reasonSkipped = nullptr; // set when runDisplayPipeline == false
 };
 
 struct DisplayOrchestrationRefreshContext {
@@ -51,25 +51,19 @@ struct DisplayOrchestrationRefreshResult {
 };
 
 class DisplayOrchestrationModule {
-public:
+  public:
     // Intentional wide wiring surface: this coordinator sits at the center of
     // display-pipeline handoff, so the cross-module dependencies stay explicit.
-    void begin(V1Display* displayPtr,
-               V1BLEClient* bleClient,
-               BleQueueModule* bleQueueModule,
-               DisplayPreviewModule* previewModule,
-               DisplayRestoreModule* restoreModule,
-               PacketParser* parserPtr,
-               SettingsManager* settings,
-               VolumeFadeModule* volumeFadeModule,
-               SpeedMuteModule* speedMuteModule,
+    void begin(V1Display* displayPtr, V1BLEClient* bleClient, BleQueueModule* bleQueueModule,
+               DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule, PacketParser* parserPtr,
+               SettingsManager* settings, VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
                QuietCoordinatorModule* quietCoordinator);
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     DisplayOrchestrationParsedResult processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
     DisplayOrchestrationRefreshResult processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx);
 
-private:
+  private:
     void syncQuietPresentation();
     void executeVolumeFade(uint32_t nowMs);
     bool processSpeedVolume(uint32_t nowMs);

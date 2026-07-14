@@ -17,7 +17,6 @@ enum class CycleState : uint8_t {
     TEARDOWN = 8,
 };
 
-
 struct CycleContext {
     uint32_t nowMs = 0;
     bool bootReady = false;
@@ -47,7 +46,7 @@ struct CycleContext {
 };
 
 class ConnectionCycleCoordinatorModule {
-public:
+  public:
     struct Providers {
         void (*stopObdScan)(void* ctx) = nullptr;
         void* stopObdScanContext = nullptr;
@@ -93,7 +92,7 @@ public:
     uint32_t totalWifiManualPhoneKicks() const { return totalWifiManualPhoneKicks_; }
     void recordObdRetryAttempt(uint32_t nowMs);
 
-private:
+  private:
     enum class TeardownStep : uint8_t {
         Idle = 0,
         WaitObdStop = 1,

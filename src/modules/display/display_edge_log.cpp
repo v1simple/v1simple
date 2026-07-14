@@ -23,13 +23,11 @@ void logEdgeLine(uint32_t nowMs, const char* event, const char* fmt, ...) {
     alpLogDisplayDecision(nowMs, event, detail);
 }
 
-}  // namespace
+} // namespace
 
 void logV1DisplaySetterEdge(uint32_t nowMs, const char* setter, const char* detail) {
     if (detail && detail[0]) {
-        logEdgeLine(nowMs, "DISP_V1_SETTER",
-                    "%s detail=%s",
-                    setter, detail);
+        logEdgeLine(nowMs, "DISP_V1_SETTER", "%s detail=%s", setter, detail);
     } else {
         logEdgeLine(nowMs, "DISP_V1_SETTER", "%s", setter);
     }

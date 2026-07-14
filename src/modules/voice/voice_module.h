@@ -14,8 +14,8 @@
  */
 
 #include <Arduino.h>
-#include "packet_parser.h"  // For AlertData, Band, Direction
-#include "audio_beep.h"     // For AlertBand, AlertDirection
+#include "packet_parser.h" // For AlertData, Band, Direction
+#include "audio_beep.h"    // For AlertBand, AlertDirection
 
 // Forward declarations
 class SettingsManager;
@@ -31,29 +31,28 @@ class V1BLEClient;
  */
 struct VoiceContext {
     // Alert data
-    const AlertData* alerts;          // Array of all current alerts
-    int alertCount;                   // Number of alerts in array
-    const AlertData* priority;        // Priority alert (can be nullptr)
+    const AlertData* alerts;   // Array of all current alerts
+    int alertCount;            // Number of alerts in array
+    const AlertData* priority; // Priority alert (can be nullptr)
 
     // V1 state
-    bool isMuted;                     // V1 mute LED is lit (UI/quiet-coordinator semantics)
-    bool isSoftMuted;                 // V1 audio is suppressed (aux0 bit 0 "isSoft").
-                                      // VR's spec-correct gate for "should I make noise?"
-                                      // (audit B2 — voice was previously gating on isMuted).
-    bool isProxyConnected;            // Phone app connected via BLE proxy
-    uint8_t mainVolume;               // Current V1 main volume (0-9)
+    bool isMuted;          // V1 mute LED is lit (UI/quiet-coordinator semantics)
+    bool isSoftMuted;      // V1 audio is suppressed (aux0 bit 0 "isSoft").
+                           // VR's spec-correct gate for "should I make noise?"
+                           // (audit B2 — voice was previously gating on isMuted).
+    bool isProxyConnected; // Phone app connected via BLE proxy
+    uint8_t mainVolume;    // Current V1 main volume (0-9)
 
     // Environment
-    bool isSuppressed;                // Priority alert is software-suppressed
+    bool isSuppressed; // Priority alert is software-suppressed
 
     // Time
-    unsigned long now;                // Current millis() timestamp
+    unsigned long now; // Current millis() timestamp
 
     // Default constructor
-    VoiceContext() :
-        alerts(nullptr), alertCount(0), priority(nullptr),
-        isMuted(false), isSoftMuted(false), isProxyConnected(false), mainVolume(0),
-        isSuppressed(false), now(0) {}
+    VoiceContext()
+        : alerts(nullptr), alertCount(0), priority(nullptr), isMuted(false), isSoftMuted(false),
+          isProxyConnected(false), mainVolume(0), isSuppressed(false), now(0) {}
 };
 
 /**
@@ -64,30 +63,30 @@ struct VoiceContext {
  */
 struct VoiceAction {
     enum class Type : uint8_t {
-        NONE = 0,              // No announcement needed
-        ANNOUNCE_PRIORITY,     // Full: band + freq + direction + bogeys
-        ANNOUNCE_DIRECTION,    // Direction only: dir + bogeys (for same alert)
-        ANNOUNCE_SECONDARY,    // Full announcement for secondary alert
-        ANNOUNCE_ESCALATION    // Threat escalation: band + freq + dir + breakdown
+        NONE = 0,           // No announcement needed
+        ANNOUNCE_PRIORITY,  // Full: band + freq + direction + bogeys
+        ANNOUNCE_DIRECTION, // Direction only: dir + bogeys (for same alert)
+        ANNOUNCE_SECONDARY, // Full announcement for secondary alert
+        ANNOUNCE_ESCALATION // Threat escalation: band + freq + dir + breakdown
     };
 
     Type type = Type::NONE;
 
     // Payload - interpretation depends on type
-    AlertBand band;                   // Band to announce
-    uint16_t freq;                    // Frequency to announce
-    AlertDirection dir;               // Direction to announce
-    uint8_t bogeyCount;               // Total bogey count (0 = don't announce count)
+    AlertBand band;     // Band to announce
+    uint16_t freq;      // Frequency to announce
+    AlertDirection dir; // Direction to announce
+    uint8_t bogeyCount; // Total bogey count (0 = don't announce count)
 
     // Escalation-specific breakdown
-    uint8_t aheadCount;               // Bogeys ahead (ESCALATION only)
-    uint8_t behindCount;              // Bogeys behind (ESCALATION only)
-    uint8_t sideCount;                // Bogeys to side (ESCALATION only)
+    uint8_t aheadCount;  // Bogeys ahead (ESCALATION only)
+    uint8_t behindCount; // Bogeys behind (ESCALATION only)
+    uint8_t sideCount;   // Bogeys to side (ESCALATION only)
 
     // Default constructor - NONE action
-    VoiceAction() :
-        type(Type::NONE), band(AlertBand::KA), freq(0), dir(AlertDirection::AHEAD),
-        bogeyCount(0), aheadCount(0), behindCount(0), sideCount(0) {}
+    VoiceAction()
+        : type(Type::NONE), band(AlertBand::KA), freq(0), dir(AlertDirection::AHEAD), bogeyCount(0), aheadCount(0),
+          behindCount(0), sideCount(0) {}
 
     // Convenience: check if action requires audio
     bool hasAction() const { return type != Type::NONE; }
@@ -97,7 +96,7 @@ struct VoiceAction {
  * VoiceModule - Voice announcement decision engine
  */
 class VoiceModule {
-public:
+  public:
     VoiceModule();
 
     // Initialize with dependencies
@@ -107,7 +106,7 @@ public:
     VoiceAction process(const VoiceContext& ctx);
 
     // State management - call when all alerts clear
-    void reset() { clearAllState(); }  // Alias for consistency with other modules
+    void reset() { clearAllState(); } // Alias for consistency with other modules
     void clearAllState();
 
     // ============================================================================
@@ -133,7 +132,7 @@ public:
     void clearSpeedSample();
     bool hasValidSpeedSource(unsigned long now) const;
 
-private:
+  private:
     // Dependencies
     SettingsManager* settings_ = nullptr;
     V1BLEClient* bleClient_ = nullptr;
@@ -234,7 +233,7 @@ private:
     void clearAlertHistories();
 
 #ifdef UNIT_TEST
-public:
+  public:
     using AlertHistoryArray = decltype(alertHistories_);
     AlertHistoryArray& getAlertHistories() { return alertHistories_; }
     uint8_t& getAlertHistoryCount() { return alertHistoryCount_; }

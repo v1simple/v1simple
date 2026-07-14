@@ -11,20 +11,20 @@
 
 const char* quietOwnerName(const QuietOwner owner) {
     switch (owner) {
-        case QuietOwner::None:
-            return "none";
-        case QuietOwner::SpeedVolume:
-            return "speed_volume";
-        case QuietOwner::VolumeFade:
-            return "volume_fade";
-        case QuietOwner::TapGesture:
-            return "tap_gesture";
-        case QuietOwner::WifiCommand:
-            return "wifi_command";
-        case QuietOwner::AutoPush:
-            return "auto_push";
-        default:
-            return "unknown";
+    case QuietOwner::None:
+        return "none";
+    case QuietOwner::SpeedVolume:
+        return "speed_volume";
+    case QuietOwner::VolumeFade:
+        return "volume_fade";
+    case QuietOwner::TapGesture:
+        return "tap_gesture";
+    case QuietOwner::WifiCommand:
+        return "wifi_command";
+    case QuietOwner::AutoPush:
+        return "auto_push";
+    default:
+        return "unknown";
     }
 }
 
@@ -153,9 +153,7 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     }
 
     pendingSpeedVolRestoreLastRetryMs_ = nowMs;
-    sendVolume(QuietOwner::SpeedVolume,
-               pendingSpeedVolRestoreVol_,
-               pendingSpeedVolRestoreMuteVol_);
+    sendVolume(QuietOwner::SpeedVolume, pendingSpeedVolRestoreVol_, pendingSpeedVolRestoreMuteVol_);
 #ifndef UNIT_TEST
     perfRecordSpeedVolRetry();
 #endif

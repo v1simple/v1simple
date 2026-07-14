@@ -67,7 +67,7 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     } else if (commandChar->canWriteNoResponse()) {
         ok = commandChar->writeValue(data, length, false);
     } else {
-        return SendResult::FAILED;  // Characteristic doesn't support write
+        return SendResult::FAILED; // Characteristic doesn't support write
     }
 
     if (!ok) {
@@ -84,15 +84,13 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
 bool V1BLEClient::requestAlertData() {
     // Packet structure intentionally explicit (not abstracted). Matches V1
     // protocol docs exactly; easier to verify than a builder pattern.
-    uint8_t packet[] = {
-        ESP_PACKET_START,
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-        PACKET_ID_REQ_START_ALERT,
-        0x01,
-        0x00,
-        ESP_PACKET_END
-    };
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_REQ_START_ALERT,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
 
     packet[5] = calcV1Checksum(packet, 5);
 
@@ -100,15 +98,13 @@ bool V1BLEClient::requestAlertData() {
 }
 
 bool V1BLEClient::requestVersion() {
-    uint8_t packet[] = {
-        ESP_PACKET_START,
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-        PACKET_ID_VERSION,
-        0x01,
-        0x00,
-        ESP_PACKET_END
-    };
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_VERSION,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
 
     packet[5] = calcV1Checksum(packet, 5);
 
@@ -118,15 +114,13 @@ bool V1BLEClient::requestVersion() {
 bool V1BLEClient::requestAllVolume() {
     // REQALLVOLUME 0x3C uses an empty payload. V1 replies
     // with RESPALLVOLUME 0x3D containing [main, muted, savedMain, savedMuted].
-    uint8_t packet[] = {
-        ESP_PACKET_START,
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-        PACKET_ID_REQ_ALL_VOLUME,
-        0x01,                       // payload length byte (1 = no payload, only checksum follows)
-        0x00,                       // checksum placeholder
-        ESP_PACKET_END
-    };
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_REQ_ALL_VOLUME,
+                        0x01, // payload length byte (1 = no payload, only checksum follows)
+                        0x00, // checksum placeholder
+                        ESP_PACKET_END};
 
     packet[5] = calcV1Checksum(packet, 5);
 
@@ -150,13 +144,13 @@ bool V1BLEClient::setDisplayOn(bool on) {
         // Turn display back ON (exit dark mode)
         // Packet: AA DA E4 33 01 [checksum] AB  (7 bytes total)
         uint8_t packet[] = {
-            ESP_PACKET_START,                               // [0] 0xAA
-            static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),// [1] 0xDA
-            static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE), // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
-            PACKET_ID_TURN_ON_DISPLAY,                      // [3] 0x33
-            0x01,                                           // [4] payload length
-            0x00,                                           // [5] checksum placeholder
-            ESP_PACKET_END                                  // [6] 0xAB
+            ESP_PACKET_START,                                // [0] 0xAA
+            static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
+            static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
+            PACKET_ID_TURN_ON_DISPLAY,                       // [3] 0x33
+            0x01,                                            // [4] payload length
+            0x00,                                            // [5] checksum placeholder
+            ESP_PACKET_END                                   // [6] 0xAB
         };
 
         // Calculate checksum over bytes 0-4 (5 bytes)
@@ -168,16 +162,16 @@ bool V1BLEClient::setDisplayOn(bool on) {
         // Per Kenny's implementation: payloadLength=2 but only 1 actual payload byte
         // Packet: AA DA E4 32 02 [mode] [checksum] AB  (8 bytes total)
         // mode=0: completely dark, mode=1: only BT icon visible
-        uint8_t mode = 0x00;  // Completely dark
+        uint8_t mode = 0x00; // Completely dark
         uint8_t packet[] = {
-            ESP_PACKET_START,                               // [0] 0xAA
-            static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),// [1] 0xDA
-            static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE), // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
-            PACKET_ID_TURN_OFF_DISPLAY,                     // [3] 0x32
-            0x02,                                           // [4] payload length = 2
-            mode,                                           // [5] mode byte
-            0x00,                                           // [6] checksum placeholder
-            ESP_PACKET_END                                  // [7] 0xAB
+            ESP_PACKET_START,                                // [0] 0xAA
+            static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
+            static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
+            PACKET_ID_TURN_OFF_DISPLAY,                      // [3] 0x32
+            0x02,                                            // [4] payload length = 2
+            mode,                                            // [5] mode byte
+            0x00,                                            // [6] checksum placeholder
+            ESP_PACKET_END                                   // [7] 0xAB
         };
 
         // Calculate checksum over bytes 0-5 (6 bytes)
@@ -196,13 +190,13 @@ bool V1BLEClient::setMute(bool muted) {
     // reqMuteOn/Off has no payload (payload length = 1, no actual payload bytes needed per V1 protocol)
     // Packet: AA DA E4 34/35 01 [checksum] AB
     uint8_t packet[] = {
-        ESP_PACKET_START,                               // [0] 0xAA
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),// [1] 0xDA
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE), // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
-        packetId,                                       // [3] 0x34 or 0x35
-        0x01,                                           // [4] payload length
-        0x00,                                           // [5] checksum placeholder
-        ESP_PACKET_END                                  // [6] 0xAB
+        ESP_PACKET_START,                                // [0] 0xAA
+        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
+        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
+        packetId,                                        // [3] 0x34 or 0x35
+        0x01,                                            // [4] payload length
+        0x00,                                            // [5] checksum placeholder
+        ESP_PACKET_END                                   // [6] 0xAB
     };
 
     packet[5] = calcV1Checksum(packet, 5);
@@ -218,14 +212,14 @@ bool V1BLEClient::setMode(uint8_t mode) {
     // Packet ID 0x36 = REQCHANGEMODE
     // Mode: 0x01 = All Bogeys, 0x02 = Logic, 0x03 = Advanced Logic
     uint8_t packet[] = {
-        ESP_PACKET_START,                               // [0] 0xAA
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),// [1] 0xDA
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE), // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
-        0x36,                                           // [3] REQCHANGEMODE
-        0x02,                                           // [4] payload length = 2
-        mode,                                           // [5] mode byte
-        0x00,                                           // [6] checksum placeholder
-        ESP_PACKET_END                                  // [7] 0xAB
+        ESP_PACKET_START,                                // [0] 0xAA
+        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
+        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
+        0x36,                                            // [3] REQCHANGEMODE
+        0x02,                                            // [4] payload length = 2
+        mode,                                            // [5] mode byte
+        0x00,                                            // [6] checksum placeholder
+        ESP_PACKET_END                                   // [7] 0xAB
     };
 
     // Calculate checksum over bytes 0-5 (6 bytes)
@@ -242,28 +236,29 @@ bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
     // 0xFF means "don't change" - skip command entirely if either is undefined
     // V1 REQWRITEVOLUME sets BOTH values, so we need both to be valid (0-9)
     if (mainVolume == 0xFF || mutedVolume == 0xFF) {
-        Serial.printf("setVolume: skipping - main=%d mute=%d (0xFF means not configured)\n",
-                      mainVolume, mutedVolume);
-        return true;  // Success - nothing to do (user hasn't configured both)
+        Serial.printf("setVolume: skipping - main=%d mute=%d (0xFF means not configured)\n", mainVolume, mutedVolume);
+        return true; // Success - nothing to do (user hasn't configured both)
     }
 
     // Clamp to valid range (0-9)
-    if (mainVolume > 9) mainVolume = 9;
-    if (mutedVolume > 9) mutedVolume = 9;
+    if (mainVolume > 9)
+        mainVolume = 9;
+    if (mutedVolume > 9)
+        mutedVolume = 9;
 
     // Packet ID 0x39 = REQWRITEVOLUME
     // Payload: mainVolume, mutedVolume (currentVolume), aux0
     uint8_t packet[] = {
-        ESP_PACKET_START,                               // [0] 0xAA
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),// [1] 0xDA
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE), // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
-        PACKET_ID_REQ_WRITE_VOLUME,                     // [3] 0x39
-        0x04,                                           // [4] payload length = 4 (3 data + checksum)
-        mainVolume,                                     // [5] main volume 0-9
-        mutedVolume,                                    // [6] muted volume 0-9
-        0x00,                                           // [7] aux0 (unused, set to 0)
-        0x00,                                           // [8] checksum placeholder
-        ESP_PACKET_END                                  // [9] 0xAB
+        ESP_PACKET_START,                                // [0] 0xAA
+        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
+        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
+        PACKET_ID_REQ_WRITE_VOLUME,                      // [3] 0x39
+        0x04,                                            // [4] payload length = 4 (3 data + checksum)
+        mainVolume,                                      // [5] main volume 0-9
+        mutedVolume,                                     // [6] muted volume 0-9
+        0x00,                                            // [7] aux0 (unused, set to 0)
+        0x00,                                            // [8] checksum placeholder
+        ESP_PACKET_END                                   // [9] 0xAB
     };
 
     // Calculate checksum over bytes 0-7 (8 bytes)
@@ -276,15 +271,13 @@ bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
 
 bool V1BLEClient::requestUserBytes() {
     // Build packet: AA D0+dest E0+src 11 01 [checksum] AB
-    uint8_t packet[] = {
-        ESP_PACKET_START,
-        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-        PACKET_ID_REQ_USER_BYTES,
-        0x01,  // length
-        0x00,  // checksum placeholder
-        ESP_PACKET_END
-    };
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_REQ_USER_BYTES,
+                        0x01, // length
+                        0x00, // checksum placeholder
+                        ESP_PACKET_END};
 
     packet[5] = calcV1Checksum(packet, 5);
 
@@ -306,14 +299,14 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
     packet[1] = static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1);
     packet[2] = static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE);
     packet[3] = PACKET_ID_WRITE_USER_BYTES;
-    packet[4] = 0x07;  // length = 6 bytes + 1
+    packet[4] = 0x07; // length = 6 bytes + 1
     memcpy(&packet[5], bytes, 6);
 
     packet[11] = calcV1Checksum(packet, 11);
     packet[12] = ESP_PACKET_END;
 
-    Serial.printf("Writing V1 user bytes: %02X %02X %02X %02X %02X %02X\n",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+    Serial.printf("Writing V1 user bytes: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1], bytes[2], bytes[3],
+                  bytes[4], bytes[5]);
     return sendCommand(packet, sizeof(packet));
 }
 
@@ -364,10 +357,9 @@ void V1BLEClient::onUserBytesReceived(const uint8_t* bytes) {
         verifyComplete_ = true;
         verifyMatch_ = (memcmp(verifyExpected_, verifyReceived_, 6) == 0);
         verifyPushMatchEdgePending_.store(verifyMatch_, std::memory_order_relaxed);
-        Serial.printf("[VerifyPush] Received user bytes: %02X%02X%02X%02X%02X%02X (match=%s)\n",
-            verifyReceived_[0], verifyReceived_[1], verifyReceived_[2],
-            verifyReceived_[3], verifyReceived_[4], verifyReceived_[5],
-            verifyMatch_ ? "YES" : "NO");
+        Serial.printf("[VerifyPush] Received user bytes: %02X%02X%02X%02X%02X%02X (match=%s)\n", verifyReceived_[0],
+                      verifyReceived_[1], verifyReceived_[2], verifyReceived_[3], verifyReceived_[4],
+                      verifyReceived_[5], verifyMatch_ ? "YES" : "NO");
         verifyPending_ = false;
     }
 }

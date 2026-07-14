@@ -32,11 +32,11 @@ struct DisplayPipelineDependencies {
     QuietCoordinatorModule* quiet = nullptr;
     AlpRuntimeModule* alp = nullptr;
     AlpEventLatch* alpLatch = nullptr;
-    SpeedSourceSelector* speedSelector = nullptr;  // For stealth mode speed display
+    SpeedSourceSelector* speedSelector = nullptr; // For stealth mode speed display
 };
 
 class DisplayPipelineModule {
-public:
+  public:
     void begin(const DisplayPipelineDependencies& dependencies);
 
     // Process after a successful parser.parse(); expects parser state already updated.
@@ -49,7 +49,7 @@ public:
     void restoreCurrentOwner(uint32_t nowMs);
     bool allowsObdPairGesture(uint32_t nowMs) const;
 
-private:
+  private:
     DisplayMode* displayMode_ = nullptr;
     V1Display* display_ = nullptr;
     PacketParser* parser_ = nullptr;
@@ -78,21 +78,13 @@ private:
     char lastAlpDisplayLogDetail_[192] = "";
     uint32_t lastAlpDisplaySnapshotLogMs_ = 0;
 
-    void logAlpDisplaySnapshot(uint32_t nowMs,
-                               const char* event,
-                               const char* detail,
-                               bool traceRelevant);
+    void logAlpDisplaySnapshot(uint32_t nowMs, const char* event, const char* detail, bool traceRelevant);
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
-    RenderFrame buildDisconnectedRestoreFrame(uint32_t nowMs,
-                                             const V1Settings& settingsRef);
-    AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent,
-                                        uint32_t nowMs);
+    RenderFrame buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef);
+    AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
     void runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs);
-    void renderComposedFrame(uint32_t nowMs,
-                             const RenderFrame& frame,
-                             bool restoreContext,
-                             const char* logEvent,
+    void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool restoreContext, const char* logEvent,
                              bool forceRedraw = false);
     void recordPerfTiming(unsigned long startUs, unsigned long endUs);
 };

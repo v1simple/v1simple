@@ -9,18 +9,20 @@ export const MAINTENANCE_API_WRITE_HEADER = 'X-V1Simple-Request';
 export const MAINTENANCE_API_WRITE_HEADER_VALUE = 'maintenance-ui';
 
 function isMaintenanceApiWrite(url, opts) {
-	const method = String(opts?.method || 'GET').toUpperCase();
-	return method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.startsWith('/api/');
+    const method = String(opts?.method || 'GET').toUpperCase();
+    return (
+        method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.startsWith('/api/')
+    );
 }
 
 function withMaintenanceApiWriteHeader(opts) {
-	return {
-		...opts,
-		headers: {
-			...(opts?.headers || {}),
-			[MAINTENANCE_API_WRITE_HEADER]: MAINTENANCE_API_WRITE_HEADER_VALUE
-		}
-	};
+    return {
+        ...opts,
+        headers: {
+            ...(opts?.headers || {}),
+            [MAINTENANCE_API_WRITE_HEADER]: MAINTENANCE_API_WRITE_HEADER_VALUE
+        }
+    };
 }
 
 /**
@@ -33,12 +35,14 @@ function withMaintenanceApiWriteHeader(opts) {
  * @returns {Promise<Response>}
  */
 export function fetchWithTimeout(url, opts = {}, timeoutMs = 5000) {
-	const controller = new AbortController();
-	const id = setTimeout(() => controller.abort(), timeoutMs);
-	const requestOpts = isMaintenanceApiWrite(url, opts) ? withMaintenanceApiWriteHeader(opts) : opts;
-	return fetch(url, { ...requestOpts, signal: controller.signal }).finally(() =>
-		clearTimeout(id)
-	);
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    const requestOpts = isMaintenanceApiWrite(url, opts)
+        ? withMaintenanceApiWriteHeader(opts)
+        : opts;
+    return fetch(url, { ...requestOpts, signal: controller.signal }).finally(() =>
+        clearTimeout(id)
+    );
 }
 
 /**
@@ -51,28 +55,28 @@ export function fetchWithTimeout(url, opts = {}, timeoutMs = 5000) {
  * @returns {{ start(): void, stop(): void }}
  */
 export function createPoll(fn, intervalMs) {
-	let id = null;
-	let inFlight = false;
+    let id = null;
+    let inFlight = false;
 
-	async function tick() {
-		if (inFlight) return;
-		inFlight = true;
-		try {
-			await fn();
-		} finally {
-			inFlight = false;
-		}
-	}
+    async function tick() {
+        if (inFlight) return;
+        inFlight = true;
+        try {
+            await fn();
+        } finally {
+            inFlight = false;
+        }
+    }
 
-	return {
-		start() {
-			if (id === null) id = setInterval(tick, intervalMs);
-		},
-		stop() {
-			if (id !== null) {
-				clearInterval(id);
-				id = null;
-			}
-		}
-	};
+    return {
+        start() {
+            if (id === null) id = setInterval(tick, intervalMs);
+        },
+        stop() {
+            if (id !== null) {
+                clearInterval(id);
+                id = null;
+            }
+        }
+    };
 }

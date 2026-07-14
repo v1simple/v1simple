@@ -20,11 +20,16 @@ extern SystemEventBus systemEventBus;
 /// Map WifiClientState enum to API-facing string name.
 inline const char* wifiClientStateApiName(WifiClientState state) {
     switch (state) {
-        case WIFI_CLIENT_DISABLED: return "disabled";
-        case WIFI_CLIENT_DISCONNECTED: return "disconnected";
-        case WIFI_CLIENT_CONNECTING: return "connecting";
-        case WIFI_CLIENT_CONNECTED: return "connected";
-        case WIFI_CLIENT_FAILED: return "failed";
+    case WIFI_CLIENT_DISABLED:
+        return "disabled";
+    case WIFI_CLIENT_DISCONNECTED:
+        return "disconnected";
+    case WIFI_CLIENT_CONNECTING:
+        return "connecting";
+    case WIFI_CLIENT_CONNECTED:
+        return "connected";
+    case WIFI_CLIENT_FAILED:
+        return "failed";
     }
     return "unknown";
 }

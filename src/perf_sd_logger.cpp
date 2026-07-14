@@ -19,11 +19,73 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 45;  // drops unused priority-display-index and proxy-latency telemetry
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION =
+    45; // drops unused priority-display-index and proxy-latency telemetry
 static constexpr const char* PERF_CSV_HEADER =
-    "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,uiToScan,uiToRest,uiScanToRest,uiFastScanExit,uiLastScanDwellMs,uiMinScanDwellMs,fadeDown,fadeRestore,fadeSkipEqual,fadeSkipNoBaseline,fadeSkipNotFaded,fadeLastDecision,fadeLastCurrentVol,fadeLastOriginalVol,fadeLastDecisionMs,speedVolDrop,speedVolRestore,speedVolRetry,bleScanStartMs,bleTargetFoundMs,bleConnectStartMs,bleConnectedMs,bleFirstRxMs,bleFollowupRequestAlertMax_us,bleFollowupRequestVersionMax_us,bleConnectStableCallbackMax_us,bleProxyStartMax_us,displayGapRecoverMax_us,displayFullRenderCount,displayRestingFullRenderCount,displayRestingIncrementalRenderCount,displayPersistedRenderCount,displayPreviewRenderCount,displayRestoreRenderCount,displayLiveScenarioRenderCount,displayRestingScenarioRenderCount,displayPersistedScenarioRenderCount,displayPreviewScenarioRenderCount,displayRestoreScenarioRenderCount,displayRestingFlushReasonFullRedrawCount,displayRestingFlushReasonPendingExternalCount,displayRestingFlushReasonPaintedCount,displayRestingFlushReasonCacheHitCount,displayPersistedFlushReasonFullRedrawCount,displayPersistedFlushReasonPendingExternalCount,displayPersistedFlushReasonPaintedCount,displayPersistedFlushReasonCacheHitCount,displayStatusVolumePaintCount,displayStatusRssiPaintCount,displayStatusProfilePaintCount,displayStatusBatteryPaintCount,displayStatusBleProxyPaintCount,displayStatusWifiPaintCount,displayStatusObdPaintCount,displayStatusGpsPaintCount,displayStatusAlpPaintCount,displayRedrawReasonFirstRunCount,displayRedrawReasonEnterLiveCount,displayRedrawReasonLeaveLiveCount,displayRedrawReasonLeavePersistedCount,displayRedrawReasonForceRedrawCount,displayRedrawReasonFrequencyChangeCount,displayRedrawReasonBandSetChangeCount,displayRedrawReasonArrowChangeCount,displayRedrawReasonSignalBarChangeCount,displayRedrawReasonVolumeChangeCount,displayRedrawReasonBogeyCounterChangeCount,displayRedrawReasonRssiRefreshCount,displayRedrawReasonFlashTickCount,displayRedrawReasonFullFlushForRedrawCount,displayRedrawReasonCacheHitSkipFlushCount,displayRedrawReasonUnionExceedsCapCount,displayRedrawReasonPartialRegionFlushCount,displayFullFlushCount,displayPartialFlushCount,displayPartialFlushAreaPeakPx,displayPartialFlushAreaTotalPx,displayFlushEquivalentAreaTotalPx,displayFlushMaxAreaPx,displayPartialFlushLogicalWidthPeakPx,displayPartialFlushLogicalHeightPeakPx,displayPartialFlushRowCallsPeak,displayPartialFlushPixelsPerRowPeakPx,displayPartialFlushUsPeak_us,displayPartialFlushWorstUsLogicalWidthPx,displayPartialFlushWorstUsLogicalHeightPx,displayPartialFlushWorstUsAreaPx,displayPartialFlushWouldFullRows64Count,displayPartialFlushWouldFullRows128Count,displayPartialFlushWouldFullRows256Count,displayUnionExceedsCapAreaPeakPx,displayUnionExceedsCapRectCountPeak,displayUnionExceedsCapAreaPeakSourceMask,displayUnionExceedsCapWithFrequencyCount,displayUnionExceedsCapWithBandsBarsCount,displayUnionExceedsCapWithArrowsCount,displayUnionExceedsCapWithStatusCount,displayUnionExceedsCapWithIndicatorsCount,displayUnionExceedsCapWithExternalCount,displayUnionExceedsCapUnclassifiedCount,displayBaseFrameMax_us,displayStatusStripMax_us,displayFrequencyMax_us,displayBandsBarsMax_us,displayArrowsIconsMax_us,displayFlushSubphaseMax_us,displayLiveRenderMax_us,displayRestingRenderMax_us,displayPersistedRenderMax_us,displayPreviewRenderMax_us,displayRestoreRenderMax_us,displayPreviewFirstRenderMax_us,displayPreviewSteadyRenderMax_us,alertPersistStarts,alertPersistStartsSkippedActive,alertPersistStartsSkippedInvalid,alertPersistExpires,alertPersistClears,autoPushStarts,autoPushCompletes,autoPushNoProfile,autoPushProfileLoadFail,autoPushProfileWriteFail,autoPushBusyRetries,autoPushModeFail,autoPushVolumeFail,autoPushDisconnectAbort,powerAutoPowerArmed,powerAutoPowerTimerStart,powerAutoPowerTimerCancel,powerAutoPowerTimerExpire,powerCarModeAlpSilenceExpire,powerCriticalWarn,powerCriticalShutdown,perfUncleanShutdown,cmdBleBusy,rxBytes,oversizeDrops,queueHighWater,bleMutexSkip,bleMutexTimeout,cmdPaceNotYet,bleDiscTaskCreateFail,displayUpdates,displaySkips,wifiConnectDeferred,pushNowRetries,pushNowFailures,minLargestBlock,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,sdWriteGe10ms,flushMax_us,bleConnectMax_us,bleDiscoveryMax_us,bleSubscribeMax_us,dispPipeMax_us,perfReportMax_us,prioritySelectRowFlag,prioritySelectFirstUsable,prioritySelectFirstEntry,prioritySelectAmbiguousIndex,prioritySelectUnusableIndex,prioritySelectInvalidChosen,alertTablePublishes,alertTablePublishes3Bogey,alertTableRowReplacements,alertTableAssemblyTimeouts,parserRowsBandNone,parserRowsKuRaw,displayLiveInvalidPrioritySkips,displayLiveFallbackToUsable,obdMax_us,obdConnectCallMax_us,obdSecurityStartCallMax_us,obdDiscoveryCallMax_us,obdSubscribeCallMax_us,obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,obdStaleCount,perfDrop,eventBusDrops,wifiHandleClientMax_us,wifiMaintenanceMax_us,wifiStatusCheckMax_us,wifiTimeoutCheckMax_us,wifiHeapGuardMax_us,wifiApStaPollMax_us,wifiStopHttpServerMax_us,wifiStopStaDisconnectMax_us,wifiStopApDisableMax_us,wifiStopModeOffMax_us,wifiStartPreflightMax_us,wifiStartApBringupMax_us,freeDmaMin,largestDmaMin,bleState,subscribeStep,connectInProgress,asyncConnectPending,pendingDisconnectCleanup,proxyAdvertising,proxyAdvertisingLastTransitionReason,wifiPriorityMode,speedSourceSelected,speedSourceValid,speedSelectedMph_x10,speedSelectedAgeMs,speedSourceSwitches,speedNoSourceSelections,speedGpsSelections,cycleState,cycleTransitionsTotal,cycleTimeInStateMs,cycleTeardownDurationMs,cycleObdRetryAttemptsTotal,cycleWifiManualPhoneKicksTotal,cycleProxyNoClientLatched,gpsSentencesOk,gpsSentencesChecksumFail,gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,gpsStableFixAgeMs,gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,notifyToDisplayMax_ms,notifyToDisplayTotalCount\n";
-static constexpr UBaseType_t PERF_SD_QUEUE_DEPTH = 16;       // Halved from 32 to reclaim ~7 KiB internal SRAM
-static constexpr uint32_t PERF_SD_WRITER_STACK_SIZE = 8192;  // Bench high-water leaves ~4 KiB free
+    "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
+    "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
+    "uiToScan,uiToRest,uiScanToRest,uiFastScanExit,uiLastScanDwellMs,uiMinScanDwellMs,fadeDown,fadeRestore,"
+    "fadeSkipEqual,fadeSkipNoBaseline,fadeSkipNotFaded,fadeLastDecision,fadeLastCurrentVol,fadeLastOriginalVol,"
+    "fadeLastDecisionMs,speedVolDrop,speedVolRestore,speedVolRetry,bleScanStartMs,bleTargetFoundMs,bleConnectStartMs,"
+    "bleConnectedMs,bleFirstRxMs,bleFollowupRequestAlertMax_us,bleFollowupRequestVersionMax_us,"
+    "bleConnectStableCallbackMax_us,bleProxyStartMax_us,displayGapRecoverMax_us,displayFullRenderCount,"
+    "displayRestingFullRenderCount,displayRestingIncrementalRenderCount,displayPersistedRenderCount,"
+    "displayPreviewRenderCount,displayRestoreRenderCount,displayLiveScenarioRenderCount,"
+    "displayRestingScenarioRenderCount,displayPersistedScenarioRenderCount,displayPreviewScenarioRenderCount,"
+    "displayRestoreScenarioRenderCount,displayRestingFlushReasonFullRedrawCount,"
+    "displayRestingFlushReasonPendingExternalCount,displayRestingFlushReasonPaintedCount,"
+    "displayRestingFlushReasonCacheHitCount,displayPersistedFlushReasonFullRedrawCount,"
+    "displayPersistedFlushReasonPendingExternalCount,displayPersistedFlushReasonPaintedCount,"
+    "displayPersistedFlushReasonCacheHitCount,displayStatusVolumePaintCount,displayStatusRssiPaintCount,"
+    "displayStatusProfilePaintCount,displayStatusBatteryPaintCount,displayStatusBleProxyPaintCount,"
+    "displayStatusWifiPaintCount,displayStatusObdPaintCount,displayStatusGpsPaintCount,displayStatusAlpPaintCount,"
+    "displayRedrawReasonFirstRunCount,displayRedrawReasonEnterLiveCount,displayRedrawReasonLeaveLiveCount,"
+    "displayRedrawReasonLeavePersistedCount,displayRedrawReasonForceRedrawCount,"
+    "displayRedrawReasonFrequencyChangeCount,displayRedrawReasonBandSetChangeCount,displayRedrawReasonArrowChangeCount,"
+    "displayRedrawReasonSignalBarChangeCount,displayRedrawReasonVolumeChangeCount,"
+    "displayRedrawReasonBogeyCounterChangeCount,displayRedrawReasonRssiRefreshCount,displayRedrawReasonFlashTickCount,"
+    "displayRedrawReasonFullFlushForRedrawCount,displayRedrawReasonCacheHitSkipFlushCount,"
+    "displayRedrawReasonUnionExceedsCapCount,displayRedrawReasonPartialRegionFlushCount,displayFullFlushCount,"
+    "displayPartialFlushCount,displayPartialFlushAreaPeakPx,displayPartialFlushAreaTotalPx,"
+    "displayFlushEquivalentAreaTotalPx,displayFlushMaxAreaPx,displayPartialFlushLogicalWidthPeakPx,"
+    "displayPartialFlushLogicalHeightPeakPx,displayPartialFlushRowCallsPeak,displayPartialFlushPixelsPerRowPeakPx,"
+    "displayPartialFlushUsPeak_us,displayPartialFlushWorstUsLogicalWidthPx,displayPartialFlushWorstUsLogicalHeightPx,"
+    "displayPartialFlushWorstUsAreaPx,displayPartialFlushWouldFullRows64Count,displayPartialFlushWouldFullRows128Count,"
+    "displayPartialFlushWouldFullRows256Count,displayUnionExceedsCapAreaPeakPx,displayUnionExceedsCapRectCountPeak,"
+    "displayUnionExceedsCapAreaPeakSourceMask,displayUnionExceedsCapWithFrequencyCount,"
+    "displayUnionExceedsCapWithBandsBarsCount,displayUnionExceedsCapWithArrowsCount,"
+    "displayUnionExceedsCapWithStatusCount,displayUnionExceedsCapWithIndicatorsCount,"
+    "displayUnionExceedsCapWithExternalCount,displayUnionExceedsCapUnclassifiedCount,displayBaseFrameMax_us,"
+    "displayStatusStripMax_us,displayFrequencyMax_us,displayBandsBarsMax_us,displayArrowsIconsMax_us,"
+    "displayFlushSubphaseMax_us,displayLiveRenderMax_us,displayRestingRenderMax_us,displayPersistedRenderMax_us,"
+    "displayPreviewRenderMax_us,displayRestoreRenderMax_us,displayPreviewFirstRenderMax_us,"
+    "displayPreviewSteadyRenderMax_us,alertPersistStarts,alertPersistStartsSkippedActive,"
+    "alertPersistStartsSkippedInvalid,alertPersistExpires,alertPersistClears,autoPushStarts,autoPushCompletes,"
+    "autoPushNoProfile,autoPushProfileLoadFail,autoPushProfileWriteFail,autoPushBusyRetries,autoPushModeFail,"
+    "autoPushVolumeFail,autoPushDisconnectAbort,powerAutoPowerArmed,powerAutoPowerTimerStart,powerAutoPowerTimerCancel,"
+    "powerAutoPowerTimerExpire,powerCarModeAlpSilenceExpire,powerCriticalWarn,powerCriticalShutdown,"
+    "perfUncleanShutdown,cmdBleBusy,rxBytes,oversizeDrops,queueHighWater,bleMutexSkip,bleMutexTimeout,cmdPaceNotYet,"
+    "bleDiscTaskCreateFail,displayUpdates,displaySkips,wifiConnectDeferred,pushNowRetries,pushNowFailures,"
+    "minLargestBlock,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,sdWriteGe10ms,flushMax_"
+    "us,bleConnectMax_us,bleDiscoveryMax_us,bleSubscribeMax_us,dispPipeMax_us,perfReportMax_us,prioritySelectRowFlag,"
+    "prioritySelectFirstUsable,prioritySelectFirstEntry,prioritySelectAmbiguousIndex,prioritySelectUnusableIndex,"
+    "prioritySelectInvalidChosen,alertTablePublishes,alertTablePublishes3Bogey,alertTableRowReplacements,"
+    "alertTableAssemblyTimeouts,parserRowsBandNone,parserRowsKuRaw,displayLiveInvalidPrioritySkips,"
+    "displayLiveFallbackToUsable,obdMax_us,obdConnectCallMax_us,obdSecurityStartCallMax_us,obdDiscoveryCallMax_us,"
+    "obdSubscribeCallMax_us,obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,obdStaleCount,perfDrop,eventBusDrops,"
+    "wifiHandleClientMax_us,wifiMaintenanceMax_us,wifiStatusCheckMax_us,wifiTimeoutCheckMax_us,wifiHeapGuardMax_us,"
+    "wifiApStaPollMax_us,wifiStopHttpServerMax_us,wifiStopStaDisconnectMax_us,wifiStopApDisableMax_us,"
+    "wifiStopModeOffMax_us,wifiStartPreflightMax_us,wifiStartApBringupMax_us,freeDmaMin,largestDmaMin,bleState,"
+    "subscribeStep,connectInProgress,asyncConnectPending,pendingDisconnectCleanup,proxyAdvertising,"
+    "proxyAdvertisingLastTransitionReason,wifiPriorityMode,speedSourceSelected,speedSourceValid,speedSelectedMph_x10,"
+    "speedSelectedAgeMs,speedSourceSwitches,speedNoSourceSelections,speedGpsSelections,cycleState,"
+    "cycleTransitionsTotal,cycleTimeInStateMs,cycleTeardownDurationMs,cycleObdRetryAttemptsTotal,"
+    "cycleWifiManualPhoneKicksTotal,cycleProxyNoClientLatched,gpsSentencesOk,gpsSentencesChecksumFail,"
+    "gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,gpsStableFixAgeMs,"
+    "gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,notifyToDisplayMax_ms,"
+    "notifyToDisplayTotalCount\n";
+static constexpr UBaseType_t PERF_SD_QUEUE_DEPTH = 16;      // Halved from 32 to reclaim ~7 KiB internal SRAM
+static constexpr uint32_t PERF_SD_WRITER_STACK_SIZE = 8192; // Bench high-water leaves ~4 KiB free
 static constexpr UBaseType_t PERF_SD_WRITER_PRIORITY = 1;
 static constexpr TickType_t PERF_SD_QUEUE_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(1000);
 static constexpr uint16_t PERF_SD_FLUSH_EVERY_ROWS = 3;
@@ -61,15 +123,13 @@ static void buildPerfCsvPath(uint32_t bootId_, uint32_t bootToken, char* out, si
     }
     if (bootToken == 0) {
         if (bootId_ != 0) {
-            snprintf(out, outLen, "/perf/perf_boot_%lu.csv",
-                     static_cast<unsigned long>(bootId_));
+            snprintf(out, outLen, "/perf/perf_boot_%lu.csv", static_cast<unsigned long>(bootId_));
         } else {
             snprintf(out, outLen, "%s", PERF_CSV_PATH_FALLBACK);
         }
         return;
     }
-    snprintf(out, outLen, "/perf/perf_boot_%lu-%08lx.csv",
-             static_cast<unsigned long>(bootId_),
+    snprintf(out, outLen, "/perf/perf_boot_%lu-%08lx.csv", static_cast<unsigned long>(bootId_),
              static_cast<unsigned long>(bootToken));
 }
 
@@ -108,16 +168,15 @@ static bool appendCsvUInt16(char* buffer, size_t bufferLen, size_t& offset, uint
 }
 
 // UTC field: YYYY-MM-DDTHH:MM:SS.sssZ or empty field (followed by comma)
-static bool appendCsvUtcField(char* buffer, size_t bufferLen, size_t& offset,
-                              uint64_t utcEpochMs, bool valid) {
+static bool appendCsvUtcField(char* buffer, size_t bufferLen, size_t& offset, uint64_t utcEpochMs, bool valid) {
     if (!valid || utcEpochMs == 0) {
         return appendCsvFormat(buffer, bufferLen, offset, ",");
     }
     const uint64_t totalSec = utcEpochMs / 1000;
-    const uint32_t ms       = static_cast<uint32_t>(utcEpochMs % 1000);
+    const uint32_t ms = static_cast<uint32_t>(utcEpochMs % 1000);
     // Simple calendar decomposition (sufficient for logging, no leap-second handling)
-    uint32_t sec  = static_cast<uint32_t>(totalSec % 60);
-    uint32_t min  = static_cast<uint32_t>((totalSec / 60) % 60);
+    uint32_t sec = static_cast<uint32_t>(totalSec % 60);
+    uint32_t min = static_cast<uint32_t>((totalSec / 60) % 60);
     uint32_t hour = static_cast<uint32_t>((totalSec / 3600) % 24);
     uint32_t days = static_cast<uint32_t>(totalSec / 86400); // days since 1970-01-01
     // Gregorian calendar
@@ -125,29 +184,28 @@ static bool appendCsvUtcField(char* buffer, size_t bufferLen, size_t& offset,
     while (true) {
         bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
         uint32_t diy = leap ? 366u : 365u;
-        if (days < diy) break;
+        if (days < diy)
+            break;
         days -= diy;
         y++;
     }
-    static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
     uint32_t mo = 1;
     for (uint32_t m = 0; m < 12; m++) {
         uint32_t md = mdays[m] + ((m == 1 && leap) ? 1u : 0u);
-        if (days < md) { mo = m + 1; break; }
+        if (days < md) {
+            mo = m + 1;
+            break;
+        }
         days -= md;
     }
-    return appendCsvFormat(buffer, bufferLen, offset,
-        "%04lu-%02lu-%02luT%02lu:%02lu:%02lu.%03luZ,",
-        static_cast<unsigned long>(y),
-        static_cast<unsigned long>(mo),
-        static_cast<unsigned long>(days + 1),
-        static_cast<unsigned long>(hour),
-        static_cast<unsigned long>(min),
-        static_cast<unsigned long>(sec),
-        static_cast<unsigned long>(ms));
+    return appendCsvFormat(
+        buffer, bufferLen, offset, "%04lu-%02lu-%02luT%02lu:%02lu:%02lu.%03luZ,", static_cast<unsigned long>(y),
+        static_cast<unsigned long>(mo), static_cast<unsigned long>(days + 1), static_cast<unsigned long>(hour),
+        static_cast<unsigned long>(min), static_cast<unsigned long>(sec), static_cast<unsigned long>(ms));
 }
-}  // namespace
+} // namespace
 
 PerfSdLogger perfSdLogger;
 
@@ -229,10 +287,7 @@ void PerfSdLogger::begin(bool sdAvailable) {
     }
 
     if (!queue_) {
-        queue_ = createQueuePreferPsram(PERF_SD_QUEUE_DEPTH,
-                                       sizeof(PerfSdSnapshot),
-                                       queueAllocation_,
-                                       &queueInPsram_);
+        queue_ = createQueuePreferPsram(PERF_SD_QUEUE_DEPTH, sizeof(PerfSdSnapshot), queueAllocation_, &queueInPsram_);
         if (!queue_) {
             Serial.println("[Perf] ERROR: Failed to create SD logger queue");
             return;
@@ -243,13 +298,8 @@ void PerfSdLogger::begin(bool sdAvailable) {
     }
 
     if (!writerTask_) {
-        BaseType_t rc = createTaskPinnedToCoreInternalStack(writerTaskEntry,
-                                                            "PerfSdWriter",
-                                                            PERF_SD_WRITER_STACK_SIZE,
-                                                            this,
-                                                            PERF_SD_WRITER_PRIORITY,
-                                                            &writerTask_,
-                                                            0);
+        BaseType_t rc = createTaskPinnedToCoreInternalStack(writerTaskEntry, "PerfSdWriter", PERF_SD_WRITER_STACK_SIZE,
+                                                            this, PERF_SD_WRITER_PRIORITY, &writerTask_, 0);
         if (rc != pdPASS) {
             Serial.println("[Perf] ERROR: Failed to create SD logger task");
             return;
@@ -335,8 +385,8 @@ bool PerfSdLogger::ensurePerfDir(fs::FS& fs) {
 
 bool PerfSdLogger::ensureCsvBuffers() {
     if (!csvLineBuffer_) {
-        csvLineBuffer_ = static_cast<char*>(
-            heap_caps_malloc(PERF_CSV_LINE_BUFFER_SIZE, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+        csvLineBuffer_ =
+            static_cast<char*>(heap_caps_malloc(PERF_CSV_LINE_BUFFER_SIZE, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
         if (!csvLineBuffer_) {
             Serial.println("[Perf] ERROR: Failed to allocate SD CSV line buffer in PSRAM");
             return false;
@@ -344,8 +394,8 @@ bool PerfSdLogger::ensureCsvBuffers() {
     }
 
     if (!writeStagingBuffer_) {
-        writeStagingBuffer_ = static_cast<uint8_t*>(
-            heap_caps_malloc(PERF_SD_WRITE_STAGING_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+        writeStagingBuffer_ =
+            static_cast<uint8_t*>(heap_caps_malloc(PERF_SD_WRITE_STAGING_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
         if (!writeStagingBuffer_) {
             Serial.println("[Perf] ERROR: Failed to allocate SD CSV write staging buffer");
             heap_caps_free(csvLineBuffer_);
@@ -368,8 +418,7 @@ bool PerfSdLogger::writeStaged(File& f, const uint8_t* data, size_t len) {
     size_t offset = 0;
     while (offset < len) {
         const size_t remaining = len - offset;
-        const size_t chunkLen =
-            (remaining > PERF_SD_WRITE_STAGING_SIZE) ? PERF_SD_WRITE_STAGING_SIZE : remaining;
+        const size_t chunkLen = (remaining > PERF_SD_WRITE_STAGING_SIZE) ? PERF_SD_WRITE_STAGING_SIZE : remaining;
         memcpy(writeStagingBuffer_, data + offset, chunkLen);
         const size_t written = f.write(writeStagingBuffer_, chunkLen);
         if (written != chunkLen) {
@@ -382,15 +431,11 @@ bool PerfSdLogger::writeStaged(File& f, const uint8_t* data, size_t len) {
 
 bool PerfSdLogger::writeSessionMarker(File& f) {
     char marker[128];
-    int n = snprintf(
-        marker,
-        sizeof(marker),
-        "#session_start,seq=%lu,bootId_=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
-        static_cast<unsigned long>(sessionSeq_),
-        static_cast<unsigned long>(bootId_),
-        static_cast<unsigned long>(sessionStartMs_),
-        static_cast<unsigned long>(sessionToken_),
-        static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
+    int n =
+        snprintf(marker, sizeof(marker), "#session_start,seq=%lu,bootId_=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
+                 static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
+                 static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
+                 static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
     if (n <= 0 || n >= static_cast<int>(sizeof(marker))) {
         return false;
     }
@@ -820,9 +865,8 @@ void PerfSdLogger::drainAndClose(uint32_t timeoutMs) {
     while (pendingWrites_.load(std::memory_order_relaxed) > 0 || uxQueueMessagesWaiting(queue_) > 0) {
         if (millis() - startMs > timeoutMs) {
             Serial.printf("[PerfSdLogger] Drain timeout after %lums, %lu items remaining, %lu writes pending\n",
-                         timeoutMs,
-                         static_cast<unsigned long>(uxQueueMessagesWaiting(queue_)),
-                         static_cast<unsigned long>(pendingWrites_.load(std::memory_order_relaxed)));
+                          timeoutMs, static_cast<unsigned long>(uxQueueMessagesWaiting(queue_)),
+                          static_cast<unsigned long>(pendingWrites_.load(std::memory_order_relaxed)));
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));

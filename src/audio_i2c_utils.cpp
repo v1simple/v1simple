@@ -4,25 +4,24 @@ namespace {
 
 constexpr uint8_t kOneByte = 1;
 
-}  // namespace
+} // namespace
 
 const char* audioI2cResultToString(AudioI2cResult result) {
     switch (result) {
-        case AudioI2cResult::Ok:
-            return "ok";
-        case AudioI2cResult::Busy:
-            return "busy";
-        case AudioI2cResult::ReadFailed:
-            return "read_failed";
-        case AudioI2cResult::WriteFailed:
-            return "write_failed";
+    case AudioI2cResult::Ok:
+        return "ok";
+    case AudioI2cResult::Busy:
+        return "busy";
+    case AudioI2cResult::ReadFailed:
+        return "read_failed";
+    case AudioI2cResult::WriteFailed:
+        return "write_failed";
     }
     return "unknown";
 }
 
 AudioI2cLockGuard::AudioI2cLockGuard(SemaphoreHandle_t mutex, TickType_t timeoutTicks)
-    : mutex_(mutex)
-    , locked_(mutex_ && xSemaphoreTake(mutex_, timeoutTicks) == pdTRUE) {}
+    : mutex_(mutex), locked_(mutex_ && xSemaphoreTake(mutex_, timeoutTicks) == pdTRUE) {}
 
 AudioI2cLockGuard::~AudioI2cLockGuard() {
     if (locked_ && mutex_) {
@@ -58,14 +57,8 @@ AudioI2cResult audioI2cReadRegister(TwoWire& wire, uint8_t deviceAddr, uint8_t r
     return AudioI2cResult::Ok;
 }
 
-AudioI2cResult audioI2cSetTca9554Pin(TwoWire& wire,
-                                     uint8_t deviceAddr,
-                                     uint8_t configReg,
-                                     uint8_t outputReg,
-                                     uint8_t pinIndex,
-                                     bool high,
-                                     uint8_t* nextConfig,
-                                     uint8_t* nextOutput) {
+AudioI2cResult audioI2cSetTca9554Pin(TwoWire& wire, uint8_t deviceAddr, uint8_t configReg, uint8_t outputReg,
+                                     uint8_t pinIndex, bool high, uint8_t* nextConfig, uint8_t* nextOutput) {
     uint8_t config = 0;
     AudioI2cResult result = audioI2cReadRegister(wire, deviceAddr, configReg, config);
     if (result != AudioI2cResult::Ok) {

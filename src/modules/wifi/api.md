@@ -56,7 +56,7 @@ For the full per-route HTTP reference (params, response shapes), see `docs/API.m
 The orchestrator owns a `WiFiManager`, the policy modules, and dependency pointers. The runtime module is the per-tick pump that the loop calls. The split exists so the orchestration layer can hold long-lived state while the runtime module remains a thin coordinator.
 
 ### `struct WifiRuntimeContext`
-**Source:** `wifi_runtime_module.h:5+`.
+**Source:** `wifi_runtime_module.h:7-22`.
 
 Per-tick input: `nowMs`, `v1ConnectedAtMs`, `enableWifi`,
 `bleConnected`, `canStartDma`, `wifiAutoStartAllowed`, `wifiAutoStartDone`,
@@ -67,7 +67,7 @@ decision. `canStartDma` is live-probed only while an auto/manual WiFi start is
 otherwise eligible; in ineligible gates it may be the last cached snapshot value.
 
 ### `class WifiOrchestrator`
-**Source:** `wifi_orchestrator_module.h:8+`.
+**Source:** `wifi_orchestrator_module.h:12-28`.
 
 Constructor takes `WiFiManager&`, `V1BLEClient&`, `PacketParser&`, `StorageManager&`, `AutoPushModule&`. Wires the runtime + policy modules.
 

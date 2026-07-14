@@ -11,7 +11,7 @@
 #include "display_element_caches.h"
 #include "display_palette.h"
 #include "display_text.h"
-#include "display_segments.h"  // DisplaySegments namespace (using-directive below)
+#include "display_segments.h" // DisplaySegments namespace (using-directive below)
 #include "display_font_manager.h"
 #include "settings.h"
 #include "battery_manager.h"
@@ -40,41 +40,38 @@ void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     // haven't changed. This is load-bearing for partial-flush region math in
     // update(priority) — without it, drawnRegion_ would expand to the volume
     // cell every frame by the steady-state status-strip refresh.
-    if (elementCaches_.volume.valid &&
-        mainVol == elementCaches_.volume.lastMainVol &&
-        muteVol == elementCaches_.volume.lastMuteVol &&
-        s.colorVolumeMain == elementCaches_.volume.lastMainColor &&
+    if (elementCaches_.volume.valid && mainVol == elementCaches_.volume.lastMainVol &&
+        muteVol == elementCaches_.volume.lastMuteVol && s.colorVolumeMain == elementCaches_.volume.lastMainColor &&
         s.colorVolumeMute == elementCaches_.volume.lastMuteColor) {
         return;
     }
-    elementCaches_.volume.valid         = true;
-    elementCaches_.volume.lastMainVol   = mainVol;
-    elementCaches_.volume.lastMuteVol   = muteVol;
+    elementCaches_.volume.valid = true;
+    elementCaches_.volume.lastMainVol = mainVol;
+    elementCaches_.volume.lastMuteVol = muteVol;
     elementCaches_.volume.lastMainColor = s.colorVolumeMain;
     elementCaches_.volume.lastMuteColor = s.colorVolumeMute;
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Volume);
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::VolumeChange);
 
     // Clear the area first - only clear what we need, BLE icon is at y=98
-    drawnRegion_.add(clearRect.x, clearRect.y, clearRect.w, clearRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(clearRect.x, clearRect.y, clearRect.w, clearRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(clearRect.x, clearRect.y, clearRect.w, clearRect.h, PALETTE_BG);
 
     // Draw main volume in blue, mute volume in yellow (user-configurable colors)
-    GFX_setTextDatum(TL_DATUM);  // Top-left alignment
-    TFT_CALL(setTextSize)(2);  // Size 2 = ~16px height
+    GFX_setTextDatum(TL_DATUM); // Top-left alignment
+    TFT_CALL(setTextSize)(2);   // Size 2 = ~16px height
 
     // Draw main volume "5V" in main volume color
-    char mainBuf[5];  // allow up to three digits plus suffix and null
+    char mainBuf[5]; // allow up to three digits plus suffix and null
     snprintf(mainBuf, sizeof(mainBuf), "%dV", mainVol);
     TFT_CALL(setTextColor)(s.colorVolumeMain, PALETTE_BG);
     GFX_drawString(tft_, mainBuf, mainRect.x, mainRect.y);
 
     // Draw mute volume "0M" in mute volume color, offset to the right
-    char muteBuf[5];  // allow up to three digits plus suffix and null
+    char muteBuf[5]; // allow up to three digits plus suffix and null
     snprintf(muteBuf, sizeof(muteBuf), "%dM", muteVol);
     TFT_CALL(setTextColor)(s.colorVolumeMute, PALETTE_BG);
-    GFX_drawString(tft_, muteBuf, muteRect.x, muteRect.y);  // Aligned with RSSI number
+    GFX_drawString(tft_, muteBuf, muteRect.x, muteRect.y); // Aligned with RSSI number
 }
 
 // ============================================================================
@@ -100,18 +97,17 @@ void V1Display::drawRssiIndicator(int rssi) {
             return;
         }
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Rssi);
-        drawnRegion_.add(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, PALETTE_BG);
         elementCaches_.rssi.valid = true;
         elementCaches_.rssi.lastHidden = true;
         elementCaches_.rssi.v1LineValid = false;
         elementCaches_.rssi.appLineValid = false;
-        return;  // Don't draw anything
+        return; // Don't draw anything
     }
 
     if (!hasFreshBleContext(millis())) {
-        return;  // Keep last-drawn RSSI visible; don't clear on stale context
+        return; // Keep last-drawn RSSI visible; don't clear on stale context
     }
 
     // Get both RSSIs
@@ -121,50 +117,44 @@ void V1Display::drawRssiIndicator(int rssi) {
     // Helper: RSSI dBm → color-code bucket (identical to the logic below,
     // used here for cache-key comparison so color transitions force a redraw).
     auto rssiColorFor = [](int r) -> uint16_t {
-        if (r >= -75) return COLOR_GREEN;
-        if (r >= -90) return COLOR_YELLOW;
+        if (r >= -75)
+            return COLOR_GREEN;
+        if (r >= -90)
+            return COLOR_YELLOW;
         return COLOR_RED;
     };
-    const uint16_t v1Color  = (v1Rssi  != 0) ? rssiColorFor(v1Rssi)  : 0;
+    const uint16_t v1Color = (v1Rssi != 0) ? rssiColorFor(v1Rssi) : 0;
     const uint16_t appColor = (appRssi != 0) ? rssiColorFor(appRssi) : 0;
 
     const bool forceBothLines = !elementCaches_.rssi.valid || elementCaches_.rssi.lastHidden;
-    const bool v1Changed =
-        forceBothLines ||
-        !elementCaches_.rssi.v1LineValid ||
-        v1Rssi != elementCaches_.rssi.lastV1Rssi ||
-        v1Color != elementCaches_.rssi.lastV1Color;
-    const bool appChanged =
-        forceBothLines ||
-        !elementCaches_.rssi.appLineValid ||
-        appRssi != elementCaches_.rssi.lastAppRssi ||
-        appColor != elementCaches_.rssi.lastAppColor;
+    const bool v1Changed = forceBothLines || !elementCaches_.rssi.v1LineValid ||
+                           v1Rssi != elementCaches_.rssi.lastV1Rssi || v1Color != elementCaches_.rssi.lastV1Color;
+    const bool appChanged = forceBothLines || !elementCaches_.rssi.appLineValid ||
+                            appRssi != elementCaches_.rssi.lastAppRssi || appColor != elementCaches_.rssi.lastAppColor;
 
     if (!v1Changed && !appChanged) {
         return;
     }
 
-    elementCaches_.rssi.valid        = true;
-    elementCaches_.rssi.lastHidden   = false;
-    elementCaches_.rssi.lastV1Rssi   = v1Rssi;
-    elementCaches_.rssi.lastAppRssi  = appRssi;
-    elementCaches_.rssi.lastV1Color  = v1Color;
+    elementCaches_.rssi.valid = true;
+    elementCaches_.rssi.lastHidden = false;
+    elementCaches_.rssi.lastV1Rssi = v1Rssi;
+    elementCaches_.rssi.lastAppRssi = appRssi;
+    elementCaches_.rssi.lastV1Color = v1Color;
     elementCaches_.rssi.lastAppColor = appColor;
-    elementCaches_.rssi.v1LineValid  = true;
+    elementCaches_.rssi.v1LineValid = true;
     elementCaches_.rssi.appLineValid = true;
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Rssi);
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::RssiRefresh);
 
     auto clearLine = [&](int lineY) {
-        drawnRegion_.add(static_cast<int16_t>(x), static_cast<int16_t>(lineY),
-                         rssiRect.w, static_cast<uint16_t>(lineHeight),
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(static_cast<int16_t>(x), static_cast<int16_t>(lineY), rssiRect.w,
+                         static_cast<uint16_t>(lineHeight), DisplayDirtyRegionSource::Status);
         FILL_RECT(x, lineY, rssiRect.w, lineHeight, PALETTE_BG);
     };
     const bool redrawBothLines = v1Changed && appChanged;
     if (redrawBothLines) {
-        drawnRegion_.add(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, PALETTE_BG);
     } else {
         if (v1Changed) {
@@ -176,7 +166,7 @@ void V1Display::drawRssiIndicator(int rssi) {
     }
 
     GFX_setTextDatum(TL_DATUM);
-    TFT_CALL(setTextSize)(2);  // Match volume text size
+    TFT_CALL(setTextSize)(2); // Match volume text size
 
     // Draw V1 RSSI if connected
     if ((redrawBothLines || v1Changed) && v1Rssi != 0) {
@@ -187,7 +177,7 @@ void V1Display::drawRssiIndicator(int rssi) {
         TFT_CALL(setTextColor)(v1Color, PALETTE_BG);
         char buf[8];
         snprintf(buf, sizeof(buf), "%d", v1Rssi);
-        GFX_drawString(tft_, buf, x + 24, y);  // Offset for "V " width
+        GFX_drawString(tft_, buf, x + 24, y); // Offset for "V " width
     }
 
     // Draw app RSSI below V1 RSSI if connected
@@ -199,7 +189,7 @@ void V1Display::drawRssiIndicator(int rssi) {
         TFT_CALL(setTextColor)(appColor, PALETTE_BG);
         char buf[8];
         snprintf(buf, sizeof(buf), "%d", appRssi);
-        GFX_drawString(tft_, buf, x + 24, y + lineHeight);  // Offset for "P " width
+        GFX_drawString(tft_, buf, x + 24, y + lineHeight); // Offset for "P " width
     }
 }
 
@@ -244,10 +234,8 @@ void V1Display::drawProfileIndicator(int slot) {
             return;
         }
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Profile);
-        drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h,
-                         DisplayDirtyRegionSource::Status);
-        FILL_RECT(profileRect.x, profileRect.y,
-                  profileRect.w, profileRect.h, PALETTE_BG);
+        drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
+        FILL_RECT(profileRect.x, profileRect.y, profileRect.w, profileRect.h, PALETTE_BG);
         elementCaches_.profile.valid = true;
         elementCaches_.profile.hiddenRender = true;
         elementCaches_.profile.lastName[0] = '\0';
@@ -266,50 +254,44 @@ void V1Display::drawProfileIndicator(int slot) {
     const char* name;
     uint16_t color;
     switch (slot % 3) {
-        case 0:
-            name = s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
-            color = s.slot0Color;
-            break;
-        case 1:
-            name = s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
-            color = s.slot1Color;
-            break;
-        default:  // case 2
-            name = s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
-            color = s.slot2Color;
-            break;
+    case 0:
+        name = s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
+        color = s.slot0Color;
+        break;
+    case 1:
+        name = s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
+        color = s.slot1Color;
+        break;
+    default: // case 2
+        name = s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
+        color = s.slot2Color;
+        break;
     }
 
     // Cache short-circuit: skip FILL_RECT+text render when slot/color/name
     // match the last-drawn values. This is what makes the arrow-only partial
     // flush actually fire — profile is called every frame from drawStatusStrip.
-    if (elementCaches_.profile.valid &&
-        !elementCaches_.profile.hiddenRender &&
-        slot  == elementCaches_.profile.lastSlot &&
-        color == elementCaches_.profile.lastColor &&
-        strncmp(name, elementCaches_.profile.lastName,
-                sizeof(elementCaches_.profile.lastName)) == 0) {
+    if (elementCaches_.profile.valid && !elementCaches_.profile.hiddenRender &&
+        slot == elementCaches_.profile.lastSlot && color == elementCaches_.profile.lastColor &&
+        strncmp(name, elementCaches_.profile.lastName, sizeof(elementCaches_.profile.lastName)) == 0) {
         return;
     }
-    elementCaches_.profile.valid        = true;
+    elementCaches_.profile.valid = true;
     elementCaches_.profile.hiddenRender = false;
-    elementCaches_.profile.lastSlot     = slot;
-    elementCaches_.profile.lastColor    = color;
-    strncpy(elementCaches_.profile.lastName, name,
-            sizeof(elementCaches_.profile.lastName) - 1);
+    elementCaches_.profile.lastSlot = slot;
+    elementCaches_.profile.lastColor = color;
+    strncpy(elementCaches_.profile.lastName, name, sizeof(elementCaches_.profile.lastName) - 1);
     elementCaches_.profile.lastName[sizeof(elementCaches_.profile.lastName) - 1] = '\0';
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Profile);
 
     // Clear area under arrows
-    drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h,
-                         DisplayDirtyRegionSource::Status);
-    FILL_RECT(profileRect.x, profileRect.y,
-              profileRect.w, profileRect.h, PALETTE_BG);
+    drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
+    FILL_RECT(profileRect.x, profileRect.y, profileRect.w, profileRect.h, PALETTE_BG);
 
     // Use built-in font (OFR font subset doesn't have all letters for profile names)
-    TFT_CALL(setTextSize)(2);  // Size 2 = ~12px per char
+    TFT_CALL(setTextSize)(2); // Size 2 = ~12px per char
     TFT_CALL(setTextColor)(color, PALETTE_BG);
-    int16_t nameWidth = strlen(name) * 12;  // size 2 = ~12px per char
+    int16_t nameWidth = strlen(name) * 12; // size 2 = ~12px per char
     int textX = cx - nameWidth / 2;
     GFX_setTextDatum(TL_DATUM);
     GFX_drawString(tft_, name, textX, profileRect.y);
@@ -333,12 +315,12 @@ void V1Display::drawBatteryIndicator() {
 
     // Battery icon position - VERTICAL at bottom-right
     // Position to the right of profile indicator area, avoiding direction arrows
-    const int battW = 14;   // Battery body width (was height when horizontal)
-    const int battH = 28;   // Battery body height (was width when horizontal)
+    const int battW = 14;                        // Battery body width (was height when horizontal)
+    const int battH = 28;                        // Battery body height (was width when horizontal)
     const int battX = SCREEN_WIDTH - battW - 8;  // Right edge with margin
     const int battY = SCREEN_HEIGHT - battH - 8; // Bottom with margin (cap above)
-    const int capW = 8;     // Positive terminal cap width (horizontal bar at top)
-    const int capH = 3;     // Positive terminal cap height
+    const int capW = 8;                          // Positive terminal cap width (horizontal bar at top)
+    const int capH = 3;                          // Positive terminal cap height
     const DisplayLayout::DisplayRect percentRect = DisplayLayout::batteryPercentRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::batteryIconRect();
 
@@ -346,9 +328,9 @@ void V1Display::drawBatteryIndicator() {
     // Use hysteresis to prevent flickering: hide above 4125, show below 4095
     uint16_t voltage = batteryManager.getVoltageMillivolts();
     if (voltage > 4125) {
-        s_batteryShowOnUSB = false;  // On USB or fully charged
+        s_batteryShowOnUSB = false; // On USB or fully charged
     } else if (voltage < 4095) {
-        s_batteryShowOnUSB = true;   // On battery, not full
+        s_batteryShowOnUSB = true; // On battery, not full
     }
     // Between 4095-4125: keep previous state (hysteresis)
 
@@ -357,16 +339,16 @@ void V1Display::drawBatteryIndicator() {
 
     // If percent is enabled, ONLY show percent (never icon)
     if (s.showBatteryPercent && !s.hideBatteryIcon && batteryManager.hasBattery()) {
-        const unsigned long PCT_FORCE_REDRAW_MS = 60000;  // 60s safety refresh
+        const unsigned long PCT_FORCE_REDRAW_MS = 60000; // 60s safety refresh
 
         // Choose color based on level
         uint16_t textColor;
         if (pct <= 20) {
-            textColor = 0xF800;  // Red - critical
+            textColor = 0xF800; // Red - critical
         } else if (pct <= 40) {
-            textColor = 0xFD20;  // Orange - low
+            textColor = 0xFD20; // Orange - low
         } else {
-            textColor = 0x07E0;  // Green - good
+            textColor = 0x07E0; // Green - good
         }
         textColor = dimColor(textColor);
 
@@ -377,14 +359,13 @@ void V1Display::drawBatteryIndicator() {
                                  (pct != elementCaches_.battery.lastPctDrawn) ||
                                  (textColor != elementCaches_.battery.lastPctColor) ||
                                  ((nowMs - elementCaches_.battery.lastPctDrawMs) >= PCT_FORCE_REDRAW_MS) ||
-                                 !elementCaches_.battery.iconValid;  // mode transition
+                                 !elementCaches_.battery.iconValid; // mode transition
 
         // Mode just transitioned from icon → percent, or first render.
         // Clear the icon area once; then cache state tracks percent-mode going forward.
         if (!elementCaches_.battery.iconValid) {
             perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
-            drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h,
-                         DisplayDirtyRegionSource::Status);
+            drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
             elementCaches_.battery.iconValid = true;
             elementCaches_.battery.lastIconShown = false;
@@ -397,21 +378,19 @@ void V1Display::drawBatteryIndicator() {
             if (elementCaches_.battery.lastPctVisible) {
                 perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
                 drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h,
-                         DisplayDirtyRegionSource::Status);
-                FILL_RECT(percentRect.x, percentRect.y,
-                          percentRect.w, percentRect.h, PALETTE_BG);
+                                 DisplayDirtyRegionSource::Status);
+                FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
                 elementCaches_.battery.lastPctVisible = false;
                 elementCaches_.battery.lastPctDrawn = -1;
             }
-            return;  // No percent on USB/fully charged
+            return; // No percent on USB/fully charged
         }
 
         if (!needsRedraw) {
-            return;  // Skip expensive render when nothing changed
+            return; // Skip expensive render when nothing changed
         }
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
-        drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
 
         // Format percentage string (no % to save space)
         char pctStr[4];
@@ -419,23 +398,20 @@ void V1Display::drawBatteryIndicator() {
 
         // Always clear the text area before drawing (covers shorter numbers)
         // Positioned to avoid top arrow which extends to roughly SCREEN_WIDTH - 14
-        FILL_RECT(percentRect.x, percentRect.y,
-                  percentRect.w, percentRect.h, PALETTE_BG);
+        FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
 
         // Right-aligned built-in font near the top-right corner.
         GFX_setTextDatum(TR_DATUM);
-        TFT_CALL(setTextSize)(2);  // Larger for better visibility
+        TFT_CALL(setTextSize)(2); // Larger for better visibility
         TFT_CALL(setTextColor)(textColor, PALETTE_BG);
-        GFX_drawString(tft_, pctStr,
-                       percentRect.x + percentRect.w - 2,
-                       percentRect.y + 12);
+        GFX_drawString(tft_, pctStr, percentRect.x + percentRect.w - 2, percentRect.y + 12);
 
         // Update cache
         elementCaches_.battery.lastPctDrawn = pct;
         elementCaches_.battery.lastPctColor = textColor;
         elementCaches_.battery.lastPctVisible = true;
         elementCaches_.battery.lastPctDrawMs = nowMs;
-        return;  // Never draw icon when percent is enabled
+        return; // Never draw icon when percent is enabled
     }
 
     // Percent is disabled, show icon instead.
@@ -445,40 +421,40 @@ void V1Display::drawBatteryIndicator() {
     const bool shownNow = hasBat && !hideIcon && s_batteryShowOnUSB;
 
     int filledSections = 0;
-    uint16_t fillColor = 0x07E0;  // default green
+    uint16_t fillColor = 0x07E0; // default green
     if (shownNow) {
         const int sections = 5;
-        filledSections = (pct + 10) / 20;  // 0-20%=1, 21-40%=2, etc. (min 1 if >0)
-        if (pct == 0) filledSections = 0;
-        if (filledSections > sections) filledSections = sections;
+        filledSections = (pct + 10) / 20; // 0-20%=1, 21-40%=2, etc. (min 1 if >0)
+        if (pct == 0)
+            filledSections = 0;
+        if (filledSections > sections)
+            filledSections = sections;
 
-        if (pct <= 20)       fillColor = 0xF800;  // Red - critical
-        else if (pct <= 40)  fillColor = 0xFD20;  // Orange - low
-        else                 fillColor = 0x07E0;  // Green - good
+        if (pct <= 20)
+            fillColor = 0xF800; // Red - critical
+        else if (pct <= 40)
+            fillColor = 0xFD20; // Orange - low
+        else
+            fillColor = 0x07E0; // Green - good
     }
     const uint16_t outlineColor = dimColor(PALETTE_TEXT);
 
     // Cache short-circuit: skip repaint when icon-mode state unchanged.
     // iconValid=false forces a repaint (used by drawProfileIndicator after
     // its FILL_RECT clips the battery corner, and by invalidateAll()).
-    if (elementCaches_.battery.iconValid &&
-        elementCaches_.battery.lastIconShown    == shownNow &&
+    if (elementCaches_.battery.iconValid && elementCaches_.battery.lastIconShown == shownNow &&
         elementCaches_.battery.lastFilledSections == filledSections &&
-        elementCaches_.battery.lastFillColor    == fillColor &&
-        elementCaches_.battery.lastOutlineColor == outlineColor &&
-        elementCaches_.battery.lastHasBattery   == hasBat &&
-        elementCaches_.battery.lastHideIcon     == hideIcon &&
-        elementCaches_.battery.lastOnUSB        == s_batteryShowOnUSB &&
-        elementCaches_.battery.lastShowPercent  == s.showBatteryPercent) {
+        elementCaches_.battery.lastFillColor == fillColor && elementCaches_.battery.lastOutlineColor == outlineColor &&
+        elementCaches_.battery.lastHasBattery == hasBat && elementCaches_.battery.lastHideIcon == hideIcon &&
+        elementCaches_.battery.lastOnUSB == s_batteryShowOnUSB &&
+        elementCaches_.battery.lastShowPercent == s.showBatteryPercent) {
         return;
     }
     // Clear percent area (in case it was previously showing, or mode transition)
     if (elementCaches_.battery.lastPctVisible || !elementCaches_.battery.iconValid) {
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
-        drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h,
-                         DisplayDirtyRegionSource::Status);
-        FILL_RECT(percentRect.x, percentRect.y,
-                  percentRect.w, percentRect.h, PALETTE_BG);
+        drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
+        FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
         elementCaches_.battery.lastPctVisible = false;
         elementCaches_.battery.lastPctDrawn = -1;
     }
@@ -486,18 +462,17 @@ void V1Display::drawBatteryIndicator() {
     // Don't draw icon if no battery, user hides it, or on USB
     if (!shownNow) {
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
-        drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
-        elementCaches_.battery.iconValid          = true;
-        elementCaches_.battery.lastIconShown      = false;
+        elementCaches_.battery.iconValid = true;
+        elementCaches_.battery.lastIconShown = false;
         elementCaches_.battery.lastFilledSections = 0;
-        elementCaches_.battery.lastFillColor      = fillColor;
-        elementCaches_.battery.lastOutlineColor   = outlineColor;
-        elementCaches_.battery.lastHasBattery     = hasBat;
-        elementCaches_.battery.lastHideIcon       = hideIcon;
-        elementCaches_.battery.lastOnUSB          = s_batteryShowOnUSB;
-        elementCaches_.battery.lastShowPercent    = s.showBatteryPercent;
+        elementCaches_.battery.lastFillColor = fillColor;
+        elementCaches_.battery.lastOutlineColor = outlineColor;
+        elementCaches_.battery.lastHasBattery = hasBat;
+        elementCaches_.battery.lastHideIcon = hideIcon;
+        elementCaches_.battery.lastOnUSB = s_batteryShowOnUSB;
+        elementCaches_.battery.lastShowPercent = s.showBatteryPercent;
         return;
     }
 
@@ -506,21 +481,20 @@ void V1Display::drawBatteryIndicator() {
 
     // Clear area (including cap above)
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
-    drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
 
     // Draw battery outline (dimmed) - vertical orientation
-    DRAW_RECT(battX, battY, battW, battH, outlineColor);  // Main body
+    DRAW_RECT(battX, battY, battW, battH, outlineColor); // Main body
     // Positive cap at top, centered
     FILL_RECT(battX + (battW - capW) / 2, battY - capH, capW, capH, outlineColor);
 
     // Draw charge sections (vertical - bottom to top, filled from bottom)
-    int sectionH = (battH - 2 * padding - (sections - 1)) / sections;  // Height of each section with 1px gap
+    int sectionH = (battH - 2 * padding - (sections - 1)) / sections; // Height of each section with 1px gap
     for (int i = 0; i < sections; i++) {
         // Draw from bottom up: section 0 at bottom, section 4 at top
         int sx = battX + padding;
-        int sy = battY + battH - padding - (i + 1) * sectionH - i;  // Bottom-up
+        int sy = battY + battH - padding - (i + 1) * sectionH - i; // Bottom-up
         int sw = battW - 2 * padding;
 
         if (i < filledSections) {
@@ -529,15 +503,15 @@ void V1Display::drawBatteryIndicator() {
     }
 
     // Commit icon cache
-    elementCaches_.battery.iconValid          = true;
-    elementCaches_.battery.lastIconShown      = true;
+    elementCaches_.battery.iconValid = true;
+    elementCaches_.battery.lastIconShown = true;
     elementCaches_.battery.lastFilledSections = filledSections;
-    elementCaches_.battery.lastFillColor      = fillColor;
-    elementCaches_.battery.lastOutlineColor   = outlineColor;
-    elementCaches_.battery.lastHasBattery     = hasBat;
-    elementCaches_.battery.lastHideIcon       = hideIcon;
-    elementCaches_.battery.lastOnUSB          = s_batteryShowOnUSB;
-    elementCaches_.battery.lastShowPercent    = s.showBatteryPercent;
+    elementCaches_.battery.lastFillColor = fillColor;
+    elementCaches_.battery.lastOutlineColor = outlineColor;
+    elementCaches_.battery.lastHasBattery = hasBat;
+    elementCaches_.battery.lastHideIcon = hideIcon;
+    elementCaches_.battery.lastOnUSB = s_batteryShowOnUSB;
+    elementCaches_.battery.lastShowPercent = s.showBatteryPercent;
 #endif
 }
 
@@ -556,8 +530,7 @@ void V1Display::drawBLEProxyIndicator() {
     if (!bleProxyEnabled_) {
         if (bleProxyDrawn_) {
             perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
-            drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+            drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
         }
@@ -575,8 +548,7 @@ void V1Display::drawBLEProxyIndicator() {
     if (s.hideBleIcon) {
         if (bleProxyDrawn_) {
             perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
-            drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+            drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
         }
@@ -591,8 +563,7 @@ void V1Display::drawBLEProxyIndicator() {
     // Visual-verification preview steps own their BLE state explicitly.  Do not
     // let an unrelated runtime-context timestamp make the same pinned step
     // alternate between the bright and stale connected roles across captures.
-    const bool bleContextFresh =
-        previewIndicatorOverridesActive_ || hasFreshBleContext(millis());
+    const bool bleContextFresh = previewIndicatorOverridesActive_ || hasFreshBleContext(millis());
 
     // Icon color from settings: connected vs disconnected
     // When connected but not receiving data, dim further to show "stale" state
@@ -601,7 +572,7 @@ void V1Display::drawBLEProxyIndicator() {
         // Connected: bright green when receiving, dimmed when stale
         const bool receivingData = bleReceivingData_ && bleContextFresh;
         btColor = receivingData ? dimColor(s.colorBleConnected, 85)
-                                : dimColor(s.colorBleConnected, 40);  // Much dimmer when no data
+                                : dimColor(s.colorBleConnected, 40); // Much dimmer when no data
     } else {
         btColor = dimColor(s.colorBleDisconnected, 85);
     }
@@ -609,20 +580,17 @@ void V1Display::drawBLEProxyIndicator() {
     // Cache short-circuit: skip rune rebuild when already drawn with same color.
     // bleProxyDrawn_ is an older singleton latch kept in sync here so existing
     // consumers (e.g. prepareFullRedrawNoClear) still observe it correctly.
-    if (elementCaches_.bleProxy.valid &&
-        elementCaches_.bleProxy.lastDrawn &&
-        elementCaches_.bleProxy.lastColor == btColor &&
-        bleProxyDrawn_) {
+    if (elementCaches_.bleProxy.valid && elementCaches_.bleProxy.lastDrawn &&
+        elementCaches_.bleProxy.lastColor == btColor && bleProxyDrawn_) {
         return;
     }
-    elementCaches_.bleProxy.valid    = true;
+    elementCaches_.bleProxy.valid = true;
     elementCaches_.bleProxy.lastDrawn = true;
     elementCaches_.bleProxy.lastColor = btColor;
 
     // Clear the area before redrawing
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
 
     // Draw Bluetooth rune - the bind rune of ᛒ (Berkanan) and ᚼ (Hagall)
@@ -630,20 +598,20 @@ void V1Display::drawBLEProxyIndicator() {
     int cx = bleX + iconSize / 2;
     int cy = bleY + iconSize / 2;
 
-    int h = iconSize - 2;      // Total height
+    int h = iconSize - 2; // Total height
     int top = cy - h / 2;
     int bot = cy + h / 2;
     int mid = cy;
 
     // Right chevron points - where the arrows reach on the right
     int rightX = cx + 5;
-    int topChevronY = mid - 4;   // Upper right point
-    int botChevronY = mid + 4;   // Lower right point
+    int topChevronY = mid - 4; // Upper right point
+    int botChevronY = mid + 4; // Lower right point
 
     // Left arrow endpoints
     int leftX = cx - 5;
-    int topArrowY = mid - 4;     // Upper left point
-    int botArrowY = mid + 4;     // Lower left point
+    int topArrowY = mid - 4; // Upper left point
+    int botArrowY = mid + 4; // Lower left point
 
     // Vertical center line (thicker for visibility)
     FILL_RECT(cx - 1, top, 2, h, btColor);
@@ -705,8 +673,7 @@ void V1Display::drawWiFiIndicator() {
             return;
         }
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
-        drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
         elementCaches_.wifi.valid = true;
         elementCaches_.wifi.lastVisible = false;
@@ -723,8 +690,7 @@ void V1Display::drawWiFiIndicator() {
             return;
         }
         perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
-        drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+        drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
         // Clear the WiFi icon area when WiFi is fully inactive.
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
         elementCaches_.wifi.valid = true;
@@ -738,20 +704,17 @@ void V1Display::drawWiFiIndicator() {
     const bool gaveUp = wifiManager.isReconnectGaveUp();
     uint16_t wifiColor;
     if (gaveUp && !staConnected) {
-        wifiColor = 0xF800;  // Bright red — STA gave up after max reconnect failures
+        wifiColor = 0xF800; // Bright red — STA gave up after max reconnect failures
     } else {
         wifiColor = dimColor(s.colorWiFiConnected, 85);
     }
 
     // Cache short-circuit: skip arc geometry rebuild when already drawn with same color.
-    if (elementCaches_.wifi.valid &&
-        elementCaches_.wifi.lastVisible &&
-        elementCaches_.wifi.lastColor == wifiColor) {
+    if (elementCaches_.wifi.valid && elementCaches_.wifi.lastVisible && elementCaches_.wifi.lastColor == wifiColor) {
         return;
     }
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
     elementCaches_.wifi.valid = true;
     elementCaches_.wifi.lastVisible = true;
     elementCaches_.wifi.lastColor = wifiColor;
@@ -774,11 +737,14 @@ void V1Display::drawWiFiIndicator() {
     // from every redraw path (full-redraw or indicator-color flip) and leaves
     // only integer adds + FILL_RECT calls.  Bit-identical to the previous
     // truncation math: kPi and casts match the original expression exactly.
-    struct ArcPoint { int8_t dx; int8_t dy; };
+    struct ArcPoint {
+        int8_t dx;
+        int8_t dy;
+    };
     static const struct ArcPoints {
-        ArcPoint arc1[7];   // inner: -45..45 step 15, r=5
-        ArcPoint arc2[9];   // middle: -50..50 step 12, r=9
-        ArcPoint arc3[12];  // outer: -55..55 step 10, r=13
+        ArcPoint arc1[7];  // inner: -45..45 step 15, r=5
+        ArcPoint arc2[9];  // middle: -50..50 step 12, r=9
+        ArcPoint arc3[12]; // outer: -55..55 step 10, r=13
     } kArcPoints = [] {
         constexpr double kPi = 3.14159;
         ArcPoints pts{};

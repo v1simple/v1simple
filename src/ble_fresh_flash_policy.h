@@ -20,10 +20,7 @@ struct BondResetResult {
 String readStoredFirmwareVersion(Preferences& prefs);
 bool hasFirmwareVersionMismatch(Preferences& prefs, const char* currentVersion);
 bool storeFirmwareVersion(Preferences& prefs, const char* currentVersion);
-BondResetResult resetBondsForFirmwareVersion(Preferences& prefs,
-                                             const char* currentVersion,
-                                             BackupBondsFn backupBonds,
+BondResetResult resetBondsForFirmwareVersion(Preferences& prefs, const char* currentVersion, BackupBondsFn backupBonds,
                                              ClearBondsFn clearBonds);
 
-}  // namespace BleFreshFlashPolicy
-
+} // namespace BleFreshFlashPolicy

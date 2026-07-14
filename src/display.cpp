@@ -5,10 +5,10 @@
 
 #include "display.h"
 #include "config.h"
-#include "display_layout.h"  // Centralized layout constants
+#include "display_layout.h" // Centralized layout constants
 #include "color_themes.h"
 #include "band_utils.h"
-#include "display_segments.h"  // 7/14-segment data tables
+#include "display_segments.h" // 7/14-segment data tables
 #include "display_ble_freshness.h"
 #include "settings.h"
 #include "battery_manager.h"
@@ -32,7 +32,7 @@ using TextWidthCacheEntry = DisplayFontManager::WidthCacheEntry;
 namespace {
 
 class PatchedAxs15231B : public Arduino_AXS15231B {
-public:
+  public:
     using Arduino_AXS15231B::Arduino_AXS15231B;
 
     void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) override {
@@ -86,22 +86,22 @@ using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
 PerfDisplayScreen V1Display::perfScreenForMode(ScreenMode mode) {
     switch (mode) {
-        case ScreenMode::Unknown:
-            return PerfDisplayScreen::Unknown;
-        case ScreenMode::Resting:
-            return PerfDisplayScreen::Resting;
-        case ScreenMode::Scanning:
-            return PerfDisplayScreen::Scanning;
-        case ScreenMode::Disconnected:
-            return PerfDisplayScreen::Unknown;
-        case ScreenMode::Maintenance:
-            return PerfDisplayScreen::Unknown;
-        case ScreenMode::Live:
-            return PerfDisplayScreen::Live;
-        case ScreenMode::Persisted:
-            return PerfDisplayScreen::Persisted;
-        case ScreenMode::Stealth:
-            return PerfDisplayScreen::Resting;
+    case ScreenMode::Unknown:
+        return PerfDisplayScreen::Unknown;
+    case ScreenMode::Resting:
+        return PerfDisplayScreen::Resting;
+    case ScreenMode::Scanning:
+        return PerfDisplayScreen::Scanning;
+    case ScreenMode::Disconnected:
+        return PerfDisplayScreen::Unknown;
+    case ScreenMode::Maintenance:
+        return PerfDisplayScreen::Unknown;
+    case ScreenMode::Live:
+        return PerfDisplayScreen::Live;
+    case ScreenMode::Persisted:
+        return PerfDisplayScreen::Persisted;
+    case ScreenMode::Stealth:
+        return PerfDisplayScreen::Resting;
     }
     return PerfDisplayScreen::Unknown;
 }
@@ -123,8 +123,8 @@ PerfDisplayScreen V1Display::perfScreenForMode(ScreenMode mode) {
 #include "display_draw.h"
 
 // Platform-specific state kept in display.cpp
-    // TFT_BL alias for backlight pin
-    #define TFT_BL LCD_BL
+// TFT_BL alias for backlight pin
+#define TFT_BL LCD_BL
 
 // Global display instance reference — defined here, declared extern in display_palette.h
 V1Display* g_displayInstance = nullptr;
@@ -138,14 +138,14 @@ V1Display* g_displayInstance = nullptr;
 using namespace DisplaySegments;
 
 // TOP_COUNTER_* constants now live in display_layout.h
-using DisplayLayout::TOP_COUNTER_FONT_SIZE;
+using DisplayLayout::TOP_COUNTER_FALLBACK_WIDTH;
+using DisplayLayout::TOP_COUNTER_FIELD_H;
+using DisplayLayout::TOP_COUNTER_FIELD_W;
 using DisplayLayout::TOP_COUNTER_FIELD_X;
 using DisplayLayout::TOP_COUNTER_FIELD_Y;
-using DisplayLayout::TOP_COUNTER_FIELD_W;
-using DisplayLayout::TOP_COUNTER_FIELD_H;
-using DisplayLayout::TOP_COUNTER_TEXT_Y;
+using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
-using DisplayLayout::TOP_COUNTER_FALLBACK_WIDTH;
+using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
 V1Display::V1Display() {
     // Initialize with standard theme by default
@@ -167,10 +167,7 @@ bool V1Display::begin() {
     unsigned long stageStartMs = beginStartMs;
     auto logDisplayStage = [&](const char* stageName) {
         const unsigned long now = millis();
-        Serial.printf("[Display] Stage %s: %lu ms (total=%lu)\n",
-                      stageName,
-                      now - stageStartMs,
-                      now - beginStartMs);
+        Serial.printf("[Display] Stage %s: %lu ms (total=%lu)\n", stageName, now - stageStartMs, now - beginStartMs);
         stageStartMs = now;
     };
 
@@ -182,7 +179,7 @@ bool V1Display::begin() {
     // Arduino_GFX initialization for Waveshare 3.49"
     // Waveshare 3.49" has INVERTED backlight PWM: 0 = full brightness, 255 = off
     pinMode(LCD_BL, OUTPUT);
-    analogWrite(LCD_BL, 255);  // Start with backlight off (inverted: 255=off)
+    analogWrite(LCD_BL, 255); // Start with backlight off (inverted: 255=off)
 
     // Manual RST toggle with Waveshare timing BEFORE creating bus
     // This is critical - Waveshare examples do: HIGH(30ms) -> LOW(250ms) -> HIGH(30ms)
@@ -195,14 +192,13 @@ bool V1Display::begin() {
     delay(30);
 
     // Create QSPI bus
-    bus_.reset(new (std::nothrow) Arduino_ESP32QSPI(
-        LCD_CS,    // CS
-        LCD_SCLK,  // SCK
-        LCD_DATA0, // D0
-        LCD_DATA1, // D1
-        LCD_DATA2, // D2
-        LCD_DATA3  // D3
-    ));
+    bus_.reset(new (std::nothrow) Arduino_ESP32QSPI(LCD_CS,    // CS
+                                                    LCD_SCLK,  // SCK
+                                                    LCD_DATA0, // D0
+                                                    LCD_DATA1, // D1
+                                                    LCD_DATA2, // D2
+                                                    LCD_DATA3  // D3
+                                                    ));
     if (!bus_) {
         Serial.println("[Display] ERROR: Failed to create bus!");
         return false;
@@ -210,20 +206,19 @@ bool V1Display::begin() {
 
     // Create AXS15231B panel - native 172x640 portrait
     // Pass GFX_NOT_DEFINED for RST since we already did manual reset
-    gfxPanel_.reset(new (std::nothrow) ActiveAxs15231B(
-        bus_.get(),         // bus
-        GFX_NOT_DEFINED,   // RST - we already did manual reset
-        0,                 // rotation (0 = no panel rotation)
-        false,             // IPS
-        172,               // width (Waveshare 3.49" is 172 wide)
-        640,               // height
-        0,                 // col_offset1
-        0,                 // row_offset1
-        0,                 // col_offset2
-        0,                 // row_offset2
-        axs15231b_180640_init_operations,   // init operations for this panel type
-        sizeof(axs15231b_180640_init_operations)
-    ));
+    gfxPanel_.reset(new (std::nothrow)
+                        ActiveAxs15231B(bus_.get(),                       // bus
+                                        GFX_NOT_DEFINED,                  // RST - we already did manual reset
+                                        0,                                // rotation (0 = no panel rotation)
+                                        false,                            // IPS
+                                        172,                              // width (Waveshare 3.49" is 172 wide)
+                                        640,                              // height
+                                        0,                                // col_offset1
+                                        0,                                // row_offset1
+                                        0,                                // col_offset2
+                                        0,                                // row_offset2
+                                        axs15231b_180640_init_operations, // init operations for this panel type
+                                        sizeof(axs15231b_180640_init_operations)));
     if (!gfxPanel_) {
         Serial.println("[Display] ERROR: Failed to create panel!");
         bus_.reset();
@@ -253,8 +248,8 @@ bool V1Display::begin() {
         void* canvasPtr = tft_->getFramebuffer();
         if (canvasPtr) {
             bool isPsram = esp_ptr_external_ram(canvasPtr);
-            Serial.printf("[Display] Canvas framebuffer: %s (%p, ~220 KiB)\n",
-                          isPsram ? "PSRAM" : "INTERNAL SRAM", canvasPtr);
+            Serial.printf("[Display] Canvas framebuffer: %s (%p, ~220 KiB)\n", isPsram ? "PSRAM" : "INTERNAL SRAM",
+                          canvasPtr);
             if (!isPsram) {
                 Serial.println("[Display] WARNING: 220 KiB canvas in internal SRAM!");
             }
@@ -265,9 +260,8 @@ bool V1Display::begin() {
     DISPLAY_FLUSH();
 
     // Turn on backlight (inverted: 0 = full brightness)
-    analogWrite(LCD_BL, 0);  // Full brightness (inverted: 0=on)
+    analogWrite(LCD_BL, 0); // Full brightness (inverted: 0=on)
     delay(30);
-
 
     delay(10); // Give hardware time to settle
 
@@ -281,16 +275,14 @@ bool V1Display::begin() {
     fontMgr_.init(tft_);
     logDisplayStage("font_init");
 
-    frequencyRasterCache_.begin(
-        static_cast<uint16_t>(DisplayLayout::kFrequencyZoneRect.w),
-        // The OFR clear strip intentionally includes vertical pad and is
-        // taller than the primary zone rect.
-        static_cast<uint16_t>(DisplayLayout::FREQUENCY_OFR_FONT_SIZE + 16));
+    frequencyRasterCache_.begin(static_cast<uint16_t>(DisplayLayout::kFrequencyZoneRect.w),
+                                // The OFR clear strip intentionally includes vertical pad and is
+                                // taller than the primary zone rect.
+                                static_cast<uint16_t>(DisplayLayout::FREQUENCY_OFR_FONT_SIZE + 16));
     logDisplayStage("freq_cache_init");
-    frequencyDigitAtlas_.begin(
-        72,
-        // Match the numeric OFR clear strip height.
-        static_cast<uint16_t>(DisplayLayout::FREQUENCY_OFR_FONT_SIZE + 16));
+    frequencyDigitAtlas_.begin(72,
+                               // Match the numeric OFR clear strip height.
+                               static_cast<uint16_t>(DisplayLayout::FREQUENCY_OFR_FONT_SIZE + 16));
     logDisplayStage("freq_digit_atlas_init");
 
     // Debug: dump top-counter glyph bounds for a few reference digits.
@@ -302,14 +294,11 @@ bool V1Display::begin() {
             fontMgr_.getTopCounterBounds('2', false, twoMin, twoMax) &&
             fontMgr_.getTopCounterBounds('8', false, eightMin, eightMax)) {
             Serial.printf("[Display] TopCounter OFR bounds @%dpx: '1'=%d..%d '2'=%d..%d '8'=%d..%d\n",
-                          TOP_COUNTER_FONT_SIZE,
-                          oneMin, oneMax, twoMin, twoMax, eightMin, eightMax);
+                          TOP_COUNTER_FONT_SIZE, oneMin, oneMax, twoMin, twoMax, eightMin, eightMax);
         }
     }
 
-    Serial.printf("[Display] OK %dx%d, font(seg7)=%d\n",
-                  SCREEN_WIDTH, SCREEN_HEIGHT,
-                  fontMgr_.segment7Ready);
+    Serial.printf("[Display] OK %dx%d, font(seg7)=%d\n", SCREEN_WIDTH, SCREEN_HEIGHT, fontMgr_.segment7Ready);
 
     // Load color theme from settings
     updateColorTheme();
@@ -322,11 +311,11 @@ bool V1Display::begin() {
 }
 
 void V1Display::setBrightness(uint8_t level) {
-    // PWM brightness control for Arduino_GFX
-    // Waveshare 3.49" has INVERTED backlight: 0=full on, 255=off
-    #ifdef LCD_BL
-    analogWrite(LCD_BL, 255 - level);  // Invert the level
-    #endif
+// PWM brightness control for Arduino_GFX
+// Waveshare 3.49" has INVERTED backlight: 0=full on, 255=off
+#ifdef LCD_BL
+    analogWrite(LCD_BL, 255 - level); // Invert the level
+#endif
 }
 
 void V1Display::clear() {
@@ -358,11 +347,9 @@ void V1Display::setBLEProxyStatus(bool proxyEnabled, bool clientConnected, bool 
     // Check if receiving state changed (for heartbeat visual)
     bool receivingChanged = (receivingData != bleReceivingData_);
 
-    if (bleProxyDrawn_ &&
-        proxyEnabled == bleProxyEnabled_ &&
-        clientConnected == bleProxyClientConnected_ &&
+    if (bleProxyDrawn_ && proxyEnabled == bleProxyEnabled_ && clientConnected == bleProxyClientConnected_ &&
         !receivingChanged) {
-        return;  // No visual change needed
+        return; // No visual change needed
     }
 
     bleProxyEnabled_ = proxyEnabled;
@@ -407,7 +394,7 @@ bool V1Display::rawFramebufferAvailable() const {
 
 bool V1Display::enableVisualFlushShadow() {
     if (flushShadow_) {
-        return true;  // Idempotent across the pins of one visual-test run.
+        return true; // Idempotent across the pins of one visual-test run.
     }
     if (!tft_) {
         return false;
@@ -419,8 +406,7 @@ bool V1Display::enableVisualFlushShadow() {
     const size_t len = rawFramebufferByteLength();
     flushShadow_ = static_cast<uint16_t*>(heap_caps_malloc(len, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     if (!flushShadow_) {
-        Serial.printf("[Display] visual flush shadow disabled: alloc %u bytes failed\n",
-                      static_cast<unsigned>(len));
+        Serial.printf("[Display] visual flush shadow disabled: alloc %u bytes failed\n", static_cast<unsigned>(len));
         return false;
     }
     // Seed with the current framebuffer: the shadow tracks divergence
@@ -444,15 +430,26 @@ void V1Display::disableVisualFlushShadow() {
 
 void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     // Constrain region to logical framebuffer bounds
-    if (!tft_ || !gfxPanel_) return;
-    int16_t maxW = tft_->width();   // 640 (logical landscape width)
-    int16_t maxH = tft_->height();  // 172 (logical landscape height)
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (w <= 0 || h <= 0) return;
-    if (x >= maxW || y >= maxH) return;
-    if (x + w > maxW) w = maxW - x;
-    if (y + h > maxH) h = maxH - y;
+    if (!tft_ || !gfxPanel_)
+        return;
+    int16_t maxW = tft_->width();  // 640 (logical landscape width)
+    int16_t maxH = tft_->height(); // 172 (logical landscape height)
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (w <= 0 || h <= 0)
+        return;
+    if (x >= maxW || y >= maxH)
+        return;
+    if (x + w > maxW)
+        w = maxW - x;
+    if (y + h > maxH)
+        h = maxH - y;
     const uint32_t areaPx = static_cast<uint32_t>(w) * static_cast<uint32_t>(h);
 
     uint16_t* fb = tft_->getFramebuffer();
@@ -473,11 +470,11 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     //   px0 = (CANVAS_WIDTH - ly0 - lh) = (CANVAS_WIDTH - y - h)
     //   pw  = lh  = h
     //
-    const int16_t kRawStride = CANVAS_WIDTH;  // 172
+    const int16_t kRawStride = CANVAS_WIDTH; // 172
     const int16_t phys_py0 = x;
-    const int16_t phys_ph  = w;
+    const int16_t phys_ph = w;
     const int16_t phys_px0 = kRawStride - y - h;
-    const int16_t phys_pw  = h;
+    const int16_t phys_pw = h;
 
     // Safety: input clamping above guarantees y+h ∈ [1, CANVAS_WIDTH], so
     // phys_px0 ∈ [0, 171]. Assert to catch any future clamping regression.
@@ -495,8 +492,7 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     // multi-row partial batches were re-tested with contiguous/packed sources
     // and still produced wrong-region artifacts on this panel path.
     for (int16_t row = 0; row < phys_ph; ++row) {
-        uint16_t* rowPtr = fb + static_cast<uint32_t>(phys_py0 + row) *
-                                    static_cast<uint32_t>(kRawStride) +
+        uint16_t* rowPtr = fb + static_cast<uint32_t>(phys_py0 + row) * static_cast<uint32_t>(kRawStride) +
                            static_cast<uint32_t>(phys_px0);
         gfxPanel_->draw16bitRGBBitmap(phys_px0, phys_py0 + row, rowPtr, phys_pw, 1);
     }
@@ -504,9 +500,7 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     ++renderSeq_;
     flushShadowSyncRegion_(phys_px0, phys_py0, phys_pw, phys_ph);
     perfRecordFlushUs(elapsedUs, areaPx, false);
-    perfRecordPartialFlushShape(elapsedUs, areaPx,
-                                static_cast<uint16_t>(w),
-                                static_cast<uint16_t>(h));
+    perfRecordPartialFlushShape(elapsedUs, areaPx, static_cast<uint16_t>(w), static_cast<uint16_t>(h));
 }
 
 const char* V1Display::bandToString(Band band) {
@@ -516,12 +510,18 @@ const char* V1Display::bandToString(Band band) {
 uint16_t V1Display::getBandColor(Band band) {
     const V1Settings& s = settingsManager.get();
     switch (band) {
-        case BAND_LASER: return s.colorBandL;
-        case BAND_KA: return s.colorBandKa;
-        case BAND_K: return s.colorBandK;
-        case BAND_KU: return s.colorBandK;  // No dedicated Ku color; share K's swatch.
-        case BAND_X: return s.colorBandX;
-        default: return PALETTE_TEXT;
+    case BAND_LASER:
+        return s.colorBandL;
+    case BAND_KA:
+        return s.colorBandKa;
+    case BAND_K:
+        return s.colorBandK;
+    case BAND_KU:
+        return s.colorBandK; // No dedicated Ku color; share K's swatch.
+    case BAND_X:
+        return s.colorBandX;
+    default:
+        return PALETTE_TEXT;
     }
 }
 

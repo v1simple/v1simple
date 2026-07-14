@@ -33,7 +33,7 @@ bool StorageManager::begin() {
     bool pinsSet = SD_MMC.setPins(SD_MMC_CLK_PIN, SD_MMC_CMD_PIN, SD_MMC_D0_PIN);
     if (!pinsSet) {
         Serial.println("[Storage] SD_MMC.setPins() failed");
-    } else if (SD_MMC.begin("/sdcard", true)) {  // 1-bit mode
+    } else if (SD_MMC.begin("/sdcard", true)) { // 1-bit mode
         fs_ = &SD_MMC;
         ready_ = true;
         usingSDMMC_ = true;

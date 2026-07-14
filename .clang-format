@@ -1,3 +1,23 @@
+# Firmware C/C++ formatting contract.
+#
+# Pinned formatter: clang-format==22.1.8, installed from the PyPI wheel
+#   pip install "clang-format==22.1.8"
+# The pin is not cosmetic: different clang-format releases produce different
+# output for the same input, so an unpinned formatter would make
+# scripts/check_clang_format.py nondeterministic across dev machines and CI.
+# scripts/check_clang_format.py verifies the running binary reports this exact
+# version and fails loudly otherwise. Bumping the version means bumping it in
+# .github/workflows/ci.yml, scripts/check_clang_format.py, CONTRIBUTING.md and
+# this comment together, and re-verifying the ratchet manifest.
+#
+# Enforcement is a RATCHET, not a repo-wide sweep: only the files listed in
+# test/contracts/format_clean_manifest.txt are gated. See CONTRIBUTING.md.
+#
+# Generated / vendored data headers (include/v1simple_logo.h,
+# include/warning_audio.h, include/Segment7Font.h, include/FreeSans*.h) are
+# excluded from formatting via .clang-format-ignore; they are machine-emitted
+# byte blobs and reformatting them is pure churn.
+
 BasedOnStyle: LLVM
 IndentWidth: 4
 TabWidth: 4
@@ -7,7 +27,17 @@ BreakBeforeBraces: Attach
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
-SortIncludes: true
+
+# Include order is LOAD-BEARING in this Arduino/ESP-IDF codebase, so sorting is
+# a behavior risk, not a style choice. Several translation units depend on a
+# specific header arriving first (e.g. src/ble_connection.cpp deliberately
+# includes ble_client.h ahead of everything else), and enabling SortIncludes
+# would silently reorder includes in 30+ files. Revisiting this via explicit
+# IncludeCategories / IncludeIsMainRegex priorities is a separate, opt-in
+# program with its own build verification -- do not flip this flag as a
+# drive-by.
+SortIncludes: false
+
 PointerAlignment: Left
 SpaceAfterCStyleCast: false
 SpaceBeforeParens: ControlStatements

@@ -20,8 +20,12 @@
 
 BatteryManager batteryManager;
 
-#define BATTERY_LOGF(...) do { } while (0)
-#define BATTERY_LOGLN(msg) do { } while (0)
+#define BATTERY_LOGF(...)                                                                                              \
+    do {                                                                                                               \
+    } while (0)
+#define BATTERY_LOGLN(msg)                                                                                             \
+    do {                                                                                                               \
+    } while (0)
 
 // ADC handles
 static adc_oneshot_unit_handle_t adc1_handle = nullptr;
@@ -32,25 +36,19 @@ namespace {
 constexpr uint16_t kShutdownReadbackTimeoutMs = 50;
 
 class ScopedWireTimeout {
-public:
-    ScopedWireTimeout(TwoWire& wire, uint16_t timeoutMs)
-        : wire_(wire)
-        , previousTimeoutMs_(wire.getTimeOut()) {
+  public:
+    ScopedWireTimeout(TwoWire& wire, uint16_t timeoutMs) : wire_(wire), previousTimeoutMs_(wire.getTimeOut()) {
         wire_.setTimeOut(timeoutMs);
     }
 
-    ~ScopedWireTimeout() {
-        wire_.setTimeOut(previousTimeoutMs_);
-    }
+    ~ScopedWireTimeout() { wire_.setTimeOut(previousTimeoutMs_); }
 
-private:
+  private:
     TwoWire& wire_;
     uint16_t previousTimeoutMs_;
 };
 
-AudioI2cResult readTca9554RegisterWithTimeout(uint8_t reg,
-                                              uint8_t& value,
-                                              TickType_t mutexTimeoutTicks,
+AudioI2cResult readTca9554RegisterWithTimeout(uint8_t reg, uint8_t& value, TickType_t mutexTimeoutTicks,
                                               uint16_t timeoutMs) {
     AudioI2cLockGuard lock(tca9554WireMutex, mutexTimeoutTicks);
     if (!lock.ok()) {
@@ -61,26 +59,16 @@ AudioI2cResult readTca9554RegisterWithTimeout(uint8_t reg,
     return audioI2cReadRegister(tca9554Wire, TCA9554_I2C_ADDR, reg, value);
 }
 
-}  // namespace
+} // namespace
 
 // I2C for TCA9554 (separate from touch I2C) - also used by ES8311 codec
-TwoWire tca9554Wire(1);  // Use I2C port 1
+TwoWire tca9554Wire(1); // Use I2C port 1
 SemaphoreHandle_t tca9554WireMutex = nullptr;
 
 BatteryManager::BatteryManager()
-    : initialized_(false)
-    , onBattery_(false)
-    , lastVoltage_(0)
-    , lastButtonPress_(0)
-    , buttonPressStart_(0)
-    , buttonWasPressed_(false)
-    , buttonSeenReleasedSinceBoot_(false)
-    , cachedVoltage_(0)
-    , cachedPercent_(0)
-    , lastUpdateMs_(0)
-    , simulatedVoltage_(0)
-{
-}
+    : initialized_(false), onBattery_(false), lastVoltage_(0), lastButtonPress_(0), buttonPressStart_(0),
+      buttonWasPressed_(false), buttonSeenReleasedSinceBoot_(false), cachedVoltage_(0), cachedPercent_(0),
+      lastUpdateMs_(0), simulatedVoltage_(0) {}
 
 bool BatteryManager::begin() {
     BATTERY_LOGLN("[Battery] Initializing battery manager...");
@@ -115,9 +103,7 @@ bool BatteryManager::begin() {
     constexpr int samples = 10;
     constexpr int sampleDelayMs = 5;
     int highCount = 0;
-    Serial.printf("[Battery] Power debounce samples=%d delayMs=%d\n",
-                  samples,
-                  sampleDelayMs);
+    Serial.printf("[Battery] Power debounce samples=%d delayMs=%d\n", samples, sampleDelayMs);
 
     BATTERY_LOGLN("[Battery] Sampling power source detection...");
     for (int i = 0; i < samples; i++) {
@@ -130,8 +116,8 @@ bool BatteryManager::begin() {
     // Majority vote
     onBattery_ = (highCount > samples / 2);
 
-    BATTERY_LOGF("[Battery] Power detection: GPIO16 samples=%d/%d (HIGH), decision=%s\n",
-                  highCount, samples, onBattery_ ? "BATTERY" : "USB");
+    BATTERY_LOGF("[Battery] Power detection: GPIO16 samples=%d/%d (HIGH), decision=%s\n", highCount, samples,
+                 onBattery_ ? "BATTERY" : "USB");
 
     // Initialize ADC for battery voltage reading
     if (!initADC()) {
@@ -164,9 +150,8 @@ bool BatteryManager::begin() {
 
     // Do initial cache update to populate voltage reading
     update();
-    Serial.printf("[Battery] Init OK (%s, %dmV, %d%%, hasBattery=%d)\n",
-                  onBattery_ ? "BATTERY" : "USB",
-                  cachedVoltage_, cachedPercent_, hasBattery());
+    Serial.printf("[Battery] Init OK (%s, %dmV, %d%%, hasBattery=%d)\n", onBattery_ ? "BATTERY" : "USB", cachedVoltage_,
+                  cachedPercent_, hasBattery());
     return true;
 }
 
@@ -226,7 +211,8 @@ bool BatteryManager::initTCA9554() {
     for (int retry = 0; retry < 5; retry++) {
         tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
         error = tca9554Wire.endTransmission();
-        if (error == 0) break;
+        if (error == 0)
+            break;
         BATTERY_LOGF("[Battery] TCA9554 probe attempt %d failed\n", retry + 1);
         delay(5);
     }
@@ -246,7 +232,7 @@ bool BatteryManager::initTCA9554() {
     if (tca9554Wire.available() >= 1) {
         current = tca9554Wire.read();
     }
-    current |= (1 << TCA9554_PWR_LATCH_PIN);  // Ensure latch pin HIGH
+    current |= (1 << TCA9554_PWR_LATCH_PIN); // Ensure latch pin HIGH
     tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
     tca9554Wire.write(TCA9554_OUTPUT_PORT);
     tca9554Wire.write(current);
@@ -260,7 +246,7 @@ bool BatteryManager::initTCA9554() {
     // Configure pin 6 as output (remains HIGH)
     tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
     tca9554Wire.write(TCA9554_CONFIG_PORT);
-    tca9554Wire.write(0xBF);  // All inputs except pin 6 (bit 6 = 0 = output)
+    tca9554Wire.write(0xBF); // All inputs except pin 6 (bit 6 = 0 = output)
     error = tca9554Wire.endTransmission();
 
     if (error != 0) {
@@ -276,13 +262,9 @@ bool BatteryManager::setTCA9554Pin(uint8_t pin, bool high) {
     return setTCA9554PinWithBudget(pin, high, pdMS_TO_TICKS(50), 3);
 }
 
-bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin,
-                                             bool high,
-                                             TickType_t timeoutTicks,
-                                             int maxRetries) {
+bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t timeoutTicks, int maxRetries) {
     if (!tca9554WireMutex || xSemaphoreTake(tca9554WireMutex, timeoutTicks) != pdTRUE) {
-        Serial.printf("[Battery] TCA9554 mutex busy (timeout=%lu ms)\n",
-                      static_cast<unsigned long>(timeoutTicks));
+        Serial.printf("[Battery] TCA9554 mutex busy (timeout=%lu ms)\n", static_cast<unsigned long>(timeoutTicks));
         return false;
     }
 
@@ -335,7 +317,7 @@ bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin,
 
         if (error == 0) {
             xSemaphoreGive(tca9554WireMutex);
-            return true;  // Success!
+            return true; // Success!
         }
 
         if (attempt < maxRetries - 1) {
@@ -350,12 +332,13 @@ bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin,
 }
 
 uint16_t BatteryManager::readADCMillivolts() {
-    if (!adc1_handle) return 0;
+    if (!adc1_handle)
+        return 0;
 
     int raw = 0;
     esp_err_t ret = adc_oneshot_read(adc1_handle, ADC_CHANNEL_3, &raw);
     if (ret != ESP_OK) {
-        return lastVoltage_;  // Return last known value on error
+        return lastVoltage_; // Return last known value on error
     }
 
     int voltage_mv = 0;
@@ -479,8 +462,7 @@ bool BatteryManager::latchPowerOn() {
     uint8_t current = tca9554Wire.read();
     bool latchHigh = (current & (1 << TCA9554_PWR_LATCH_PIN)) != 0;
 
-    BATTERY_LOGF("[Battery] Power latch pin 6 is %s (0x%02X)\n",
-                 latchHigh ? "HIGH" : "LOW", current);
+    BATTERY_LOGF("[Battery] Power latch pin 6 is %s (0x%02X)\n", latchHigh ? "HIGH" : "LOW", current);
 
     if (!latchHigh) {
         Serial.println("[Battery] WARN: Latch is LOW - forcing HIGH!");
@@ -494,7 +476,8 @@ bool BatteryManager::latchPowerOn() {
 // WiFi and other SD users are already stopped by prepareForShutdown).
 static bool sdLogEnabled_ = false;
 static void sdLog(const char* line) {
-    if (!sdLogEnabled_ || !storageManager.isSDCard()) return;
+    if (!sdLogEnabled_ || !storageManager.isSDCard())
+        return;
     File f = SD_MMC.open("/poweroff.log", FILE_APPEND);
     if (f) {
         f.printf("[%lu] %s\n", millis(), line);
@@ -505,13 +488,13 @@ static void sdLog(const char* line) {
 static void blankPanelBacklightForSleepOrPowerOff() {
     Serial.println("[Battery] Fading backlight...");
     for (int i = 0; i <= 255; i += 5) {
-        analogWrite(LCD_BL, i);  // Inverted: 255 = off
+        analogWrite(LCD_BL, i); // Inverted: 255 = off
         delay(10);
     }
 
-    analogWrite(LCD_BL, 255);  // Backlight off (inverted)
+    analogWrite(LCD_BL, 255); // Backlight off (inverted)
     pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);  // Force off (inverted backlight)
+    digitalWrite(LCD_BL, HIGH); // Force off (inverted backlight)
     delay(50);
 }
 
@@ -522,22 +505,20 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
     sdLog("=== DEEP-SLEEP BEGIN ===");
 
     char buf[160];
-    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%",
-             onBattery_, cachedVoltage_, cachedPercent_);
+    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
     sdLog(buf);
 
     blankPanelBacklightForSleepOrPowerOff();
 
-    snprintf(buf, sizeof(buf),
-             "ext1Mask=0x%016llX pu=0x%016llX",
-             static_cast<unsigned long long>(wakeMask),
+    snprintf(buf, sizeof(buf), "ext1Mask=0x%016llX pu=0x%016llX", static_cast<unsigned long long>(wakeMask),
              static_cast<unsigned long long>(pullupMask));
     Serial.printf("[Battery] Deep sleep config: %s\n", buf);
     sdLog(buf);
 
     // Configure RTC pad pull-ups before enabling the wake source.
     for (int pin = 0; pin <= 21; ++pin) {
-        if (!(pullupMask & (1ULL << pin))) continue;
+        if (!(pullupMask & (1ULL << pin)))
+            continue;
         const gpio_num_t g = static_cast<gpio_num_t>(pin);
         if (!rtc_gpio_is_valid_gpio(g)) {
             Serial.printf("[Battery] deep sleep: pin %d is not an RTC GPIO\n", pin);
@@ -555,7 +536,7 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
         esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     }
 
-    delay(100);  // Let serial flush
+    delay(100); // Let serial flush
     esp_deep_sleep_start();
     return true;
 }
@@ -576,8 +557,7 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
 
     sdLog("=== POWER-OFF BEGIN ===");
     char buf[128];
-    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%",
-             onBattery_, cachedVoltage_, cachedPercent_);
+    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
     sdLog(buf);
 
     blankPanelBacklightForSleepOrPowerOff();
@@ -592,10 +572,7 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
         Serial.println("[Battery] Dropping power latch...");
     }
 
-    const bool latchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN,
-                                                      false,
-                                                      pdMS_TO_TICKS(250),
-                                                      5);
+    const bool latchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN, false, pdMS_TO_TICKS(250), 5);
     snprintf(buf, sizeof(buf), "latchDrop=%s", latchDropped ? "OK" : "FAILED");
     Serial.printf("[Battery] Latch drop result: %s\n", latchDropped ? "OK" : "FAILED");
     sdLog(buf);
@@ -605,25 +582,19 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
         // block the deep-sleep fallback forever.
         uint8_t readback = 0;
         const AudioI2cResult readbackResult = readTca9554RegisterWithTimeout(
-            TCA9554_OUTPUT_PORT,
-            readback,
-            pdMS_TO_TICKS(kShutdownReadbackTimeoutMs),
-            kShutdownReadbackTimeoutMs);
+            TCA9554_OUTPUT_PORT, readback, pdMS_TO_TICKS(kShutdownReadbackTimeoutMs), kShutdownReadbackTimeoutMs);
         if (readbackResult == AudioI2cResult::Ok) {
             bool pin6Low = (readback & (1 << TCA9554_PWR_LATCH_PIN)) == 0;
-            snprintf(buf, sizeof(buf), "readback=0x%02X pin6=%s",
-                     readback, pin6Low ? "LOW" : "HIGH_STUCK");
+            snprintf(buf, sizeof(buf), "readback=0x%02X pin6=%s", readback, pin6Low ? "LOW" : "HIGH_STUCK");
             Serial.printf("[Battery] TCA9554 %s\n", buf);
             sdLog(buf);
         } else {
-            snprintf(buf, sizeof(buf), "readback=%s",
-                     audioI2cResultToString(readbackResult));
-            Serial.printf("[Battery] TCA9554 readback failed (%s)\n",
-                          audioI2cResultToString(readbackResult));
+            snprintf(buf, sizeof(buf), "readback=%s", audioI2cResultToString(readbackResult));
+            Serial.printf("[Battery] TCA9554 readback failed (%s)\n", audioI2cResultToString(readbackResult));
             sdLog(buf);
         }
 
-        delay(500);  // Wait for power rail to collapse
+        delay(500); // Wait for power rail to collapse
         // If we reach here, the latch drop didn't fully cut power.
         Serial.println("[Battery] WARN: Still running after latch drop - power rail did not collapse");
         sdLog("WARN: still alive after 500ms latch drop wait");
@@ -637,7 +608,7 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
     Serial.println("[Battery] Entering deep sleep fallback...");
     enterDeepSleep(1ULL << PWR_BUTTON_GPIO, sdLogEnabled);
     return latchDropped;
-#endif  // CAR_MODE_PWR_SHORT
+#endif // CAR_MODE_PWR_SHORT
 }
 
 bool BatteryManager::isPowerButtonPressed() {
@@ -650,13 +621,16 @@ bool BatteryManager::isPowerButtonPressed() {
 
 bool BatteryManager::processPowerButton() {
     // Allow shutdown when a battery is present.
-    if (!hasBattery()) return false;
+    if (!hasBattery())
+        return false;
 
     bool pinLow = isPowerButtonPressed();
     // Safety: require at least one HIGH sample (button released) before arming.
     // Prevents a button held at power-on from triggering an immediate shutdown.
-    if (!pinLow) buttonSeenReleasedSinceBoot_ = true;
-    if (!buttonSeenReleasedSinceBoot_) return false;
+    if (!pinLow)
+        buttonSeenReleasedSinceBoot_ = true;
+    if (!buttonSeenReleasedSinceBoot_)
+        return false;
 
     PwrButtonState state{buttonWasPressed_, buttonPressStart_};
     bool result = processPowerButtonState(pinLow, static_cast<uint32_t>(millis()), state);

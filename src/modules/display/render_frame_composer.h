@@ -21,9 +21,6 @@ struct AlpSnapshot {
 };
 
 class RenderFrameComposer {
-public:
-    RenderFrame compose(const V1Snapshot& v1,
-                        const AlpSnapshot& alp,
-                        const V1Settings& settings,
-                        uint32_t nowMs) const;
+  public:
+    RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& settings, uint32_t nowMs) const;
 };

@@ -41,7 +41,7 @@ class QualificationSerialModule;
 class V1BLEClient;
 class PacketParser;
 class TouchHandler;
-#include "display_mode.h"  // enum class — cannot forward-declare
+#include "display_mode.h" // enum class — cannot forward-declare
 #include "main_runtime_state.h"
 class AutoPushModule;
 class TouchUiModule;
@@ -137,7 +137,7 @@ extern AlpSdLogger alpSdLogger;
 extern AlpEventLatch alpEventLatch;
 extern GpsRuntimeModule gpsRuntimeModule;
 extern GpsTimePublisher gpsTimePublisher;
-extern GpsGeoPublisher  gpsGeoPublisher;
+extern GpsGeoPublisher gpsGeoPublisher;
 extern SpeedMuteModule speedMuteModule;
 extern QualificationSerialModule qualificationSerialModule;
 

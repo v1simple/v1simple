@@ -17,9 +17,7 @@ constexpr const char* LEGACY_PROFILE_PATH = "/known_v1_profiles.txt";
 constexpr uint8_t STORE_VERSION = 1;
 
 bool isHex(char c) {
-    return (c >= '0' && c <= '9') ||
-           (c >= 'a' && c <= 'f') ||
-           (c >= 'A' && c <= 'F');
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 String clampLen(const String& input, size_t maxLen) {
@@ -90,7 +88,7 @@ int parseDefaultProfile(const String& raw) {
     return value.toInt();
 }
 
-}  // namespace
+} // namespace
 
 V1DeviceStore v1DeviceStore;
 
@@ -210,8 +208,7 @@ bool V1DeviceStore::loadFromStore() {
     }
 
     JsonDocument doc;
-    const JsonRollbackLoadResult loadResult =
-        loadJsonDocumentWithRollback(*fs_, STORE_PATH, MAX_STORE_BYTES, doc);
+    const JsonRollbackLoadResult loadResult = loadJsonDocumentWithRollback(*fs_, STORE_PATH, MAX_STORE_BYTES, doc);
     if (loadResult == JsonRollbackLoadResult::Missing) {
         return true;
     }

@@ -62,11 +62,10 @@ struct DisplayCorrectnessTraceStats {
     size_t size = 0;
 };
 
-DisplayCorrectnessTraceEvent buildDisplayCorrectnessTraceEvent(const RenderFrame& frame,
-                                                               uint32_t tsMs);
+DisplayCorrectnessTraceEvent buildDisplayCorrectnessTraceEvent(const RenderFrame& frame, uint32_t tsMs);
 
 class DisplayCorrectnessTraceLog {
-public:
+  public:
     static constexpr size_t kCapacity = 64;
 
     void reset();
@@ -74,26 +73,18 @@ public:
     size_t copyRecent(DisplayCorrectnessTraceEvent* out, size_t maxCount) const;
     DisplayCorrectnessTraceStats stats() const;
 
-private:
+  private:
     void lock() const;
     void unlock() const;
 
     struct LockGuard {
-        explicit LockGuard(const DisplayCorrectnessTraceLog& ownerRef) : owner(ownerRef) {
-            owner.lock();
-        }
-        ~LockGuard() {
-            owner.unlock();
-        }
+        explicit LockGuard(const DisplayCorrectnessTraceLog& ownerRef) : owner(ownerRef) { owner.lock(); }
+        ~LockGuard() { owner.unlock(); }
         const DisplayCorrectnessTraceLog& owner;
     };
 
-    static uint8_t nextIndex(uint8_t idx) {
-        return static_cast<uint8_t>((idx + 1u) % kCapacity);
-    }
-    static uint8_t prevIndex(uint8_t idx) {
-        return static_cast<uint8_t>((idx + kCapacity - 1u) % kCapacity);
-    }
+    static uint8_t nextIndex(uint8_t idx) { return static_cast<uint8_t>((idx + 1u) % kCapacity); }
+    static uint8_t prevIndex(uint8_t idx) { return static_cast<uint8_t>((idx + kCapacity - 1u) % kCapacity); }
 
     DisplayCorrectnessTraceEvent ring_[kCapacity] = {};
     uint8_t head_ = 0;

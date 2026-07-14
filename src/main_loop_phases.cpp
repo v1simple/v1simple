@@ -8,13 +8,11 @@
 #include "config.h"
 #include "main_globals.h"
 
-LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(
-    const unsigned long nowMs,
-    const unsigned long nowUs,
-    const unsigned long lastLoopUs,
-    const bool currentBootSplashHoldActive,
-    const unsigned long currentBootSplashHoldUntilMs,
-    const bool currentInitialScanningScreenShown) {
+LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(const unsigned long nowMs, const unsigned long nowUs,
+                                                               const unsigned long lastLoopUs,
+                                                               const bool currentBootSplashHoldActive,
+                                                               const unsigned long currentBootSplashHoldUntilMs,
+                                                               const bool currentInitialScanningScreenShown) {
     LoopConnectionEarlyContext loopConnectionEarlyCtx;
     loopConnectionEarlyCtx.nowMs = nowMs;
     loopConnectionEarlyCtx.nowUs = nowUs;
@@ -35,16 +33,12 @@ LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(
     return values;
 }
 
-LoopIngestPhaseValues processLoopIngestPhase(
-    const unsigned long nowMs,
-    const bool currentBootReady,
-    const unsigned long bootReadyDeadlineMs,
-    const bool skipNonCoreThisLoop,
-    const bool overloadThisLoop) {
+LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bool currentBootReady,
+                                             const unsigned long bootReadyDeadlineMs, const bool skipNonCoreThisLoop,
+                                             const bool overloadThisLoop) {
     LoopSettingsPrepContext loopSettingsPrepCtx;
     loopSettingsPrepCtx.nowMs = nowMs;
-    const LoopSettingsPrepValues loopSettingsPrepValues =
-        loopSettingsPrepModule.process(loopSettingsPrepCtx);
+    const LoopSettingsPrepValues loopSettingsPrepValues = loopSettingsPrepModule.process(loopSettingsPrepCtx);
 
     LoopPreIngestContext loopPreIngestCtx;
     loopPreIngestCtx.nowMs = nowMs;
@@ -69,10 +63,8 @@ LoopIngestPhaseValues processLoopIngestPhase(
     return values;
 }
 
-void processLoopDisplayPreWifiPhase(
-    const unsigned long nowMs,
-    const bool bootSplashHoldActive,
-    const bool overloadLateThisLoop) {
+void processLoopDisplayPreWifiPhase(const unsigned long nowMs, const bool bootSplashHoldActive,
+                                    const bool overloadLateThisLoop) {
 
     LoopDisplayContext loopDisplayCtx;
     loopDisplayCtx.nowMs = nowMs;
@@ -87,24 +79,15 @@ void processLoopDisplayPreWifiPhase(
     loopPostDisplayModule.process(loopPostDisplayPreWifiCtx);
 }
 
-LoopWifiPhaseValues processLoopWifiPhase(
-    const unsigned long nowMs,
-    const unsigned long v1ConnectedAtMs,
-    const bool enableWifi,
-    const bool wifiAutoStartAllowed,
-    const bool currentWifiAutoStartDone,
-    const bool wifiManualStartIntentLatched,
-    const bool skipLateNonCoreThisLoop,
-    const bool bleBackpressure,
-    const bool overloadLateThisLoop,
-    const bool bleConnectBurstSettling,
-    const bool bootSplashHoldActive) {
+LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const unsigned long v1ConnectedAtMs,
+                                         const bool enableWifi, const bool wifiAutoStartAllowed,
+                                         const bool currentWifiAutoStartDone, const bool wifiManualStartIntentLatched,
+                                         const bool skipLateNonCoreThisLoop, const bool bleBackpressure,
+                                         const bool overloadLateThisLoop, const bool bleConnectBurstSettling,
+                                         const bool bootSplashHoldActive) {
     LoopRuntimeSnapshotContext loopRuntimeSnapshotCtx;
     loopRuntimeSnapshotCtx.canStartDmaProbeAllowed =
-        enableWifi &&
-        !currentWifiAutoStartDone &&
-        wifiManualStartIntentLatched &&
-        wifiAutoStartAllowed;
+        enableWifi && !currentWifiAutoStartDone && wifiManualStartIntentLatched && wifiAutoStartAllowed;
     const LoopRuntimeSnapshotValues loopRuntimeSnapshotValues =
         loopRuntimeSnapshotModule.process(loopRuntimeSnapshotCtx);
 
@@ -132,15 +115,11 @@ LoopWifiPhaseValues processLoopWifiPhase(
     return values;
 }
 
-LoopFinalizePhaseValues processLoopFinalizePhase(
-    const unsigned long nowMs,
-    const bool bootSplashHoldActive,
-    const bool displayPreviewRunning,
-    const bool bleBackpressure,
-    const bool overloadLateThisLoop,
-    const unsigned long scanScreenDwellMs,
-    const unsigned long connectionStateProcessMaxGapMs,
-    const unsigned long loopStartUs) {
+LoopFinalizePhaseValues processLoopFinalizePhase(const unsigned long nowMs, const bool bootSplashHoldActive,
+                                                 const bool displayPreviewRunning, const bool bleBackpressure,
+                                                 const bool overloadLateThisLoop, const unsigned long scanScreenDwellMs,
+                                                 const unsigned long connectionStateProcessMaxGapMs,
+                                                 const unsigned long loopStartUs) {
     LoopPostDisplayContext loopPostDisplayPostWifiCtx;
     loopPostDisplayPostWifiCtx.enableAutoPush = false;
     loopPostDisplayPostWifiCtx.runSpeedAndDispatch = true;
@@ -150,8 +129,7 @@ LoopFinalizePhaseValues processLoopFinalizePhase(
     loopPostDisplayPostWifiCtx.bootSplashHoldActive = bootSplashHoldActive;
     loopPostDisplayPostWifiCtx.displayPreviewRunning = displayPreviewRunning;
     loopPostDisplayPostWifiCtx.maxProcessGapMs = connectionStateProcessMaxGapMs;
-    const LoopPostDisplayResult loopPostDisplayResult =
-        loopPostDisplayModule.process(loopPostDisplayPostWifiCtx);
+    const LoopPostDisplayResult loopPostDisplayResult = loopPostDisplayModule.process(loopPostDisplayPostWifiCtx);
 
     PeriodicMaintenanceModule::Context maintenanceCtx;
     maintenanceCtx.bleConnected = loopPostDisplayResult.bleConnectedNow;
@@ -166,16 +144,14 @@ LoopFinalizePhaseValues processLoopFinalizePhase(
     return values;
 }
 
-unsigned long processLoopSettingsEarlyReturnPhase(const unsigned long nowMs,
-                                                  const unsigned long loopStartUs) {
+unsigned long processLoopSettingsEarlyReturnPhase(const unsigned long nowMs, const unsigned long loopStartUs) {
     PeriodicMaintenanceModule::Context maintenanceCtx;
     maintenanceCtx.forceTailBleDrainPending = true;
     periodicMaintenanceModule.process(nowMs, maintenanceCtx);
     return loopTailModule.process(false, loopStartUs, true);
 }
 
-bool shouldReturnEarlyFromLoopPowerTouchPhase(const unsigned long nowMs,
-                                              const unsigned long loopStartUs) {
+bool shouldReturnEarlyFromLoopPowerTouchPhase(const unsigned long nowMs, const unsigned long loopStartUs) {
     LoopPowerTouchContext loopPowerTouchCtx;
     loopPowerTouchCtx.nowMs = nowMs;
     loopPowerTouchCtx.loopStartUs = loopStartUs;

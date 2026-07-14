@@ -13,7 +13,7 @@
 #include "display_palette.h"
 #include "settings.h"
 #include "perf_metrics.h"
-#include "packet_parser.h"                 // Direction enum, DIR_FRONT/SIDE/REAR
+#include "packet_parser.h"                  // Direction enum, DIR_FRONT/SIDE/REAR
 #include "modules/alp/alp_runtime_module.h" // AlpLaserDirection enum (for laser-color override)
 
 // Blink timer moved to V1Display::updateBlinkPhase_() for lockstep sync with
@@ -51,8 +51,8 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // independent of blink phase: an arrow that V1 reports as flashing is
     // still part of the current alert, so its cluster geometry never changes.
     const bool showFront = (dir & DIR_FRONT) != 0;
-    const bool showSide  = (dir & DIR_SIDE)  != 0;
-    const bool showRear  = (dir & DIR_REAR)  != 0;
+    const bool showSide = (dir & DIR_SIDE) != 0;
+    const bool showRear = (dir & DIR_REAR) != 0;
 
     // Per-arrow blink-off-phase flag.  Keep the three visual states distinct:
     //   1. arrow not in V1's active Image1 direction set → dim resting glyph
@@ -62,18 +62,18 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // solve that by erasing #1 too; the simple-arrow widget intentionally keeps
     // resting arrows visible as layout/context chrome.
     const bool blinkOffFront = showFront && (flashBits & 0x20) && !blinkPhase_;
-    const bool blinkOffSide  = showSide  && (flashBits & 0x40) && !blinkPhase_;
-    const bool blinkOffRear  = showRear  && (flashBits & 0x80) && !blinkPhase_;
+    const bool blinkOffSide = showSide && (flashBits & 0x40) && !blinkPhase_;
+    const bool blinkOffRear = showRear && (flashBits & 0x80) && !blinkPhase_;
 
     // Stylized stacked arrows sized/positioned to match the real V1 display
-    int cx = SCREEN_WIDTH - 70;           // right anchor
-    int cy = SCREEN_HEIGHT / 2;           // vertically centered
+    int cx = SCREEN_WIDTH - 70; // right anchor
+    int cy = SCREEN_HEIGHT / 2; // vertically centered
 
     // Position arrows to fit ABOVE frequency display at bottom
     // With multi-alert always enabled, use raised layout as default
     const bool raisedLayout = dirty_.multiAlert;
     if (raisedLayout) {
-        cy = 94;  // Raised but allow full-size arrows
+        cy = 94; // Raised but allow full-size arrows
         cx -= 6;
     } else {
         cy = 104;
@@ -85,25 +85,25 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
 
     // Top arrow (FRONT): Taller triangle pointing up - matches V1 proportions
     // Wider/shallower angle to match V1 reference
-    const int topW = (int)(125 * scale);      // Width at base
-    const int topH = (int)(70 * scale);       // Height
-    const int topNotchW = (int)(63 * scale);  // Notch width at bottom
-    const int topNotchH = (int)(8 * scale);   // Notch height
+    const int topW = (int)(125 * scale);     // Width at base
+    const int topH = (int)(70 * scale);      // Height
+    const int topNotchW = (int)(63 * scale); // Notch width at bottom
+    const int topNotchH = (int)(8 * scale);  // Notch height
 
     // Bottom arrow (REAR): Shorter/squatter triangle pointing down
-    const int bottomW = (int)(125 * scale);   // Same width as top
-    const int bottomH = (int)(30 * scale);    // Shorter height
+    const int bottomW = (int)(125 * scale); // Same width as top
+    const int bottomH = (int)(30 * scale);  // Shorter height
     const int bottomNotchW = (int)(63 * scale);
     const int bottomNotchH = (int)(8 * scale);
 
     // Calculate positions for equal gaps between arrows
     const int sideBarH = (int)(22 * scale);
-    const int gap = (int)(15 * scale);  // gap between arrows
+    const int gap = (int)(15 * scale); // gap between arrows
 
     // Top arrow center: above side arrow with gap
-    int topArrowCenterY = cy - sideBarH/2 - gap - topH/2;
+    int topArrowCenterY = cy - sideBarH / 2 - gap - topH / 2;
     // Bottom arrow center: below side arrow with gap
-    int bottomArrowCenterY = cy + sideBarH/2 + gap + bottomH/2;
+    int bottomArrowCenterY = cy + sideBarH / 2 + gap + bottomH / 2;
 
     const V1Settings& s = settingsManager.get();
     // Get individual arrow colors (use muted color if muted)
@@ -156,24 +156,16 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         // flag to avoid the flaky small-window partial path for this frame.
         arrowVisibilityForceFullFlush_ = true;
     }
-    const bool blinkOffChanged = elementCaches_.arrow.valid &&
-                                 ((blinkOffFront != elementCaches_.arrow.blinkOffFront) ||
-                                  (blinkOffSide  != elementCaches_.arrow.blinkOffSide)  ||
-                                  (blinkOffRear  != elementCaches_.arrow.blinkOffRear));
+    const bool blinkOffChanged = elementCaches_.arrow.valid && ((blinkOffFront != elementCaches_.arrow.blinkOffFront) ||
+                                                                (blinkOffSide != elementCaches_.arrow.blinkOffSide) ||
+                                                                (blinkOffRear != elementCaches_.arrow.blinkOffRear));
     const bool mutedChanged = elementCaches_.arrow.valid && (muted != elementCaches_.arrow.muted);
     const bool colorsChanged = elementCaches_.arrow.valid &&
                                ((frontCol != elementCaches_.arrow.frontCol) ||
-                                (sideCol != elementCaches_.arrow.sideCol) ||
-                                (rearCol != elementCaches_.arrow.rearCol));
+                                (sideCol != elementCaches_.arrow.sideCol) || (rearCol != elementCaches_.arrow.rearCol));
     const bool layoutChanged = elementCaches_.arrow.valid && (raisedLayout != elementCaches_.arrow.raisedLayout);
-    bool anyChanged = !elementCaches_.arrow.valid ||
-                      frontVisibilityChanged ||
-                      sideVisibilityChanged ||
-                      rearVisibilityChanged ||
-                      blinkOffChanged ||
-                      mutedChanged ||
-                      colorsChanged ||
-                      layoutChanged;
+    bool anyChanged = !elementCaches_.arrow.valid || frontVisibilityChanged || sideVisibilityChanged ||
+                      rearVisibilityChanged || blinkOffChanged || mutedChanged || colorsChanged || layoutChanged;
 
     // If nothing changed, skip redraw entirely
     if (!anyChanged) {
@@ -186,14 +178,13 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // exactly the pixels we touched.
     {
         const DisplayLayout::DisplayRect r = V1Display::arrowBoundingRect(raisedLayout);
-        drawnRegion_.add(r.x, r.y, r.w, r.h,
-                         DisplayDirtyRegionSource::Arrows);
+        drawnRegion_.add(r.x, r.y, r.w, r.h, DisplayDirtyRegionSource::Arrows);
     }
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::ArrowChange);
 
     // Calculate clear regions for each arrow
     const int maxW = (topW > bottomW) ? topW : bottomW;
-    int clearLeft = cx - maxW/2 - 10;
+    int clearLeft = cx - maxW / 2 - 10;
     int clearWidth = maxW + 20;
     int maxClearRight = SCREEN_WIDTH - 42;
     // D7 fix: only clip in centered layout. In raised layout we honour the
@@ -205,10 +196,11 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     if (clearLeft + clearWidth > SCREEN_WIDTH) {
         clearWidth = SCREEN_WIDTH - clearLeft;
     }
-    auto drawTriangleArrow = [&](int centerY, bool down, bool active, bool blinkOff, int triW, int triH, int notchW, int notchH, uint16_t activeCol, bool needsClear) {
+    auto drawTriangleArrow = [&](int centerY, bool down, bool active, bool blinkOff, int triW, int triH, int notchW,
+                                 int notchH, uint16_t activeCol, bool needsClear) {
         // Clear just this arrow's region if needed
         if (needsClear) {
-            int arrowTop = centerY - triH/2 - 2;
+            int arrowTop = centerY - triH / 2 - 2;
             int arrowHeight = triH + 4;
             FILL_RECT(clearLeft, arrowTop, clearWidth, arrowHeight, PALETTE_BG);
         }
@@ -216,7 +208,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         // Three-state fill: blinkOff erases the active flashing segment,
         // active draws bright, and inactive draws the dim resting glyph.
         uint16_t fillCol = blinkOff ? PALETTE_BG : (active ? activeCol : offCol);
-        uint16_t outlineCol = TFT_BLACK;  // Black outline like V1
+        uint16_t outlineCol = TFT_BLACK; // Black outline like V1
 
         // Triangle points
         int tipX = cx;
@@ -236,17 +228,17 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         DRAW_LINE(tipX, tipY, baseLeftX, baseY, outlineCol);
         DRAW_LINE(tipX, tipY, baseRightX, baseY, outlineCol);
         // Base line with notch gap
-        DRAW_LINE(baseLeftX, baseY, cx - notchW/2, baseY, outlineCol);
-        DRAW_LINE(cx + notchW/2, baseY, baseRightX, baseY, outlineCol);
+        DRAW_LINE(baseLeftX, baseY, cx - notchW / 2, baseY, outlineCol);
+        DRAW_LINE(cx + notchW / 2, baseY, baseRightX, baseY, outlineCol);
         // Notch outline
         if (down) {
-            DRAW_LINE(cx - notchW/2, baseY, cx - notchW/2, baseY - notchH, outlineCol);
-            DRAW_LINE(cx - notchW/2, baseY - notchH, cx + notchW/2, baseY - notchH, outlineCol);
-            DRAW_LINE(cx + notchW/2, baseY - notchH, cx + notchW/2, baseY, outlineCol);
+            DRAW_LINE(cx - notchW / 2, baseY, cx - notchW / 2, baseY - notchH, outlineCol);
+            DRAW_LINE(cx - notchW / 2, baseY - notchH, cx + notchW / 2, baseY - notchH, outlineCol);
+            DRAW_LINE(cx + notchW / 2, baseY - notchH, cx + notchW / 2, baseY, outlineCol);
         } else {
-            DRAW_LINE(cx - notchW/2, baseY, cx - notchW/2, baseY + notchH, outlineCol);
-            DRAW_LINE(cx - notchW/2, baseY + notchH, cx + notchW/2, baseY + notchH, outlineCol);
-            DRAW_LINE(cx + notchW/2, baseY + notchH, cx + notchW/2, baseY, outlineCol);
+            DRAW_LINE(cx - notchW / 2, baseY, cx - notchW / 2, baseY + notchH, outlineCol);
+            DRAW_LINE(cx - notchW / 2, baseY + notchH, cx + notchW / 2, baseY + notchH, outlineCol);
+            DRAW_LINE(cx + notchW / 2, baseY + notchH, cx + notchW / 2, baseY, outlineCol);
         }
     };
 
@@ -261,11 +253,11 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         }
 
         uint16_t fillCol = blinkOff ? PALETTE_BG : (active ? sideCol : offCol);
-        uint16_t outlineCol = TFT_BLACK;  // Black outline like V1
-        const int barW = (int)(66 * scale);   // Center bar width
+        uint16_t outlineCol = TFT_BLACK;    // Black outline like V1
+        const int barW = (int)(66 * scale); // Center bar width
         const int barH = sideBarH;
-        [[maybe_unused]] const int headW = (int)(28 * scale);  // Arrow head width
-        [[maybe_unused]] const int headH = (int)(22 * scale);  // Arrow head height
+        [[maybe_unused]] const int headW = (int)(28 * scale); // Arrow head width
+        [[maybe_unused]] const int headH = (int)(22 * scale); // Arrow head height
         const int halfH = barH / 2;
 
         // Fill center bar
@@ -277,15 +269,15 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         FILL_TRIANGLE(cx + barW / 2 + headW, cy, cx + barW / 2, cy - headH, cx + barW / 2, cy + headH, fillCol);
 
         // Outline - top edge
-        DRAW_LINE(cx - barW/2, cy - halfH, cx + barW/2, cy - halfH, outlineCol);
+        DRAW_LINE(cx - barW / 2, cy - halfH, cx + barW / 2, cy - halfH, outlineCol);
         // Outline - bottom edge
-        DRAW_LINE(cx - barW/2, cy + halfH, cx + barW/2, cy + halfH, outlineCol);
+        DRAW_LINE(cx - barW / 2, cy + halfH, cx + barW / 2, cy + halfH, outlineCol);
         // Outline - left arrow head
-        DRAW_LINE(cx - barW/2, cy - headH, cx - barW/2 - headW, cy, outlineCol);
-        DRAW_LINE(cx - barW/2 - headW, cy, cx - barW/2, cy + headH, outlineCol);
+        DRAW_LINE(cx - barW / 2, cy - headH, cx - barW / 2 - headW, cy, outlineCol);
+        DRAW_LINE(cx - barW / 2 - headW, cy, cx - barW / 2, cy + headH, outlineCol);
         // Outline - right arrow head
-        DRAW_LINE(cx + barW/2, cy - headH, cx + barW/2 + headW, cy, outlineCol);
-        DRAW_LINE(cx + barW/2 + headW, cy, cx + barW/2, cy + headH, outlineCol);
+        DRAW_LINE(cx + barW / 2, cy - headH, cx + barW / 2 + headW, cy, outlineCol);
+        DRAW_LINE(cx + barW / 2 + headW, cy, cx + barW / 2, cy + headH, outlineCol);
     };
 
     // The three arrow glyphs are not vertically disjoint: the side-arrow clear
@@ -294,40 +286,24 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // repaint can therefore erase neighboring arrow bases without redrawing the
     // neighbor. Redraw the full cluster whenever any arrow state changes.
     [[maybe_unused]] const int headH = (int)(22 * scale);
-    int totalTop = topArrowCenterY - topH/2 - 2;
-    int totalBottom = bottomArrowCenterY + bottomH/2 + 2;
+    int totalTop = topArrowCenterY - topH / 2 - 2;
+    int totalBottom = bottomArrowCenterY + bottomH / 2 + 2;
     FILL_RECT(clearLeft, totalTop, clearWidth, totalBottom - totalTop, PALETTE_BG);
 
     // Draw all three arrows
-    drawTriangleArrow(topArrowCenterY,
-                      false,
-                      showFront,
-                      blinkOffFront,
-                      topW,
-                      topH,
-                      topNotchW,
-                      topNotchH,
-                      frontCol,
+    drawTriangleArrow(topArrowCenterY, false, showFront, blinkOffFront, topW, topH, topNotchW, topNotchH, frontCol,
                       false);
     drawSideArrow(showSide, blinkOffSide, false);
-    drawTriangleArrow(bottomArrowCenterY,
-                      true,
-                      showRear,
-                      blinkOffRear,
-                      bottomW,
-                      bottomH,
-                      bottomNotchW,
-                      bottomNotchH,
-                      rearCol,
-                      false);
+    drawTriangleArrow(bottomArrowCenterY, true, showRear, blinkOffRear, bottomW, bottomH, bottomNotchW, bottomNotchH,
+                      rearCol, false);
 
     // Update cache
     elementCaches_.arrow.showFront = showFront;
     elementCaches_.arrow.showSide = showSide;
     elementCaches_.arrow.showRear = showRear;
     elementCaches_.arrow.blinkOffFront = blinkOffFront;
-    elementCaches_.arrow.blinkOffSide  = blinkOffSide;
-    elementCaches_.arrow.blinkOffRear  = blinkOffRear;
+    elementCaches_.arrow.blinkOffSide = blinkOffSide;
+    elementCaches_.arrow.blinkOffRear = blinkOffRear;
     elementCaches_.arrow.muted = muted;
     elementCaches_.arrow.frontCol = frontCol;
     elementCaches_.arrow.sideCol = sideCol;

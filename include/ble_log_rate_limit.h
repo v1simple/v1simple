@@ -10,12 +10,9 @@ struct BleLogRateLimitState {
     bool hasLogged = false;
 };
 
-inline bool shouldLogBleConnectionEvent(
-    BleLogRateLimitState& state,
-    uint32_t nowMs,
-    uint32_t minIntervalMs = kBleConnectionLogMinIntervalMs) {
-    if (!state.hasLogged ||
-        static_cast<uint32_t>(nowMs - state.lastLogMs) >= minIntervalMs) {
+inline bool shouldLogBleConnectionEvent(BleLogRateLimitState& state, uint32_t nowMs,
+                                        uint32_t minIntervalMs = kBleConnectionLogMinIntervalMs) {
+    if (!state.hasLogged || static_cast<uint32_t>(nowMs - state.lastLogMs) >= minIntervalMs) {
         state.lastLogMs = nowMs;
         state.hasLogged = true;
         return true;

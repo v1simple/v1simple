@@ -6,7 +6,7 @@
 #include <freertos/semphr.h>
 
 class QualificationSerialModule {
-public:
+  public:
     enum class Suite : uint8_t {
         Core,
         Display,
@@ -44,7 +44,7 @@ public:
     bool isRunning() const { return state_ == State::Running || state_ == State::Finalizing; }
     bool isDone() const { return state_ == State::Done; }
 
-private:
+  private:
     enum class State : uint8_t {
         Idle,
         Running,

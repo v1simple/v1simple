@@ -21,15 +21,10 @@ struct BackupSnapshotCache {
 
 using BackupSnapshotBuildFn = void (*)(JsonDocument&, uint32_t snapshotMs, void* ctx);
 
-bool sendCachedBackupSnapshot(WebServer& server,
-                              BackupSnapshotCache& cache,
-                              uint32_t settingsRevision,
-                              uint32_t profileRevision,
-                              BackupSnapshotBuildFn buildSnapshot,
-                              void* buildCtx,
-                              uint32_t (*millisFn)(void* ctx) = nullptr,
-                              void* millisCtx = nullptr);
+bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uint32_t settingsRevision,
+                              uint32_t profileRevision, BackupSnapshotBuildFn buildSnapshot, void* buildCtx,
+                              uint32_t (*millisFn)(void* ctx) = nullptr, void* millisCtx = nullptr);
 
 void releaseBackupSnapshotCache(BackupSnapshotCache& cache);
 
-}  // namespace BackupApiService
+} // namespace BackupApiService

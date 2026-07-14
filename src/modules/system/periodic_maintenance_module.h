@@ -4,7 +4,7 @@
 
 // Coordinates loop-tail periodic maintenance actions while preserving call order.
 class PeriodicMaintenanceModule {
-public:
+  public:
     struct Context {
         bool bleConnected = false;
         bool bleBackpressure = false;
@@ -41,6 +41,6 @@ public:
     void process(uint32_t nowMs);
     void process(uint32_t nowMs, const Context& ctx);
 
-private:
+  private:
     Providers providers{};
 };

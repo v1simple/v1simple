@@ -14,7 +14,7 @@
 
 static bool sd_audio_ready = false;
 static const char* AUDIO_PATH = "/audio";
-static fs::FS* audioFS = nullptr;  // Filesystem containing audio files
+static fs::FS* audioFS = nullptr; // Filesystem containing audio files
 static uint8_t amp_disable_fail_count = 0;
 static constexpr uint8_t AMP_DISABLE_MAX_RETRIES = 5;
 static constexpr unsigned long AMP_TIMEOUT_CHECK_INTERVAL_MS = 100UL;
@@ -44,39 +44,25 @@ void audio_init_sd() {
 // Mu-law decode table (8-bit compressed -> 16-bit linear PCM)
 // This is the standard ITU-T G.711 mu-law expansion table
 static const int16_t mulaw_decode_table[256] = {
-    -32124,-31100,-30076,-29052,-28028,-27004,-25980,-24956,
-    -23932,-22908,-21884,-20860,-19836,-18812,-17788,-16764,
-    -15996,-15484,-14972,-14460,-13948,-13436,-12924,-12412,
-    -11900,-11388,-10876,-10364, -9852, -9340, -8828, -8316,
-     -7932, -7676, -7420, -7164, -6908, -6652, -6396, -6140,
-     -5884, -5628, -5372, -5116, -4860, -4604, -4348, -4092,
-     -3900, -3772, -3644, -3516, -3388, -3260, -3132, -3004,
-     -2876, -2748, -2620, -2492, -2364, -2236, -2108, -1980,
-     -1884, -1820, -1756, -1692, -1628, -1564, -1500, -1436,
-     -1372, -1308, -1244, -1180, -1116, -1052,  -988,  -924,
-      -876,  -844,  -812,  -780,  -748,  -716,  -684,  -652,
-      -620,  -588,  -556,  -524,  -492,  -460,  -428,  -396,
-      -372,  -356,  -340,  -324,  -308,  -292,  -276,  -260,
-      -244,  -228,  -212,  -196,  -180,  -164,  -148,  -132,
-      -120,  -112,  -104,   -96,   -88,   -80,   -72,   -64,
-       -56,   -48,   -40,   -32,   -24,   -16,    -8,     0,
-     32124, 31100, 30076, 29052, 28028, 27004, 25980, 24956,
-     23932, 22908, 21884, 20860, 19836, 18812, 17788, 16764,
-     15996, 15484, 14972, 14460, 13948, 13436, 12924, 12412,
-     11900, 11388, 10876, 10364,  9852,  9340,  8828,  8316,
-      7932,  7676,  7420,  7164,  6908,  6652,  6396,  6140,
-      5884,  5628,  5372,  5116,  4860,  4604,  4348,  4092,
-      3900,  3772,  3644,  3516,  3388,  3260,  3132,  3004,
-      2876,  2748,  2620,  2492,  2364,  2236,  2108,  1980,
-      1884,  1820,  1756,  1692,  1628,  1564,  1500,  1436,
-      1372,  1308,  1244,  1180,  1116,  1052,   988,   924,
-       876,   844,   812,   780,   748,   716,   684,   652,
-       620,   588,   556,   524,   492,   460,   428,   396,
-       372,   356,   340,   324,   308,   292,   276,   260,
-       244,   228,   212,   196,   180,   164,   148,   132,
-       120,   112,   104,    96,    88,    80,    72,    64,
-        56,    48,    40,    32,    24,    16,     8,     0
-};
+    -32124, -31100, -30076, -29052, -28028, -27004, -25980, -24956, -23932, -22908, -21884, -20860, -19836, -18812,
+    -17788, -16764, -15996, -15484, -14972, -14460, -13948, -13436, -12924, -12412, -11900, -11388, -10876, -10364,
+    -9852,  -9340,  -8828,  -8316,  -7932,  -7676,  -7420,  -7164,  -6908,  -6652,  -6396,  -6140,  -5884,  -5628,
+    -5372,  -5116,  -4860,  -4604,  -4348,  -4092,  -3900,  -3772,  -3644,  -3516,  -3388,  -3260,  -3132,  -3004,
+    -2876,  -2748,  -2620,  -2492,  -2364,  -2236,  -2108,  -1980,  -1884,  -1820,  -1756,  -1692,  -1628,  -1564,
+    -1500,  -1436,  -1372,  -1308,  -1244,  -1180,  -1116,  -1052,  -988,   -924,   -876,   -844,   -812,   -780,
+    -748,   -716,   -684,   -652,   -620,   -588,   -556,   -524,   -492,   -460,   -428,   -396,   -372,   -356,
+    -340,   -324,   -308,   -292,   -276,   -260,   -244,   -228,   -212,   -196,   -180,   -164,   -148,   -132,
+    -120,   -112,   -104,   -96,    -88,    -80,    -72,    -64,    -56,    -48,    -40,    -32,    -24,    -16,
+    -8,     0,      32124,  31100,  30076,  29052,  28028,  27004,  25980,  24956,  23932,  22908,  21884,  20860,
+    19836,  18812,  17788,  16764,  15996,  15484,  14972,  14460,  13948,  13436,  12924,  12412,  11900,  11388,
+    10876,  10364,  9852,   9340,   8828,   8316,   7932,   7676,   7420,   7164,   6908,   6652,   6396,   6140,
+    5884,   5628,   5372,   5116,   4860,   4604,   4348,   4092,   3900,   3772,   3644,   3516,   3388,   3260,
+    3132,   3004,   2876,   2748,   2620,   2492,   2364,   2236,   2108,   1980,   1884,   1820,   1756,   1692,
+    1628,   1564,   1500,   1436,   1372,   1308,   1244,   1180,   1116,   1052,   988,    924,    876,    844,
+    812,    780,    748,    716,    684,    652,    620,    588,    556,    524,    492,    460,    428,    396,
+    372,    356,    340,    324,    308,    292,    276,    260,    244,    228,    212,    196,    180,    164,
+    148,    132,    120,    112,    104,    96,     88,     80,     72,     64,     56,     48,     40,     32,
+    24,     16,     8,      0};
 
 // Forward declaration for helper function
 static void sd_audio_playback_task(void* pvParameters);
@@ -105,16 +91,13 @@ static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
     // cleanup and corrupt scheduler state; a persistent worker keeps the
     // preallocated internal stack without any delete/recreate window.
     if (sdAudioWorkerHandle == nullptr) {
-        sdAudioWorkerHandle = xTaskCreateStaticPinnedToCore(
-            sd_audio_playback_task,
-            "sd_audio",
-            SD_AUDIO_TASK_STACK_SIZE,
-            nullptr,  // Params passed via global struct
-            1,        // Priority (low)
-            g_sdAudioTaskStack,
-            &g_sdAudioTaskTCB,
-            1         // Core 1
-        );
+        sdAudioWorkerHandle =
+            xTaskCreateStaticPinnedToCore(sd_audio_playback_task, "sd_audio", SD_AUDIO_TASK_STACK_SIZE,
+                                          nullptr, // Params passed via global struct
+                                          1,       // Priority (low)
+                                          g_sdAudioTaskStack, &g_sdAudioTaskTCB,
+                                          1 // Core 1
+            );
         if (sdAudioWorkerHandle == nullptr) {
             Serial.println("[AUDIO] ERROR: Failed to create SD audio worker!");
             PERF_INC(audioTaskFail);
@@ -138,14 +121,14 @@ static void finish_sd_audio_job() {
 // Background task for SD audio concatenation playback (mu-law compressed)
 // Uses pre-allocated buffers - no malloc in task
 static void sd_audio_playback_task(void* pvParameters) {
-    (void)pvParameters;  // Unused - params are in g_sdAudioTaskParams
+    (void)pvParameters; // Unused - params are in g_sdAudioTaskParams
 
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         if (i2s_tx_chan == nullptr) {
             i2s_init();
-            vTaskDelay(pdMS_TO_TICKS(30));  // Reduced from 50ms
+            vTaskDelay(pdMS_TO_TICKS(30)); // Reduced from 50ms
         }
 
         if (!i2s_initialized) {
@@ -161,14 +144,14 @@ static void sd_audio_playback_task(void* pvParameters) {
 
         // Amp warm-keeping: skip stabilization delay if amp is already warm
         if (!amp_is_warm) {
-            vTaskDelay(pdMS_TO_TICKS(20));  // ES8311 lock time
+            vTaskDelay(pdMS_TO_TICKS(20)); // ES8311 lock time
             const AudioI2cResult ampEnableResult = set_speaker_amp(true);
             if (ampEnableResult != AudioI2cResult::Ok) {
                 audio_log_i2c_failure("sd_audio_playback_task amp enable (cold)", ampEnableResult);
                 finish_sd_audio_job();
                 continue;
             }
-            vTaskDelay(pdMS_TO_TICKS(50));  // Amp stabilization (only on cold start)
+            vTaskDelay(pdMS_TO_TICKS(50)); // Amp stabilization (only on cold start)
             amp_is_warm = true;
             AUDIO_LOGLN("[AUDIO] Amp cold start - full init");
         } else {
@@ -212,17 +195,14 @@ static void sd_audio_playback_task(void* pvParameters) {
                 // Decode mu-law to stereo PCM using pre-allocated buffer
                 for (size_t j = 0; j < bytesRead; j++) {
                     int16_t sample = mulaw_decode_table[g_mulawChunkBuffer[j]];
-                    g_stereoChunkBuffer[j * 2] = sample;       // Left
-                    g_stereoChunkBuffer[j * 2 + 1] = sample;   // Right
+                    g_stereoChunkBuffer[j * 2] = sample;     // Left
+                    g_stereoChunkBuffer[j * 2 + 1] = sample; // Right
                 }
 
                 size_t bytes_written = 0;
                 const AudioWriteResult writeResult = audioWriteWithTimeout([&](TickType_t timeoutTicks) {
-                    return i2s_channel_write(i2s_tx_chan,
-                                             g_stereoChunkBuffer,
-                                             bytesRead * 2 * sizeof(int16_t),
-                                             &bytes_written,
-                                             timeoutTicks);
+                    return i2s_channel_write(i2s_tx_chan, g_stereoChunkBuffer, bytesRead * 2 * sizeof(int16_t),
+                                             &bytes_written, timeoutTicks);
                 });
                 if (writeResult.status != AudioWriteStatus::Ok) {
                     AUDIO_LOGF("[AUDIO] i2s_channel_write %s: %d\n",
@@ -258,7 +238,7 @@ static void sd_audio_playback_task(void* pvParameters) {
             }
         } else {
             // Brief delay for DMA buffer to flush
-            vTaskDelay(pdMS_TO_TICKS(30));  // Reduced from 50ms
+            vTaskDelay(pdMS_TO_TICKS(30)); // Reduced from 50ms
 
             // Don't disable amp immediately - keep it warm for faster subsequent plays
             // Record when we finished so timeout can disable it later
@@ -273,36 +253,46 @@ static void sd_audio_playback_task(void* pvParameters) {
 // Get GHz value for band and frequency
 int getGHz(AlertBand band, uint16_t freqMHz) {
     switch (band) {
-        case AlertBand::KA:
-            // Ka band: 33.4-36.0 GHz - determine which integer GHz
-            if (freqMHz < 34000) return 33;
-            if (freqMHz < 35000) return 34;
-            if (freqMHz < 36000) return 35;
-            return 36;
-        case AlertBand::K:
-            return 24;  // K band is 24.x GHz
-        case AlertBand::X:
-            return 10;  // X band is 10.x GHz
-        default:
-            return 0;   // Laser has no frequency
+    case AlertBand::KA:
+        // Ka band: 33.4-36.0 GHz - determine which integer GHz
+        if (freqMHz < 34000)
+            return 33;
+        if (freqMHz < 35000)
+            return 34;
+        if (freqMHz < 36000)
+            return 35;
+        return 36;
+    case AlertBand::K:
+        return 24; // K band is 24.x GHz
+    case AlertBand::X:
+        return 10; // X band is 10.x GHz
+    default:
+        return 0; // Laser has no frequency
     }
 }
 
 static const char* getBandClipFile(AlertBand band) {
     switch (band) {
-        case AlertBand::LASER: return "band_laser.mul";
-        case AlertBand::KA:    return "band_ka.mul";
-        case AlertBand::K:     return "band_k.mul";
-        case AlertBand::X:     return "band_x.mul";
+    case AlertBand::LASER:
+        return "band_laser.mul";
+    case AlertBand::KA:
+        return "band_ka.mul";
+    case AlertBand::K:
+        return "band_k.mul";
+    case AlertBand::X:
+        return "band_x.mul";
     }
     return nullptr;
 }
 
 static const char* getDirectionClipFile(AlertDirection direction) {
     switch (direction) {
-        case AlertDirection::AHEAD:  return "dir_ahead.mul";
-        case AlertDirection::BEHIND: return "dir_behind.mul";
-        case AlertDirection::SIDE:   return "dir_side.mul";
+    case AlertDirection::AHEAD:
+        return "dir_ahead.mul";
+    case AlertDirection::BEHIND:
+        return "dir_behind.mul";
+    case AlertDirection::SIDE:
+        return "dir_side.mul";
     }
     return nullptr;
 }
@@ -361,10 +351,10 @@ void play_test_voice() {
 //   BAND_FREQ: "Ka 34 7 49"
 // direction appended if includeDirection is true
 // bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
-void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                          VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount) {
-    AUDIO_LOGF("[AUDIO] play_frequency_voice() band=%d freq=%d dir=%d mode=%d incDir=%d bogeys=%d\n",
-               (int)band, freqMHz, (int)direction, (int)mode, includeDirection, bogeyCount);
+void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
+                          bool includeDirection, uint8_t bogeyCount) {
+    AUDIO_LOGF("[AUDIO] play_frequency_voice() band=%d freq=%d dir=%d mode=%d incDir=%d bogeys=%d\n", (int)band,
+               freqMHz, (int)direction, (int)mode, includeDirection, bogeyCount);
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
@@ -403,10 +393,17 @@ void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direc
     if (mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
         const char* bandFile = nullptr;
         switch (band) {
-            case AlertBand::KA: bandFile = "band_ka.mul"; break;
-            case AlertBand::K:  bandFile = "band_k.mul"; break;
-            case AlertBand::X:  bandFile = "band_x.mul"; break;
-            default: break;
+        case AlertBand::KA:
+            bandFile = "band_ka.mul";
+            break;
+        case AlertBand::K:
+            bandFile = "band_k.mul";
+            break;
+        case AlertBand::X:
+            bandFile = "band_x.mul";
+            break;
+        default:
+            break;
         }
         if (bandFile) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, bandFile);
@@ -435,9 +432,15 @@ void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direc
     if (includeDirection) {
         const char* dirFile = nullptr;
         switch (direction) {
-            case AlertDirection::AHEAD:  dirFile = "dir_ahead.mul"; break;
-            case AlertDirection::BEHIND: dirFile = "dir_behind.mul"; break;
-            case AlertDirection::SIDE:   dirFile = "dir_side.mul"; break;
+        case AlertDirection::AHEAD:
+            dirFile = "dir_ahead.mul";
+            break;
+        case AlertDirection::BEHIND:
+            dirFile = "dir_behind.mul";
+            break;
+        case AlertDirection::SIDE:
+            dirFile = "dir_side.mul";
+            break;
         }
         if (dirFile) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
@@ -487,10 +490,18 @@ void play_band_only(AlertBand band) {
 
     const char* bandFile = nullptr;
     switch (band) {
-        case AlertBand::LASER: bandFile = "band_laser.mul"; break;
-        case AlertBand::KA:    bandFile = "band_ka.mul"; break;
-        case AlertBand::K:     bandFile = "band_k.mul"; break;
-        case AlertBand::X:     bandFile = "band_x.mul"; break;
+    case AlertBand::LASER:
+        bandFile = "band_laser.mul";
+        break;
+    case AlertBand::KA:
+        bandFile = "band_ka.mul";
+        break;
+    case AlertBand::K:
+        bandFile = "band_k.mul";
+        break;
+    case AlertBand::X:
+        bandFile = "band_x.mul";
+        break;
     }
 
     if (bandFile) {
@@ -524,9 +535,15 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
     // Just the direction clip
     const char* dirFile = nullptr;
     switch (direction) {
-        case AlertDirection::AHEAD:  dirFile = "dir_ahead.mul"; break;
-        case AlertDirection::BEHIND: dirFile = "dir_behind.mul"; break;
-        case AlertDirection::SIDE:   dirFile = "dir_side.mul"; break;
+    case AlertDirection::AHEAD:
+        dirFile = "dir_ahead.mul";
+        break;
+    case AlertDirection::BEHIND:
+        dirFile = "dir_behind.mul";
+        break;
+    case AlertDirection::SIDE:
+        dirFile = "dir_side.mul";
+        break;
     }
     if (dirFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
@@ -589,10 +606,10 @@ void audio_process_amp_timeout() {
 
 // Play threat escalation: "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
 // Used when secondary alert ramps up from weak (≤2 bars) to strong (≥4 bars) over time
-void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                            uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
-    AUDIO_LOGF("[AUDIO] play_threat_escalation() band=%d freq=%d dir=%d total=%d\n",
-               (int)band, freqMHz, (int)direction, total);
+void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
+                            uint8_t behind, uint8_t side) {
+    AUDIO_LOGF("[AUDIO] play_threat_escalation() band=%d freq=%d dir=%d total=%d\n", (int)band, freqMHz, (int)direction,
+               total);
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
@@ -618,10 +635,17 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
     // 1. Band clip
     const char* bandFile = nullptr;
     switch (band) {
-        case AlertBand::KA: bandFile = "band_ka.mul"; break;
-        case AlertBand::K:  bandFile = "band_k.mul"; break;
-        case AlertBand::X:  bandFile = "band_x.mul"; break;
-        default: break;
+    case AlertBand::KA:
+        bandFile = "band_ka.mul";
+        break;
+    case AlertBand::K:
+        bandFile = "band_k.mul";
+        break;
+    case AlertBand::X:
+        bandFile = "band_x.mul";
+        break;
+    default:
+        break;
     }
     if (bandFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, bandFile);
@@ -641,9 +665,15 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
     // 5. Direction clip
     const char* dirFile = nullptr;
     switch (direction) {
-        case AlertDirection::AHEAD:  dirFile = "dir_ahead.mul"; break;
-        case AlertDirection::BEHIND: dirFile = "dir_behind.mul"; break;
-        case AlertDirection::SIDE:   dirFile = "dir_side.mul"; break;
+    case AlertDirection::AHEAD:
+        dirFile = "dir_ahead.mul";
+        break;
+    case AlertDirection::BEHIND:
+        dirFile = "dir_behind.mul";
+        break;
+    case AlertDirection::SIDE:
+        dirFile = "dir_side.mul";
+        break;
     }
     if (dirFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);

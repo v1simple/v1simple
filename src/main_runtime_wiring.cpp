@@ -90,12 +90,7 @@ void showInitialScanningScreen() {
 }
 
 static WifiOrchestrator& getWifiOrchestrator() {
-    static WifiOrchestrator orchestrator(
-        wifiManager,
-        bleClient,
-        parser,
-        storageManager,
-        autoPushModule);
+    static WifiOrchestrator orchestrator(wifiManager, bleClient, parser, storageManager, autoPushModule);
     return orchestrator;
 }
 
@@ -105,100 +100,78 @@ void configureWifiRuntimeModule() {
     wifiManager.setGpsRuntime(&gpsRuntimeModule);
     getWifiOrchestrator().ensureCallbacksConfigured();
     if (!wifiStatusObservabilityCallbackConfigured) {
-        wifiManager.appendStatusCallback([](JsonObject obj, void* /*ctx*/) {
-            obj["maintenanceBoot"] = mainRuntimeState.maintenanceBootActive;
-            obj["maintenanceBootUptimeMs"] =
-                mainRuntimeState.maintenanceBootActive && mainRuntimeState.maintenanceBootStartedMs != 0
-                    ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
-                    : 0;
-            StatusObservabilityPayload::WifiStatusSnapshot wifiStatus;
-            wifiStatus.apLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
-            wifiStatus.apLastTransitionReason =
-                perfWifiApTransitionReasonName(wifiStatus.apLastTransitionReasonCode);
-            wifiStatus.lowDmaCooldownRemainingMs = wifiManager.lowDmaCooldownRemainingMs();
-            wifiStatus.autoStart = wifiAutoStartModule.getLastDecision();
+        wifiManager.appendStatusCallback(
+            [](JsonObject obj, void* /*ctx*/) {
+                obj["maintenanceBoot"] = mainRuntimeState.maintenanceBootActive;
+                obj["maintenanceBootUptimeMs"] =
+                    mainRuntimeState.maintenanceBootActive && mainRuntimeState.maintenanceBootStartedMs != 0
+                        ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
+                        : 0;
+                StatusObservabilityPayload::WifiStatusSnapshot wifiStatus;
+                wifiStatus.apLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
+                wifiStatus.apLastTransitionReason =
+                    perfWifiApTransitionReasonName(wifiStatus.apLastTransitionReasonCode);
+                wifiStatus.lowDmaCooldownRemainingMs = wifiManager.lowDmaCooldownRemainingMs();
+                wifiStatus.autoStart = wifiAutoStartModule.getLastDecision();
 
-            StatusObservabilityPayload::appendStatusObservability(obj, wifiStatus);
+                StatusObservabilityPayload::appendStatusObservability(obj, wifiStatus);
 
-            const QuietCommittedState quietCommitted = quietCoordinatorModule.getCommittedState();
-            const QuietDesiredState& quietDesired = quietCoordinatorModule.getDesiredState();
-            const QuietPresentationState& quietPresentation =
-                quietCoordinatorModule.getPresentationState();
+                const QuietCommittedState quietCommitted = quietCoordinatorModule.getCommittedState();
+                const QuietDesiredState& quietDesired = quietCoordinatorModule.getDesiredState();
+                const QuietPresentationState& quietPresentation = quietCoordinatorModule.getPresentationState();
 
-            JsonObject quietObj = obj["quiet"].to<JsonObject>();
+                JsonObject quietObj = obj["quiet"].to<JsonObject>();
 
-            JsonObject desiredObj = quietObj["desired"].to<JsonObject>();
-            desiredObj["muteOwner"] = quietOwnerName(quietDesired.muteOwner);
-            desiredObj["muteOwnerRaw"] = static_cast<uint8_t>(quietDesired.muteOwner);
-            desiredObj["mutePending"] = quietDesired.mutePending;
-            desiredObj["mute"] = quietDesired.mute;
-            desiredObj["volumeOwner"] = quietOwnerName(quietDesired.volumeOwner);
-            desiredObj["volumeOwnerRaw"] = static_cast<uint8_t>(quietDesired.volumeOwner);
-            desiredObj["volumePending"] = quietDesired.volumePending;
-            desiredObj["volume"] = quietDesired.volume;
-            desiredObj["muteVolume"] = quietDesired.muteVolume;
+                JsonObject desiredObj = quietObj["desired"].to<JsonObject>();
+                desiredObj["muteOwner"] = quietOwnerName(quietDesired.muteOwner);
+                desiredObj["muteOwnerRaw"] = static_cast<uint8_t>(quietDesired.muteOwner);
+                desiredObj["mutePending"] = quietDesired.mutePending;
+                desiredObj["mute"] = quietDesired.mute;
+                desiredObj["volumeOwner"] = quietOwnerName(quietDesired.volumeOwner);
+                desiredObj["volumeOwnerRaw"] = static_cast<uint8_t>(quietDesired.volumeOwner);
+                desiredObj["volumePending"] = quietDesired.volumePending;
+                desiredObj["volume"] = quietDesired.volume;
+                desiredObj["muteVolume"] = quietDesired.muteVolume;
 
-            JsonObject committedObj = quietObj["committed"].to<JsonObject>();
-            committedObj["connected"] = quietCommitted.connected;
-            committedObj["hasDisplayState"] = quietCommitted.hasDisplayState;
-            committedObj["muted"] = quietCommitted.muted;
-            committedObj["mainVolume"] = quietCommitted.mainVolume;
-            committedObj["muteVolume"] = quietCommitted.muteVolume;
+                JsonObject committedObj = quietObj["committed"].to<JsonObject>();
+                committedObj["connected"] = quietCommitted.connected;
+                committedObj["hasDisplayState"] = quietCommitted.hasDisplayState;
+                committedObj["muted"] = quietCommitted.muted;
+                committedObj["mainVolume"] = quietCommitted.mainVolume;
+                committedObj["muteVolume"] = quietCommitted.muteVolume;
 
-            JsonObject presentationObj = quietObj["presentation"].to<JsonObject>();
-            presentationObj["activeMuteOwner"] =
-                quietOwnerName(quietPresentation.activeMuteOwner);
-            presentationObj["activeMuteOwnerRaw"] =
-                static_cast<uint8_t>(quietPresentation.activeMuteOwner);
-            presentationObj["activeVolumeOwner"] =
-                quietOwnerName(quietPresentation.activeVolumeOwner);
-            presentationObj["activeVolumeOwnerRaw"] =
-                static_cast<uint8_t>(quietPresentation.activeVolumeOwner);
-            presentationObj["speedVolZeroActive"] = quietPresentation.speedVolZeroActive;
-            presentationObj["voiceSuppressed"] = quietPresentation.voiceSuppressed;
-            presentationObj["voiceAllowVolZeroBypass"] =
-                quietPresentation.voiceAllowVolZeroBypass;
-            presentationObj["effectiveMuted"] = quietPresentation.effectiveMuted;
-        }, nullptr);
+                JsonObject presentationObj = quietObj["presentation"].to<JsonObject>();
+                presentationObj["activeMuteOwner"] = quietOwnerName(quietPresentation.activeMuteOwner);
+                presentationObj["activeMuteOwnerRaw"] = static_cast<uint8_t>(quietPresentation.activeMuteOwner);
+                presentationObj["activeVolumeOwner"] = quietOwnerName(quietPresentation.activeVolumeOwner);
+                presentationObj["activeVolumeOwnerRaw"] = static_cast<uint8_t>(quietPresentation.activeVolumeOwner);
+                presentationObj["speedVolZeroActive"] = quietPresentation.speedVolZeroActive;
+                presentationObj["voiceSuppressed"] = quietPresentation.voiceSuppressed;
+                presentationObj["voiceAllowVolZeroBypass"] = quietPresentation.voiceAllowVolZeroBypass;
+                presentationObj["effectiveMuted"] = quietPresentation.effectiveMuted;
+            },
+            nullptr);
         wifiStatusObservabilityCallbackConfigured = true;
     }
 
     WifiRuntimeModule::Providers wifiRuntimeProviders;
     wifiRuntimeProviders.runWifiAutoStartProcess =
-        [](void* ctx,
-           uint32_t nowMs,
-           uint32_t v1ConnectedAtMs,
-           bool enableWifi,
-           bool bleConnected,
-           bool canStartDma,
-           bool wifiAutoStartAllowed,
-           bool& wifiManualStartIntentLatched,
-           bool& wifiAutoStartDone) {
+        [](void* ctx, uint32_t nowMs, uint32_t v1ConnectedAtMs, bool enableWifi, bool bleConnected, bool canStartDma,
+           bool wifiAutoStartAllowed, bool& wifiManualStartIntentLatched, bool& wifiAutoStartDone) {
             static_cast<WifiAutoStartModule*>(ctx)->process(
-                nowMs,
-                v1ConnectedAtMs,
-                enableWifi,
-                bleConnected,
-                canStartDma,
-                wifiAutoStartAllowed,
-                wifiManualStartIntentLatched,
-                wifiAutoStartDone,
-                [](bool autoStarted, void* /*ctx*/) { return wifiManager.startSetupMode(autoStarted); },
-                nullptr);
+                nowMs, v1ConnectedAtMs, enableWifi, bleConnected, canStartDma, wifiAutoStartAllowed,
+                wifiManualStartIntentLatched, wifiAutoStartDone,
+                [](bool autoStarted, void* /*ctx*/) { return wifiManager.startSetupMode(autoStarted); }, nullptr);
         };
     wifiRuntimeProviders.wifiAutoStartContext = &wifiAutoStartModule;
-    wifiRuntimeProviders.shouldRunWifiProcessingPolicy =
-        [](void* ctx) {
-            return isWifiProcessingEnabledPolicy(
-                *static_cast<WiFiManager*>(ctx));
-        };
+    wifiRuntimeProviders.shouldRunWifiProcessingPolicy = [](void* ctx) {
+        return isWifiProcessingEnabledPolicy(*static_cast<WiFiManager*>(ctx));
+    };
     wifiRuntimeProviders.wifiPolicyContext = &wifiManager;
     wifiRuntimeProviders.readWifiLifecyclePending =
         ProviderCallbackBindings::member<WiFiManager, &WiFiManager::hasPendingLifecycleWork>;
     wifiRuntimeProviders.wifiLifecycleContext = &wifiManager;
-    wifiRuntimeProviders.perfTimestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
+    wifiRuntimeProviders.perfTimestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     wifiRuntimeProviders.runWifiCadence =
         ProviderCallbackBindings::member<WifiProcessCadenceModule, &WifiProcessCadenceModule::process>;
     wifiRuntimeProviders.wifiCadenceContext = &wifiProcessCadenceModule;
@@ -206,61 +179,48 @@ void configureWifiRuntimeModule() {
         static_cast<WiFiManager*>(ctx)->setBoundaryTransitionAdmission(allowTransitionWork);
     };
     wifiRuntimeProviders.wifiTransitionAdmissionContext = &wifiManager;
-    wifiRuntimeProviders.runWifiManagerProcess =
-        ProviderCallbackBindings::member<WiFiManager, &WiFiManager::process>;
+    wifiRuntimeProviders.runWifiManagerProcess = ProviderCallbackBindings::member<WiFiManager, &WiFiManager::process>;
     wifiRuntimeProviders.wifiManagerProcessContext = &wifiManager;
-    wifiRuntimeProviders.recordWifiProcessUs = [](void*, uint32_t elapsedUs) {
-        perfRecordWifiProcessUs(elapsedUs);
-    };
+    wifiRuntimeProviders.recordWifiProcessUs = [](void*, uint32_t elapsedUs) { perfRecordWifiProcessUs(elapsedUs); };
     wifiRuntimeProviders.readWifiServiceActive =
         ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isWifiServiceActive>;
     wifiRuntimeProviders.wifiServiceContext = &wifiManager;
-    wifiRuntimeProviders.readWifiConnected =
-        ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isConnected>;
+    wifiRuntimeProviders.readWifiConnected = ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isConnected>;
     wifiRuntimeProviders.wifiConnectedContext = &wifiManager;
-    wifiRuntimeProviders.readVisualNowMs = [](void*) -> uint32_t {
-        return millis();
+    wifiRuntimeProviders.readVisualNowMs = [](void*) -> uint32_t { return millis(); };
+    wifiRuntimeProviders.runWifiVisualSync = [](void* ctx, uint32_t nowMs, bool wifiVisualActiveNow,
+                                                bool displayPreviewRunning, bool bootSplashHoldActive) {
+        static bool prevWifiVisualActive = false;
+        static bool prevStaConnected = false;
+        const bool stateChanged = (wifiVisualActiveNow != prevWifiVisualActive);
+        prevWifiVisualActive = wifiVisualActiveNow;
+
+        // Track STA connection independently so the icon color updates
+        // immediately when STA connects, even if wifiVisualActiveNow
+        // was already true (AP was running).
+        const bool staConnected = wifiManager.isConnected();
+        const bool staChanged = (staConnected != prevStaConnected);
+        prevStaConnected = staConnected;
+
+        static_cast<WifiVisualSyncModule*>(ctx)->process(
+            nowMs, wifiVisualActiveNow, displayPreviewRunning, bootSplashHoldActive,
+            [](void* /*ctx*/) {
+                display.drawWiFiIndicator();
+                const int leftColWidth = 64;
+                const int leftColHeight = 96;
+                display.flushRegion(0, SCREEN_HEIGHT - leftColHeight, leftColWidth, leftColHeight);
+            },
+            nullptr);
+
+        // Force full DISPLAY_FLUSH on next pipeline run when WiFi icon
+        // visibility or color transitions.  The small flushRegion above
+        // handles periodic color refreshes, but the icon's initial
+        // appearance requires a full flush to reliably reach the
+        // AXS15231B panel.
+        if (stateChanged || staChanged) {
+            display.forceNextRedraw();
+        }
     };
-    wifiRuntimeProviders.runWifiVisualSync =
-        [](void* ctx,
-           uint32_t nowMs,
-           bool wifiVisualActiveNow,
-           bool displayPreviewRunning,
-           bool bootSplashHoldActive) {
-            static bool prevWifiVisualActive = false;
-            static bool prevStaConnected = false;
-            const bool stateChanged = (wifiVisualActiveNow != prevWifiVisualActive);
-            prevWifiVisualActive = wifiVisualActiveNow;
-
-            // Track STA connection independently so the icon color updates
-            // immediately when STA connects, even if wifiVisualActiveNow
-            // was already true (AP was running).
-            const bool staConnected = wifiManager.isConnected();
-            const bool staChanged = (staConnected != prevStaConnected);
-            prevStaConnected = staConnected;
-
-            static_cast<WifiVisualSyncModule*>(ctx)->process(
-                nowMs,
-                wifiVisualActiveNow,
-                displayPreviewRunning,
-                bootSplashHoldActive,
-                [](void* /*ctx*/) {
-                    display.drawWiFiIndicator();
-                    const int leftColWidth = 64;
-                    const int leftColHeight = 96;
-                    display.flushRegion(0, SCREEN_HEIGHT - leftColHeight, leftColWidth, leftColHeight);
-                },
-                nullptr);
-
-            // Force full DISPLAY_FLUSH on next pipeline run when WiFi icon
-            // visibility or color transitions.  The small flushRegion above
-            // handles periodic color refreshes, but the icon's initial
-            // appearance requires a full flush to reliably reach the
-            // AXS15231B panel.
-            if (stateChanged || staChanged) {
-                display.forceNextRedraw();
-            }
-        };
     wifiRuntimeProviders.wifiVisualSyncContext = &wifiVisualSyncModule;
     wifiRuntimeModule.begin(wifiRuntimeProviders);
 }
@@ -270,9 +230,7 @@ static void configureLoopConnectionEarlyModule() {
     loopConnectionEarlyProviders.runConnectionRuntime =
         ProviderCallbackBindings::member<ConnectionRuntimeModule, &ConnectionRuntimeModule::process>;
     loopConnectionEarlyProviders.connectionRuntimeContext = &connectionRuntimeModule;
-    loopConnectionEarlyProviders.showInitialScanning = [](void*) {
-        showInitialScanningScreen();
-    };
+    loopConnectionEarlyProviders.showInitialScanning = [](void*) { showInitialScanningScreen(); };
     loopConnectionEarlyProviders.readProxyConnected =
         ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::isProxyClientConnected>;
     loopConnectionEarlyProviders.proxyConnectedContext = &bleClient;
@@ -283,8 +241,7 @@ static void configureLoopConnectionEarlyModule() {
         ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::getProxyClientRssi>;
     loopConnectionEarlyProviders.proxyRssiContext = &bleClient;
     loopConnectionEarlyProviders.runDisplayEarly =
-        ProviderCallbackBindings::member<DisplayOrchestrationModule,
-                                         &DisplayOrchestrationModule::processEarly>;
+        ProviderCallbackBindings::member<DisplayOrchestrationModule, &DisplayOrchestrationModule::processEarly>;
     loopConnectionEarlyProviders.displayEarlyContext = &displayOrchestrationModule;
     loopConnectionEarlyModule.begin(loopConnectionEarlyProviders);
 }
@@ -297,20 +254,18 @@ void configureTouchUiModule() {
         .stopWifiSetup = [](void* /*ctx*/) { wifiManager.stopSetupMode(true); },
         .requestMaintenanceBoot = [](void* /*ctx*/) { requestMaintenanceBootRestart(); },
         .drawWifiIndicator = [](void* /*ctx*/) { display.drawWiFiIndicator(); },
-        .restoreDisplay = [](void* /*ctx*/) {
-            if (mainRuntimeState.bootSplashHoldActive) {
-                return;
-            }
-            displayPipelineModule.restoreCurrentOwner(millis());
-        },
+        .restoreDisplay =
+            [](void* /*ctx*/) {
+                if (mainRuntimeState.bootSplashHoldActive) {
+                    return;
+                }
+                displayPipelineModule.restoreCurrentOwner(millis());
+            },
         .readObdStatus = [](uint32_t nowMs, void* /*ctx*/) { return obdRuntimeModule.snapshot(nowMs); },
-        .requestObdManualPairScan = [](uint32_t nowMs, void* /*ctx*/) {
-            return obdRuntimeModule.requestManualPairScan(nowMs);
-        },
-        .isObdPairGestureSafe = [](uint32_t nowMs, void* /*ctx*/) {
-            return displayPipelineModule.allowsObdPairGesture(nowMs);
-        }
-    };
+        .requestObdManualPairScan = [](uint32_t nowMs,
+                                       void* /*ctx*/) { return obdRuntimeModule.requestManualPairScan(nowMs); },
+        .isObdPairGestureSafe = [](uint32_t nowMs,
+                                   void* /*ctx*/) { return displayPipelineModule.allowsObdPairGesture(nowMs); }};
     touchUiModule.begin(&display, &touchHandler, &settingsManager, touchCbs);
 }
 
@@ -339,7 +294,8 @@ void configureAlertDisplayPipeline() {
 
 static void configureSystemLoopCoreModules() {
     systemEventBus.reset();
-    if (!bleQueueModule.begin(&bleClient, &parser, &v1ProfileManager, &displayPreviewModule, &powerModule, &systemEventBus)) {
+    if (!bleQueueModule.begin(&bleClient, &parser, &v1ProfileManager, &displayPreviewModule, &powerModule,
+                              &systemEventBus)) {
         fatalBootError("BLE queue init failed", true);
     }
     configureConnectionRuntimeModule();
@@ -349,21 +305,10 @@ static void configureSystemLoopCoreModules() {
     configureLoopTailModule();
     configureLoopTelemetryModule();
     configureLoopIngestModule();
-    displayRestoreModule.begin(&display,
-                               &parser,
-                               &bleClient,
-                               &displayPreviewModule,
-                               &displayPipelineModule);
-    displayOrchestrationModule.begin(&display,
-                                     &bleClient,
-                                     &bleQueueModule,
-                                     &displayPreviewModule,
-                                     &displayRestoreModule,
-                                     &parser,
-                                     &settingsManager,
-                                     &volumeFadeModule,
-                                     &speedMuteModule,
-                                     &quietCoordinatorModule);
+    displayRestoreModule.begin(&display, &parser, &bleClient, &displayPreviewModule, &displayPipelineModule);
+    displayOrchestrationModule.begin(&display, &bleClient, &bleQueueModule, &displayPreviewModule,
+                                     &displayRestoreModule, &parser, &settingsManager, &volumeFadeModule,
+                                     &speedMuteModule, &quietCoordinatorModule);
 }
 
 static void configureSystemLoopPhaseModules() {
@@ -413,8 +358,7 @@ bool qualificationModeSavedObdEnabled = false;
 void syncQualificationModeRuntime() {
     const V1Settings& settings = settingsManager.get();
     bleClient.setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
-    SettingsRuntimeSync::syncObdVehicleRuntimeSettings(
-        settings, obdRuntimeModule, speedSourceSelector);
+    SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, obdRuntimeModule, speedSourceSelector);
     connectionCycleCoordinatorModule.reset();
 }
 
@@ -429,22 +373,22 @@ bool applyQualificationModeOverride(uint8_t rawMode) {
     bool proxyBle = current.proxyBLE;
     bool obdEnabled = current.obdEnabled;
     switch (static_cast<QualificationSerialModule::Mode>(rawMode)) {
-        case QualificationSerialModule::Mode::Proxy:
-            proxyBle = true;
-            obdEnabled = false;
-            break;
-        case QualificationSerialModule::Mode::Obd:
-            proxyBle = false;
-            obdEnabled = true;
-            break;
-        case QualificationSerialModule::Mode::V1Only:
-            proxyBle = false;
-            obdEnabled = false;
-            break;
-        case QualificationSerialModule::Mode::Current:
-            break;
-        default:
-            return false;
+    case QualificationSerialModule::Mode::Proxy:
+        proxyBle = true;
+        obdEnabled = false;
+        break;
+    case QualificationSerialModule::Mode::Obd:
+        proxyBle = false;
+        obdEnabled = true;
+        break;
+    case QualificationSerialModule::Mode::V1Only:
+        proxyBle = false;
+        obdEnabled = false;
+        break;
+    case QualificationSerialModule::Mode::Current:
+        break;
+    default:
+        return false;
     }
 
     settingsManager.applyVolatileQualificationMode(proxyBle, obdEnabled);
@@ -464,28 +408,21 @@ void clearQualificationModeOverride() {
     if (!qualificationModeOverrideActive) {
         return;
     }
-    settingsManager.applyVolatileQualificationMode(
-        qualificationModeSavedProxyBle, qualificationModeSavedObdEnabled);
+    settingsManager.applyVolatileQualificationMode(qualificationModeSavedProxyBle, qualificationModeSavedObdEnabled);
     syncQualificationModeRuntime();
     qualificationModeOverrideActive = false;
 }
-}  // namespace
+} // namespace
 
 static void configureRuntimeSensorModules() {
-    speedSourceSelector.begin(&obdRuntimeModule, settingsManager.get().obdEnabled,
-                              &gpsRuntimeModule, settingsManager.get().gpsEnabled);
-    obdRuntimeModule.begin(
-        &obdBleClient,
-        settingsManager.get().obdEnabled,
-        settingsManager.get().obdSavedAddress.c_str(),
-        settingsManager.get().obdSavedAddrType,
-        settingsManager.get().obdMinRssi);
-    speedMuteModule.begin(
-        settingsManager.get().speedMuteEnabled,
-        settingsManager.get().speedMuteThresholdMph,
-        settingsManager.get().speedMuteHysteresisMph,
-        settingsManager.get().speedMuteVolume,
-        settingsManager.get().speedMuteVoice);
+    speedSourceSelector.begin(&obdRuntimeModule, settingsManager.get().obdEnabled, &gpsRuntimeModule,
+                              settingsManager.get().gpsEnabled);
+    obdRuntimeModule.begin(&obdBleClient, settingsManager.get().obdEnabled,
+                           settingsManager.get().obdSavedAddress.c_str(), settingsManager.get().obdSavedAddrType,
+                           settingsManager.get().obdMinRssi);
+    speedMuteModule.begin(settingsManager.get().speedMuteEnabled, settingsManager.get().speedMuteThresholdMph,
+                          settingsManager.get().speedMuteHysteresisMph, settingsManager.get().speedMuteVolume,
+                          settingsManager.get().speedMuteVoice);
 
     // ALP (Active Laser Protection) — UART2 listener for gun identification.
     // When enabled, ALP can also own laser alerting via V1 profile-push policy.
@@ -504,21 +441,11 @@ static void configureQualificationSerialModule() {
     providers.startPerfSession = [](void*) { perfSdLogger.startNewSession(); };
     providers.enqueueSnapshotNow = [](void*) { return perfMetricsEnqueueSnapshotNow(); };
     providers.tryDrainPerf = [](void*) { return perfSdLogger.tryDrainAndClose(); };
-    providers.setSdCapturePaused = [](bool paused, void*) {
-        perfMetricsSetSdCapturePaused(paused);
-    };
-    providers.startDisplayPreview = [](uint32_t durationMs, void*) {
-        requestColorPreviewHold(durationMs);
-    };
-    providers.cancelDisplayPreview = [](void*) {
-        cancelDisplayPreview();
-    };
-    providers.applyQualificationMode = [](uint8_t mode, void*) {
-        return applyQualificationModeOverride(mode);
-    };
-    providers.clearQualificationMode = [](void*) {
-        clearQualificationModeOverride();
-    };
+    providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
+    providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
+    providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };
+    providers.applyQualificationMode = [](uint8_t mode, void*) { return applyQualificationModeOverride(mode); };
+    providers.clearQualificationMode = [](void*) { clearQualificationModeOverride(); };
     providers.isStorageReady = [](void*) { return storageManager.isReady(); };
     providers.isSDCard = [](void*) { return storageManager.isSDCard(); };
     providers.filesystem = [](void*) { return storageManager.getFilesystem(); };

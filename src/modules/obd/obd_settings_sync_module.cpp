@@ -17,8 +17,7 @@ void ObdSettingsSyncModule::copyString(char* dest, size_t destLen, const char* s
 }
 
 bool ObdSettingsSyncModule::snapshotsEqual(const Snapshot& lhs, const Snapshot& rhs) {
-    return lhs.savedAddrType == rhs.savedAddrType &&
-           strcmp(lhs.savedAddress, rhs.savedAddress) == 0;
+    return lhs.savedAddrType == rhs.savedAddrType && strcmp(lhs.savedAddress, rhs.savedAddress) == 0;
 }
 
 ObdSettingsSyncModule::Snapshot ObdSettingsSyncModule::captureRuntimeSnapshot() const {
@@ -27,9 +26,7 @@ ObdSettingsSyncModule::Snapshot ObdSettingsSyncModule::captureRuntimeSnapshot() 
         return snapshot;
     }
 
-    copyString(snapshot.savedAddress,
-               sizeof(snapshot.savedAddress),
-               obdRuntimeModule_->getSavedAddress());
+    copyString(snapshot.savedAddress, sizeof(snapshot.savedAddress), obdRuntimeModule_->getSavedAddress());
     snapshot.savedAddrType = obdRuntimeModule_->getSavedAddrType();
     return snapshot;
 }
@@ -40,8 +37,7 @@ bool ObdSettingsSyncModule::settingsMatchSnapshot(const Snapshot& snapshot) cons
     }
 
     const V1Settings& settings = settings_->get();
-    return settings.obdSavedAddress == snapshot.savedAddress &&
-            settings.obdSavedAddrType == snapshot.savedAddrType;
+    return settings.obdSavedAddress == snapshot.savedAddress && settings.obdSavedAddrType == snapshot.savedAddrType;
 }
 
 void ObdSettingsSyncModule::applySnapshot(const Snapshot& snapshot) {
@@ -76,8 +72,7 @@ void ObdSettingsSyncModule::process(uint32_t nowMs) {
         return;
     }
 
-    if (static_cast<int32_t>(nowMs - pendingChangedAtMs_) <
-        static_cast<int32_t>(STABILITY_WINDOW_MS)) {
+    if (static_cast<int32_t>(nowMs - pendingChangedAtMs_) < static_cast<int32_t>(STABILITY_WINDOW_MS)) {
         return;
     }
 

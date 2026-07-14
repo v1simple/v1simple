@@ -4,14 +4,12 @@
 
 namespace V1ProfilePushPolicy {
 
-template <typename SettingsLike>
-inline bool shouldDisableV1Laser(const SettingsLike& settings) {
+template <typename SettingsLike> inline bool shouldDisableV1Laser(const SettingsLike& settings) {
     return settings.alpEnabled && settings.alpDisableV1LaserOnPush;
 }
 
-template <typename SettingsLike>
-inline void applyBeforePush(const SettingsLike& settings, uint8_t bytes[6]) {
-    static constexpr uint8_t kV1LaserEnableBit = 0x08;  // V1 user byte 0 bit 3
+template <typename SettingsLike> inline void applyBeforePush(const SettingsLike& settings, uint8_t bytes[6]) {
+    static constexpr uint8_t kV1LaserEnableBit = 0x08; // V1 user byte 0 bit 3
 
     if (!bytes || !shouldDisableV1Laser(settings)) {
         return;
@@ -21,8 +19,7 @@ inline void applyBeforePush(const SettingsLike& settings, uint8_t bytes[6]) {
 }
 
 template <typename SettingsLike, typename UserSettingsLike>
-inline void applyBeforePushToUserSettings(const SettingsLike& settings,
-                                          UserSettingsLike& userSettings) {
+inline void applyBeforePushToUserSettings(const SettingsLike& settings, UserSettingsLike& userSettings) {
     if (!shouldDisableV1Laser(settings)) {
         return;
     }
@@ -30,4 +27,4 @@ inline void applyBeforePushToUserSettings(const SettingsLike& settings,
     applyBeforePush(settings, userSettings.bytes);
 }
 
-}  // namespace V1ProfilePushPolicy
+} // namespace V1ProfilePushPolicy

@@ -10,8 +10,7 @@ void ConnectionStateDispatchModule::reset() {
     hasRunProcess_ = false;
 }
 
-ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(
-        const ConnectionStateDispatchContext& ctx) {
+ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(const ConnectionStateDispatchContext& ctx) {
     ConnectionStateDispatchDecision decision;
 
     if (providers.runCadence) {
@@ -28,13 +27,9 @@ ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(
     bool shouldRunConnectionStateProcess = decision.cadence.shouldRunConnectionStateProcess;
     const bool watchdogEligible = !ctx.bootSplashHoldActive && !ctx.displayPreviewRunning;
     if (hasRunProcess_) {
-        decision.elapsedSinceLastProcessMs =
-            static_cast<uint32_t>(ctx.nowMs - lastProcessRunMs_);
+        decision.elapsedSinceLastProcessMs = static_cast<uint32_t>(ctx.nowMs - lastProcessRunMs_);
     }
-    if (!shouldRunConnectionStateProcess &&
-        watchdogEligible &&
-        hasRunProcess_ &&
-        ctx.maxProcessGapMs > 0) {
+    if (!shouldRunConnectionStateProcess && watchdogEligible && hasRunProcess_ && ctx.maxProcessGapMs > 0) {
         const uint32_t elapsedSinceProcessMs = decision.elapsedSinceLastProcessMs;
         if (elapsedSinceProcessMs >= ctx.maxProcessGapMs) {
             shouldRunConnectionStateProcess = true;

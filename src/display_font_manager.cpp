@@ -4,10 +4,10 @@
  */
 
 #include "display_font_manager.h"
-#include "display_driver.h"     // Arduino_Canvas full definition (via Arduino_GFX_Library)
+#include "display_driver.h" // Arduino_Canvas full definition (via Arduino_GFX_Library)
 #include "display_layout.h"
-#include "Segment7Font.h"       // Modified V1SevenX TTF binary data
-#include <Arduino.h>                       // millis(), Serial, psramFound()
+#include "Segment7Font.h" // Modified V1SevenX TTF binary data
+#include <Arduino.h>      // millis(), Serial, psramFound()
 #include <esp_heap_caps.h>
 
 // ============================================================================
@@ -26,10 +26,9 @@ void DisplayFontManager::init(Arduino_Canvas* canvas) {
     // varied-frequency alert sequences.  Internal-SRAM metadata overhead
     // for this glyph count is ~4-6 KB (safe with WiFi+BLE headroom >30 KB).
     const bool psramOk = psramFound() && (ESP.getPsramSize() > 0);
-    const uint32_t seg7Cache = psramOk ? 98304u : 8192u;  // 96 KB
+    const uint32_t seg7Cache = psramOk ? 98304u : 8192u; // 96 KB
 
-    Serial.printf("[FontMgr] cache budget: psram=%s seg7=%lu\n",
-                  psramOk ? "yes" : "no",
+    Serial.printf("[FontMgr] cache budget: psram=%s seg7=%lu\n", psramOk ? "yes" : "no",
                   static_cast<unsigned long>(seg7Cache));
 
     // --- Segment7 digits ---
@@ -64,21 +63,12 @@ void DisplayFontManager::prewarmSegment7FrequencyGlyphs() {
     // alerts (e.g., 33.8) do not pay OpenFontRender glyph build latency.
     static constexpr int kWarmFontSize = DisplayLayout::FREQUENCY_OFR_FONT_SIZE;
     static constexpr const char* kWarmupSamples[] = {
-        "33.800",
-        "35.500",
-        "34.700",
-        "24.150",
-        "10.525",
-        "88.888",
-        "--.---",
-        "LASER",
-        "truSPd",
-        "drgEYE",
+        "33.800", "35.500", "34.700", "24.150", "10.525", "88.888", "--.---", "LASER", "truSPd", "drgEYE",
     };
 
     const unsigned long warmStartMs = millis();
     segment7.setBackgroundColor(0, 0, 0);
-    segment7.setFontColor(0, 0, 0);  // Render black-on-black into canvas.
+    segment7.setFontColor(0, 0, 0); // Render black-on-black into canvas.
     segment7.setFontSize(kWarmFontSize);
 
     for (const char* sample : kWarmupSamples) {
@@ -88,8 +78,7 @@ void DisplayFontManager::prewarmSegment7FrequencyGlyphs() {
         segment7.printf("%s", sample);
     }
 
-    Serial.printf("[FontMgr] Segment7 prewarm complete in %lu ms\n",
-                  millis() - warmStartMs);
+    Serial.printf("[FontMgr] Segment7 prewarm complete in %lu ms\n", millis() - warmStartMs);
 }
 
 // ============================================================================
@@ -133,14 +122,18 @@ void DisplayFontManager::primeTopCounterBoundsCache() {
             if (showDot) {
                 text[1] = '.';
             }
-            FT_BBox bbox = segment7.calculateBoundingBox(
-                0, 0, TOP_COUNTER_FONT_SIZE, Align::Left, Layout::Horizontal, text);
+            FT_BBox bbox =
+                segment7.calculateBoundingBox(0, 0, TOP_COUNTER_FONT_SIZE, Align::Left, Layout::Horizontal, text);
             int xMin = static_cast<int>(bbox.xMin);
             int xMax = static_cast<int>(bbox.xMax);
-            if (xMin < -32767) xMin = -32767;
-            if (xMin > 32767)  xMin = 32767;
-            if (xMax < -32767) xMax = -32767;
-            if (xMax > 32767)  xMax = 32767;
+            if (xMin < -32767)
+                xMin = -32767;
+            if (xMin > 32767)
+                xMin = 32767;
+            if (xMax < -32767)
+                xMax = -32767;
+            if (xMax > 32767)
+                xMax = 32767;
             topCounterXMin[c][showDot ? 1 : 0] = static_cast<int16_t>(xMin);
             topCounterXMax[c][showDot ? 1 : 0] = static_cast<int16_t>(xMax);
         };
@@ -151,8 +144,7 @@ void DisplayFontManager::primeTopCounterBoundsCache() {
     topCounterBoundsReady = true;
 }
 
-bool DisplayFontManager::getTopCounterBounds(
-        char symbol, bool showDot, int& xMin, int& xMax) {
+bool DisplayFontManager::getTopCounterBounds(char symbol, bool showDot, int& xMin, int& xMax) {
     const uint8_t idx = static_cast<uint8_t>(symbol);
     const uint8_t dotIdx = showDot ? 1 : 0;
 
@@ -174,8 +166,7 @@ bool DisplayFontManager::getTopCounterBounds(
     if (showDot) {
         text[1] = '.';
     }
-    FT_BBox bbox = segment7.calculateBoundingBox(
-        0, 0, TOP_COUNTER_FONT_SIZE, Align::Left, Layout::Horizontal, text);
+    FT_BBox bbox = segment7.calculateBoundingBox(0, 0, TOP_COUNTER_FONT_SIZE, Align::Left, Layout::Horizontal, text);
     xMin = static_cast<int>(bbox.xMin);
     xMax = static_cast<int>(bbox.xMax);
     return true;

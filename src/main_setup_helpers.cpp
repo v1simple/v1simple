@@ -82,7 +82,7 @@ V1ConnectedAutoPushSelection resolveV1ConnectedAutoPushSelection(const V1Setting
     return selection;
 }
 
-}  // namespace
+} // namespace
 
 void prepareForShutdown(void* /*context*/) {
     feedLoopTaskWatchdogDuringShutdown();
@@ -112,7 +112,7 @@ void prepareForShutdown(void* /*context*/) {
     if (pScan && pScan->isScanning()) {
         pScan->stop();
     }
-    delay(50);  // Brief settle for disconnect packets to transmit
+    delay(50); // Brief settle for disconnect packets to transmit
     feedLoopTaskWatchdogDuringShutdown();
 
     // Drain SD loggers (car power mode shutdown)
@@ -161,22 +161,17 @@ void onV1Connected() {
     const V1ConnectedAutoPushSelection selection = resolveV1ConnectedAutoPushSelection(s);
 
     const AutoPushSlot& slot = settingsManager.getSlot(selection.selectedSlotIndex);
-    SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u addr='%s' profile='%s' mode=%d\n",
-                     s.autoPushEnabled ? "on" : "off",
-                     selection.activeSlotIndex,
-                     selection.selectedSlotIndex,
-                     static_cast<unsigned>(selection.deviceDefaultProfile),
-                     selection.connectedAddress.c_str(),
-                     slot.profileName.c_str(),
-                     static_cast<int>(slot.mode));
+    SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u addr='%s' "
+                     "profile='%s' mode=%d\n",
+                     s.autoPushEnabled ? "on" : "off", selection.activeSlotIndex, selection.selectedSlotIndex,
+                     static_cast<unsigned>(selection.deviceDefaultProfile), selection.connectedAddress.c_str(),
+                     slot.profileName.c_str(), static_cast<int>(slot.mode));
     if (!s.autoPushEnabled) {
         return;
     }
 
     display.setProfileIndicatorSlot(selection.selectedSlotIndex);
-    const auto queueResult = autoPushModule.queueSlotPush(selection.selectedSlotIndex,
-                                                          false,
-                                                          false);
+    const auto queueResult = autoPushModule.queueSlotPush(selection.selectedSlotIndex, false, false);
     (void)queueResult;
 }
 
@@ -239,13 +234,11 @@ uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) 
     // GPS module
     {
         const V1Settings& gs = services.settings.get();
-        services.gpsRuntime.begin(gs.gpsEnabled, gs.gpsEnablePinActiveHigh,
-                                  gs.gpsBaud,
-                                  &services.gpsTime, &services.gpsGeo);
+        services.gpsRuntime.begin(gs.gpsEnabled, gs.gpsEnablePinActiveHigh, gs.gpsBaud, &services.gpsTime,
+                                  &services.gpsGeo);
         if (gs.gpsEnabled) {
             SerialLog.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
-                             static_cast<unsigned long>(gs.gpsBaud),
-                             1, 5);
+                             static_cast<unsigned long>(gs.gpsBaud), 1, 5);
         }
     }
 
@@ -264,52 +257,41 @@ void initializeTouchAndDisplayControls() {
     // Initialize BOOT button (GPIO 0) for brightness adjustment
     pinMode(BOOT_BUTTON_GPIO, INPUT_PULLUP);
     const V1Settings& displaySettings = settingsManager.get();
-    display.setBrightness(displaySettings.brightness);  // Apply saved brightness
-    SerialLog.printf("[Settings] Applied saved brightness: %d\n",
-                     displaySettings.brightness);
+    display.setBrightness(displaySettings.brightness); // Apply saved brightness
+    SerialLog.printf("[Settings] Applied saved brightness: %d\n", displaySettings.brightness);
 }
 
 namespace {
 
 void configureUiAutoPushModule(QuietCoordinatorModule& quietCoordinator) {
     // Initialize auto-push module after settings/profiles are ready
-    autoPushModule.begin(&settingsManager,
-                         &v1ProfileManager,
-                         &bleClient,
-                         &display,
-                         &quietCoordinator);
+    autoPushModule.begin(&settingsManager, &v1ProfileManager, &bleClient, &display, &quietCoordinator);
 }
 
 void configureUiTouchInteractionModules(QuietCoordinatorModule& quietCoordinator) {
     configureTouchUiModule();
 
-    tapGestureModule.begin(&touchHandler,
-                           &settingsManager,
-                           &display,
-                           &bleClient,
-                           &parser,
-                           &autoPushModule,
-                           &alertPersistenceModule,
-                           &displayMode,
-                           &quietCoordinator,
+    tapGestureModule.begin(&touchHandler, &settingsManager, &display, &bleClient, &parser, &autoPushModule,
+                           &alertPersistenceModule, &displayMode, &quietCoordinator,
                            TapGestureModule::WifiCallbacks{
                                .isWifiActive = [](void*) { return wifiManager.isWifiServiceActive(); },
                                .stopWifi = [](void*) { wifiManager.stopSetupMode(true); },
-                               .requestMaintenanceBoot = [](void*) {
-                                   if (requestMaintenanceBoot()) {
-                                       Serial.println("[MaintBoot] touch long-press requested maintenance reboot");
-                                       settingsManager.save();
-                                       markCleanShutdown();
-                                       delay(50);
-                                       ESP.restart();
-                                   } else {
-                                       Serial.println("[MaintBoot] ERROR: failed to persist maintenance request");
-                                   }
-                               },
+                               .requestMaintenanceBoot =
+                                   [](void*) {
+                                       if (requestMaintenanceBoot()) {
+                                           Serial.println("[MaintBoot] touch long-press requested maintenance reboot");
+                                           settingsManager.save();
+                                           markCleanShutdown();
+                                           delay(50);
+                                           ESP.restart();
+                                       } else {
+                                           Serial.println("[MaintBoot] ERROR: failed to persist maintenance request");
+                                       }
+                                   },
                            });
 }
 
-}  // namespace
+} // namespace
 
 void configureUiInteractionModules(QuietCoordinatorModule& quietCoordinator) {
     configureUiAutoPushModule(quietCoordinator);
@@ -322,12 +304,8 @@ void logBootSummaryAndWifiStartup(uint32_t bootId, esp_reset_reason_t resetReaso
     extern const char* getBuildGitSha();
     const char* gitSha = getBuildGitSha();
     const char* resetStr = resetReasonToString(resetReason);
-    SerialLog.printf("BOOT bootId=%lu reset=%s git=%s scenario=%s wifiMaster=%s\n",
-                     static_cast<unsigned long>(bootId),
-                     resetStr,
-                     gitSha,
-                     scenario,
-                     bootSettings.enableWifi ? "on" : "off");
+    SerialLog.printf("BOOT bootId=%lu reset=%s git=%s scenario=%s wifiMaster=%s\n", static_cast<unsigned long>(bootId),
+                     resetStr, gitSha, scenario, bootSettings.enableWifi ? "on" : "off");
 
     if (!bootSettings.enableWifi) {
         SerialLog.println("[WiFi] Master disabled - startup and loop processing skipped");
@@ -347,7 +325,7 @@ void initializeEarlyBootDiagnostics() {
 
     // Backlight is handled in display.begin() (inverted PWM for Waveshare).
     Serial.begin(115200);
-    delay(30);  // Conservative USB CDC settle.
+    delay(30); // Conservative USB CDC settle.
 
     // PANIC BREADCRUMBS: Log crash info FIRST (before any other init).
     logPanicBreadcrumbs();

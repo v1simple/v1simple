@@ -12,10 +12,8 @@ static constexpr uint32_t TRANSITION_DEBOUNCE_MS = 1500;
 
 // --- Pure decision function ---
 
-SpeedMuteDecision evaluateSpeedMute(
-    const SpeedMuteSettings& settings,
-    const SpeedMuteContext& ctx,
-    SpeedMuteState& state) {
+SpeedMuteDecision evaluateSpeedMute(const SpeedMuteSettings& settings, const SpeedMuteContext& ctx,
+                                    SpeedMuteState& state) {
 
     SpeedMuteDecision decision;
 
@@ -66,9 +64,7 @@ SpeedMuteDecision evaluateSpeedMute(
 
 // --- Module wrapper ---
 
-void SpeedMuteModule::begin(bool enabled, uint8_t thresholdMph,
-                            uint8_t hysteresisMph, uint8_t v1Volume,
-                            bool voice) {
+void SpeedMuteModule::begin(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph, uint8_t v1Volume, bool voice) {
     settings_.enabled = enabled;
     settings_.thresholdMph = thresholdMph;
     settings_.hysteresisMph = hysteresisMph;
@@ -77,8 +73,7 @@ void SpeedMuteModule::begin(bool enabled, uint8_t thresholdMph,
     state_ = {};
 }
 
-void SpeedMuteModule::syncSettings(bool enabled, uint8_t thresholdMph,
-                                   uint8_t hysteresisMph, uint8_t v1Volume,
+void SpeedMuteModule::syncSettings(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph, uint8_t v1Volume,
                                    bool voice) {
     settings_.enabled = enabled;
     settings_.thresholdMph = thresholdMph;
@@ -87,8 +82,7 @@ void SpeedMuteModule::syncSettings(bool enabled, uint8_t thresholdMph,
     settings_.voice = voice;
 }
 
-SpeedMuteDecision SpeedMuteModule::update(float speedMph, bool speedValid,
-                                          uint32_t nowMs) {
+SpeedMuteDecision SpeedMuteModule::update(float speedMph, bool speedValid, uint32_t nowMs) {
     SpeedMuteContext ctx;
     ctx.speedMph = speedMph;
     ctx.speedValid = speedValid;
@@ -98,5 +92,5 @@ SpeedMuteDecision SpeedMuteModule::update(float speedMph, bool speedValid,
 
 bool SpeedMuteModule::isBandOverridden(uint8_t band) const {
     // Laser and Ka always override speed mute — never suppress these.
-    return (band == 1 || band == 2);  // BAND_LASER=1, BAND_KA=2
+    return (band == 1 || band == 2); // BAND_LASER=1, BAND_KA=2
 }

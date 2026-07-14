@@ -18,7 +18,7 @@
 #include "settings.h"
 #include "perf_metrics.h"
 #include "packet_parser.h"
-#include <algorithm>  // std::max
+#include <algorithm> // std::max
 #include <cstring>
 
 // Blink timer moved to V1Display::updateBlinkPhase_() for lockstep sync with
@@ -39,7 +39,7 @@ constexpr int kBandLabelClearLeftPad = 5;
 constexpr int kBandLabelClearW = 66;
 constexpr int kBandLabelClearH = 42;
 
-}  // namespace
+} // namespace
 
 // ============================================================================
 // Band indicator stack (vertical L / Ka / K / X on the left)
@@ -57,8 +57,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     }
 
     if (elementCaches_.bands.valid && effectiveBandMask == elementCaches_.bands.lastMask &&
-        muted == elementCaches_.bands.lastMuted &&
-        elementCaches_.bands.lastPaletteRevision == paletteRevision_) {
+        muted == elementCaches_.bands.lastMuted && elementCaches_.bands.lastPaletteRevision == paletteRevision_) {
         return false;
     }
 
@@ -72,12 +71,10 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         const char* label;
         uint8_t mask;
         uint16_t color;
-    } cells[DisplayLayout::BAND_CELL_COUNT] = {
-        {"L",  BAND_LASER, s.colorBandL},
-        {"Ka", BAND_KA,    s.colorBandKa},
-        {"K",  BAND_K,     s.colorBandK},
-        {"X",  BAND_X,     s.colorBandX}
-    };
+    } cells[DisplayLayout::BAND_CELL_COUNT] = {{"L", BAND_LASER, s.colorBandL},
+                                               {"Ka", BAND_KA, s.colorBandKa},
+                                               {"K", BAND_K, s.colorBandK},
+                                               {"X", BAND_X, s.colorBandX}};
 
     // The V1's band-display row has no dedicated Ku LED — Ku alerts light
     // the K LED on the V1 itself.  When
@@ -88,7 +85,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     const bool kuActive = (effectiveBandMask & BAND_KU) != 0;
     if (kuActive) {
         cells[2].label = DisplayVisualContract::bandCellLabel(effectiveBandMask, 2);
-        cells[2].mask  = DisplayVisualContract::bandCellMask(effectiveBandMask, 2);
+        cells[2].mask = DisplayVisualContract::bandCellMask(effectiveBandMask, 2);
     }
 
     TFT_CALL(setFont)(&FreeSansBold24pt7b);
@@ -118,10 +115,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 
     auto overlapsGpsBadge = [&](int16_t rectY) -> bool {
         const DisplayLayout::DisplayRect gpsRect = DisplayLayout::gpsBadgeRect();
-        return clearX < gpsRect.x + gpsRect.w &&
-               clearX + static_cast<int16_t>(clearW) > gpsRect.x &&
-               rectY < gpsRect.y + gpsRect.h &&
-               rectY + static_cast<int16_t>(kBandLabelClearH) > gpsRect.y;
+        return clearX < gpsRect.x + gpsRect.w && clearX + static_cast<int16_t>(clearW) > gpsRect.x &&
+               rectY < gpsRect.y + gpsRect.h && rectY + static_cast<int16_t>(kBandLabelClearH) > gpsRect.y;
     };
 
     // When any band is blinking, the OFF-phase clear can sit very close to a
@@ -147,14 +142,17 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         } else {
             int16_t maxY = static_cast<int16_t>(unionY + unionH);
             const int16_t newMaxY = static_cast<int16_t>(clearY[i] + kBandLabelClearH);
-            if (clearY[i] < unionY) unionY = clearY[i];
-            if (newMaxY > maxY) maxY = newMaxY;
+            if (clearY[i] < unionY)
+                unionY = clearY[i];
+            if (newMaxY > maxY)
+                maxY = newMaxY;
             unionH = static_cast<uint16_t>(maxY - unionY);
         }
 
-        const bool changed = forceFullStack ||
-                             colorForCell(previousMask, previousMuted, i) != colorForCell(effectiveBandMask, muted, i) ||
-                             strcmp(DisplayVisualContract::bandCellLabel(previousMask, i), cells[i].label) != 0;
+        const bool changed =
+            forceFullStack ||
+            colorForCell(previousMask, previousMuted, i) != colorForCell(effectiveBandMask, muted, i) ||
+            strcmp(DisplayVisualContract::bandCellLabel(previousMask, i), cells[i].label) != 0;
         cellChanged[i] = changed;
         anyCellChanged = anyCellChanged || changed;
         gpsNeedsRestore = gpsNeedsRestore || (changed && overlapsGpsBadge(clearY[i]));
@@ -179,10 +177,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::BandSetChange);
 
     if (forceFullStack) {
-        drawnRegion_.add(clearX,
-                         unionY,
-                         static_cast<int16_t>(clearW),
-                         static_cast<int16_t>(unionH),
+        drawnRegion_.add(clearX, unionY, static_cast<int16_t>(clearW), static_cast<int16_t>(unionH),
                          DisplayDirtyRegionSource::Bands);
         FILL_RECT(clearX, unionY, clearW, unionH, PALETTE_BG);
     } else {
@@ -190,11 +185,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
             if (!cellChanged[i]) {
                 continue;
             }
-            drawnRegion_.add(clearX,
-                             clearY[i],
-                             static_cast<int16_t>(clearW),
-                             static_cast<int16_t>(kBandLabelClearH),
-                         DisplayDirtyRegionSource::Bands);
+            drawnRegion_.add(clearX, clearY[i], static_cast<int16_t>(clearW), static_cast<int16_t>(kBandLabelClearH),
+                             DisplayDirtyRegionSource::Bands);
             FILL_RECT(clearX, clearY[i], clearW, kBandLabelClearH, PALETTE_BG);
         }
     }
@@ -203,8 +195,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         if (!forceFullStack && !cellChanged[i]) {
             continue;
         }
-        const bool isActive =
-            (effectiveBandMask & DisplayVisualContract::bandCellMask(effectiveBandMask, i)) != 0;
+        const bool isActive = (effectiveBandMask & DisplayVisualContract::bandCellMask(effectiveBandMask, i)) != 0;
         int labelY = startY + i * spacing;
         labelY += s_bandBaselineAdjust;
         uint16_t col = isActive ? (muted ? PALETTE_MUTED_OR_PERSISTED : cells[i].color) : TFT_DARKGREY;
@@ -256,11 +247,11 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     constexpr int barCount = DisplayLayout::MAIN_SIGNAL_BAR_COUNT;
 
     uint8_t strength = std::max(frontStrength, rearStrength);
-    if (strength > barCount) strength = barCount;
+    if (strength > barCount)
+        strength = barCount;
 
     if (elementCaches_.bars.valid && strength == elementCaches_.bars.lastStrength &&
-        muted == elementCaches_.bars.lastMuted &&
-        elementCaches_.bars.lastPaletteRevision == paletteRevision_) {
+        muted == elementCaches_.bars.lastMuted && elementCaches_.bars.lastPaletteRevision == paletteRevision_) {
         return;
     }
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::SignalBarChange);
@@ -268,10 +259,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     bool hasSignal = (strength > 0);
 
     const V1Settings& s = settingsManager.get();
-    const uint16_t configured[6] = {
-        s.colorBar1, s.colorBar2, s.colorBar3,
-        s.colorBar4, s.colorBar5, s.colorBar6
-    };
+    const uint16_t configured[6] = {s.colorBar1, s.colorBar2, s.colorBar3, s.colorBar4, s.colorBar5, s.colorBar6};
     // Sample the six configured colors across eight positions: bar i maps to
     // continuous index i*5/7 in [0,5]; endpoints land exactly on colorBar1
     // and colorBar6.
@@ -287,15 +275,10 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     // A palette-revision change repaints the full stack: lit-state deltas
     // can't see color changes, and lit bars must take their new colors.
     const bool paletteChanged =
-        elementCaches_.bars.valid &&
-        elementCaches_.bars.lastPaletteRevision != paletteRevision_;
+        elementCaches_.bars.valid && elementCaches_.bars.lastPaletteRevision != paletteRevision_;
     const bool forceFullStack = !elementCaches_.bars.valid || paletteChanged;
     if (forceFullStack) {
-        drawnRegion_.add(stackRect.x,
-                         stackRect.y,
-                         stackRect.w,
-                         stackRect.h,
-                         DisplayDirtyRegionSource::SignalBars);
+        drawnRegion_.add(stackRect.x, stackRect.y, stackRect.w, stackRect.h, DisplayDirtyRegionSource::SignalBars);
     }
     int dirtyTop = SCREEN_HEIGHT;
     int dirtyBottom = 0;
@@ -312,9 +295,11 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
 
         const DisplayLayout::DisplayRect barRect = DisplayLayout::mainSignalBarRect(i);
         if (!forceFullStack) {
-            if (barRect.y < dirtyTop) dirtyTop = barRect.y;
+            if (barRect.y < dirtyTop)
+                dirtyTop = barRect.y;
             const int bottom = barRect.y + barRect.h;
-            if (bottom > dirtyBottom) dirtyBottom = bottom;
+            if (bottom > dirtyBottom)
+                dirtyBottom = bottom;
         }
 
         uint16_t fillColor;
@@ -334,11 +319,8 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
         // one item-owned window so a large jump does not spend most of the
         // multi-rect budget on adjacent signal-bar cells and accidentally force
         // the frame back to a full-canvas push.
-        drawnRegion_.add(stackRect.x,
-                         static_cast<int16_t>(dirtyTop),
-                         stackRect.w,
-                         static_cast<int16_t>(dirtyBottom - dirtyTop),
-                         DisplayDirtyRegionSource::SignalBars);
+        drawnRegion_.add(stackRect.x, static_cast<int16_t>(dirtyTop), stackRect.w,
+                         static_cast<int16_t>(dirtyBottom - dirtyTop), DisplayDirtyRegionSource::SignalBars);
     }
 
     elementCaches_.bars.lastStrength = strength;

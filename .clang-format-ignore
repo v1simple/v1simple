@@ -1,0 +1,14 @@
+# Files clang-format must never touch.
+#
+# These are generated / vendored data headers: machine-emitted byte blobs and
+# bitmap font tables. Reformatting them is pure churn, would explode diffs, and
+# would be overwritten by the next regeneration. The same exclusion set is
+# mirrored in scripts/run_firmware_coverage.py (coverage) and
+# scripts/check_clang_format.py (format ratchet), which rejects any attempt to
+# add one of these paths to test/contracts/format_clean_manifest.txt.
+#
+# Patterns are POSIX globs relative to this file (clang-format >= 18).
+include/v1simple_logo.h
+include/warning_audio.h
+include/Segment7Font.h
+include/FreeSans*.h

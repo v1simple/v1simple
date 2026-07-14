@@ -12,6 +12,41 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/ci-test.sh [--with-coverage] [--help]
+
+  --with-coverage   Also run the firmware C++ coverage lane (native-coverage
+                    suites + gcovr + ratchet check). OFF by default: the lane is
+                    a whole second native run (measured: 170.7s uninstrumented
+                    vs 206.6s instrumented for 149 suites, plus ~24s of gcovr),
+                    so the PR gate does not carry it. It runs out-of-band in
+                    .github/workflows/coverage.yml. When this flag is passed the
+                    coverage section runs AFTER the budget check, so it is not
+                    charged against the 1200s ci-test budget.
+  --help            Show this message.
+EOF
+}
+
+WITH_COVERAGE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-coverage)
+      WITH_COVERAGE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo -e "${RED}Unknown argument: $1${NC}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
 START_TIME=$(date +%s)
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
 if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
@@ -31,17 +66,6 @@ run_step() {
   echo -e "${YELLOW}[run] ${label}${NC}"
   "$@"
   echo -e "${GREEN}[pass] ${label}${NC}"
-}
-
-run_advisory_step() {
-  local label="$1"
-  shift
-  echo -e "${YELLOW}[advisory] ${label}${NC}"
-  if "$@"; then
-    echo -e "${GREEN}[pass] ${label}${NC}"
-  else
-    echo -e "${YELLOW}[warn] ${label} failed (advisory)${NC}"
-  fi
 }
 
 PIO_CMD="${PIO_CMD:-pio}"
@@ -75,6 +99,8 @@ run_step "Main loop semantic guard" python3 scripts/check_main_loop_semantic_gua
 run_step "Module const-correctness semantic guard" python3 scripts/check_module_const_correctness.py
 run_step "Extern-escape semantic guard" python3 scripts/check_extern_escape.py
 run_step "Header style contract" python3 scripts/check_header_style_contract.py
+run_step "clang-format check" python3 scripts/check_clang_format.py
+run_step "clang-format check regression tests" python3 scripts/test_check_clang_format.py
 run_step "Modified font reserved-name contract" python3 scripts/check_modified_font_names.py
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py
@@ -153,6 +179,22 @@ echo "{\"elapsed_seconds\": ${ELAPSED}, \"lane\": \"ci-test\"}" > "$TIMING_DIR/t
 
 section "Budget Check"
 run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TIMING_DIR/timing.json"
+
+# Opt-in only, and deliberately sequenced AFTER the budget check: the coverage
+# lane is not part of the authoritative PR gate, so its wall clock must not be
+# charged against the 1200s ci-test budget. Without --with-coverage nothing
+# below runs and the gate is unchanged.
+if [[ "$WITH_COVERAGE" -eq 1 ]]; then
+  section "Firmware Coverage (opt-in, outside the ci-test budget)"
+  COVERAGE_START=$(date +%s)
+  run_step "Firmware coverage ratchet regression tests" python3 scripts/test_check_firmware_coverage.py
+  run_step "Firmware coverage measurement" python3 scripts/run_firmware_coverage.py
+  # Blocking: the Track C splits have landed and the baseline was regenerated
+  # from a full 149-suite instrumented run against the reformatted tree.
+  run_step "Firmware coverage ratchet" python3 scripts/check_firmware_coverage.py
+  COVERAGE_ELAPSED=$(($(date +%s) - COVERAGE_START))
+  echo -e "${YELLOW}[info] coverage lane took ${COVERAGE_ELAPSED}s (not charged to the ci-test budget)${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}All gates passed in ${ELAPSED}s${NC}"

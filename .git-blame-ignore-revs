@@ -1,0 +1,34 @@
+# Commits to ignore in `git blame` -- clang-format reformats.
+#
+# The .clang-format config existed but had never been applied: 277 of 294
+# non-generated firmware files drifted from it. Applying it touched almost
+# every line in the tree without changing a single instruction. Without this
+# file, `git blame` would attribute all of that code to the reformat.
+#
+# Enable it once, locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Every FIRMWARE source (src/, include/) in these commits was verified
+# byte-exactly equal to clang-format(previous content): 301 of 301 files, no
+# hand edit. See each commit body for the per-slice proof.
+#
+# One documented exception, in the final slice below: reformatting re-wrapped
+# the CSV header string that test_perf_csv_schema_contract parses as source
+# text, so that ONE test file carries a real (disclosed) hardening edit in the
+# same commit -- it is not pure clang-format output. Everything that test
+# guards was re-verified sharp. The reformat still dominates the commit, so it
+# stays blame-ignored; just don't read the test's normalizeSource() helper as
+# formatter output.
+
+# refactor: clang-format hot-path files (final ratchet slice)
+# NOTE: also carries the test_perf_csv_schema_contract hardening (see above).
+79e93b361d2d1b60a918e0c9a2764ee1deddd1d6
+
+# refactor: clang-format include/ and src/ root non-hot files (slice 3)
+0af8f099cc96a45650313c41cdf9a512f1edcf54
+
+# refactor(wifi): clang-format wifi, system and perf modules (slice 2)
+02d1ca3fda610d04437fa022ada8e171a30afdf1
+
+# refactor: clang-format leaf modules (ratchet slice 1)
+3560d7bf051ffe620fc28b561867f258044a848a

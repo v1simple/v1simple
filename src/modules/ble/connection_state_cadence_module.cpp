@@ -12,8 +12,7 @@ void ConnectionStateCadenceModule::onScanningScreenShown(unsigned long nowMs) {
     scanScreenDwellActive_ = true;
 }
 
-ConnectionStateCadenceDecision ConnectionStateCadenceModule::process(
-        const ConnectionStateCadenceContext& ctx) {
+ConnectionStateCadenceDecision ConnectionStateCadenceModule::process(const ConnectionStateCadenceContext& ctx) {
     ConnectionStateCadenceDecision decision;
 
     if (lastBleConnectedForScanDwell_ && !ctx.bleConnectedNow && !ctx.bootSplashHoldActive) {

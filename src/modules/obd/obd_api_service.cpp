@@ -14,21 +14,22 @@ namespace {
 
 const char* commandKindName(ObdCommandKind kind) {
     switch (kind) {
-        case ObdCommandKind::AT_INIT: return "at_init";
-        case ObdCommandKind::SANITY: return "sanity";
-        case ObdCommandKind::SPEED: return "speed";
-        case ObdCommandKind::NONE:
-        default:
-            return "none";
+    case ObdCommandKind::AT_INIT:
+        return "at_init";
+    case ObdCommandKind::SANITY:
+        return "sanity";
+    case ObdCommandKind::SPEED:
+        return "speed";
+    case ObdCommandKind::NONE:
+    default:
+        return "none";
     }
 }
 
 constexpr size_t MAX_OBD_DEVICE_NAME_LEN = 32;
 
 bool isHex(char c) {
-    return (c >= '0' && c <= '9') ||
-           (c >= 'a' && c <= 'f') ||
-           (c >= 'A' && c <= 'F');
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 String normalizeObdDeviceAddress(const String& rawAddress) {
@@ -74,12 +75,11 @@ void sendMaintenanceModeError(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
-}  // namespace
+} // namespace
 
-void handleApiConfigGet(WebServer& server,
-                        SettingsManager& settings,
-                        const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
     const V1Settings& s = settings.get();
     JsonDocument doc;
     doc["enabled"] = s.obdEnabled;
@@ -94,10 +94,9 @@ void handleApiConfigGet(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiStatus(WebServer& server,
-                     ObdRuntimeModule& obdRuntime,
-                     const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+void handleApiStatus(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
@@ -139,11 +138,10 @@ void handleApiStatus(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiDevicesList(WebServer& server,
-                          ObdRuntimeModule& obdRuntime,
-                          SettingsManager& settings,
+void handleApiDevicesList(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
                           const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
 
     JsonDocument doc;
     JsonArray arr = doc["devices"].to<JsonArray>();
@@ -162,11 +160,11 @@ void handleApiDevicesList(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiDeviceNameSave(WebServer& server,
-                             SettingsManager& settings,
-                             const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx)) return;
+void handleApiDeviceNameSave(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
+    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
+        return;
 
     if (!server.hasArg("address")) {
         server.send(400, "application/json", "{\"error\":\"Missing address\"}");
@@ -175,7 +173,8 @@ void handleApiDeviceNameSave(WebServer& server,
 
     const String requestedAddress = normalizeObdDeviceAddress(server.arg("address"));
     const String savedAddress = normalizeObdDeviceAddress(settings.get().obdSavedAddress);
-    if (requestedAddress.length() == 0 || savedAddress.length() == 0 || !requestedAddress.equalsIgnoreCase(savedAddress)) {
+    if (requestedAddress.length() == 0 || savedAddress.length() == 0 ||
+        !requestedAddress.equalsIgnoreCase(savedAddress)) {
         server.send(404, "application/json", "{\"error\":\"Saved OBD device not found\"}");
         return;
     }
@@ -183,19 +182,18 @@ void handleApiDeviceNameSave(WebServer& server,
     ObdSettingsUpdate update;
     update.hasSavedName = true;
     update.savedName = sanitizeObdDeviceName(server.hasArg("name") ? server.arg("name") : "");
-    settings.applyObdSettingsUpdate(
-        update,
-        runtime.maintenanceBootActive ? SettingsPersistMode::Immediate
-                                      : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                ? SettingsPersistMode::Immediate
+                                                : SettingsPersistMode::ImmediateNvsDeferredBackup);
 
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiScan(WebServer& server,
-                   ObdRuntimeModule& obdRuntime,
-                   const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx)) return;
+void handleApiScan(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtime& runtime) {
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
+    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
+        return;
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
@@ -224,12 +222,12 @@ void handleApiScan(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiForget(WebServer& server,
-                     ObdRuntimeModule& obdRuntime,
-                     SettingsManager& settings,
+void handleApiForget(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
                      const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx)) return;
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
+    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
+        return;
     if (!runtime.maintenanceBootActive) {
         obdRuntime.forgetDevice();
     }
@@ -240,21 +238,20 @@ void handleApiForget(WebServer& server,
     update.savedName = "";
     update.hasSavedAddrType = true;
     update.savedAddrType = 0;
-    settings.applyObdSettingsUpdate(
-        update,
-        runtime.maintenanceBootActive ? SettingsPersistMode::Immediate
-                                      : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                ? SettingsPersistMode::Immediate
+                                                : SettingsPersistMode::ImmediateNvsDeferredBackup);
     JsonDocument doc;
     doc["success"] = true;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiConfig(WebServer& server,
-                     ObdRuntimeModule& obdRuntime,
-                     SettingsManager& settings,
+void handleApiConfig(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
                      const Runtime& runtime) {
-    if (runtime.markUiActivity) runtime.markUiActivity(runtime.ctx);
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx)) return;
+    if (runtime.markUiActivity)
+        runtime.markUiActivity(runtime.ctx);
+    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
+        return;
 
     if (!server.hasArg("plain") || server.arg("plain").length() == 0) {
         JsonDocument errDoc;
@@ -287,44 +284,37 @@ void handleApiConfig(WebServer& server,
     }
     if (body["obdScanWindowMs"].is<int>()) {
         update.hasObdScanWindowMs = true;
-        update.obdScanWindowMs =
-            static_cast<uint32_t>(std::max(0, body["obdScanWindowMs"].as<int>()));
+        update.obdScanWindowMs = static_cast<uint32_t>(std::max(0, body["obdScanWindowMs"].as<int>()));
     }
     if (body["obdRetryIntervalMs"].is<int>()) {
         update.hasObdRetryIntervalMs = true;
-        update.obdRetryIntervalMs =
-            static_cast<uint32_t>(std::max(0, body["obdRetryIntervalMs"].as<int>()));
+        update.obdRetryIntervalMs = static_cast<uint32_t>(std::max(0, body["obdRetryIntervalMs"].as<int>()));
     }
     if (body["proxyOpenWindowMs"].is<int>()) {
         update.hasProxyOpenWindowMs = true;
-        update.proxyOpenWindowMs =
-            static_cast<uint32_t>(std::max(0, body["proxyOpenWindowMs"].as<int>()));
+        update.proxyOpenWindowMs = static_cast<uint32_t>(std::max(0, body["proxyOpenWindowMs"].as<int>()));
     }
     if (body["wifiOpenTimeoutMs"].is<int>()) {
         update.hasWifiOpenTimeoutMs = true;
-        update.wifiOpenTimeoutMs =
-            static_cast<uint32_t>(std::max(0, body["wifiOpenTimeoutMs"].as<int>()));
+        update.wifiOpenTimeoutMs = static_cast<uint32_t>(std::max(0, body["wifiOpenTimeoutMs"].as<int>()));
     }
     if (body["v1SettleQuietMs"].is<int>()) {
         update.hasV1SettleQuietMs = true;
-        update.v1SettleQuietMs =
-            static_cast<uint32_t>(std::max(0, body["v1SettleQuietMs"].as<int>()));
+        update.v1SettleQuietMs = static_cast<uint32_t>(std::max(0, body["v1SettleQuietMs"].as<int>()));
     }
     if (body["v1SettleFallbackMs"].is<int>()) {
         update.hasV1SettleFallbackMs = true;
-        update.v1SettleFallbackMs =
-            static_cast<uint32_t>(std::max(0, body["v1SettleFallbackMs"].as<int>()));
+        update.v1SettleFallbackMs = static_cast<uint32_t>(std::max(0, body["v1SettleFallbackMs"].as<int>()));
     }
     if (body["cycleTeardownAckTimeoutMs"].is<int>()) {
         update.hasCycleTeardownAckTimeoutMs = true;
-        update.cycleTeardownAckTimeoutMs = static_cast<uint32_t>(
-            std::max(0, body["cycleTeardownAckTimeoutMs"].as<int>()));
+        update.cycleTeardownAckTimeoutMs =
+            static_cast<uint32_t>(std::max(0, body["cycleTeardownAckTimeoutMs"].as<int>()));
     }
 
-    const bool changed = settings.applyObdSettingsUpdate(
-        update,
-        runtime.maintenanceBootActive ? SettingsPersistMode::Immediate
-                                      : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    const bool changed = settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                                     ? SettingsPersistMode::Immediate
+                                                                     : SettingsPersistMode::ImmediateNvsDeferredBackup);
     if (changed && runtime.syncAfterConfigChange) {
         runtime.syncAfterConfigChange(runtime.ctx);
     }
@@ -334,4 +324,4 @@ void handleApiConfig(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-}  // namespace ObdApiService
+} // namespace ObdApiService

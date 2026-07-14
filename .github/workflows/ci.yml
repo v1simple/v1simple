@@ -49,7 +49,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pio-
 
       - name: Install Python toolchain
-        run: pip install "platformio>=6.1.19,<7" "cryptography>=41" "Pillow>=10.4,<13"
+        run: pip install "platformio>=6.1.19,<7" "cryptography>=41" "Pillow>=10.4,<13" "clang-format==22.1.8"
 
       - name: Run ci-test.sh
         run: |

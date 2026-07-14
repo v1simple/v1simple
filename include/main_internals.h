@@ -8,7 +8,7 @@
 #pragma once
 
 #include <cstdint>
-#include "esp_system.h"      // esp_reset_reason_t
+#include "esp_system.h" // esp_reset_reason_t
 #include "main_runtime_services.h"
 
 class QuietCoordinatorModule;

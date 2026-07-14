@@ -5,12 +5,8 @@ void WifiVisualSyncModule::reset() {
     lastWifiIconRefreshMs_ = 0;
 }
 
-void WifiVisualSyncModule::process(unsigned long nowMs,
-                                   bool wifiVisualActiveNow,
-                                   bool displayPreviewRunning,
-                                   bool bootSplashHoldActive,
-                                   void (*drawAndFlush)(void* ctx),
-                                   void* ctx) {
+void WifiVisualSyncModule::process(unsigned long nowMs, bool wifiVisualActiveNow, bool displayPreviewRunning,
+                                   bool bootSplashHoldActive, void (*drawAndFlush)(void* ctx), void* ctx) {
     bool refreshWifiIcon = false;
     if (wifiVisualActiveNow != lastWifiVisualActive_) {
         refreshWifiIcon = true;

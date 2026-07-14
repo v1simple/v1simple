@@ -116,6 +116,7 @@ def check_production_env_is_tested(errors: list[str]) -> None:
     production_text = PRODUCTION_BUILD.read_text(encoding="utf-8")
     ci_workflow_text = CI_YML.read_text(encoding="utf-8")
     release_text = RELEASE_YML.read_text(encoding="utf-8")
+    dependency_command = f'"$PIO_CMD" pkg install -e {ENV}'
 
     require_contains(ci_workflow_text, "./scripts/ci-test.sh", ".github/workflows/ci.yml", errors)
     workflow_path = CI_YML.relative_to(ROOT).as_posix()
@@ -152,6 +153,7 @@ def check_production_env_is_tested(errors: list[str]) -> None:
     )
     for required in (
         f"PIO_BUILD_ARGS=(-e {ENV})",
+        dependency_command,
         'run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean',
         'run_step "Firmware build" run_firmware_build_with_memory_log',
         'run_step "LittleFS image build" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t buildfs',
@@ -166,6 +168,16 @@ def check_production_env_is_tested(errors: list[str]) -> None:
             required,
             "scripts/build_production_artifacts.sh",
             errors,
+        )
+
+    dependency_index = production_text.find(dependency_command)
+    clean_index = production_text.find(
+        'run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean'
+    )
+    if -1 not in (dependency_index, clean_index) and dependency_index > clean_index:
+        errors.append(
+            "scripts/build_production_artifacts.sh must install PlatformIO project "
+            "dependencies before the first firmware command"
         )
 
     if "./scripts/ci-test.sh" in release_text:

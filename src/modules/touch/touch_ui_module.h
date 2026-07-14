@@ -10,19 +10,19 @@
 #include "touch_handler.h"
 
 class TouchUiModule {
-public:
+  public:
     TouchUiModule() = default;
 
     struct Callbacks {
         bool (*isWifiSetupActive)(void* ctx) = nullptr;
         void* isWifiSetupActiveCtx = nullptr;
-        void (*stopWifiSetup)(void* ctx) = nullptr;       // stop AP/setup mode if unexpectedly active
+        void (*stopWifiSetup)(void* ctx) = nullptr; // stop AP/setup mode if unexpectedly active
         void* stopWifiSetupCtx = nullptr;
-        void (*requestMaintenanceBoot)(void* ctx) = nullptr;  // persist flag + reboot
+        void (*requestMaintenanceBoot)(void* ctx) = nullptr; // persist flag + reboot
         void* requestMaintenanceBootCtx = nullptr;
         void (*drawWifiIndicator)(void* ctx) = nullptr;
         void* drawWifiIndicatorCtx = nullptr;
-        void (*restoreDisplay)(void* ctx) = nullptr;      // refresh display with current state
+        void (*restoreDisplay)(void* ctx) = nullptr; // refresh display with current state
         void* restoreDisplayCtx = nullptr;
         ObdRuntimeStatus (*readObdStatus)(uint32_t nowMs, void* ctx) = nullptr;
         void* readObdStatusCtx = nullptr;
@@ -32,15 +32,12 @@ public:
         void* isObdPairGestureSafeCtx = nullptr;
     };
 
-    void begin(V1Display* disp,
-               TouchHandler* touch,
-               SettingsManager* settings,
-               const Callbacks& cbs);
+    void begin(V1Display* disp, TouchHandler* touch, SettingsManager* settings, const Callbacks& cbs);
 
     // Returns true if UI consumed the loop (brightness/volume adjustment active)
     bool process(unsigned long nowMs, bool bootPressed);
 
-private:
+  private:
     void enterAdjustMode();
     void exitAdjustModeAndSave();
     bool handleSliderTouch(unsigned long nowMs);
@@ -71,5 +68,5 @@ private:
     static constexpr unsigned long OBD_PAIR_LONG_PRESS_MS = 10000;
     static constexpr unsigned long DOUBLE_PRESS_WINDOW_MS = 600;
     static constexpr unsigned long VOLUME_TEST_DEBOUNCE_MS = 1000;
-    static constexpr unsigned long SLIDER_REDRAW_MIN_MS = 50;  // Cap slider redraw rate (~20 Hz)
+    static constexpr unsigned long SLIDER_REDRAW_MIN_MS = 50; // Cap slider redraw rate (~20 Hz)
 };

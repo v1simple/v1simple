@@ -35,33 +35,33 @@ Default constructor; dependencies null until `begin()`.
 
 #### `void begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble, V1Display* disp, QuietCoordinatorModule* quietCoordinator)`
 Injects dependencies. Call once from `setup()`.
-**Source:** `auto_push_module.h:36-40`.
+**Source:** `auto_push_module.h:36-37`.
 
 ### Queue entry points
 
 #### `QueueResult queueSlotPush(int slotIndex, bool activateSlot = false, bool updateProfileIndicator = true)`
 Queues a slot-driven push through the shared executor. Used by the auto-push trigger and by the slot-activate API endpoint.
-**Source:** `auto_push_module.h:43-45`.
+**Source:** `auto_push_module.h:40`.
 
 #### `QueueResult queuePushNow(const PushNowRequest& request)`
 Queues an explicit push-now request with optional profile/mode overrides. Used by the `/api/autopush/push` endpoint.
-**Source:** `auto_push_module.h:48`.
+**Source:** `auto_push_module.h:43`.
 
 ### Pump
 
 #### `void process()`
 Advances the state machine. Call once per main-loop tick.
-**Source:** `auto_push_module.h:51`.
+**Source:** `auto_push_module.h:46`.
 
 ### Status
 
 #### `String getStatusJson() const`
 Returns a JSON status string consumed by `/api/autopush/status`.
-**Source:** `auto_push_module.h:54`.
+**Source:** `auto_push_module.h:49`.
 
 #### `bool isActive() const`
 True when the state machine is not idle.
-**Source:** `auto_push_module.h:56`.
+**Source:** `auto_push_module.h:51`.
 
 ## Internal state machine (informational)
 

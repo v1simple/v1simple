@@ -8,8 +8,7 @@ namespace WifiStaticPathGuard {
 namespace {
 
 bool startsWith(const char* path, const char* prefix) {
-    return path != nullptr &&
-           std::strncmp(path, prefix, std::strlen(prefix)) == 0;
+    return path != nullptr && std::strncmp(path, prefix, std::strlen(prefix)) == 0;
 }
 
 bool endsWith(const char* path, const char* suffix) {
@@ -19,8 +18,7 @@ bool endsWith(const char* path, const char* suffix) {
 
     const size_t pathLen = std::strlen(path);
     const size_t suffixLen = std::strlen(suffix);
-    return pathLen >= suffixLen &&
-           std::strncmp(path + pathLen - suffixLen, suffix, suffixLen) == 0;
+    return pathLen >= suffixLen && std::strncmp(path + pathLen - suffixLen, suffix, suffixLen) == 0;
 }
 
 bool hasNestedPathAfterPrefix(const char* path, const char* prefix) {
@@ -42,12 +40,10 @@ bool equalsAny(const char* path, const char* const* allowed, size_t count) {
 }
 
 bool isAllowedSingleFileAsset(const char* path, const char* prefix, const char* suffix) {
-    return startsWith(path, prefix) &&
-           !hasNestedPathAfterPrefix(path, prefix) &&
-           endsWith(path, suffix);
+    return startsWith(path, prefix) && !hasNestedPathAfterPrefix(path, prefix) && endsWith(path, suffix);
 }
 
-}  // namespace
+} // namespace
 
 bool isSafe(const char* path) {
     if (path == nullptr || path[0] != '/') {
@@ -78,26 +74,10 @@ bool isSafe(const char* path) {
 
 bool isHtmlPagePath(const char* path) {
     static constexpr const char* kPagePaths[] = {
-        "/",
-        "/index.html",
-        "/alp",
-        "/alp.html",
-        "/audio",
-        "/audio.html",
-        "/autopush",
-        "/autopush.html",
-        "/colors",
-        "/colors.html",
-        "/devices",
-        "/devices.html",
-        "/gps",
-        "/gps.html",
-        "/obd",
-        "/obd.html",
-        "/profiles",
-        "/profiles.html",
-        "/settings",
-        "/settings.html",
+        "/",           "/index.html",   "/alp",           "/alp.html", "/audio",
+        "/audio.html", "/autopush",     "/autopush.html", "/colors",   "/colors.html",
+        "/devices",    "/devices.html", "/gps",           "/gps.html", "/obd",
+        "/obd.html",   "/profiles",     "/profiles.html", "/settings", "/settings.html",
     };
 
     return isSafe(path) && equalsAny(path, kPagePaths, sizeof(kPagePaths) / sizeof(kPagePaths[0]));
@@ -112,18 +92,16 @@ bool isAllowedServedPath(const char* path) {
         return true;
     }
 
-    if (std::strcmp(path, "/_app/env.js") == 0 ||
-        std::strcmp(path, "/_app/version.json") == 0 ||
+    if (std::strcmp(path, "/_app/env.js") == 0 || std::strcmp(path, "/_app/version.json") == 0 ||
         startsWith(path, "/_app/immutable/")) {
         return true;
     }
 
-    if (isAllowedSingleFileAsset(path, "/audio/", ".mul") ||
-        isAllowedSingleFileAsset(path, "/branding/", ".png")) {
+    if (isAllowedSingleFileAsset(path, "/audio/", ".mul") || isAllowedSingleFileAsset(path, "/branding/", ".png")) {
         return true;
     }
 
     return false;
 }
 
-}  // namespace WifiStaticPathGuard
+} // namespace WifiStaticPathGuard

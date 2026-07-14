@@ -8,49 +8,40 @@
 
 namespace BackupApiService {
 
-static void sendBackup(WebServer& server,
-                       BackupSnapshotCache& cachedSnapshot,
-                       const BackupRuntime& runtime,
-                       uint32_t (*millisFn)(void* ctx),
-                       void* millisCtx) {
+static void sendBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
+                       uint32_t (*millisFn)(void* ctx), void* millisCtx) {
     Serial.println("[HTTP] GET /api/settings/backup");
     server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
-    sendCachedBackupSnapshot(
-        server,
-        cachedSnapshot,
-        runtime.getBackupRevision(runtime.ctx),
-        runtime.getCatalogRevision(runtime.ctx),
-        runtime.buildDocument,
-        runtime.ctx,
-        millisFn,
-        millisCtx);
+    sendCachedBackupSnapshot(server, cachedSnapshot, runtime.getBackupRevision(runtime.ctx),
+                             runtime.getCatalogRevision(runtime.ctx), runtime.buildDocument, runtime.ctx, millisFn,
+                             millisCtx);
 }
 
 static void handleBackupNow(WebServer& server, const BackupRuntime& runtime) {
     Serial.println("[HTTP] POST /api/settings/backup-now");
     sendBackupNowResponse(server, BackupNowRuntime{
-        runtime.isStorageReady, runtime.ctx,
-        runtime.isSDCard,       runtime.ctx,
-        runtime.backupToSD,     runtime.ctx,
-    });
+                                      runtime.isStorageReady,
+                                      runtime.ctx,
+                                      runtime.isSDCard,
+                                      runtime.ctx,
+                                      runtime.backupToSD,
+                                      runtime.ctx,
+                                  });
 }
 
-void handleApiBackup(WebServer& server,
-                     BackupSnapshotCache& cachedSnapshot,
-                     const BackupRuntime& runtime,
-                     void (*markUiActivity)(void* ctx), void* uiActivityCtx,
-                     uint32_t (*millisFn)(void* ctx), void* millisCtx) {
+void handleApiBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
+                     void (*markUiActivity)(void* ctx), void* uiActivityCtx, uint32_t (*millisFn)(void* ctx),
+                     void* millisCtx) {
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     sendBackup(server, cachedSnapshot, runtime, millisFn, millisCtx);
 }
 
-void handleApiBackupNow(WebServer& server,
-                        const BackupRuntime& runtime,
-                        bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                        void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiBackupNow(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
+                        void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
@@ -110,15 +101,14 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
     server.send(200, "application/json", response);
 }
 
-void handleApiRestore(WebServer& server,
-                      const BackupRuntime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
-                      void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) return;
+void handleApiRestore(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
+                      void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
     handleRestore(server, runtime);
 }
 
-}  // namespace BackupApiService
+} // namespace BackupApiService

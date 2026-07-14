@@ -14,7 +14,7 @@ struct ConnectionRuntimeSnapshot {
 };
 
 class ConnectionRuntimeModule {
-public:
+  public:
     struct Config {
         unsigned long tickGapMaxUs = 25000;
         unsigned long overloadLoopUs = 25000;
@@ -33,14 +33,11 @@ public:
     void begin(const Providers& hooks);
     void begin(const Providers& hooks, const Config& cfg);
 
-    ConnectionRuntimeSnapshot process(unsigned long nowMs,
-                                      unsigned long nowUs,
-                                      unsigned long lastLoopUs,
-                                      bool bootSplashHoldActive,
-                                      unsigned long bootSplashHoldUntilMs,
+    ConnectionRuntimeSnapshot process(unsigned long nowMs, unsigned long nowUs, unsigned long lastLoopUs,
+                                      bool bootSplashHoldActive, unsigned long bootSplashHoldUntilMs,
                                       bool initialScanningScreenShown);
 
-private:
+  private:
     void reset();
     Providers providers{};
     Config config_;

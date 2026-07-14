@@ -17,7 +17,7 @@ void sendSettingsUnavailable(WebServer& server) {
     server.send(500, "application/json", "{\"error\":\"Settings unavailable\"}");
 }
 
-}  // namespace
+} // namespace
 
 void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
     if (!runtime.getSettings) {
@@ -29,7 +29,7 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
 
     JsonDocument doc;
     doc["ap_ssid"] = settings.apSSID;
-    doc["ap_password"] = "********";  // Don't send actual password
+    doc["ap_password"] = "********"; // Don't send actual password
     doc["isDefaultPassword"] = (settings.apPassword == "setupv1simple");
     doc["proxy_ble"] = settings.proxyBLE;
     doc["proxy_name"] = settings.proxyName;
@@ -58,7 +58,8 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
 }
 
 void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx)) return;
+    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
+        return;
 
     if (!runtime.getSettings || !runtime.applySettingsUpdate) {
         sendSettingsUnavailable(server);
@@ -81,7 +82,8 @@ void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
         }
 
         if (apSsid.length() == 0 || apPass.length() < 8) {
-            server.send(400, "application/json", "{\"error\":\"AP SSID required and password must be at least 8 characters\"}");
+            server.send(400, "application/json",
+                        "{\"error\":\"AP SSID required and password must be at least 8 characters\"}");
             return;
         }
 
@@ -138,4 +140,4 @@ void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
 
     server.send(200, "application/json", "{\"success\":true}");
 }
-}  // namespace WifiSettingsApiService
+} // namespace WifiSettingsApiService

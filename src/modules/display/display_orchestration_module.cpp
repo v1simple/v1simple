@@ -17,15 +17,10 @@
 
 #include "modules/quiet/quiet_coordinator_templates.h"
 
-void DisplayOrchestrationModule::begin(V1Display* displayPtr,
-                                       V1BLEClient* bleClient,
-                                       BleQueueModule* bleQueueModule,
-                                       DisplayPreviewModule* previewModule,
-                                       DisplayRestoreModule* restoreModule,
-                                       PacketParser* parserPtr,
-                                       SettingsManager* settings,
-                                       VolumeFadeModule* volumeFadeModule,
-                                       SpeedMuteModule* speedMuteModule,
+void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleClient, BleQueueModule* bleQueueModule,
+                                       DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule,
+                                       PacketParser* parserPtr, SettingsManager* settings,
+                                       VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
                                        QuietCoordinatorModule* quietCoordinator) {
     display_ = displayPtr;
     ble_ = bleClient;
@@ -71,9 +66,7 @@ void DisplayOrchestrationModule::processEarly(const DisplayOrchestrationEarlyCon
     if (!ctx.overloadThisLoop && !ctx.bootSplashHoldActive) {
         display_->setBleContext(ctx.bleContext);
         if (!previewRunning) {
-            display_->setBLEProxyStatus(ctx.bleContext.v1Connected,
-                                       ctx.bleContext.proxyConnected,
-                                       ctx.bleReceiving);
+            display_->setBLEProxyStatus(ctx.bleContext.v1Connected, ctx.bleContext.proxyConnected, ctx.bleReceiving);
         }
     }
 
@@ -86,8 +79,8 @@ void DisplayOrchestrationModule::processEarly(const DisplayOrchestrationEarlyCon
     }
 }
 
-DisplayOrchestrationParsedResult DisplayOrchestrationModule::processParsedFrame(
-        const DisplayOrchestrationParsedContext& ctx) {
+DisplayOrchestrationParsedResult
+DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedContext& ctx) {
     DisplayOrchestrationParsedResult result;
     if (!display_ || !ble_ || !bleQueue_ || !preview_ || !parser_ || !settings_) {
         return result;
@@ -122,8 +115,8 @@ DisplayOrchestrationParsedResult DisplayOrchestrationModule::processParsedFrame(
     return result;
 }
 
-DisplayOrchestrationRefreshResult DisplayOrchestrationModule::processLightweightRefresh(
-        const DisplayOrchestrationRefreshContext& ctx) {
+DisplayOrchestrationRefreshResult
+DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx) {
     DisplayOrchestrationRefreshResult result;
     if (!display_ || !ble_ || !preview_ || !parser_) {
         return result;
@@ -132,8 +125,7 @@ DisplayOrchestrationRefreshResult DisplayOrchestrationModule::processLightweight
     // Report whether a renderable priority alert exists.
     const bool loopHasAlerts = parser_->hasAlerts();
     AlertData loopPriority;
-    const bool loopHasRenderablePriority =
-        loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
+    const bool loopHasRenderablePriority = loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
     result.signalPriorityActive = loopHasRenderablePriority;
 
     // ── D2 fix: blink-refresh tick ────────────────────────────────────────
@@ -147,21 +139,14 @@ DisplayOrchestrationRefreshResult DisplayOrchestrationModule::processLightweight
     // to produce a useful phase flip — not eaten by an internal threshold
     // beat). Suppressed on boot splash, preview, late-overload loops, and
     // BLE disconnect to honor the priority stack.
-    if (!ctx.pipelineRanThisLoop &&
-        !ctx.bootSplashHoldActive &&
-        !ctx.overloadLateThisLoop &&
-        !preview_->isRunning() &&
-        ble_->isConnected() &&
-        loopHasRenderablePriority) {
+    if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
+        ble_->isConnected() && loopHasRenderablePriority) {
         const DisplayState liveState = parser_->getDisplayState();
-        const bool flashActive =
-            (liveState.flashBits != 0) ||
-            (liveState.bandFlashBits != 0) ||
-            (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE) ||
-            (liveState.bogeyCounterByte != liveState.bogeyCounterByte2);
+        const bool flashActive = (liveState.flashBits != 0) || (liveState.bandFlashBits != 0) ||
+                                 (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE) ||
+                                 (liveState.bogeyCounterByte != liveState.bogeyCounterByte2);
         if (flashActive) {
-            const uint32_t lastToggle =
-                static_cast<uint32_t>(display_->getLastBlinkToggleMs());
+            const uint32_t lastToggle = static_cast<uint32_t>(display_->getLastBlinkToggleMs());
             const uint32_t sinceToggle = ctx.nowMs - lastToggle;
             if (sinceToggle >= V1Display::getBlinkIntervalMs()) {
                 result.runBlinkRefresh = true;

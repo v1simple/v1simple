@@ -7,8 +7,7 @@
 
 namespace {
 
-template <typename T>
-bool assignIfChanged(T& target, const T& value) {
+template <typename T> bool assignIfChanged(T& target, const T& value) {
     if (target == value) {
         return false;
     }
@@ -28,7 +27,7 @@ void persistSettingsByMode(SettingsManager& manager, SettingsPersistMode persist
     manager.save();
 }
 
-}  // namespace
+} // namespace
 
 // --- Simple property setters ---
 
@@ -130,8 +129,9 @@ void SettingsManager::setSlotVolumes(int slotNum, uint8_t volume, uint8_t muteVo
     save();
 }
 
-void SettingsManager::setDisplayColors(uint16_t bogey, uint16_t freq, uint16_t arrowFront, uint16_t arrowSide, uint16_t arrowRear,
-                                        uint16_t bandL, uint16_t bandKa, uint16_t bandK, uint16_t bandX, bool deferSave) {
+void SettingsManager::setDisplayColors(uint16_t bogey, uint16_t freq, uint16_t arrowFront, uint16_t arrowSide,
+                                       uint16_t arrowRear, uint16_t bandL, uint16_t bandKa, uint16_t bandK,
+                                       uint16_t bandX, bool deferSave) {
     settings_.colorBogey = bogey;
     settings_.colorFrequency = freq;
     settings_.colorArrowFront = arrowFront;
@@ -141,7 +141,8 @@ void SettingsManager::setDisplayColors(uint16_t bogey, uint16_t freq, uint16_t a
     settings_.colorBandKa = bandKa;
     settings_.colorBandK = bandK;
     settings_.colorBandX = bandX;
-    if (!deferSave) save();
+    if (!deferSave)
+        save();
 }
 
 void SettingsManager::setWiFiIconColors(uint16_t icon, uint16_t connected) {
@@ -156,7 +157,8 @@ void SettingsManager::setBleIconColors(uint16_t connected, uint16_t disconnected
     save();
 }
 
-void SettingsManager::setSignalBarColors(uint16_t bar1, uint16_t bar2, uint16_t bar3, uint16_t bar4, uint16_t bar5, uint16_t bar6) {
+void SettingsManager::setSignalBarColors(uint16_t bar1, uint16_t bar2, uint16_t bar3, uint16_t bar4, uint16_t bar5,
+                                         uint16_t bar6) {
     settings_.colorBar1 = bar1;
     settings_.colorBar2 = bar2;
     settings_.colorBar3 = bar3;
@@ -293,8 +295,7 @@ void SettingsManager::setAlertVolumeFade(bool enabled, uint8_t delaySec, uint8_t
     save();
 }
 
-void SettingsManager::setSpeedMute(bool enabled, uint8_t thresholdMph,
-                                   uint8_t hysteresisMph) {
+void SettingsManager::setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph) {
     settings_.speedMuteEnabled = enabled;
     settings_.speedMuteThresholdMph = clampU8(thresholdMph, 5, 60);
     settings_.speedMuteHysteresisMph = clampU8(hysteresisMph, 1, 10);
@@ -305,7 +306,6 @@ void SettingsManager::setStealthEnabled(bool enabled) {
     settings_.stealthEnabled = enabled;
     save();
 }
-
 
 const AutoPushSlot& SettingsManager::getActiveSlot() const {
     return settings_.autoPushSlotView(settings_.activeSlot).config;
@@ -360,8 +360,7 @@ void SettingsManager::setSlotPriorityArrowOnly(int slotNum, bool prioArrow) {
     save();
 }
 
-bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
-                                              SettingsPersistMode persistMode) {
+bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
     V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
 
@@ -390,12 +389,10 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
         changed |= assignIfChanged(slot.priorityArrow, update.priorityArrowOnly);
     }
     if (update.hasProfileName) {
-        changed |= assignIfChanged(slot.config.profileName,
-                                   sanitizeProfileNameValue(update.profileName));
+        changed |= assignIfChanged(slot.config.profileName, sanitizeProfileNameValue(update.profileName));
     }
     if (update.hasMode) {
-        changed |= assignIfChanged(slot.config.mode,
-                                   normalizeV1ModeValue(static_cast<int>(update.mode)));
+        changed |= assignIfChanged(slot.config.mode, normalizeV1ModeValue(static_cast<int>(update.mode)));
     }
 
     if (changed) {
@@ -405,14 +402,12 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
     return changed;
 }
 
-bool SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
-                                               SettingsPersistMode persistMode) {
+bool SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 
     if (update.hasActiveSlot) {
         changed |= assignIfChanged(settings_.activeSlot,
-                                   static_cast<int>(
-                                       V1Settings::normalizeAutoPushSlotIndex(update.activeSlot)));
+                                   static_cast<int>(V1Settings::normalizeAutoPushSlotIndex(update.activeSlot)));
     }
     if (update.hasEnabled) {
         changed |= assignIfChanged(settings_.autoPushEnabled, update.enabled);
@@ -434,8 +429,7 @@ void SettingsManager::setLastV1Address(const String& addr) {
     }
 }
 
-void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
-                                                SettingsPersistMode persistMode) {
+void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 
     if (update.hasApCredentials) {
@@ -455,12 +449,10 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
         changed |= assignIfChanged(settings_.proxyName, sanitizeProxyNameValue(update.proxyName));
     }
     if (update.hasAutoPowerOffMinutes) {
-        changed |= assignIfChanged(settings_.autoPowerOffMinutes,
-                                   clampU8(update.autoPowerOffMinutes, 0, 60));
+        changed |= assignIfChanged(settings_.autoPowerOffMinutes, clampU8(update.autoPowerOffMinutes, 0, 60));
     }
     if (update.hasApTimeoutMinutes) {
-        changed |= assignIfChanged(settings_.apTimeoutMinutes,
-                                   clampApTimeoutValue(update.apTimeoutMinutes));
+        changed |= assignIfChanged(settings_.apTimeoutMinutes, clampApTimeoutValue(update.apTimeoutMinutes));
     }
     if (update.hasAlpEnabled) {
         changed |= assignIfChanged(settings_.alpEnabled, update.alpEnabled);
@@ -469,12 +461,10 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
         changed |= assignIfChanged(settings_.alpSdLogEnabled, update.alpSdLogEnabled);
     }
     if (update.hasAlpAlertPersistSec) {
-        changed |= assignIfChanged(settings_.alpAlertPersistSec,
-                                   std::min<uint8_t>(5, update.alpAlertPersistSec));
+        changed |= assignIfChanged(settings_.alpAlertPersistSec, std::min<uint8_t>(5, update.alpAlertPersistSec));
     }
     if (update.hasAlpDisableV1LaserOnPush) {
-        changed |= assignIfChanged(settings_.alpDisableV1LaserOnPush,
-                                   update.alpDisableV1LaserOnPush);
+        changed |= assignIfChanged(settings_.alpDisableV1LaserOnPush, update.alpDisableV1LaserOnPush);
     }
     if (update.hasPowerOffSdLog) {
         changed |= assignIfChanged(settings_.powerOffSdLog, update.powerOffSdLog);
@@ -500,30 +490,25 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     }
 }
 
-void SettingsManager::applyQuietSettingsUpdate(const QuietSettingsUpdate& update,
-                                               SettingsPersistMode persistMode) {
+void SettingsManager::applyQuietSettingsUpdate(const QuietSettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
     if (update.hasAlertVolumeFadeEnabled) {
         changed |= assignIfChanged(settings_.alertVolumeFadeEnabled, update.alertVolumeFadeEnabled);
     }
     if (update.hasAlertVolumeFadeDelaySec) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeDelaySec,
-                                   clampU8(update.alertVolumeFadeDelaySec, 1, 10));
+        changed |= assignIfChanged(settings_.alertVolumeFadeDelaySec, clampU8(update.alertVolumeFadeDelaySec, 1, 10));
     }
     if (update.hasAlertVolumeFadeVolume) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeVolume,
-                                   clampU8(update.alertVolumeFadeVolume, 1, 9));
+        changed |= assignIfChanged(settings_.alertVolumeFadeVolume, clampU8(update.alertVolumeFadeVolume, 1, 9));
     }
     if (update.hasSpeedMuteEnabled) {
         changed |= assignIfChanged(settings_.speedMuteEnabled, update.speedMuteEnabled);
     }
     if (update.hasSpeedMuteThresholdMph) {
-        changed |= assignIfChanged(settings_.speedMuteThresholdMph,
-                                   clampU8(update.speedMuteThresholdMph, 5, 60));
+        changed |= assignIfChanged(settings_.speedMuteThresholdMph, clampU8(update.speedMuteThresholdMph, 5, 60));
     }
     if (update.hasSpeedMuteHysteresisMph) {
-        changed |= assignIfChanged(settings_.speedMuteHysteresisMph,
-                                   clampU8(update.speedMuteHysteresisMph, 1, 10));
+        changed |= assignIfChanged(settings_.speedMuteHysteresisMph, clampU8(update.speedMuteHysteresisMph, 1, 10));
     }
     if (update.hasSpeedMuteVolume) {
         const uint8_t val = (update.speedMuteVolume <= 9) ? update.speedMuteVolume : 0;
@@ -538,8 +523,7 @@ void SettingsManager::applyQuietSettingsUpdate(const QuietSettingsUpdate& update
     }
 }
 
-void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update,
-                                               SettingsPersistMode persistMode) {
+void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 
     if (update.hasVoiceAlertMode) {
@@ -577,23 +561,19 @@ void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update
         changed |= assignIfChanged(settings_.alertVolumeFadeEnabled, update.alertVolumeFadeEnabled);
     }
     if (update.hasAlertVolumeFadeDelaySec) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeDelaySec,
-                                   clampU8(update.alertVolumeFadeDelaySec, 1, 10));
+        changed |= assignIfChanged(settings_.alertVolumeFadeDelaySec, clampU8(update.alertVolumeFadeDelaySec, 1, 10));
     }
     if (update.hasAlertVolumeFadeVolume) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeVolume,
-                                   clampU8(update.alertVolumeFadeVolume, 1, 9));
+        changed |= assignIfChanged(settings_.alertVolumeFadeVolume, clampU8(update.alertVolumeFadeVolume, 1, 9));
     }
     if (update.hasSpeedMuteEnabled) {
         changed |= assignIfChanged(settings_.speedMuteEnabled, update.speedMuteEnabled);
     }
     if (update.hasSpeedMuteThresholdMph) {
-        changed |= assignIfChanged(settings_.speedMuteThresholdMph,
-                                   clampU8(update.speedMuteThresholdMph, 5, 60));
+        changed |= assignIfChanged(settings_.speedMuteThresholdMph, clampU8(update.speedMuteThresholdMph, 5, 60));
     }
     if (update.hasSpeedMuteHysteresisMph) {
-        changed |= assignIfChanged(settings_.speedMuteHysteresisMph,
-                                   clampU8(update.speedMuteHysteresisMph, 1, 10));
+        changed |= assignIfChanged(settings_.speedMuteHysteresisMph, clampU8(update.speedMuteHysteresisMph, 1, 10));
     }
     if (update.hasSpeedMuteVolume) {
         const uint8_t val = (update.speedMuteVolume <= 9) ? update.speedMuteVolume : 0;
@@ -611,62 +591,99 @@ void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update
     }
 }
 
-void SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
-                                                 SettingsPersistMode persistMode) {
+void SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 
     // Sanitize all incoming color values: reject 0x0000 (display-blackout value) and
     // fall back to the current stored color. Mirrors the sanitization applied on the
     // NVS-load and SD-restore paths.
-#define APPLY_COLOR(field, incoming) \
+#define APPLY_COLOR(field, incoming)                                                                                   \
     changed |= assignIfChanged(settings_.field, sanitizeRgb565Color((incoming), settings_.field))
 
-    if (update.hasColorBogey) APPLY_COLOR(colorBogey, update.colorBogey);
-    if (update.hasColorFrequency) APPLY_COLOR(colorFrequency, update.colorFrequency);
-    if (update.hasColorArrowFront) APPLY_COLOR(colorArrowFront, update.colorArrowFront);
-    if (update.hasColorArrowSide) APPLY_COLOR(colorArrowSide, update.colorArrowSide);
-    if (update.hasColorArrowRear) APPLY_COLOR(colorArrowRear, update.colorArrowRear);
-    if (update.hasColorBandL) APPLY_COLOR(colorBandL, update.colorBandL);
-    if (update.hasColorBandKa) APPLY_COLOR(colorBandKa, update.colorBandKa);
-    if (update.hasColorBandK) APPLY_COLOR(colorBandK, update.colorBandK);
-    if (update.hasColorBandX) APPLY_COLOR(colorBandX, update.colorBandX);
-    if (update.hasColorBandPhoto) APPLY_COLOR(colorBandPhoto, update.colorBandPhoto);
-    if (update.hasColorWiFiIcon) APPLY_COLOR(colorWiFiIcon, update.colorWiFiIcon);
-    if (update.hasColorWiFiConnected) APPLY_COLOR(colorWiFiConnected, update.colorWiFiConnected);
-    if (update.hasColorBleConnected) APPLY_COLOR(colorBleConnected, update.colorBleConnected);
-    if (update.hasColorBleDisconnected) APPLY_COLOR(colorBleDisconnected, update.colorBleDisconnected);
-    if (update.hasColorBar1) APPLY_COLOR(colorBar1, update.colorBar1);
-    if (update.hasColorBar2) APPLY_COLOR(colorBar2, update.colorBar2);
-    if (update.hasColorBar3) APPLY_COLOR(colorBar3, update.colorBar3);
-    if (update.hasColorBar4) APPLY_COLOR(colorBar4, update.colorBar4);
-    if (update.hasColorBar5) APPLY_COLOR(colorBar5, update.colorBar5);
-    if (update.hasColorBar6) APPLY_COLOR(colorBar6, update.colorBar6);
-    if (update.hasColorMuted) APPLY_COLOR(colorMuted, update.colorMuted);
-    if (update.hasColorPersisted) APPLY_COLOR(colorPersisted, update.colorPersisted);
-    if (update.hasColorVolumeMain) APPLY_COLOR(colorVolumeMain, update.colorVolumeMain);
-    if (update.hasColorVolumeMute) APPLY_COLOR(colorVolumeMute, update.colorVolumeMute);
-    if (update.hasColorRssiV1) APPLY_COLOR(colorRssiV1, update.colorRssiV1);
-    if (update.hasColorRssiProxy) APPLY_COLOR(colorRssiProxy, update.colorRssiProxy);
-    if (update.hasColorObd) APPLY_COLOR(colorObd, update.colorObd);
-    if (update.hasColorAlpConnected) APPLY_COLOR(colorAlpConnected, update.colorAlpConnected);
-    if (update.hasColorAlpDli) APPLY_COLOR(colorAlpDli, update.colorAlpDli);
-    if (update.hasColorAlpLidActive) APPLY_COLOR(colorAlpLidActive, update.colorAlpLidActive);
-    if (update.hasColorAlpAlert) APPLY_COLOR(colorAlpAlert, update.colorAlpAlert);
+    if (update.hasColorBogey)
+        APPLY_COLOR(colorBogey, update.colorBogey);
+    if (update.hasColorFrequency)
+        APPLY_COLOR(colorFrequency, update.colorFrequency);
+    if (update.hasColorArrowFront)
+        APPLY_COLOR(colorArrowFront, update.colorArrowFront);
+    if (update.hasColorArrowSide)
+        APPLY_COLOR(colorArrowSide, update.colorArrowSide);
+    if (update.hasColorArrowRear)
+        APPLY_COLOR(colorArrowRear, update.colorArrowRear);
+    if (update.hasColorBandL)
+        APPLY_COLOR(colorBandL, update.colorBandL);
+    if (update.hasColorBandKa)
+        APPLY_COLOR(colorBandKa, update.colorBandKa);
+    if (update.hasColorBandK)
+        APPLY_COLOR(colorBandK, update.colorBandK);
+    if (update.hasColorBandX)
+        APPLY_COLOR(colorBandX, update.colorBandX);
+    if (update.hasColorBandPhoto)
+        APPLY_COLOR(colorBandPhoto, update.colorBandPhoto);
+    if (update.hasColorWiFiIcon)
+        APPLY_COLOR(colorWiFiIcon, update.colorWiFiIcon);
+    if (update.hasColorWiFiConnected)
+        APPLY_COLOR(colorWiFiConnected, update.colorWiFiConnected);
+    if (update.hasColorBleConnected)
+        APPLY_COLOR(colorBleConnected, update.colorBleConnected);
+    if (update.hasColorBleDisconnected)
+        APPLY_COLOR(colorBleDisconnected, update.colorBleDisconnected);
+    if (update.hasColorBar1)
+        APPLY_COLOR(colorBar1, update.colorBar1);
+    if (update.hasColorBar2)
+        APPLY_COLOR(colorBar2, update.colorBar2);
+    if (update.hasColorBar3)
+        APPLY_COLOR(colorBar3, update.colorBar3);
+    if (update.hasColorBar4)
+        APPLY_COLOR(colorBar4, update.colorBar4);
+    if (update.hasColorBar5)
+        APPLY_COLOR(colorBar5, update.colorBar5);
+    if (update.hasColorBar6)
+        APPLY_COLOR(colorBar6, update.colorBar6);
+    if (update.hasColorMuted)
+        APPLY_COLOR(colorMuted, update.colorMuted);
+    if (update.hasColorPersisted)
+        APPLY_COLOR(colorPersisted, update.colorPersisted);
+    if (update.hasColorVolumeMain)
+        APPLY_COLOR(colorVolumeMain, update.colorVolumeMain);
+    if (update.hasColorVolumeMute)
+        APPLY_COLOR(colorVolumeMute, update.colorVolumeMute);
+    if (update.hasColorRssiV1)
+        APPLY_COLOR(colorRssiV1, update.colorRssiV1);
+    if (update.hasColorRssiProxy)
+        APPLY_COLOR(colorRssiProxy, update.colorRssiProxy);
+    if (update.hasColorObd)
+        APPLY_COLOR(colorObd, update.colorObd);
+    if (update.hasColorAlpConnected)
+        APPLY_COLOR(colorAlpConnected, update.colorAlpConnected);
+    if (update.hasColorAlpDli)
+        APPLY_COLOR(colorAlpDli, update.colorAlpDli);
+    if (update.hasColorAlpLidActive)
+        APPLY_COLOR(colorAlpLidActive, update.colorAlpLidActive);
+    if (update.hasColorAlpAlert)
+        APPLY_COLOR(colorAlpAlert, update.colorAlpAlert);
 
 #undef APPLY_COLOR
-    if (update.hasFreqUseBandColor) changed |= assignIfChanged(settings_.freqUseBandColor, update.freqUseBandColor);
-    if (update.hasHideWifiIcon) changed |= assignIfChanged(settings_.hideWifiIcon, update.hideWifiIcon);
+    if (update.hasFreqUseBandColor)
+        changed |= assignIfChanged(settings_.freqUseBandColor, update.freqUseBandColor);
+    if (update.hasHideWifiIcon)
+        changed |= assignIfChanged(settings_.hideWifiIcon, update.hideWifiIcon);
     if (update.hasHideProfileIndicator) {
         changed |= assignIfChanged(settings_.hideProfileIndicator, update.hideProfileIndicator);
     }
-    if (update.hasHideBatteryIcon) changed |= assignIfChanged(settings_.hideBatteryIcon, update.hideBatteryIcon);
-    if (update.hasShowBatteryPercent) changed |= assignIfChanged(settings_.showBatteryPercent, update.showBatteryPercent);
-    if (update.hasHideBleIcon) changed |= assignIfChanged(settings_.hideBleIcon, update.hideBleIcon);
+    if (update.hasHideBatteryIcon)
+        changed |= assignIfChanged(settings_.hideBatteryIcon, update.hideBatteryIcon);
+    if (update.hasShowBatteryPercent)
+        changed |= assignIfChanged(settings_.showBatteryPercent, update.showBatteryPercent);
+    if (update.hasHideBleIcon)
+        changed |= assignIfChanged(settings_.hideBleIcon, update.hideBleIcon);
     if (update.hasHideVolumeIndicator) {
         changed |= assignIfChanged(settings_.hideVolumeIndicator, update.hideVolumeIndicator);
     }
-    if (update.hasHideRssiIndicator) changed |= assignIfChanged(settings_.hideRssiIndicator, update.hideRssiIndicator);
-    if (update.hasBrightness) changed |= assignIfChanged(settings_.brightness, update.brightness);
+    if (update.hasHideRssiIndicator)
+        changed |= assignIfChanged(settings_.hideRssiIndicator, update.hideRssiIndicator);
+    if (update.hasBrightness)
+        changed |= assignIfChanged(settings_.brightness, update.brightness);
 
     if (changed) {
         persistSettingsByMode(*this, persistMode);
@@ -696,8 +713,8 @@ void SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     settings_.colorBar6 = 0xF800;
     settings_.colorMuted = 0x3186;
     settings_.colorPersisted = 0x18C3;
-    settings_.colorVolumeMain = 0xF800;   // Red — matches constructor & NVS default
-    settings_.colorVolumeMute = 0x7BEF;   // Grey — matches constructor & NVS default
+    settings_.colorVolumeMain = 0xF800; // Red — matches constructor & NVS default
+    settings_.colorVolumeMute = 0x7BEF; // Grey — matches constructor & NVS default
     settings_.colorRssiV1 = 0x07E0;
     settings_.colorRssiProxy = 0x001F;
     settings_.colorObd = 0x001F;
@@ -710,14 +727,11 @@ void SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     persistSettingsByMode(*this, persistMode);
 }
 
-bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update,
-                                             SettingsPersistMode persistMode) {
+bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 
-    if (update.resetSavedNameOnAddressChange &&
-        update.hasSavedAddress &&
-        settings_.obdSavedAddress != update.savedAddress &&
-        !update.hasSavedName) {
+    if (update.resetSavedNameOnAddressChange && update.hasSavedAddress &&
+        settings_.obdSavedAddress != update.savedAddress && !update.hasSavedName) {
         changed |= assignIfChanged(settings_.obdSavedName, String(""));
     }
 
@@ -734,46 +748,43 @@ bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update,
         changed |= assignIfChanged(settings_.obdMinRssi, static_cast<int8_t>(clampedRssi));
     }
     if (update.hasObdScanWindowMs) {
-        changed |= assignIfChanged(settings_.obdScanWindowMs,
-                                   clampConnectionCycleObdScanWindowMsValue(
-                                       static_cast<int64_t>(update.obdScanWindowMs)));
+        changed |=
+            assignIfChanged(settings_.obdScanWindowMs,
+                            clampConnectionCycleObdScanWindowMsValue(static_cast<int64_t>(update.obdScanWindowMs)));
     }
     if (update.hasObdRetryIntervalMs) {
-        changed |= assignIfChanged(settings_.obdRetryIntervalMs,
-                                   clampConnectionCycleObdRetryIntervalMsValue(
-                                       static_cast<int64_t>(update.obdRetryIntervalMs)));
+        changed |= assignIfChanged(settings_.obdRetryIntervalMs, clampConnectionCycleObdRetryIntervalMsValue(
+                                                                     static_cast<int64_t>(update.obdRetryIntervalMs)));
     }
     if (update.hasProxyOpenWindowMs) {
-        changed |= assignIfChanged(settings_.proxyOpenWindowMs,
-                                   clampConnectionCycleProxyOpenWindowMsValue(
-                                       static_cast<int64_t>(update.proxyOpenWindowMs)));
+        changed |=
+            assignIfChanged(settings_.proxyOpenWindowMs,
+                            clampConnectionCycleProxyOpenWindowMsValue(static_cast<int64_t>(update.proxyOpenWindowMs)));
     }
     if (update.hasWifiOpenTimeoutMs) {
-        changed |= assignIfChanged(settings_.wifiOpenTimeoutMs,
-                                   clampConnectionCycleWifiOpenTimeoutMsValue(
-                                       static_cast<int64_t>(update.wifiOpenTimeoutMs)));
+        changed |=
+            assignIfChanged(settings_.wifiOpenTimeoutMs,
+                            clampConnectionCycleWifiOpenTimeoutMsValue(static_cast<int64_t>(update.wifiOpenTimeoutMs)));
     }
     if (update.hasV1SettleQuietMs) {
-        changed |= assignIfChanged(settings_.v1SettleQuietMs,
-                                   clampConnectionCycleV1SettleQuietMsValue(
-                                       static_cast<int64_t>(update.v1SettleQuietMs)));
+        changed |=
+            assignIfChanged(settings_.v1SettleQuietMs,
+                            clampConnectionCycleV1SettleQuietMsValue(static_cast<int64_t>(update.v1SettleQuietMs)));
     }
     if (update.hasV1SettleFallbackMs) {
-        changed |= assignIfChanged(settings_.v1SettleFallbackMs,
-                                   clampConnectionCycleV1SettleFallbackMsValue(
-                                       static_cast<int64_t>(update.v1SettleFallbackMs)));
+        changed |= assignIfChanged(settings_.v1SettleFallbackMs, clampConnectionCycleV1SettleFallbackMsValue(
+                                                                     static_cast<int64_t>(update.v1SettleFallbackMs)));
     }
     if (update.hasCycleTeardownAckTimeoutMs) {
-        changed |= assignIfChanged(settings_.cycleTeardownAckTimeoutMs,
-                                   clampConnectionCycleTeardownAckTimeoutMsValue(
-                                       static_cast<int64_t>(update.cycleTeardownAckTimeoutMs)));
+        changed |= assignIfChanged(
+            settings_.cycleTeardownAckTimeoutMs,
+            clampConnectionCycleTeardownAckTimeoutMsValue(static_cast<int64_t>(update.cycleTeardownAckTimeoutMs)));
     }
     if (update.hasSavedAddress) {
         if (isValidBleAddress(update.savedAddress)) {
             changed |= assignIfChanged(settings_.obdSavedAddress, update.savedAddress);
         } else {
-            Serial.printf("[Settings] WARN: Rejecting invalid OBD address update: '%s'\n",
-                          update.savedAddress.c_str());
+            Serial.printf("[Settings] WARN: Rejecting invalid OBD address update: '%s'\n", update.savedAddress.c_str());
         }
     }
     if (update.hasSavedName) {

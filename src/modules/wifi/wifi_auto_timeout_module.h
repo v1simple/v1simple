@@ -24,6 +24,6 @@ struct WifiAutoTimeoutResult {
 
 // Evaluates auto-timeout stop eligibility for WiFi AP mode.
 class WifiAutoTimeoutModule {
-public:
+  public:
     WifiAutoTimeoutResult evaluate(const WifiAutoTimeoutInput& input) const;
 };

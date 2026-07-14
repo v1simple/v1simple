@@ -35,9 +35,9 @@ class V1ProfileManager;
 
 // WiFi mode options (prefixed to avoid conflicts with ESP SDK)
 enum WiFiModeSetting {
-    V1_WIFI_OFF = 0,        // WiFi disabled
-    V1_WIFI_AP = 2,         // Create access point
-    V1_WIFI_APSTA = 3       // Both modes
+    V1_WIFI_OFF = 0,  // WiFi disabled
+    V1_WIFI_AP = 2,   // Create access point
+    V1_WIFI_APSTA = 3 // Both modes
 };
 
 // V1 operating modes (from ESP library)
@@ -100,11 +100,7 @@ struct WifiStaSlot {
     uint8_t priority;
     uint32_t lastConnectedAtSec;
 
-    WifiStaSlot()
-        : ssid(""),
-          label(""),
-          priority(0),
-          lastConnectedAtSec(0) {}
+    WifiStaSlot() : ssid(""), label(""), priority(0), lastConnectedAtSec(0) {}
 
     bool isConfigured() const { return ssid.length() > 0; }
 };
@@ -112,133 +108,133 @@ struct WifiStaSlot {
 // Settings structure
 // Voice alert content mode
 enum VoiceAlertMode {
-    VOICE_MODE_DISABLED = 0,     // Voice alerts disabled
-    VOICE_MODE_BAND_ONLY = 1,    // Just band name ("Ka")
-    VOICE_MODE_FREQ_ONLY = 2,    // Just frequency ("34.7")
-    VOICE_MODE_BAND_FREQ = 3     // Band + frequency ("Ka 34.7")
+    VOICE_MODE_DISABLED = 0,  // Voice alerts disabled
+    VOICE_MODE_BAND_ONLY = 1, // Just band name ("Ka")
+    VOICE_MODE_FREQ_ONLY = 2, // Just frequency ("34.7")
+    VOICE_MODE_BAND_FREQ = 3  // Band + frequency ("Ka 34.7")
 };
 
 struct V1Settings {
     // WiFi settings
     bool enableWifi;
-    WiFiModeSetting wifiMode;  // V1_WIFI_AP (default) or V1_WIFI_APSTA (with client)
-    String apSSID;           // AP mode SSID (device hotspot name)
-    String apPassword;       // AP mode password
+    WiFiModeSetting wifiMode; // V1_WIFI_AP (default) or V1_WIFI_APSTA (with client)
+    String apSSID;            // AP mode SSID (device hotspot name)
+    String apPassword;        // AP mode password
 
     // WiFi client (STA) settings - connect to external network
-    bool wifiClientEnabled;  // Enable WiFi client mode (AP+STA dual mode)
-    WifiStaSlot wifiStaSlots[kWifiStaSlotCount];  // Saved STA networks
-    String wifiClientSSID;   // Compatibility alias: primary saved STA SSID
+    bool wifiClientEnabled;                      // Enable WiFi client mode (AP+STA dual mode)
+    WifiStaSlot wifiStaSlots[kWifiStaSlotCount]; // Saved STA networks
+    String wifiClientSSID;                       // Compatibility alias: primary saved STA SSID
     // NOTE: wifiClientPassword stored separately in secure NVS namespace
 
     // BLE proxy settings
-    bool proxyBLE;          // Enable BLE proxy for companion app
-    String proxyName;       // BLE device name when proxying
+    bool proxyBLE;    // Enable BLE proxy for companion app
+    String proxyName; // BLE device name when proxying
 
     // Display settings
     bool turnOffDisplay;
     uint8_t brightness;
 
     // Custom display colors (RGB565 format)
-    uint16_t colorBogey;         // Bogey counter color
-    uint16_t colorFrequency;     // Frequency display color
-    uint16_t colorArrowFront;    // Front arrow color
-    uint16_t colorArrowSide;     // Side arrow color
-    uint16_t colorArrowRear;     // Rear arrow color
-    uint16_t colorBandL;         // Laser band color
-    uint16_t colorBandKa;        // Ka band color
-    uint16_t colorBandK;         // K band color
-    uint16_t colorBandX;         // X band color
-    uint16_t colorBandPhoto;     // Photo radar color (when V1 sends 'P')
-    uint16_t colorWiFiIcon;      // WiFi indicator icon color (no client)
-    uint16_t colorWiFiConnected;  // WiFi icon when client connected
-    uint16_t colorBleConnected;   // Bluetooth icon when client connected
+    uint16_t colorBogey;           // Bogey counter color
+    uint16_t colorFrequency;       // Frequency display color
+    uint16_t colorArrowFront;      // Front arrow color
+    uint16_t colorArrowSide;       // Side arrow color
+    uint16_t colorArrowRear;       // Rear arrow color
+    uint16_t colorBandL;           // Laser band color
+    uint16_t colorBandKa;          // Ka band color
+    uint16_t colorBandK;           // K band color
+    uint16_t colorBandX;           // X band color
+    uint16_t colorBandPhoto;       // Photo radar color (when V1 sends 'P')
+    uint16_t colorWiFiIcon;        // WiFi indicator icon color (no client)
+    uint16_t colorWiFiConnected;   // WiFi icon when client connected
+    uint16_t colorBleConnected;    // Bluetooth icon when client connected
     uint16_t colorBleDisconnected; // Bluetooth icon when no client
-    uint16_t colorBar1;          // Signal bar 1 (bottom/weakest)
-    uint16_t colorBar2;          // Signal bar 2
-    uint16_t colorBar3;          // Signal bar 3
-    uint16_t colorBar4;          // Signal bar 4
-    uint16_t colorBar5;          // Signal bar 5
-    uint16_t colorBar6;          // Signal bar 6 (top/strongest)
-    uint16_t colorMuted;         // Muted alert color (shown when alerts are muted/grayed)
-    uint16_t colorPersisted;     // Persisted alert color (shown after alert disappears)
-    uint16_t colorVolumeMain;    // Volume indicator main volume color
-    uint16_t colorVolumeMute;    // Volume indicator muted volume color
-    uint16_t colorRssiV1;        // RSSI indicator V1 label color
-    uint16_t colorRssiProxy;     // RSSI indicator Proxy label color
-    uint16_t colorObd;           // OBD "OBD" status text color when connected
-    uint16_t colorAlpConnected;  // ALP badge: green — connected, idle / warm-up
-    uint16_t colorAlpDli;        // ALP badge: orange — DLI active (below LID speed limit)
-    uint16_t colorAlpLidActive;  // ALP badge: blue — LID active (above LID speed limit, IR-capable)
-    uint16_t colorAlpAlert;      // ALP badge: red — active laser alert while live
-    bool freqUseBandColor;       // Use band color for frequency display instead of custom freq color
+    uint16_t colorBar1;            // Signal bar 1 (bottom/weakest)
+    uint16_t colorBar2;            // Signal bar 2
+    uint16_t colorBar3;            // Signal bar 3
+    uint16_t colorBar4;            // Signal bar 4
+    uint16_t colorBar5;            // Signal bar 5
+    uint16_t colorBar6;            // Signal bar 6 (top/strongest)
+    uint16_t colorMuted;           // Muted alert color (shown when alerts are muted/grayed)
+    uint16_t colorPersisted;       // Persisted alert color (shown after alert disappears)
+    uint16_t colorVolumeMain;      // Volume indicator main volume color
+    uint16_t colorVolumeMute;      // Volume indicator muted volume color
+    uint16_t colorRssiV1;          // RSSI indicator V1 label color
+    uint16_t colorRssiProxy;       // RSSI indicator Proxy label color
+    uint16_t colorObd;             // OBD "OBD" status text color when connected
+    uint16_t colorAlpConnected;    // ALP badge: green — connected, idle / warm-up
+    uint16_t colorAlpDli;          // ALP badge: orange — DLI active (below LID speed limit)
+    uint16_t colorAlpLidActive;    // ALP badge: blue — LID active (above LID speed limit, IR-capable)
+    uint16_t colorAlpAlert;        // ALP badge: red — active laser alert while live
+    bool freqUseBandColor;         // Use band color for frequency display instead of custom freq color
 
     // Display visibility settings
-    bool hideWifiIcon;           // Hide WiFi icon after brief display
-    bool hideProfileIndicator;   // Hide profile indicator after brief display
-    bool hideBatteryIcon;        // Hide battery icon
-    bool showBatteryPercent;     // Show battery percentage text next to icon
-    bool hideBleIcon;            // Hide BLE icon
-    bool hideVolumeIndicator;    // Hide volume indicator (V1 firmware 4.1028+ only)
-    bool hideRssiIndicator;      // Hide RSSI signal strength indicator
+    bool hideWifiIcon;         // Hide WiFi icon after brief display
+    bool hideProfileIndicator; // Hide profile indicator after brief display
+    bool hideBatteryIcon;      // Hide battery icon
+    bool showBatteryPercent;   // Show battery percentage text next to icon
+    bool hideBleIcon;          // Hide BLE icon
+    bool hideVolumeIndicator;  // Hide volume indicator (V1 firmware 4.1028+ only)
+    bool hideRssiIndicator;    // Hide RSSI signal strength indicator
 
     // Voice alerts (when no app connected)
-    VoiceAlertMode voiceAlertMode;  // What content to speak (disabled/band/freq/band+freq)
-    bool voiceDirectionEnabled;     // Append direction (ahead/side/behind) to voice
-    bool announceBogeyCount;        // Announce bogey count after direction
-    bool muteVoiceIfVolZero;        // Mute voice alerts when V1 volume is 0
-    uint8_t voiceVolume;            // Voice alert volume (0-100%)
+    VoiceAlertMode voiceAlertMode; // What content to speak (disabled/band/freq/band+freq)
+    bool voiceDirectionEnabled;    // Append direction (ahead/side/behind) to voice
+    bool announceBogeyCount;       // Announce bogey count after direction
+    bool muteVoiceIfVolZero;       // Mute voice alerts when V1 volume is 0
+    uint8_t voiceVolume;           // Voice alert volume (0-100%)
 
     // Secondary alert announcements (non-priority alerts)
-    bool announceSecondaryAlerts;   // Master toggle for secondary announcements
-    bool secondaryLaser;            // Announce secondary Laser alerts
-    bool secondaryKa;               // Announce secondary Ka alerts
-    bool secondaryK;                // Announce secondary K alerts
-    bool secondaryX;                // Announce secondary X alerts
+    bool announceSecondaryAlerts; // Master toggle for secondary announcements
+    bool secondaryLaser;          // Announce secondary Laser alerts
+    bool secondaryKa;             // Announce secondary Ka alerts
+    bool secondaryK;              // Announce secondary K alerts
+    bool secondaryX;              // Announce secondary X alerts
 
     // Volume fade (reduce V1 volume after initial alert period)
-    bool alertVolumeFadeEnabled;    // Enable volume fade feature
+    bool alertVolumeFadeEnabled;     // Enable volume fade feature
     uint8_t alertVolumeFadeDelaySec; // Seconds at full volume before fading (1-10)
-    uint8_t alertVolumeFadeVolume;  // Volume to fade to (1-9; 0 triggers V1 mute feedback loop)
+    uint8_t alertVolumeFadeVolume;   // Volume to fade to (1-9; 0 triggers V1 mute feedback loop)
 
     // Speed-aware muting (suppress alerts below speed threshold)
-    bool speedMuteEnabled;           // Enable speed-based auto-muting
-    uint8_t speedMuteThresholdMph;   // Mute below this speed (5-60 mph)
-    uint8_t speedMuteHysteresisMph;  // Unmute at threshold + hysteresis (1-10 mph)
-    uint8_t speedMuteVolume;         // V1 volume when speed-muted (0-9)
-    bool speedMuteVoice;             // Also suppress voice announcements when speed-muted
-    bool stealthEnabled;             // Enable stealth (blank) screen with OBD speed when idle
+    bool speedMuteEnabled;          // Enable speed-based auto-muting
+    uint8_t speedMuteThresholdMph;  // Mute below this speed (5-60 mph)
+    uint8_t speedMuteHysteresisMph; // Unmute at threshold + hysteresis (1-10 mph)
+    uint8_t speedMuteVolume;        // V1 volume when speed-muted (0-9)
+    bool speedMuteVoice;            // Also suppress voice announcements when speed-muted
+    bool stealthEnabled;            // Enable stealth (blank) screen with OBD speed when idle
 
     // Auto-push on connection settings
-    bool autoPushEnabled;        // Enable auto-push profile on V1 connection
-    int activeSlot;              // Which slot is active: 0=Default, 1=Highway, 2=Comfort
-    String slot0Name;            // Custom display name for slot 0 (default: "DEFAULT")
-    String slot1Name;            // Custom display name for slot 1 (default: "HIGHWAY")
-    String slot2Name;            // Custom display name for slot 2 (default: "COMFORT")
-    uint16_t slot0Color;         // Custom color for slot 0 display (default: purple 0x780F)
-    uint16_t slot1Color;         // Custom color for slot 1 display (default: green 0x07E0)
-    uint16_t slot2Color;         // Custom color for slot 2 display (default: grey 0x8410)
-    uint8_t slot0Volume;         // V1 main volume for slot 0 (0-9, 0xFF=no change)
-    uint8_t slot1Volume;         // V1 main volume for slot 1 (0-9, 0xFF=no change)
-    uint8_t slot2Volume;         // V1 main volume for slot 2 (0-9, 0xFF=no change)
-    uint8_t slot0MuteVolume;     // V1 mute volume for slot 0 (0-9, 0xFF=no change)
-    uint8_t slot1MuteVolume;     // V1 mute volume for slot 1 (0-9, 0xFF=no change)
-    uint8_t slot2MuteVolume;     // V1 mute volume for slot 2 (0-9, 0xFF=no change)
-    bool slot0DarkMode;          // V1 display off (dark mode) for slot 0
-    bool slot1DarkMode;          // V1 display off (dark mode) for slot 1
-    bool slot2DarkMode;          // V1 display off (dark mode) for slot 2
-    bool slot0MuteToZero;        // Mute to zero for slot 0
-    bool slot1MuteToZero;        // Mute to zero for slot 1
-    bool slot2MuteToZero;        // Mute to zero for slot 2
+    bool autoPushEnabled;    // Enable auto-push profile on V1 connection
+    int activeSlot;          // Which slot is active: 0=Default, 1=Highway, 2=Comfort
+    String slot0Name;        // Custom display name for slot 0 (default: "DEFAULT")
+    String slot1Name;        // Custom display name for slot 1 (default: "HIGHWAY")
+    String slot2Name;        // Custom display name for slot 2 (default: "COMFORT")
+    uint16_t slot0Color;     // Custom color for slot 0 display (default: purple 0x780F)
+    uint16_t slot1Color;     // Custom color for slot 1 display (default: green 0x07E0)
+    uint16_t slot2Color;     // Custom color for slot 2 display (default: grey 0x8410)
+    uint8_t slot0Volume;     // V1 main volume for slot 0 (0-9, 0xFF=no change)
+    uint8_t slot1Volume;     // V1 main volume for slot 1 (0-9, 0xFF=no change)
+    uint8_t slot2Volume;     // V1 main volume for slot 2 (0-9, 0xFF=no change)
+    uint8_t slot0MuteVolume; // V1 mute volume for slot 0 (0-9, 0xFF=no change)
+    uint8_t slot1MuteVolume; // V1 mute volume for slot 1 (0-9, 0xFF=no change)
+    uint8_t slot2MuteVolume; // V1 mute volume for slot 2 (0-9, 0xFF=no change)
+    bool slot0DarkMode;      // V1 display off (dark mode) for slot 0
+    bool slot1DarkMode;      // V1 display off (dark mode) for slot 1
+    bool slot2DarkMode;      // V1 display off (dark mode) for slot 2
+    bool slot0MuteToZero;    // Mute to zero for slot 0
+    bool slot1MuteToZero;    // Mute to zero for slot 1
+    bool slot2MuteToZero;    // Mute to zero for slot 2
     // Shared persistence window for both V1 radar persistence and ALP laser-event
     // persistence. The display pipeline intentionally reuses this per-slot knob
     // rather than adding a second ALP-specific setting or NVS key.
-    uint8_t slot0AlertPersist;   // Alert persistence (seconds) for slot 0 (0-5s)
-    uint8_t slot1AlertPersist;   // Alert persistence (seconds) for slot 1 (0-5s)
-    uint8_t slot2AlertPersist;   // Alert persistence (seconds) for slot 2 (0-5s)
-    bool slot0PriorityArrow;     // Priority arrow only for slot 0
-    bool slot1PriorityArrow;     // Priority arrow only for slot 1
-    bool slot2PriorityArrow;     // Priority arrow only for slot 2
+    uint8_t slot0AlertPersist; // Alert persistence (seconds) for slot 0 (0-5s)
+    uint8_t slot1AlertPersist; // Alert persistence (seconds) for slot 1 (0-5s)
+    uint8_t slot2AlertPersist; // Alert persistence (seconds) for slot 2 (0-5s)
+    bool slot0PriorityArrow;   // Priority arrow only for slot 0
+    bool slot1PriorityArrow;   // Priority arrow only for slot 1
+    bool slot2PriorityArrow;   // Priority arrow only for slot 2
     AutoPushSlot slot0_default;
     AutoPushSlot slot1_highway;
     AutoPushSlot slot2_comfort;
@@ -267,31 +263,31 @@ struct V1Settings {
         const AutoPushSlot& config;
     };
 
-    String lastV1Address;  // Last known V1 BLE address for fast reconnect
+    String lastV1Address; // Last known V1 BLE address for fast reconnect
 
     // Auto power-off on V1 disconnect
-    uint8_t autoPowerOffMinutes;  // Minutes to wait after V1 disconnect or ALP silence before power off (0=disabled)
-    uint8_t apTimeoutMinutes;       // Minutes before AP auto-stops (0=always on, 5-60)
+    uint8_t autoPowerOffMinutes; // Minutes to wait after V1 disconnect or ALP silence before power off (0=disabled)
+    uint8_t apTimeoutMinutes;    // Minutes before AP auto-stops (0=always on, 5-60)
 
     // OBD-II speed source settings
-    bool obdEnabled;             // Enable OBD module
-    String obdSavedAddress;      // Saved OBDLink CX BLE address for auto-reconnect
-    String obdSavedName;         // Optional friendly name for the saved OBD adapter
-    uint8_t obdSavedAddrType;    // Saved BLE address type (0=public, 1=random)
-    int8_t obdMinRssi;           // Minimum RSSI for scan acceptance (dBm)
+    bool obdEnabled;          // Enable OBD module
+    String obdSavedAddress;   // Saved OBDLink CX BLE address for auto-reconnect
+    String obdSavedName;      // Optional friendly name for the saved OBD adapter
+    uint8_t obdSavedAddrType; // Saved BLE address type (0=public, 1=random)
+    int8_t obdMinRssi;        // Minimum RSSI for scan acceptance (dBm)
 
     // Connection cycle coordinator settings
-    uint32_t obdScanWindowMs;            // OBD discovery window after V1 settles
-    uint32_t obdRetryIntervalMs;         // OBD reconnect interval when proxy is idle
-    uint32_t proxyOpenWindowMs;          // Proxy advertising window before WiFi auto-start
-    uint32_t wifiOpenTimeoutMs;          // WiFi-open dwell before settling without AP activity
-    uint32_t v1SettleQuietMs;            // Quiet time after VerifyPush match before OBD scan
-    uint32_t v1SettleFallbackMs;         // Quiet time when auto-push is disabled
-    uint32_t cycleTeardownAckTimeoutMs;  // Per-step teardown ack timeout
+    uint32_t obdScanWindowMs;           // OBD discovery window after V1 settles
+    uint32_t obdRetryIntervalMs;        // OBD reconnect interval when proxy is idle
+    uint32_t proxyOpenWindowMs;         // Proxy advertising window before WiFi auto-start
+    uint32_t wifiOpenTimeoutMs;         // WiFi-open dwell before settling without AP activity
+    uint32_t v1SettleQuietMs;           // Quiet time after VerifyPush match before OBD scan
+    uint32_t v1SettleFallbackMs;        // Quiet time when auto-push is disabled
+    uint32_t cycleTeardownAckTimeoutMs; // Per-step teardown ack timeout
 
     // ALP (Active Laser Protection) settings
-    bool alpEnabled;             // Enable ALP UART listener module
-    bool alpSdLogEnabled;        // Enable ALP event logging to SD card (CSV)
+    bool alpEnabled;      // Enable ALP UART listener module
+    bool alpSdLogEnabled; // Enable ALP event logging to SD card (CSV)
     // Laser display persistence (seconds) after an ALP session closes.
     // Defaults to 0 — the ALP has its own speaker and users found the
     // post-engagement tail on the display unhelpful after a real hit.
@@ -305,139 +301,110 @@ struct V1Settings {
     bool alpDisableV1LaserOnPush;
 
     // GPS (optional hardware — Adafruit Ultimate GPS v3 / MTK3339)
-    bool     gpsEnabled;            // Enable GPS runtime module
-    uint32_t gpsBaud;               // UART baud rate (9600 / 38400 / 115200)
-    bool     gpsEnablePinActiveHigh; // Deprecated compatibility key; GPS EN is not driven
-    bool     gpsLogUtcToPerf;       // Stamp UTC into perf CSV
-    bool     gpsLogUtcToAlp;        // Stamp UTC into ALP CSV
+    bool gpsEnabled;             // Enable GPS runtime module
+    uint32_t gpsBaud;            // UART baud rate (9600 / 38400 / 115200)
+    bool gpsEnablePinActiveHigh; // Deprecated compatibility key; GPS EN is not driven
+    bool gpsLogUtcToPerf;        // Stamp UTC into perf CSV
+    bool gpsLogUtcToAlp;         // Stamp UTC into ALP CSV
 
     // Debug / diagnostics
-    bool powerOffSdLog;          // Log power-off diagnostics to /poweroff.log on SD
+    bool powerOffSdLog; // Log power-off diagnostics to /poweroff.log on SD
 
     // Default constructor with sensible defaults
-    V1Settings() :
-        enableWifi(true),
-        wifiMode(V1_WIFI_AP),
-        apSSID("V1-Simple"),
-        apPassword("setupv1simple"),
-        wifiClientEnabled(false),  // WiFi client disabled by default
-        wifiClientSSID(""),        // No saved network
-        proxyBLE(true),
-        proxyName("V1-Proxy"),  // Must match NVS load() default
-        turnOffDisplay(false),
-        brightness(200),
-        colorBogey(0xF800),      // Red (same as KA)
-        colorFrequency(0xF800),  // Red (same as KA)
-        colorArrowFront(0xF800), // Red (front)
-        colorArrowSide(0xF800),  // Red (side)
-        colorArrowRear(0xF800),  // Red (rear)
-        colorBandL(0x001F),      // Blue (laser)
-        colorBandKa(0xF800),     // Red
-        colorBandK(0x001F),      // Blue
-        colorBandX(0x07E0),      // Green
-        colorBandPhoto(0x780F),  // Purple (photo radar)
-        colorWiFiIcon(0x07FF),   // Cyan (WiFi icon, no client)
-        colorWiFiConnected(0x07E0), // Green (WiFi client connected)
-        colorBleConnected(0x07E0),   // Green (BLE connected)
-        colorBleDisconnected(0x001F), // Blue (BLE disconnected)
-        colorBar1(0x07E0),       // Green (weakest)
-        colorBar2(0x07E0),       // Green
-        colorBar3(0xFFE0),       // Yellow
-        colorBar4(0xFFE0),       // Yellow
-        colorBar5(0xF800),       // Red
-        colorBar6(0xF800),       // Red (strongest)
-        colorMuted(0x3186),      // Dark grey (muted alerts) — matches NVS default
-        colorPersisted(0x18C3),  // Darker grey (persisted alerts) — matches NVS default
-        colorVolumeMain(0xF800), // Red (volume bar) — matches NVS default
-        colorVolumeMute(0x7BEF), // Grey (muted volume) — matches NVS default
-        colorRssiV1(0x07E0),     // Green (V1 RSSI label) — matches NVS default
-        colorRssiProxy(0x001F),  // Blue (proxy RSSI label) — matches NVS default
-        colorObd(0x001F),         // Blue OBD badge (matches existing BLE disconnected icon default)
-        colorAlpConnected(0x07E0), // Green ALP badge — connected, idle
-        colorAlpDli(0xFD20),       // Orange ALP badge — DLI active (below LID speed limit)
-        colorAlpLidActive(0x001F), // Blue ALP badge — LID active (above LID speed limit)
-        colorAlpAlert(0xF800),     // Red ALP badge — active laser alert (solid)
-        freqUseBandColor(false), // Use custom freq color by default
-        hideWifiIcon(false),     // Show WiFi icon by default
-        hideProfileIndicator(false), // Show profile indicator by default
-        hideBatteryIcon(false),  // Show battery icon by default
-        showBatteryPercent(false), // Hide battery % text by default — matches NVS default
-        hideBleIcon(false),      // Show BLE icon by default
-        hideVolumeIndicator(false), // Show volume indicator by default
-        hideRssiIndicator(false),   // Show RSSI indicator by default — matches NVS default
-        voiceAlertMode(VOICE_MODE_BAND_FREQ),  // Full band+freq announcements by default
-        voiceDirectionEnabled(true),           // Include direction by default
-        announceBogeyCount(true),              // Announce bogey count by default
-        muteVoiceIfVolZero(false),             // Don't mute voice alerts at vol 0 by default
-        voiceVolume(75),                       // Voice alerts at 75% volume by default
-        announceSecondaryAlerts(false),        // Secondary alerts off by default (opt-in)
-        secondaryLaser(true),                  // Laser always important
-        secondaryKa(true),                     // Ka usually real threats
-        secondaryK(false),                     // K has more false positives
-        secondaryX(false),                     // X is rare
-        alertVolumeFadeEnabled(false),   // Volume fade disabled by default
-        alertVolumeFadeDelaySec(2),      // 2 seconds at full volume before fade
-        alertVolumeFadeVolume(1),        // Fade to volume 1 (quiet but audible)
-        speedMuteEnabled(false),         // Speed mute disabled by default
-        speedMuteThresholdMph(25),       // 25 mph default (city driving)
-        speedMuteHysteresisMph(3),       // 3 mph hysteresis band
-        speedMuteVolume(0),              // Silent by default
-        speedMuteVoice(true),            // Suppress voice when speed-muted
-        stealthEnabled(false),           // Stealth mode disabled by default
-        autoPushEnabled(kDefaultAutoPushEnabled),
-        activeSlot(0),
-        slot0Name("DEFAULT"),
-        slot1Name("HIGHWAY"),
-        slot2Name("COMFORT"),
-        slot0Color(0x400A),
-        slot1Color(0x07E0),
-        slot2Color(0x8410),
-        slot0Volume(0xFF),
-        slot1Volume(0xFF),
-        slot2Volume(0xFF),
-        slot0MuteVolume(0xFF),
-        slot1MuteVolume(0xFF),
-        slot2MuteVolume(0xFF),
-        slot0DarkMode(false),
-        slot1DarkMode(false),
-        slot2DarkMode(false),
-        slot0MuteToZero(false),
-        slot1MuteToZero(false),
-        slot2MuteToZero(false),
-        slot0AlertPersist(0),
-        slot1AlertPersist(0),
-        slot2AlertPersist(0),
-        slot0PriorityArrow(false),
-        slot1PriorityArrow(false),
-        slot2PriorityArrow(false),
-        slot0_default(),
-        slot1_highway(),
-        slot2_comfort(),
-        lastV1Address(""),
-        autoPowerOffMinutes(0),  // Default: disabled
-        apTimeoutMinutes(0),     // Default: always on (0=unlimited)
-        obdEnabled(false),       // OBD disabled by default
-        obdSavedAddress(""),     // No saved device
-        obdSavedName(""),        // No friendly name
-        obdSavedAddrType(0),     // Default PUBLIC address type
-        obdMinRssi(-90),         // Default -90 dBm minimum RSSI
-        obdScanWindowMs(kConnectionCycleObdScanWindowMsDefault),
-        obdRetryIntervalMs(kConnectionCycleObdRetryIntervalMsDefault),
-        proxyOpenWindowMs(kConnectionCycleProxyOpenWindowMsDefault),
-        wifiOpenTimeoutMs(kConnectionCycleWifiOpenTimeoutMsDefault),
-        v1SettleQuietMs(kConnectionCycleV1SettleQuietMsDefault),
-        v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
-        cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
-        alpEnabled(false),       // ALP disabled by default
-        alpSdLogEnabled(false),  // ALP SD logging off by default
-        alpAlertPersistSec(0),   // ALP display persist off by default
-        alpDisableV1LaserOnPush(true),  // When ALP is enabled, let ALP own laser alerting
-        gpsEnabled(false),       // GPS disabled by default until module is installed
-        gpsBaud(9600),           // Default UART baud for MTK3339
-        gpsEnablePinActiveHigh(true),  // Deprecated compatibility key; normalized true
-        gpsLogUtcToPerf(true),   // UTC column on by default when GPS enabled
-        gpsLogUtcToAlp(true),    // UTC column on by default when GPS enabled
-        powerOffSdLog(false) {}    // Power-off SD logging off by default
+    V1Settings()
+        : enableWifi(true), wifiMode(V1_WIFI_AP), apSSID("V1-Simple"), apPassword("setupv1simple"),
+          wifiClientEnabled(false),                                   // WiFi client disabled by default
+          wifiClientSSID(""),                                         // No saved network
+          proxyBLE(true), proxyName("V1-Proxy"),                      // Must match NVS load() default
+          turnOffDisplay(false), brightness(200), colorBogey(0xF800), // Red (same as KA)
+          colorFrequency(0xF800),                                     // Red (same as KA)
+          colorArrowFront(0xF800),                                    // Red (front)
+          colorArrowSide(0xF800),                                     // Red (side)
+          colorArrowRear(0xF800),                                     // Red (rear)
+          colorBandL(0x001F),                                         // Blue (laser)
+          colorBandKa(0xF800),                                        // Red
+          colorBandK(0x001F),                                         // Blue
+          colorBandX(0x07E0),                                         // Green
+          colorBandPhoto(0x780F),                                     // Purple (photo radar)
+          colorWiFiIcon(0x07FF),                                      // Cyan (WiFi icon, no client)
+          colorWiFiConnected(0x07E0),                                 // Green (WiFi client connected)
+          colorBleConnected(0x07E0),                                  // Green (BLE connected)
+          colorBleDisconnected(0x001F),                               // Blue (BLE disconnected)
+          colorBar1(0x07E0),                                          // Green (weakest)
+          colorBar2(0x07E0),                                          // Green
+          colorBar3(0xFFE0),                                          // Yellow
+          colorBar4(0xFFE0),                                          // Yellow
+          colorBar5(0xF800),                                          // Red
+          colorBar6(0xF800),                                          // Red (strongest)
+          colorMuted(0x3186),                                         // Dark grey (muted alerts) — matches NVS default
+          colorPersisted(0x18C3),               // Darker grey (persisted alerts) — matches NVS default
+          colorVolumeMain(0xF800),              // Red (volume bar) — matches NVS default
+          colorVolumeMute(0x7BEF),              // Grey (muted volume) — matches NVS default
+          colorRssiV1(0x07E0),                  // Green (V1 RSSI label) — matches NVS default
+          colorRssiProxy(0x001F),               // Blue (proxy RSSI label) — matches NVS default
+          colorObd(0x001F),                     // Blue OBD badge (matches existing BLE disconnected icon default)
+          colorAlpConnected(0x07E0),            // Green ALP badge — connected, idle
+          colorAlpDli(0xFD20),                  // Orange ALP badge — DLI active (below LID speed limit)
+          colorAlpLidActive(0x001F),            // Blue ALP badge — LID active (above LID speed limit)
+          colorAlpAlert(0xF800),                // Red ALP badge — active laser alert (solid)
+          freqUseBandColor(false),              // Use custom freq color by default
+          hideWifiIcon(false),                  // Show WiFi icon by default
+          hideProfileIndicator(false),          // Show profile indicator by default
+          hideBatteryIcon(false),               // Show battery icon by default
+          showBatteryPercent(false),            // Hide battery % text by default — matches NVS default
+          hideBleIcon(false),                   // Show BLE icon by default
+          hideVolumeIndicator(false),           // Show volume indicator by default
+          hideRssiIndicator(false),             // Show RSSI indicator by default — matches NVS default
+          voiceAlertMode(VOICE_MODE_BAND_FREQ), // Full band+freq announcements by default
+          voiceDirectionEnabled(true),          // Include direction by default
+          announceBogeyCount(true),             // Announce bogey count by default
+          muteVoiceIfVolZero(false),            // Don't mute voice alerts at vol 0 by default
+          voiceVolume(75),                      // Voice alerts at 75% volume by default
+          announceSecondaryAlerts(false),       // Secondary alerts off by default (opt-in)
+          secondaryLaser(true),                 // Laser always important
+          secondaryKa(true),                    // Ka usually real threats
+          secondaryK(false),                    // K has more false positives
+          secondaryX(false),                    // X is rare
+          alertVolumeFadeEnabled(false),        // Volume fade disabled by default
+          alertVolumeFadeDelaySec(2),           // 2 seconds at full volume before fade
+          alertVolumeFadeVolume(1),             // Fade to volume 1 (quiet but audible)
+          speedMuteEnabled(false),              // Speed mute disabled by default
+          speedMuteThresholdMph(25),            // 25 mph default (city driving)
+          speedMuteHysteresisMph(3),            // 3 mph hysteresis band
+          speedMuteVolume(0),                   // Silent by default
+          speedMuteVoice(true),                 // Suppress voice when speed-muted
+          stealthEnabled(false),                // Stealth mode disabled by default
+          autoPushEnabled(kDefaultAutoPushEnabled), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
+          slot2Name("COMFORT"), slot0Color(0x400A), slot1Color(0x07E0), slot2Color(0x8410), slot0Volume(0xFF),
+          slot1Volume(0xFF), slot2Volume(0xFF), slot0MuteVolume(0xFF), slot1MuteVolume(0xFF), slot2MuteVolume(0xFF),
+          slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false), slot0MuteToZero(false),
+          slot1MuteToZero(false), slot2MuteToZero(false), slot0AlertPersist(0), slot1AlertPersist(0),
+          slot2AlertPersist(0), slot0PriorityArrow(false), slot1PriorityArrow(false), slot2PriorityArrow(false),
+          slot0_default(), slot1_highway(), slot2_comfort(), lastV1Address(""),
+          autoPowerOffMinutes(0), // Default: disabled
+          apTimeoutMinutes(0),    // Default: always on (0=unlimited)
+          obdEnabled(false),      // OBD disabled by default
+          obdSavedAddress(""),    // No saved device
+          obdSavedName(""),       // No friendly name
+          obdSavedAddrType(0),    // Default PUBLIC address type
+          obdMinRssi(-90),        // Default -90 dBm minimum RSSI
+          obdScanWindowMs(kConnectionCycleObdScanWindowMsDefault),
+          obdRetryIntervalMs(kConnectionCycleObdRetryIntervalMsDefault),
+          proxyOpenWindowMs(kConnectionCycleProxyOpenWindowMsDefault),
+          wifiOpenTimeoutMs(kConnectionCycleWifiOpenTimeoutMsDefault),
+          v1SettleQuietMs(kConnectionCycleV1SettleQuietMsDefault),
+          v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
+          cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
+          alpEnabled(false),             // ALP disabled by default
+          alpSdLogEnabled(false),        // ALP SD logging off by default
+          alpAlertPersistSec(0),         // ALP display persist off by default
+          alpDisableV1LaserOnPush(true), // When ALP is enabled, let ALP own laser alerting
+          gpsEnabled(false),             // GPS disabled by default until module is installed
+          gpsBaud(9600),                 // Default UART baud for MTK3339
+          gpsEnablePinActiveHigh(true),  // Deprecated compatibility key; normalized true
+          gpsLogUtcToPerf(true),         // UTC column on by default when GPS enabled
+          gpsLogUtcToAlp(true),          // UTC column on by default when GPS enabled
+          powerOffSdLog(false) {}        // Power-off SD logging off by default
 
     int primaryWifiStaSlotIndex() const {
         int best = -1;
@@ -453,8 +420,7 @@ struct V1Settings {
 
             const WifiStaSlot& current = wifiStaSlots[best];
             if (slot.priority < current.priority ||
-                (slot.priority == current.priority &&
-                 slot.lastConnectedAtSec > current.lastConnectedAtSec)) {
+                (slot.priority == current.priority && slot.lastConnectedAtSec > current.lastConnectedAtSec)) {
                 best = static_cast<int>(i);
             }
         }
@@ -471,9 +437,7 @@ struct V1Settings {
         return index >= 0 ? &wifiStaSlots[index] : nullptr;
     }
 
-    bool hasConfiguredWifiStaSlot() const {
-        return primaryWifiStaSlotIndex() >= 0;
-    }
+    bool hasConfiguredWifiStaSlot() const { return primaryWifiStaSlotIndex() >= 0; }
 
     void refreshWifiClientAliasFromSlots() {
         if (const WifiStaSlot* slot = primaryWifiStaSlot()) {
@@ -495,89 +459,45 @@ struct V1Settings {
         refreshWifiClientAliasFromSlots();
     }
 
-    static uint8_t normalizeAutoPushSlotIndex(int slotNum) {
-        return slotNum == 1 ? 1 : (slotNum == 2 ? 2 : 0);
-    }
+    static uint8_t normalizeAutoPushSlotIndex(int slotNum) { return slotNum == 1 ? 1 : (slotNum == 2 ? 2 : 0); }
 
     AutoPushSlotView autoPushSlotView(int slotNum) {
         switch (normalizeAutoPushSlotIndex(slotNum)) {
-            case 1:
-                return AutoPushSlotView{
-                    slot1Name,
-                    slot1Color,
-                    slot1Volume,
-                    slot1MuteVolume,
-                    slot1DarkMode,
-                    slot1MuteToZero,
-                    slot1AlertPersist,
-                    slot1PriorityArrow,
-                    slot1_highway,
-                };
-            case 2:
-                return AutoPushSlotView{
-                    slot2Name,
-                    slot2Color,
-                    slot2Volume,
-                    slot2MuteVolume,
-                    slot2DarkMode,
-                    slot2MuteToZero,
-                    slot2AlertPersist,
-                    slot2PriorityArrow,
-                    slot2_comfort,
-                };
-            default:
-                return AutoPushSlotView{
-                    slot0Name,
-                    slot0Color,
-                    slot0Volume,
-                    slot0MuteVolume,
-                    slot0DarkMode,
-                    slot0MuteToZero,
-                    slot0AlertPersist,
-                    slot0PriorityArrow,
-                    slot0_default,
-                };
+        case 1:
+            return AutoPushSlotView{
+                slot1Name,       slot1Color,        slot1Volume,        slot1MuteVolume, slot1DarkMode,
+                slot1MuteToZero, slot1AlertPersist, slot1PriorityArrow, slot1_highway,
+            };
+        case 2:
+            return AutoPushSlotView{
+                slot2Name,       slot2Color,        slot2Volume,        slot2MuteVolume, slot2DarkMode,
+                slot2MuteToZero, slot2AlertPersist, slot2PriorityArrow, slot2_comfort,
+            };
+        default:
+            return AutoPushSlotView{
+                slot0Name,       slot0Color,        slot0Volume,        slot0MuteVolume, slot0DarkMode,
+                slot0MuteToZero, slot0AlertPersist, slot0PriorityArrow, slot0_default,
+            };
         }
     }
 
     ConstAutoPushSlotView autoPushSlotView(int slotNum) const {
         switch (normalizeAutoPushSlotIndex(slotNum)) {
-            case 1:
-                return ConstAutoPushSlotView{
-                    slot1Name,
-                    slot1Color,
-                    slot1Volume,
-                    slot1MuteVolume,
-                    slot1DarkMode,
-                    slot1MuteToZero,
-                    slot1AlertPersist,
-                    slot1PriorityArrow,
-                    slot1_highway,
-                };
-            case 2:
-                return ConstAutoPushSlotView{
-                    slot2Name,
-                    slot2Color,
-                    slot2Volume,
-                    slot2MuteVolume,
-                    slot2DarkMode,
-                    slot2MuteToZero,
-                    slot2AlertPersist,
-                    slot2PriorityArrow,
-                    slot2_comfort,
-                };
-            default:
-                return ConstAutoPushSlotView{
-                    slot0Name,
-                    slot0Color,
-                    slot0Volume,
-                    slot0MuteVolume,
-                    slot0DarkMode,
-                    slot0MuteToZero,
-                    slot0AlertPersist,
-                    slot0PriorityArrow,
-                    slot0_default,
-                };
+        case 1:
+            return ConstAutoPushSlotView{
+                slot1Name,       slot1Color,        slot1Volume,        slot1MuteVolume, slot1DarkMode,
+                slot1MuteToZero, slot1AlertPersist, slot1PriorityArrow, slot1_highway,
+            };
+        case 2:
+            return ConstAutoPushSlotView{
+                slot2Name,       slot2Color,        slot2Volume,        slot2MuteVolume, slot2DarkMode,
+                slot2MuteToZero, slot2AlertPersist, slot2PriorityArrow, slot2_comfort,
+            };
+        default:
+            return ConstAutoPushSlotView{
+                slot0Name,       slot0Color,        slot0Volume,        slot0MuteVolume, slot0DarkMode,
+                slot0MuteToZero, slot0AlertPersist, slot0PriorityArrow, slot0_default,
+            };
         }
     }
 };
@@ -632,7 +552,7 @@ struct DeviceSettingsUpdate {
     uint32_t gpsBaud = 9600;
 
     bool hasGpsEnablePinActiveHigh = false;
-    bool gpsEnablePinActiveHigh = true;  // Deprecated compatibility key; false is ignored
+    bool gpsEnablePinActiveHigh = true; // Deprecated compatibility key; false is ignored
 
     bool hasGpsLogUtcToPerf = false;
     bool gpsLogUtcToPerf = true;
@@ -892,7 +812,7 @@ struct AutoPushStateUpdate {
 };
 
 class SettingsManager {
-public:
+  public:
     SettingsManager();
 
     // Initialize and load settings
@@ -1013,18 +933,15 @@ public:
     void load();
 
     // WiFi client (STA) settings - connect to external network
-    String getWifiClientPassword();  // Retrieves from secure NVS namespace
+    String getWifiClientPassword(); // Retrieves from secure NVS namespace
     String getWifiStaSlotPassword(size_t index);
     void setWifiClientEnabled(bool enabled);
     void setWifiClientCredentials(const String& ssid, const String& password);
-    void setWifiStaSlotCredentials(size_t index,
-                                   const String& ssid,
-                                   const String& password,
-                                   const String& label,
+    void setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password, const String& label,
                                    uint8_t priority);
     void markWifiStaSlotConnected(size_t index, uint32_t connectedAtSec);
     void clearWifiStaSlot(size_t index);
-    void clearWifiClientCredentials();  // Forget saved network
+    void clearWifiClientCredentials(); // Forget saved network
 
     // SD card backup/restore for display settings
     bool backupToSD();
@@ -1033,10 +950,9 @@ public:
     bool deferredBackupPending() const;
     bool deferredBackupRetryScheduled() const;
     uint32_t deferredBackupNextAttemptAtMs() const;
-    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc,
-                                                  bool deferBackupRewrite);
+    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite);
     bool restoreFromSD();
-    bool checkAndRestoreFromSD();  // Call after storage is mounted to retry restore
+    bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
 
     // NVS diagnostic info for troubleshooting persistence
     struct NvsDiagnostic {
@@ -1053,7 +969,7 @@ public:
     // Validate profile references exist - clear invalid ones
     void validateProfileReferences(V1ProfileManager& profileMgr);
 
-private:
+  private:
     V1Settings settings_;
     Preferences preferences_;
     uint32_t backupRevisionCounter_ = 1;
@@ -1069,10 +985,10 @@ private:
     bool writeSettingsToNamespace(const char* ns);
     String getActiveNamespace();
     String getStagingNamespace(const String& activeNamespace);
-    bool checkNeedsRestore();  // Returns true if NVS appears to be default/empty
+    bool checkNeedsRestore(); // Returns true if NVS appears to be default/empty
     void cleanupNamespacesIfNeeded(bool hasSdBackup);
 };
 
 // Global settings instance
 extern SettingsManager settingsManager;
-#endif  // SETTINGS_H
+#endif // SETTINGS_H

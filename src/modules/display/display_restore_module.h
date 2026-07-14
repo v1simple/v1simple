@@ -16,11 +16,8 @@ class DisplayPipelineModule;
  * - Restores the appropriate V1 state (alerts or scanning)
  */
 class DisplayRestoreModule {
-public:
-    void begin(V1Display* disp,
-               PacketParser* pktParser,
-               V1BLEClient* ble,
-               DisplayPreviewModule* preview,
+  public:
+    void begin(V1Display* disp, PacketParser* pktParser, V1BLEClient* ble, DisplayPreviewModule* preview,
                DisplayPipelineModule* displayPipeline);
 
     /**
@@ -29,7 +26,7 @@ public:
      */
     bool process();
 
-private:
+  private:
     V1Display* display_ = nullptr;
     PacketParser* parser_ = nullptr;
     V1BLEClient* bleClient_ = nullptr;

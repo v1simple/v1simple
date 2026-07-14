@@ -41,6 +41,37 @@ static std::string projectRoot() {
     return std::string(PROJECT_DIR);
 }
 
+// Collapse every run of whitespace to a single space so that assertions about
+// production source survive clang-format re-wrapping. Without this, a statement
+// like `if (x) foo();` that clang-format legally splits across two lines
+// (AllowShortIfStatementsOnASingleLine: false) would stop matching even though
+// the code is semantically identical. Normalizing both haystack and needle keeps
+// the assertion exactly as strong -- the tokens must still all be present, in
+// order -- while making it insensitive to line breaks and indentation.
+std::string normalizeWhitespace(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool inSpace = false;
+    for (const char ch : text) {
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+            if (!inSpace) {
+                out.push_back(' ');
+                inSpace = true;
+            }
+        } else {
+            out.push_back(ch);
+            inSpace = false;
+        }
+    }
+    return out;
+}
+
+// Format-tolerant substring search: true when `needle` occurs in `haystack`
+// ignoring only whitespace layout.
+bool containsNormalized(const std::string& haystack, const std::string& needle) {
+    return normalizeWhitespace(haystack).find(normalizeWhitespace(needle)) != std::string::npos;
+}
+
 size_t countOccurrences(const std::string& text, const std::string& needle) {
     size_t count = 0;
     size_t pos = 0;
@@ -436,8 +467,12 @@ void test_noncritical_ble_connection_logs_are_rate_limited_or_callback_disabled(
                           subscribeStepBody.find("subscribeFailServiceLog"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           wifiPriorityBody.find("BleLogRateLimitState wifiPriorityLog"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          wifiPriorityBody.find("if (shouldLog) Serial.println(\"[BLE] Stopping scan for WiFi priority mode\")"));
+    // Whitespace-normalized: clang-format may split this guarded log onto two lines.
+    // The assertion still requires the println to be gated by `shouldLog`.
+    TEST_ASSERT_TRUE_MESSAGE(
+        containsNormalized(wifiPriorityBody,
+                           "if (shouldLog) Serial.println(\"[BLE] Stopping scan for WiFi priority mode\")"),
+        "scan-stop log must stay rate-limited behind shouldLog");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           followupBody.find("logNonCriticalFollowupFailure("));
     TEST_ASSERT_EQUAL(std::string::npos,

@@ -8,16 +8,10 @@
 #include "modules/auto_push/auto_push_module.h"
 #endif
 
-void TapGestureModule::begin(TouchHandler* touchHandler,
-                             SettingsManager* settings,
-                             V1Display* displayPtr,
-                             V1BLEClient* bleClient,
-                             PacketParser* parserPtr,
-                             AutoPushModule* autoPushModule,
-                             AlertPersistenceModule* alertPersistenceModule,
-                             DisplayMode* displayModePtr,
-                             QuietCoordinatorModule* quietCoordinator,
-                             const WifiCallbacks& wifiCbs) {
+void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* displayPtr,
+                             V1BLEClient* bleClient, PacketParser* parserPtr, AutoPushModule* autoPushModule,
+                             AlertPersistenceModule* alertPersistenceModule, DisplayMode* displayModePtr,
+                             QuietCoordinatorModule* quietCoordinator, const WifiCallbacks& wifiCbs) {
     touch_ = touchHandler;
     settings_ = settings;
     display_ = displayPtr;
@@ -53,10 +47,8 @@ void TapGestureModule::process(unsigned long nowMs) {
         bool currentMuted = state.muted;
         bool newMuted = !currentMuted;
 
-        DBG_PRINTF("Mute: %s -> Sending: %s (%s)\n",
-                      currentMuted ? "MUTED" : "UNMUTED",
-                      newMuted ? "MUTE_ON" : "MUTE_OFF",
-                      reason);
+        DBG_PRINTF("Mute: %s -> Sending: %s (%s)\n", currentMuted ? "MUTED" : "UNMUTED",
+                   newMuted ? "MUTE_ON" : "MUTE_OFF", reason);
 
         const bool cmdSent = quiet_ && quiet_->sendMute(QuietOwner::TapGesture, newMuted);
         DBG_PRINTF("Mute command sent: %s\n", cmdSent ? "OK" : "FAIL");
@@ -104,13 +96,13 @@ void TapGestureModule::process(unsigned long nowMs) {
     // maintenance instead of starting WiFi late in the normal drive runtime.
     // Gated on no active alert: an accidental 4 s hold mid-alert must never
     // reboot the display out from under the driver.
-    if (touching_ && touchLevelActive && !longPressFired_ && wifiCbs_.isWifiActive &&
-        !parser_->hasAlerts() &&
+    if (touching_ && touchLevelActive && !longPressFired_ && wifiCbs_.isWifiActive && !parser_->hasAlerts() &&
         (nowMs - touchStartMs_) >= LONG_PRESS_WIFI_MS) {
         longPressFired_ = true;
         tapCount_ = 0;
         if (wifiCbs_.isWifiActive(wifiCbs_.isWifiActiveCtx)) {
-            if (wifiCbs_.stopWifi) wifiCbs_.stopWifi(wifiCbs_.stopWifiCtx);
+            if (wifiCbs_.stopWifi)
+                wifiCbs_.stopWifi(wifiCbs_.stopWifiCtx);
             DBG_PRINTLN("Long-press: WiFi stopped");
         } else {
             if (wifiCbs_.requestMaintenanceBoot) {
@@ -120,7 +112,8 @@ void TapGestureModule::process(unsigned long nowMs) {
         }
         return;
     }
-    if (longPressFired_) return;  // Suppress taps while held after long-press
+    if (longPressFired_)
+        return; // Suppress taps while held after long-press
 
     if (newTapEdge) {
         const bool hasActiveAlert = parser_->hasAlerts();

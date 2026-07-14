@@ -12,14 +12,12 @@
 #include "packet_parser.h"
 #endif
 
-#define CONN_LOG(...) do { } while(0)
+#define CONN_LOG(...)                                                                                                  \
+    do {                                                                                                               \
+    } while (0)
 
-void ConnectionStateModule::begin(V1BLEClient* bleClient,
-                                  PacketParser* parserPtr,
-                                  V1Display* displayPtr,
-                                  PowerModule* powerModule,
-                                  BleQueueModule* bleQueueModule,
-                                  SystemEventBus* eventBus) {
+void ConnectionStateModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Display* displayPtr,
+                                  PowerModule* powerModule, BleQueueModule* bleQueueModule, SystemEventBus* eventBus) {
     ble_ = bleClient;
     parser_ = parserPtr;
     display_ = displayPtr;

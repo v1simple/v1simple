@@ -19,14 +19,14 @@
 
 using namespace DisplaySegments;
 
-using DisplayLayout::TOP_COUNTER_FONT_SIZE;
+using DisplayLayout::TOP_COUNTER_FALLBACK_WIDTH;
+using DisplayLayout::TOP_COUNTER_FIELD_H;
+using DisplayLayout::TOP_COUNTER_FIELD_W;
 using DisplayLayout::TOP_COUNTER_FIELD_X;
 using DisplayLayout::TOP_COUNTER_FIELD_Y;
-using DisplayLayout::TOP_COUNTER_FIELD_W;
-using DisplayLayout::TOP_COUNTER_FIELD_H;
-using DisplayLayout::TOP_COUNTER_TEXT_Y;
+using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
-using DisplayLayout::TOP_COUNTER_FALLBACK_WIDTH;
+using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
 // Top counter render cache is in elementCaches_.topCounter
 
@@ -40,11 +40,7 @@ bool isTopCounterDigit(char symbol) {
     return symbol >= '0' && symbol <= '9';
 }
 
-void buildTopCounterText(char primary,
-                         bool primaryDot,
-                         char secondary,
-                         bool secondaryDot,
-                         bool drawFixedPrimaryDot,
+void buildTopCounterText(char primary, bool primaryDot, char secondary, bool secondaryDot, bool drawFixedPrimaryDot,
                          char (&buf)[8]) {
     size_t pos = 0;
     buf[pos++] = (primary == '\0') ? ' ' : primary;
@@ -60,11 +56,12 @@ void buildTopCounterText(char primary,
     buf[pos] = '\0';
 }
 
-}  // namespace
+} // namespace
 
 // --- 7-segment digit rendering ---
 
-void V1Display::drawSevenSegmentDigit(int x, int y, float scale, char c, bool addDot, uint16_t onColor, uint16_t offColor) {
+void V1Display::drawSevenSegmentDigit(int x, int y, float scale, char c, bool addDot, uint16_t onColor,
+                                      uint16_t offColor) {
     SegMetrics m = segMetrics(scale);
     bool segments[7] = {false, false, false, false, false, false, false};
     // Segment layout:   0=top, 1=upper-right, 2=lower-right, 3=bottom, 4=lower-left, 5=upper-left, 6=middle
@@ -135,7 +132,8 @@ void V1Display::drawSevenSegmentDigit(int x, int y, float scale, char c, bool ad
 
     auto drawSeg = [&](int sx, int sy, int w, int h, bool on) {
         uint16_t col = on ? onColor : offColor;
-        if (!on && offColor == PALETTE_BG) return;
+        if (!on && offColor == PALETTE_BG)
+            return;
         FILL_ROUND_RECT(sx, sy, w, h, scale, col);
     };
 
@@ -172,10 +170,12 @@ int V1Display::measureSevenSegmentText(const char* text, float scale) const {
     int width = 0;
     size_t len = strlen(text);
     for (size_t i = 0; i < len; ++i) {
-        if (text[i] == '.') continue;
+        if (text[i] == '.')
+            continue;
         bool hasDot = (i + 1 < len && text[i + 1] == '.');
         width += m.digitW + m.spacing + (hasDot ? m.dot / 2 : 0);
-        if (hasDot) ++i;
+        if (hasDot)
+            ++i;
     }
     if (width > 0) {
         width -= m.spacing; // remove trailing spacing
@@ -189,40 +189,46 @@ int V1Display::drawSevenSegmentText(const char* text, int x, int y, float scale,
     size_t len = strlen(text);
     for (size_t i = 0; i < len; ++i) {
         char c = text[i];
-        if (c == '.') continue; // handled alongside previous digit
+        if (c == '.')
+            continue; // handled alongside previous digit
         bool hasDot = (i + 1 < len && text[i + 1] == '.');
         drawSevenSegmentDigit(cursor, y, scale, c, hasDot, onColor, offColor);
         cursor += m.digitW + m.spacing + (hasDot ? m.dot / 2 : 0);
-        if (hasDot) ++i;
+        if (hasDot)
+            ++i;
     }
     return cursor - x - m.spacing;
 }
 
 // --- 14-segment digit and text rendering ---
 
-void V1Display::draw14SegmentDigit(int x, int y, float scale, char c, bool addDot, uint16_t onColor, uint16_t offColor) {
+void V1Display::draw14SegmentDigit(int x, int y, float scale, char c, bool addDot, uint16_t onColor,
+                                   uint16_t offColor) {
     SegMetrics m = segMetrics(scale);
     uint16_t pattern = get14SegPattern(c);
 
     auto drawHSeg = [&](int sx, int sy, int w, bool on) {
         uint16_t col = on ? onColor : offColor;
-        if (!on && offColor == PALETTE_BG) return;
+        if (!on && offColor == PALETTE_BG)
+            return;
         FILL_ROUND_RECT(sx, sy, w, m.segThick, scale, col);
     };
 
     auto drawVSeg = [&](int sx, int sy, int h, bool on) {
         uint16_t col = on ? onColor : offColor;
-        if (!on && offColor == PALETTE_BG) return;
+        if (!on && offColor == PALETTE_BG)
+            return;
         FILL_ROUND_RECT(sx, sy, m.segThick, h, scale, col);
     };
 
     auto drawDiag = [&](int x1, int y1, int x2, int y2, bool on) {
         uint16_t col = on ? onColor : offColor;
-        if (!on && offColor == PALETTE_BG) return;
+        if (!on && offColor == PALETTE_BG)
+            return;
         // Draw thick diagonal line
-        for (int t = -m.segThick/2; t <= m.segThick/2; t++) {
-            DRAW_LINE(x1+t, y1, x2+t, y2, col);
-            DRAW_LINE(x1, y1+t, x2, y2+t, col);
+        for (int t = -m.segThick / 2; t <= m.segThick / 2; t++) {
+            DRAW_LINE(x1 + t, y1, x2 + t, y2, col);
+            DRAW_LINE(x1, y1 + t, x2, y2 + t, col);
         }
     };
 
@@ -231,31 +237,31 @@ void V1Display::draw14SegmentDigit(int x, int y, float scale, char c, bool addDo
     int midY = y + m.segLen + m.segThick;
 
     // Horizontal segments
-    drawHSeg(x + m.segThick, y, m.segLen, pattern & S14_TOP);                           // Top
-    drawHSeg(x + m.segThick, y + 2*m.segLen + 2*m.segThick, m.segLen, pattern & S14_BOT); // Bottom
-    drawHSeg(x + m.segThick, midY, halfW - m.segThick/2, pattern & S14_ML);              // Middle-left
-    drawHSeg(centerX + m.segThick/2, midY, halfW - m.segThick/2, pattern & S14_MR);      // Middle-right
+    drawHSeg(x + m.segThick, y, m.segLen, pattern & S14_TOP);                                 // Top
+    drawHSeg(x + m.segThick, y + 2 * m.segLen + 2 * m.segThick, m.segLen, pattern & S14_BOT); // Bottom
+    drawHSeg(x + m.segThick, midY, halfW - m.segThick / 2, pattern & S14_ML);                 // Middle-left
+    drawHSeg(centerX + m.segThick / 2, midY, halfW - m.segThick / 2, pattern & S14_MR);       // Middle-right
 
     // Vertical segments - outer
-    drawVSeg(x, y + m.segThick, m.segLen, pattern & S14_TL);                             // Top-left
-    drawVSeg(x, y + m.segLen + 2*m.segThick, m.segLen, pattern & S14_BL);                // Bottom-left
-    drawVSeg(x + m.segLen + m.segThick, y + m.segThick, m.segLen, pattern & S14_TR);     // Top-right
-    drawVSeg(x + m.segLen + m.segThick, y + m.segLen + 2*m.segThick, m.segLen, pattern & S14_BR); // Bottom-right
+    drawVSeg(x, y + m.segThick, m.segLen, pattern & S14_TL);                                        // Top-left
+    drawVSeg(x, y + m.segLen + 2 * m.segThick, m.segLen, pattern & S14_BL);                         // Bottom-left
+    drawVSeg(x + m.segLen + m.segThick, y + m.segThick, m.segLen, pattern & S14_TR);                // Top-right
+    drawVSeg(x + m.segLen + m.segThick, y + m.segLen + 2 * m.segThick, m.segLen, pattern & S14_BR); // Bottom-right
 
     // Center vertical segments
-    drawVSeg(centerX, y + m.segThick, m.segLen - m.segThick, pattern & S14_CT);          // Center-top
-    drawVSeg(centerX, midY + m.segThick, m.segLen - m.segThick, pattern & S14_CB);       // Center-bottom
+    drawVSeg(centerX, y + m.segThick, m.segLen - m.segThick, pattern & S14_CT);    // Center-top
+    drawVSeg(centerX, midY + m.segThick, m.segLen - m.segThick, pattern & S14_CB); // Center-bottom
 
     // Diagonal segments
     int diagInset = m.segThick;
-    drawDiag(x + diagInset, y + m.segThick + diagInset,
-             centerX - diagInset, midY - diagInset, pattern & S14_DTL);                   // Diag top-left
-    drawDiag(centerX + diagInset, y + m.segThick + diagInset,
-             x + m.segLen + m.segThick - diagInset, midY - diagInset, pattern & S14_DTR); // Diag top-right
-    drawDiag(x + diagInset, y + 2*m.segLen + m.segThick - diagInset,
-             centerX - diagInset, midY + m.segThick + diagInset, pattern & S14_DBL);      // Diag bottom-left
-    drawDiag(centerX + diagInset, midY + m.segThick + diagInset,
-             x + m.segLen + m.segThick - diagInset, y + 2*m.segLen + m.segThick - diagInset, pattern & S14_DBR); // Diag bottom-right
+    drawDiag(x + diagInset, y + m.segThick + diagInset, centerX - diagInset, midY - diagInset,
+             pattern & S14_DTL); // Diag top-left
+    drawDiag(centerX + diagInset, y + m.segThick + diagInset, x + m.segLen + m.segThick - diagInset, midY - diagInset,
+             pattern & S14_DTR); // Diag top-right
+    drawDiag(x + diagInset, y + 2 * m.segLen + m.segThick - diagInset, centerX - diagInset,
+             midY + m.segThick + diagInset, pattern & S14_DBL); // Diag bottom-left
+    drawDiag(centerX + diagInset, midY + m.segThick + diagInset, x + m.segLen + m.segThick - diagInset,
+             y + 2 * m.segLen + m.segThick - diagInset, pattern & S14_DBR); // Diag bottom-right
 
     if (addDot) {
         int dotR = m.dot / 2 + 1;
@@ -271,11 +277,13 @@ int V1Display::draw14SegmentText(const char* text, int x, int y, float scale, ui
     size_t len = strlen(text);
     for (size_t i = 0; i < len; ++i) {
         char c = text[i];
-        if (c == '.') continue;
+        if (c == '.')
+            continue;
         bool hasDot = (i + 1 < len && text[i + 1] == '.');
         draw14SegmentDigit(cursor, y, scale, c, hasDot, onColor, offColor);
         cursor += m.digitW + m.spacing + (hasDot ? m.dot / 2 : 0);
-        if (hasDot) ++i;
+        if (hasDot)
+            ++i;
     }
     return cursor - x - m.spacing;
 }
@@ -284,11 +292,7 @@ int V1Display::draw14SegmentText(const char* text, int x, int y, float scale, ui
 
 // Segment7 bogey counter (original V1 style).
 // Uses Segment7 TTF font if available, falls back to software renderer.
-void V1Display::drawTopCounterPair(char primary,
-                                   bool muted,
-                                   bool primaryDot,
-                                   char secondary,
-                                   bool secondaryDot) {
+void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary, bool secondaryDot) {
     const V1Settings& s = settingsManager.get();
     const bool hasSecondary = hasTrailingTopCounterSymbol(secondary, secondaryDot);
     const bool primaryIsDigit = isTopCounterDigit(primary);
@@ -301,8 +305,7 @@ void V1Display::drawTopCounterPair(char primary,
     bool colorChanged = (s.colorBogey != elementCaches_.topCounter.lastBogeyColor);
 
     // Skip redraw if nothing changed
-    if (elementCaches_.topCounter.counterValid && !colorChanged &&
-        muted == elementCaches_.topCounter.lastMuted &&
+    if (elementCaches_.topCounter.counterValid && !colorChanged && muted == elementCaches_.topCounter.lastMuted &&
         strcmp(buf, elementCaches_.topCounter.lastText) == 0) {
         return;
     }
@@ -311,18 +314,15 @@ void V1Display::drawTopCounterPair(char primary,
     // starts at x=77 — see drawBandIndicators). Nothing else paints that gap, so
     // any residue there persists indefinitely; widening here makes the per-frame
     // FILL_RECT below absorb it.
-    constexpr int kBandsColumnLeftX = 77;  // mirrors unionX in drawBandIndicators (x=82, x-5=77)
+    constexpr int kBandsColumnLeftX = 77; // mirrors unionX in drawBandIndicators (x=82, x-5=77)
     constexpr int kClearLeftPad = 1;
     const int clearX = TOP_COUNTER_FIELD_X - kClearLeftPad;
     const int clearW = (kBandsColumnLeftX - clearX);
-    drawnRegion_.add(static_cast<int16_t>(clearX),
-                     DisplayLayout::kTopCounterRect.y,
-                     static_cast<int16_t>(clearW),
-                     DisplayLayout::kTopCounterRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(static_cast<int16_t>(clearX), DisplayLayout::kTopCounterRect.y, static_cast<int16_t>(clearW),
+                     DisplayLayout::kTopCounterRect.h, DisplayDirtyRegionSource::Status);
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::BogeyCounterChange);
-    elementCaches_.topCounter.counterValid   = true;
-    elementCaches_.topCounter.lastMuted      = muted;
+    elementCaches_.topCounter.counterValid = true;
+    elementCaches_.topCounter.lastMuted = muted;
     elementCaches_.topCounter.lastBogeyColor = s.colorBogey;
     strncpy(elementCaches_.topCounter.lastText, buf, sizeof(elementCaches_.topCounter.lastText));
     elementCaches_.topCounter.lastText[sizeof(elementCaches_.topCounter.lastText) - 1] = '\0';
@@ -376,12 +376,10 @@ void V1Display::drawTopCounterPair(char primary,
         int glyphXMax = 0;
         bool haveCachedBounds = false;
         if (!hasSecondary) {
-            haveCachedBounds =
-                fontMgr_.getTopCounterBounds(buf[0], buf[1] == '.', glyphXMin, glyphXMax);
+            haveCachedBounds = fontMgr_.getTopCounterBounds(buf[0], buf[1] == '.', glyphXMin, glyphXMax);
         }
         if (!haveCachedBounds) {
-            FT_BBox bbox = fontMgr_.segment7.calculateBoundingBox(
-                0, 0, fontSize, Align::Left, Layout::Horizontal, buf);
+            FT_BBox bbox = fontMgr_.segment7.calculateBoundingBox(0, 0, fontSize, Align::Left, Layout::Horizontal, buf);
             glyphXMin = static_cast<int>(bbox.xMin);
             glyphXMax = static_cast<int>(bbox.xMax);
         }
@@ -391,8 +389,7 @@ void V1Display::drawTopCounterPair(char primary,
             int refMin = 0;
             int refMax = 0;
             if (fontMgr_.getTopCounterBounds('8', false, refMin, refMax)) {
-                const int fieldCenterX =
-                    fieldLeft + ((fieldRight - fieldLeft) / 2) + centerBiasPx;
+                const int fieldCenterX = fieldLeft + ((fieldRight - fieldLeft) / 2) + centerBiasPx;
                 const int refCenterX = refMin + ((refMax - refMin) / 2);
                 x = fieldCenterX - refCenterX;
             }
@@ -401,8 +398,10 @@ void V1Display::drawTopCounterPair(char primary,
         const int minCursorX = fieldLeft - glyphXMin;
         const int maxCursorX = clearRight - glyphXMax;
         if (minCursorX <= maxCursorX) {
-            if (x < minCursorX) x = minCursorX;
-            if (x > maxCursorX) x = maxCursorX;
+            if (x < minCursorX)
+                x = minCursorX;
+            if (x > maxCursorX)
+                x = maxCursorX;
         } else {
             // Glyph is wider than the safe window; keep its left edge inside
             // rather than letting it drift into the band column.
@@ -459,8 +458,7 @@ void V1Display::drawTopCounter(char symbol, bool muted, bool showDot) {
 
 void V1Display::drawMuteIcon(bool muted) {
     // Skip redraw if nothing changed
-    if (elementCaches_.topCounter.muteIconValid &&
-        muted == elementCaches_.topCounter.lastMutedState) {
+    if (elementCaches_.topCounter.muteIconValid && muted == elementCaches_.topCounter.lastMutedState) {
         return;
     }
     elementCaches_.topCounter.muteIconValid = true;
@@ -468,21 +466,18 @@ void V1Display::drawMuteIcon(bool muted) {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::muteBadgeRect();
 
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
 
     if (muted) {
         // Draw badge with muted styling
         uint16_t outline = PALETTE_MUTED;
         uint16_t fill = PALETTE_MUTED;
 
-        FILL_ROUND_RECT(badgeRect.x, badgeRect.y,
-                        badgeRect.w, badgeRect.h, 5, fill);
-        DRAW_ROUND_RECT(badgeRect.x, badgeRect.y,
-                        badgeRect.w, badgeRect.h, 5, outline);
+        FILL_ROUND_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 5, fill);
+        DRAW_ROUND_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 5, outline);
 
         GFX_setTextDatum(MC_DATUM);
-        TFT_CALL(setTextSize)(2);  // Larger text for visibility
+        TFT_CALL(setTextSize)(2); // Larger text for visibility
         TFT_CALL(setTextColor)(PALETTE_BG, fill);
         int cx = badgeRect.x + badgeRect.w / 2;
         int cy = badgeRect.y + badgeRect.h / 2;
@@ -493,7 +488,6 @@ void V1Display::drawMuteIcon(bool muted) {
         GFX_drawString(tft_, muteText, cx + 1, cy);
     } else {
         // Clear the badge area when not muted.
-        FILL_RECT(badgeRect.x, badgeRect.y,
-                  badgeRect.w, badgeRect.h, PALETTE_BG);
+        FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     }
 }

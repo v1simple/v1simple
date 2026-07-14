@@ -37,30 +37,18 @@ struct WifiAutoStartDecisionSnapshot {
 
 // Owns deferred WiFi auto-start gate decisions and one-shot triggering.
 class WifiAutoStartModule {
-public:
-    bool process(unsigned long nowMs,
-                 unsigned long v1ConnectedAtMs,
-                 bool enableWifi,
-                 bool bleConnected,
-                 bool canStartDma,
-                 bool wifiAutoStartAllowed,
-                 bool& wifiManualStartIntentLatched,
-                 bool& wifiAutoStartDone,
-                 bool (*startWifi)(bool autoStarted, void* ctx),
-                 void* ctx);
+  public:
+    bool process(unsigned long nowMs, unsigned long v1ConnectedAtMs, bool enableWifi, bool bleConnected,
+                 bool canStartDma, bool wifiAutoStartAllowed, bool& wifiManualStartIntentLatched,
+                 bool& wifiAutoStartDone, bool (*startWifi)(bool autoStarted, void* ctx), void* ctx);
 
     const WifiAutoStartDecisionSnapshot& getLastDecision() const { return lastDecision_; }
 
-private:
-    WifiAutoStartDecisionSnapshot buildDecisionSnapshot(unsigned long nowMs,
-                                                        unsigned long v1ConnectedAtMs,
-                                                        bool enableWifi,
-                                                        bool bleConnected,
-                                                        bool canStartDma,
-                                                        bool wifiAutoStartAllowed,
-                                                        bool wifiManualStartIntentLatched,
-                                                        bool wifiAutoStartDone,
-                                                        bool startTriggered,
+  private:
+    WifiAutoStartDecisionSnapshot buildDecisionSnapshot(unsigned long nowMs, unsigned long v1ConnectedAtMs,
+                                                        bool enableWifi, bool bleConnected, bool canStartDma,
+                                                        bool wifiAutoStartAllowed, bool wifiManualStartIntentLatched,
+                                                        bool wifiAutoStartDone, bool startTriggered,
                                                         bool startSucceeded) const;
     void logDecisionIfChanged(const WifiAutoStartDecisionSnapshot& snapshot);
 

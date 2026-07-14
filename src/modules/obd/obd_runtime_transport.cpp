@@ -37,14 +37,11 @@ extern "C" {
 #include "obd_ble_client.h"
 #endif
 
-
 // ======================================================================
 // FILE-SCOPE HELPERS — copyString for transport code
 // ======================================================================
 
 using ObdStringUtils::copyString;
-
-
 
 #ifndef UNIT_TEST
 constexpr UBaseType_t OBD_TRANSPORT_QUEUE_DEPTH = 1;
@@ -53,7 +50,6 @@ constexpr UBaseType_t OBD_TRANSPORT_PRIORITY = 1;
 constexpr TickType_t OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(1000);
 constexpr size_t OBD_TRANSPORT_ADDR_BUF_LEN = 18;
 constexpr size_t OBD_TRANSPORT_CMD_BUF_LEN = 16;
-
 
 // ======================================================================
 // TRANSPORT INFRASTRUCTURE — FreeRTOS task, queues, anonymous namespace state
@@ -100,9 +96,7 @@ void obdTransportTaskEntry(void* param) {
     while (true) {
         ObdTransportRequest request{};
         if (!sObdTransport.requestQueue ||
-            xQueueReceive(sObdTransport.requestQueue,
-                          &request,
-                          OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS) != pdTRUE) {
+            xQueueReceive(sObdTransport.requestQueue, &request, OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS) != pdTRUE) {
             continue;
         }
 
@@ -113,49 +107,46 @@ void obdTransportTaskEntry(void* param) {
         result.issuedMs = request.nowMs;
 
         switch (request.op) {
-            case ObdTransportOp::CONNECT:
-                result.success = context->bleClient->connect(
-                    request.address,
-                    request.addrType,
-                    request.timeoutMs,
-                    request.preferCachedAttributes);
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::DISCONNECT:
-                context->bleClient->disconnect();
-                result.success = true;
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::SECURITY_START:
-                result.success = context->bleClient->beginSecurity();
-                result.bleError = context->bleClient->getLastBleError();
-                result.securityError = context->bleClient->getLastSecurityError();
-                break;
-            case ObdTransportOp::DISCOVER:
-                result.success = context->bleClient->discoverServices();
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::SUBSCRIBE:
-                result.success = context->bleClient->subscribeNotify([](const uint8_t* data, size_t len) {
-                    if (sObdTransport.context.runtime) {
-                        sObdTransport.context.runtime->onBleData(data, len);
-                    }
-                });
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::WRITE:
-                result.success = context->bleClient->writeCommand(request.cmd, request.withResponse);
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::RSSI_READ:
-                result.success = true;
-                result.rssi = context->bleClient->getRssi(request.nowMs);
-                result.bleError = context->bleClient->getLastBleError();
-                break;
-            case ObdTransportOp::NONE:
-            default:
-                result.success = false;
-                break;
+        case ObdTransportOp::CONNECT:
+            result.success = context->bleClient->connect(request.address, request.addrType, request.timeoutMs,
+                                                         request.preferCachedAttributes);
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::DISCONNECT:
+            context->bleClient->disconnect();
+            result.success = true;
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::SECURITY_START:
+            result.success = context->bleClient->beginSecurity();
+            result.bleError = context->bleClient->getLastBleError();
+            result.securityError = context->bleClient->getLastSecurityError();
+            break;
+        case ObdTransportOp::DISCOVER:
+            result.success = context->bleClient->discoverServices();
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::SUBSCRIBE:
+            result.success = context->bleClient->subscribeNotify([](const uint8_t* data, size_t len) {
+                if (sObdTransport.context.runtime) {
+                    sObdTransport.context.runtime->onBleData(data, len);
+                }
+            });
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::WRITE:
+            result.success = context->bleClient->writeCommand(request.cmd, request.withResponse);
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::RSSI_READ:
+            result.success = true;
+            result.rssi = context->bleClient->getRssi(request.nowMs);
+            result.bleError = context->bleClient->getLastBleError();
+            break;
+        case ObdTransportOp::NONE:
+        default:
+            result.success = false;
+            break;
         }
 
         if (sObdTransport.resultQueue) {
@@ -172,22 +163,18 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
     }
 
     if (!sObdTransport.requestQueue) {
-        sObdTransport.requestQueue = createQueuePreferPsram(
-            OBD_TRANSPORT_QUEUE_DEPTH,
-            sizeof(ObdTransportRequest),
-            sObdTransport.requestQueueAllocation,
-            &sObdTransport.requestQueueInPsram);
+        sObdTransport.requestQueue =
+            createQueuePreferPsram(OBD_TRANSPORT_QUEUE_DEPTH, sizeof(ObdTransportRequest),
+                                   sObdTransport.requestQueueAllocation, &sObdTransport.requestQueueInPsram);
         if (!sObdTransport.requestQueue) {
             Serial.println("[OBD] ERROR: failed to create transport request queue");
             return false;
         }
     }
     if (!sObdTransport.resultQueue) {
-        sObdTransport.resultQueue = createQueuePreferPsram(
-            OBD_TRANSPORT_QUEUE_DEPTH,
-            sizeof(ObdTransportResult),
-            sObdTransport.resultQueueAllocation,
-            &sObdTransport.resultQueueInPsram);
+        sObdTransport.resultQueue =
+            createQueuePreferPsram(OBD_TRANSPORT_QUEUE_DEPTH, sizeof(ObdTransportResult),
+                                   sObdTransport.resultQueueAllocation, &sObdTransport.resultQueueInPsram);
         if (!sObdTransport.resultQueue) {
             Serial.println("[OBD] ERROR: failed to create transport result queue");
             return false;
@@ -197,14 +184,9 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
         sObdTransport.context.bleClient = bleClient;
         sObdTransport.context.runtime = runtime;
 
-        const BaseType_t rc = createTaskPinnedToCoreInternalStack(
-            obdTransportTaskEntry,
-            "ObdTransport",
-            OBD_TRANSPORT_STACK_SIZE,
-            &sObdTransport.context,
-            OBD_TRANSPORT_PRIORITY,
-            &sObdTransport.task,
-            0);
+        const BaseType_t rc =
+            createTaskPinnedToCoreInternalStack(obdTransportTaskEntry, "ObdTransport", OBD_TRANSPORT_STACK_SIZE,
+                                                &sObdTransport.context, OBD_TRANSPORT_PRIORITY, &sObdTransport.task, 0);
         if (rc != pdPASS) {
             Serial.println("[OBD] ERROR: failed to create transport task");
             return false;
@@ -229,7 +211,6 @@ uint32_t ObdRuntimeModule::transportStackHighWaterBytes() const {
     return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(task));
 }
 #endif
-
 
 // ======================================================================
 // BLE EVENT QUEUE — enqueue / drain / apply BLE events from callbacks
@@ -271,44 +252,41 @@ bool ObdRuntimeModule::popBleEvent(BleEvent& event) {
 
 void ObdRuntimeModule::applyBleEvent(const BleEvent& event) {
     switch (event.type) {
-        case BleEventType::DEVICE_FOUND:
-            if (state_ != ObdConnectionState::SCANNING ||
-                event.address[0] == '\0' ||
-                event.rssi < minRssi_) {
-                return;
-            }
-            copyString(pendingAddress_, sizeof(pendingAddress_), event.address);
-            pendingRssi_ = event.rssi;
-            pendingAddrType_ = event.addrType;
-            pendingDeviceFound_ = true;
+    case BleEventType::DEVICE_FOUND:
+        if (state_ != ObdConnectionState::SCANNING || event.address[0] == '\0' || event.rssi < minRssi_) {
             return;
+        }
+        copyString(pendingAddress_, sizeof(pendingAddress_), event.address);
+        pendingRssi_ = event.rssi;
+        pendingAddrType_ = event.addrType;
+        pendingDeviceFound_ = true;
+        return;
 
-        case BleEventType::DISCONNECT:
-            bleDisconnected_ = true;
-            bleDisconnectReason_ = event.disconnectReason;
-            return;
+    case BleEventType::DISCONNECT:
+        bleDisconnected_ = true;
+        bleDisconnectReason_ = event.disconnectReason;
+        return;
 
-        case BleEventType::DATA:
-            if (state_ != ObdConnectionState::AT_INIT &&
-                state_ != ObdConnectionState::POLLING) {
-                return;
-            }
-            {
-                const size_t remaining = BLE_BUF_LEN - 1 - bleBufLen_;
-                const size_t toCopy = std::min(event.dataLen, remaining);
-                if (toCopy > 0) {
-                    memcpy(bleBuf_ + bleBufLen_, event.data, toCopy);
-                    bleBufLen_ += toCopy;
-                    bleBuf_[bleBufLen_] = '\0';
-                }
-                if (toCopy < event.dataLen || event.overflowed) {
-                    bleOverflowed_ = true;
-                }
-                if (event.dataReady) {
-                    bleDataReady_ = true;
-                }
-            }
+    case BleEventType::DATA:
+        if (state_ != ObdConnectionState::AT_INIT && state_ != ObdConnectionState::POLLING) {
             return;
+        }
+        {
+            const size_t remaining = BLE_BUF_LEN - 1 - bleBufLen_;
+            const size_t toCopy = std::min(event.dataLen, remaining);
+            if (toCopy > 0) {
+                memcpy(bleBuf_ + bleBufLen_, event.data, toCopy);
+                bleBufLen_ += toCopy;
+                bleBuf_[bleBufLen_] = '\0';
+            }
+            if (toCopy < event.dataLen || event.overflowed) {
+                bleOverflowed_ = true;
+            }
+            if (event.dataReady) {
+                bleDataReady_ = true;
+            }
+        }
+        return;
     }
 }
 
@@ -325,7 +303,6 @@ void ObdRuntimeModule::clearBleResponseState() {
     bleDataReady_ = false;
     bleOverflowed_ = false;
 }
-
 
 // ======================================================================
 // BLE ABSTRACTION WRAPPERS — thin layer over bleClient_
@@ -525,17 +502,12 @@ void ObdRuntimeModule::clearTransportRequest() {
     pendingTransportTimedOut_ = false;
 }
 
-
 // ======================================================================
 // ASYNC TRANSPORT REQUEST API — queueing and result polling
 // ======================================================================
 
-bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op,
-                                             uint32_t nowMs,
-                                             uint32_t timeoutMs,
-                                             const char* cmd,
-                                             bool withResponse,
-                                             bool preferCachedAttributes) {
+bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, uint32_t timeoutMs, const char* cmd,
+                                             bool withResponse, bool preferCachedAttributes) {
     if (transportRequestActive_) {
         return false;
     }
@@ -577,41 +549,41 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op,
     result.requestId = ++nextTransportRequestId_;
     result.issuedMs = nowMs;
     switch (op) {
-        case ObdTransportOp::CONNECT:
-            result.success = connectBle(timeoutMs, preferCachedAttributes);
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::DISCONNECT:
-            disconnectBle();
-            result.success = true;
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::SECURITY_START:
-            result.success = beginBleSecurity();
-            result.bleError = getBleLastError();
-            result.securityError = getBleSecurityFailure();
-            break;
-        case ObdTransportOp::DISCOVER:
-            result.success = discoverBleServices();
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::SUBSCRIBE:
-            result.success = subscribeBleNotifications();
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::WRITE:
-            result.success = writeBleCommand(cmd, withResponse);
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::RSSI_READ:
-            result.success = true;
-            result.rssi = readBleRssi(nowMs);
-            result.bleError = getBleLastError();
-            break;
-        case ObdTransportOp::NONE:
-        default:
-            result.success = false;
-            break;
+    case ObdTransportOp::CONNECT:
+        result.success = connectBle(timeoutMs, preferCachedAttributes);
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::DISCONNECT:
+        disconnectBle();
+        result.success = true;
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::SECURITY_START:
+        result.success = beginBleSecurity();
+        result.bleError = getBleLastError();
+        result.securityError = getBleSecurityFailure();
+        break;
+    case ObdTransportOp::DISCOVER:
+        result.success = discoverBleServices();
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::SUBSCRIBE:
+        result.success = subscribeBleNotifications();
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::WRITE:
+        result.success = writeBleCommand(cmd, withResponse);
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::RSSI_READ:
+        result.success = true;
+        result.rssi = readBleRssi(nowMs);
+        result.bleError = getBleLastError();
+        break;
+    case ObdTransportOp::NONE:
+    default:
+        result.success = false;
+        break;
     }
     readyTransportResult_ = result;
     return true;
@@ -637,10 +609,8 @@ void ObdRuntimeModule::pumpTransportResults() {
 }
 
 bool ObdRuntimeModule::pendingTransportTimedOut(uint32_t nowMs) const {
-    return transportRequestActive_ &&
-           pendingTransportTimeoutMs_ > 0 &&
-           static_cast<int32_t>(nowMs - pendingTransportIssuedMs_) >=
-               static_cast<int32_t>(pendingTransportTimeoutMs_);
+    return transportRequestActive_ && pendingTransportTimeoutMs_ > 0 &&
+           static_cast<int32_t>(nowMs - pendingTransportIssuedMs_) >= static_cast<int32_t>(pendingTransportTimeoutMs_);
 }
 
 bool ObdRuntimeModule::takeTransportResult(ObdTransportOp op, ObdTransportResult& result) {
@@ -651,7 +621,6 @@ bool ObdRuntimeModule::takeTransportResult(ObdTransportOp op, ObdTransportResult
     readyTransportResult_ = {};
     return true;
 }
-
 
 // ======================================================================
 // BLE CALLBACKS FROM CLIENT — device discovery, disconnect, notify
@@ -681,7 +650,8 @@ void ObdRuntimeModule::onBleDisconnect(int reason) {
 }
 
 void ObdRuntimeModule::onBleData(const uint8_t* data, size_t len) {
-    if (!data || len == 0) return;
+    if (!data || len == 0)
+        return;
 
     BleEvent event{};
     event.type = BleEventType::DATA;
@@ -696,41 +666,41 @@ void ObdRuntimeModule::onBleData(const uint8_t* data, size_t len) {
 
 const char* ObdRuntimeModule::bleReasonName(int reason) {
     switch (reason) {
-        case 0:
-            return "none";
-        case 13:
-            return "unacceptable_conn_interval";
-        case 520:
-            return "supervision_timeout";
-        case 534:
-            return "local_host_terminated";
+    case 0:
+        return "none";
+    case 13:
+        return "unacceptable_conn_interval";
+    case 520:
+        return "supervision_timeout";
+    case 534:
+        return "local_host_terminated";
 #ifndef UNIT_TEST
-        case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
-            return "pinkey_missing";
-        case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
-            return "auth_fail";
-        case BLE_HS_HCI_ERR(BLE_ERR_NO_PAIRING):
-            return "no_pairing";
+    case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
+        return "pinkey_missing";
+    case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
+        return "auth_fail";
+    case BLE_HS_HCI_ERR(BLE_ERR_NO_PAIRING):
+        return "no_pairing";
 #endif
-        default:
-            return "unknown";
+    default:
+        return "unknown";
     }
 }
 
 bool ObdRuntimeModule::isSecurityBleError(int error) {
 #ifndef UNIT_TEST
     switch (error) {
-        case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHEN):
-        case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHOR):
-        case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_ENC):
-        case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_KEY_SZ):
-        case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
-        case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
-        case BLE_HS_HCI_ERR(BLE_ERR_NO_PAIRING):
-        case BLE_HS_HCI_ERR(BLE_ERR_INSUFFICIENT_SEC):
-            return true;
-        default:
-            return false;
+    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHEN):
+    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHOR):
+    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_ENC):
+    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_KEY_SZ):
+    case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
+    case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
+    case BLE_HS_HCI_ERR(BLE_ERR_NO_PAIRING):
+    case BLE_HS_HCI_ERR(BLE_ERR_INSUFFICIENT_SEC):
+        return true;
+    default:
+        return false;
     }
 #else
     return error != 0;

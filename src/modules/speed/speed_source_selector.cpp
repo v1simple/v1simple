@@ -10,8 +10,7 @@
 // ObdRuntimeModule and GpsRuntimeModule before including this translation
 // unit (see test/test_obd_speed_source/test_obd_speed_source.cpp).
 
-void SpeedSourceSelector::begin(ObdRuntimeModule* obd, bool obdEnabled,
-                                GpsRuntimeModule* gps, bool gpsEnabled) {
+void SpeedSourceSelector::begin(ObdRuntimeModule* obd, bool obdEnabled, GpsRuntimeModule* gps, bool gpsEnabled) {
     obd_ = obd;
     gps_ = gps;
     syncEnabledInputs(obdEnabled, gpsEnabled);
@@ -41,8 +40,7 @@ SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
     // --- OBD (primary) ---
     float obdSpeed = 0.0f;
     uint32_t obdTs = 0;
-    if (obdEnabled_ && obd_ && obd_->getFreshSpeed(nowMs, obdSpeed, obdTs) &&
-        obdSpeed <= MAX_VALID_SPEED_MPH) {
+    if (obdEnabled_ && obd_ && obd_->getFreshSpeed(nowMs, obdSpeed, obdTs) && obdSpeed <= MAX_VALID_SPEED_MPH) {
         status.obdFresh = true;
         status.obdSpeedMph = obdSpeed;
         status.obdAgeMs = nowMs - obdTs;
@@ -63,10 +61,8 @@ SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
         status.gpsHdop = gpsStatus.hdop;
         // "Good signal" gate: fresh speed sample, stable fix, enough satellites,
         // and HDOP within a reasonable bound. NaN HDOP fails the comparison.
-        status.gpsGoodSignal = status.gpsFresh &&
-                               gpsStatus.stableHasFix &&
-                               gpsStatus.satellites >= GPS_MIN_SATELLITES &&
-                               gpsStatus.hdop > 0.0f &&
+        status.gpsGoodSignal = status.gpsFresh && gpsStatus.stableHasFix &&
+                               gpsStatus.satellites >= GPS_MIN_SATELLITES && gpsStatus.hdop > 0.0f &&
                                gpsStatus.hdop <= GPS_MAX_HDOP;
     }
 
@@ -133,10 +129,12 @@ SpeedSelectorStatus SpeedSourceSelector::snapshotAt(uint32_t nowMs) const {
 
 const char* SpeedSourceSelector::sourceName(SpeedSource source) {
     switch (source) {
-        case SpeedSource::OBD: return "obd";
-        case SpeedSource::GPS: return "gps";
-        case SpeedSource::NONE:
-        default:
-            return "none";
+    case SpeedSource::OBD:
+        return "obd";
+    case SpeedSource::GPS:
+        return "gps";
+    case SpeedSource::NONE:
+    default:
+        return "none";
     }
 }

@@ -29,20 +29,12 @@ struct Runtime {
 
 void handleApiGet(WebServer& server, const Runtime& runtime);
 
-void handleApiSave(WebServer& server,
-                   const Runtime& runtime,
-                   bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-void handleApiReset(WebServer& server,
-                    const Runtime& runtime,
-                    bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiReset(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-void handleApiPreview(WebServer& server,
-                      const Runtime& runtime,
-                      bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiPreview(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-void handleApiClear(WebServer& server,
-                    const Runtime& runtime,
-                    bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiClear(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-}  // namespace WifiDisplayColorsApiService
+} // namespace WifiDisplayColorsApiService

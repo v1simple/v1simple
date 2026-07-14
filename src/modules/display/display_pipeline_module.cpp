@@ -33,13 +33,11 @@ struct FrameV1Alerts {
 };
 
 bool isAlpPrimaryKind(RenderFramePrimaryKind kind) {
-    return kind == RenderFramePrimaryKind::ALP_LIVE ||
-           kind == RenderFramePrimaryKind::ALP_PERSISTED;
+    return kind == RenderFramePrimaryKind::ALP_LIVE || kind == RenderFramePrimaryKind::ALP_PERSISTED;
 }
 
 bool isLivePrimaryKind(RenderFramePrimaryKind kind) {
-    return kind == RenderFramePrimaryKind::V1_LIVE ||
-           kind == RenderFramePrimaryKind::ALP_LIVE;
+    return kind == RenderFramePrimaryKind::V1_LIVE || kind == RenderFramePrimaryKind::ALP_LIVE;
 }
 
 bool isHighRateDisplaySnapshotEvent(const char* event) {
@@ -47,24 +45,20 @@ bool isHighRateDisplaySnapshotEvent(const char* event) {
         return false;
     }
 
-    return strcmp(event, "DISP_LIVE") == 0 ||
-           strcmp(event, "DISP_IDLE") == 0 ||
-           strcmp(event, "DISP_RESTORE") == 0 ||
+    return strcmp(event, "DISP_LIVE") == 0 || strcmp(event, "DISP_IDLE") == 0 || strcmp(event, "DISP_RESTORE") == 0 ||
            strcmp(event, "DISP_SCAN") == 0;
 }
 
 constexpr uint32_t kAlpDisplaySnapshotLogIntervalMs = 1000;
 
 bool isNormalAlpListeningHeartbeat(AlpState state, uint8_t heartbeatByte1) {
-    return state == AlpState::LISTENING &&
-           (heartbeatByte1 == 0x02 || heartbeatByte1 == 0x03 || heartbeatByte1 == 0x04);
+    return state == AlpState::LISTENING && (heartbeatByte1 == 0x02 || heartbeatByte1 == 0x03 || heartbeatByte1 == 0x04);
 }
 
 constexpr uint32_t kAlpListeningHoldDwellMs = 1000;
 
 bool hasDisplayableAlpAlertContext(const AlpLaserEvent& event) {
-    return event.gun != AlpGunType::UNKNOWN ||
-           event.direction != AlpLaserDirection::UNKNOWN;
+    return event.gun != AlpGunType::UNKNOWN || event.direction != AlpLaserDirection::UNKNOWN;
 }
 
 DisplayState sanitizeDisconnectedRestoreState(const DisplayState& base) {
@@ -93,18 +87,18 @@ AlertData alpEventToSyntheticAlert(const AlpLaserEvent& event) {
     alert.band = BAND_LASER;
     alert.frequency = 0;
     switch (event.direction) {
-        case AlpLaserDirection::FRONT:
-            alert.direction = DIR_FRONT;
-            break;
+    case AlpLaserDirection::FRONT:
+        alert.direction = DIR_FRONT;
+        break;
 
-        case AlpLaserDirection::REAR:
-            alert.direction = DIR_REAR;
-            break;
+    case AlpLaserDirection::REAR:
+        alert.direction = DIR_REAR;
+        break;
 
-        case AlpLaserDirection::UNKNOWN:
-        default:
-            alert.direction = DIR_NONE;
-            break;
+    case AlpLaserDirection::UNKNOWN:
+    default:
+        alert.direction = DIR_NONE;
+        break;
     }
     alert.frontStrength = 6;
     return alert;
@@ -137,169 +131,129 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
     return result;
 }
 
-int renderAlertCountForSnapshot(const RenderFrame& frame,
-                                int v1AlertCount,
-                                bool deferSecondaryCards) {
+int renderAlertCountForSnapshot(const RenderFrame& frame, int v1AlertCount, bool deferSecondaryCards) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-            return deferSecondaryCards ? 1 : v1AlertCount;
+    case RenderFramePrimaryKind::V1_LIVE:
+        return deferSecondaryCards ? 1 : v1AlertCount;
 
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            return (v1AlertCount == 0 || deferSecondaryCards) ? 1 : v1AlertCount;
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        return (v1AlertCount == 0 || deferSecondaryCards) ? 1 : v1AlertCount;
 
-        default:
-            return 0;
+    default:
+        return 0;
     }
 }
 
-PerfDisplayRenderScenario scenarioForFrame(const RenderFrame& frame,
-                                           bool restoreContext) {
+PerfDisplayRenderScenario scenarioForFrame(const RenderFrame& frame, bool restoreContext) {
     if (restoreContext) {
         return PerfDisplayRenderScenario::Restore;
     }
     if (frame.primaryKind == RenderFramePrimaryKind::V1_PERSISTED) {
         return PerfDisplayRenderScenario::Persisted;
     }
-    return frame.primaryKind == RenderFramePrimaryKind::IDLE
-               ? PerfDisplayRenderScenario::Resting
-               : PerfDisplayRenderScenario::Live;
+    return frame.primaryKind == RenderFramePrimaryKind::IDLE ? PerfDisplayRenderScenario::Resting
+                                                             : PerfDisplayRenderScenario::Live;
 }
 
 const char* bandLogName(Band band) {
     switch (band) {
-        case BAND_X:     return "X";
-        case BAND_K:     return "K";
-        case BAND_KU:    return "KU";
-        case BAND_KA:    return "KA";
-        case BAND_LASER: return "LASER";
-        case BAND_NONE:
-        default:         return "NONE";
+    case BAND_X:
+        return "X";
+    case BAND_K:
+        return "K";
+    case BAND_KU:
+        return "KU";
+    case BAND_KA:
+        return "KA";
+    case BAND_LASER:
+        return "LASER";
+    case BAND_NONE:
+    default:
+        return "NONE";
     }
 }
 
 const char* directionLogName(Direction dir) {
     switch (dir) {
-        case DIR_FRONT: return "FRONT";
-        case DIR_SIDE:  return "SIDE";
-        case DIR_REAR:  return "REAR";
-        case DIR_NONE:
-        default:        return "NONE";
+    case DIR_FRONT:
+        return "FRONT";
+    case DIR_SIDE:
+        return "SIDE";
+    case DIR_REAR:
+        return "REAR";
+    case DIR_NONE:
+    default:
+        return "NONE";
     }
 }
 
-void formatAlertSummary(char* dest,
-                        size_t destSize,
-                        bool hasAlert,
-                        const AlertData& alert) {
+void formatAlertSummary(char* dest, size_t destSize, bool hasAlert, const AlertData& alert) {
     if (!hasAlert || !alert.isValid || alert.band == BAND_NONE) {
         snprintf(dest, destSize, "NONE");
         return;
     }
 
-    snprintf(dest, destSize, "%s/%u/%s",
-             bandLogName(alert.band),
-             static_cast<unsigned>(alert.frequency),
+    snprintf(dest, destSize, "%s/%u/%s", bandLogName(alert.band), static_cast<unsigned>(alert.frequency),
              directionLogName(alert.direction));
 }
 
-void formatDisplaySnapshotDetail(char* dest,
-                                 size_t destSize,
-                                 bool alpHasLaser,
-                                 bool alpOwnsLaser,
-                                 bool alpLidActive,
-                                 const char* alpGunAbbr,
-                                 AlpLaserDirection alpDir,
-                                 int alertCount,
-                                 bool hasRenderablePriority,
-                                 const AlertData& renderablePriority,
-                                 bool hasDisplayPriority,
-                                 const AlertData& displayPriority,
-                                 int renderAlertCount,
-                                 bool deferSecondaryCards,
-                                 const DisplayState& displayState,
-                                 uint8_t rawV1SignalBars) {
+void formatDisplaySnapshotDetail(char* dest, size_t destSize, bool alpHasLaser, bool alpOwnsLaser, bool alpLidActive,
+                                 const char* alpGunAbbr, AlpLaserDirection alpDir, int alertCount,
+                                 bool hasRenderablePriority, const AlertData& renderablePriority,
+                                 bool hasDisplayPriority, const AlertData& displayPriority, int renderAlertCount,
+                                 bool deferSecondaryCards, const DisplayState& displayState, uint8_t rawV1SignalBars) {
     char renderableBuf[32];
     char displayBuf[32];
-    formatAlertSummary(renderableBuf, sizeof(renderableBuf),
-                       hasRenderablePriority, renderablePriority);
-    formatAlertSummary(displayBuf, sizeof(displayBuf),
-                       hasDisplayPriority, displayPriority);
+    formatAlertSummary(renderableBuf, sizeof(renderableBuf), hasRenderablePriority, renderablePriority);
+    formatAlertSummary(displayBuf, sizeof(displayBuf), hasDisplayPriority, displayPriority);
 
-    snprintf(dest, destSize,
-             "has=%u own=%u lid=%u g=%s d=%s v1c=%d rp=%s dp=%s rc=%d def=%u ab=0x%02X ar=0x%02X pa=0x%02X sb=%u v1sb=%u",
-             alpHasLaser ? 1u : 0u,
-             alpOwnsLaser ? 1u : 0u,
-             alpLidActive ? 1u : 0u,
-             alpGunAbbr ? alpGunAbbr : "-",
-             alpLaserDirectionName(alpDir),
-             alertCount,
-             renderableBuf,
-             displayBuf,
-             renderAlertCount,
-             deferSecondaryCards ? 1u : 0u,
-             static_cast<unsigned>(displayState.activeBands),
-             static_cast<unsigned>(displayState.arrows),
-             static_cast<unsigned>(displayState.priorityArrow),
-             static_cast<unsigned>(displayState.signalBars),
-             static_cast<unsigned>(rawV1SignalBars));
+    snprintf(
+        dest, destSize,
+        "has=%u own=%u lid=%u g=%s d=%s v1c=%d rp=%s dp=%s rc=%d def=%u ab=0x%02X ar=0x%02X pa=0x%02X sb=%u v1sb=%u",
+        alpHasLaser ? 1u : 0u, alpOwnsLaser ? 1u : 0u, alpLidActive ? 1u : 0u, alpGunAbbr ? alpGunAbbr : "-",
+        alpLaserDirectionName(alpDir), alertCount, renderableBuf, displayBuf, renderAlertCount,
+        deferSecondaryCards ? 1u : 0u, static_cast<unsigned>(displayState.activeBands),
+        static_cast<unsigned>(displayState.arrows), static_cast<unsigned>(displayState.priorityArrow),
+        static_cast<unsigned>(displayState.signalBars), static_cast<unsigned>(rawV1SignalBars));
 }
 
-void formatRenderFrameSnapshotDetail(char* dest,
-                                     size_t destSize,
-                                     const RenderFrame& frame,
-                                     bool alpOwnsLaser,
-                                     int v1AlertCount,
-                                     bool deferSecondaryCards) {
+void formatRenderFrameSnapshotDetail(char* dest, size_t destSize, const RenderFrame& frame, bool alpOwnsLaser,
+                                     int v1AlertCount, bool deferSecondaryCards) {
     const bool alpPrimary = isAlpPrimaryKind(frame.primaryKind);
     const AlpLaserEvent& alpEvent = alpPrimary ? frame.alpPrimary : sAlpEventEmpty;
-    const char* alpGunAbbr = (alpPrimary && alpEvent.gun != AlpGunType::UNKNOWN)
-                                 ? alpGunAbbrev(alpEvent.gun)
-                                 : nullptr;
+    const char* alpGunAbbr = (alpPrimary && alpEvent.gun != AlpGunType::UNKNOWN) ? alpGunAbbrev(alpEvent.gun) : nullptr;
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
 
     AlertData displayPriority{};
     bool hasDisplayPriority = false;
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            displayPriority = frame.v1Priority;
-            hasDisplayPriority = true;
-            break;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        displayPriority = frame.v1Priority;
+        hasDisplayPriority = true;
+        break;
 
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            displayPriority = alpEventToSyntheticAlert(frame.alpPrimary);
-            hasDisplayPriority = true;
-            break;
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        displayPriority = alpEventToSyntheticAlert(frame.alpPrimary);
+        hasDisplayPriority = true;
+        break;
 
-        case RenderFramePrimaryKind::NONE:
-        case RenderFramePrimaryKind::IDLE:
-        default:
-            break;
+    case RenderFramePrimaryKind::NONE:
+    case RenderFramePrimaryKind::IDLE:
+    default:
+        break;
     }
 
-    formatDisplaySnapshotDetail(dest,
-                                destSize,
-                                alpPrimary,
-                                alpOwnsLaser,
-                                alpPrimary ? alpEvent.lidActive : false,
-                                alpGunAbbr,
-                                alpPrimary ? alpEvent.direction : AlpLaserDirection::UNKNOWN,
-                                v1AlertCount,
-                                v1Alerts.hasPriority,
-                                v1Alerts.priority,
-                                hasDisplayPriority,
-                                displayPriority,
-                                renderAlertCountForSnapshot(frame,
-                                                            v1AlertCount,
-                                                            deferSecondaryCards),
-                                deferSecondaryCards,
-                                frame.primaryState,
-                                frame.context.signalBars);
+    formatDisplaySnapshotDetail(dest, destSize, alpPrimary, alpOwnsLaser, alpPrimary ? alpEvent.lidActive : false,
+                                alpGunAbbr, alpPrimary ? alpEvent.direction : AlpLaserDirection::UNKNOWN, v1AlertCount,
+                                v1Alerts.hasPriority, v1Alerts.priority, hasDisplayPriority, displayPriority,
+                                renderAlertCountForSnapshot(frame, v1AlertCount, deferSecondaryCards),
+                                deferSecondaryCards, frame.primaryState, frame.context.signalBars);
 }
 
-}  // namespace
+} // namespace
 
 void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencies) {
     displayMode_ = dependencies.displayMode;
@@ -323,9 +277,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastAlpDisplaySnapshotLogMs_ = 0;
 }
 
-void DisplayPipelineModule::logAlpDisplaySnapshot(uint32_t nowMs,
-                                                  const char* event,
-                                                  const char* detail,
+void DisplayPipelineModule::logAlpDisplaySnapshot(uint32_t nowMs, const char* event, const char* detail,
                                                   bool traceRelevant) {
     const bool shouldTrace = traceRelevant || lastAlpDisplayTraceRelevant_;
     lastAlpDisplayTraceRelevant_ = traceRelevant;
@@ -333,13 +285,11 @@ void DisplayPipelineModule::logAlpDisplaySnapshot(uint32_t nowMs,
         return;
     }
 
-    if (strcmp(lastAlpDisplayLogEvent_, event) == 0 &&
-        strcmp(lastAlpDisplayLogDetail_, detail) == 0) {
+    if (strcmp(lastAlpDisplayLogEvent_, event) == 0 && strcmp(lastAlpDisplayLogDetail_, detail) == 0) {
         return;
     }
 
-    if (isHighRateDisplaySnapshotEvent(event) &&
-        strcmp(lastAlpDisplayLogEvent_, event) == 0 &&
+    if (isHighRateDisplaySnapshotEvent(event) && strcmp(lastAlpDisplayLogEvent_, event) == 0 &&
         (nowMs - lastAlpDisplaySnapshotLogMs_) < kAlpDisplaySnapshotLogIntervalMs) {
         return;
     }
@@ -350,9 +300,7 @@ void DisplayPipelineModule::logAlpDisplaySnapshot(uint32_t nowMs,
     alp_->logDisplayDecision(nowMs, event, detail);
 }
 
-void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent,
-                                           uint32_t nowMs,
-                                           uint8_t persistSec) {
+void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec) {
     if (alpEvent.active) {
         if (alpLatch_) {
             alpLatch_->setEvent(alpEvent);
@@ -371,12 +319,10 @@ void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent,
     }
 }
 
-AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent,
-                                                            uint32_t nowMs) {
+AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs) {
     if (rawAlpEvent.active) {
         AlpLaserEvent next = rawAlpEvent;
-        if (next.gun == AlpGunType::UNKNOWN &&
-            alpAlertPresentation_.gun != AlpGunType::UNKNOWN) {
+        if (next.gun == AlpGunType::UNKNOWN && alpAlertPresentation_.gun != AlpGunType::UNKNOWN) {
             next.gun = alpAlertPresentation_.gun;
         }
         if (next.direction == AlpLaserDirection::UNKNOWN &&
@@ -396,18 +342,12 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
     const bool sessionActive = alp_ && alp_->currentSession().active;
     const bool normalHeartbeat = isNormalAlpListeningHeartbeat(alpState, heartbeatByte1);
     const bool recentInactiveClose =
-        rawAlpEvent.closedAtMs != 0 &&
-        (nowMs - rawAlpEvent.closedAtMs) < kAlpListeningHoldDwellMs;
+        rawAlpEvent.closedAtMs != 0 && (nowMs - rawAlpEvent.closedAtMs) < kAlpListeningHoldDwellMs;
 
-    const bool holdAcrossListeningGap =
-        alpState == AlpState::LISTENING &&
-        !normalHeartbeat &&
-        recentInactiveClose;
-    const bool holdAcrossTeardownGap =
-        alpState == AlpState::TEARDOWN && sessionActive;
+    const bool holdAcrossListeningGap = alpState == AlpState::LISTENING && !normalHeartbeat && recentInactiveClose;
+    const bool holdAcrossTeardownGap = alpState == AlpState::TEARDOWN && sessionActive;
 
-    if ((holdAcrossListeningGap || holdAcrossTeardownGap) &&
-        hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
+    if ((holdAcrossListeningGap || holdAcrossTeardownGap) && hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
         alpAlertPresentation_.active = true;
         alpAlertPresentation_.lidActive = (heartbeatByte1 == 0x04);
         alpAlertPresentation_.closedAtMs = 0;
@@ -418,8 +358,7 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
     return alpAlertPresentation_;
 }
 
-RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs,
-                                                    const V1Settings& settingsRef) {
+RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef) {
     DisplayState state = parser_->getDisplayState();
     const bool hasAlerts = parser_->hasAlerts();
 
@@ -427,10 +366,8 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs,
     const bool hasRenderablePriority = hasAlerts && parser_->getRenderablePriorityAlert(priority);
     if (hasRenderablePriority) {
         const AlertData rawPriority = parser_->getPriorityAlert();
-        const bool rawRenderable = rawPriority.isValid &&
-                                   rawPriority.band != BAND_NONE &&
-                                   ((rawPriority.band == BAND_LASER) ||
-                                    (rawPriority.frequency != 0));
+        const bool rawRenderable = rawPriority.isValid && rawPriority.band != BAND_NONE &&
+                                   ((rawPriority.band == BAND_LASER) || (rawPriority.frequency != 0));
         if (!rawRenderable) {
             PERF_INC(displayLiveFallbackToUsable);
         }
@@ -489,8 +426,7 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs,
 // NOTE: stealth fields are injected by the caller (handleParsed / restoreCurrentOwner)
 // after buildRenderFrame() returns, not here, to keep composer_ pure.
 
-RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
-                                                                 const V1Settings& settingsRef) {
+RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef) {
     const AlpLaserEvent& rawAlpEvent = alp_ ? alp_->currentEvent() : sAlpEventEmpty;
     const AlpLaserEvent displayAlpEvent = buildPresentedAlpEvent(rawAlpEvent, nowMs);
     // ALP persist is global, not per-slot — settingsRef is forwarded to the
@@ -510,9 +446,7 @@ RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
     return composer_.compose(v1, alp, settingsRef, nowMs);
 }
 
-void DisplayPipelineModule::runVoice(const RenderFrame& frame,
-                                     const V1Settings& settingsRef,
-                                     uint32_t nowMs) {
+void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
     if (v1Alerts.alertCount == 0) {
         voice_->clearAllState();
@@ -531,10 +465,8 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame,
     voiceCtx.now = nowMs;
 
     if (quiet_) {
-        quiet_->applyVoicePresentation(voiceCtx,
-                                      speedMute_,
-                                      v1Alerts.hasPriority,
-                                      v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
+        quiet_->applyVoicePresentation(voiceCtx, speedMute_, v1Alerts.hasPriority,
+                                       v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
     }
 
     const unsigned long voiceStartUs = micros();
@@ -546,41 +478,35 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame,
     }
 
     switch (voiceAction.type) {
-        case VoiceAction::Type::ANNOUNCE_PRIORITY:
-            play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                 settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
-                                 voiceAction.bogeyCount);
-            break;
+    case VoiceAction::Type::ANNOUNCE_PRIORITY:
+        play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir, settingsRef.voiceAlertMode,
+                             settingsRef.voiceDirectionEnabled, voiceAction.bogeyCount);
+        break;
 
-        case VoiceAction::Type::ANNOUNCE_DIRECTION:
-            play_direction_only(voiceAction.dir, voiceAction.bogeyCount);
-            break;
+    case VoiceAction::Type::ANNOUNCE_DIRECTION:
+        play_direction_only(voiceAction.dir, voiceAction.bogeyCount);
+        break;
 
-        case VoiceAction::Type::ANNOUNCE_SECONDARY:
-            play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                 settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled, 1);
-            break;
+    case VoiceAction::Type::ANNOUNCE_SECONDARY:
+        play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir, settingsRef.voiceAlertMode,
+                             settingsRef.voiceDirectionEnabled, 1);
+        break;
 
-        case VoiceAction::Type::ANNOUNCE_ESCALATION:
-            play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                   voiceAction.bogeyCount, voiceAction.aheadCount,
-                                   voiceAction.behindCount, voiceAction.sideCount);
-            break;
+    case VoiceAction::Type::ANNOUNCE_ESCALATION:
+        play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir, voiceAction.bogeyCount,
+                               voiceAction.aheadCount, voiceAction.behindCount, voiceAction.sideCount);
+        break;
 
-        case VoiceAction::Type::NONE:
-        default:
-            break;
+    case VoiceAction::Type::NONE:
+    default:
+        break;
     }
 }
 
-void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs,
-                                                const RenderFrame& frame,
-                                                bool restoreContext,
-                                                const char* logEvent,
-                                                bool forceRedraw) {
-    const bool deferSecondaryCards = ble_->isConnectBurstSettling() &&
-                                     isLivePrimaryKind(frame.primaryKind) &&
-                                     frame.cardCount > 0;
+void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool restoreContext,
+                                                const char* logEvent, bool forceRedraw) {
+    const bool deferSecondaryCards =
+        ble_->isConnectBurstSettling() && isLivePrimaryKind(frame.primaryKind) && frame.cardCount > 0;
 
     // Avoid copying the full RenderFrame (std::array<RenderFrameCard, 15>
     // + scalars, a few hundred bytes) on every pipeline tick just to override one
@@ -619,18 +545,13 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs,
     // consumed. Fallback: when we just transitioned out of a trace-relevant
     // state we still format one final frame so the de-dup logger can print the
     // closing snapshot (matches the prior `lastAlpDisplayTraceRelevant_` carry).
-    const bool traceRelevant = isAlpPrimaryKind(frame.primaryKind) ||
-                               (alp_ && alp_->ownsLaserDisplay()) ||
+    const bool traceRelevant = isAlpPrimaryKind(frame.primaryKind) || (alp_ && alp_->ownsLaserDisplay()) ||
                                (alpLatch_ && alpLatch_->isLatched());
     if (traceRelevant || lastAlpDisplayTraceRelevant_) {
         const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
         char displayLogDetail[224];
-        formatRenderFrameSnapshotDetail(displayLogDetail,
-                                        sizeof(displayLogDetail),
-                                        frame,
-                                        alp_ && alp_->ownsLaserDisplay(),
-                                        v1Alerts.alertCount,
-                                        deferSecondaryCards);
+        formatRenderFrameSnapshotDetail(displayLogDetail, sizeof(displayLogDetail), frame,
+                                        alp_ && alp_->ownsLaserDisplay(), v1Alerts.alertCount, deferSecondaryCards);
         logAlpDisplaySnapshot(nowMs, logEvent, displayLogDetail, traceRelevant);
     }
 
@@ -648,8 +569,7 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs,
 }
 
 void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ ||
-        !voice_ || !displayMode_) {
+    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
         return;
     }
 
@@ -665,11 +585,8 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
     if (frame.primaryKind == RenderFramePrimaryKind::V1_LIVE) {
         alertPersistence_->setPersistedAlert(frame.v1Priority);
     }
-    renderComposedFrame(nowMs,
-                        frame,
-                        false,
-                        frame.primaryKind == RenderFramePrimaryKind::IDLE ? "DISP_IDLE"
-                                                                          : "DISP_LIVE");
+    renderComposedFrame(nowMs, frame, false,
+                        frame.primaryKind == RenderFramePrimaryKind::IDLE ? "DISP_IDLE" : "DISP_LIVE");
 }
 
 // D2 fix: narrow re-render path used by the orchestrator's blink-refresh
@@ -686,16 +603,14 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     const V1Settings& settingsRef = settings_->get();
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
     // No blink sources on an IDLE frame — don't waste a render cycle.
-    if (frame.primaryKind == RenderFramePrimaryKind::IDLE ||
-        frame.primaryKind == RenderFramePrimaryKind::NONE) {
+    if (frame.primaryKind == RenderFramePrimaryKind::IDLE || frame.primaryKind == RenderFramePrimaryKind::NONE) {
         return;
     }
     renderComposedFrame(nowMs, frame, false, "DISP_BLINK");
 }
 
 void DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ ||
-        !voice_ || !displayMode_) {
+    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
         return;
     }
 
@@ -714,23 +629,15 @@ void DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
         const bool alpLidActive = alpEvent.lidActive;
         const AlpGunType alpGun = alpEvent.gun;
         const AlpLaserDirection alpDir = alpEvent.direction;
-        const char* alpGunAbbr = (alpHasLaser && alpGun != AlpGunType::UNKNOWN)
-                                     ? alpGunAbbrev(alpGun)
-                                     : nullptr;
+        const char* alpGunAbbr = (alpHasLaser && alpGun != AlpGunType::UNKNOWN) ? alpGunAbbrev(alpGun) : nullptr;
         AlertData emptyPriority{};
         char displayLogDetail[224];
         const DisplayState rawScanState = parser_->getDisplayState();
         const DisplayState scanState = sanitizeDisconnectedRestoreState(rawScanState);
-        formatDisplaySnapshotDetail(displayLogDetail, sizeof(displayLogDetail),
-                                    alpHasLaser, alpOwnsLaser, alpLidActive,
-                                    alpGunAbbr, alpDir, 0,
-                                    false, emptyPriority,
-                                    false, emptyPriority,
-                                    0, false,
-                                    scanState,
-                                    rawScanState.signalBars);
-        logAlpDisplaySnapshot(nowMs, "DISP_SCAN", displayLogDetail,
-                              alpHasLaser || alpOwnsLaser);
+        formatDisplaySnapshotDetail(displayLogDetail, sizeof(displayLogDetail), alpHasLaser, alpOwnsLaser, alpLidActive,
+                                    alpGunAbbr, alpDir, 0, false, emptyPriority, false, emptyPriority, 0, false,
+                                    scanState, rawScanState.signalBars);
+        logAlpDisplaySnapshot(nowMs, "DISP_SCAN", displayLogDetail, alpHasLaser || alpOwnsLaser);
         perfSetDisplayRenderScenario(PerfDisplayRenderScenario::Restore);
         display_->showScanning();
         perfClearDisplayRenderScenario();
@@ -763,8 +670,7 @@ bool DisplayPipelineModule::allowsObdPairGesture(uint32_t nowMs) const {
 
     const V1Settings& s = settings_->get();
     const uint8_t persistSec = settings_->getSlotAlertPersistSec(s.activeSlot);
-    if (persistSec > 0 &&
-        alertPersistence_->getPersistedAlert().isValid &&
+    if (persistSec > 0 && alertPersistence_->getPersistedAlert().isValid &&
         alertPersistence_->shouldShowPersisted(nowMs, persistSec * 1000UL)) {
         return false;
     }

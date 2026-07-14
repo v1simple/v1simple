@@ -11,7 +11,9 @@
 #define PARSER_PERF_INC(counter) PERF_INC(counter)
 #define PARSER_TRACE_ENABLED() (perfDebugEnabled)
 #else
-#define PARSER_PERF_INC(counter) do { } while (0)
+#define PARSER_PERF_INC(counter)                                                                                       \
+    do {                                                                                                               \
+    } while (0)
 #define PARSER_TRACE_ENABLED() (false)
 #endif
 
@@ -63,18 +65,26 @@ Band PacketParser::decodeBand(uint8_t bandArrow) const {
     // 0x01=Laser, 0x02=Ka, 0x04=K, 0x08=X, 0x10=Ku.  We preserve the
     // historical bit-test order for known-good Laser/Ka/K/X handling, then
     // explicitly check 0x10 for Ku so it no longer falls through to BAND_NONE.
-    if (bandArrow & 0b00000001) return BAND_LASER;
-    if (bandArrow & 0b00000010) return BAND_KA;
-    if (bandArrow & 0b00000100) return BAND_K;
-    if (bandArrow & 0b00001000) return BAND_X;
-    if ((bandArrow & 0x1F) == 0x10) return BAND_KU;
+    if (bandArrow & 0b00000001)
+        return BAND_LASER;
+    if (bandArrow & 0b00000010)
+        return BAND_KA;
+    if (bandArrow & 0b00000100)
+        return BAND_K;
+    if (bandArrow & 0b00001000)
+        return BAND_X;
+    if ((bandArrow & 0x1F) == 0x10)
+        return BAND_KU;
     return BAND_NONE;
 }
 
 Direction PacketParser::decodeDirection(uint8_t bandArrow) const {
-    if (bandArrow & 0b00100000) return DIR_FRONT;
-    if (bandArrow & 0b01000000) return DIR_SIDE;
-    if (bandArrow & 0b10000000) return DIR_REAR;
+    if (bandArrow & 0b00100000)
+        return DIR_FRONT;
+    if (bandArrow & 0b01000000)
+        return DIR_SIDE;
+    if (bandArrow & 0b10000000)
+        return DIR_REAR;
     return DIR_NONE;
 }
 
@@ -91,46 +101,70 @@ uint8_t PacketParser::mapStrengthToBars(Band band, uint8_t raw) const {
     //   VR 4 -> 3   VR 5 -> 4   VR 6 -> 5   VR 7 -> 5   VR 8 -> 6
     auto vrBars = [band, raw]() -> uint8_t {
         switch (band) {
-            case BAND_LASER:
-                // VR returns 8 bars for any laser alert, including Invalid.
+        case BAND_LASER:
+            // VR returns 8 bars for any laser alert, including Invalid.
+            return 8;
+        case BAND_KA:
+            if (raw >= 0xBA)
                 return 8;
-            case BAND_KA:
-                if (raw >= 0xBA) return 8;
-                if (raw >= 0xB3) return 7;
-                if (raw >= 0xAC) return 6;
-                if (raw >= 0xA5) return 5;
-                if (raw >= 0x9E) return 4;
-                if (raw >= 0x97) return 3;
-                if (raw >= 0x90) return 2;
-                if (raw >= 0x01) return 1;
-                return 0;
-            case BAND_X:
-                if (raw >= 0xD0) return 8;
-                if (raw >= 0xC5) return 7;
-                if (raw >= 0xBD) return 6;
-                if (raw >= 0xB4) return 5;
-                if (raw >= 0xAA) return 4;
-                if (raw >= 0xA0) return 3;
-                if (raw >= 0x96) return 2;
-                if (raw >= 0x01) return 1;
-                return 0;
-            case BAND_K:
-            case BAND_KU:
-                // VR groups K, Ku, and Photo onto the same K-band scale.
-                // (Items 4 and a portion of the Ku/Photo handling depend on
-                // this branch also accepting Ku/Photo bands once item 4 wires
-                // them through decodeBand.)
-                if (raw >= 0xC2) return 8;
-                if (raw >= 0xB8) return 7;
-                if (raw >= 0xAE) return 6;
-                if (raw >= 0xA4) return 5;
-                if (raw >= 0x9A) return 4;
-                if (raw >= 0x90) return 3;
-                if (raw >= 0x88) return 2;
-                if (raw >= 0x01) return 1;
-                return 0;
-            default:
-                return 0;
+            if (raw >= 0xB3)
+                return 7;
+            if (raw >= 0xAC)
+                return 6;
+            if (raw >= 0xA5)
+                return 5;
+            if (raw >= 0x9E)
+                return 4;
+            if (raw >= 0x97)
+                return 3;
+            if (raw >= 0x90)
+                return 2;
+            if (raw >= 0x01)
+                return 1;
+            return 0;
+        case BAND_X:
+            if (raw >= 0xD0)
+                return 8;
+            if (raw >= 0xC5)
+                return 7;
+            if (raw >= 0xBD)
+                return 6;
+            if (raw >= 0xB4)
+                return 5;
+            if (raw >= 0xAA)
+                return 4;
+            if (raw >= 0xA0)
+                return 3;
+            if (raw >= 0x96)
+                return 2;
+            if (raw >= 0x01)
+                return 1;
+            return 0;
+        case BAND_K:
+        case BAND_KU:
+            // VR groups K, Ku, and Photo onto the same K-band scale.
+            // (Items 4 and a portion of the Ku/Photo handling depend on
+            // this branch also accepting Ku/Photo bands once item 4 wires
+            // them through decodeBand.)
+            if (raw >= 0xC2)
+                return 8;
+            if (raw >= 0xB8)
+                return 7;
+            if (raw >= 0xAE)
+                return 6;
+            if (raw >= 0xA4)
+                return 5;
+            if (raw >= 0x9A)
+                return 4;
+            if (raw >= 0x90)
+                return 3;
+            if (raw >= 0x88)
+                return 2;
+            if (raw >= 0x01)
+                return 1;
+            return 0;
+        default:
+            return 0;
         }
     }();
 
@@ -214,8 +248,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     const bool indexValidZeroBased = (alertIndex < receivedAlertCount);
     if (!indexValidOneBased && !indexValidZeroBased) {
         if (PARSER_TRACE_ENABLED()) {
-            Serial.printf("[AlertAsm] drop idx=%u cnt=%u (invalid raw index)\n",
-                          static_cast<unsigned>(alertIndex),
+            Serial.printf("[AlertAsm] drop idx=%u cnt=%u (invalid raw index)\n", static_cast<unsigned>(alertIndex),
                           static_cast<unsigned>(receivedAlertCount));
         }
         return true;
@@ -230,8 +263,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
     }
 
-    const bool replacingRow =
-        alertChunkPresent_[rawSlot] && (alertChunkCountTag_[rawSlot] == receivedAlertCount);
+    const bool replacingRow = alertChunkPresent_[rawSlot] && (alertChunkCountTag_[rawSlot] == receivedAlertCount);
     if (replacingRow) {
         PARSER_PERF_INC(alertTableRowReplacements);
     }
@@ -251,14 +283,12 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     auto countRowsForMode = [&](bool zeroBased) -> size_t {
         size_t rows = 0;
         for (uint8_t logicalIdx = 0; logicalIdx < receivedAlertCount; ++logicalIdx) {
-            const size_t expectedRawIndex = zeroBased
-                ? static_cast<size_t>(logicalIdx)
-                : static_cast<size_t>(logicalIdx + 1);
+            const size_t expectedRawIndex =
+                zeroBased ? static_cast<size_t>(logicalIdx) : static_cast<size_t>(logicalIdx + 1);
             if (expectedRawIndex >= RAW_ALERT_INDEX_SLOTS) {
                 continue;
             }
-            if (alertChunkPresent_[expectedRawIndex] &&
-                alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
+            if (alertChunkPresent_[expectedRawIndex] && alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
                 (nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs) {
                 ++rows;
             }
@@ -273,18 +303,13 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     const size_t rowsForCount = std::max(rowsZeroBased, rowsOneBased);
 
     if (PARSER_TRACE_ENABLED()) {
-        Serial.printf(
-            "[AlertRow] idx=%u cnt=%u rawSlot=%u rows0=%u rows1=%u repl=%u raw0=0x%02X f=%u bandArrow=0x%02X aux0=0x%02X\n",
-            static_cast<unsigned>(alertIndex),
-            static_cast<unsigned>(receivedAlertCount),
-            static_cast<unsigned>(rawSlot),
-            static_cast<unsigned>(rowsZeroBased),
-            static_cast<unsigned>(rowsOneBased),
-            replacingRow ? 1u : 0u,
-            static_cast<unsigned>(payload[0]),
-            static_cast<unsigned>(combineMSBLSB(payload[1], payload[2])),
-            static_cast<unsigned>(payload[5]),
-            static_cast<unsigned>(payload[6]));
+        Serial.printf("[AlertRow] idx=%u cnt=%u rawSlot=%u rows0=%u rows1=%u repl=%u raw0=0x%02X f=%u bandArrow=0x%02X "
+                      "aux0=0x%02X\n",
+                      static_cast<unsigned>(alertIndex), static_cast<unsigned>(receivedAlertCount),
+                      static_cast<unsigned>(rawSlot), static_cast<unsigned>(rowsZeroBased),
+                      static_cast<unsigned>(rowsOneBased), replacingRow ? 1u : 0u, static_cast<unsigned>(payload[0]),
+                      static_cast<unsigned>(combineMSBLSB(payload[1], payload[2])), static_cast<unsigned>(payload[5]),
+                      static_cast<unsigned>(payload[6]));
     }
 
     // Rolling raw-index cache: only publish when at least one full scheme is ready.
@@ -294,20 +319,16 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             PARSER_PERF_INC(alertTableAssemblyTimeouts);
             if (PARSER_TRACE_ENABLED()) {
                 Serial.printf("[AlertAsm] timeout cnt=%u rows=%u/%u ageMs=%lu\n",
+                              static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsForCount),
                               static_cast<unsigned>(receivedAlertCount),
-                              static_cast<unsigned>(rowsForCount),
-                              static_cast<unsigned>(receivedAlertCount),
-                              static_cast<unsigned long>(
-                                  nowMs - alertTableFirstSeenMs_[receivedAlertCount]));
+                              static_cast<unsigned long>(nowMs - alertTableFirstSeenMs_[receivedAlertCount]));
             }
             clearAlertCacheForCount(receivedAlertCount);
             return true;
         }
         if (PARSER_TRACE_ENABLED()) {
-            Serial.printf("[AlertAsm] partial rows=%u/%u (rows0=%u rows1=%u)\n",
-                          static_cast<unsigned>(rowsForCount),
-                          static_cast<unsigned>(receivedAlertCount),
-                          static_cast<unsigned>(rowsZeroBased),
+            Serial.printf("[AlertAsm] partial rows=%u/%u (rows0=%u rows1=%u)\n", static_cast<unsigned>(rowsForCount),
+                          static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsZeroBased),
                           static_cast<unsigned>(rowsOneBased));
         }
         return true;
@@ -324,10 +345,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
     if (PARSER_TRACE_ENABLED()) {
         const char* mode = (decodeMode == AlertIndexMode::ZeroBased) ? "zero" : "one";
-        Serial.printf("[AlertAsm] publish mode=%s cnt=%u rows0=%u rows1=%u\n",
-                      mode,
-                      static_cast<unsigned>(receivedAlertCount),
-                      static_cast<unsigned>(rowsZeroBased),
+        Serial.printf("[AlertAsm] publish mode=%s cnt=%u rows0=%u rows1=%u\n", mode,
+                      static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsZeroBased),
                       static_cast<unsigned>(rowsOneBased));
     }
 
@@ -341,20 +360,16 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // decode into a new table buffer before publishing.
     for (size_t i = 0; i < receivedAlertCount && i < MAX_ALERTS; ++i) {
         const size_t expectedRawIndex = (decodeMode == AlertIndexMode::ZeroBased) ? i : (i + 1);
-        const bool rowFresh =
-            (expectedRawIndex < RAW_ALERT_INDEX_SLOTS) &&
-            alertChunkPresent_[expectedRawIndex] &&
-            alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
-            ((nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs);
+        const bool rowFresh = (expectedRawIndex < RAW_ALERT_INDEX_SLOTS) && alertChunkPresent_[expectedRawIndex] &&
+                              alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
+                              ((nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs);
         if (!rowFresh) {
             if (PARSER_TRACE_ENABLED()) {
                 Serial.printf("[AlertAsm] missing row rawIdx=%u cnt=%u rows=%u ageMs=%lu\n",
-                              static_cast<unsigned>(expectedRawIndex),
-                              static_cast<unsigned>(receivedAlertCount),
+                              static_cast<unsigned>(expectedRawIndex), static_cast<unsigned>(receivedAlertCount),
                               static_cast<unsigned>(rowsForCount),
                               static_cast<unsigned long>(
-                                  (expectedRawIndex < RAW_ALERT_INDEX_SLOTS &&
-                                   alertChunkPresent_[expectedRawIndex])
+                                  (expectedRawIndex < RAW_ALERT_INDEX_SLOTS && alertChunkPresent_[expectedRawIndex])
                                       ? (nowMs - alertChunkRxMs_[expectedRawIndex])
                                       : 0));
             }
@@ -362,8 +377,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
 
         const auto& a = alertChunks_[expectedRawIndex];
-        uint8_t bandArrow = a[5];  // band + arrow bits (low-5 contains raw band encoding)
-        uint8_t aux0 = a[6];       // aux0: bit7=priority, bit6=junk, low nibble=photo type
+        uint8_t bandArrow = a[5]; // band + arrow bits (low-5 contains raw band encoding)
+        uint8_t aux0 = a[6];      // aux0: bit7=priority, bit6=junk, low nibble=photo type
         const uint8_t rawBandBits = static_cast<uint8_t>(bandArrow & 0x1F);
         const bool isKu = (rawBandBits == 0x10);
 
@@ -375,13 +390,11 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             PARSER_PERF_INC(parserRowsBandNone);
         }
         Direction dir = decodeDirection(bandArrow);
-        bool isPriority = (aux0 & 0x80) != 0;  // (aux0 & 128) != 0
+        bool isPriority = (aux0 & 0x80) != 0; // (aux0 & 128) != 0
         // Match official Android/iOS library behavior:
         // junk flag is valid on V1 4.1032+, photo type on 4.1037+.
-        const bool junkSupported =
-            !displayState_.hasV1Version || (displayState_.v1FirmwareVersion >= 41032);
-        const bool photoSupported =
-            !displayState_.hasV1Version || (displayState_.v1FirmwareVersion >= 41037);
+        const bool junkSupported = !displayState_.hasV1Version || (displayState_.v1FirmwareVersion >= 41032);
+        const bool photoSupported = !displayState_.hasV1Version || (displayState_.v1FirmwareVersion >= 41037);
         bool isJunk = junkSupported && ((aux0 & 0x40) != 0);
         uint8_t photoType = photoSupported ? static_cast<uint8_t>(aux0 & 0x0F) : 0;
 
@@ -417,10 +430,13 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         // 2) First usable alert
         // 3) Entry 0 as last-resort safety fallback
         auto isUsableAlert = [this](int idx) -> bool {
-            if (idx < 0 || idx >= static_cast<int>(alertCount_)) return false;
+            if (idx < 0 || idx >= static_cast<int>(alertCount_))
+                return false;
             const AlertData& a = alerts_[static_cast<size_t>(idx)];
-            if (!a.isValid || a.band == BAND_NONE) return false;
-            if (a.band != BAND_LASER && a.frequency == 0) return false;
+            if (!a.isValid || a.band == BAND_NONE)
+                return false;
+            if (a.band != BAND_LASER && a.frequency == 0)
+                return false;
             return true;
         };
 
@@ -458,16 +474,16 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
 
         switch (source) {
-            case PrioritySource::RowFlag:
-                PARSER_PERF_INC(prioritySelectRowFlag);
-                break;
-            case PrioritySource::FirstUsable:
-                PARSER_PERF_INC(prioritySelectFirstUsable);
-                break;
-            case PrioritySource::FirstEntry:
-            default:
-                PARSER_PERF_INC(prioritySelectFirstEntry);
-                break;
+        case PrioritySource::RowFlag:
+            PARSER_PERF_INC(prioritySelectRowFlag);
+            break;
+        case PrioritySource::FirstUsable:
+            PARSER_PERF_INC(prioritySelectFirstUsable);
+            break;
+        case PrioritySource::FirstEntry:
+        default:
+            PARSER_PERF_INC(prioritySelectFirstEntry);
+            break;
         }
 
         if (!isUsableAlert(priorityIdx)) {
@@ -475,14 +491,11 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
 
         if (PARSER_TRACE_ENABLED()) {
-            const char* src =
-                (source == PrioritySource::RowFlag) ? "rowFlag" :
-                (source == PrioritySource::FirstUsable) ? "firstUsable" : "firstEntry";
-            Serial.printf("[AlertPri] src=%s idx=%u cnt=%u rowFlagIdx=%d\n",
-                          src,
-                          static_cast<unsigned>(priorityIdx),
-                          static_cast<unsigned>(alertCount_),
-                          priorityFromRowFlag);
+            const char* src = (source == PrioritySource::RowFlag)       ? "rowFlag"
+                              : (source == PrioritySource::FirstUsable) ? "firstUsable"
+                                                                        : "firstEntry";
+            Serial.printf("[AlertPri] src=%s idx=%u cnt=%u rowFlagIdx=%d\n", src, static_cast<unsigned>(priorityIdx),
+                          static_cast<unsigned>(alertCount_), priorityFromRowFlag);
         }
 
         displayState_.v1PriorityIndex = priorityIdx;
@@ -519,7 +532,7 @@ AlertData PacketParser::getPriorityAlert() const {
     if (idx < alertCount_) {
         return alerts_[idx];
     }
-    return alerts_[0];  // Fallback
+    return alerts_[0]; // Fallback
 }
 
 bool PacketParser::getRenderablePriorityAlert(AlertData& out) const {

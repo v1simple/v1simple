@@ -40,10 +40,7 @@ function pruneUncompressedAppAssets(appDir) {
     let removedFiles = 0;
     let removedBytes = 0;
     const compressibleExt = /\.(js|css|json)$/;
-    const keepRawFiles = new Set([
-        join(appDir, 'env.js'),
-        join(appDir, 'version.json'),
-    ]);
+    const keepRawFiles = new Set([join(appDir, 'env.js'), join(appDir, 'version.json')]);
 
     while (stack.length > 0) {
         const dir = stack.pop();
@@ -80,28 +77,34 @@ function pruneUncompressedAppAssets(appDir) {
 
 const pruned = pruneUncompressedAppAssets(join(dataDir, '_app'));
 if (pruned.removedFiles > 0) {
-    console.log(`🗜️ Pruned ${pruned.removedFiles} uncompressed /_app assets (${(pruned.removedBytes / 1024).toFixed(1)} KB)`);
+    console.log(
+        `🗜️ Pruned ${pruned.removedFiles} uncompressed /_app assets (${(pruned.removedBytes / 1024).toFixed(1)} KB)`
+    );
 }
 
 const stagedAudio = stageAudioFiles();
 if (stagedAudio.missing.length > 0) {
-    console.error(`❌ Missing ${stagedAudio.missing.length} audio clips required by ${stagedAudio.sourceDir}:`);
+    console.error(
+        `❌ Missing ${stagedAudio.missing.length} audio clips required by ${stagedAudio.sourceDir}:`
+    );
     for (const file of stagedAudio.missing) {
         console.error(`   ${file}`);
     }
     process.exit(1);
 }
-console.log(`🔊 Staged ${stagedAudio.copied}/${stagedAudio.expected} audio clips to ${stagedAudio.targetDir}`);
+console.log(
+    `🔊 Staged ${stagedAudio.copied}/${stagedAudio.expected} audio clips to ${stagedAudio.targetDir}`
+);
 
 // List deployed files with sizes
 function listFiles(dir, prefix = '') {
     const files = readdirSync(dir);
     let totalSize = 0;
-    
+
     for (const file of files) {
         const filePath = join(dir, file);
         const stat = statSync(filePath);
-        
+
         if (stat.isDirectory()) {
             totalSize += listFiles(filePath, prefix + file + '/');
         } else {

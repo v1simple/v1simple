@@ -71,12 +71,9 @@ void configureLoopRuntimeSnapshotModule() {
 
 void configureLoopPostDisplayModule() {
     LoopPostDisplayModule::Providers loopPostDisplayProviders;
-    loopPostDisplayProviders.runAutoPush =
-        ProviderCallbackBindings::member<AutoPushModule, &AutoPushModule::process>;
+    loopPostDisplayProviders.runAutoPush = ProviderCallbackBindings::member<AutoPushModule, &AutoPushModule::process>;
     loopPostDisplayProviders.autoPushContext = &autoPushModule;
-    loopPostDisplayProviders.readDispatchNowMs = [](void*) -> uint32_t {
-        return millis();
-    };
+    loopPostDisplayProviders.readDispatchNowMs = [](void*) -> uint32_t { return millis(); };
     loopPostDisplayProviders.readBleConnectedNow =
         ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::isConnected>;
     loopPostDisplayProviders.bleConnectedContext = &bleClient;
@@ -107,34 +104,22 @@ static uint32_t readCachedLargestDmaHeap(void*) {
     return StorageManager::getCachedLargestDma();
 }
 
-static void recordHeapStatsSample(void*,
-                                  uint32_t freeHeap,
-                                  uint32_t largestHeapBlock,
-                                  uint32_t cachedFreeDma,
+static void recordHeapStatsSample(void*, uint32_t freeHeap, uint32_t largestHeapBlock, uint32_t cachedFreeDma,
                                   uint32_t cachedLargestDma) {
     perfRecordHeapStats(freeHeap, largestHeapBlock, cachedFreeDma, cachedLargestDma);
 }
 
 void configureLoopPowerTouchModule() {
     LoopPowerTouchModule::Providers loopPowerTouchProviders;
-    loopPowerTouchProviders.timestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
-    loopPowerTouchProviders.microsNow = [](void*) -> uint32_t {
-        return micros();
-    };
-    loopPowerTouchProviders.runPowerProcess =
-        ProviderCallbackBindings::member<PowerModule, &PowerModule::process>;
+    loopPowerTouchProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
+    loopPowerTouchProviders.microsNow = [](void*) -> uint32_t { return micros(); };
+    loopPowerTouchProviders.runPowerProcess = ProviderCallbackBindings::member<PowerModule, &PowerModule::process>;
     loopPowerTouchProviders.powerContext = &powerModule;
     loopPowerTouchProviders.runTouchUiProcess =
         ProviderCallbackBindings::member<TouchUiModule, &TouchUiModule::process>;
     loopPowerTouchProviders.touchUiContext = &touchUiModule;
-    loopPowerTouchProviders.recordTouchUs = [](void*, uint32_t elapsedUs) {
-        perfRecordTouchUs(elapsedUs);
-    };
-    loopPowerTouchProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) {
-        perfRecordLoopJitterUs(jitterUs);
-    };
+    loopPowerTouchProviders.recordTouchUs = [](void*, uint32_t elapsedUs) { perfRecordTouchUs(elapsedUs); };
+    loopPowerTouchProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) { perfRecordLoopJitterUs(jitterUs); };
     loopPowerTouchProviders.refreshDmaCache = refreshStorageDmaHeapCache;
     loopPowerTouchProviders.readFreeHeap = readCurrentFreeHeap;
     loopPowerTouchProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;
@@ -150,13 +135,9 @@ void configureLoopPreIngestModule() {
         bleClient.setBootReady(true);
         SerialLog.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", static_cast<unsigned long>(nowMs));
     };
-    loopPreIngestProviders.runWifiPriorityApply =
-        [](void* ctx, uint32_t nowMs) {
-            static_cast<WifiPriorityPolicyModule*>(ctx)->apply(
-                nowMs,
-                bleClient,
-                wifiManager);
-        };
+    loopPreIngestProviders.runWifiPriorityApply = [](void* ctx, uint32_t nowMs) {
+        static_cast<WifiPriorityPolicyModule*>(ctx)->apply(nowMs, bleClient, wifiManager);
+    };
     loopPreIngestProviders.wifiPriorityContext = &wifiPriorityPolicyModule;
     loopPreIngestModule.begin(loopPreIngestProviders);
 }
@@ -177,12 +158,10 @@ void configureConnectionRuntimeModule() {
 void configureConnectionStateDispatchModule() {
     ConnectionStateDispatchModule::Providers connectionStateDispatchProviders;
     connectionStateDispatchProviders.runCadence =
-        ProviderCallbackBindings::member<ConnectionStateCadenceModule,
-                                         &ConnectionStateCadenceModule::process>;
+        ProviderCallbackBindings::member<ConnectionStateCadenceModule, &ConnectionStateCadenceModule::process>;
     connectionStateDispatchProviders.cadenceContext = &connectionStateCadenceModule;
     connectionStateDispatchProviders.runConnectionStateProcess =
-        ProviderCallbackBindings::memberDiscardReturn<ConnectionStateModule,
-                                                      &ConnectionStateModule::process>;
+        ProviderCallbackBindings::memberDiscardReturn<ConnectionStateModule, &ConnectionStateModule::process>;
     connectionStateDispatchProviders.connectionStateContext = &connectionStateModule;
     connectionStateDispatchProviders.recordDecision = [](void*, const ConnectionStateDispatchDecision& decision) {
         PERF_INC(connectionDispatchRuns);
@@ -209,9 +188,7 @@ void configurePeriodicMaintenanceModule() {
     obdSettingsSyncModule.begin(&settingsManager, &obdRuntimeModule);
 
     PeriodicMaintenanceModule::Providers periodicMaintenanceProviders;
-    periodicMaintenanceProviders.timestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
+    periodicMaintenanceProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     periodicMaintenanceProviders.runPerfReport = [](void*) { perfMetricsCheckReport(); };
     periodicMaintenanceProviders.recordPerfReportUs = [](void*, uint32_t elapsedUs) {
         perfRecordPerfReportUs(elapsedUs);
@@ -228,40 +205,25 @@ void configurePeriodicMaintenanceModule() {
     periodicMaintenanceProviders.runDeferredBleBondBackup =
         ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::serviceDeferredBondBackup>;
     periodicMaintenanceProviders.deferredBleBondBackupContext = &bleClient;
-    periodicMaintenanceProviders.runStoreSave = [](void*, uint32_t nowMs) {
-        processV1DeviceStoreSave(nowMs);
-    };
+    periodicMaintenanceProviders.runStoreSave = [](void*, uint32_t nowMs) { processV1DeviceStoreSave(nowMs); };
     periodicMaintenanceModule.begin(periodicMaintenanceProviders);
 }
 
 void configureLoopTailModule() {
     LoopTailModule::Providers loopTailProviders;
-    loopTailProviders.perfTimestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
-    loopTailProviders.loopMicrosUs = [](void*) -> uint32_t {
-        return micros();
-    };
-    loopTailProviders.runBleDrain =
-        ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
+    loopTailProviders.perfTimestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
+    loopTailProviders.loopMicrosUs = [](void*) -> uint32_t { return micros(); };
+    loopTailProviders.runBleDrain = ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
     loopTailProviders.bleDrainContext = &bleQueueModule;
-    loopTailProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) {
-        perfRecordBleDrainUs(elapsedUs);
-    };
-    loopTailProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) {
-        perfRecordLoopJitterUs(jitterUs);
-    };
-    loopTailProviders.yieldOneTick = [](void*) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    };
+    loopTailProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) { perfRecordBleDrainUs(elapsedUs); };
+    loopTailProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) { perfRecordLoopJitterUs(jitterUs); };
+    loopTailProviders.yieldOneTick = [](void*) { vTaskDelay(pdMS_TO_TICKS(1)); };
     loopTailModule.begin(loopTailProviders);
 }
 
 void configureLoopTelemetryModule() {
     LoopTelemetryModule::Providers loopTelemetryProviders;
-    loopTelemetryProviders.microsNow = [](void*) -> uint32_t {
-        return micros();
-    };
+    loopTelemetryProviders.microsNow = [](void*) -> uint32_t { return micros(); };
     loopTelemetryProviders.refreshDmaCache = refreshStorageDmaHeapCache;
     loopTelemetryProviders.readFreeHeap = readCurrentFreeHeap;
     loopTelemetryProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;
@@ -273,23 +235,17 @@ void configureLoopTelemetryModule() {
 
 void configureLoopIngestModule() {
     LoopIngestModule::Providers loopIngestProviders;
-    loopIngestProviders.timestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
-    loopIngestProviders.runBleProcess =
-        ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::process>;
+    loopIngestProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
+    loopIngestProviders.runBleProcess = ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::process>;
     loopIngestProviders.bleProcessContext = &bleClient;
     loopIngestProviders.recordBleProcessUs = [](void* ctx, uint32_t elapsedUs) {
         perfRecordBleProcessUs(elapsedUs);
         static_cast<V1BLEClient*>(ctx)->noteBleProcessDuration(elapsedUs);
     };
     loopIngestProviders.bleProcessPerfContext = &bleClient;
-    loopIngestProviders.runBleDrain =
-        ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
+    loopIngestProviders.runBleDrain = ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
     loopIngestProviders.bleDrainContext = &bleQueueModule;
-    loopIngestProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) {
-        perfRecordBleDrainUs(elapsedUs);
-    };
+    loopIngestProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) { perfRecordBleDrainUs(elapsedUs); };
     loopIngestProviders.readBleBackpressure =
         ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::isBackpressured>;
     loopIngestProviders.bleBackpressureContext = &bleQueueModule;
@@ -298,20 +254,15 @@ void configureLoopIngestModule() {
 
 void configureLoopDisplayModule() {
     LoopDisplayModule::Providers loopDisplayProviders;
-    loopDisplayProviders.readDisplayNowMs = [](void*) -> uint32_t {
-        return millis();
-    };
+    loopDisplayProviders.readDisplayNowMs = [](void*) -> uint32_t { return millis(); };
     loopDisplayProviders.collectParsedSignal = [](void* ctx) -> ParsedFrameSignal {
         BleQueueModule* queue = static_cast<BleQueueModule*>(ctx);
-        return ParsedFrameEventModule::collect(
-            queue->consumeParsedFlag(),
-            queue->getLastParsedTimestamp(),
-            systemEventBus);
+        return ParsedFrameEventModule::collect(queue->consumeParsedFlag(), queue->getLastParsedTimestamp(),
+                                               systemEventBus);
     };
     loopDisplayProviders.parsedSignalContext = &bleQueueModule;
     loopDisplayProviders.runParsedFrame =
-        ProviderCallbackBindings::member<DisplayOrchestrationModule,
-                                         &DisplayOrchestrationModule::processParsedFrame>;
+        ProviderCallbackBindings::member<DisplayOrchestrationModule, &DisplayOrchestrationModule::processParsedFrame>;
     loopDisplayProviders.parsedFrameContext = &displayOrchestrationModule;
     loopDisplayProviders.runLightweightRefresh =
         ProviderCallbackBindings::member<DisplayOrchestrationModule,
@@ -323,9 +274,7 @@ void configureLoopDisplayModule() {
     loopDisplayProviders.runBlinkRefresh =
         ProviderCallbackBindings::member<DisplayPipelineModule, &DisplayPipelineModule::refreshBlinkTick>;
     loopDisplayProviders.blinkRefreshContext = &displayPipelineModule;
-    loopDisplayProviders.timestampUs = [](void*) -> uint32_t {
-        return PERF_TIMESTAMP_US();
-    };
+    loopDisplayProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     loopDisplayProviders.recordDispPipeUs = [](void* ctx, uint32_t elapsedUs) {
         perfRecordDispPipeUs(elapsedUs);
         static_cast<V1BLEClient*>(ctx)->noteDisplayPipelineDuration(elapsedUs);

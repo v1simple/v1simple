@@ -22,18 +22,17 @@ class SettingsManager;
  * Context for volume fade decisions
  */
 struct VolumeFadeContext {
-    bool hasAlert;              // Currently have active alert
-    bool alertMuted;            // Alert is muted by user
-    bool alertSuppressed;       // Alert is software-suppressed
-    uint8_t currentVolume;      // Current V1 volume
-    uint8_t currentMuteVolume;  // Current V1 mute volume
-    uint16_t currentFrequency;  // Current priority frequency (MHz*10) for dedup
-    unsigned long now;          // Current timestamp
+    bool hasAlert;             // Currently have active alert
+    bool alertMuted;           // Alert is muted by user
+    bool alertSuppressed;      // Alert is software-suppressed
+    uint8_t currentVolume;     // Current V1 volume
+    uint8_t currentMuteVolume; // Current V1 mute volume
+    uint16_t currentFrequency; // Current priority frequency (MHz*10) for dedup
+    unsigned long now;         // Current timestamp
 
-    VolumeFadeContext() :
-        hasAlert(false), alertMuted(false), alertSuppressed(false),
-        currentVolume(0), currentMuteVolume(0), currentFrequency(0),
-        now(0) {}
+    VolumeFadeContext()
+        : hasAlert(false), alertMuted(false), alertSuppressed(false), currentVolume(0), currentMuteVolume(0),
+          currentFrequency(0), now(0) {}
 };
 
 /**
@@ -42,19 +41,18 @@ struct VolumeFadeContext {
 struct VolumeFadeAction {
     enum class Type : uint8_t {
         NONE = 0,
-        FADE_DOWN,      // Reduce volume
-        RESTORE         // Restore original volume
+        FADE_DOWN, // Reduce volume
+        RESTORE    // Restore original volume
     };
 
     Type type = Type::NONE;
-    uint8_t targetVolume;       // Volume to set (FADE_DOWN)
-    uint8_t targetMuteVolume;   // Mute volume to set (FADE_DOWN)
-    uint8_t restoreVolume;      // Volume to restore to (RESTORE)
-    uint8_t restoreMuteVolume;  // Mute volume to restore to (RESTORE)
+    uint8_t targetVolume;      // Volume to set (FADE_DOWN)
+    uint8_t targetMuteVolume;  // Mute volume to set (FADE_DOWN)
+    uint8_t restoreVolume;     // Volume to restore to (RESTORE)
+    uint8_t restoreMuteVolume; // Mute volume to restore to (RESTORE)
 
-    VolumeFadeAction() :
-        type(Type::NONE), targetVolume(0), targetMuteVolume(0),
-        restoreVolume(0), restoreMuteVolume(0) {}
+    VolumeFadeAction()
+        : type(Type::NONE), targetVolume(0), targetMuteVolume(0), restoreVolume(0), restoreMuteVolume(0) {}
 
     bool hasAction() const { return type != Type::NONE; }
 };
@@ -63,7 +61,7 @@ struct VolumeFadeAction {
  * VolumeFadeModule class
  */
 class VolumeFadeModule {
-public:
+  public:
     VolumeFadeModule();
 
     void begin(SettingsManager* settings);
@@ -77,7 +75,7 @@ public:
     /// Cleared after first use or 1.5 s.
     void setBaselineHint(uint8_t mainVol, uint8_t muteVol, uint32_t nowMs);
 
-private:
+  private:
     void reset();
     SettingsManager* settings_ = nullptr;
 
@@ -102,7 +100,7 @@ private:
     static constexpr unsigned long RESTORE_RETRY_MIN_INTERVAL_MS = 75;
 
     // External baseline hint from an external volume owner.
-    uint8_t hintBaselineVolume_ = 0xFF;     // 0xFF = no hint
+    uint8_t hintBaselineVolume_ = 0xFF; // 0xFF = no hint
     uint8_t hintBaselineMuteVolume_ = 0;
     unsigned long hintSetMs_ = 0;
     static constexpr unsigned long HINT_WINDOW_MS = 1500;

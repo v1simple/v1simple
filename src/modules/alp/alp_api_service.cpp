@@ -17,13 +17,12 @@ void sendMaintenanceModeError(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
-}  // namespace
+} // namespace
 
-void handleApiStatus(WebServer& server,
-                     AlpRuntimeModule& alpRuntime,
-                     void (*markUiActivity)(void* ctx), void* uiActivityCtx,
-                     bool maintenanceBootActive) {
-    if (markUiActivity) markUiActivity(uiActivityCtx);
+void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*markUiActivity)(void* ctx),
+                     void* uiActivityCtx, bool maintenanceBootActive) {
+    if (markUiActivity)
+        markUiActivity(uiActivityCtx);
     if (maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
@@ -48,9 +47,7 @@ void handleApiStatus(WebServer& server,
     lastGun["name"] = alpGunName(s.lastGun);
     lastGun["abbrev"] = alpGunAbbrev(s.lastGun);
     lastGun["identifiedMs"] = s.lastGunTimestampMs;
-    lastGun["ageMs"] = (s.lastGunTimestampMs == 0)
-        ? 0
-        : static_cast<uint32_t>(nowMs - s.lastGunTimestampMs);
+    lastGun["ageMs"] = (s.lastGunTimestampMs == 0) ? 0 : static_cast<uint32_t>(nowMs - s.lastGunTimestampMs);
 
     // ── V1-shape display projection (what the display consumes) ──────
     JsonObject event = doc["event"].to<JsonObject>();
@@ -101,9 +98,7 @@ void handleApiStatus(WebServer& server,
     // ── Protocol-level diagnostics ───────────────────────────────────
     JsonObject proto = doc["protocol"].to<JsonObject>();
     proto["lastHeartbeatMs"] = s.lastHeartbeatMs;
-    proto["lastHeartbeatAgeMs"] = (s.lastHeartbeatMs == 0)
-        ? 0
-        : static_cast<uint32_t>(nowMs - s.lastHeartbeatMs);
+    proto["lastHeartbeatAgeMs"] = (s.lastHeartbeatMs == 0) ? 0 : static_cast<uint32_t>(nowMs - s.lastHeartbeatMs);
     proto["lastHbByte1"] = s.lastHbByte1;
 
     doc["nowMs"] = nowMs;
@@ -111,4 +106,4 @@ void handleApiStatus(WebServer& server,
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-}  // namespace AlpApiService
+} // namespace AlpApiService

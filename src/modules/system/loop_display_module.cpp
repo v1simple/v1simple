@@ -25,27 +25,19 @@ void LoopDisplayModule::process(const LoopDisplayContext& ctx) {
 
     bool pipelineRanThisLoop = false;
     if (parsedResult.runDisplayPipeline) {
-        if (providers.recordNotifyToDisplayMs &&
-            parsedSignal.parsedTsMs != 0 &&
+        if (providers.recordNotifyToDisplayMs && parsedSignal.parsedTsMs != 0 &&
             displayNowMs >= parsedSignal.parsedTsMs) {
-            providers.recordNotifyToDisplayMs(
-                providers.notifyPerfContext,
-                displayNowMs - parsedSignal.parsedTsMs);
+            providers.recordNotifyToDisplayMs(providers.notifyPerfContext, displayNowMs - parsedSignal.parsedTsMs);
         }
 
         if (providers.runDisplayPipeline) {
             if (providers.timestampUs && providers.recordDispPipeUs) {
                 const uint32_t startUs = providers.timestampUs(providers.timestampContext);
-                providers.runDisplayPipeline(
-                    providers.displayPipelineContext,
-                    displayNowMs);
-                providers.recordDispPipeUs(
-                    providers.dispPipePerfContext,
-                    providers.timestampUs(providers.timestampContext) - startUs);
+                providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
+                providers.recordDispPipeUs(providers.dispPipePerfContext,
+                                           providers.timestampUs(providers.timestampContext) - startUs);
             } else {
-                providers.runDisplayPipeline(
-                    providers.displayPipelineContext,
-                    displayNowMs);
+                providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
             }
         }
         pipelineRanThisLoop = true;
@@ -63,9 +55,8 @@ void LoopDisplayModule::process(const LoopDisplayContext& ctx) {
             if (providers.timestampUs && providers.recordDispPipeUs) {
                 const uint32_t startUs = providers.timestampUs(providers.timestampContext);
                 providers.runBlinkRefresh(providers.blinkRefreshContext, displayNowMs);
-                providers.recordDispPipeUs(
-                    providers.dispPipePerfContext,
-                    providers.timestampUs(providers.timestampContext) - startUs);
+                providers.recordDispPipeUs(providers.dispPipePerfContext,
+                                           providers.timestampUs(providers.timestampContext) - startUs);
             } else {
                 providers.runBlinkRefresh(providers.blinkRefreshContext, displayNowMs);
             }

@@ -36,7 +36,7 @@
 #include "modules/alp/alp_laser_event.h"
 #include "render_frame.h"
 #include "color_themes.h"
-#include "display_layout.h"  // Centralized layout constants
+#include "display_layout.h" // Centralized layout constants
 #include "display_ble_context.h"
 #include "display_vol_warn.h"
 #include "display_dirty_flags.h"
@@ -51,7 +51,7 @@ class ObdRuntimeModule;
 class AlpRuntimeModule;
 
 class V1Display {
-public:
+  public:
     V1Display();
     ~V1Display();
 
@@ -75,8 +75,8 @@ public:
     // Show connection status
     void showDisconnected();
     void showMaintenanceMode();
-    void showResting(bool forceRedraw = false); // idle/rest screen
-    void showScanning(); // scanning screen (like resting but with SCAN text)
+    void showResting(bool forceRedraw = false);        // idle/rest screen
+    void showScanning();                               // scanning screen (like resting but with SCAN text)
     void showStealth(float speedMph, bool speedValid); // stealth: blank screen with OBD speed
 
     // Force next update() call to fully redraw (use after settings change)
@@ -87,8 +87,8 @@ public:
     void resetChangeTracking();
 
     void showBootSplash();
-    void showShutdown();       // Shutdown screen with goodbye message
-    void showLowBattery();     // Critical low battery warning
+    void showShutdown();   // Shutdown screen with goodbye message
+    void showLowBattery(); // Critical low battery warning
 
     // Set brightness (0-255)
     void setBrightness(uint8_t level);
@@ -96,8 +96,8 @@ public:
     // Settings adjustment overlay (brightness + voice volume)
     void showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel);
     void updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider);
-    void hideBrightnessSlider();                                           // Hide slider and restore display
-    int getActiveSliderFromTouch(int16_t touchY);                          // Returns 0=brightness, 1=volume, -1=none
+    void hideBrightnessSlider();                  // Hide slider and restore display
+    int getActiveSliderFromTouch(int16_t touchY); // Returns 0=brightness, 1=volume, -1=none
 
     // Clear screen
     void clear();
@@ -106,13 +106,12 @@ public:
     const char* bandToString(Band band);
     uint16_t getBandColor(Band band);
 
-
     // Color theme helpers
-    void updateColorTheme();  // Update colors from settings
+    void updateColorTheme(); // Update colors from settings
     const ColorPalette& getCurrentPalette() const { return currentPalette_; }
 
     // Profile indicator
-    void drawProfileIndicator(int slot);  // 0=Default, 1=Highway, 2=Comfort
+    void drawProfileIndicator(int slot); // 0=Default, 1=Highway, 2=Comfort
     void setProfileIndicatorSlot(int slot);
 
     // Battery indicator (only shows when on battery power)
@@ -163,7 +162,7 @@ public:
 
     // Flush canvas to physical display
     void flush();
-    void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h);  // Partial flush to reduce SPI traffic
+    void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h); // Partial flush to reduce SPI traffic
     uint32_t renderSequenceId() const { return renderSeq_; }
     void setVisualTestBlinkPhase(bool image1Phase, unsigned long epochMs);
     const uint8_t* rawFramebufferBytes() const;
@@ -187,9 +186,7 @@ public:
     bool enableVisualFlushShadow();
     void disableVisualFlushShadow();
     bool flushShadowAvailable() const { return flushShadow_ != nullptr; }
-    const uint8_t* flushShadowBytes() const {
-        return reinterpret_cast<const uint8_t*>(flushShadow_);
-    }
+    const uint8_t* flushShadowBytes() const { return reinterpret_cast<const uint8_t*>(flushShadow_); }
 
     // Logical bounding rect of the direction-arrow cluster. Exposed so the
     // live-update path can flushRegion() over exactly what drawDirectionArrow's
@@ -204,14 +201,14 @@ public:
     using ArrowClusterRect = DisplayLayout::DisplayRect;
     static DisplayLayout::DisplayRect arrowBoundingRect(bool raisedLayout);
 
-private:
+  private:
     enum class ScreenMode { Unknown, Resting, Scanning, Disconnected, Maintenance, Live, Persisted, Stealth };
     static PerfDisplayScreen perfScreenForMode(ScreenMode mode);
 
     // Display driver (Arduino_GFX)
     std::unique_ptr<Arduino_ESP32QSPI> bus_;
     std::unique_ptr<Arduino_AXS15231B> gfxPanel_;
-    std::unique_ptr<Arduino_Canvas> tft_;  // Canvas for rotation/buffering
+    std::unique_ptr<Arduino_Canvas> tft_; // Canvas for rotation/buffering
 
     // Visual-test flush shadow (raw framebuffer layout, PSRAM). Null unless a
     // visual pin is active. Sync helpers are called from DISPLAY_FLUSH() and
@@ -242,11 +239,9 @@ private:
         // Mirrors flushRegion's row blit exactly — same offsets, same widths —
         // so the shadow holds precisely the bytes the panel was sent, no more.
         for (int16_t row = 0; row < physRows; ++row) {
-            const uint32_t offset =
-                static_cast<uint32_t>(physRow0 + row) * static_cast<uint32_t>(CANVAS_WIDTH) +
-                static_cast<uint32_t>(physX0);
-            std::memcpy(flushShadow_ + offset, fb + offset,
-                        static_cast<size_t>(physW) * sizeof(uint16_t));
+            const uint32_t offset = static_cast<uint32_t>(physRow0 + row) * static_cast<uint32_t>(CANVAS_WIDTH) +
+                                    static_cast<uint32_t>(physX0);
+            std::memcpy(flushShadow_ + offset, fb + offset, static_cast<size_t>(physW) * sizeof(uint16_t));
         }
     }
 
@@ -254,17 +249,16 @@ private:
     AlertData lastAlert_;
 
     // Color palette
-    ColorPalette currentPalette_;  // Store current theme palette
+    ColorPalette currentPalette_; // Store current theme palette
 
     // Drawing helpers
     bool drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0);
 
-
     void drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, bool isPhotoRadar = false);
-    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar = false);   // 7-segment style
+    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar = false); // 7-segment style
     void prewarmFrequencyDigitAtlas();
     void prewarmFrequencyRasterCache();
-    void drawVolumeZeroWarning();  // Flash "VOL 0" warning when volume=0 and no app connected
+    void drawVolumeZeroWarning(); // Flash "VOL 0" warning when volume=0 and no app connected
     void drawStatusText(const char* text, uint16_t color);
     void drawBLEProxyIndicator();
     void drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits = 0, uint16_t frontColorOverride = 0);
@@ -272,16 +266,13 @@ private:
     void drawBaseFrame();
     void prepareFullRedrawNoClear();
     void drawTopCounter(char symbol, bool muted, bool showDot);
-    void drawTopCounterSegment7(char symbol, bool muted, bool showDot);       // 7-segment style
-    void drawTopCounterPair(char primary,
-                            bool muted,
-                            bool primaryDot,
-                            char secondary = '\0',
+    void drawTopCounterSegment7(char symbol, bool muted, bool showDot); // 7-segment style
+    void drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary = '\0',
                             bool secondaryDot = false);
     void drawStatusStrip(const DisplayState& state, char topChar, bool topMuted, bool topDot);
 
-    void drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol);              // "5V  0M" style
-    void drawRssiIndicator(int rssi);                                         // BLE RSSI in dBm
+    void drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol); // "5V  0M" style
+    void drawRssiIndicator(int rssi);                           // BLE RSSI in dBm
     void drawMuteIcon(bool muted);
     void drawObdIndicator();
     void drawGpsIndicator();
@@ -296,30 +287,31 @@ private:
     int draw14SegmentText(const char* text, int x, int y, float scale, uint16_t onColor, uint16_t offColor);
 
     // Multi-alert card row
-    void drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority, bool muted = false);
+    void drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
+                                 bool muted = false);
     // Use centralized constant from display_layout.h
     static constexpr int SECONDARY_ROW_HEIGHT = DisplayLayout::SECONDARY_ROW_HEIGHT;
 
-    int currentProfileSlot_ = 0;  // Track current profile for display
-    ScreenMode currentScreen_ = ScreenMode::Unknown;  // Track current screen to avoid redundant full redraws
-    uint32_t paletteRevision_ = 0;                    // Incremented on theme change to trigger redraws
-    uint32_t lastRestingPaletteRevision_ = 0;         // Palette revision last used for resting screen
-    int lastRestingProfileSlot_ = -1;                 // Last profile shown on resting screen
-    uint32_t lastStealthPaletteRevision_ = 0;          // Palette revision last used for stealth screen
-    int lastStealthRoundedMph_ = -1;                   // Last centered stealth speed text (-1 = "-- MPH")
-    bool lastStealthSpeedValid_ = false;               // Last stealth speed text validity
+    int currentProfileSlot_ = 0;                     // Track current profile for display
+    ScreenMode currentScreen_ = ScreenMode::Unknown; // Track current screen to avoid redundant full redraws
+    uint32_t paletteRevision_ = 0;                   // Incremented on theme change to trigger redraws
+    uint32_t lastRestingPaletteRevision_ = 0;        // Palette revision last used for resting screen
+    int lastRestingProfileSlot_ = -1;                // Last profile shown on resting screen
+    uint32_t lastStealthPaletteRevision_ = 0;        // Palette revision last used for stealth screen
+    int lastStealthRoundedMph_ = -1;                 // Last centered stealth speed text (-1 = "-- MPH")
+    bool lastStealthSpeedValid_ = false;             // Last stealth speed text validity
 
     // Visibility timeout tracking
-    uint32_t wifiConnectedTime_ = 0;         // When WiFi became connected
-    uint32_t profileChangedTime_ = 0;        // When profile was last changed
-    bool wifiWasConnected_ = false;          // Track WiFi connection state changes
-    int lastProfileSlot_ = -1;               // Track profile changes
-    bool bleProxyEnabled_ = false;           // BLE proxy enabled flag
-    bool bleProxyClientConnected_ = false;   // BLE proxy client connection flag
-    bool bleReceivingData_ = true;           // True when V1 packets received recently (heartbeat)
-    bool bleProxyDrawn_ = false;             // Track if icon has been drawn at least once
-    bool multiAlertMode_ = false;            // True while rendering a live multi-alert frame
-    bool persistedMode_ = false;              // True when drawing persisted alerts (uses PALETTE_PERSISTED)
+    uint32_t wifiConnectedTime_ = 0;       // When WiFi became connected
+    uint32_t profileChangedTime_ = 0;      // When profile was last changed
+    bool wifiWasConnected_ = false;        // Track WiFi connection state changes
+    int lastProfileSlot_ = -1;             // Track profile changes
+    bool bleProxyEnabled_ = false;         // BLE proxy enabled flag
+    bool bleProxyClientConnected_ = false; // BLE proxy client connection flag
+    bool bleReceivingData_ = true;         // True when V1 packets received recently (heartbeat)
+    bool bleProxyDrawn_ = false;           // Track if icon has been drawn at least once
+    bool multiAlertMode_ = false;          // True while rendering a live multi-alert frame
+    bool persistedMode_ = false;           // True when drawing persisted alerts (uses PALETTE_PERSISTED)
     bool speedVolZeroActive_ = false;      // Suppress VOL 0 warning during speed-mute vol 0
     // Per-frame render instrumentation (not DisplayDirtyFlags-governed).
     // Each update path resets drawnRegion_ at frame entry and each leaf draw
@@ -432,9 +424,7 @@ private:
 
     RestingNoOpKey lastRestingNoOpKey_{};
     bool lastRestingNoOpKeyValid_ = false;
-    RestingNoOpKey buildRestingNoOpKey(const DisplayState& state,
-                                       uint32_t nowMs,
-                                       bool bleContextFresh) const;
+    RestingNoOpKey buildRestingNoOpKey(const DisplayState& state, uint32_t nowMs, bool bleContextFresh) const;
     bool canSkipRestingNoOp(const RestingNoOpKey& key) const;
     void rememberRestingNoOpKey(const RestingNoOpKey& key);
     void invalidateRestingNoOpKey();
@@ -455,11 +445,11 @@ private:
     // by updateBlinkPhase_() — drawDirectionArrow, drawBandIndicators, and
     // drawStatusStrip (for bogey-counter blink) call it at entry and then
     // read blinkPhase_.
-    static constexpr unsigned long BLINK_INTERVAL_MS = 96;  // ESP Spec 3.015: 10.416 Hz toggle
+    static constexpr unsigned long BLINK_INTERVAL_MS = 96; // ESP Spec 3.015: 10.416 Hz toggle
     bool blinkPhase_ = true;
     unsigned long lastBlinkToggleMs_ = 0;
 
-public:
+  public:
     // D2 fix: orchestrator reads this to decide when to fire a lightweight
     // blink-refresh tick. Returning the renderer's own toggle timestamp
     // (rather than tracking refresh wall-clock) eliminates the beat between
@@ -468,7 +458,7 @@ public:
     unsigned long getLastBlinkToggleMs() const { return lastBlinkToggleMs_; }
     static constexpr unsigned long getBlinkIntervalMs() { return BLINK_INTERVAL_MS; }
 
-private:
+  private:
     // Defined inline so rendering TUs (display_arrow.cpp, display_bands.cpp) that
     // are linked into native tests without display.cpp still resolve the symbol.
     // millis() is visible here via display_driver.h/Arduino.h (real build) or the
@@ -500,39 +490,39 @@ private:
         }
     }
 
-    bool obdEnabled_ = false;              // OBD module enabled
-    bool obdConnected_ = false;            // OBD adapter connected
-    bool obdScanAttention_ = false;        // Runtime manual scan / scan-pending state
-    bool obdAttention_ = false;            // Temporary UI hold-time attention
+    bool obdEnabled_ = false;                      // OBD module enabled
+    bool obdConnected_ = false;                    // OBD adapter connected
+    bool obdScanAttention_ = false;                // Runtime manual scan / scan-pending state
+    bool obdAttention_ = false;                    // Temporary UI hold-time attention
     bool previewIndicatorOverridesActive_ = false; // Display preview owns ALP/OBD badges
-    ObdRuntimeModule* obdRtMod_ = nullptr; // Injected in begin(); used by syncTopIndicators
-    AlpRuntimeModule* alpRtMod_ = nullptr; // Injected in begin(); used by syncTopIndicators
-    bool alpEnabled_ = false;              // ALP module enabled
-    uint8_t alpStateRaw_ = 0;              // AlpState cast to uint8_t for badge color selection
-    uint8_t alpHbByte1_ = 0;               // Last B0 heartbeat byte1 (02=Warm-Up, 03=DLI, 04=LID)
-    bool alpHasLaserEvent_ = false;        // true when ALP has an active laser session (overrides byte1 → solid red)
+    ObdRuntimeModule* obdRtMod_ = nullptr;         // Injected in begin(); used by syncTopIndicators
+    AlpRuntimeModule* alpRtMod_ = nullptr;         // Injected in begin(); used by syncTopIndicators
+    bool alpEnabled_ = false;                      // ALP module enabled
+    uint8_t alpStateRaw_ = 0;                      // AlpState cast to uint8_t for badge color selection
+    uint8_t alpHbByte1_ = 0;                       // Last B0 heartbeat byte1 (02=Warm-Up, 03=DLI, 04=LID)
+    bool alpHasLaserEvent_ = false; // true when ALP has an active laser session (overrides byte1 → solid red)
 
     // ALP frequency-area override: when active, gun abbreviation replaces frequency text
     bool alpFreqOverride_ = false;
     char alpFreqText_[16] = "";
-    bool alpLidActive_ = false;            // true = LID active (byte1=04, blue), false = DLI (orange)
-    AlpLaserEvent alpLaserEvent_{};        // live ALP event-owned direction/gun/lid state for rendering
-    DisplayBleContext bleCtx_;              // BLE state snapshot for display DI
-    uint32_t bleCtxUpdatedAtMs_ = 0;        // When setBleContext() last refreshed bleCtx_
-    uint32_t renderSeq_ = 0;                 // Monotonic id bumped after every display flush.
+    bool alpLidActive_ = false;      // true = LID active (byte1=04, blue), false = DLI (orange)
+    AlpLaserEvent alpLaserEvent_{};  // live ALP event-owned direction/gun/lid state for rendering
+    DisplayBleContext bleCtx_;       // BLE state snapshot for display DI
+    uint32_t bleCtxUpdatedAtMs_ = 0; // When setBleContext() last refreshed bleCtx_
+    uint32_t renderSeq_ = 0;         // Monotonic id bumped after every display flush.
 
-    static constexpr uint32_t HIDE_TIMEOUT_MS = 3000;  // 3 second display timeout
+    static constexpr uint32_t HIDE_TIMEOUT_MS = 3000; // 3 second display timeout
 
     // State previously at file scope in display.cpp
-    DisplayFontManager       fontMgr_;
+    DisplayFontManager fontMgr_;
     DisplayFrequencyDigitAtlas frequencyDigitAtlas_;
     DisplayFrequencyRasterCache frequencyRasterCache_;
-    DisplayDirtyFlags        dirty_;
-    DisplayElementCaches     elementCaches_;
+    DisplayDirtyFlags dirty_;
+    DisplayElementCaches elementCaches_;
     VolumeZeroWarning volZeroWarn_;
 
 #ifdef UNIT_TEST
-public:
+  public:
     // Test seam: inject a recording canvas and expose it for assertions.
     // The display takes ownership; caller must allocate with new.
     void setTestCanvas(Arduino_Canvas* canvas) { tft_.reset(canvas); }
@@ -544,25 +534,20 @@ public:
     void ut_bumpPaletteRevision() { ++paletteRevision_; }
     DisplayFrequencyDigitAtlas& ut_frequencyDigitAtlas() { return frequencyDigitAtlas_; }
     // Public wrappers for private rendering methods (native integration tests only)
-    void ut_drawFrequency(uint32_t freqMHz, Band band = BAND_NONE,
-                          bool muted = false, bool isPhotoRadar = false) {
+    void ut_drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, bool isPhotoRadar = false) {
         drawFrequency(freqMHz, band, muted, isPhotoRadar);
     }
     bool ut_drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0) {
         return drawBandIndicators(bandMask, muted, bandFlashBits);
     }
-    void ut_drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStrength,
-                                    Band band = BAND_KA, bool muted = false) {
+    void ut_drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStrength, Band band = BAND_KA,
+                                   bool muted = false) {
         drawVerticalSignalBars(frontStrength, rearStrength, band, muted);
     }
-    void ut_drawDirectionArrow(Direction dir, bool muted,
-                               uint8_t flashBits = 0, uint16_t frontColorOverride = 0) {
+    void ut_drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits = 0, uint16_t frontColorOverride = 0) {
         drawDirectionArrow(dir, muted, flashBits, frontColorOverride);
     }
-    void ut_drawTopCounterPair(char primary,
-                               bool muted,
-                               bool primaryDot,
-                               char secondary = '\0',
+    void ut_drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary = '\0',
                                bool secondaryDot = false) {
         drawTopCounterPair(primary, muted, primaryDot, secondary, secondaryDot);
     }
@@ -571,23 +556,19 @@ public:
         blinkPhase_ = phase;
         lastBlinkToggleMs_ = lastToggleMs;
     }
-    void ut_drawObdIndicator()     { drawObdIndicator(); }
-    void ut_drawBaseFrame()        { drawBaseFrame(); }
+    void ut_drawObdIndicator() { drawObdIndicator(); }
+    void ut_drawBaseFrame() { drawBaseFrame(); }
     void ut_syncTopIndicators(uint32_t nowMs) { syncTopIndicators(nowMs); }
     void ut_setObdStatus(bool enabled, bool connected, bool scanAttention = false) {
         setObdStatus(enabled, connected, scanAttention);
     }
-    void ut_drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
-        drawVolumeIndicator(mainVol, muteVol);
-    }
-    void ut_drawRssiIndicator(int rssi) {
-        drawRssiIndicator(rssi);
-    }
+    void ut_drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) { drawVolumeIndicator(mainVol, muteVol); }
+    void ut_drawRssiIndicator(int rssi) { drawRssiIndicator(rssi); }
     void ut_drawBatteryIndicator() { drawBatteryIndicator(); }
     void ut_drawBLEProxyIndicator() { drawBLEProxyIndicator(); }
     void ut_drawWiFiIndicator() { drawWiFiIndicator(); }
-    void ut_drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
-                                    const AlertData& priority, bool muted = false) {
+    void ut_drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
+                                    bool muted = false) {
         drawSecondaryAlertCards(alerts, alertCount, priority, muted);
     }
     bool ut_drawnRegionEmpty() const { return drawnRegion_.empty(); }
@@ -607,4 +588,4 @@ public:
 
 // Global display instance (defined in main.cpp)
 extern V1Display display;
-#endif  // DISPLAY_H
+#endif // DISPLAY_H

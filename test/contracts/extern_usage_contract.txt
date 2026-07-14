@@ -6,14 +6,14 @@ kind=header file=include/audio_internals.h line=43 text=extern i2s_chan_handle_t
 kind=header file=include/audio_internals.h line=44 text=extern std::atomic<TaskHandle_t> audioTaskHandle;
 kind=header file=include/audio_internals.h line=45 text=extern std::atomic<uint32_t> g_audioPcmStackHighWaterBytes;
 kind=header file=include/audio_internals.h line=46 text=extern std::atomic<uint32_t> g_audioSdStackHighWaterBytes;
-kind=header file=include/audio_internals.h line=47 text=extern std::atomic<bool> audio_playing;
-kind=header file=include/audio_internals.h line=48 text=extern std::atomic<bool> amp_is_warm;
-kind=header file=include/audio_internals.h line=49 text=extern std::atomic<unsigned long> amp_last_used_ms;
-kind=header file=include/audio_internals.h line=55 text=extern int16_t* g_stereoChunkBuffer;
-kind=header file=include/audio_internals.h line=56 text=extern uint8_t* g_mulawChunkBuffer;
-kind=header file=include/audio_internals.h line=59 text=extern SDAudioTaskParams g_sdAudioTaskParams;
-kind=header file=include/audio_internals.h line=64 text=extern StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
-kind=header file=include/audio_internals.h line=65 text=extern StaticTask_t g_sdAudioTaskTCB;
+kind=header file=include/audio_internals.h line=49 text=extern std::atomic<bool> audio_playing;
+kind=header file=include/audio_internals.h line=50 text=extern std::atomic<bool> amp_is_warm;
+kind=header file=include/audio_internals.h line=51 text=extern std::atomic<unsigned long> amp_last_used_ms;
+kind=header file=include/audio_internals.h line=57 text=extern int16_t* g_stereoChunkBuffer;
+kind=header file=include/audio_internals.h line=58 text=extern uint8_t* g_mulawChunkBuffer;
+kind=header file=include/audio_internals.h line=61 text=extern SDAudioTaskParams g_sdAudioTaskParams;
+kind=header file=include/audio_internals.h line=66 text=extern StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
+kind=header file=include/audio_internals.h line=67 text=extern StaticTask_t g_sdAudioTaskTCB;
 kind=header file=include/ble_internals.h line=141 text=extern portMUX_TYPE pendingAddrMux;
 kind=header file=include/ble_internals.h line=143 text=extern V1BLEClient* instancePtr;
 kind=header file=include/display_palette.h line=18 text=extern V1Display* g_displayInstance;
@@ -89,14 +89,28 @@ kind=header file=include/wifi_manager_internals.h line=16 text=extern SystemEven
 kind=header file=src/battery_manager.h line=117 text=extern BatteryManager batteryManager;
 kind=header file=src/battery_manager.h line=125 text=extern TwoWire tca9554Wire;
 kind=header file=src/battery_manager.h line=126 text=extern SemaphoreHandle_t tca9554WireMutex;
-kind=header file=src/display.h line=556 text=extern V1Display display;
+kind=header file=src/display.h line=609 text=extern V1Display display;
 kind=source file=src/main_boot.cpp line=24 text=extern V1Display display;
-kind=source file=src/main_setup_helpers.cpp line=299 text=extern const char* getBuildGitSha();
+kind=source file=src/main_setup_helpers.cpp line=322 text=extern const char* getBuildGitSha();
 kind=header file=src/perf_metrics.h line=812 text=extern PerfExtendedMetrics perfExtended;
 kind=header file=src/perf_metrics.h line=932 text=extern PerfCounters perfCounters;
-kind=header file=src/perf_metrics.h line=1420 text=extern PerfLatency perfLatency;
-kind=header file=src/perf_metrics.h line=1424 text=extern bool perfDebugEnabled; // Runtime debug print enable
-kind=header file=src/perf_metrics.h line=1425 text=extern uint32_t perfLastReportMs; // Last report timestamp
+kind=header file=src/perf_metrics.h line=968 text=extern PerfLatency perfLatency;
+kind=header file=src/perf_metrics.h line=972 text=extern bool perfDebugEnabled; // Runtime debug print enable
+kind=header file=src/perf_metrics.h line=973 text=extern uint32_t perfLastReportMs; // Last report timestamp
+kind=header file=src/perf_metrics_internal.h line=20 text=extern uint32_t sDmaFreeCapMin;
+kind=header file=src/perf_metrics_internal.h line=21 text=extern uint32_t sDmaLargestCapMin;
+kind=header file=src/perf_metrics_internal.h line=22 text=extern std::atomic<uint32_t> sPrevWindowLoopMaxUs;
+kind=header file=src/perf_metrics_internal.h line=23 text=extern std::atomic<uint32_t> sPrevWindowWifiMaxUs;
+kind=header file=src/perf_metrics_internal.h line=24 text=extern std::atomic<uint32_t> sPrevWindowBleProcessMaxUs;
+kind=header file=src/perf_metrics_internal.h line=25 text=extern std::atomic<uint32_t> sPrevWindowDispPipeMaxUs;
+kind=header file=src/perf_metrics_internal.h line=26 text=extern std::atomic<uint8_t> sConnectionCycleStateCode;
+kind=header file=src/perf_metrics_internal.h line=27 text=extern std::atomic<uint32_t> sConnectionCycleTimeInStateMs;
+kind=header file=src/perf_metrics_internal.h line=28 text=extern std::atomic<uint32_t> sConnectionCycleTransitionsTotal;
+kind=header file=src/perf_metrics_internal.h line=29 text=extern std::atomic<uint32_t> sConnectionCycleTeardownDurationMs;
+kind=header file=src/perf_metrics_internal.h line=30 text=extern std::atomic<uint32_t> sConnectionCycleObdRetryAttemptsTotal;
+kind=header file=src/perf_metrics_internal.h line=31 text=extern std::atomic<uint32_t> sConnectionCycleWifiManualPhoneKicksTotal;
+kind=header file=src/perf_metrics_internal.h line=32 text=extern std::atomic<uint8_t> sConnectionCycleProxyNoClientLatched;
+kind=header file=src/perf_metrics_internal.h line=33 text=extern portMUX_TYPE sPerfSnapshotMux;
 kind=header file=src/perf_sd_logger.h line=100 text=extern PerfSdLogger perfSdLogger;
 kind=header file=src/settings.h line=1077 text=extern SettingsManager settingsManager;
 kind=header file=src/storage_manager.h line=306 text=extern StorageManager storageManager;

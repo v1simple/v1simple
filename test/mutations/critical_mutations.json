@@ -8,8 +8,8 @@
         "description": "- EMPTY -> + EMPTY percentage math",
         "impact": "Battery percentage becomes nonsensical and masks low-battery shutdown risk",
         "file": "include/battery_math.h",
-        "search": "    return static_cast<uint8_t>(\n        (static_cast<uint32_t>(voltageMV - kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
-        "replace": "    return static_cast<uint8_t>(\n        (static_cast<uint32_t>(voltageMV + kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
+        "search": "    return static_cast<uint8_t>((static_cast<uint32_t>(voltageMV - kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
+        "replace": "    return static_cast<uint8_t>((static_cast<uint32_t>(voltageMV + kEmptyMv) * 100U) / (kFullMv - kEmptyMv));",
         "tests": [
           "test_battery_manager"
         ]
@@ -56,8 +56,8 @@
         "description": "> barCount clamp drops exact max by one",
         "impact": "Signal bar strength off-by-one causes visual glitch at max bars",
         "file": "src/display_bands.cpp",
-        "search": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength > barCount) strength = barCount;",
-        "replace": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength >= barCount) strength = barCount - 1;",
+        "search": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength > barCount)\n        strength = barCount;",
+        "replace": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength >= barCount)\n        strength = barCount - 1;",
         "tests": [
           "test_display_rendering_bands",
           "test_display"
@@ -153,8 +153,8 @@
         "description": "release debounce 100ms -> 99ms constant",
         "impact": "Touch release bouncing not fully debounced, rapid re-triggers possible",
         "file": "src/touch_handler.cpp",
-        "search": "    , releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register",
-        "replace": "    , releaseDebounceMs_(99) // 100ms of no-touch required before new tap can register",
+        "search": "      releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register",
+        "replace": "      releaseDebounceMs_(99) // 100ms of no-touch required before new tap can register",
         "tests": [
           "test_touch_handler"
         ]
@@ -177,8 +177,8 @@
         "file": "src/packet_parser.cpp",
         "description": "LED bitmap 0x3F decodes to 6 instead of full local 8 bars",
         "impact": "Signal meter under-reports V1G2 source full-scale as only six of this display's eight bars",
-        "search": "        case 63:  return 8;\n        case 127: return 8;",
-        "replace": "        case 63:  return 6;\n        case 127: return 8;",
+        "search": "    case 63:\n        return 8;\n    case 127:\n        return 8;",
+        "replace": "    case 63:\n        return 6;\n    case 127:\n        return 8;",
         "tests": [
           "test_protocol_spec_conformance"
         ]

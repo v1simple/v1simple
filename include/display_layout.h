@@ -41,12 +41,12 @@
 namespace DisplayLayout {
 
 // Main display zone (shows frequency, status during alerts)
-constexpr int PRIMARY_ZONE_HEIGHT = 95;   // Fixed height for primary alert display
-constexpr int PRIMARY_ZONE_Y = 20;        // Below status bar
+constexpr int PRIMARY_ZONE_HEIGHT = 95; // Fixed height for primary alert display
+constexpr int PRIMARY_ZONE_Y = 20;      // Below status bar
 
 // Secondary row (alert cards)
-constexpr int SECONDARY_ROW_HEIGHT = 54;  // Height for secondary alert cards
-constexpr int SECONDARY_ROW_Y = SCREEN_HEIGHT - SECONDARY_ROW_HEIGHT;  // Y=118 on 172px display
+constexpr int SECONDARY_ROW_HEIGHT = 54;                              // Height for secondary alert cards
+constexpr int SECONDARY_ROW_Y = SCREEN_HEIGHT - SECONDARY_ROW_HEIGHT; // Y=118 on 172px display
 
 // Bottom boundary for primary content — the secondary cards row owns the
 // footer, so primary content (frequency numerals, alert text, clears) must
@@ -54,31 +54,29 @@ constexpr int SECONDARY_ROW_Y = SCREEN_HEIGHT - SECONDARY_ROW_HEIGHT;  // Y=118 
 constexpr int CONTENT_BOTTOM_Y = SECONDARY_ROW_Y;
 
 // Verify zones don't overlap (compile-time check)
-static_assert(PRIMARY_ZONE_Y + PRIMARY_ZONE_HEIGHT <= SECONDARY_ROW_Y,
-              "Primary zone overlaps with secondary row");
-static_assert(PRIMARY_ZONE_Y + PRIMARY_ZONE_HEIGHT <= CONTENT_BOTTOM_Y,
-              "Primary zone exceeds content area");
+static_assert(PRIMARY_ZONE_Y + PRIMARY_ZONE_HEIGHT <= SECONDARY_ROW_Y, "Primary zone overlaps with secondary row");
+static_assert(PRIMARY_ZONE_Y + PRIMARY_ZONE_HEIGHT <= CONTENT_BOTTOM_Y, "Primary zone exceeds content area");
 
 // ============================================================================
 // Band Indicator Column (Left Side)
 // ============================================================================
 
-constexpr int BAND_COLUMN_WIDTH = 120;    // Width reserved for band labels (X, K, Ka, L)
+constexpr int BAND_COLUMN_WIDTH = 120; // Width reserved for band labels (X, K, Ka, L)
 
 // ============================================================================
 // Signal/Info Column (Right Side)
 // ============================================================================
 
-constexpr int SIGNAL_COLUMN_WIDTH = 200;  // Width reserved for signal bars, arrows, battery
+constexpr int SIGNAL_COLUMN_WIDTH = 200; // Width reserved for signal bars, arrows, battery
 
 // ============================================================================
 // Frequency/Content Area (Center)
 // ============================================================================
 
 // Content area margins define the frequency display region
-constexpr int CONTENT_LEFT_MARGIN = BAND_COLUMN_WIDTH;     // 120px - after band indicators
-constexpr int CONTENT_RIGHT_MARGIN = SIGNAL_COLUMN_WIDTH;  // 200px - before signal column
-constexpr int CONTENT_AVAILABLE_WIDTH = SCREEN_WIDTH - CONTENT_LEFT_MARGIN - CONTENT_RIGHT_MARGIN;  // 320px
+constexpr int CONTENT_LEFT_MARGIN = BAND_COLUMN_WIDTH;    // 120px - after band indicators
+constexpr int CONTENT_RIGHT_MARGIN = SIGNAL_COLUMN_WIDTH; // 200px - before signal column
+constexpr int CONTENT_AVAILABLE_WIDTH = SCREEN_WIDTH - CONTENT_LEFT_MARGIN - CONTENT_RIGHT_MARGIN; // 320px
 
 // Shared frequency/SCAN geometry.  SCAN intentionally uses the same baseline,
 // font size, and horizontal lane as live frequency text so the disconnected
@@ -98,8 +96,7 @@ inline int frequencyOfrMaxWidth() {
 }
 
 inline int frequencyOfrY() {
-    return FREQUENCY_MUTE_ICON_BOTTOM +
-           (CONTENT_BOTTOM_Y - FREQUENCY_MUTE_ICON_BOTTOM - FREQUENCY_OFR_FONT_SIZE) / 2 +
+    return FREQUENCY_MUTE_ICON_BOTTOM + (CONTENT_BOTTOM_Y - FREQUENCY_MUTE_ICON_BOTTOM - FREQUENCY_OFR_FONT_SIZE) / 2 +
            FREQUENCY_OFR_Y_OFFSET;
 }
 
@@ -108,8 +105,7 @@ inline int frequencyFallbackMaxWidth() {
 }
 
 inline int frequencyFallbackY(int glyphHeight) {
-    return FREQUENCY_MUTE_ICON_BOTTOM +
-           (CONTENT_BOTTOM_Y - FREQUENCY_MUTE_ICON_BOTTOM - glyphHeight) / 2 +
+    return FREQUENCY_MUTE_ICON_BOTTOM + (CONTENT_BOTTOM_Y - FREQUENCY_MUTE_ICON_BOTTOM - glyphHeight) / 2 +
            FREQUENCY_FALLBACK_Y_OFFSET;
 }
 
@@ -157,48 +153,30 @@ struct DisplayRect {
 // Primary content zone — frequency strip + arrow cluster share this Y range.
 // x covers the full width of the frequency content area.
 constexpr DisplayRect kFrequencyZoneRect{
-    static_cast<int16_t>(CONTENT_LEFT_MARGIN),
-    static_cast<int16_t>(PRIMARY_ZONE_Y),
-    static_cast<int16_t>(CONTENT_AVAILABLE_WIDTH),
-    static_cast<int16_t>(PRIMARY_ZONE_HEIGHT)
-};
+    static_cast<int16_t>(CONTENT_LEFT_MARGIN), static_cast<int16_t>(PRIMARY_ZONE_Y),
+    static_cast<int16_t>(CONTENT_AVAILABLE_WIDTH), static_cast<int16_t>(PRIMARY_ZONE_HEIGHT)};
 
 // Band-indicator column (left side).
-constexpr DisplayRect kBandsColumnRect{
-    0,
-    static_cast<int16_t>(PRIMARY_ZONE_Y),
-    static_cast<int16_t>(BAND_COLUMN_WIDTH),
-    static_cast<int16_t>(PRIMARY_ZONE_HEIGHT)
-};
+constexpr DisplayRect kBandsColumnRect{0, static_cast<int16_t>(PRIMARY_ZONE_Y), static_cast<int16_t>(BAND_COLUMN_WIDTH),
+                                       static_cast<int16_t>(PRIMARY_ZONE_HEIGHT)};
 
 // Signal-bars column (right side). Overapproximated to full signal column
 // width — tight rect would hug just the bar glyphs but this keeps the math
 // simple and union absorbs the extra width. Vertical extent matches the
 // actual 8-bar stack (y=10..165, see drawVerticalSignalBars), which spans
 // beyond the primary zone by design.
-constexpr DisplayRect kSignalBarsRect{
-    static_cast<int16_t>(SCREEN_WIDTH - SIGNAL_COLUMN_WIDTH),
-    10,
-    static_cast<int16_t>(SIGNAL_COLUMN_WIDTH),
-    155
-};
+constexpr DisplayRect kSignalBarsRect{static_cast<int16_t>(SCREEN_WIDTH - SIGNAL_COLUMN_WIDTH), 10,
+                                      static_cast<int16_t>(SIGNAL_COLUMN_WIDTH), 155};
 
 // Secondary alert-cards footer — full width overapproximated so we don't
 // need to track which card slots are occupied for rect math.
-constexpr DisplayRect kSecondaryCardsRect{
-    0,
-    static_cast<int16_t>(SECONDARY_ROW_Y),
-    static_cast<int16_t>(SCREEN_WIDTH),
-    static_cast<int16_t>(SECONDARY_ROW_HEIGHT)
-};
+constexpr DisplayRect kSecondaryCardsRect{0, static_cast<int16_t>(SECONDARY_ROW_Y), static_cast<int16_t>(SCREEN_WIDTH),
+                                          static_cast<int16_t>(SECONDARY_ROW_HEIGHT)};
 
 // Top-counter field (top-left bogey counter glyph).
 constexpr DisplayRect kTopCounterRect{
-    static_cast<int16_t>(TOP_COUNTER_FIELD_X),
-    static_cast<int16_t>(TOP_COUNTER_FIELD_Y),
-    static_cast<int16_t>(TOP_COUNTER_FIELD_W),
-    static_cast<int16_t>(TOP_COUNTER_FIELD_H)
-};
+    static_cast<int16_t>(TOP_COUNTER_FIELD_X), static_cast<int16_t>(TOP_COUNTER_FIELD_Y),
+    static_cast<int16_t>(TOP_COUNTER_FIELD_W), static_cast<int16_t>(TOP_COUNTER_FIELD_H)};
 
 // Renderer-owned element geometry. The visual-verification manifest exports
 // these same helpers, so its assertions cannot drift away from the coordinates
@@ -214,10 +192,14 @@ inline DisplayRect bandCellAssertRect(int index) {
     // fixed x=82 and y=55+43*i anchors.
     const int clamped = (index < 0) ? 0 : ((index >= BAND_CELL_COUNT) ? (BAND_CELL_COUNT - 1) : index);
     switch (clamped) {
-        case 0: return DisplayRect{82, 5, 23, 34};
-        case 1: return DisplayRect{82, 48, 56, 35};
-        case 2: return DisplayRect{82, 91, 30, 35};
-        default: return DisplayRect{82, 134, 30, 34};
+    case 0:
+        return DisplayRect{82, 5, 23, 34};
+    case 1:
+        return DisplayRect{82, 48, 56, 35};
+    case 2:
+        return DisplayRect{82, 91, 30, 35};
+    default:
+        return DisplayRect{82, 134, 30, 34};
     }
 }
 
@@ -367,8 +349,10 @@ inline DisplayRect directionArrowClusterRect(bool raisedLayout) {
     }
     int totalTop = topArrowCenterY - topH / 2 - 2;
     int totalBottom = bottomArrowCenterY + bottomH / 2 + 2;
-    if (totalTop < 0) totalTop = 0;
-    if (totalBottom > SCREEN_HEIGHT) totalBottom = SCREEN_HEIGHT;
+    if (totalTop < 0)
+        totalTop = 0;
+    if (totalBottom > SCREEN_HEIGHT)
+        totalBottom = SCREEN_HEIGHT;
     return DisplayRect{
         static_cast<int16_t>(clearLeft),
         static_cast<int16_t>(totalTop),

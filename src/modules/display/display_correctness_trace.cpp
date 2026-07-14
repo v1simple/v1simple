@@ -9,137 +9,134 @@ DisplayCorrectnessStatus compareStatus(bool applicable, uint32_t source, uint32_
     if (!applicable) {
         return DisplayCorrectnessStatus::NOT_APPLICABLE;
     }
-    return source == rendered ? DisplayCorrectnessStatus::MATCH
-                              : DisplayCorrectnessStatus::MISMATCH;
+    return source == rendered ? DisplayCorrectnessStatus::MATCH : DisplayCorrectnessStatus::MISMATCH;
 }
 
 DisplayCorrectnessOwner ownerFor(RenderFramePrimaryKind kind) {
     switch (kind) {
-        case RenderFramePrimaryKind::IDLE:
-            return DisplayCorrectnessOwner::IDLE;
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return DisplayCorrectnessOwner::V1;
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            return DisplayCorrectnessOwner::ALP;
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return DisplayCorrectnessOwner::NONE;
+    case RenderFramePrimaryKind::IDLE:
+        return DisplayCorrectnessOwner::IDLE;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return DisplayCorrectnessOwner::V1;
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        return DisplayCorrectnessOwner::ALP;
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return DisplayCorrectnessOwner::NONE;
     }
 }
 
 uint8_t primaryBandFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return static_cast<uint8_t>(frame.v1Priority.band);
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            return BAND_LASER;
-        case RenderFramePrimaryKind::IDLE:
-            return frame.primaryState.activeBands;
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return BAND_NONE;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return static_cast<uint8_t>(frame.v1Priority.band);
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        return BAND_LASER;
+    case RenderFramePrimaryKind::IDLE:
+        return frame.primaryState.activeBands;
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return BAND_NONE;
     }
 }
 
 uint8_t primaryArrowsFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return static_cast<uint8_t>(frame.v1Priority.direction);
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            return static_cast<uint8_t>(frame.primaryState.priorityArrow);
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::IDLE:
-            return static_cast<uint8_t>(frame.primaryState.arrows);
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return DIR_NONE;
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return static_cast<uint8_t>(frame.v1Priority.direction);
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        return static_cast<uint8_t>(frame.primaryState.priorityArrow);
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::IDLE:
+        return static_cast<uint8_t>(frame.primaryState.arrows);
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return DIR_NONE;
     }
 }
 
 uint32_t primaryFrequencyFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return frame.v1Priority.frequency;
-        case RenderFramePrimaryKind::IDLE:
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return 0;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return frame.v1Priority.frequency;
+    case RenderFramePrimaryKind::IDLE:
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return 0;
     }
 }
 
 uint8_t renderedSignalBarsFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return 0;
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-        case RenderFramePrimaryKind::IDLE:
-            return frame.primaryState.signalBars;
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return 0;
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return 0;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+    case RenderFramePrimaryKind::IDLE:
+        return frame.primaryState.signalBars;
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return 0;
     }
 }
 
 uint8_t sourceSignalBarsFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-            return frame.context.signalBars;
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            return 0;
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-        case RenderFramePrimaryKind::IDLE:
-            return frame.primaryState.signalBars;
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return 0;
+    case RenderFramePrimaryKind::V1_LIVE:
+        return frame.context.signalBars;
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        return 0;
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+    case RenderFramePrimaryKind::IDLE:
+        return frame.primaryState.signalBars;
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return 0;
     }
 }
 
 bool renderedMutedFor(const RenderFrame& frame) {
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::V1_LIVE:
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED:
-            return frame.primaryState.muted;
-        case RenderFramePrimaryKind::IDLE:
-        case RenderFramePrimaryKind::V1_PERSISTED:
-        case RenderFramePrimaryKind::NONE:
-        default:
-            return false;
+    case RenderFramePrimaryKind::V1_LIVE:
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED:
+        return frame.primaryState.muted;
+    case RenderFramePrimaryKind::IDLE:
+    case RenderFramePrimaryKind::V1_PERSISTED:
+    case RenderFramePrimaryKind::NONE:
+    default:
+        return false;
     }
 }
 
 bool hasPrimaryAlert(RenderFramePrimaryKind kind) {
-    return kind == RenderFramePrimaryKind::V1_LIVE ||
-           kind == RenderFramePrimaryKind::V1_PERSISTED ||
-           kind == RenderFramePrimaryKind::ALP_LIVE ||
-           kind == RenderFramePrimaryKind::ALP_PERSISTED;
+    return kind == RenderFramePrimaryKind::V1_LIVE || kind == RenderFramePrimaryKind::V1_PERSISTED ||
+           kind == RenderFramePrimaryKind::ALP_LIVE || kind == RenderFramePrimaryKind::ALP_PERSISTED;
 }
 
-}  // namespace
+} // namespace
 
-DisplayCorrectnessTraceEvent buildDisplayCorrectnessTraceEvent(const RenderFrame& frame,
-                                                               uint32_t tsMs) {
+DisplayCorrectnessTraceEvent buildDisplayCorrectnessTraceEvent(const RenderFrame& frame, uint32_t tsMs) {
     DisplayCorrectnessTraceEvent event;
     event.seq = ++gDisplayCorrectnessTraceSeq;
     event.tsMs = tsMs;
     event.primaryKind = frame.primaryKind;
     event.owner = ownerFor(frame.primaryKind);
-    event.cardCount = frame.cardCount < 0 ? 0 : static_cast<uint8_t>(
-        frame.cardCount > static_cast<int>(RenderFrame::MAX_CARDS)
-            ? RenderFrame::MAX_CARDS
-            : frame.cardCount);
+    event.cardCount =
+        frame.cardCount < 0
+            ? 0
+            : static_cast<uint8_t>(frame.cardCount > static_cast<int>(RenderFrame::MAX_CARDS) ? RenderFrame::MAX_CARDS
+                                                                                              : frame.cardCount);
 
     event.sourceBand = primaryBandFor(frame);
     event.renderedBand = primaryBandFor(frame);
@@ -157,25 +154,18 @@ DisplayCorrectnessTraceEvent buildDisplayCorrectnessTraceEvent(const RenderFrame
     const bool primaryAlert = hasPrimaryAlert(frame.primaryKind);
     event.bandStatus = compareStatus(primaryAlert, event.sourceBand, event.renderedBand);
     event.arrowsStatus = compareStatus(primaryAlert, event.sourceArrows, event.renderedArrows);
-    event.frequencyStatus = compareStatus(
-        frame.primaryKind == RenderFramePrimaryKind::V1_LIVE ||
-        frame.primaryKind == RenderFramePrimaryKind::V1_PERSISTED,
-        event.sourceFrequency,
-        event.renderedFrequency);
-    event.bogeyStatus = compareStatus(
-        frame.primaryKind != RenderFramePrimaryKind::NONE,
-        static_cast<uint8_t>(event.sourceBogey),
-        static_cast<uint8_t>(event.renderedBogey));
-    event.muteStatus = compareStatus(
-        frame.primaryKind == RenderFramePrimaryKind::V1_LIVE,
-        event.sourceMuted ? 1u : 0u,
-        event.renderedMuted ? 1u : 0u);
-    event.signalBarsStatus = compareStatus(
-        frame.primaryKind == RenderFramePrimaryKind::V1_LIVE ||
-        frame.primaryKind == RenderFramePrimaryKind::ALP_LIVE ||
-        frame.primaryKind == RenderFramePrimaryKind::ALP_PERSISTED,
-        event.sourceSignalBars,
-        event.renderedSignalBars);
+    event.frequencyStatus = compareStatus(frame.primaryKind == RenderFramePrimaryKind::V1_LIVE ||
+                                              frame.primaryKind == RenderFramePrimaryKind::V1_PERSISTED,
+                                          event.sourceFrequency, event.renderedFrequency);
+    event.bogeyStatus =
+        compareStatus(frame.primaryKind != RenderFramePrimaryKind::NONE, static_cast<uint8_t>(event.sourceBogey),
+                      static_cast<uint8_t>(event.renderedBogey));
+    event.muteStatus = compareStatus(frame.primaryKind == RenderFramePrimaryKind::V1_LIVE, event.sourceMuted ? 1u : 0u,
+                                     event.renderedMuted ? 1u : 0u);
+    event.signalBarsStatus = compareStatus(frame.primaryKind == RenderFramePrimaryKind::V1_LIVE ||
+                                               frame.primaryKind == RenderFramePrimaryKind::ALP_LIVE ||
+                                               frame.primaryKind == RenderFramePrimaryKind::ALP_PERSISTED,
+                                           event.sourceSignalBars, event.renderedSignalBars);
 
     return event;
 }
@@ -223,8 +213,7 @@ bool DisplayCorrectnessTraceLog::publish(const DisplayCorrectnessTraceEvent& eve
     return !dropped;
 }
 
-size_t DisplayCorrectnessTraceLog::copyRecent(DisplayCorrectnessTraceEvent* out,
-                                              size_t maxCount) const {
+size_t DisplayCorrectnessTraceLog::copyRecent(DisplayCorrectnessTraceEvent* out, size_t maxCount) const {
     LockGuard guard(*this);
     if (!out || maxCount == 0 || count_ == 0) {
         return 0;

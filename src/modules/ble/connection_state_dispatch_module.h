@@ -23,10 +23,10 @@ struct ConnectionStateDispatchDecision {
 
 // Executes the connection-state cadence gate and applies starvation watchdog safety.
 class ConnectionStateDispatchModule {
-public:
+  public:
     struct Providers {
-        ConnectionStateCadenceDecision (*runCadence)(
-            void* ctx, const ConnectionStateCadenceContext& cadenceCtx) = nullptr;
+        ConnectionStateCadenceDecision (*runCadence)(void* ctx,
+                                                     const ConnectionStateCadenceContext& cadenceCtx) = nullptr;
         void* cadenceContext = nullptr;
 
         void (*runConnectionStateProcess)(void* ctx, uint32_t nowMs) = nullptr;
@@ -40,7 +40,7 @@ public:
     void reset();
     ConnectionStateDispatchDecision process(const ConnectionStateDispatchContext& ctx);
 
-private:
+  private:
     Providers providers{};
     uint32_t lastProcessRunMs_ = 0;
     bool hasRunProcess_ = false;

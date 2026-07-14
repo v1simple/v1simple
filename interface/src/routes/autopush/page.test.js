@@ -5,151 +5,179 @@ import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
-	return installFetchMock(
-		[
-			...overrides,
-			{
-				method: 'GET',
-				match: '/api/autopush/slots',
-				respond: jsonResponse({
-					enabled: true,
-					activeSlot: 1,
-					slots: [
-						{
-							name: 'Default',
-							profile: 'Road Trip',
-							mode: 2,
-							volume: 6,
-							muteVolume: 2,
-							darkMode: false,
-							muteToZero: false,
-							alertPersist: 1,
-							priorityArrowOnly: false
-						},
-						{
-							name: 'Highway',
-							profile: 'Quiet Commute',
-							mode: 3,
-							volume: 8,
-							muteVolume: 2,
-							darkMode: true,
-							muteToZero: false,
-							alertPersist: 2,
-							priorityArrowOnly: true
-						},
-						{
-							name: 'Comfort',
-							profile: '',
-							mode: 0,
-							volume: 4,
-							muteVolume: 1,
-							darkMode: false,
-							muteToZero: true,
-							alertPersist: 0,
-							priorityArrowOnly: false
-						}
-					]
-				})
-			},
-			{
-				method: 'GET',
-				match: '/api/v1/profiles',
-				respond: jsonResponse({
-					profiles: [{ name: 'Road Trip' }, { name: 'Quiet Commute' }]
-				})
-			},
-			{ method: 'POST', match: '/api/autopush/activate', respond: jsonResponse({ success: true }) },
-			{ method: 'POST', match: '/api/autopush/push', respond: jsonResponse({ success: true }) },
-			{ method: 'POST', match: '/api/autopush/slot', respond: jsonResponse({ success: true }) }
-		],
-		jsonResponse({})
-	);
+    return installFetchMock(
+        [
+            ...overrides,
+            {
+                method: 'GET',
+                match: '/api/autopush/slots',
+                respond: jsonResponse({
+                    enabled: true,
+                    activeSlot: 1,
+                    slots: [
+                        {
+                            name: 'Default',
+                            profile: 'Road Trip',
+                            mode: 2,
+                            volume: 6,
+                            muteVolume: 2,
+                            darkMode: false,
+                            muteToZero: false,
+                            alertPersist: 1,
+                            priorityArrowOnly: false
+                        },
+                        {
+                            name: 'Highway',
+                            profile: 'Quiet Commute',
+                            mode: 3,
+                            volume: 8,
+                            muteVolume: 2,
+                            darkMode: true,
+                            muteToZero: false,
+                            alertPersist: 2,
+                            priorityArrowOnly: true
+                        },
+                        {
+                            name: 'Comfort',
+                            profile: '',
+                            mode: 0,
+                            volume: 4,
+                            muteVolume: 1,
+                            darkMode: false,
+                            muteToZero: true,
+                            alertPersist: 0,
+                            priorityArrowOnly: false
+                        }
+                    ]
+                })
+            },
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse({
+                    profiles: [{ name: 'Road Trip' }, { name: 'Quiet Commute' }]
+                })
+            },
+            {
+                method: 'POST',
+                match: '/api/autopush/activate',
+                respond: jsonResponse({ success: true })
+            },
+            {
+                method: 'POST',
+                match: '/api/autopush/push',
+                respond: jsonResponse({ success: true })
+            },
+            {
+                method: 'POST',
+                match: '/api/autopush/slot',
+                respond: jsonResponse({ success: true })
+            }
+        ],
+        jsonResponse({})
+    );
 }
 
 describe('autopush route page', () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
 
-	it('loads slots and opens the slot editor', async () => {
-		installDefaultFetch();
-		const { unmount } = render(Page);
+    it('loads slots and opens the slot editor', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
 
-		await screen.findByText('Auto-Push Profiles');
-		await screen.findByText('Highway');
-		await screen.findByText('Active');
+        await screen.findByText('Auto-Push Profiles');
+        await screen.findByText('Highway');
+        await screen.findByText('Active');
 
-		await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
 
-		expect(await screen.findByLabelText('Profile')).toBeInTheDocument();
-		expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
-		expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(await screen.findByLabelText('Profile')).toBeInTheDocument();
+        expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
 
-		unmount();
-	});
+        unmount();
+    });
 
-	it('keeps the slot editor open when saving a slot fails', async () => {
-		installDefaultFetch([
-			{ method: 'POST', match: '/api/autopush/slot', respond: jsonResponse({ error: 'bad save' }, 500) }
-		]);
-		const { unmount } = render(Page);
+    it('keeps the slot editor open when saving a slot fails', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/slot',
+                respond: jsonResponse({ error: 'bad save' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
 
-		await screen.findByText('Highway');
-		await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-		await fireEvent.click(await screen.findByRole('button', { name: /^save$/i }));
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(await screen.findByRole('button', { name: /^save$/i }));
 
-		await screen.findByText('Failed to save');
-		expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
-		expect(screen.getByLabelText('Profile')).toBeInTheDocument();
+        await screen.findByText('Failed to save');
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(screen.getByLabelText('Profile')).toBeInTheDocument();
 
-		unmount();
-	});
+        unmount();
+    });
 
-	it('keeps the previous active slot when activation fails', async () => {
-		installDefaultFetch([
-			{ method: 'POST', match: '/api/autopush/activate', respond: jsonResponse({ error: 'bad activate' }, 500) }
-		]);
-		const { unmount } = render(Page);
+    it('keeps the previous active slot when activation fails', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/activate',
+                respond: jsonResponse({ error: 'bad activate' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
 
-		await screen.findByText('Highway');
-		await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
 
-		await screen.findByText('Failed to activate');
-		expect(screen.getByText('Highway')).toBeInTheDocument();
-		expect(screen.getAllByText('Active')).toHaveLength(1);
-		expect(screen.getAllByRole('button', { name: /^activate$/i })).toHaveLength(2);
+        await screen.findByText('Failed to activate');
+        expect(screen.getByText('Highway')).toBeInTheDocument();
+        expect(screen.getAllByText('Active')).toHaveLength(1);
+        expect(screen.getAllByRole('button', { name: /^activate$/i })).toHaveLength(2);
 
-		unmount();
-	});
+        unmount();
+    });
 
-	it('announces activation with the 1-based slot number', async () => {
-		installDefaultFetch([
-			{ method: 'POST', match: '/api/autopush/activate', respond: jsonResponse({ success: true }) }
-		]);
-		const { unmount } = render(Page);
+    it('announces activation with the 1-based slot number', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/activate',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
 
-		await screen.findByText('Highway');
-		await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
 
-		// Slot index 0 must announce as "Slot 1" (regression pin: toasts were
-		// 0-based in an earlier build).
-		await screen.findByText('Slot 1 activated');
-		expect(screen.getAllByText('Active')).toHaveLength(1);
+        // Slot index 0 must announce as "Slot 1" (regression pin: toasts were
+        // 0-based in an earlier build).
+        await screen.findByText('Slot 1 activated');
+        expect(screen.getAllByText('Active')).toHaveLength(1);
 
-		unmount();
-	});
+        unmount();
+    });
 
-	it('shows an error when profiles fail to load', async () => {
-		installDefaultFetch([
-			{ method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ error: 'bad profiles' }, 500) }
-		]);
-		const { unmount } = render(Page);
+    it('shows an error when profiles fail to load', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse({ error: 'bad profiles' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
 
-		await screen.findByText('Failed to load profiles');
-		await screen.findByText('Highway');
-		expect(screen.getByText('Auto-Push Profiles')).toBeInTheDocument();
-		expect(screen.getByText('Active')).toBeInTheDocument();
+        await screen.findByText('Failed to load profiles');
+        await screen.findByText('Highway');
+        expect(screen.getByText('Auto-Push Profiles')).toBeInTheDocument();
+        expect(screen.getByText('Active')).toBeInTheDocument();
 
-		unmount();
-	});
+        unmount();
+    });
 });

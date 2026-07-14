@@ -10,9 +10,8 @@
 // every call site, same as the drawing macros in display_draw.h.
 // ============================================================================
 
-#include "display_driver.h"  // DISPLAY_USE_ARDUINO_GFX, Arduino_Canvas, etc.
+#include "display_driver.h" // DISPLAY_USE_ARDUINO_GFX, Arduino_Canvas, etc.
 #include <memory>
-
 
 // Shared datum state for the current single display context.
 // This intentionally lives in a function-local static so all Arduino_GFX text
@@ -22,7 +21,10 @@ inline uint8_t& gfxCurrentTextDatum() {
     return datum;
 }
 
-#define GFX_setTextDatum(d) do { gfxCurrentTextDatum() = (d); } while(0)
+#define GFX_setTextDatum(d)                                                                                            \
+    do {                                                                                                               \
+        gfxCurrentTextDatum() = (d);                                                                                   \
+    } while (0)
 
 // Arduino_GFX implementation of drawString with datum support.
 // Uses getTextBounds() to compute alignment offsets.
@@ -36,37 +38,42 @@ inline void GFX_drawString(Arduino_Canvas* canvas, const char* str, int16_t x, i
 
     // Horizontal alignment
     switch (datum) {
-        case TC_DATUM: case MC_DATUM: case BC_DATUM:
-            drawX = x - x1 - w / 2;
-            break;
-        case TR_DATUM: case MR_DATUM: case BR_DATUM:
-            drawX = x - x1 - w;
-            break;
-        default:  // TL, ML, BL — left aligned
-            drawX = x - x1;
-            break;
+    case TC_DATUM:
+    case MC_DATUM:
+    case BC_DATUM:
+        drawX = x - x1 - w / 2;
+        break;
+    case TR_DATUM:
+    case MR_DATUM:
+    case BR_DATUM:
+        drawX = x - x1 - w;
+        break;
+    default: // TL, ML, BL — left aligned
+        drawX = x - x1;
+        break;
     }
 
     // Vertical alignment
     switch (datum) {
-        case ML_DATUM: case MC_DATUM: case MR_DATUM:
-            drawY = y - y1 - h / 2;
-            break;
-        case BL_DATUM: case BC_DATUM: case BR_DATUM:
-            drawY = y - y1 - h;
-            break;
-        default:  // TL, TC, TR — top aligned
-            drawY = y - y1;
-            break;
+    case ML_DATUM:
+    case MC_DATUM:
+    case MR_DATUM:
+        drawY = y - y1 - h / 2;
+        break;
+    case BL_DATUM:
+    case BC_DATUM:
+    case BR_DATUM:
+        drawY = y - y1 - h;
+        break;
+    default: // TL, TC, TR — top aligned
+        drawY = y - y1;
+        break;
     }
 
     canvas->setCursor(drawX, drawY);
     canvas->print(str);
 }
 
-inline void GFX_drawString(const std::unique_ptr<Arduino_Canvas>& canvas,
-                           const char* str,
-                           int16_t x,
-                           int16_t y) {
+inline void GFX_drawString(const std::unique_ptr<Arduino_Canvas>& canvas, const char* str, int16_t x, int16_t y) {
     GFX_drawString(canvas.get(), str, x, y);
 }

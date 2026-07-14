@@ -38,8 +38,8 @@ static constexpr uint32_t EOT_STALE_MS = 10000;
 static constexpr uint8_t BUFFER_OVERFLOWS_BEFORE_DISCONNECT = 2;
 
 // ── ECU idle detection (car-off / petrol stop) ─────────────────
-static constexpr uint8_t ECU_IDLE_BACKOFF_THRESHOLD = 6;        // backoff cycles before entering ECU_IDLE
-static constexpr uint32_t ECU_IDLE_PROBE_INTERVAL_MS = 30000;   // slow reconnect probe while idling
+static constexpr uint8_t ECU_IDLE_BACKOFF_THRESHOLD = 6;      // backoff cycles before entering ECU_IDLE
+static constexpr uint32_t ECU_IDLE_PROBE_INTERVAL_MS = 30000; // slow reconnect probe while idling
 static constexpr uint8_t EOT_INVALID_STREAK_CLEAR_CACHE = 3;
 static constexpr uint8_t EOT_CACHE_PERSIST_SAMPLES = 3;
 static constexpr uint8_t CORE_READY_MIN_SPEED_SAMPLES = 3;
@@ -50,29 +50,14 @@ static constexpr int8_t DEFAULT_MIN_RSSI = -80;
 
 // ── AT init sequence ────────────────────────────────────────────
 static constexpr const char* COLD_INIT_COMMANDS[] = {
-    "ATZ\r",
-    "ATE0\r",
-    "ATL0\r",
-    "ATS0\r",
-    "ATAL\r",
-    "ATH0\r",
-    "ATSP0\r",
-    "ATAT1\r",
+    "ATZ\r", "ATE0\r", "ATL0\r", "ATS0\r", "ATAL\r", "ATH0\r", "ATSP0\r", "ATAT1\r",
 };
-static constexpr size_t COLD_INIT_COMMAND_COUNT =
-    sizeof(COLD_INIT_COMMANDS) / sizeof(COLD_INIT_COMMANDS[0]);
+static constexpr size_t COLD_INIT_COMMAND_COUNT = sizeof(COLD_INIT_COMMANDS) / sizeof(COLD_INIT_COMMANDS[0]);
 
 static constexpr const char* WARM_INIT_COMMANDS[] = {
-    "ATE0\r",
-    "ATL0\r",
-    "ATS0\r",
-    "ATAL\r",
-    "ATH0\r",
-    "ATSP0\r",
-    "ATAT1\r",
+    "ATE0\r", "ATL0\r", "ATS0\r", "ATAL\r", "ATH0\r", "ATSP0\r", "ATAT1\r",
 };
-static constexpr size_t WARM_INIT_COMMAND_COUNT =
-    sizeof(WARM_INIT_COMMANDS) / sizeof(WARM_INIT_COMMANDS[0]);
+static constexpr size_t WARM_INIT_COMMAND_COUNT = sizeof(WARM_INIT_COMMANDS) / sizeof(WARM_INIT_COMMANDS[0]);
 static constexpr uint32_t AT_INIT_RESPONSE_TIMEOUT_MS = 2000;
 static constexpr uint8_t AT_INIT_RETRIES = 1;
 
@@ -80,4 +65,4 @@ static constexpr uint8_t AT_INIT_RETRIES = 1;
 static constexpr const char* SPEED_POLL_CMD = "010D\r";
 static constexpr const char* VIN_POLL_CMD = "0902\r";
 
-}  // namespace obd
+} // namespace obd

@@ -4,7 +4,7 @@
 
 // Owns per-loop telemetry sampling and heap/cache perf recording.
 class LoopTelemetryModule {
-public:
+  public:
     struct Providers {
         uint32_t (*microsNow)(void* ctx) = nullptr;
         void* microsContext = nullptr;
@@ -22,8 +22,8 @@ public:
         void* cachedFreeDmaContext = nullptr;
         uint32_t (*readCachedLargestDma)(void* ctx) = nullptr;
         void* cachedLargestDmaContext = nullptr;
-        void (*recordHeapStats)(
-            void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock, uint32_t cachedFreeDma, uint32_t cachedLargestDma) = nullptr;
+        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock, uint32_t cachedFreeDma,
+                                uint32_t cachedLargestDma) = nullptr;
         void* heapStatsContext = nullptr;
     };
 
@@ -33,7 +33,7 @@ public:
     // Visible for testing: how often heap is sampled (every Nth loop).
     static constexpr uint8_t HEAP_SAMPLE_DIVISOR = 8;
 
-private:
+  private:
     Providers providers{};
-    uint8_t heapSampleSkip_ = HEAP_SAMPLE_DIVISOR - 1;  // sample on first call
+    uint8_t heapSampleSkip_ = HEAP_SAMPLE_DIVISOR - 1; // sample on first call
 };

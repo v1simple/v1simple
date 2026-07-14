@@ -13,8 +13,7 @@ namespace {
 
 constexpr size_t STATUS_CACHE_GROWTH_QUANTUM = 256u;
 
-template <typename T>
-T callOr(T (*fn)(void* ctx), void* ctx, const T& fallback) {
+template <typename T> T callOr(T (*fn)(void* ctx), void* ctx, const T& fallback) {
     return fn ? fn(ctx) : fallback;
 }
 
@@ -28,9 +27,8 @@ void buildStatusDoc(const StatusRuntime& runtime, JsonDocument& doc) {
     wifi["sta_connected"] = staConnected;
     wifi["sta_ip"] = staConnected ? callOr<String>(runtime.staIp, runtime.staIpCtx, String("")) : "";
     wifi["ap_ip"] = callOr<String>(runtime.apIp, runtime.apIpCtx, String(""));
-    wifi["ssid"] = staConnected
-        ? callOr<String>(runtime.connectedSsid, runtime.connectedSsidCtx, String(""))
-        : callOr<String>(runtime.apSsid, runtime.apSsidCtx, String(""));
+    wifi["ssid"] = staConnected ? callOr<String>(runtime.connectedSsid, runtime.connectedSsidCtx, String(""))
+                                : callOr<String>(runtime.apSsid, runtime.apSsidCtx, String(""));
     wifi["rssi"] = staConnected ? callOr<int32_t>(runtime.rssi, runtime.rssiCtx, 0) : 0;
     wifi["sta_enabled"] = callOr<bool>(runtime.staEnabled, runtime.staEnabledCtx, false);
     wifi["sta_ssid"] = callOr<String>(runtime.staSavedSsid, runtime.staSavedSsidCtx, String(""));
@@ -62,8 +60,7 @@ void buildStatusDoc(const StatusRuntime& runtime, JsonDocument& doc) {
 }
 
 size_t roundUpStatusCacheCapacity(size_t required) {
-    return ((required + STATUS_CACHE_GROWTH_QUANTUM - 1u) / STATUS_CACHE_GROWTH_QUANTUM) *
-           STATUS_CACHE_GROWTH_QUANTUM;
+    return ((required + STATUS_CACHE_GROWTH_QUANTUM - 1u) / STATUS_CACHE_GROWTH_QUANTUM) * STATUS_CACHE_GROWTH_QUANTUM;
 }
 
 bool ensureStatusCacheCapacity(StatusJsonCache& cachedStatusJson, size_t required) {
@@ -73,16 +70,13 @@ bool ensureStatusCacheCapacity(StatusJsonCache& cachedStatusJson, size_t require
 
     const size_t newCapacity = roundUpStatusCacheCapacity(required);
     const size_t previousCapacity = cachedStatusJson.capacity;
-    char* newData = static_cast<char*>(
-        heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+    char* newData = static_cast<char*>(heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     bool inPsram = true;
 
     if (newData == nullptr) {
-        Serial.printf(
-            "[WiFiStatus] Cache PSRAM alloc failed; falling back to internal (%lu bytes)\n",
-            static_cast<unsigned long>(newCapacity));
-        newData = static_cast<char*>(
-            heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
+        Serial.printf("[WiFiStatus] Cache PSRAM alloc failed; falling back to internal (%lu bytes)\n",
+                      static_cast<unsigned long>(newCapacity));
+        newData = static_cast<char*>(heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
         inPsram = false;
     }
 
@@ -101,23 +95,17 @@ bool ensureStatusCacheCapacity(StatusJsonCache& cachedStatusJson, size_t require
     cachedStatusJson.length = 0;
     cachedStatusJson.inPsram = inPsram;
 
-    Serial.printf("[WiFiStatus] Cache grow %lu -> %lu bytes (%s)\n",
-                  static_cast<unsigned long>(previousCapacity),
-                  static_cast<unsigned long>(newCapacity),
-                  inPsram ? "psram" : "internal");
+    Serial.printf("[WiFiStatus] Cache grow %lu -> %lu bytes (%s)\n", static_cast<unsigned long>(previousCapacity),
+                  static_cast<unsigned long>(newCapacity), inPsram ? "psram" : "internal");
     return true;
 }
 
-void sendStatus(WebServer& server,
-                const StatusRuntime& runtime,
-                StatusJsonCache& cachedStatusJson,
-                unsigned long& lastStatusJsonTime,
-                unsigned long cacheTtlMs,
-                unsigned long (*millisFn)(void* ctx), void* millisCtx) {
+void sendStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,
+                unsigned long& lastStatusJsonTime, unsigned long cacheTtlMs, unsigned long (*millisFn)(void* ctx),
+                void* millisCtx) {
     const unsigned long now = millisFn ? millisFn(millisCtx) : millis();
-    const bool cacheValid = cachedStatusJson.data != nullptr &&
-                            cachedStatusJson.length > 0 &&
-                            (now - lastStatusJsonTime) < cacheTtlMs;
+    const bool cacheValid =
+        cachedStatusJson.data != nullptr && cachedStatusJson.length > 0 && (now - lastStatusJsonTime) < cacheTtlMs;
 
     if (!cacheValid) {
         WifiJson::Document doc;
@@ -137,16 +125,14 @@ void sendStatus(WebServer& server,
     sendSerializedJson(server, cachedStatusJson.data, cachedStatusJson.length);
 }
 
-}  // namespace
+} // namespace
 
-void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson,
-                               unsigned long& lastStatusJsonTime) {
+void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime) {
     cachedStatusJson.length = 0;
     lastStatusJsonTime = 0;
 }
 
-void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson,
-                            unsigned long& lastStatusJsonTime) {
+void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime) {
     if (cachedStatusJson.data != nullptr) {
         heap_caps_free(cachedStatusJson.data);
     }
@@ -157,25 +143,14 @@ void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson,
     lastStatusJsonTime = 0;
 }
 
-void handleApiStatus(WebServer& server,
-                     const StatusRuntime& runtime,
-                     StatusJsonCache& cachedStatusJson,
-                     unsigned long& lastStatusJsonTime,
-                     unsigned long cacheTtlMs,
-                     unsigned long (*millisFn)(void* ctx), void* millisCtx,
-                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
+void handleApiStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,
+                     unsigned long& lastStatusJsonTime, unsigned long cacheTtlMs, unsigned long (*millisFn)(void* ctx),
+                     void* millisCtx, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx)) {
         return;
     }
 
-    sendStatus(
-        server,
-        runtime,
-        cachedStatusJson,
-        lastStatusJsonTime,
-        cacheTtlMs,
-        millisFn,
-        millisCtx);
+    sendStatus(server, runtime, cachedStatusJson, lastStatusJsonTime, cacheTtlMs, millisFn, millisCtx);
 }
 
-}  // namespace WifiStatusApiService
+} // namespace WifiStatusApiService

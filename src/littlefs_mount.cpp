@@ -8,4 +8,4 @@ bool mountStorage() {
     return LittleFS.begin(kAutoFormat, kBasePath, kMaxOpenFiles, kPartitionLabel);
 }
 
-}  // namespace fsmount
+} // namespace fsmount

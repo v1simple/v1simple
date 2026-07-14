@@ -11,7 +11,7 @@ namespace WifiV1DevicesApiService {
 struct DeviceInfo {
     String address;
     String name;
-    uint8_t defaultProfile = 0;  // 0=none/global slot, 1..3=slot override
+    uint8_t defaultProfile = 0; // 0=none/global slot, 1..3=slot override
     bool connected = false;
 };
 
@@ -28,16 +28,13 @@ struct Runtime {
 
 void handleApiDevicesList(WebServer& server, const Runtime& runtime);
 
-void handleApiDeviceNameSave(WebServer& server,
-                             const Runtime& runtime,
-                             bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiDeviceNameSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                             void* rateLimitCtx);
 
-void handleApiDeviceProfileSave(WebServer& server,
-                                const Runtime& runtime,
-                                bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiDeviceProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                                void* rateLimitCtx);
 
-void handleApiDeviceDelete(WebServer& server,
-                           const Runtime& runtime,
-                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+void handleApiDeviceDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                           void* rateLimitCtx);
 
-}  // namespace WifiV1DevicesApiService
+} // namespace WifiV1DevicesApiService

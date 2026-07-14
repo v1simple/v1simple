@@ -18,27 +18,27 @@
 #include <freertos/semphr.h>
 
 // Hardware Pins
-#define BATTERY_ADC_CHANNEL     ADC1_CHANNEL_3  // GPIO4
-#define BATTERY_ADC_GPIO        4
-#define BOOT_BUTTON_GPIO        0               // BOOT button for brightness adjustment
-#define PWR_BUTTON_GPIO         16              // Also battery presence detection
-#define TCA9554_SDA_GPIO        47
-#define TCA9554_SCL_GPIO        48
-#define TCA9554_I2C_ADDR        0x20            // ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000
-#define TCA9554_PWR_LATCH_PIN   6               // Pin 6 controls battery power latch
+#define BATTERY_ADC_CHANNEL ADC1_CHANNEL_3 // GPIO4
+#define BATTERY_ADC_GPIO 4
+#define BOOT_BUTTON_GPIO 0 // BOOT button for brightness adjustment
+#define PWR_BUTTON_GPIO 16 // Also battery presence detection
+#define TCA9554_SDA_GPIO 47
+#define TCA9554_SCL_GPIO 48
+#define TCA9554_I2C_ADDR 0x20   // ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000
+#define TCA9554_PWR_LATCH_PIN 6 // Pin 6 controls battery power latch
 
 // TCA9554 Registers
-#define TCA9554_OUTPUT_PORT     0x01
-#define TCA9554_CONFIG_PORT     0x03
+#define TCA9554_OUTPUT_PORT 0x01
+#define TCA9554_CONFIG_PORT 0x03
 
 // Battery voltage thresholds (mV)
-#define BATTERY_FULL_MV         battery_math::kFullMv
-#define BATTERY_EMPTY_MV        battery_math::kEmptyMv
-#define BATTERY_WARNING_MV      battery_math::kWarningMv
-#define BATTERY_CRITICAL_MV     battery_math::kCriticalMv
+#define BATTERY_FULL_MV battery_math::kFullMv
+#define BATTERY_EMPTY_MV battery_math::kEmptyMv
+#define BATTERY_WARNING_MV battery_math::kWarningMv
+#define BATTERY_CRITICAL_MV battery_math::kCriticalMv
 
 class BatteryManager {
-public:
+  public:
     BatteryManager();
 
     // Initialize the battery manager (call in setup)
@@ -88,7 +88,7 @@ public:
         uint32_t buttonPressStart = 0;
     };
 
-private:
+  private:
     bool initialized_;
     bool onBattery_;
     uint16_t lastVoltage_;
@@ -124,4 +124,4 @@ bool processPowerButtonState(bool pinLow, uint32_t nowMs, BatteryManager::PwrBut
 // Shared I2C bus for TCA9554 (also used by ES8311 codec)
 extern TwoWire tca9554Wire;
 extern SemaphoreHandle_t tca9554WireMutex;
-#endif  // BATTERY_MANAGER_H
+#endif // BATTERY_MANAGER_H

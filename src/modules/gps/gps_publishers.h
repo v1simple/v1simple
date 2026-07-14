@@ -27,24 +27,24 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct GpsTimeSnapshot {
-    bool     valid         = false;
-    uint32_t capturedMs    = 0;      // millis() at publish
-    uint64_t utcEpochMs    = 0;      // ms since Unix epoch (UTC)
-    uint8_t  source        = 0;      // 1 = RMC
+    bool valid = false;
+    uint32_t capturedMs = 0; // millis() at publish
+    uint64_t utcEpochMs = 0; // ms since Unix epoch (UTC)
+    uint8_t source = 0;      // 1 = RMC
 };
 
 struct GpsGeoSnapshot {
-    bool     valid         = false;
-    uint32_t capturedMs    = 0;
-    float    latitudeDeg   = NAN;
-    float    longitudeDeg  = NAN;
-    bool     courseValid   = false;
-    float    courseDeg     = NAN;    // 0..360, true north
-    bool     speedValid    = false;
-    float    speedMph      = 0.0f;
-    uint8_t  satellites    = 0;
-    float    hdop          = NAN;
-    bool     hasFix        = false;
+    bool valid = false;
+    uint32_t capturedMs = 0;
+    float latitudeDeg = NAN;
+    float longitudeDeg = NAN;
+    bool courseValid = false;
+    float courseDeg = NAN; // 0..360, true north
+    bool speedValid = false;
+    float speedMph = 0.0f;
+    uint8_t satellites = 0;
+    float hdop = NAN;
+    bool hasFix = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,9 +52,9 @@ struct GpsGeoSnapshot {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class GpsTimePublisher {
-public:
+  public:
     // Staleness threshold: UTC stale after this many ms with no re-publish.
-    static constexpr uint32_t kStaleMs = 30000;  // 30 s
+    static constexpr uint32_t kStaleMs = 30000; // 30 s
 
     // Called by GpsRuntimeModule to publish a new UTC time.
     void publish(const GpsTimeSnapshot& s);
@@ -67,7 +67,7 @@ public:
     // Returns true if the publisher has a valid, fresh snapshot.
     bool readUtc(uint32_t nowMs, uint64_t& utcEpochMsOut) const;
 
-private:
+  private:
     void lock() const;
     void unlock() const;
 
@@ -84,9 +84,9 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 
 class GpsGeoPublisher {
-public:
+  public:
     // Staleness threshold: geo stale after this many ms with no re-publish.
-    static constexpr uint32_t kStaleMs = 5000;  // 5 s
+    static constexpr uint32_t kStaleMs = 5000; // 5 s
 
     // Called by GpsRuntimeModule to publish a new geo snapshot.
     void publish(const GpsGeoSnapshot& s);
@@ -97,7 +97,7 @@ public:
     // Returns true if the most recent snapshot is fresh.
     bool fresh(uint32_t nowMs) const;
 
-private:
+  private:
     void lock() const;
     void unlock() const;
 

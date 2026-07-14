@@ -39,14 +39,8 @@ void sendStaticCacheHeaders(WebServer& server_, bool gzip, bool immutableCache, 
     server_.sendHeader("Expires", "0");
 }
 
-bool streamOpenFile(WebServer& server_,
-                    File& file,
-                    const char* path,
-                    const char* contentType,
-                    size_t fileSize,
-                    bool gzip,
-                    bool immutableCache,
-                    const String& etag) {
+bool streamOpenFile(WebServer& server_, File& file, const char* path, const char* contentType, size_t fileSize,
+                    bool gzip, bool immutableCache, const String& etag) {
     constexpr size_t kStreamChunkBytes = 256;
     server_.setContentLength(fileSize);
     sendStaticCacheHeaders(server_, gzip, immutableCache, etag);
@@ -63,10 +57,8 @@ bool streamOpenFile(WebServer& server_,
             break;
         }
         if (!client_write_retry::writeAll(client, buf, len)) {
-            client.stop();  // Fail-fast on short/partial stream writes.
-            Serial.printf("[HTTP] WARN stream failed %s (%u/%u bytes)\n",
-                          path,
-                          static_cast<unsigned>(bytesSent),
+            client.stop(); // Fail-fast on short/partial stream writes.
+            Serial.printf("[HTTP] WARN stream failed %s (%u/%u bytes)\n", path, static_cast<unsigned>(bytesSent),
                           static_cast<unsigned>(fileSize));
             return false;
         }
@@ -75,9 +67,7 @@ bool streamOpenFile(WebServer& server_,
 
     if (bytesSent != fileSize) {
         client.stop();
-        Serial.printf("[HTTP] WARN stream short %s (%u/%u bytes)\n",
-                      path,
-                      static_cast<unsigned>(bytesSent),
+        Serial.printf("[HTTP] WARN stream short %s (%u/%u bytes)\n", path, static_cast<unsigned>(bytesSent),
                       static_cast<unsigned>(fileSize));
         return false;
     }
@@ -85,7 +75,7 @@ bool streamOpenFile(WebServer& server_,
     return true;
 }
 
-}  // namespace
+} // namespace
 
 bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* contentType) {
     uint32_t startUs = PERF_TIMESTAMP_US();
@@ -106,7 +96,8 @@ bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* c
                     file.close();
                     return true;
                 }
-                const bool streamOk = streamOpenFile(server_, file, path, contentType, fileSize, true, immutableCache, etag);
+                const bool streamOk =
+                    streamOpenFile(server_, file, path, contentType, fileSize, true, immutableCache, etag);
                 file.close();
                 if (!streamOk) {
                     server_.send(500, "text/plain", "Stream error");

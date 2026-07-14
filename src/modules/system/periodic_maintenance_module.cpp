@@ -5,7 +5,7 @@
 
 #if PERF_METRICS
 static uint32_t sLastHeapIntegrityCheckMs = 0;
-static constexpr uint32_t HEAP_INTEGRITY_CHECK_INTERVAL_MS = 30000;  // Every 30 seconds
+static constexpr uint32_t HEAP_INTEGRITY_CHECK_INTERVAL_MS = 30000; // Every 30 seconds
 #endif
 
 void PeriodicMaintenanceModule::begin(const Providers& hooks) {
@@ -18,8 +18,7 @@ void PeriodicMaintenanceModule::process(uint32_t nowMs) {
 
 void PeriodicMaintenanceModule::process(uint32_t nowMs, const Context& ctx) {
     const bool deferLowPriorityMaintenance =
-        ctx.bleConnected || ctx.bleBackpressure || ctx.loopOverloaded ||
-        ctx.forceTailBleDrainPending;
+        ctx.bleConnected || ctx.bleBackpressure || ctx.loopOverloaded || ctx.forceTailBleDrainPending;
 #if PERF_METRICS
     // Periodic heap integrity check (every ~30 seconds).
     // heap_caps_check_integrity_all(true) can take hundreds of milliseconds on
@@ -27,8 +26,7 @@ void PeriodicMaintenanceModule::process(uint32_t nowMs, const Context& ctx) {
     // while the loop is already pressured. This diagnostic is useful on the
     // bench, but it is lower priority than every drive-time tier.
     if (!deferLowPriorityMaintenance &&
-        (sLastHeapIntegrityCheckMs == 0 ||
-         (nowMs - sLastHeapIntegrityCheckMs >= HEAP_INTEGRITY_CHECK_INTERVAL_MS))) {
+        (sLastHeapIntegrityCheckMs == 0 || (nowMs - sLastHeapIntegrityCheckMs >= HEAP_INTEGRITY_CHECK_INTERVAL_MS))) {
         sLastHeapIntegrityCheckMs = nowMs;
 
         if (!heap_caps_check_integrity_all(true)) {

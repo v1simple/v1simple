@@ -26,8 +26,8 @@
 #include "storage_manager.h"
 #include "config.h"
 #include <Arduino.h>
-#include <WiFi.h>  // For WiFi coexistence during BLE connect
-#include <Preferences.h>  // For fresh-flash detection
+#include <WiFi.h>        // For WiFi coexistence during BLE connect
+#include <Preferences.h> // For fresh-flash detection
 #include <set>
 #include <string>
 #include <cstdlib>
@@ -101,36 +101,18 @@ portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
 V1BLEClient* instancePtr = nullptr;
 
 V1BLEClient::V1BLEClient()
-    : pClient_(nullptr)
-    , pRemoteService_(nullptr)
-    , pDisplayDataChar_(nullptr)
-    , pCommandChar_(nullptr)
-    , pCommandCharLong_(nullptr)
-    , pServer_(nullptr)
-    , pProxyService_(nullptr)
-    , pProxyNotifyChar_(nullptr)
-    , pProxyNotifyLongChar_(nullptr)
-    , pProxyWriteChar_(nullptr)
-    , proxyEnabled_(false)
-    , proxyServerInitialized_(false)
-    , proxyServerInitAttempted_(false)
-    // proxyClientConnected_ - uses default member initializer (atomic)
-    , proxyName_("V1-Proxy")
-    , proxyQueue_(nullptr)
-    , phone2v1Queue_(nullptr)
-    , proxyQueuesInPsram_(false)
-    , dataCallback_(nullptr)
-    , connectImmediateCallback_(nullptr)
-    , connectStableCallback_(nullptr)
-    // connected_, shouldConnect_ - use default member initializers (atomic)
-    , hasTargetDevice_(false)
-    , targetAddress_()
-    , lastScanStart_(0)
-    , freshFlashBoot_(false)
-    , pScanCallbacks_(nullptr)
-    , pClientCallbacks_(nullptr)
-    , pProxyServerCallbacks_(nullptr)
-    , pProxyWriteCallbacks_(nullptr) {
+    : pClient_(nullptr), pRemoteService_(nullptr), pDisplayDataChar_(nullptr), pCommandChar_(nullptr),
+      pCommandCharLong_(nullptr), pServer_(nullptr), pProxyService_(nullptr), pProxyNotifyChar_(nullptr),
+      pProxyNotifyLongChar_(nullptr), pProxyWriteChar_(nullptr), proxyEnabled_(false), proxyServerInitialized_(false),
+      proxyServerInitAttempted_(false)
+      // proxyClientConnected_ - uses default member initializer (atomic)
+      ,
+      proxyName_("V1-Proxy"), proxyQueue_(nullptr), phone2v1Queue_(nullptr), proxyQueuesInPsram_(false),
+      dataCallback_(nullptr), connectImmediateCallback_(nullptr), connectStableCallback_(nullptr)
+      // connected_, shouldConnect_ - use default member initializers (atomic)
+      ,
+      hasTargetDevice_(false), targetAddress_(), lastScanStart_(0), freshFlashBoot_(false), pScanCallbacks_(nullptr),
+      pClientCallbacks_(nullptr), pProxyServerCallbacks_(nullptr), pProxyWriteCallbacks_(nullptr) {
     instancePtr = this;
 }
 
@@ -143,28 +125,28 @@ V1BLEClient::~V1BLEClient() {
 
 const char* V1BLEClient::getSubscribeStepName() const {
     switch (subscribeStep_) {
-        case SubscribeStep::GET_SERVICE:
-            return "GET_SERVICE";
-        case SubscribeStep::GET_DISPLAY_CHAR:
-            return "GET_DISPLAY_CHAR";
-        case SubscribeStep::GET_COMMAND_CHAR:
-            return "GET_COMMAND_CHAR";
-        case SubscribeStep::GET_COMMAND_LONG:
-            return "GET_COMMAND_LONG";
-        case SubscribeStep::SUBSCRIBE_DISPLAY:
-            return "SUBSCRIBE_DISPLAY";
-        case SubscribeStep::GET_DISPLAY_LONG:
-            return "GET_DISPLAY_LONG";
-        case SubscribeStep::SUBSCRIBE_LONG:
-            return "SUBSCRIBE_LONG";
-        case SubscribeStep::REQUEST_ALERT_DATA:
-            return "REQUEST_ALERT_DATA";
-        case SubscribeStep::REQUEST_VERSION:
-            return "REQUEST_VERSION";
-        case SubscribeStep::COMPLETE:
-            return "COMPLETE";
-        default:
-            return "UNKNOWN";
+    case SubscribeStep::GET_SERVICE:
+        return "GET_SERVICE";
+    case SubscribeStep::GET_DISPLAY_CHAR:
+        return "GET_DISPLAY_CHAR";
+    case SubscribeStep::GET_COMMAND_CHAR:
+        return "GET_COMMAND_CHAR";
+    case SubscribeStep::GET_COMMAND_LONG:
+        return "GET_COMMAND_LONG";
+    case SubscribeStep::SUBSCRIBE_DISPLAY:
+        return "SUBSCRIBE_DISPLAY";
+    case SubscribeStep::GET_DISPLAY_LONG:
+        return "GET_DISPLAY_LONG";
+    case SubscribeStep::SUBSCRIBE_LONG:
+        return "SUBSCRIBE_LONG";
+    case SubscribeStep::REQUEST_ALERT_DATA:
+        return "REQUEST_ALERT_DATA";
+    case SubscribeStep::REQUEST_VERSION:
+        return "REQUEST_VERSION";
+    case SubscribeStep::COMPLETE:
+        return "COMPLETE";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -174,7 +156,8 @@ const char* V1BLEClient::getSubscribeStepName() const {
 
 void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
     BLEState oldState = bleState_;
-    if (oldState == newState) return;  // No change
+    if (oldState == newState)
+        return; // No change
 
     const uint32_t now = static_cast<uint32_t>(millis());
     const uint32_t stateTime =
@@ -204,13 +187,10 @@ void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
     } else if (newState == BLEState::CONNECTED) {
         perfRecordBleTimelineEvent(PerfBleTimelineEvent::Connected, now);
     }
-    if (oldState == BLEState::SCANNING &&
-        newState == BLEState::DISCONNECTED &&
-        reason &&
+    if (oldState == BLEState::SCANNING && newState == BLEState::DISCONNECTED && reason &&
         strstr(reason, "scan ended without finding V1")) {
         PERF_INC(bleScanNoTargetExits);
     }
-
 }
 
 // Full cleanup of BLE connection state - call before retry or after failures
@@ -232,7 +212,7 @@ void V1BLEClient::cleanupConnection() {
     notifyLongChar_.store(nullptr, std::memory_order_release);
     connected_.store(false, std::memory_order_release);
     {
-        SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));  // COLD: disconnect cleanup
+        SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: disconnect cleanup
         if (lock.locked()) {
             shouldConnect_ = false;
             hasTargetDevice_ = false;
@@ -277,12 +257,10 @@ void V1BLEClient::completeHardResetBLEClient() {
         }
         pClient_->setClientCallbacks(pClientCallbacks_.get());
         // Connection parameters: 12-24 (15-30ms interval), balanced for stability
-        pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN,
-                                     NIMBLE_CONN_INTERVAL_MAX,
-                                     NIMBLE_CONN_LATENCY,
-                                     NIMBLE_CONN_SUPERVISION_TIMEOUT);
+        pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN, NIMBLE_CONN_INTERVAL_MAX, NIMBLE_CONN_LATENCY,
+                                      NIMBLE_CONN_SUPERVISION_TIMEOUT);
         pClient_->setConnectTimeout(NIMBLE_CONNECT_TIMEOUT_INIT_MS);
-        pClient_->setConnectRetries(0);  // Project manages retries via MAX_CONNECT_ATTEMPTS
+        pClient_->setConnectRetries(0); // Project manages retries via MAX_CONNECT_ATTEMPTS
     } else {
         Serial.println("[BLE] ERROR: Failed to create client!");
     }
@@ -290,14 +268,13 @@ void V1BLEClient::completeHardResetBLEClient() {
     // Reset failure counter after hard reset
     consecutiveConnectFailures_ = 0;
     nextConnectAllowedMs_ = 0;
-
 }
 
 // Initialize BLE stack without starting scan
 bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
     static bool initialized = false;
     if (initialized) {
-        return true;  // Already initialized
+        return true; // Already initialized
     }
 
     Serial.print("[BLE] Init...");
@@ -327,9 +304,8 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
     // stack is brought up once per boot.
     {
         Preferences blePrefs;
-        if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {  // Read-write mode
-            needsFreshFlashBondReset =
-                BleFreshFlashPolicy::hasFirmwareVersionMismatch(blePrefs, FIRMWARE_VERSION);
+        if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) { // Read-write mode
+            needsFreshFlashBondReset = BleFreshFlashPolicy::hasFirmwareVersionMismatch(blePrefs, FIRMWARE_VERSION);
             blePrefs.end();
         }
     }
@@ -350,7 +326,7 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
     // NimBLE-Arduino expects dBm here, not esp_power_level_t enum indices.
     // 9 dBm is a supported ESP32-S3 step.
     NimBLEDevice::setPower(BLE_TX_POWER_DBM);
-    NimBLEDevice::setMTU(517);  // Max MTU for BLE 5.x
+    NimBLEDevice::setMTU(517); // Max MTU for BLE 5.x
 
     const bool requestedProxyEnabled = proxyEnabled_;
     proxyServerInitAttempted_ = true;
@@ -380,12 +356,9 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
         Preferences blePrefs;
         if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
             Serial.printf(" fresh-flash detected...");
-            const BleFreshFlashPolicy::BondResetResult resetResult =
-                BleFreshFlashPolicy::resetBondsForFirmwareVersion(
-                    blePrefs,
-                    FIRMWARE_VERSION,
-                    backupCurrentBleBondsViaCore0AtBoot,
-                    []() { NimBLEDevice::deleteAllBonds(); });
+            const BleFreshFlashPolicy::BondResetResult resetResult = BleFreshFlashPolicy::resetBondsForFirmwareVersion(
+                blePrefs, FIRMWARE_VERSION, backupCurrentBleBondsViaCore0AtBoot,
+                []() { NimBLEDevice::deleteAllBonds(); });
             if (resetResult.backedUpBondCount > 0) {
                 Serial.printf(" backed up %d bond(s)...", resetResult.backedUpBondCount);
             }
@@ -423,12 +396,10 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
         pClient_->setClientCallbacks(pClientCallbacks_.get());
 
         // Connection parameters: 12-24 (15-30ms interval), balanced for stability
-        pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN,
-                                     NIMBLE_CONN_INTERVAL_MAX,
-                                     NIMBLE_CONN_LATENCY,
-                                     NIMBLE_CONN_SUPERVISION_TIMEOUT);
+        pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN, NIMBLE_CONN_INTERVAL_MAX, NIMBLE_CONN_LATENCY,
+                                      NIMBLE_CONN_SUPERVISION_TIMEOUT);
         pClient_->setConnectTimeout(NIMBLE_CONNECT_TIMEOUT_INIT_MS);
-        pClient_->setConnectRetries(0);  // Project manages retries via MAX_CONNECT_ATTEMPTS
+        pClient_->setConnectRetries(0); // Project manages retries via MAX_CONNECT_ATTEMPTS
     }
 
     initialized = true;
@@ -448,18 +419,18 @@ bool V1BLEClient::begin(bool enableProxy, const char* proxyName) {
     // Replace scan callbacks atomically; previous handler is released automatically.
     pScanCallbacks_.reset(new ScanCallbacks(this));
     pScan->setScanCallbacks(pScanCallbacks_.get());
-    pScan->setActiveScan(true);  // Request scan response to get device names
+    pScan->setActiveScan(true); // Request scan response to get device names
     // ESP32-S3 WiFi coexistence: use 75% duty cycle for reliable V1 discovery
     // Higher duty = more BLE radio time = faster discovery, but less WiFi throughput
-    pScan->setInterval(160);  // 100ms interval
-    pScan->setWindow(120);    // 75ms window - 75% duty cycle (was 50%)
-    pScan->setMaxResults(0);  // Unlimited results
+    pScan->setInterval(160); // 100ms interval
+    pScan->setWindow(120);   // 75ms window - 75% duty cycle (was 50%)
+    pScan->setMaxResults(0); // Unlimited results
     // Reliability first: allow duplicate reports so we don't miss a late name/scan-response
     // update under WiFi coexistence stress.
     pScan->setDuplicateFilter(false);
 
     lastScanStart_ = static_cast<uint32_t>(millis());
-    bool started = pScan->start(SCAN_DURATION, false, false);  // duration, isContinuous, restart
+    bool started = pScan->start(SCAN_DURATION, false, false); // duration, isContinuous, restart
 
     if (started) {
         setBLEState(BLEState::SCANNING, "begin()");
@@ -534,14 +505,12 @@ bool V1BLEClient::isProxyClientConnected() {
     return proxyClientConnected_;
 }
 
-void V1BLEClient::setConnectionCycleProxyPolicy(const bool advertisingAllowed,
-                                                const bool keepConnectionAllowed) {
+void V1BLEClient::setConnectionCycleProxyPolicy(const bool advertisingAllowed, const bool keepConnectionAllowed) {
     proxyAdvertisingAllowed_ = advertisingAllowed;
     proxyKeepConnectionAllowed_ = keepConnectionAllowed;
 }
 
-void V1BLEClient::setConnectionCycleState(const uint8_t stateCode,
-                                          const uint32_t timeInStateMs) {
+void V1BLEClient::setConnectionCycleState(const uint8_t stateCode, const uint32_t timeInStateMs) {
     connectionCycleStateCode_ = stateCode;
     connectionCycleTimeInStateMs_ = timeInStateMs;
 }
@@ -551,17 +520,15 @@ void V1BLEClient::setObdBleArbitrationRequest(ObdBleArbitrationRequest request) 
         return;
     }
 
-    const bool releasingAutoHold =
-        obdBleArbitrationRequest_ == ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD &&
-        request != ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
+    const bool releasingAutoHold = obdBleArbitrationRequest_ == ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD &&
+                                   request != ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
     const bool releasingManualPreempt =
         obdBleArbitrationRequest_ == ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN &&
         request == ObdBleArbitrationRequest::NONE;
 
     if (releasingAutoHold || releasingManualPreempt) {
         proxySuppressedForObdHold_ = true;
-        if (proxySuppressedResumeReasonCode_ ==
-            static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
+        if (proxySuppressedResumeReasonCode_ == static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
             proxySuppressedResumeReasonCode_ =
                 static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow);
         }

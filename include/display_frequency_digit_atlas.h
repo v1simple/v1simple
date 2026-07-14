@@ -13,8 +13,8 @@
 #include <cstdint>
 
 class DisplayFrequencyDigitAtlas {
-public:
-    static constexpr uint8_t kTextPositions = 6;  // DD.DDD
+  public:
+    static constexpr uint8_t kTextPositions = 6; // DD.DDD
     static constexpr uint8_t kDigitPositions = 5;
     static constexpr uint8_t kDigits = 10;
     static constexpr uint8_t kDotSlot = kDigitPositions * kDigits;
@@ -40,40 +40,18 @@ public:
 
     static bool isNumericFrequencyText(const char* text);
 
-    bool storeCell(uint8_t position,
-                   char symbol,
-                   int16_t x,
-                   int16_t y,
-                   int16_t w,
-                   int16_t h,
-                   const uint16_t* framebuffer,
-                   int16_t rawStride,
-                   uint16_t bg);
+    bool storeCell(uint8_t position, char symbol, int16_t x, int16_t y, int16_t w, int16_t h,
+                   const uint16_t* framebuffer, int16_t rawStride, uint16_t bg);
 
-    bool restoreText(const char* text,
-                     uint16_t color,
-                     uint16_t bg,
-                     uint16_t* framebuffer,
-                     int16_t rawStride);
+    bool restoreText(const char* text, uint16_t color, uint16_t bg, uint16_t* framebuffer, int16_t rawStride);
 
-    bool changedTextRect(const char* previousText,
-                         const char* nextText,
-                         int16_t& x,
-                         int16_t& y,
-                         int16_t& w,
+    bool changedTextRect(const char* previousText, const char* nextText, int16_t& x, int16_t& y, int16_t& w,
                          int16_t& h) const;
 
-    bool restoreTextInRect(const char* text,
-                           uint16_t color,
-                           uint16_t bg,
-                           uint16_t* framebuffer,
-                           int16_t rawStride,
-                           int16_t rectX,
-                           int16_t rectY,
-                           int16_t rectW,
-                           int16_t rectH);
+    bool restoreTextInRect(const char* text, uint16_t color, uint16_t bg, uint16_t* framebuffer, int16_t rawStride,
+                           int16_t rectX, int16_t rectY, int16_t rectW, int16_t rectH);
 
-private:
+  private:
     struct Cell {
         bool valid = false;
         int16_t x = 0;
@@ -83,23 +61,12 @@ private:
     };
 
     static int slotFor(uint8_t position, char symbol);
-    bool copyGeometry(int16_t x,
-                      int16_t y,
-                      int16_t w,
-                      int16_t h,
-                      int16_t rawStride,
-                      int16_t& physX,
-                      int16_t& physY,
-                      int16_t& physW,
-                      int16_t& physH) const;
+    bool copyGeometry(int16_t x, int16_t y, int16_t w, int16_t h, int16_t rawStride, int16_t& physX, int16_t& physY,
+                      int16_t& physW, int16_t& physH) const;
     uint8_t* alphaFor(uint8_t slot) const;
     const uint16_t* blendLutFor(uint16_t fg, uint16_t bg);
 
-    static bool rectsIntersect(const Cell& cell,
-                               int16_t x,
-                               int16_t y,
-                               int16_t w,
-                               int16_t h);
+    static bool rectsIntersect(const Cell& cell, int16_t x, int16_t y, int16_t w, int16_t h);
     static uint8_t alphaFromRgb565(uint16_t px, uint16_t bg);
     static uint16_t blend565(uint16_t fg, uint16_t bg, uint8_t alpha);
 

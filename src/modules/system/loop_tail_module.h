@@ -4,7 +4,7 @@
 
 // Owns late-loop BLE drain + yield + loop-duration finalization.
 class LoopTailModule {
-public:
+  public:
     struct Providers {
         uint32_t (*perfTimestampUs)(void* ctx) = nullptr;
         void* perfTimestampContext = nullptr;
@@ -27,6 +27,6 @@ public:
     void begin(const Providers& hooks);
     uint32_t process(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain = false);
 
-private:
+  private:
     Providers providers{};
 };

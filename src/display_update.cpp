@@ -59,9 +59,8 @@ PerfDisplayRenderPath restingRenderPathForScenario() {
 }
 
 PerfDisplayRenderPath persistedRenderPathForScenario() {
-    return (perfGetDisplayRenderScenario() == PerfDisplayRenderScenario::Restore)
-               ? PerfDisplayRenderPath::Restore
-               : PerfDisplayRenderPath::Persisted;
+    return (perfGetDisplayRenderScenario() == PerfDisplayRenderScenario::Restore) ? PerfDisplayRenderPath::Restore
+                                                                                  : PerfDisplayRenderPath::Persisted;
 }
 
 struct DispatchRectList {
@@ -74,18 +73,28 @@ bool clipToFramebuffer(DrawnRegion::Rect& rect) {
     int16_t y = rect.y;
     int16_t w = rect.w;
     int16_t h = rect.h;
-    if (w <= 0 || h <= 0) return false;
-    if (x < 0) { w = static_cast<int16_t>(w + x); x = 0; }
-    if (y < 0) { h = static_cast<int16_t>(h + y); y = 0; }
-    if (w <= 0 || h <= 0) return false;
-    if (x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT) return false;
+    if (w <= 0 || h <= 0)
+        return false;
+    if (x < 0) {
+        w = static_cast<int16_t>(w + x);
+        x = 0;
+    }
+    if (y < 0) {
+        h = static_cast<int16_t>(h + y);
+        y = 0;
+    }
+    if (w <= 0 || h <= 0)
+        return false;
+    if (x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT)
+        return false;
     if (x + w > SCREEN_WIDTH) {
         w = static_cast<int16_t>(SCREEN_WIDTH - x);
     }
     if (y + h > SCREEN_HEIGHT) {
         h = static_cast<int16_t>(SCREEN_HEIGHT - y);
     }
-    if (w <= 0 || h <= 0) return false;
+    if (w <= 0 || h <= 0)
+        return false;
     rect.x = x;
     rect.y = y;
     rect.w = w;
@@ -102,10 +111,7 @@ int16_t rectBottom(const DrawnRegion::Rect& rect) {
 }
 
 bool rectsOverlapOrTouch(const DrawnRegion::Rect& a, const DrawnRegion::Rect& b) {
-    return a.x <= rectRight(b) &&
-           rectRight(a) >= b.x &&
-           a.y <= rectBottom(b) &&
-           rectBottom(a) >= b.y;
+    return a.x <= rectRight(b) && rectRight(a) >= b.x && a.y <= rectBottom(b) && rectBottom(a) >= b.y;
 }
 
 DrawnRegion::Rect unionRect(const DrawnRegion::Rect& a, const DrawnRegion::Rect& b) {
@@ -134,7 +140,7 @@ bool addMergedRect(DispatchRectList& list, DrawnRegion::Rect rect) {
         rect = unionRect(list.rects[i], rect);
         list.rects[i] = list.rects[static_cast<uint8_t>(list.count - 1)];
         --list.count;
-        i = 0xFF;  // restart merge scan after unsigned increment wraps to 0
+        i = 0xFF; // restart merge scan after unsigned increment wraps to 0
     }
 
     if (list.count >= DrawnRegion::MAX_RECTS) {
@@ -172,9 +178,7 @@ uint32_t rectListRowCalls(const DispatchRectList& list) {
     return total;
 }
 
-bool shouldUseMultiRectDispatch(const DrawnRegion& region,
-                                uint32_t partialAreaCap,
-                                bool arrowPainted,
+bool shouldUseMultiRectDispatch(const DrawnRegion& region, uint32_t partialAreaCap, bool arrowPainted,
                                 DispatchRectList& list) {
     if (arrowPainted || region.rectCount() < 2) {
         return false;
@@ -201,8 +205,7 @@ bool shouldUseMultiRectDispatch(const DrawnRegion& region,
     }
 
     const uint32_t perRectPenaltyRows = 8u * static_cast<uint32_t>(list.count - 1);
-    return (totalArea * 100u < unionArea * 85u) &&
-           (totalRows + perRectPenaltyRows < unionRows);
+    return (totalArea * 100u < unionArea * 85u) && (totalRows + perRectPenaltyRows < unionRows);
 }
 
 #if defined(DISPLAY_WAVESHARE_349)
@@ -217,9 +220,7 @@ uint8_t batteryVoltageBand(uint16_t millivolts) {
 }
 
 bool hasTimeDrivenRestingBlink(const DisplayState& state) {
-    return state.flashBits != 0 ||
-           state.bandFlashBits != 0 ||
-           state.bogeyCounterByte != state.bogeyCounterByte2 ||
+    return state.flashBits != 0 || state.bandFlashBits != 0 || state.bogeyCounterByte != state.bogeyCounterByte2 ||
            state.bogeyCounterDot != state.bogeyCounterDot2;
 }
 
@@ -237,28 +238,28 @@ uint32_t hashProfileName(const char* name) {
 
 const char* profileNameForSlot(const V1Settings& s, int slot) {
     switch (slot % 3) {
-        case 0:
-            return s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
-        case 1:
-            return s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
-        default:
-            return s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
+    case 0:
+        return s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
+    case 1:
+        return s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
+    default:
+        return s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
     }
 }
 
 uint16_t profileColorForSlot(const V1Settings& s, int slot) {
     switch (slot % 3) {
-        case 0:
-            return s.slot0Color;
-        case 1:
-            return s.slot1Color;
-        default:
-            return s.slot2Color;
+    case 0:
+        return s.slot0Color;
+    case 1:
+        return s.slot1Color;
+    default:
+        return s.slot2Color;
     }
 }
 #endif
 
-}  // namespace
+} // namespace
 
 // ============================================================================
 // renderFrame — display-pipeline frame dispatch
@@ -272,25 +273,24 @@ AlertData alpEventToSyntheticAlert(const AlpLaserEvent& event) {
     alert.band = BAND_LASER;
     alert.frequency = 0;
     switch (event.direction) {
-        case AlpLaserDirection::FRONT:
-            alert.direction = DIR_FRONT;
-            break;
+    case AlpLaserDirection::FRONT:
+        alert.direction = DIR_FRONT;
+        break;
 
-        case AlpLaserDirection::REAR:
-            alert.direction = DIR_REAR;
-            break;
+    case AlpLaserDirection::REAR:
+        alert.direction = DIR_REAR;
+        break;
 
-        case AlpLaserDirection::UNKNOWN:
-        default:
-            alert.direction = DIR_NONE;
-            break;
+    case AlpLaserDirection::UNKNOWN:
+    default:
+        alert.direction = DIR_NONE;
+        break;
     }
     alert.frontStrength = 6;
     return alert;
 }
 
-int buildV1AlertArrayFromCards(const RenderFrame& frame,
-                               std::array<AlertData, RenderFrame::MAX_CARDS>& alerts) {
+int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, RenderFrame::MAX_CARDS>& alerts) {
     int alertCount = 0;
     for (int index = 0; index < frame.cardCount; ++index) {
         const RenderFrameCard& card = frame.cards[index];
@@ -305,88 +305,81 @@ int buildV1AlertArrayFromCards(const RenderFrame& frame,
     return alertCount;
 }
 
-}  // namespace
+} // namespace
 
 void V1Display::renderFrame(const RenderFrame& frame) {
     persistedMode_ = false;
 
-#if defined(UNIT_TEST) || \
-    (defined(DISPLAY_CORRECTNESS_TRACE_ENABLED) && DISPLAY_CORRECTNESS_TRACE_ENABLED)
-    displayCorrectnessTracePublish(
-        buildDisplayCorrectnessTraceEvent(frame, static_cast<uint32_t>(millis())));
+#if defined(UNIT_TEST) || (defined(DISPLAY_CORRECTNESS_TRACE_ENABLED) && DISPLAY_CORRECTNESS_TRACE_ENABLED)
+    displayCorrectnessTracePublish(buildDisplayCorrectnessTraceEvent(frame, static_cast<uint32_t>(millis())));
 #endif
 
     switch (frame.primaryKind) {
-        case RenderFramePrimaryKind::NONE:
-            return;
+    case RenderFramePrimaryKind::NONE:
+        return;
 
-        case RenderFramePrimaryKind::IDLE:
-            if (frame.stealthMode) {
-                showStealth(frame.stealthSpeedMph, frame.stealthSpeedValid);
-            } else {
-                update(frame.primaryState);
-            }
-            return;
-
-        case RenderFramePrimaryKind::V1_LIVE: {
-            // Card-row input contract (matches the legacy tree): the alert
-            // list passed to update() includes the priority alert itself —
-            // the composer strips it from frame.cards, but
-            // drawSecondaryAlertCards() relies on seeing it. Its old-priority
-            // grace admission asks "is the previous priority still in the
-            // list", and its slot refresh keeps priority-matching slots
-            // alive. A priority-stripped list makes ordinary frequency
-            // jitter look like a priority handoff and admits a ghost card
-            // that re-admits forever (stuck first card).
-            // The pointer is also never null during live frames: a null list
-            // is the screen-transition "clear card state" signal, not a
-            // "zero secondaries" frame — null here would bypass the grace
-            // window and wipe persisted cards instantly.
-            std::array<AlertData, RenderFrame::MAX_CARDS + 1> liveAlerts{};
-            int liveCount = 0;
-            liveAlerts[liveCount++] = frame.v1Priority;
-            for (int index = 0; index < frame.cardCount; ++index) {
-                const RenderFrameCard& card = frame.cards[index];
-                if (card.kind != RenderFrameCard::Kind::V1) {
-                    continue;
-                }
-                if (liveCount >= static_cast<int>(liveAlerts.size())) {
-                    break;
-                }
-                liveAlerts[liveCount++] = card.v1Alert;
-            }
-            update(frame.v1Priority, liveAlerts.data(), liveCount,
-                   frame.primaryState);
-            return;
+    case RenderFramePrimaryKind::IDLE:
+        if (frame.stealthMode) {
+            showStealth(frame.stealthSpeedMph, frame.stealthSpeedValid);
+        } else {
+            update(frame.primaryState);
         }
+        return;
 
-        case RenderFramePrimaryKind::V1_PERSISTED:
-            updatePersisted(frame.v1Priority, frame.primaryState);
-            return;
-
-        case RenderFramePrimaryKind::ALP_LIVE:
-        case RenderFramePrimaryKind::ALP_PERSISTED: {
-            // ALP frames carry the full unstripped V1 alert list in
-            // frame.cards (the composer passes skipPriority=nullptr on this
-            // path), so no priority prepend is needed. Keep the pointer
-            // non-null for the same reason as V1_LIVE: null is the
-            // screen-transition clear signal and would bypass card grace.
-            std::array<AlertData, RenderFrame::MAX_CARDS> cardAlerts{};
-            const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts);
-            const AlertData syntheticAlert = alpEventToSyntheticAlert(frame.alpPrimary);
-            update(syntheticAlert,
-                   cardAlerts.data(),
-                   cardCount,
-                   frame.primaryState);
-            return;
+    case RenderFramePrimaryKind::V1_LIVE: {
+        // Card-row input contract (matches the legacy tree): the alert
+        // list passed to update() includes the priority alert itself —
+        // the composer strips it from frame.cards, but
+        // drawSecondaryAlertCards() relies on seeing it. Its old-priority
+        // grace admission asks "is the previous priority still in the
+        // list", and its slot refresh keeps priority-matching slots
+        // alive. A priority-stripped list makes ordinary frequency
+        // jitter look like a priority handoff and admits a ghost card
+        // that re-admits forever (stuck first card).
+        // The pointer is also never null during live frames: a null list
+        // is the screen-transition "clear card state" signal, not a
+        // "zero secondaries" frame — null here would bypass the grace
+        // window and wipe persisted cards instantly.
+        std::array<AlertData, RenderFrame::MAX_CARDS + 1> liveAlerts{};
+        int liveCount = 0;
+        liveAlerts[liveCount++] = frame.v1Priority;
+        for (int index = 0; index < frame.cardCount; ++index) {
+            const RenderFrameCard& card = frame.cards[index];
+            if (card.kind != RenderFrameCard::Kind::V1) {
+                continue;
+            }
+            if (liveCount >= static_cast<int>(liveAlerts.size())) {
+                break;
+            }
+            liveAlerts[liveCount++] = card.v1Alert;
         }
+        update(frame.v1Priority, liveAlerts.data(), liveCount, frame.primaryState);
+        return;
+    }
+
+    case RenderFramePrimaryKind::V1_PERSISTED:
+        updatePersisted(frame.v1Priority, frame.primaryState);
+        return;
+
+    case RenderFramePrimaryKind::ALP_LIVE:
+    case RenderFramePrimaryKind::ALP_PERSISTED: {
+        // ALP frames carry the full unstripped V1 alert list in
+        // frame.cards (the composer passes skipPriority=nullptr on this
+        // path), so no priority prepend is needed. Keep the pointer
+        // non-null for the same reason as V1_LIVE: null is the
+        // screen-transition clear signal and would bypass card grace.
+        std::array<AlertData, RenderFrame::MAX_CARDS> cardAlerts{};
+        const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts);
+        const AlertData syntheticAlert = alpEventToSyntheticAlert(frame.alpPrimary);
+        update(syntheticAlert, cardAlerts.data(), cardCount, frame.primaryState);
+        return;
+    }
     }
 }
 
 #if defined(DISPLAY_WAVESHARE_349)
-V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& state,
-                                                          uint32_t nowMs,
-                                                          bool bleContextFresh) const {
+V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& state, uint32_t nowMs,
+                                                         bool bleContextFresh) const {
     const V1Settings& s = settingsManager.get();
     const uint16_t batteryMv = batteryManager.getVoltageMillivolts();
     const GpsRuntimeStatus gpsStatus = gpsRuntimeModule.snapshot(nowMs);
@@ -425,10 +418,7 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.colorAlpLidActive = s.colorAlpLidActive;
     key.colorAlpAlert = s.colorAlpAlert;
     const bool rssiCanChangePixels =
-        state.supportsVolume() &&
-        !s.hideVolumeIndicator &&
-        !s.hideRssiIndicator &&
-        bleContextFresh;
+        state.supportsVolume() && !s.hideVolumeIndicator && !s.hideRssiIndicator && bleContextFresh;
     key.v1Rssi = rssiCanChangePixels ? bleCtx_.v1Rssi : 0;
     key.proxyRssi = rssiCanChangePixels ? bleCtx_.proxyRssi : 0;
     key.currentProfileSlot = currentProfileSlot_;
@@ -488,88 +478,47 @@ bool V1Display::canSkipRestingNoOp(const RestingNoOpKey& key) const {
         return false;
     }
     const RestingNoOpKey& last = lastRestingNoOpKey_;
-    return key.paletteRevision == last.paletteRevision &&
-           key.firmwareVersion == last.firmwareVersion &&
-           key.batteryMinuteBucket == last.batteryMinuteBucket &&
-           key.colorBogey == last.colorBogey &&
-           key.colorVolumeMain == last.colorVolumeMain &&
-           key.colorVolumeMute == last.colorVolumeMute &&
-           key.colorRssiV1 == last.colorRssiV1 &&
-           key.colorRssiProxy == last.colorRssiProxy &&
-           key.colorFrequency == last.colorFrequency &&
-           key.colorArrowFront == last.colorArrowFront &&
-           key.colorArrowSide == last.colorArrowSide &&
-           key.colorArrowRear == last.colorArrowRear &&
-           key.colorBandL == last.colorBandL &&
-           key.colorBandKa == last.colorBandKa &&
-           key.colorBandK == last.colorBandK &&
-           key.colorBandX == last.colorBandX &&
-           key.colorBandPhoto == last.colorBandPhoto &&
-           key.colorBar1 == last.colorBar1 &&
-           key.colorBar2 == last.colorBar2 &&
-           key.colorBar3 == last.colorBar3 &&
-           key.colorBar4 == last.colorBar4 &&
-           key.colorBar5 == last.colorBar5 &&
-           key.colorBar6 == last.colorBar6 &&
-           key.colorWifi == last.colorWifi &&
-           key.colorBleConnected == last.colorBleConnected &&
-           key.colorBleDisconnected == last.colorBleDisconnected &&
-           key.colorObd == last.colorObd &&
-           key.colorMuted == last.colorMuted &&
-           key.colorAlpConnected == last.colorAlpConnected &&
-           key.colorAlpDli == last.colorAlpDli &&
-           key.colorAlpLidActive == last.colorAlpLidActive &&
-           key.colorAlpAlert == last.colorAlpAlert &&
-           key.v1Rssi == last.v1Rssi &&
-           key.proxyRssi == last.proxyRssi &&
+    return key.paletteRevision == last.paletteRevision && key.firmwareVersion == last.firmwareVersion &&
+           key.batteryMinuteBucket == last.batteryMinuteBucket && key.colorBogey == last.colorBogey &&
+           key.colorVolumeMain == last.colorVolumeMain && key.colorVolumeMute == last.colorVolumeMute &&
+           key.colorRssiV1 == last.colorRssiV1 && key.colorRssiProxy == last.colorRssiProxy &&
+           key.colorFrequency == last.colorFrequency && key.colorArrowFront == last.colorArrowFront &&
+           key.colorArrowSide == last.colorArrowSide && key.colorArrowRear == last.colorArrowRear &&
+           key.colorBandL == last.colorBandL && key.colorBandKa == last.colorBandKa &&
+           key.colorBandK == last.colorBandK && key.colorBandX == last.colorBandX &&
+           key.colorBandPhoto == last.colorBandPhoto && key.colorBar1 == last.colorBar1 &&
+           key.colorBar2 == last.colorBar2 && key.colorBar3 == last.colorBar3 && key.colorBar4 == last.colorBar4 &&
+           key.colorBar5 == last.colorBar5 && key.colorBar6 == last.colorBar6 && key.colorWifi == last.colorWifi &&
+           key.colorBleConnected == last.colorBleConnected && key.colorBleDisconnected == last.colorBleDisconnected &&
+           key.colorObd == last.colorObd && key.colorMuted == last.colorMuted &&
+           key.colorAlpConnected == last.colorAlpConnected && key.colorAlpDli == last.colorAlpDli &&
+           key.colorAlpLidActive == last.colorAlpLidActive && key.colorAlpAlert == last.colorAlpAlert &&
+           key.v1Rssi == last.v1Rssi && key.proxyRssi == last.proxyRssi &&
            key.currentProfileSlot == last.currentProfileSlot &&
            key.currentProfileNameHash == last.currentProfileNameHash &&
-           key.currentProfileColor == last.currentProfileColor &&
-           key.activeBands == last.activeBands &&
-           key.signalBars == last.signalBars &&
-           key.flashBits == last.flashBits &&
-           key.bandFlashBits == last.bandFlashBits &&
-           key.mainVolume == last.mainVolume &&
-           key.muteVolume == last.muteVolume &&
-           key.alpStateRaw == last.alpStateRaw &&
-           key.alpHbByte1 == last.alpHbByte1 &&
-           key.batteryPct == last.batteryPct &&
-           key.batteryVoltageBand == last.batteryVoltageBand &&
-           key.gpsSats == last.gpsSats &&
-           key.arrows == last.arrows &&
-           key.priorityArrow == last.priorityArrow &&
-           key.bogeyCounterChar == last.bogeyCounterChar &&
-           key.bogeyCounterChar2 == last.bogeyCounterChar2 &&
-           key.bogeyCounterDot == last.bogeyCounterDot &&
-           key.bogeyCounterDot2 == last.bogeyCounterDot2 &&
-           key.hasVolumeData == last.hasVolumeData &&
-           key.hasV1Version == last.hasV1Version &&
-           key.hasKuAlert == last.hasKuAlert &&
-           key.bleFresh == last.bleFresh &&
-           key.v1Connected == last.v1Connected &&
-           key.proxyConnected == last.proxyConnected &&
-           key.bleProxyEnabled == last.bleProxyEnabled &&
+           key.currentProfileColor == last.currentProfileColor && key.activeBands == last.activeBands &&
+           key.signalBars == last.signalBars && key.flashBits == last.flashBits &&
+           key.bandFlashBits == last.bandFlashBits && key.mainVolume == last.mainVolume &&
+           key.muteVolume == last.muteVolume && key.alpStateRaw == last.alpStateRaw &&
+           key.alpHbByte1 == last.alpHbByte1 && key.batteryPct == last.batteryPct &&
+           key.batteryVoltageBand == last.batteryVoltageBand && key.gpsSats == last.gpsSats &&
+           key.arrows == last.arrows && key.priorityArrow == last.priorityArrow &&
+           key.bogeyCounterChar == last.bogeyCounterChar && key.bogeyCounterChar2 == last.bogeyCounterChar2 &&
+           key.bogeyCounterDot == last.bogeyCounterDot && key.bogeyCounterDot2 == last.bogeyCounterDot2 &&
+           key.hasVolumeData == last.hasVolumeData && key.hasV1Version == last.hasV1Version &&
+           key.hasKuAlert == last.hasKuAlert && key.bleFresh == last.bleFresh && key.v1Connected == last.v1Connected &&
+           key.proxyConnected == last.proxyConnected && key.bleProxyEnabled == last.bleProxyEnabled &&
            key.bleProxyClientConnected == last.bleProxyClientConnected &&
-           key.bleReceivingData == last.bleReceivingData &&
-           key.wifiServiceActive == last.wifiServiceActive &&
-           key.wifiConnected == last.wifiConnected &&
-           key.wifiGaveUp == last.wifiGaveUp &&
-           key.hasBattery == last.hasBattery &&
-           key.showBatteryPercent == last.showBatteryPercent &&
-           key.hideBatteryIcon == last.hideBatteryIcon &&
-           key.hideVolumeIndicator == last.hideVolumeIndicator &&
-           key.hideRssiIndicator == last.hideRssiIndicator &&
-           key.hideWifiIcon == last.hideWifiIcon &&
-           key.hideBleIcon == last.hideBleIcon &&
-           key.hideProfileIndicator == last.hideProfileIndicator &&
-           key.freqUseBandColor == last.freqUseBandColor &&
-           key.profileFlashActive == last.profileFlashActive &&
-           key.obdEnabled == last.obdEnabled &&
-           key.obdConnected == last.obdConnected &&
-           key.obdAttention == last.obdAttention &&
-           key.obdScanAttention == last.obdScanAttention &&
-           key.alpEnabled == last.alpEnabled &&
-           key.alpHasLaserEvent == last.alpHasLaserEvent &&
+           key.bleReceivingData == last.bleReceivingData && key.wifiServiceActive == last.wifiServiceActive &&
+           key.wifiConnected == last.wifiConnected && key.wifiGaveUp == last.wifiGaveUp &&
+           key.hasBattery == last.hasBattery && key.showBatteryPercent == last.showBatteryPercent &&
+           key.hideBatteryIcon == last.hideBatteryIcon && key.hideVolumeIndicator == last.hideVolumeIndicator &&
+           key.hideRssiIndicator == last.hideRssiIndicator && key.hideWifiIcon == last.hideWifiIcon &&
+           key.hideBleIcon == last.hideBleIcon && key.hideProfileIndicator == last.hideProfileIndicator &&
+           key.freqUseBandColor == last.freqUseBandColor && key.profileFlashActive == last.profileFlashActive &&
+           key.obdEnabled == last.obdEnabled && key.obdConnected == last.obdConnected &&
+           key.obdAttention == last.obdAttention && key.obdScanAttention == last.obdScanAttention &&
+           key.alpEnabled == last.alpEnabled && key.alpHasLaserEvent == last.alpHasLaserEvent &&
            key.gpsShown == last.gpsShown;
 }
 
@@ -589,10 +538,7 @@ void V1Display::invalidateRestingNoOpKey() {
 // drawStatusStrip — full status strip render
 // ============================================================================
 
-void V1Display::drawStatusStrip(const DisplayState& state,
-                                char topChar,
-                                bool topMuted,
-                                bool topDot) {
+void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool topMuted, bool topDot) {
     // Single-LED bogey counter blink:
     // docs/V1_PROTOCOL_REFERENCES.md#infdisplaydata.
     // Image 2 is the steady/blink-off mask companion to Image 1; toggling the
@@ -613,13 +559,12 @@ void V1Display::drawStatusStrip(const DisplayState& state,
     // blinks them, and now so do we.
     updateBlinkPhase_();
     char bogeyChar = topChar;
-    bool bogeyDot  = topDot;
+    bool bogeyDot = topDot;
     const bool bogeyBlinking =
-        (state.bogeyCounterByte != state.bogeyCounterByte2) ||
-        (state.bogeyCounterDot  != state.bogeyCounterDot2);
+        (state.bogeyCounterByte != state.bogeyCounterByte2) || (state.bogeyCounterDot != state.bogeyCounterDot2);
     if (bogeyBlinking && !blinkPhase_) {
         bogeyChar = state.bogeyCounterChar2;
-        bogeyDot  = state.bogeyCounterDot2;
+        bogeyDot = state.bogeyCounterDot2;
     }
     drawTopCounterPair(bogeyChar, topMuted, bogeyDot);
     const V1Settings& s = settingsManager.get();
@@ -647,8 +592,7 @@ void V1Display::update(const DisplayState& state) {
     persistedMode_ = false;
     const uint32_t nowMs = static_cast<uint32_t>(millis());
 
-    const bool needsFullRedraw =
-        currentScreen_ != ScreenMode::Resting || dirty_.resetTracking;
+    const bool needsFullRedraw = currentScreen_ != ScreenMode::Resting || dirty_.resetTracking;
 
     // Don't process resting update if we're in Scanning mode
     if (currentScreen_ == ScreenMode::Scanning) {
@@ -672,10 +616,7 @@ void V1Display::update(const DisplayState& state) {
         } else if (currentScreen_ == ScreenMode::Persisted) {
             perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::LeavePersisted);
         }
-        perfRecordDisplayScreenTransition(
-            perfScreenForMode(currentScreen_),
-            PerfDisplayScreen::Resting,
-            millis());
+        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Resting, millis());
     }
 
     perfRecordDisplayRenderPath(restingRenderPathForScenario());
@@ -705,25 +646,17 @@ void V1Display::update(const DisplayState& state) {
     } else {
         const bool volZero = (state.mainVolume == 0 && state.hasVolumeData);
         const bool proxyConnected = bleCtx_.proxyConnected;
-        showVolumeWarning = volZeroWarn_.evaluate(
-            volZero, proxyConnected, speedVolZeroActive_);
+        showVolumeWarning = volZeroWarn_.evaluate(volZero, proxyConnected, speedVolZeroActive_);
     }
 
 #if defined(DISPLAY_WAVESHARE_349)
-    const bool volumeWarningTimeDriven =
-        bleContextFresh &&
-        state.hasVolumeData &&
-        state.mainVolume == 0 &&
-        !bleCtx_.proxyConnected &&
-        !speedVolZeroActive_;
-    const bool allowRestingNoOpSkip =
-        !volumeWarningTimeDriven && !hasTimeDrivenRestingBlink(state);
+    const bool volumeWarningTimeDriven = bleContextFresh && state.hasVolumeData && state.mainVolume == 0 &&
+                                         !bleCtx_.proxyConnected && !speedVolZeroActive_;
+    const bool allowRestingNoOpSkip = !volumeWarningTimeDriven && !hasTimeDrivenRestingBlink(state);
     RestingNoOpKey restingNoOpKey;
     if (allowRestingNoOpSkip) {
         restingNoOpKey = buildRestingNoOpKey(state, nowMs, bleContextFresh);
-        if (!needsFullRedraw &&
-            !hadPendingExternalDraws &&
-            canSkipRestingNoOp(restingNoOpKey)) {
+        if (!needsFullRedraw && !hadPendingExternalDraws && canSkipRestingNoOp(restingNoOpKey)) {
             perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
             perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting,
                                            PerfDisplayFlushDecisionReason::CacheHit);
@@ -743,23 +676,20 @@ void V1Display::update(const DisplayState& state) {
     if (needsFullRedraw) {
         stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame,
-                                          micros() - stageStartUs);
+        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     char topChar = state.bogeyCounterChar;
     stageStartUs = micros();
     drawStatusStrip(state, topChar, effectiveMuted, state.bogeyCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // B1: Ku alerts have no dedicated LED on the V1 band row — they light K.
     // OR BAND_KU into the mask so drawBandIndicators relabels K -> "Ku".
-    const uint8_t bandMaskWithKu1 =
-        static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
+    const uint8_t bandMaskWithKu1 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
     const bool bandsPainted = drawBandIndicators(bandMaskWithKu1, effectiveMuted);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator();  // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
 
     // Volume-zero warning replaces frequency display
@@ -768,26 +698,22 @@ void V1Display::update(const DisplayState& state) {
     } else {
         stageStartUs = micros();
         drawFrequency(0, BAND_NONE, effectiveMuted);
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency,
-                                          micros() - stageStartUs);
+        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
     }
 
     stageStartUs = micros();
     drawVerticalSignalBars(state.signalBars, state.signalBars, BAND_KA, effectiveMuted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     stageStartUs = micros();
     drawDirectionArrow(DIR_NONE, effectiveMuted, 0);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     // Clear any persisted card slots
     AlertData emptyPriority;
     stageStartUs = micros();
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, effectiveMuted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
@@ -806,8 +732,7 @@ void V1Display::update(const DisplayState& state) {
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting, flushDecision);
     drawnRegion_.reset();
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Resting;
@@ -840,17 +765,13 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     arrowVisibilityForceFullFlush_ = false;
     arrowPaintedThisFrame_ = false;
 
-    const bool needsFullRedraw =
-        currentScreen_ != ScreenMode::Persisted || dirty_.resetTracking;
+    const bool needsFullRedraw = currentScreen_ != ScreenMode::Persisted || dirty_.resetTracking;
 
     if (needsFullRedraw) {
         if (currentScreen_ == ScreenMode::Live) {
             perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::LeaveLive);
         }
-        perfRecordDisplayScreenTransition(
-            perfScreenForMode(currentScreen_),
-            PerfDisplayScreen::Persisted,
-            millis());
+        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Persisted, millis());
     }
 
     perfRecordDisplayRenderPath(persistedRenderPathForScenario());
@@ -862,8 +783,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     if (needsFullRedraw) {
         stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame,
-                                          micros() - stageStartUs);
+        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     // Bogey counter shows V1's decoded display — NOT greyed, always visible
@@ -871,46 +791,37 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     syncTopIndicators(static_cast<uint32_t>(millis()));
     stageStartUs = micros();
     drawStatusStrip(state, topChar, false, state.bogeyCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // Band indicator in persisted color
     stageStartUs = micros();
     const bool bandsPainted = drawBandIndicators(alert.band, true);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator();  // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Frequency in persisted color
-    const bool isPhotoRadar =
-        (alert.photoType != 0) ||
-        state.hasPhotoAlert ||
-        (state.bogeyCounterChar == 'P');
+    const bool isPhotoRadar = (alert.photoType != 0) || state.hasPhotoAlert || (state.bogeyCounterChar == 'P');
     stageStartUs = micros();
     drawFrequency(alert.frequency, alert.band, true, isPhotoRadar);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
 
     // No signal bars — draw empty
     stageStartUs = micros();
     drawVerticalSignalBars(0, 0, alert.band, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Arrows in persisted grey
     stageStartUs = micros();
     drawDirectionArrow(alert.direction, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     // Clear card area
     AlertData emptyPriority;
     stageStartUs = micros();
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
@@ -929,8 +840,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Persisted, flushDecision);
     drawnRegion_.reset();
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Persisted;
@@ -940,8 +850,8 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 // update(priority, allAlerts, alertCount, state) — Live alert display
 // ============================================================================
 
-void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
-                       int alertCount, const DisplayState& state) {
+void V1Display::update(const AlertData& priority, const AlertData* allAlerts, int alertCount,
+                       const DisplayState& state) {
     persistedMode_ = false;
 
     if (!priority.isValid || priority.band == BAND_NONE) {
@@ -968,8 +878,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
     arrowPaintedThisFrame_ = false;
 
     const V1Settings& s = settingsManager.get();
-    const bool needsFullRedraw =
-        currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
+    const bool needsFullRedraw = currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
 
     // Correctness override for V1 blink frames. Diag14 proved the framebuffer
     // paints Image1/Image2 arrow phases correctly, but the panel still looked
@@ -986,17 +895,12 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
     // Kept separate from needsFullRedraw so EnterLive logging / screen
     // transition recording (gated by needsFullRedraw below) only fire on
     // actual mode transitions, not every blink frame.
-    const bool blinkForceFullFlush =
-        (state.flashBits != 0) || (state.bandFlashBits != 0);
+    const bool blinkForceFullFlush = (state.flashBits != 0) || (state.bandFlashBits != 0);
 
     if (needsFullRedraw) {
-        DISPLAY_LOG("[DISP] Entering Live mode (was %d), alertCount=%d\n",
-                    (int)currentScreen_, alertCount);
+        DISPLAY_LOG("[DISP] Entering Live mode (was %d), alertCount=%d\n", (int)currentScreen_, alertCount);
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::EnterLive);
-        perfRecordDisplayScreenTransition(
-            perfScreenForMode(currentScreen_),
-            PerfDisplayScreen::Live,
-            millis());
+        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Live, millis());
     }
 
     perfRecordDisplayRenderPath(liveRenderPathForScenario());
@@ -1025,40 +929,32 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
     if (needsFullRedraw) {
         stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame,
-                                          micros() - stageStartUs);
+        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     syncTopIndicators(static_cast<uint32_t>(millis()));
     stageStartUs = micros();
     drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // Photo-radar detection: image1 is the steady displayed character. If V1
     // is showing 'P' (steady or in the on-phase of a blink), liveTopCounterChar
     // == 'P'. Under blink-pair semantics image2=='P' implies image1=='P'
     // (steady-P case), so a separate byte2 check would be redundant.
-    const bool isPhotoRadar =
-        (priority.photoType != 0) ||
-        state.hasPhotoAlert ||
-        (liveTopCounterChar == 'P');
+    const bool isPhotoRadar = (priority.photoType != 0) || state.hasPhotoAlert || (liveTopCounterChar == 'P');
     stageStartUs = micros();
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
 
     stageStartUs = micros();
     // B1: see above — re-label K cell as "Ku" when a Ku alert is active.
-    const uint8_t bandMaskWithKu2 =
-        static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
+    const uint8_t bandMaskWithKu2 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
     const bool bandsPainted = drawBandIndicators(bandMaskWithKu2, state.muted, state.bandFlashBits);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator();  // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
     drawVerticalSignalBars(state.signalBars, state.signalBars, priority.band, state.muted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Arrow blink: V1 reports the priority-arrow blink directly via image1 vs
     // image2 in the InfDisplayData packet (image1 = currently lit, image2 =
@@ -1071,8 +967,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
     const uint8_t arrowFlashBits = state.flashBits;
     stageStartUs = micros();
     drawDirectionArrow(arrowsToShow, state.muted, arrowFlashBits);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     if (needsFullRedraw) {
         // Force card redraw only when a full screen clear invalidated the card area.
@@ -1082,8 +977,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
 
     stageStartUs = micros();
     drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     // Region-union partial-flush dispatch (steady-state optimization).
     //
@@ -1117,24 +1011,17 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
 
     if (hadPendingExternalDraws) {
         const uint8_t pendingSources =
-            static_cast<uint8_t>(pendingExternalDraws.sourceMask() |
-                                 DisplayDirtyRegionSource::External);
-        drawnRegion_.add(pendingExternalDraws.x(), pendingExternalDraws.y(),
-                         pendingExternalDraws.w(), pendingExternalDraws.h(),
-                         pendingSources);
+            static_cast<uint8_t>(pendingExternalDraws.sourceMask() | DisplayDirtyRegionSource::External);
+        drawnRegion_.add(pendingExternalDraws.x(), pendingExternalDraws.y(), pendingExternalDraws.w(),
+                         pendingExternalDraws.h(), pendingSources);
     }
 
     const bool smallWindowForceFullFlush =
-        blinkForceFullFlush ||
-        (arrowVisibilityForceFullFlush_ && drawnRegion_.areaPx() < kPartialFlushAreaCap);
+        blinkForceFullFlush || (arrowVisibilityForceFullFlush_ && drawnRegion_.areaPx() < kPartialFlushAreaCap);
     DispatchRectList multiRectDispatch;
     const bool useMultiRectDispatch =
-        !needsFullRedraw &&
-        !smallWindowForceFullFlush &&
-        shouldUseMultiRectDispatch(drawnRegion_,
-                                   kPartialFlushAreaCap,
-                                   arrowPaintedThisFrame_,
-                                   multiRectDispatch);
+        !needsFullRedraw && !smallWindowForceFullFlush &&
+        shouldUseMultiRectDispatch(drawnRegion_, kPartialFlushAreaCap, arrowPaintedThisFrame_, multiRectDispatch);
 
     stageStartUs = micros();
     if (needsFullRedraw) {
@@ -1157,18 +1044,14 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
         }
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     } else if (drawnRegion_.areaPx() >= kPartialFlushAreaCap) {
-        perfRecordDisplayUnionExceedsCap(drawnRegion_.areaPx(),
-                                         drawnRegion_.rectCount(),
-                                         drawnRegion_.sourceMask());
+        perfRecordDisplayUnionExceedsCap(drawnRegion_.areaPx(), drawnRegion_.rectCount(), drawnRegion_.sourceMask());
         DISPLAY_FLUSH();
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::UnionExceedsCap);
     } else {
-        flushRegion(drawnRegion_.x(), drawnRegion_.y(),
-                    drawnRegion_.w(), drawnRegion_.h());
+        flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     }
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush,
-                                      micros() - stageStartUs);
+    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     // Consume the live-frame region after dispatch. This prevents the next
     // live frame from mistaking already-flushed paint for pending external
@@ -1184,4 +1067,4 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts,
     lastState_ = state;
 }
 
-#endif  // DISPLAY_RENDER_FRAME_ONLY
+#endif // DISPLAY_RENDER_FRAME_ONLY

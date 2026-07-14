@@ -71,37 +71,76 @@ def mask_comments_and_strings(source: str) -> str:
     return "".join(result)
 
 
-def is_inside_scope_block(source: str, line_no: int) -> bool:
+def strip_preprocessor(masked: str) -> str:
+    """Blank out preprocessor directives (including line continuations).
+
+    The line-based scanner used to skip any line starting with '#'. Statement-based
+    scanning needs the same exclusion, so directives are replaced by spaces (newlines
+    preserved) to keep byte offsets — and therefore reported line numbers — intact.
     """
-    Check if a line is inside a class/struct/enum/union definition (brace or scope counting).
-    This includes both function bodies and type definitions.
+    out = list(masked)
+    i = 0
+    n = len(masked)
+    while i < n:
+        # Find first non-space char of the line.
+        line_start = i
+        while i < n and masked[i] in " \t":
+            i += 1
+        if i < n and masked[i] == "#":
+            # Blank the directive, honouring backslash line continuations.
+            while i < n:
+                ch = masked[i]
+                if ch == "\n":
+                    if i > 0 and masked[:i].rstrip(" \t").endswith("\\"):
+                        i += 1  # continued directive: keep blanking
+                        continue
+                    break
+                out[i] = " "
+                i += 1
+        # Advance to end of line.
+        while i < n and masked[i] != "\n":
+            i += 1
+        i += 1
+        if i <= line_start:  # safety: never loop forever
+            i = line_start + 1
+    return "".join(out)
+
+
+def iter_file_scope_statements(masked: str):
+    """Yield (start_index, statement_text) for every ';'-terminated statement at
+    file/namespace scope (brace depth 0).
+
+    Working on logical statements rather than physical lines is what makes this
+    guard clang-format proof: a declaration that gets wrapped across lines (e.g.
+    broken after '=') is still evaluated as one statement.
     """
-    lines = source.split("\n")
-    brace_depth = 0
-    scope_type = None
-
-    for i in range(min(line_no - 1, len(lines))):
-        line = lines[i].strip()
-
-        # Track scope type (class, struct, enum, union)
-        if any(kw in line for kw in ["class ", "struct ", "enum ", "union "]):
-            # Check if this is a definition (has opening brace)
-            if "{" in line:
-                scope_type = "type_def"
-                brace_depth = line.count("{") - line.count("}")
-
-        # Count braces
-        brace_depth += line.count("{") - line.count("}")
-
-    return brace_depth > 0
+    depth = 0
+    start: int | None = None
+    for idx, ch in enumerate(masked):
+        if ch == "{":
+            depth += 1
+            start = None
+        elif ch == "}":
+            depth = max(0, depth - 1)
+            start = None
+        elif depth == 0:
+            if ch == ";":
+                if start is not None:
+                    yield start, masked[start : idx + 1]
+                start = None
+            elif not ch.isspace() and start is None:
+                start = idx
 
 
 def is_variable_declaration(line: str) -> bool:
     """
-    Check if a line looks like a simple variable declaration at file/namespace scope.
+    Check if a statement looks like a simple variable declaration at file/namespace scope.
     Excludes function declarations, type definitions, and other non-variable patterns.
+
+    Accepts a whole logical statement (possibly spanning several physical lines);
+    interior whitespace is collapsed so wrapped declarations read like single-line ones.
     """
-    stripped = line.strip()
+    stripped = re.sub(r"\s+", " ", line).strip()
 
     # Must end with semicolon (not part of larger statement)
     if not stripped.endswith(";"):
@@ -154,24 +193,16 @@ def scan_module_headers() -> list[str]:
         relative = header_path.relative_to(ROOT).as_posix()
         source = header_path.read_text(encoding="utf-8", errors="replace")
 
-        lines = source.split("\n")
+        # Mask comments/strings first (this also removes the old block-comment
+        # false-positive path), then drop preprocessor directives. Both keep byte
+        # offsets stable so reported line numbers stay accurate.
+        masked = strip_preprocessor(mask_comments_and_strings(source))
 
-        for line_no, raw_line in enumerate(lines, start=1):
-            # Skip empty lines and comment-only lines
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("//"):
-                continue
-
-            # Skip preprocessor directives
-            if stripped.startswith("#"):
-                continue
-
-            # Skip if inside any scope block (class, struct, function, etc.)
-            if is_inside_scope_block(source, line_no):
-                continue
-
-            # Check if this looks like a variable declaration
-            if is_variable_declaration(raw_line):
+        # Statement-scoped, not line-scoped: brace depth 0 == file/namespace scope,
+        # which is the same set of declarations the old line scanner targeted.
+        for start_index, statement in iter_file_scope_statements(masked):
+            if is_variable_declaration(statement):
+                line_no = source.count("\n", 0, start_index) + 1
                 violations.append(f"file={relative} line={line_no}")
 
     return violations

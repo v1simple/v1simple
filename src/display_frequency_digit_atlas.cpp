@@ -23,7 +23,7 @@ uint16_t scale8To5(uint16_t v) {
 uint16_t scale8To6(uint16_t v) {
     return static_cast<uint16_t>((v * 63u + 127u) / 255u);
 }
-}  // namespace
+} // namespace
 
 bool DisplayFrequencyDigitAtlas::begin(uint16_t maxLogicalW, uint16_t maxLogicalH) {
     release();
@@ -49,8 +49,7 @@ bool DisplayFrequencyDigitAtlas::begin(uint16_t maxLogicalW, uint16_t maxLogical
     }
 
     invalidate();
-    Serial.printf("[DisplayCache] frequency digit atlas: slots=%u bytes=%u\n",
-                  static_cast<unsigned>(kSlotCount),
+    Serial.printf("[DisplayCache] frequency digit atlas: slots=%u bytes=%u\n", static_cast<unsigned>(kSlotCount),
                   static_cast<unsigned>(bytes_));
     return true;
 }
@@ -111,15 +110,8 @@ bool DisplayFrequencyDigitAtlas::isNumericFrequencyText(const char* text) {
     return text[kTextPositions] == '\0';
 }
 
-bool DisplayFrequencyDigitAtlas::storeCell(uint8_t position,
-                                           char symbol,
-                                           int16_t x,
-                                           int16_t y,
-                                           int16_t w,
-                                           int16_t h,
-                                           const uint16_t* framebuffer,
-                                           int16_t rawStride,
-                                           uint16_t bg) {
+bool DisplayFrequencyDigitAtlas::storeCell(uint8_t position, char symbol, int16_t x, int16_t y, int16_t w, int16_t h,
+                                           const uint16_t* framebuffer, int16_t rawStride, uint16_t bg) {
     if (!enabled() || !framebuffer) {
         return false;
     }
@@ -140,8 +132,7 @@ bool DisplayFrequencyDigitAtlas::storeCell(uint8_t position,
     uint8_t* dst = alphaFor(static_cast<uint8_t>(slot));
     std::memset(dst, 0, slotBytes_);
     for (int16_t row = 0; row < physH; ++row) {
-        const uint16_t* srcRow = framebuffer +
-                                 static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
+        const uint16_t* srcRow = framebuffer + static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
                                  static_cast<uint32_t>(physX);
         uint8_t* dstRow = dst + static_cast<uint32_t>(row) * maxLogicalH_;
         for (int16_t col = 0; col < physW; ++col) {
@@ -162,10 +153,7 @@ bool DisplayFrequencyDigitAtlas::storeCell(uint8_t position,
     return true;
 }
 
-bool DisplayFrequencyDigitAtlas::restoreText(const char* text,
-                                             uint16_t color,
-                                             uint16_t bg,
-                                             uint16_t* framebuffer,
+bool DisplayFrequencyDigitAtlas::restoreText(const char* text, uint16_t color, uint16_t bg, uint16_t* framebuffer,
                                              int16_t rawStride) {
     if (!ready() || !framebuffer || !isNumericFrequencyText(text)) {
         ++missCount_;
@@ -198,8 +186,7 @@ bool DisplayFrequencyDigitAtlas::restoreText(const char* text,
 
         const uint8_t* src = alphaFor(static_cast<uint8_t>(slot));
         for (int16_t row = 0; row < physH; ++row) {
-            uint16_t* dstRow = framebuffer +
-                               static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
+            uint16_t* dstRow = framebuffer + static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
                                static_cast<uint32_t>(physX);
             const uint8_t* srcRow = src + static_cast<uint32_t>(row) * maxLogicalH_;
             for (int16_t col = 0; col < physW; ++col) {
@@ -215,20 +202,14 @@ bool DisplayFrequencyDigitAtlas::restoreText(const char* text,
     return true;
 }
 
-bool DisplayFrequencyDigitAtlas::changedTextRect(const char* previousText,
-                                                 const char* nextText,
-                                                 int16_t& x,
-                                                 int16_t& y,
-                                                 int16_t& w,
-                                                 int16_t& h) const {
+bool DisplayFrequencyDigitAtlas::changedTextRect(const char* previousText, const char* nextText, int16_t& x, int16_t& y,
+                                                 int16_t& w, int16_t& h) const {
     x = 0;
     y = 0;
     w = 0;
     h = 0;
 
-    if (!ready() ||
-        !isNumericFrequencyText(previousText) ||
-        !isNumericFrequencyText(nextText)) {
+    if (!ready() || !isNumericFrequencyText(previousText) || !isNumericFrequencyText(nextText)) {
         return false;
     }
 
@@ -268,10 +249,7 @@ bool DisplayFrequencyDigitAtlas::changedTextRect(const char* previousText,
 
         const int previousSlot = slotFor(pos, previousText[pos]);
         const int nextSlot = slotFor(pos, nextText[pos]);
-        if (previousSlot < 0 ||
-            nextSlot < 0 ||
-            !includeCell(cells_[previousSlot]) ||
-            !includeCell(cells_[nextSlot])) {
+        if (previousSlot < 0 || nextSlot < 0 || !includeCell(cells_[previousSlot]) || !includeCell(cells_[nextSlot])) {
             return false;
         }
     }
@@ -287,20 +265,10 @@ bool DisplayFrequencyDigitAtlas::changedTextRect(const char* previousText,
     return true;
 }
 
-bool DisplayFrequencyDigitAtlas::restoreTextInRect(const char* text,
-                                                   uint16_t color,
-                                                   uint16_t bg,
-                                                   uint16_t* framebuffer,
-                                                   int16_t rawStride,
-                                                   int16_t rectX,
-                                                   int16_t rectY,
-                                                   int16_t rectW,
+bool DisplayFrequencyDigitAtlas::restoreTextInRect(const char* text, uint16_t color, uint16_t bg, uint16_t* framebuffer,
+                                                   int16_t rawStride, int16_t rectX, int16_t rectY, int16_t rectW,
                                                    int16_t rectH) {
-    if (!ready() ||
-        !framebuffer ||
-        !isNumericFrequencyText(text) ||
-        rectW <= 0 ||
-        rectH <= 0) {
+    if (!ready() || !framebuffer || !isNumericFrequencyText(text) || rectW <= 0 || rectH <= 0) {
         ++missCount_;
         return false;
     }
@@ -335,8 +303,7 @@ bool DisplayFrequencyDigitAtlas::restoreTextInRect(const char* text,
 
         const uint8_t* src = alphaFor(slot);
         for (int16_t row = 0; row < physH; ++row) {
-            uint16_t* dstRow = framebuffer +
-                               static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
+            uint16_t* dstRow = framebuffer + static_cast<uint32_t>(physY + row) * static_cast<uint32_t>(rawStride) +
                                static_cast<uint32_t>(physX);
             const uint8_t* srcRow = src + static_cast<uint32_t>(row) * maxLogicalH_;
             for (int16_t col = 0; col < physW; ++col) {
@@ -373,18 +340,9 @@ int DisplayFrequencyDigitAtlas::slotFor(uint8_t position, char symbol) {
     return static_cast<int>(densePos) * kDigits + (symbol - '0');
 }
 
-bool DisplayFrequencyDigitAtlas::copyGeometry(int16_t x,
-                                              int16_t y,
-                                              int16_t w,
-                                              int16_t h,
-                                              int16_t rawStride,
-                                              int16_t& physX,
-                                              int16_t& physY,
-                                              int16_t& physW,
-                                              int16_t& physH) const {
-    if (w <= 0 || h <= 0 ||
-        w > static_cast<int16_t>(maxLogicalW_) ||
-        h > static_cast<int16_t>(maxLogicalH_) ||
+bool DisplayFrequencyDigitAtlas::copyGeometry(int16_t x, int16_t y, int16_t w, int16_t h, int16_t rawStride,
+                                              int16_t& physX, int16_t& physY, int16_t& physW, int16_t& physH) const {
+    if (w <= 0 || h <= 0 || w > static_cast<int16_t>(maxLogicalW_) || h > static_cast<int16_t>(maxLogicalH_) ||
         rawStride <= 0) {
         return false;
     }
@@ -395,10 +353,7 @@ bool DisplayFrequencyDigitAtlas::copyGeometry(int16_t x,
     physW = h;
     physH = w;
 
-    if (physX < 0 ||
-        physY < 0 ||
-        physX + physW > rawStride ||
-        physW > static_cast<int16_t>(maxLogicalH_) ||
+    if (physX < 0 || physY < 0 || physX + physW > rawStride || physW > static_cast<int16_t>(maxLogicalH_) ||
         physH > static_cast<int16_t>(maxLogicalW_)) {
         return false;
     }
@@ -425,11 +380,7 @@ const uint16_t* DisplayFrequencyDigitAtlas::blendLutFor(uint16_t fg, uint16_t bg
     return blendLut_;
 }
 
-bool DisplayFrequencyDigitAtlas::rectsIntersect(const Cell& cell,
-                                                int16_t x,
-                                                int16_t y,
-                                                int16_t w,
-                                                int16_t h) {
+bool DisplayFrequencyDigitAtlas::rectsIntersect(const Cell& cell, int16_t x, int16_t y, int16_t w, int16_t h) {
     if (!cell.valid || cell.w <= 0 || cell.h <= 0 || w <= 0 || h <= 0) {
         return false;
     }

@@ -8,7 +8,7 @@ const char* normalizedVersion(const char* version) {
     return version ? version : "";
 }
 
-}  // namespace
+} // namespace
 
 String readStoredFirmwareVersion(Preferences& prefs) {
     return prefs.getString(kFirmwareVersionKey, "");
@@ -23,9 +23,7 @@ bool storeFirmwareVersion(Preferences& prefs, const char* currentVersion) {
     return readStoredFirmwareVersion(prefs) == normalizedVersion(currentVersion);
 }
 
-BondResetResult resetBondsForFirmwareVersion(Preferences& prefs,
-                                             const char* currentVersion,
-                                             BackupBondsFn backupBonds,
+BondResetResult resetBondsForFirmwareVersion(Preferences& prefs, const char* currentVersion, BackupBondsFn backupBonds,
                                              ClearBondsFn clearBonds) {
     BondResetResult result;
     if (backupBonds) {
@@ -39,4 +37,4 @@ BondResetResult resetBondsForFirmwareVersion(Preferences& prefs,
     return result;
 }
 
-}  // namespace BleFreshFlashPolicy
+} // namespace BleFreshFlashPolicy

@@ -7,7 +7,7 @@
 #include "obd_runtime_module.h"
 
 class ObdSettingsSyncModule {
-public:
+  public:
     void begin(SettingsManager* settings, ObdRuntimeModule* obdRuntimeModule);
     void process(uint32_t nowMs);
 
@@ -16,7 +16,7 @@ public:
     uint32_t getPendingChangedAtMsForTest() const { return pendingChangedAtMs_; }
 #endif
 
-private:
+  private:
     static constexpr size_t ADDR_BUF_LEN = 18;
     static constexpr uint32_t STABILITY_WINDOW_MS = 5000;
 

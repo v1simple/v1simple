@@ -4,7 +4,6 @@
 /// OBD-owned BLE client and scan callback, fully independent of ble_client.cpp.
 /// Owns its own NimBLEClient. Created once, never deleted (heap-safety rule).
 
-
 #include <NimBLEDevice.h>
 #include <cstdint>
 
@@ -12,19 +11,19 @@ class ObdRuntimeModule;
 
 /// Scan callback that filters for OBDLink devices by name prefix + RSSI gate.
 class ObdScanCallback : public NimBLEScanCallbacks {
-public:
+  public:
     void configure(ObdRuntimeModule* parent, int8_t minRssi);
     void onResult(const NimBLEAdvertisedDevice* device) override;
     void onScanEnd(const NimBLEScanResults& results, int reason) override;
 
-private:
+  private:
     ObdRuntimeModule* parent_ = nullptr;
     int8_t minRssi_ = -80;
 };
 
 /// OBD client disconnect callback — signals runtime module on disconnect.
 class ObdClientCallback : public NimBLEClientCallbacks {
-public:
+  public:
     void configure(class ObdBleClient* owner, ObdRuntimeModule* parent);
     void onConnect(NimBLEClient* client) override;
     void onConnectFail(NimBLEClient* client, int reason) override;
@@ -32,14 +31,14 @@ public:
     void onAuthenticationComplete(NimBLEConnInfo& connInfo) override;
     void onIdentity(NimBLEConnInfo& connInfo) override;
 
-private:
+  private:
     class ObdBleClient* owner_ = nullptr;
     ObdRuntimeModule* parent_ = nullptr;
 };
 
 /// Low-level BLE operations for OBD adapter communication.
 class ObdBleClient {
-public:
+  public:
     /// Create the NimBLEClient (once). Must be called after NimBLEDevice::init().
     void init(ObdRuntimeModule* parent);
 
@@ -81,7 +80,7 @@ public:
     /// Query cached RSSI. Updates at most every 2 seconds.
     int8_t getRssi(uint32_t nowMs);
 
-private:
+  private:
     friend class ObdClientCallback;
 
     void syncSecurityStateFromConnInfo();
@@ -92,8 +91,8 @@ private:
     void clearLinkState(bool clearErrors);
 
     NimBLEClient* pClient_ = nullptr;
-    NimBLERemoteCharacteristic* pTxChar_ = nullptr;  // notify (device → host)
-    NimBLERemoteCharacteristic* pRxChar_ = nullptr;  // write  (host → device)
+    NimBLERemoteCharacteristic* pTxChar_ = nullptr; // notify (device → host)
+    NimBLERemoteCharacteristic* pRxChar_ = nullptr; // write  (host → device)
 
     ObdScanCallback scanCallback_;
     ObdClientCallback clientCallback_;

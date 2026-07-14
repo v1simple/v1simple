@@ -24,23 +24,22 @@ const char* WIFI_CLIENT_NS = kSettingsWifiClientNamespace;
 const char* WIFI_CLIENT_SD_SECRET_PATH = "/v1wifi_secret.json";
 const char* WIFI_CLIENT_SD_SECRET_TYPE = "v1wifi_secret";
 const int WIFI_CLIENT_SD_SECRET_VERSION = 2;
-const char* const SETTINGS_BACKUP_CANDIDATES[] = {
-    SETTINGS_BACKUP_PATH,
-    SETTINGS_BACKUP_PREV_PATH,
-    "/v1simple_settings.json",
-    "/v1settings_backup.json"
-};
-const size_t SETTINGS_BACKUP_CANDIDATES_COUNT = sizeof(SETTINGS_BACKUP_CANDIDATES) / sizeof(SETTINGS_BACKUP_CANDIDATES[0]);
+const char* const SETTINGS_BACKUP_CANDIDATES[] = {SETTINGS_BACKUP_PATH, SETTINGS_BACKUP_PREV_PATH,
+                                                  "/v1simple_settings.json", "/v1settings_backup.json"};
+const size_t SETTINGS_BACKUP_CANDIDATES_COUNT =
+    sizeof(SETTINGS_BACKUP_CANDIDATES) / sizeof(SETTINGS_BACKUP_CANDIDATES[0]);
 
 WiFiModeSetting clampWifiModeValue(int raw) {
-    if (raw == static_cast<int>(V1_WIFI_AP)) return V1_WIFI_AP;
-    if (raw == static_cast<int>(V1_WIFI_APSTA)) return V1_WIFI_APSTA;
+    if (raw == static_cast<int>(V1_WIFI_AP))
+        return V1_WIFI_AP;
+    if (raw == static_cast<int>(V1_WIFI_APSTA))
+        return V1_WIFI_APSTA;
     return V1_WIFI_OFF;
 }
 
 VoiceAlertMode clampVoiceAlertModeValue(int raw) {
-    int clamped = std::max(static_cast<int>(VOICE_MODE_DISABLED),
-                           std::min(raw, static_cast<int>(VOICE_MODE_BAND_FREQ)));
+    int clamped =
+        std::max(static_cast<int>(VOICE_MODE_DISABLED), std::min(raw, static_cast<int>(VOICE_MODE_BAND_FREQ)));
     return static_cast<VoiceAlertMode>(clamped);
 }
 
@@ -49,8 +48,7 @@ static constexpr size_t MAX_OBD_SAVED_NAME_LEN = 32;
 static constexpr uint32_t SETTINGS_DEFERRED_PERSIST_DEBOUNCE_MS = 750;
 static constexpr uint32_t SETTINGS_DEFERRED_PERSIST_RETRY_BACKOFF_MS = 1000;
 
-static_assert(kWifiStaSlotCount == kNvsWifiStaSlotCount,
-              "WiFi STA slot model and NVS key arrays must stay in sync");
+static_assert(kWifiStaSlotCount == kNvsWifiStaSlotCount, "WiFi STA slot model and NVS key arrays must stay in sync");
 
 static bool isDeferredPersistDue(uint32_t nowMs, uint32_t targetMs) {
     return static_cast<int32_t>(nowMs - targetMs) >= 0;
@@ -74,9 +72,7 @@ String sanitizeObdSavedNameValue(const String& raw) {
     return value;
 }
 
-static void migrateLegacyWifiStaSlotNvs(const String& activeNs,
-                                        const WifiStaSlot& slot0,
-                                        bool legacySsidKeyPresent) {
+static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlot& slot0, bool legacySsidKeyPresent) {
     if (activeNs.length() == 0) {
         return;
     }
@@ -110,7 +106,6 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs,
     }
     wifiPrefs.end();
 }
-
 
 // Global instance
 SettingsManager settingsManager;
@@ -165,7 +160,6 @@ void SettingsManager::begin() {
     checkAndRestoreFromSD();
 }
 
-
 void SettingsManager::load() {
     String activeNs = getActiveNamespace();
     if (!preferences_.begin(activeNs.c_str(), true)) {
@@ -205,8 +199,7 @@ void SettingsManager::load() {
     const bool wifiClientEnabledKeyPresent = preferences_.isKey(kNvsWifiClientEnabled);
     const bool wifiClientSsidKeyPresent = preferences_.isKey(kNvsWifiClientSsid);
     settings_.wifiClientEnabled = preferences_.getBool(kNvsWifiClientEnabled, false);
-    const String legacyWifiClientSsid =
-        sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiClientSsid, ""));
+    const String legacyWifiClientSsid = sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiClientSsid, ""));
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         WifiStaSlot& slot = settings_.wifiStaSlots[i];
         slot.ssid = sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiStaSlotSsid[i], ""));
@@ -226,26 +219,23 @@ void SettingsManager::load() {
     // a saved STA SSID without the explicit enabled flag.  If the flag is
     // present, preserve it exactly so the Web UI's WiFi Client OFF toggle
     // stays OFF across reboot while keeping saved networks.
-    if (!wifiClientEnabledKeyPresent &&
-        !settings_.wifiClientEnabled &&
-        settings_.hasConfiguredWifiStaSlot()) {
+    if (!wifiClientEnabledKeyPresent && !settings_.wifiClientEnabled && settings_.hasConfiguredWifiStaSlot()) {
         Serial.println("[Settings] HEAL: wifiClientEnabled flag missing but SSID is set — enabling");
         settings_.wifiClientEnabled = true;
     }
     settings_.refreshWifiClientAliasFromSlots();
 
     // Debug: Log WiFi client settings on load
-    Serial.printf("[Settings] WiFi client keys: enabledKey=%s ssidKey=%s\n",
-                  wifiClientEnabledKeyPresent ? "yes" : "no",
+    Serial.printf("[Settings] WiFi client keys: enabledKey=%s ssidKey=%s\n", wifiClientEnabledKeyPresent ? "yes" : "no",
                   wifiClientSsidKeyPresent ? "yes" : "no");
-    Serial.printf("[Settings] WiFi client: enabled=%s, SSID='%s'\n",
-                  settings_.wifiClientEnabled ? "true" : "false",
+    Serial.printf("[Settings] WiFi client: enabled=%s, SSID='%s'\n", settings_.wifiClientEnabled ? "true" : "false",
                   settings_.wifiClientSSID.c_str());
 
     settings_.proxyBLE = preferences_.getBool(kNvsProxyBle, true);
     settings_.proxyName = sanitizeProxyNameValue(preferences_.getString(kNvsProxyName, "V1-Proxy"));
     settings_.turnOffDisplay = preferences_.getBool(kNvsDisplayOff, false);
-    settings_.brightness = std::max<uint8_t>(1, preferences_.getUChar(kNvsBrightness, 200));  // Min 1 to avoid blank screen
+    settings_.brightness =
+        std::max<uint8_t>(1, preferences_.getUChar(kNvsBrightness, 200)); // Min 1 to avoid blank screen
     settings_.colorBogey = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBogey, 0xF800), 0xF800);
     settings_.colorFrequency = sanitizeRgb565Color(preferences_.getUShort(kNvsColorFreq, 0xF800), 0xF800);
     settings_.colorArrowFront = sanitizeRgb565Color(preferences_.getUShort(kNvsColorArrowFront, 0xF800), 0xF800);
@@ -255,29 +245,42 @@ void SettingsManager::load() {
     settings_.colorBandKa = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandKa, 0xF800), 0xF800);
     settings_.colorBandK = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandK, 0x001F), 0x001F);
     settings_.colorBandX = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandX, 0x07E0), 0x07E0);
-    settings_.colorBandPhoto = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandPhoto, 0x780F), 0x780F);  // Purple (photo radar)
+    settings_.colorBandPhoto =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandPhoto, 0x780F), 0x780F); // Purple (photo radar)
     settings_.colorWiFiIcon = sanitizeRgb565Color(preferences_.getUShort(kNvsColorWifi, 0x07FF), 0x07FF);
     settings_.colorWiFiConnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorWifiConnected, 0x07E0), 0x07E0);
     settings_.colorBleConnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBleConnected, 0x07E0), 0x07E0);
-    settings_.colorBleDisconnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBleDisconnected, 0x001F), 0x001F);
+    settings_.colorBleDisconnected =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorBleDisconnected, 0x001F), 0x001F);
     settings_.colorBar1 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar1, 0x07E0), 0x07E0);
     settings_.colorBar2 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar2, 0x07E0), 0x07E0);
     settings_.colorBar3 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar3, 0xFFE0), 0xFFE0);
     settings_.colorBar4 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar4, 0xFFE0), 0xFFE0);
     settings_.colorBar5 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar5, 0xF800), 0xF800);
     settings_.colorBar6 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBar6, 0xF800), 0xF800);
-    settings_.colorMuted = sanitizeRgb565Color(preferences_.getUShort(kNvsColorMuted, 0x3186), 0x3186);  // Dark grey muted color
-    settings_.colorPersisted = sanitizeRgb565Color(preferences_.getUShort(kNvsColorPersisted, 0x18C3), 0x18C3);  // Darker grey for persisted alerts
-    settings_.colorVolumeMain = sanitizeRgb565Color(preferences_.getUShort(kNvsColorVolumeMain, 0xF800), 0xF800);  // Red for main volume
-    settings_.colorVolumeMute = sanitizeRgb565Color(preferences_.getUShort(kNvsColorVolumeMute, 0x7BEF), 0x7BEF);  // Grey for mute volume
-    settings_.colorRssiV1 = sanitizeRgb565Color(preferences_.getUShort(kNvsColorRssiV1, 0x07E0), 0x07E0);       // Green for V1 RSSI label
-    settings_.colorRssiProxy = sanitizeRgb565Color(preferences_.getUShort(kNvsColorRssiProxy, 0x001F), 0x001F);   // Blue for Proxy RSSI label
-    settings_.colorObd = sanitizeRgb565Color(preferences_.getUShort(kNvsColorObd, 0x001F), 0x001F);              // Blue OBD badge color
-    settings_.colorAlpConnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpConn, 0x07E0), 0x07E0);  // Green ALP connected
-    settings_.colorAlpDli = sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpDli, 0xFD20), 0xFD20);            // Orange ALP DLI active
-    settings_.colorAlpLidActive = sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpLid, 0x001F), 0x001F);      // Blue ALP LID active
-    settings_.colorAlpAlert = sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpAlert, 0xF800), 0xF800);        // Red ALP alert (solid during session)
-    settings_.freqUseBandColor = preferences_.getBool(kNvsFreqBandColor, false);  // Use custom freq color by default
+    settings_.colorMuted =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorMuted, 0x3186), 0x3186); // Dark grey muted color
+    settings_.colorPersisted = sanitizeRgb565Color(preferences_.getUShort(kNvsColorPersisted, 0x18C3),
+                                                   0x18C3); // Darker grey for persisted alerts
+    settings_.colorVolumeMain =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorVolumeMain, 0xF800), 0xF800); // Red for main volume
+    settings_.colorVolumeMute =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorVolumeMute, 0x7BEF), 0x7BEF); // Grey for mute volume
+    settings_.colorRssiV1 =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorRssiV1, 0x07E0), 0x07E0); // Green for V1 RSSI label
+    settings_.colorRssiProxy =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorRssiProxy, 0x001F), 0x001F); // Blue for Proxy RSSI label
+    settings_.colorObd =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorObd, 0x001F), 0x001F); // Blue OBD badge color
+    settings_.colorAlpConnected =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpConn, 0x07E0), 0x07E0); // Green ALP connected
+    settings_.colorAlpDli =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpDli, 0xFD20), 0xFD20); // Orange ALP DLI active
+    settings_.colorAlpLidActive =
+        sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpLid, 0x001F), 0x001F); // Blue ALP LID active
+    settings_.colorAlpAlert = sanitizeRgb565Color(preferences_.getUShort(kNvsColorAlpAlert, 0xF800),
+                                                  0xF800);                       // Red ALP alert (solid during session)
+    settings_.freqUseBandColor = preferences_.getBool(kNvsFreqBandColor, false); // Use custom freq color by default
     settings_.hideWifiIcon = preferences_.getBool(kNvsHideWifi, false);
     settings_.hideProfileIndicator = preferences_.getBool(kNvsHideProfile, false);
     settings_.hideBatteryIcon = preferences_.getBool(kNvsHideBattery, false);
@@ -302,8 +305,10 @@ void SettingsManager::load() {
 
     // Volume fade settings
     settings_.alertVolumeFadeEnabled = preferences_.getBool(kNvsVolFadeEnabled, false);
-    settings_.alertVolumeFadeDelaySec = std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeSeconds, 2), 1, 10);  // 1-10 seconds
-    settings_.alertVolumeFadeVolume = std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeVolume, 1), 1, 9);  // 1-9 (min 1 prevents V1 mute indicator feedback loop)
+    settings_.alertVolumeFadeDelaySec =
+        std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeSeconds, 2), 1, 10); // 1-10 seconds
+    settings_.alertVolumeFadeVolume = std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeVolume, 1), 1,
+                                                          9); // 1-9 (min 1 prevents V1 mute indicator feedback loop)
 
     // Speed-aware muting settings
     settings_.speedMuteEnabled = preferences_.getBool(kNvsSpeedMuteEnabled, false);
@@ -375,26 +380,19 @@ void SettingsManager::load() {
         settings_.obdMinRssi = static_cast<int8_t>(std::max(-100, std::min(rssi, -40)));
     }
     settings_.obdScanWindowMs = clampConnectionCycleObdScanWindowMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleObdScanWindow,
-                                                  kConnectionCycleObdScanWindowMsDefault)));
+        static_cast<int64_t>(preferences_.getUInt(kNvsCycleObdScanWindow, kConnectionCycleObdScanWindowMsDefault)));
     settings_.obdRetryIntervalMs = clampConnectionCycleObdRetryIntervalMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleObdRetryInt,
-                                                  kConnectionCycleObdRetryIntervalMsDefault)));
+        static_cast<int64_t>(preferences_.getUInt(kNvsCycleObdRetryInt, kConnectionCycleObdRetryIntervalMsDefault)));
     settings_.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleProxyOpenWindow,
-                                                  kConnectionCycleProxyOpenWindowMsDefault)));
+        static_cast<int64_t>(preferences_.getUInt(kNvsCycleProxyOpenWindow, kConnectionCycleProxyOpenWindowMsDefault)));
     settings_.wifiOpenTimeoutMs = clampConnectionCycleWifiOpenTimeoutMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleWifiOpenTimeout,
-                                                  kConnectionCycleWifiOpenTimeoutMsDefault)));
+        static_cast<int64_t>(preferences_.getUInt(kNvsCycleWifiOpenTimeout, kConnectionCycleWifiOpenTimeoutMsDefault)));
     settings_.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleV1SettleQuiet,
-                                                  kConnectionCycleV1SettleQuietMsDefault)));
-    settings_.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleV1SettleFallback,
-                                                  kConnectionCycleV1SettleFallbackMsDefault)));
-    settings_.cycleTeardownAckTimeoutMs = clampConnectionCycleTeardownAckTimeoutMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleTeardownAckTimeout,
-                                                  kConnectionCycleTeardownAckTimeoutMsDefault)));
+        static_cast<int64_t>(preferences_.getUInt(kNvsCycleV1SettleQuiet, kConnectionCycleV1SettleQuietMsDefault)));
+    settings_.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(static_cast<int64_t>(
+        preferences_.getUInt(kNvsCycleV1SettleFallback, kConnectionCycleV1SettleFallbackMsDefault)));
+    settings_.cycleTeardownAckTimeoutMs = clampConnectionCycleTeardownAckTimeoutMsValue(static_cast<int64_t>(
+        preferences_.getUInt(kNvsCycleTeardownAckTimeout, kConnectionCycleTeardownAckTimeoutMsDefault)));
 
     if (settings_.proxyBLE && settings_.obdEnabled) {
         // Legacy migration: older builds allowed both. OBD was the explicit
@@ -409,7 +407,8 @@ void SettingsManager::load() {
     settings_.alpSdLogEnabled = preferences_.getBool(kNvsAlpSdLog, false);
     {
         uint8_t alpPersist = preferences_.getUChar(kNvsAlpPersistSec, 0);
-        if (alpPersist > 5) alpPersist = 5;
+        if (alpPersist > 5)
+            alpPersist = 5;
         settings_.alpAlertPersistSec = alpPersist;
     }
     settings_.alpDisableV1LaserOnPush = preferences_.getBool(kNvsAlpNoV1Laser, true);
@@ -428,16 +427,13 @@ void SettingsManager::load() {
     // leave diagnostics or future backups reporting a dead polarity state.
     settings_.gpsEnablePinActiveHigh = true;
     settings_.gpsLogUtcToPerf = preferences_.getBool(kNvsGpsLogUtcToPerf, true);
-    settings_.gpsLogUtcToAlp  = preferences_.getBool(kNvsGpsLogUtcToAlp,  true);
+    settings_.gpsLogUtcToAlp = preferences_.getBool(kNvsGpsLogUtcToAlp, true);
 
     preferences_.end();
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);
 
-    Serial.printf("[Settings] OK wifi=%s proxy=%s bright=%d autoPush=%s\n",
-                  settings_.enableWifi ? "on" : "off",
-                  settings_.proxyBLE ? "on" : "off",
-                  settings_.brightness,
-                  settings_.autoPushEnabled ? "on" : "off");
+    Serial.printf("[Settings] OK wifi=%s proxy=%s bright=%d autoPush=%s\n", settings_.enableWifi ? "on" : "off",
+                  settings_.proxyBLE ? "on" : "off", settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
 }
 
 void SettingsManager::save() {
@@ -476,8 +472,7 @@ void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
         return;
     }
 
-    if (deferredPersistNextAttemptAtMs_ != 0 &&
-        !isDeferredPersistDue(nowMs, deferredPersistNextAttemptAtMs_)) {
+    if (deferredPersistNextAttemptAtMs_ != 0 && !isDeferredPersistDue(nowMs, deferredPersistNextAttemptAtMs_)) {
         return;
     }
 

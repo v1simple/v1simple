@@ -11,7 +11,7 @@ Display-area taps. Triple-tap for profile change (`PROFILE_CHANGE_TAP_COUNT = 3`
 ### Public types
 
 #### `struct WifiCallbacks`
-**Source:** `tap_gesture_module.h:16-22`.
+**Source:** `tap_gesture_module.h:18-25`.
 
 Function-pointer hooks for WiFi state / maintenance entry — `isWifiActive`, `stopWifi`, `requestMaintenanceBoot`, plus context pointers.
 
@@ -19,13 +19,13 @@ Function-pointer hooks for WiFi state / maintenance entry — `isWifiActive`, `s
 
 #### `void begin(TouchHandler*, SettingsManager*, V1Display*, V1BLEClient*, PacketParser*, AutoPushModule*, AlertPersistenceModule*, DisplayMode*, QuietCoordinatorModule*, const WifiCallbacks& = {})`
 Wires the wide dependency surface (taps can affect almost any subsystem).
-**Source:** `tap_gesture_module.h:25-34`.
+**Source:** `tap_gesture_module.h:27-30`.
 
 ### Pump
 
 #### `void process(unsigned long nowMs)`
 Per-loop tick. Reads touch events, updates tap-counting state, fires gestures.
-**Source:** `tap_gesture_module.h:36`.
+**Source:** `tap_gesture_module.h:32`.
 
 ### Constants
 
@@ -34,7 +34,7 @@ Per-loop tick. Reads touch events, updates tap-counting state, fires gestures.
 - `TAP_DEBOUNCE_MS = 150` — single-tap debounce.
 - `LONG_PRESS_WIFI_MS = 4000` — long-press maintenance-entry / WiFi-stop threshold.
 
-**Source:** `tap_gesture_module.h:48-58`.
+**Source:** `tap_gesture_module.h:42-52`.
 
 ## Class: `TouchUiModule`
 
@@ -45,14 +45,14 @@ BOOT button UI — brightness slider, volume slider, maintenance boot entry (lon
 ### Public types
 
 #### `struct Callbacks`
-**Source:** `touch_ui_module.h:14-30`.
+**Source:** `touch_ui_module.h:16-33`.
 
 Function-pointer hooks for WiFi setup, display indicator drawing, OBD scan, and gesture-safety checks.
 
 ### Lifecycle
 
 #### `void begin(V1Display*, TouchHandler*, SettingsManager*, const Callbacks&)`
-**Source:** `touch_ui_module.h:32-35`.
+**Source:** `touch_ui_module.h:35`.
 
 ### Pump
 
@@ -69,7 +69,7 @@ Returns true if the UI consumed the loop (brightness/volume adjustment was activ
 - `VOLUME_TEST_DEBOUNCE_MS = 1000`
 - `SLIDER_REDRAW_MIN_MS = 50` — caps slider redraw at ~20 Hz.
 
-**Source:** `touch_ui_module.h:55-60`.
+**Source:** `touch_ui_module.h:53-57`.
 
 ## Dependencies
 

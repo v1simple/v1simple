@@ -14,7 +14,7 @@ struct LoopRuntimeSnapshotContext {
 
 // Snapshots loop-local runtime service state once per iteration.
 class LoopRuntimeSnapshotModule {
-public:
+  public:
     struct Providers {
         bool (*readBleConnected)(void* ctx) = nullptr;
         void* bleConnectedContext = nullptr;
@@ -29,7 +29,7 @@ public:
     void begin(const Providers& hooks);
     LoopRuntimeSnapshotValues process(const LoopRuntimeSnapshotContext& ctx);
 
-private:
+  private:
     Providers providers{};
     bool hasCachedCanStartDma_ = false;
     bool cachedCanStartDma_ = false;

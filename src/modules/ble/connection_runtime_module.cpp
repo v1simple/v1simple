@@ -6,8 +6,7 @@ void ConnectionRuntimeModule::begin(const Providers& hooks) {
     begin(hooks, Config{});
 }
 
-void ConnectionRuntimeModule::begin(const Providers& hooks,
-                                    const Config& cfg) {
+void ConnectionRuntimeModule::begin(const Providers& hooks, const Config& cfg) {
     providers = hooks;
     config_ = cfg;
     reset();
@@ -18,16 +17,13 @@ void ConnectionRuntimeModule::reset() {
     runStartLogged_ = false;
 }
 
-ConnectionRuntimeSnapshot ConnectionRuntimeModule::process(unsigned long nowMs,
-                                                           unsigned long nowUs,
-                                                           unsigned long lastLoopUs,
-                                                           bool bootSplashHoldActive,
+ConnectionRuntimeSnapshot ConnectionRuntimeModule::process(unsigned long nowMs, unsigned long nowUs,
+                                                           unsigned long lastLoopUs, bool bootSplashHoldActive,
                                                            unsigned long bootSplashHoldUntilMs,
                                                            bool initialScanningScreenShown) {
     ConnectionRuntimeSnapshot snapshot;
 
-    const bool connectedNow =
-        providers.isBleConnected ? providers.isBleConnected(providers.bleContext) : false;
+    const bool connectedNow = providers.isBleConnected ? providers.isBleConnected(providers.bleContext) : false;
 
     snapshot.bootSplashHoldActive = bootSplashHoldActive;
     snapshot.initialScanningScreenShown = initialScanningScreenShown;
@@ -46,15 +42,12 @@ ConnectionRuntimeSnapshot ConnectionRuntimeModule::process(unsigned long nowMs,
     const unsigned long sinceTickUs = nowUs - lastTickUs_;
     lastTickUs_ = nowUs;
 
-    snapshot.backpressured =
-        providers.isBackpressured ? providers.isBackpressured(providers.queueContext) : false;
+    snapshot.backpressured = providers.isBackpressured ? providers.isBackpressured(providers.queueContext) : false;
     snapshot.skipNonCore = (sinceTickUs > config_.tickGapMaxUs) || snapshot.backpressured;
     snapshot.overloaded = (lastLoopUs >= config_.overloadLoopUs) || snapshot.skipNonCore;
 
-    const unsigned long lastRxMs =
-        providers.getLastRxMillis ? providers.getLastRxMillis(providers.queueContext) : 0;
-    snapshot.receiving =
-        lastRxMs != 0 && (nowMs - lastRxMs) < config_.receivingHeartbeatMs;
+    const unsigned long lastRxMs = providers.getLastRxMillis ? providers.getLastRxMillis(providers.queueContext) : 0;
+    snapshot.receiving = lastRxMs != 0 && (nowMs - lastRxMs) < config_.receivingHeartbeatMs;
 
     if (!runStartLogged_) {
         const bool bleReady = snapshot.connected;

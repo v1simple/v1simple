@@ -48,28 +48,21 @@ constexpr uint8_t kFrequencyRasterFlagPhoto = 0x04;
 constexpr uint8_t kFrequencyRasterFlagAlp = 0x08;
 constexpr uint8_t kFrequencyRasterFlagLaser = 0x10;
 
-uint8_t frequencyRasterFlags(bool muted,
-                             bool isPhotoRadar,
-                             bool isAlpOverride,
-                             bool isLaser) {
+uint8_t frequencyRasterFlags(bool muted, bool isPhotoRadar, bool isAlpOverride, bool isLaser) {
     uint8_t flags = kFrequencyRasterFlagOfr;
-    if (muted) flags |= kFrequencyRasterFlagMuted;
-    if (isPhotoRadar) flags |= kFrequencyRasterFlagPhoto;
-    if (isAlpOverride) flags |= kFrequencyRasterFlagAlp;
-    if (isLaser) flags |= kFrequencyRasterFlagLaser;
+    if (muted)
+        flags |= kFrequencyRasterFlagMuted;
+    if (isPhotoRadar)
+        flags |= kFrequencyRasterFlagPhoto;
+    if (isAlpOverride)
+        flags |= kFrequencyRasterFlagAlp;
+    if (isLaser)
+        flags |= kFrequencyRasterFlagLaser;
     return flags;
 }
 
-FrequencyRasterKey makeFrequencyRasterKey(const char* text,
-                                          uint16_t color,
-                                          uint16_t bg,
-                                          uint16_t fontSize,
-                                          uint32_t paletteRevision,
-                                          int x,
-                                          int y,
-                                          int w,
-                                          int h,
-                                          uint8_t flags) {
+FrequencyRasterKey makeFrequencyRasterKey(const char* text, uint16_t color, uint16_t bg, uint16_t fontSize,
+                                          uint32_t paletteRevision, int x, int y, int w, int h, uint8_t flags) {
     FrequencyRasterKey key{};
     std::strncpy(key.text, text, sizeof(key.text));
     key.text[sizeof(key.text) - 1] = '\0';
@@ -85,15 +78,9 @@ FrequencyRasterKey makeFrequencyRasterKey(const char* text,
     return key;
 }
 
-void getFrequencyTextBounds(DisplayFontManager& fontMgr,
-                            int fontSize,
-                            const char* text,
-                            int& xMin,
-                            int& xMax) {
+void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const char* text, int& xMin, int& xMax) {
     for (FrequencyBoundsCacheEntry& entry : s_frequencyBoundsCache) {
-        if (entry.valid &&
-            entry.fontSize == fontSize &&
-            std::strncmp(entry.text, text, sizeof(entry.text)) == 0) {
+        if (entry.valid && entry.fontSize == fontSize && std::strncmp(entry.text, text, sizeof(entry.text)) == 0) {
             xMin = entry.xMin;
             xMax = entry.xMax;
             return;
@@ -101,8 +88,7 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr,
     }
 
     fontMgr.segment7.setFontSize(fontSize);
-    FT_BBox bbox = fontMgr.segment7.calculateBoundingBox(
-        0, 0, fontSize, Align::Left, Layout::Horizontal, text);
+    FT_BBox bbox = fontMgr.segment7.calculateBoundingBox(0, 0, fontSize, Align::Left, Layout::Horizontal, text);
     xMin = static_cast<int>(bbox.xMin);
     xMax = static_cast<int>(bbox.xMax);
 
@@ -113,11 +99,10 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr,
     dst.text[sizeof(dst.text) - 1] = '\0';
     dst.xMin = xMin;
     dst.xMax = xMax;
-    s_frequencyBoundsCacheNextSlot =
-        static_cast<uint8_t>((s_frequencyBoundsCacheNextSlot + 1) %
-                             (sizeof(s_frequencyBoundsCache) / sizeof(s_frequencyBoundsCache[0])));
+    s_frequencyBoundsCacheNextSlot = static_cast<uint8_t>(
+        (s_frequencyBoundsCacheNextSlot + 1) % (sizeof(s_frequencyBoundsCache) / sizeof(s_frequencyBoundsCache[0])));
 }
-}  // namespace
+} // namespace
 
 // --- Segment7 frequency display. Uses Segment7 TTF font if available, falls back to software renderer. ---
 
@@ -147,8 +132,7 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
     if (isAlpOverride) {
         // LID active (above LID speed limit) uses colorAlpLidActive; otherwise
         // DLI active uses colorAlpDli. Naming matches AL Priority manual.
-        freqColor = muted ? PALETTE_MUTED_OR_PERSISTED
-                          : (alpLidActive_ ? s.colorAlpLidActive : s.colorAlpDli);
+        freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : (alpLidActive_ ? s.colorAlpLidActive : s.colorAlpDli);
     } else if (usingOfr) {
         if (band == BAND_LASER) {
             freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
@@ -157,7 +141,7 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
         } else if (isPhotoRadar && s.freqUseBandColor) {
-            freqColor = s.colorBandPhoto;  // Photo radar gets its own color
+            freqColor = s.colorBandPhoto; // Photo radar gets its own color
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);
         } else {
@@ -179,10 +163,8 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
     }
 
     bool textChanged = (strcmp(elementCaches_.frequency.lastText, textBuf) != 0);
-    bool changed = !elementCaches_.frequency.valid ||
-                   (elementCaches_.frequency.lastUsedOfr != usingOfr) ||
-                   textChanged ||
-                   (elementCaches_.frequency.lastColor != freqColor);
+    bool changed = !elementCaches_.frequency.valid || (elementCaches_.frequency.lastUsedOfr != usingOfr) ||
+                   textChanged || (elementCaches_.frequency.lastColor != freqColor);
     if (!changed) {
         return;
     }
@@ -222,7 +204,8 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         }
 
         int x = leftMargin + (maxWidth - textWidth) / 2;
-        if (x < leftMargin) x = leftMargin;
+        if (x < leftMargin)
+            x = leftMargin;
 
         // Clear only the union of old/new glyph bounds.  Store lastDrawX/Width as
         // actual glyph bounds rather than the cursor box; Segment7 alpha glyphs
@@ -231,12 +214,15 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         int clearY = y - 8;
         int clearH = fontSize + 16;
         const int maxClearBottom = DisplayLayout::CONTENT_BOTTOM_Y;
-        if (clearY + clearH > maxClearBottom) clearH = maxClearBottom - clearY;
+        if (clearY + clearH > maxClearBottom)
+            clearH = maxClearBottom - clearY;
         int clearLeft = x + glyphXMin - kClearPadPx;
         int clearRight = x + glyphXMax + kClearPadPx;
-        if (elementCaches_.frequency.valid && elementCaches_.frequency.lastUsedOfr && elementCaches_.frequency.lastDrawWidth > 0) {
+        if (elementCaches_.frequency.valid && elementCaches_.frequency.lastUsedOfr &&
+            elementCaches_.frequency.lastDrawWidth > 0) {
             clearLeft = std::min(clearLeft, elementCaches_.frequency.lastDrawX - kClearPadPx);
-            clearRight = std::max(clearRight, elementCaches_.frequency.lastDrawX + elementCaches_.frequency.lastDrawWidth + kClearPadPx);
+            clearRight = std::max(clearRight, elementCaches_.frequency.lastDrawX +
+                                                  elementCaches_.frequency.lastDrawWidth + kClearPadPx);
         }
         const int clearMinX = DisplayLayout::kFrequencyZoneRect.x;
         const int clearMaxX = DisplayLayout::kFrequencyZoneRect.x + DisplayLayout::kFrequencyZoneRect.w;
@@ -248,9 +234,7 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         const int glyphW = glyphRight - glyphLeft;
 
         uint16_t* framebuffer = nullptr;
-        const bool numericAtlasEligible = hasFreq &&
-                                          !isAlpOverride &&
-                                          band != BAND_LASER &&
+        const bool numericAtlasEligible = hasFreq && !isAlpOverride && band != BAND_LASER &&
                                           DisplayFrequencyDigitAtlas::isNumericFrequencyText(textBuf);
         const bool digitAtlasReady = numericAtlasEligible && frequencyDigitAtlas_.ready();
         bool rasterKeyValid = false;
@@ -259,15 +243,8 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
             framebuffer = tft_->getFramebuffer();
             if (framebuffer && !digitAtlasReady && glyphW > 0 && clearH > 0 && frequencyRasterCache_.enabled()) {
                 rasterKey = makeFrequencyRasterKey(
-                    textBuf,
-                    freqColor,
-                    PALETTE_BG,
-                    static_cast<uint16_t>(fontSize),
-                    paletteRevision_,
-                    glyphLeft,
-                    clearY,
-                    glyphW,
-                    clearH,
+                    textBuf, freqColor, PALETTE_BG, static_cast<uint16_t>(fontSize), paletteRevision_, glyphLeft,
+                    clearY, glyphW, clearH,
                     frequencyRasterFlags(muted, isPhotoRadar, isAlpOverride, band == BAND_LASER));
                 rasterKeyValid = true;
             }
@@ -275,12 +252,8 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
 
         bool cachedRender = false;
         const bool numericDeltaEligible =
-            digitAtlasReady &&
-            framebuffer &&
-            textChanged &&
-            elementCaches_.frequency.valid &&
-            elementCaches_.frequency.lastUsedOfr &&
-            (elementCaches_.frequency.lastColor == freqColor) &&
+            digitAtlasReady && framebuffer && textChanged && elementCaches_.frequency.valid &&
+            elementCaches_.frequency.lastUsedOfr && (elementCaches_.frequency.lastColor == freqColor) &&
             (elementCaches_.frequency.lastDrawX == x + glyphXMin) &&
             (elementCaches_.frequency.lastDrawWidth == glyphXMax - glyphXMin) &&
             DisplayFrequencyDigitAtlas::isNumericFrequencyText(elementCaches_.frequency.lastText);
@@ -290,39 +263,26 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
             int16_t dirtyY = 0;
             int16_t dirtyW = 0;
             int16_t dirtyH = 0;
-            if (frequencyDigitAtlas_.changedTextRect(elementCaches_.frequency.lastText,
-                                                     textBuf,
-                                                     dirtyX,
-                                                     dirtyY,
-                                                     dirtyW,
+            if (frequencyDigitAtlas_.changedTextRect(elementCaches_.frequency.lastText, textBuf, dirtyX, dirtyY, dirtyW,
                                                      dirtyH)) {
-                drawnRegion_.add(dirtyX, dirtyY, dirtyW, dirtyH,
-                         DisplayDirtyRegionSource::Frequency);
+                drawnRegion_.add(dirtyX, dirtyY, dirtyW, dirtyH, DisplayDirtyRegionSource::Frequency);
                 FILL_RECT(dirtyX, dirtyY, dirtyW, dirtyH, PALETTE_BG);
-                cachedRender = frequencyDigitAtlas_.restoreTextInRect(textBuf,
-                                                                      freqColor,
-                                                                      PALETTE_BG,
-                                                                      framebuffer,
-                                                                      CANVAS_WIDTH,
-                                                                      dirtyX,
-                                                                      dirtyY,
-                                                                      dirtyW,
-                                                                      dirtyH);
+                cachedRender = frequencyDigitAtlas_.restoreTextInRect(textBuf, freqColor, PALETTE_BG, framebuffer,
+                                                                      CANVAS_WIDTH, dirtyX, dirtyY, dirtyW, dirtyH);
             }
         }
 
         if (!cachedRender) {
             if (clearH > 0 && clearW > 0) {
-                drawnRegion_.add(static_cast<int16_t>(clearLeft),
-                                 static_cast<int16_t>(clearY),
-                                 static_cast<int16_t>(clearW),
-                                 static_cast<int16_t>(clearH),
-                         DisplayDirtyRegionSource::Frequency);
+                drawnRegion_.add(static_cast<int16_t>(clearLeft), static_cast<int16_t>(clearY),
+                                 static_cast<int16_t>(clearW), static_cast<int16_t>(clearH),
+                                 DisplayDirtyRegionSource::Frequency);
                 FILL_RECT(clearLeft, clearY, clearW, clearH, PALETTE_BG);
             }
 
             if (digitAtlasReady && framebuffer) {
-                cachedRender = frequencyDigitAtlas_.restoreText(textBuf, freqColor, PALETTE_BG, framebuffer, CANVAS_WIDTH);
+                cachedRender =
+                    frequencyDigitAtlas_.restoreText(textBuf, freqColor, PALETTE_BG, framebuffer, CANVAS_WIDTH);
             }
             if (!cachedRender && rasterKeyValid) {
                 cachedRender = frequencyRasterCache_.restore(rasterKey, framebuffer, CANVAS_WIDTH);
@@ -356,23 +316,18 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         const int leftMargin = DisplayLayout::FREQUENCY_FALLBACK_LEFT_MARGIN;
         const int maxWidth = DisplayLayout::frequencyFallbackMaxWidth();
         int x = leftMargin + (maxWidth - width) / 2;
-        if (x < leftMargin) x = leftMargin;
+        if (x < leftMargin)
+            x = leftMargin;
 
         if (isAlpOverride || band == BAND_LASER) {
             // Alpha text — use 14-segment renderer
-            drawnRegion_.add(static_cast<int16_t>(x - 4),
-                             static_cast<int16_t>(y - 4),
-                             static_cast<int16_t>(width + 8),
-                             static_cast<int16_t>(m.digitH + 8),
-                         DisplayDirtyRegionSource::Frequency);
+            drawnRegion_.add(static_cast<int16_t>(x - 4), static_cast<int16_t>(y - 4), static_cast<int16_t>(width + 8),
+                             static_cast<int16_t>(m.digitH + 8), DisplayDirtyRegionSource::Frequency);
             FILL_RECT(x - 4, y - 4, width + 8, m.digitH + 8, PALETTE_BG);
             draw14SegmentText(textBuf, x, y, scale, freqColor, PALETTE_BG);
         } else {
-            drawnRegion_.add(static_cast<int16_t>(x - 2),
-                             static_cast<int16_t>(y),
-                             static_cast<int16_t>(width + 4),
-                             static_cast<int16_t>(m.digitH + 4),
-                         DisplayDirtyRegionSource::Frequency);
+            drawnRegion_.add(static_cast<int16_t>(x - 2), static_cast<int16_t>(y), static_cast<int16_t>(width + 4),
+                             static_cast<int16_t>(m.digitH + 4), DisplayDirtyRegionSource::Frequency);
             FILL_RECT(x - 2, y, width + 4, m.digitH + 4, PALETTE_BG);
             drawSevenSegmentText(textBuf, x, y, scale, freqColor, PALETTE_BG);
         }
@@ -405,31 +360,24 @@ void V1Display::prewarmFrequencyDigitAtlas() {
     }
 
     int x = leftMargin + (maxWidth - s_frequencyCachedNumericWidth) / 2;
-    if (x < leftMargin) x = leftMargin;
+    if (x < leftMargin)
+        x = leftMargin;
 
     constexpr const char* kReferencePrefixes[] = {
-        "",
-        "8",
-        "88",
-        "88.",
-        "88.8",
-        "88.88",
+        "", "8", "88", "88.", "88.8", "88.88",
     };
     int offsets[DisplayFrequencyDigitAtlas::kTextPositions] = {};
     for (uint8_t pos = 1; pos < DisplayFrequencyDigitAtlas::kTextPositions; ++pos) {
-        offsets[pos] = DisplayFontManager::cachedTextWidth(
-            fontMgr_.segment7,
-            fontSize,
-            kReferencePrefixes[pos],
-            s_frequencyWidthCache,
-            s_frequencyWidthCacheNextSlot);
+        offsets[pos] = DisplayFontManager::cachedTextWidth(fontMgr_.segment7, fontSize, kReferencePrefixes[pos],
+                                                           s_frequencyWidthCache, s_frequencyWidthCacheNextSlot);
     }
 
     constexpr int kCellPadPx = 3;
     int clearY = y - 8;
     int clearH = fontSize + 16;
     const int maxClearBottom = DisplayLayout::CONTENT_BOTTOM_Y;
-    if (clearY + clearH > maxClearBottom) clearH = maxClearBottom - clearY;
+    if (clearY + clearH > maxClearBottom)
+        clearH = maxClearBottom - clearY;
     const int clearMinX = DisplayLayout::kFrequencyZoneRect.x;
     const int clearMaxX = DisplayLayout::kFrequencyZoneRect.x + DisplayLayout::kFrequencyZoneRect.w;
 
@@ -457,15 +405,9 @@ void V1Display::prewarmFrequencyDigitAtlas() {
         tft_->fillRect(cellLeft, clearY, cellW, clearH, PALETTE_BG);
         fontMgr_.segment7.setCursor(x + offsets[pos], y);
         fontMgr_.segment7.printf("%s", symbolText);
-        frequencyDigitAtlas_.storeCell(pos,
-                                       symbol,
-                                       static_cast<int16_t>(cellLeft),
-                                       static_cast<int16_t>(clearY),
-                                       static_cast<int16_t>(cellW),
-                                       static_cast<int16_t>(clearH),
-                                       framebuffer,
-                                       CANVAS_WIDTH,
-                                       PALETTE_BG);
+        frequencyDigitAtlas_.storeCell(pos, symbol, static_cast<int16_t>(cellLeft), static_cast<int16_t>(clearY),
+                                       static_cast<int16_t>(cellW), static_cast<int16_t>(clearH), framebuffer,
+                                       CANVAS_WIDTH, PALETTE_BG);
     };
 
     for (uint8_t pos = 0; pos < DisplayFrequencyDigitAtlas::kTextPositions; ++pos) {
@@ -480,16 +422,12 @@ void V1Display::prewarmFrequencyDigitAtlas() {
 
     elementCaches_.frequency.invalidate();
     drawnRegion_.reset();
-    tft_->fillRect(DisplayLayout::kFrequencyZoneRect.x,
-                   DisplayLayout::kFrequencyZoneRect.y,
-                   DisplayLayout::kFrequencyZoneRect.w,
-                   DisplayLayout::kFrequencyZoneRect.h,
-                   PALETTE_BG);
+    tft_->fillRect(DisplayLayout::kFrequencyZoneRect.x, DisplayLayout::kFrequencyZoneRect.y,
+                   DisplayLayout::kFrequencyZoneRect.w, DisplayLayout::kFrequencyZoneRect.h, PALETTE_BG);
 
     Serial.printf("[DisplayCache] frequency digit atlas prewarm: ready=%d stores=%lu in %lu ms\n",
                   frequencyDigitAtlas_.ready() ? 1 : 0,
-                  static_cast<unsigned long>(frequencyDigitAtlas_.storeCount() - storesBefore),
-                  millis() - warmStartMs);
+                  static_cast<unsigned long>(frequencyDigitAtlas_.storeCount() - storesBefore), millis() - warmStartMs);
 }
 
 void V1Display::prewarmFrequencyRasterCache() {
@@ -505,7 +443,7 @@ void V1Display::prewarmFrequencyRasterCache() {
     };
 
     static constexpr FrequencyWarmSample kWarmSamples[] = {
-        {0, BAND_NONE, false, false},      // --.---
+        {0, BAND_NONE, false, false}, // --.---
         {0, BAND_LASER, false, false},
     };
 
@@ -553,11 +491,8 @@ void V1Display::prewarmFrequencyRasterCache() {
 
     elementCaches_.frequency.invalidate();
     drawnRegion_.reset();
-    tft_->fillRect(DisplayLayout::kFrequencyZoneRect.x,
-                   DisplayLayout::kFrequencyZoneRect.y,
-                   DisplayLayout::kFrequencyZoneRect.w,
-                   DisplayLayout::kFrequencyZoneRect.h,
-                   PALETTE_BG);
+    tft_->fillRect(DisplayLayout::kFrequencyZoneRect.x, DisplayLayout::kFrequencyZoneRect.y,
+                   DisplayLayout::kFrequencyZoneRect.w, DisplayLayout::kFrequencyZoneRect.h, PALETTE_BG);
 
     Serial.printf("[DisplayCache] frequency raster prewarm: stores=%lu in %lu ms\n",
                   static_cast<unsigned long>(frequencyRasterCache_.storeCount() - storesBefore),
@@ -579,7 +514,7 @@ void V1Display::drawVolumeZeroWarning() {
     // Position warning centered in frequency area
     const int leftMargin = 120;
     const int rightMargin = 200;
-    const int textScale = 6;  // Large for visibility
+    const int textScale = 6; // Large for visibility
     int maxWidth = SCREEN_WIDTH - leftMargin - rightMargin;
     int centerX = leftMargin + maxWidth / 2;
     int centerY = DisplayLayout::CONTENT_BOTTOM_Y / 2 + 10;
@@ -589,16 +524,13 @@ void V1Display::drawVolumeZeroWarning() {
     const char* warningStr = "VOL 0";
     int charW = 6 * textScale;
     int charH = 8 * textScale;
-    int textW = 5 * charW;  // 5 characters
+    int textW = 5 * charW; // 5 characters
     int textX = centerX - textW / 2;
     int textY = centerY - charH / 2;
 
     // Clear the frequency area
-    drawnRegion_.add(static_cast<int16_t>(leftMargin),
-                     static_cast<int16_t>(textY - 5),
-                     static_cast<int16_t>(maxWidth),
-                     static_cast<int16_t>(charH + 10),
-                         DisplayDirtyRegionSource::Frequency);
+    drawnRegion_.add(static_cast<int16_t>(leftMargin), static_cast<int16_t>(textY - 5), static_cast<int16_t>(maxWidth),
+                     static_cast<int16_t>(charH + 10), DisplayDirtyRegionSource::Frequency);
     FILL_RECT(leftMargin, textY - 5, maxWidth, charH + 10, PALETTE_BG);
 
     // This path bypasses drawFrequency*(), so invalidate the normal frequency
@@ -608,9 +540,9 @@ void V1Display::drawVolumeZeroWarning() {
     elementCaches_.frequency.invalidate();
 
     if (flashOn) {
-        tft_->setFont(NULL);  // Default built-in font
+        tft_->setFont(NULL); // Default built-in font
         tft_->setTextSize(textScale);
-        tft_->setTextColor(0xF800, PALETTE_BG);  // Bright red on background
+        tft_->setTextColor(0xF800, PALETTE_BG); // Bright red on background
         tft_->setCursor(textX, textY);
         tft_->print(warningStr);
     }

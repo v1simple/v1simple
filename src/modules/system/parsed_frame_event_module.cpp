@@ -2,8 +2,7 @@
 
 #include "system_event_bus.h"
 
-ParsedFrameSignal ParsedFrameEventModule::collect(bool queueParsedReady,
-                                                  uint32_t queueParsedTsMs,
+ParsedFrameSignal ParsedFrameEventModule::collect(bool queueParsedReady, uint32_t queueParsedTsMs,
                                                   SystemEventBus& eventBus) {
     ParsedFrameSignal signal;
     signal.parsedReady = queueParsedReady;

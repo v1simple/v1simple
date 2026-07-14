@@ -14,35 +14,23 @@ namespace {
 constexpr size_t BACKUP_CACHE_GROWTH_QUANTUM = 256u;
 
 size_t roundUpBackupCacheCapacity(size_t required) {
-    return ((required + BACKUP_CACHE_GROWTH_QUANTUM - 1u) / BACKUP_CACHE_GROWTH_QUANTUM) *
-           BACKUP_CACHE_GROWTH_QUANTUM;
+    return ((required + BACKUP_CACHE_GROWTH_QUANTUM - 1u) / BACKUP_CACHE_GROWTH_QUANTUM) * BACKUP_CACHE_GROWTH_QUANTUM;
 }
 
-bool hasMatchingSnapshot(const BackupSnapshotCache& cache,
-                         uint32_t settingsRevision,
-                         uint32_t profileRevision) {
-    return cache.valid &&
-           cache.data != nullptr &&
-           cache.length > 0 &&
-           cache.settingsRevision == settingsRevision &&
+bool hasMatchingSnapshot(const BackupSnapshotCache& cache, uint32_t settingsRevision, uint32_t profileRevision) {
+    return cache.valid && cache.data != nullptr && cache.length > 0 && cache.settingsRevision == settingsRevision &&
            cache.profileRevision == profileRevision;
 }
 
-bool allocateBackupSnapshotBuffer(size_t required,
-                                  char*& newData,
-                                  size_t& newCapacity,
-                                  bool& inPsram) {
+bool allocateBackupSnapshotBuffer(size_t required, char*& newData, size_t& newCapacity, bool& inPsram) {
     newCapacity = roundUpBackupCacheCapacity(required);
-    newData = static_cast<char*>(
-        heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+    newData = static_cast<char*>(heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     inPsram = true;
 
     if (newData == nullptr) {
-        Serial.printf(
-            "[BackupApi] Cache PSRAM alloc failed; falling back to internal (%lu bytes)\n",
-            static_cast<unsigned long>(newCapacity));
-        newData = static_cast<char*>(
-            heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
+        Serial.printf("[BackupApi] Cache PSRAM alloc failed; falling back to internal (%lu bytes)\n",
+                      static_cast<unsigned long>(newCapacity));
+        newData = static_cast<char*>(heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
         inPsram = false;
     }
 
@@ -55,16 +43,11 @@ bool allocateBackupSnapshotBuffer(size_t required,
     return true;
 }
 
-}  // namespace
+} // namespace
 
-bool sendCachedBackupSnapshot(WebServer& server,
-                              BackupSnapshotCache& cache,
-                              uint32_t settingsRevision,
-                              uint32_t profileRevision,
-                              BackupSnapshotBuildFn buildSnapshot,
-                              void* buildCtx,
-                              uint32_t (*millisFn)(void* ctx),
-                              void* millisCtx) {
+bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uint32_t settingsRevision,
+                              uint32_t profileRevision, BackupSnapshotBuildFn buildSnapshot, void* buildCtx,
+                              uint32_t (*millisFn)(void* ctx), void* millisCtx) {
     if (hasMatchingSnapshot(cache, settingsRevision, profileRevision)) {
         sendSerializedJson(server, cache.data, cache.length);
         return true;
@@ -96,10 +79,8 @@ bool sendCachedBackupSnapshot(WebServer& server,
         targetInPsram = newInPsram;
         usingNewAllocation = true;
 
-        Serial.printf("[BackupApi] Cache grow %lu -> %lu bytes (%s)\n",
-                      static_cast<unsigned long>(cache.capacity),
-                      static_cast<unsigned long>(targetCapacity),
-                      targetInPsram ? "psram" : "internal");
+        Serial.printf("[BackupApi] Cache grow %lu -> %lu bytes (%s)\n", static_cast<unsigned long>(cache.capacity),
+                      static_cast<unsigned long>(targetCapacity), targetInPsram ? "psram" : "internal");
     }
 
     const size_t length = serializeJson(doc, targetData, targetCapacity);
@@ -146,4 +127,4 @@ void releaseBackupSnapshotCache(BackupSnapshotCache& cache) {
     cache.valid = false;
 }
 
-}  // namespace BackupApiService
+} // namespace BackupApiService

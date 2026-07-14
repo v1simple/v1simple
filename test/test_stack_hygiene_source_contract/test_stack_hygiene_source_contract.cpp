@@ -20,9 +20,9 @@ void setUp() {}
 void tearDown() {}
 
 void test_perf_sd_snapshot_stays_on_flat_path() {
-    const std::string source = readTextFile("src/perf_metrics.cpp");
+    const std::string source = readTextFile("src/perf_snapshot.cpp");
 
-    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_metrics.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_snapshot.cpp");
     TEST_ASSERT_EQUAL(std::string::npos,
                       source.find("PerfRuntimeMetricsSnapshot runtimeSnapshot{};"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
@@ -99,9 +99,9 @@ void test_graceful_shutdown_feeds_between_bounded_drain_steps() {
 }
 
 void test_short_lived_task_stack_watermarks_are_reported() {
-    const std::string source = readTextFile("src/perf_metrics.cpp");
+    const std::string source = readTextFile("src/perf_report.cpp");
 
-    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_metrics.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_report.cpp");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           source.find("audio_pcm_stack_high_water_bytes()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

@@ -7,7 +7,7 @@ const char* runtimeModeLabel(bool dualRadioMode, bool staRadioOn) {
     }
     return staRadioOn ? "STA" : "AP";
 }
-}  // namespace
+} // namespace
 
 WifiHeapGuardResult WifiHeapGuardModule::evaluate(const WifiHeapGuardInput& input) const {
     WifiHeapGuardResult result;

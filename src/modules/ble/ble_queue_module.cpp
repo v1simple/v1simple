@@ -32,10 +32,7 @@ static void compactRxBuffer(std::vector<uint8_t>& rxBuffer, size_t& readPos) {
     readPos = 0;
 }
 
-static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer,
-                              size_t& readPos,
-                              const uint8_t* data,
-                              size_t length) {
+static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer, size_t& readPos, const uint8_t* data, size_t length) {
     if (!data || length == 0) {
         return 0;
     }
@@ -62,12 +59,8 @@ static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer,
     return toCopy;
 }
 
-bool BleQueueModule::begin(V1BLEClient* bleClient,
-                           PacketParser* parserPtr,
-                           V1ProfileManager* profileMgr,
-                           DisplayPreviewModule* previewModule,
-                           PowerModule* powerModule,
-                           SystemEventBus* eventBus,
+bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,
+                           DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus,
                            Config cfg) {
     ble_ = bleClient;
     parser_ = parserPtr;
@@ -82,8 +75,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient,
     rxBufferReady_ = false;
     if (!queueHandle_) {
         Serial.printf("[BLE_QUEUE] FATAL: queue allocation failed (depth=%u item=%u)\n",
-                      static_cast<unsigned>(config_.queueDepth),
-                      static_cast<unsigned>(sizeof(BLEDataPacket)));
+                      static_cast<unsigned>(config_.queueDepth), static_cast<unsigned>(sizeof(BLEDataPacket)));
         backpressureActive_ = false;
         return false;
     }
@@ -92,8 +84,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient,
     rxBuffer_.reserve(desiredRxCap);
     if (rxBuffer_.capacity() < desiredRxCap) {
         Serial.printf("[BLE_QUEUE] FATAL: RX buffer reserve failed (cap=%u have=%u)\n",
-                      static_cast<unsigned>(desiredRxCap),
-                      static_cast<unsigned>(rxBuffer_.capacity()));
+                      static_cast<unsigned>(desiredRxCap), static_cast<unsigned>(rxBuffer_.capacity()));
         vQueueDelete(queueHandle_);
         queueHandle_ = nullptr;
         backpressureActive_ = false;
@@ -114,7 +105,8 @@ void BleQueueModule::end() {
 }
 
 void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID) {
-    if (!queueHandle_) return;
+    if (!queueHandle_)
+        return;
 
     if (length > 0 && length <= sizeof(BLEDataPacket::data)) {
         PERF_INC(rxPackets);
@@ -144,8 +136,7 @@ void BleQueueModule::refreshBackpressureState() {
     const size_t queuePressureThreshold = std::max<size_t>(4, config_.queueDepth / 4);
     static constexpr size_t RX_BACKPRESSURE_BYTES = 192;
     backpressureActive_ =
-        (unreadBytes >= RX_BACKPRESSURE_BYTES) ||
-        (static_cast<size_t>(queueDepth) >= queuePressureThreshold);
+        (unreadBytes >= RX_BACKPRESSURE_BYTES) || (static_cast<size_t>(queueDepth) >= queuePressureThreshold);
 }
 
 void BleQueueModule::process() {
@@ -237,12 +228,14 @@ void BleQueueModule::process() {
         }
 
         availableBytes = rxBuffer_.size() - rxReadPos_;
-        if (availableBytes == 0) break;
+        if (availableBytes == 0)
+            break;
 
         const uint8_t* dataBegin = rxBuffer_.data() + rxReadPos_;
-        const uint8_t* startPtr = (rxBuffer_[rxReadPos_] == ESP_PACKET_START)
-            ? dataBegin
-            : static_cast<const uint8_t*>(memchr(dataBegin, ESP_PACKET_START, availableBytes));
+        const uint8_t* startPtr =
+            (rxBuffer_[rxReadPos_] == ESP_PACKET_START)
+                ? dataBegin
+                : static_cast<const uint8_t*>(memchr(dataBegin, ESP_PACKET_START, availableBytes));
         if (startPtr == nullptr) {
             rxBuffer_.clear();
             rxReadPos_ = 0;
@@ -266,10 +259,7 @@ void BleQueueModule::process() {
         size_t packetSize = 6 + lenField;
         if (packetSize > MAX_PACKET_SIZE) {
             if (!loggedTooLargeWarning) {
-                if (shouldLogBleConnectionEvent(
-                        tooLargeWarningLog_,
-                        parseTimestampMs,
-                        kBleResyncLogMinIntervalMs)) {
+                if (shouldLogBleConnectionEvent(tooLargeWarningLog_, parseTimestampMs, kBleResyncLogMinIntervalMs)) {
                     Serial.printf("[BLE] WARN: BLE packet too large (%u bytes) - resyncing\n", (unsigned)packetSize);
                 }
                 loggedTooLargeWarning = true;
@@ -283,10 +273,7 @@ void BleQueueModule::process() {
         }
         if (rxBuffer_[rxReadPos_ + packetSize - 1] != ESP_PACKET_END) {
             if (!loggedMissingEndWarning) {
-                if (shouldLogBleConnectionEvent(
-                        missingEndWarningLog_,
-                        parseTimestampMs,
-                        kBleResyncLogMinIntervalMs)) {
+                if (shouldLogBleConnectionEvent(missingEndWarningLog_, parseTimestampMs, kBleResyncLogMinIntervalMs)) {
                     Serial.println("[BLE] WARN: Packet missing end marker - resyncing");
                 }
                 loggedMissingEndWarning = true;

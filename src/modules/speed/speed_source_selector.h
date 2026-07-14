@@ -5,11 +5,7 @@
 class ObdRuntimeModule;
 class GpsRuntimeModule;
 
-enum class SpeedSource : uint8_t {
-    NONE = 0,
-    GPS = 1,
-    OBD = 3
-};
+enum class SpeedSource : uint8_t { NONE = 0, GPS = 1, OBD = 3 };
 
 struct SpeedSelection {
     SpeedSource source = SpeedSource::NONE;
@@ -30,8 +26,8 @@ struct SpeedSelectorStatus {
     float obdSpeedMph = 0.0f;
     uint32_t obdAgeMs = UINT32_MAX;
 
-    bool gpsFresh = false;          // Fresh sample with valid speed
-    bool gpsGoodSignal = false;     // Fresh + stable fix + sats/HDOP thresholds
+    bool gpsFresh = false;      // Fresh sample with valid speed
+    bool gpsGoodSignal = false; // Fresh + stable fix + sats/HDOP thresholds
     float gpsSpeedMph = 0.0f;
     uint32_t gpsAgeMs = UINT32_MAX;
     uint8_t gpsSatellites = 0;
@@ -44,14 +40,13 @@ struct SpeedSelectorStatus {
 };
 
 class SpeedSourceSelector {
-public:
+  public:
     static constexpr float MAX_VALID_SPEED_MPH = 250.0f;
     // GPS "good signal" thresholds — secondary source quality gate.
     static constexpr uint8_t GPS_MIN_SATELLITES = 4;
     static constexpr float GPS_MAX_HDOP = 5.0f;
 
-    void begin(ObdRuntimeModule* obd, bool obdEnabled,
-               GpsRuntimeModule* gps = nullptr, bool gpsEnabled = false);
+    void begin(ObdRuntimeModule* obd, bool obdEnabled, GpsRuntimeModule* gps = nullptr, bool gpsEnabled = false);
     void syncEnabledInputs(bool obdEnabled, bool gpsEnabled = false);
     void update(uint32_t nowMs);
 
@@ -64,7 +59,7 @@ public:
 
     static const char* sourceName(SpeedSource source);
 
-private:
+  private:
     SpeedSelectorStatus buildStatus(uint32_t nowMs) const;
 
     bool obdEnabled_ = false;

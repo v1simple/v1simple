@@ -25,7 +25,7 @@ struct LoopPostDisplayResult {
 
 // Orchestrates post-display auto-push and connection-state dispatch cadence/watchdog.
 class LoopPostDisplayModule {
-public:
+  public:
     struct Providers {
         void (*runAutoPush)(void* ctx) = nullptr;
         void* autoPushContext = nullptr;
@@ -42,6 +42,6 @@ public:
     void begin(const Providers& hooks);
     LoopPostDisplayResult process(const LoopPostDisplayContext& ctx);
 
-private:
+  private:
     Providers providers{};
 };

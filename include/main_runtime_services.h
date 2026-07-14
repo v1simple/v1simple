@@ -17,18 +17,10 @@ struct BootLoggingRuntimeServices {
     GpsTimePublisher& gpsTime;
     GpsGeoPublisher& gpsGeo;
 
-    explicit BootLoggingRuntimeServices(StorageManager& storageRef,
-                                        SettingsManager& settingsRef,
-                                        PerfSdLogger& perfLoggerRef,
-                                        AlpSdLogger& alpLoggerRef,
-                                        GpsRuntimeModule& gpsRuntimeRef,
-                                        GpsTimePublisher& gpsTimeRef,
+    explicit BootLoggingRuntimeServices(StorageManager& storageRef, SettingsManager& settingsRef,
+                                        PerfSdLogger& perfLoggerRef, AlpSdLogger& alpLoggerRef,
+                                        GpsRuntimeModule& gpsRuntimeRef, GpsTimePublisher& gpsTimeRef,
                                         GpsGeoPublisher& gpsGeoRef)
-        : storage(storageRef),
-          settings(settingsRef),
-          perfLogger(perfLoggerRef),
-          alpLogger(alpLoggerRef),
-          gpsRuntime(gpsRuntimeRef),
-          gpsTime(gpsTimeRef),
-          gpsGeo(gpsGeoRef) {}
+        : storage(storageRef), settings(settingsRef), perfLogger(perfLoggerRef), alpLogger(alpLoggerRef),
+          gpsRuntime(gpsRuntimeRef), gpsTime(gpsTimeRef), gpsGeo(gpsGeoRef) {}
 };

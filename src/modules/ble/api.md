@@ -25,7 +25,7 @@ Owns the FreeRTOS queue that buffers raw BLE notifications between the NimBLE ca
 ### Public types
 
 #### `struct Config`
-**Source:** `ble_queue_module.h:18-23`.
+**Source:** `ble_queue_module.h:19-23`.
 
 - `size_t queueDepth` — FreeRTOS queue depth (default 24).
 - `size_t rxBufferCap` — RX byte buffer cap (default 512).
@@ -34,35 +34,35 @@ Owns the FreeRTOS queue that buffers raw BLE notifications between the NimBLE ca
 
 #### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1ProfileManager* profileMgr, DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus = nullptr, Config cfg = Config())`
 Wires dependencies, allocates the FreeRTOS queue, primes the RX buffer.
-**Source:** `ble_queue_module.h:25-32`.
+**Source:** `ble_queue_module.h:25-27`.
 
 ### Entry points
 
 #### `void onNotify(const uint8_t* data, size_t length, uint16_t charUUID)`
 Called from the NimBLE notify callback. Enqueues the packet for main-loop processing. Must be safe from interrupt-ish context.
-**Source:** `ble_queue_module.h:40`.
+**Source:** `ble_queue_module.h:48`.
 
 #### `void process()`
 Drains the queue, frames packets out of the byte stream, parses, and forwards results to the rest of the pipeline. Call once per main-loop tick.
-**Source:** `ble_queue_module.h:43`.
+**Source:** `ble_queue_module.h:51`.
 
 ### Status
 
 #### `uint32_t getLastParsedTimestamp() const`
 Timestamp (millis) of the most recent successful parse — used by display latency tracking.
-**Source:** `ble_queue_module.h:30`.
+**Source:** `ble_queue_module.h:38`.
 
 #### `bool consumeParsedFlag()`
 Returns true if at least one packet was successfully parsed since the last call, then clears the flag.
-**Source:** `ble_queue_module.h:33`.
+**Source:** `ble_queue_module.h:41`.
 
 #### `unsigned long getLastRxMillis() const`
 Timestamp of last received notification (regardless of parse outcome).
-**Source:** `ble_queue_module.h:45`.
+**Source:** `ble_queue_module.h:53`.
 
 #### `bool isBackpressured() const`
 True when the queue / RX buffer is in the high-water region. Consumers throttle non-essential work.
-**Source:** `ble_queue_module.h:46`.
+**Source:** `ble_queue_module.h:54`.
 
 ## Class: `ConnectionStateModule`
 
@@ -74,7 +74,7 @@ Tracks BLE connect/disconnect transitions, resets parser state on disconnect, re
 
 #### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule, BleQueueModule* bleQueueModule, SystemEventBus* eventBus = nullptr)`
 Injects dependencies.
-**Source:** `connection_state_module.h:25-31`.
+**Source:** `connection_state_module.h:25-26`.
 
 #### `bool process(unsigned long nowMs)`
 Runs one tick of state-tracking. Returns true if currently connected.
@@ -117,7 +117,7 @@ Function pointers for dependency injection — `isBleConnected`, `isBackpressure
 
 #### `void begin(const Providers& hooks)` / `void begin(const Providers& hooks, const Config& cfg)`
 Two overloads; second accepts non-default config.
-**Source:** `connection_runtime_module.h:33-34`.
+**Source:** `connection_runtime_module.h:33`.
 
 ### Pump
 
@@ -154,7 +154,7 @@ Notifies the cadence gate that the scan screen is up so dwell logic can engage.
 #### `ConnectionStateCadenceDecision process(const ConnectionStateCadenceContext& ctx)`
 Returns the decision for this tick.
 
-**Source:** `connection_state_cadence_module.h:23-25`.
+**Source:** `connection_state_cadence_module.h:25`.
 
 ## Class: `ConnectionStateDispatchModule`
 
@@ -185,7 +185,7 @@ Function pointers — `runCadence`, `runConnectionStateProcess`, `recordDecision
 #### `void reset()` — clear internal state.
 #### `ConnectionStateDispatchDecision process(const ConnectionStateDispatchContext& ctx)` — run one dispatch tick.
 
-**Source:** `connection_state_dispatch_module.h:39-41`.
+**Source:** `connection_state_dispatch_module.h:41`.
 
 ## Dependencies (module-wide)
 

@@ -45,13 +45,13 @@ Bundles all dependencies for `begin()` so the wide injection surface stays expli
 
 #### `void begin(const DisplayPipelineDependencies& dependencies)`
 Wires dependencies. Call once from `setup()`.
-**Source:** `display_pipeline_module.h:34`.
+**Source:** `display_pipeline_module.h:40`.
 
 ### Pump
 
 #### `void handleParsed(uint32_t nowMs)`
 Called after `parser.parse()` succeeds. Composes a frame, runs the voice pipeline against the parsed alert snapshot, and updates the display.
-**Source:** `display_pipeline_module.h:37`.
+**Source:** `display_pipeline_module.h:43`.
 
 #### `void refreshBlinkTick(uint32_t nowMs)`
 Re-renders the current frame without alert-persistence or voice side effects. The loop display phase calls this only when the orchestrator requests a blink refresh on a no-parsed-frame loop, so blink state can advance without waiting for the next V1 packet.
@@ -59,11 +59,11 @@ Re-renders the current frame without alert-persistence or voice side effects. Th
 
 #### `void restoreCurrentOwner(uint32_t nowMs)`
 Re-asserts current display ownership (V1 vs ALP) — used by the restore module after a preview ends.
-**Source:** `display_pipeline_module.h:38`.
+**Source:** `display_pipeline_module.h:49`.
 
 #### `bool allowsObdPairGesture(uint32_t nowMs) const`
 True when the OBD pair gesture (e.g. touchscreen long-press) is admissible — false during alerts, previews, or boot splash.
-**Source:** `display_pipeline_module.h:39`.
+**Source:** `display_pipeline_module.h:50`.
 
 ## Class: `DisplayOrchestrationModule`
 
@@ -74,15 +74,15 @@ Loop-level coordinator that decides whether `DisplayPipelineModule::handleParsed
 ### Public types
 
 #### `struct DisplayOrchestrationEarlyContext`
-**Source:** `display_orchestration_module.h:15-21`.
+**Source:** `display_orchestration_module.h:17-23`.
 Inputs for the early-loop hook — `nowMs`, boot-splash flag, overload flag, BLE context snapshot, BLE-receiving flag.
 
 #### `struct DisplayOrchestrationParsedContext` / `struct DisplayOrchestrationParsedResult`
-**Source:** `display_orchestration_module.h:23-31`.
+**Source:** `display_orchestration_module.h:25-29`.
 Inputs/outputs for the "should we run pipeline this tick?" decision. Result includes `runDisplayPipeline` and `reasonSkipped` (string for logs).
 
 #### `struct DisplayOrchestrationRefreshContext` / `struct DisplayOrchestrationRefreshResult`
-**Source:** `display_orchestration_module.h:33-43`.
+**Source:** `display_orchestration_module.h:36-41`.
 Inputs/outputs for the periodic refresh hook — used when no parsed frame arrives but a periodic re-render is due.
 
 ### Methods
@@ -106,27 +106,27 @@ Runs a multi-phase visual preview that exercises every screen element. Used both
 
 #### `DisplayPreviewModule()`
 Default constructor.
-**Source:** `display_preview_module.h:39`.
+**Source:** `display_preview_module.h:40`.
 
 #### `void begin(V1Display* display)`
 Wires the render target. Call once.
-**Source:** `display_preview_module.h:41`.
+**Source:** `display_preview_module.h:42`.
 
 ### Control
 
 #### `void requestHold(uint32_t durationMs)`
 Starts the preview sequence; nonzero `durationMs` is honored as the caller-owned hold. Pass `0` to run the full diagnostic sequence duration. Preview update renders at most one step per loop; skipped diagnostic steps are dropped/carry-forwarded rather than caught up with multiple display flushes.
-**Source:** `display_preview_module.h:44`.
+**Source:** `display_preview_module.h:45`.
 
 #### `void cancel()`
 Ends preview immediately.
-**Source:** `display_preview_module.h:45`.
+**Source:** `display_preview_module.h:46`.
 
 ### Status
 
 #### `bool isRunning() const`
 True while preview is active.
-**Source:** `display_preview_module.h:48`.
+**Source:** `display_preview_module.h:49`.
 
 There's also a "preview just ended" one-shot flag exposed by `consumeEnded()`.
 
@@ -144,13 +144,13 @@ Runs after `DisplayPreviewModule` ends — forces a full redraw and restores liv
 ### Lifecycle
 
 #### `void begin(V1Display* disp, PacketParser* pktParser, V1BLEClient* ble, DisplayPreviewModule* preview, DisplayPipelineModule* displayPipeline)`
-**Source:** `display_restore_module.h:21-25`.
+**Source:** `display_restore_module.h:20-21`.
 
 ### Pump
 
 #### `bool process()`
 Checks the preview-ended flag; if set, performs restoration. Returns true if work was done.
-**Source:** `display_restore_module.h:31`.
+**Source:** `display_restore_module.h:27`.
 
 ## Class: `RenderFrameComposer`
 
@@ -161,12 +161,12 @@ Pure function: given V1 state, ALP state, settings, and time, produces a `Render
 ### Public types
 
 #### `struct V1Snapshot`
-**Source:** `render_frame_composer.h:5-13`.
+**Source:** `render_frame_composer.h:6-14`.
 
 V1-side inputs — `DisplayState`, alert array + count, priority alert, has-persisted flag + persisted alert.
 
 #### `struct AlpSnapshot`
-**Source:** `render_frame_composer.h:15-20`.
+**Source:** `render_frame_composer.h:16-21`.
 
 ALP-side inputs — `AlpLaserEvent`, ownership flag (`ownsLaserDisplay`), persistence-latch flag, latched event.
 
@@ -174,7 +174,7 @@ ALP-side inputs — `AlpLaserEvent`, ownership flag (`ownsLaserDisplay`), persis
 
 #### `RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& settings, uint32_t nowMs) const`
 Pure composition. `RenderFrame` (defined in `include/render_frame.h`) is the union frame consumed by `V1Display`.
-**Source:** `render_frame_composer.h:23-25`.
+**Source:** `render_frame_composer.h:25`.
 
 ## Edge logging — `display_edge_log.{h,cpp}`
 

@@ -10,7 +10,7 @@ Per the header at lines 4-15:
 ## Public types
 
 ### `struct VolumeFadeContext`
-**Source:** `volume_fade_module.h:23-36`.
+**Source:** `volume_fade_module.h:24-36`.
 
 Per-decision input — `hasAlert`, `alertMuted`, `alertSuppressed`, `currentVolume`, `currentMuteVolume`, `currentFrequency` (for dedup), `now`. Default-constructs to zero/false for safe fall-through.
 
@@ -32,7 +32,7 @@ Decision output. `Type` enum:
 
 #### `VolumeFadeModule()`
 Default constructor.
-**Source:** `volume_fade_module.h:64`.
+**Source:** `volume_fade_module.h:65`.
 
 #### `void begin(SettingsManager* settings)`
 Wires settings dependency.
@@ -42,7 +42,7 @@ Wires settings dependency.
 
 #### `VolumeFadeAction process(const VolumeFadeContext& ctx)`
 Main decision method.
-**Source:** `volume_fade_module.h:69`.
+**Source:** `volume_fade_module.h:70`.
 
 ### Cross-module hint
 

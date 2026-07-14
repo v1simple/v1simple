@@ -11,7 +11,7 @@ Display-area taps. Triple-tap for profile change (`PROFILE_CHANGE_TAP_COUNT = 3`
 ### Public types
 
 #### `struct WifiCallbacks`
-**Source:** `tap_gesture_module.h:16-22`.
+**Source:** `tap_gesture_module.h:18-25`.
 
 Function-pointer hooks for WiFi state / maintenance entry — `isWifiActive`, `stopWifi`, `requestMaintenanceBoot`, plus context pointers.
 
@@ -25,7 +25,7 @@ Wires the wide dependency surface (taps can affect almost any subsystem).
 
 #### `void process(unsigned long nowMs)`
 Per-loop tick. Reads touch events, updates tap-counting state, fires gestures.
-**Source:** `tap_gesture_module.h:30`.
+**Source:** `tap_gesture_module.h:32`.
 
 ### Constants
 
@@ -45,7 +45,7 @@ BOOT button UI — brightness slider, volume slider, maintenance boot entry (lon
 ### Public types
 
 #### `struct Callbacks`
-**Source:** `touch_ui_module.h:14-30`.
+**Source:** `touch_ui_module.h:16-33`.
 
 Function-pointer hooks for WiFi setup, display indicator drawing, OBD scan, and gesture-safety checks.
 

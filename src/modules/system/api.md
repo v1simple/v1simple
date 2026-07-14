@@ -30,7 +30,7 @@ Listed in the rough order they execute per tick:
 Cross-module event bus. POD payloads, fixed-size, no heap, designed for hot-path use.
 
 ### `enum class SystemEventType : uint8_t`
-**Source:** `system_event_bus.h:5+`.
+**Source:** `system_event_bus.h:13-19`.
 
 Event types — `NONE`, `BLE_FRAME_PARSED`, `ALP_STATE_CHANGED`, etc. Used by modules that need to react to events without direct coupling.
 
@@ -153,7 +153,7 @@ Periodic maintenance — perf report scheduling, log rotation, etc. Preserves ca
 **Header:** `connection_cycle_coordinator_module.h`.
 
 #### `enum class CycleState : uint8_t`
-**Source:** `connection_cycle_coordinator_module.h:3-12`.
+**Source:** `connection_cycle_coordinator_module.h:8-18`.
 
 States: `SCAN_V1`, `V1_SETTLING`, `OBD_SCAN`, `OBD_CONNECT`, `OBD_SETTLED`, `PROXY_OPEN`, etc.
 

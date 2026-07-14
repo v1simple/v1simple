@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import check_obd_proxy_qualification as obd_proxy_qualification
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / ".artifacts" / "release_evidence" / "manifest.json"
 ALLOWED_RESULTS = {
@@ -25,6 +27,7 @@ ALLOWED_RESULTS = {
     "ACCEPTED_RISK",
 }
 CORE_BENCH_ID = "core-display-bench"
+OBD_PROXY_ID = "obd-proxy-arbitration"
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +76,14 @@ def validate_bench_result_file(path: Path, declared_result: str) -> list[str]:
     return errors
 
 
+def has_nonempty_scope(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value) and all(isinstance(item, str) and item.strip() for item in value)
+    return False
+
+
 def validate_manifest(payload: Any, *, allow_bench_warn: bool = False) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload, dict):
@@ -88,6 +99,7 @@ def validate_manifest(payload: Any, *, allow_bench_warn: bool = False) -> list[s
 
     seen_ids: set[str] = set()
     core_seen = False
+    obd_proxy_seen = False
     for index, item in enumerate(evidence):
         prefix = f"evidence[{index}]"
         if not isinstance(item, dict):
@@ -95,6 +107,7 @@ def validate_manifest(payload: Any, *, allow_bench_warn: bool = False) -> list[s
             continue
 
         evidence_id = str(item.get("id", "")).strip()
+        kind = str(item.get("kind", "")).strip()
         result = str(item.get("result", "")).strip()
         artifact_raw = str(item.get("artifact_path", "")).strip()
         rationale = str(item.get("rationale", "")).strip()
@@ -130,8 +143,41 @@ def validate_manifest(payload: Any, *, allow_bench_warn: bool = False) -> list[s
                     + (" or WARN with --allow-bench-warn" if allow_bench_warn else "")
                 )
 
+        if evidence_id == OBD_PROXY_ID:
+            obd_proxy_seen = True
+            if kind == "hardware-qualification":
+                if result != "PASS":
+                    errors.append(f"{prefix}.result must be PASS for hardware-qualification")
+                if not artifact_raw:
+                    # The generic artifact rule above reports the missing path.
+                    pass
+                else:
+                    artifact_path = resolve_artifact_path(artifact_raw)
+                    if artifact_path.exists() and not artifact_path.is_file():
+                        errors.append(f"{prefix}.artifact_path must be a file: {artifact_path}")
+                    elif artifact_path.is_file():
+                        for error in obd_proxy_qualification.validate_artifact_file(artifact_path):
+                            errors.append(f"{prefix}.artifact: {error}")
+            elif kind == "accepted-risk":
+                if result != "ACCEPTED_RISK":
+                    errors.append(f"{prefix}.result must be ACCEPTED_RISK for accepted-risk")
+                if not rationale:
+                    errors.append(f"{prefix}.rationale is required for accepted-risk")
+                if not has_nonempty_scope(item.get("scope")):
+                    errors.append(
+                        f"{prefix}.scope must be a non-empty string or array of non-empty strings"
+                    )
+                if artifact_raw:
+                    errors.append(f"{prefix}.artifact_path must be omitted for accepted-risk")
+            else:
+                errors.append(
+                    f"{prefix}.kind must be hardware-qualification or accepted-risk for {OBD_PROXY_ID}"
+                )
+
     if not core_seen:
         errors.append(f"missing required evidence id: {CORE_BENCH_ID}")
+    if not obd_proxy_seen:
+        errors.append(f"missing required evidence id: {OBD_PROXY_ID}")
 
     return errors
 

@@ -105,7 +105,8 @@ path must move together.
 
 Not itemized section-by-section to keep this walkthrough readable; all fail CI:
 `check_modified_font_names.py`, `test_check_littlefs_image_compatibility.py`,
-`test_run_device_tests_script.py`, `test_release_evidence_manifest.py`,
+`test_run_device_tests_script.py`, `test_obd_proxy_qualification.py`,
+`test_release_evidence_manifest.py`,
 `check_littlefs_mount_contract.py`, `check_build_dist_contract.py`,
 `check_release_workflow_flash_contract.py`, `check_web_installer_page.py`,
 `check_api_doc_sources.py`, `check_alp_protocol_docs_contract.py`,
@@ -187,6 +188,7 @@ Bench result language is intentionally small:
 - `analyze_alp_fingerprints.py` — ALP frame fingerprint analysis.
 - `pio-size.sh` — size report wrapper.
 - `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, maintenance 409 gating, the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
+- `check_obd_proxy_qualification.py` — validates a typed OBD/proxy hardware evidence pack against `tools/obd_proxy_qualification_profile_v1.json`; normal CI exercises only its synthetic regression suite.
 
 
 ## Where new gates go

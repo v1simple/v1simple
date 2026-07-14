@@ -214,34 +214,34 @@ void initializeStorageAndProfiles() {
     }
 }
 
-uint32_t initializeBootPerformanceLoggers() {
+uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) {
     const uint32_t bootId = nextBootId();
     const uint32_t bootToken = static_cast<uint32_t>(esp_random());
-    perfSdLogger.setBootId(bootId, bootToken);
+    services.perfLogger.setBootId(bootId, bootToken);
 
     // Standalone perf CSV loggers (SD only).
-    const bool sdEnabled = storageManager.isReady() && storageManager.isSDCard();
-    perfSdLogger.begin(sdEnabled);
-    if (perfSdLogger.isEnabled()) {
-        SerialLog.printf("[PERF] SD logger enabled (%s)\n", perfSdLogger.csvPath());
+    const bool sdEnabled = services.storage.isReady() && services.storage.isSDCard();
+    services.perfLogger.begin(sdEnabled);
+    if (services.perfLogger.isEnabled()) {
+        SerialLog.printf("[PERF] SD logger enabled (%s)\n", services.perfLogger.csvPath());
     } else {
         SerialLog.println("[PERF] SD logger disabled (no SD)");
     }
 
     // ALP SD logger — event-level CSV for drive data capture
-    const bool alpLogEnabled = settingsManager.get().alpSdLogEnabled;
-    alpSdLogger.setBootId(bootId, bootToken);
-    alpSdLogger.begin(alpLogEnabled, sdEnabled, &gpsTimePublisher);
-    if (alpSdLogger.isEnabled()) {
-        SerialLog.printf("[ALP_SD] logger enabled (%s)\n", alpSdLogger.csvPath());
+    const bool alpLogEnabled = services.settings.get().alpSdLogEnabled;
+    services.alpLogger.setBootId(bootId, bootToken);
+    services.alpLogger.begin(alpLogEnabled, sdEnabled, &services.gpsTime);
+    if (services.alpLogger.isEnabled()) {
+        SerialLog.printf("[ALP_SD] logger enabled (%s)\n", services.alpLogger.csvPath());
     }
 
     // GPS module
     {
-        const V1Settings& gs = settingsManager.get();
-        gpsRuntimeModule.begin(gs.gpsEnabled, gs.gpsEnablePinActiveHigh,
-                               gs.gpsBaud,
-                               &gpsTimePublisher, &gpsGeoPublisher);
+        const V1Settings& gs = services.settings.get();
+        services.gpsRuntime.begin(gs.gpsEnabled, gs.gpsEnablePinActiveHigh,
+                                  gs.gpsBaud,
+                                  &services.gpsTime, &services.gpsGeo);
         if (gs.gpsEnabled) {
             SerialLog.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
                              static_cast<unsigned long>(gs.gpsBaud),

@@ -17,7 +17,7 @@ Every entry below has a `Source:` line pointing at the stable file or handler wh
 
 # HTTP API
 
-All routes are registered in `src/wifi_routes.cpp` and delegated to handlers in `src/modules/wifi/wifi_*_api_service.cpp` and related files. These routes are reachable during maintenance boot only; endpoints that would require a skipped normal-runtime subsystem return a structured maintenance error instead of pretending the runtime is merely disconnected. Mutating `POST /api/*` requests must include `X-V1Simple-Request: maintenance-ui`; the bundled web UI adds this header automatically.
+All routes are registered in `src/wifi_routes.cpp` and delegated to handlers in `src/modules/wifi/wifi_*_api_service.cpp` and related files. These routes are reachable during maintenance boot only; endpoints that would require a skipped normal-runtime subsystem return a structured maintenance error instead of pretending the runtime is merely disconnected. Mutating `POST /api/*` requests are accepted only while the authoritative maintenance-boot flag is active and when they include `X-V1Simple-Request: maintenance-ui`; the bundled web UI adds this header automatically. Either failed condition returns the same `403` forbidden response.
 
 ## Static / SPA assets
 

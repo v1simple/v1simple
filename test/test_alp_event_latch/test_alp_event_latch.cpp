@@ -2,7 +2,9 @@
 
 #include "../../src/modules/alp/alp_event_latch.h"
 #include "../../src/modules/alp/alp_runtime_module.h"
+#ifndef V1_LINKED_TEST_ALP_EVENT_LATCH
 #include "../../src/modules/alp/alp_event_latch.cpp"
+#endif
 
 static AlpEventLatch latch;
 

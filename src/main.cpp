@@ -506,7 +506,16 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason,
         }
     }
 
-    const uint32_t bootId = maintenanceBoot ? nextBootId() : initializeBootPerformanceLoggers();
+    BootLoggingRuntimeServices bootLoggingServices(storageManager,
+                                                   settingsManager,
+                                                   perfSdLogger,
+                                                   alpSdLogger,
+                                                   gpsRuntimeModule,
+                                                   gpsTimePublisher,
+                                                   gpsGeoPublisher);
+    const uint32_t bootId = maintenanceBoot
+                                ? nextBootId()
+                                : initializeBootPerformanceLoggers(bootLoggingServices);
 
     logBootStage("storage");
 

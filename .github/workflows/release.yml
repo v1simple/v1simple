@@ -104,7 +104,7 @@ jobs:
           if ! git diff --quiet -- include/config.h CHANGELOG.md; then
             git add include/config.h CHANGELOG.md
             git diff --cached --check
-            git commit -m "chore(release): prepare $RELEASE_TAG"
+            git commit -m "chore(release): prepare $RELEASE_TAG [skip ci]"
           fi
           if [ -n "$(git status --porcelain)" ]; then
             echo "::error::Release preparation left unexpected working-tree changes."
@@ -124,7 +124,7 @@ jobs:
               git diff --name-status "$BASE_SHA" "$RELEASE_SHA"
               exit 1
             fi
-            if [ "$(git log -1 --format=%s "$RELEASE_SHA")" != "chore(release): prepare $RELEASE_TAG" ]; then
+            if [ "$(git log -1 --format=%s "$RELEASE_SHA")" != "chore(release): prepare $RELEASE_TAG [skip ci]" ]; then
               echo "::error::Release commit subject does not match $RELEASE_TAG."
               exit 1
             fi
@@ -258,7 +258,7 @@ jobs:
         id: publish
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_SHA: ${{ steps.release_commit.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
@@ -292,9 +292,18 @@ jobs:
             git tag -a "$RELEASE_TAG" "$RELEASE_SHA" \
               -m "Release $RELEASE_TAG" \
               -m "Release-Run-ID: $RELEASE_RUN_ID"
-            AUTH_VALUE="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
-            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_VALUE" \
-              push --atomic origin \
+            if [ -z "$RELEASE_DEPLOY_KEY" ]; then
+              echo "::error::RELEASE_DEPLOY_KEY is not configured."
+              exit 1
+            fi
+            DEPLOY_KEY_PATH="$RUNNER_TEMP/v1simple-release-deploy-key"
+            KNOWN_HOSTS_PATH="$RUNNER_TEMP/v1simple-release-known-hosts"
+            umask 077
+            printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$DEPLOY_KEY_PATH"
+            trap 'rm -f "$DEPLOY_KEY_PATH" "$KNOWN_HOSTS_PATH"' EXIT
+            SSH_COMMAND="ssh -i $DEPLOY_KEY_PATH -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN_HOSTS_PATH -o StrictHostKeyChecking=accept-new"
+            if ! GIT_SSH_COMMAND="$SSH_COMMAND" git push --atomic \
+              "git@github.com:$GITHUB_REPOSITORY.git" \
               HEAD:refs/heads/main \
               "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
               git fetch --force origin main

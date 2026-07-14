@@ -65,8 +65,15 @@ void test_release_action_and_permission_scope_contract() {
                           workflow.find("./scripts/build_production_artifacts.sh"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("git diff --name-only \"$BASE_SHA\" \"$RELEASE_SHA\""));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          workflow.find("push --atomic origin"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        workflow.find("RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        workflow.find("GIT_SSH_COMMAND=\"$SSH_COMMAND\" git push --atomic"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        workflow.find("chore(release): prepare $RELEASE_TAG [skip ci]"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         workflow.find("deploy_pages: ${{ steps.publish.outputs.deploy_pages }}"));

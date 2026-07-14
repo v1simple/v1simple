@@ -10,6 +10,13 @@ assets and the GitHub Pages ESP Web Tools installer from the same generated
 manifest and merged firmware image. There is no second release button or
 version choice in the normal path.
 
+Repository setup keeps the automation identity narrow: the write-enabled
+deploy key named `v1simple release publisher` is stored only in the
+`RELEASE_DEPLOY_KEY` Actions secret, and the `main-pr-ci-gate` ruleset grants
+DeployKey bypass only for the generated fast-forward release commit. Human
+owners are not on the bypass list. The generated commit uses `[skip ci]` so its
+push cannot recursively start another Release run.
+
 ## 1. Branch and version
 
 - Prepare changes on a short-lived branch and merge them to `main` through a PR.

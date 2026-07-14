@@ -223,13 +223,15 @@ def check_release_version_automation(errors: list[str]) -> None:
         'python3 scripts/prepare_release.py',
         '--bump "$RELEASE_BUMP"',
         '--resume-tag "$RESUME_TAG"',
-        'git commit -m "chore(release): prepare $RELEASE_TAG"',
+        'git commit -m "chore(release): prepare $RELEASE_TAG [skip ci]"',
         'git diff --name-only "$BASE_SHA" "$RELEASE_SHA"',
         "python3 scripts/check_release_config_change.py",
         "./scripts/build_production_artifacts.sh",
         'EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"',
         "Release-Run-ID: $RELEASE_RUN_ID",
-        "push --atomic origin",
+        "RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}",
+        'GIT_SSH_COMMAND="$SSH_COMMAND" git push --atomic',
+        '"git@github.com:$GITHUB_REPOSITORY.git"',
         "HEAD:refs/heads/main",
         '"refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"',
         "published: ${{ steps.publish.outputs.published }}",
@@ -254,6 +256,7 @@ def check_release_version_automation(errors: list[str]) -> None:
         "actions: read",
         "workflow_dispatch:",
         "paths-ignore:",
+        "AUTH_VALUE=",
     ):
         if forbidden in release_text:
             errors.append(f"release.yml contains retired release behavior: {forbidden!r}")

@@ -73,7 +73,8 @@ published to GitHub Pages with each release.
 - `docs/PERF_SLOS.md` — correctness/operational SLOs and scoring contract.
 - `docs/HARDWARE_NOTES.md` — install procedure, solder mods, audio/GPS wiring, car-mode bench-test sequence.
 - `docs/RELEASE_CHECKLIST.md` — release procedure.
-- `RELEASE_NOTES.md` — release validation scope and accepted limitations.
+- `RELEASE_NOTES.md` — historical 1.0.1 validation scope and accepted limitations;
+  later release notes are generated on GitHub from merged changes.
 - `docs/ALP_PROTOCOL_EVIDENCE.md` — tracked, sanitized ALP byte-pattern evidence for source/test citations.
 - `docs/V1_PROTOCOL_REFERENCES.md` — tracked V1 protocol fact summary for source/test citations. Maintainers may verify against local official PDFs, but tracked comments should cite the tracked summary by anchor.
 - `CONTRIBUTORS.md` — project origin and attribution, including the upstream V1G2-T4S3 reference.

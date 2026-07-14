@@ -73,6 +73,7 @@ section "Semantic Gates"
 run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
 run_step "Bug pattern scanner regression tests" python3 scripts/test_bug_pattern_scanner.py
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
+run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
 run_step "sdkconfig redefine guard (CONFIG_* -D vs framework header)" python3 scripts/check_sdkconfig_redefines.py
 run_step "BLE deletion semantic guard" python3 scripts/check_ble_deletion_contract.py
 run_step "Frontend HTTP resilience semantic guard" python3 scripts/check_frontend_http_resilience_contract.py

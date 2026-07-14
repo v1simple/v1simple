@@ -3,17 +3,21 @@
 > Status: Active
 > Date: 2026-05-27
 
-Use this before merging `dev` to `main`, then run the manual release workflow
-from `main` after the merge. The workflow publishes both the GitHub Release
-assets and the GitHub Pages ESP Web Tools installer from the same generated
-manifest and merged firmware image.
+Use this before merging a release-ready branch to `main`, then run the manual
+release workflow from `main` after the merge. Select a `patch`, `minor`, or
+`major` bump; the workflow prepares the version commit automatically and
+publishes both the GitHub Release assets and the GitHub Pages ESP Web Tools
+installer from the same generated manifest and merged firmware image.
 
 ## 1. Branch and version
 
-- Be on `dev`; do not release from `main` directly.
+- Prepare changes on a short-lived branch and merge them to `main` through a PR.
 - Working tree clean before the final gate.
-- `include/config.h` must contain a plain semver string, e.g. `#define FIRMWARE_VERSION "1.0.0"` — no suffix spaces.
-- `CHANGELOG.md` current entry and Version History must match that version.
+- Do not manually reuse or move a published version tag. The Release workflow
+  derives the next stable semver from immutable tags.
+- Choose `patch`, `minor`, or `major` in the workflow UI. The default is
+  `patch`; the workflow updates `include/config.h`, opens the new changelog
+  section, and rotates changelog links automatically.
 
 ## 2. Documentation gates
 
@@ -23,7 +27,7 @@ manifest and merged firmware image.
 
 ## 3. Local CI gate
 
-Run the authoritative local gate before committing release-prep changes:
+Run the authoritative local gate before merging release-ready changes:
 
 ```bash
 ./scripts/ci-test.sh
@@ -117,23 +121,28 @@ only when that investigation is documented.
 
 ## 5. Merge and release procedure
 
-- Push `dev` only when explicitly intended.
-- Open PR from `dev` to `main`.
+- Push the release-ready branch only when explicitly intended.
+- Open a PR from the release-ready branch to `main`.
 - Merge with a merge commit, not squash, to avoid release/version history conflicts.
 - After the merge is on `main`, manually run `.github/workflows/release.yml`
-  (`workflow_dispatch`) for the release commit. The workflow performs:
-  1. `scripts/ci-test.sh`
-  2. Version read from `include/config.h`
-  3. Conflicting tag-collision guard; reruns may reuse a tag already pointing at the same commit
-  4. Web build + asset checks
-  5. Firmware/filesystem build
-  6. ESP Web Tools merged image with DIO/80m/16MB image-info validation
-  7. GitHub Pages installer staging and static contract validation
-  8. Third-party notices and runtime license staging
-  9. Image-info evidence artifact upload
-  10. Git tag creation/reuse
-  11. GitHub Release
-  12. GitHub Pages installer deployment
+  (`workflow_dispatch`) and select the semantic-version bump. The workflow:
+  1. refreshes current `main` and immutable version tags
+  2. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
+  3. runs `scripts/ci-test.sh` on that exact commit
+  4. performs the web build and asset checks
+  5. builds the firmware and filesystem
+  6. validates the ESP Web Tools merged image with the DIO/80m/16MB policy
+  7. stages the GitHub Pages installer, notices, and runtime licenses
+  8. uploads image-info evidence
+  9. atomically pushes the fast-forward release commit and its single tag
+  10. publishes generated GitHub release notes and binary assets
+  11. deploys the GitHub Pages installer
+
+If a run fails before publication, rerun it; the same version is prepared
+again. If publication already pushed the release commit and tag, a rerun finds
+that run's annotated tag and resumes the exact tested commit even if `main` has
+advanced. If `main` advances during a release build, the atomic push refuses
+the race and the workflow must be rerun from current `main`.
 
 ## 6. Release assets
 

@@ -36,26 +36,26 @@
 // production test/release path is moved with it.
 // ============================================================================
 #ifndef PERF_METRICS
-#define PERF_METRICS 0  // Default for ad-hoc builds without platformio.ini flags
+#define PERF_METRICS 0 // Default for ad-hoc builds without platformio.ini flags
 #endif
 
 // Compile-time toggles for monitoring and verbose alerts
 #ifndef PERF_MONITORING
-#define PERF_MONITORING 1  // Disable to keep counters only (no sampling/prints)
+#define PERF_MONITORING 1 // Disable to keep counters only (no sampling/prints)
 #endif
 
 #ifndef PERF_VERBOSE
-#define PERF_VERBOSE 0  // Enable to allow immediate alerts and stage timings
+#define PERF_VERBOSE 0 // Enable to allow immediate alerts and stage timings
 #endif
 
 // Sampling rate: measure 1 in N packets to reduce overhead
 #ifndef PERF_SAMPLE_RATE
-#define PERF_SAMPLE_RATE 8  // Measure every 8th packet
+#define PERF_SAMPLE_RATE 8 // Measure every 8th packet
 #endif
 
 // Threshold for alert (print immediately if exceeded)
 #ifndef PERF_LATENCY_ALERT_MS
-#define PERF_LATENCY_ALERT_MS 100  // Alert if latency > 100ms
+#define PERF_LATENCY_ALERT_MS 100 // Alert if latency > 100ms
 #endif
 
 // ============================================================================
@@ -64,135 +64,137 @@
 // ============================================================================
 struct PerfCounters {
     // Packet flow
-    std::atomic<uint32_t> rxPackets{0};        // Total BLE notifications received
-    std::atomic<uint32_t> rxBytes{0};          // Total bytes received
-    std::atomic<uint32_t> queueDrops{0};       // Packets dropped (queue full)
-    std::atomic<uint32_t> oversizeDrops{0};    // Packets dropped (too large for buffer)
-    std::atomic<uint32_t> queueHighWater{0};   // Max queue depth seen
-    std::atomic<uint32_t> proxyQueueHighWater{0}; // Max proxy queue depth
+    std::atomic<uint32_t> rxPackets{0};              // Total BLE notifications received
+    std::atomic<uint32_t> rxBytes{0};                // Total bytes received
+    std::atomic<uint32_t> queueDrops{0};             // Packets dropped (queue full)
+    std::atomic<uint32_t> oversizeDrops{0};          // Packets dropped (too large for buffer)
+    std::atomic<uint32_t> queueHighWater{0};         // Max queue depth seen
+    std::atomic<uint32_t> proxyQueueHighWater{0};    // Max proxy queue depth
     std::atomic<uint32_t> phoneCmdQueueHighWater{0}; // Max phone→V1 cmd queue depth
-    std::atomic<uint32_t> phoneCmdDropsOverflow{0}; // Phone→V1 queue overflow drops
-    std::atomic<uint32_t> phoneCmdDropsInvalid{0}; // Phone→V1 malformed packet drops
-    std::atomic<uint32_t> phoneCmdDropsBleFail{0}; // Phone→V1 hard BLE send failures
-    std::atomic<uint32_t> phoneCmdDropsLockBusy{0}; // Phone→V1 queue lock-busy drops
-    std::atomic<uint32_t> parseSuccesses{0};   // Successfully parsed packets
-    std::atomic<uint32_t> parseFailures{0};    // Parse failures (resync)
-    std::atomic<uint32_t> parseResyncs{0};     // Framing-level resyncs (bad length/size/end marker)
-    std::atomic<uint32_t> perfDrop{0};         // Perf SD snapshot drops (queue full)
-    std::atomic<uint32_t> perfSdLockFail{0};   // Perf SD writer lock failures
-    std::atomic<uint32_t> perfSdDirFail{0};    // Perf SD dir ensure failures
-    std::atomic<uint32_t> perfSdOpenFail{0};   // Perf SD file open failures
-    std::atomic<uint32_t> perfSdHeaderFail{0}; // Perf SD CSV header write failures
-    std::atomic<uint32_t> perfSdMarkerFail{0}; // Perf SD session marker write failures
-    std::atomic<uint32_t> perfSdWriteFail{0};  // Perf SD data line write failures
+    std::atomic<uint32_t> phoneCmdDropsOverflow{0};  // Phone→V1 queue overflow drops
+    std::atomic<uint32_t> phoneCmdDropsInvalid{0};   // Phone→V1 malformed packet drops
+    std::atomic<uint32_t> phoneCmdDropsBleFail{0};   // Phone→V1 hard BLE send failures
+    std::atomic<uint32_t> phoneCmdDropsLockBusy{0};  // Phone→V1 queue lock-busy drops
+    std::atomic<uint32_t> parseSuccesses{0};         // Successfully parsed packets
+    std::atomic<uint32_t> parseFailures{0};          // Parse failures (resync)
+    std::atomic<uint32_t> parseResyncs{0};           // Framing-level resyncs (bad length/size/end marker)
+    std::atomic<uint32_t> perfDrop{0};               // Perf SD snapshot drops (queue full)
+    std::atomic<uint32_t> perfSdLockFail{0};         // Perf SD writer lock failures
+    std::atomic<uint32_t> perfSdDirFail{0};          // Perf SD dir ensure failures
+    std::atomic<uint32_t> perfSdOpenFail{0};         // Perf SD file open failures
+    std::atomic<uint32_t> perfSdHeaderFail{0};       // Perf SD CSV header write failures
+    std::atomic<uint32_t> perfSdMarkerFail{0};       // Perf SD session marker write failures
+    std::atomic<uint32_t> perfSdWriteFail{0};        // Perf SD data line write failures
 
     // Connection
-    std::atomic<uint32_t> reconnects{0};       // BLE reconnection count
-    std::atomic<uint32_t> disconnects{0};      // BLE disconnection count
-    std::atomic<uint32_t> connectionDispatchRuns{0}; // connection-state dispatch passes
-    std::atomic<uint32_t> connectionCadenceDisplayDue{0}; // cadence allowed display/update tick
+    std::atomic<uint32_t> reconnects{0};                     // BLE reconnection count
+    std::atomic<uint32_t> disconnects{0};                    // BLE disconnection count
+    std::atomic<uint32_t> connectionDispatchRuns{0};         // connection-state dispatch passes
+    std::atomic<uint32_t> connectionCadenceDisplayDue{0};    // cadence allowed display/update tick
     std::atomic<uint32_t> connectionCadenceHoldScanDwell{0}; // scan dwell hold suppressed process
-    std::atomic<uint32_t> connectionStateProcessRuns{0}; // connectionStateModule.process() calls
-    std::atomic<uint32_t> connectionStateWatchdogForces{0}; // watchdog-forced process calls
+    std::atomic<uint32_t> connectionStateProcessRuns{0};     // connectionStateModule.process() calls
+    std::atomic<uint32_t> connectionStateWatchdogForces{0};  // watchdog-forced process calls
     std::atomic<uint32_t> connectionStateProcessGapMaxMs{0}; // max observed gap between process runs
-    std::atomic<uint32_t> bleScanStateEntries{0}; // transitions into SCANNING
-    std::atomic<uint32_t> bleScanStateExits{0}; // transitions out of SCANNING
-    std::atomic<uint32_t> bleScanTargetFound{0}; // SCANNING->SCAN_STOPPING due to target found
-    std::atomic<uint32_t> bleScanNoTargetExits{0}; // SCANNING->DISCONNECTED without target
-    std::atomic<uint32_t> bleScanDwellMaxMs{0}; // max SCANNING state dwell duration
+    std::atomic<uint32_t> bleScanStateEntries{0};            // transitions into SCANNING
+    std::atomic<uint32_t> bleScanStateExits{0};              // transitions out of SCANNING
+    std::atomic<uint32_t> bleScanTargetFound{0};             // SCANNING->SCAN_STOPPING due to target found
+    std::atomic<uint32_t> bleScanNoTargetExits{0};           // SCANNING->DISCONNECTED without target
+    std::atomic<uint32_t> bleScanDwellMaxMs{0};              // max SCANNING state dwell duration
 
     // Display
-    std::atomic<uint32_t> displayUpdates{0};   // Frames drawn
-    std::atomic<uint32_t> displaySkips{0};     // Updates skipped (throttled)
+    std::atomic<uint32_t> displayUpdates{0}; // Frames drawn
+    std::atomic<uint32_t> displaySkips{0};   // Updates skipped (throttled)
 
     // Mutex contention monitoring (should stay low/zero in normal operation)
-    std::atomic<uint32_t> bleMutexSkip{0};        // HOT path try-lock skips
-    std::atomic<uint32_t> bleMutexTimeout{0};     // COLD path timeout failures
-    std::atomic<uint32_t> cmdPaceNotYet{0};       // sendCommand pacing deferrals
-    std::atomic<uint32_t> cmdBleBusy{0};          // sendCommand BLE write failed (transient)
-    std::atomic<uint32_t> uuid128FallbackHits{0}; // 128-bit custom UUID fast extraction path hits
-    std::atomic<uint32_t> bleDiscTaskCreateFail{0}; // Discovery task spawn failures
-    std::atomic<uint32_t> wifiConnectDeferred{0}; // WiFi connects staged via non-blocking phase machine
-    std::atomic<uint32_t> wifiStopGraceful{0}; // graceful staged WiFi stop requests
-    std::atomic<uint32_t> wifiStopImmediate{0}; // immediate WiFi stop requests
-    std::atomic<uint32_t> wifiStopManual{0}; // stop requests flagged manual
-    std::atomic<uint32_t> wifiStopTimeout{0}; // stop reason timeout
-    std::atomic<uint32_t> wifiStopNoClients{0}; // stop reason no_clients
-    std::atomic<uint32_t> wifiStopNoClientsAuto{0}; // stop reason no_clients_auto
-    std::atomic<uint32_t> wifiStopLowDma{0}; // stop reason low_dma
-    std::atomic<uint32_t> wifiStopPoweroff{0}; // stop reason poweroff
-    std::atomic<uint32_t> wifiStopOther{0}; // stop reasons not covered above
-    std::atomic<uint32_t> wifiApDropLowDma{0}; // AP retired due to sustained low SRAM in AP+STA
-    std::atomic<uint32_t> wifiApDropIdleSta{0}; // AP retired while STA remained connected
-    std::atomic<uint32_t> wifiApUpTransitions{0}; // AP transition marker: down->up
-    std::atomic<uint32_t> wifiApDownTransitions{0}; // AP transition marker: up->down
-    std::atomic<uint32_t> wifiApState{0}; // AP state marker (1=up, 0=down)
-    std::atomic<uint32_t> wifiApLastTransitionMs{0}; // millis() when AP state last changed
-    std::atomic<uint32_t> wifiApLastTransitionReason{0}; // PerfWifiApTransitionReason
-    std::atomic<uint32_t> wifiProcessMaxUs{0}; // max WiFiManager::process() duration
-    std::atomic<uint32_t> wifiHandleClientMaxUs{0}; // max server.handleClient() duration inside WiFi process
-    std::atomic<uint32_t> wifiMaintenanceMaxUs{0}; // max maintenance block duration inside WiFi process
-    std::atomic<uint32_t> wifiStatusCheckMaxUs{0}; // max checkWifiClientStatus() duration
-    std::atomic<uint32_t> wifiTimeoutCheckMaxUs{0}; // max checkAutoTimeout() duration
-    std::atomic<uint32_t> wifiHeapGuardMaxUs{0}; // max heap guard sampling/evaluation duration
-    std::atomic<uint32_t> wifiApStaPollMaxUs{0}; // max softAP station poll duration
-    std::atomic<uint32_t> wifiStopHttpServerMaxUs{0}; // max staged/immediate HTTP stop duration
-    std::atomic<uint32_t> wifiStopStaDisconnectMaxUs{0}; // max staged/immediate STA disconnect duration
-    std::atomic<uint32_t> wifiStopApDisableMaxUs{0}; // max staged/immediate AP disable duration
-    std::atomic<uint32_t> wifiStopModeOffMaxUs{0}; // max staged/immediate radio-off duration
-    std::atomic<uint32_t> wifiStartPreflightMaxUs{0}; // max setup-mode start preflight duration
-    std::atomic<uint32_t> wifiStartApBringupMaxUs{0}; // max AP bring-up/server-start duration
-    std::atomic<uint32_t> proxyAdvertisingOnTransitions{0}; // proxy advertising transition marker: off->on
-    std::atomic<uint32_t> proxyAdvertisingOffTransitions{0}; // proxy advertising transition marker: on->off
-    std::atomic<uint32_t> proxyAdvertisingState{0}; // proxy advertising state marker (1=on, 0=off)
+    std::atomic<uint32_t> bleMutexSkip{0};                     // HOT path try-lock skips
+    std::atomic<uint32_t> bleMutexTimeout{0};                  // COLD path timeout failures
+    std::atomic<uint32_t> cmdPaceNotYet{0};                    // sendCommand pacing deferrals
+    std::atomic<uint32_t> cmdBleBusy{0};                       // sendCommand BLE write failed (transient)
+    std::atomic<uint32_t> uuid128FallbackHits{0};              // 128-bit custom UUID fast extraction path hits
+    std::atomic<uint32_t> bleDiscTaskCreateFail{0};            // Discovery task spawn failures
+    std::atomic<uint32_t> wifiConnectDeferred{0};              // WiFi connects staged via non-blocking phase machine
+    std::atomic<uint32_t> wifiStopGraceful{0};                 // graceful staged WiFi stop requests
+    std::atomic<uint32_t> wifiStopImmediate{0};                // immediate WiFi stop requests
+    std::atomic<uint32_t> wifiStopManual{0};                   // stop requests flagged manual
+    std::atomic<uint32_t> wifiStopTimeout{0};                  // stop reason timeout
+    std::atomic<uint32_t> wifiStopNoClients{0};                // stop reason no_clients
+    std::atomic<uint32_t> wifiStopNoClientsAuto{0};            // stop reason no_clients_auto
+    std::atomic<uint32_t> wifiStopLowDma{0};                   // stop reason low_dma
+    std::atomic<uint32_t> wifiStopPoweroff{0};                 // stop reason poweroff
+    std::atomic<uint32_t> wifiStopOther{0};                    // stop reasons not covered above
+    std::atomic<uint32_t> wifiApDropLowDma{0};                 // AP retired due to sustained low SRAM in AP+STA
+    std::atomic<uint32_t> wifiApDropIdleSta{0};                // AP retired while STA remained connected
+    std::atomic<uint32_t> wifiApUpTransitions{0};              // AP transition marker: down->up
+    std::atomic<uint32_t> wifiApDownTransitions{0};            // AP transition marker: up->down
+    std::atomic<uint32_t> wifiApState{0};                      // AP state marker (1=up, 0=down)
+    std::atomic<uint32_t> wifiApLastTransitionMs{0};           // millis() when AP state last changed
+    std::atomic<uint32_t> wifiApLastTransitionReason{0};       // PerfWifiApTransitionReason
+    std::atomic<uint32_t> wifiProcessMaxUs{0};                 // max WiFiManager::process() duration
+    std::atomic<uint32_t> wifiHandleClientMaxUs{0};            // max server.handleClient() duration inside WiFi process
+    std::atomic<uint32_t> wifiMaintenanceMaxUs{0};             // max maintenance block duration inside WiFi process
+    std::atomic<uint32_t> wifiStatusCheckMaxUs{0};             // max checkWifiClientStatus() duration
+    std::atomic<uint32_t> wifiTimeoutCheckMaxUs{0};            // max checkAutoTimeout() duration
+    std::atomic<uint32_t> wifiHeapGuardMaxUs{0};               // max heap guard sampling/evaluation duration
+    std::atomic<uint32_t> wifiApStaPollMaxUs{0};               // max softAP station poll duration
+    std::atomic<uint32_t> wifiStopHttpServerMaxUs{0};          // max staged/immediate HTTP stop duration
+    std::atomic<uint32_t> wifiStopStaDisconnectMaxUs{0};       // max staged/immediate STA disconnect duration
+    std::atomic<uint32_t> wifiStopApDisableMaxUs{0};           // max staged/immediate AP disable duration
+    std::atomic<uint32_t> wifiStopModeOffMaxUs{0};             // max staged/immediate radio-off duration
+    std::atomic<uint32_t> wifiStartPreflightMaxUs{0};          // max setup-mode start preflight duration
+    std::atomic<uint32_t> wifiStartApBringupMaxUs{0};          // max AP bring-up/server-start duration
+    std::atomic<uint32_t> proxyAdvertisingOnTransitions{0};    // proxy advertising transition marker: off->on
+    std::atomic<uint32_t> proxyAdvertisingOffTransitions{0};   // proxy advertising transition marker: on->off
+    std::atomic<uint32_t> proxyAdvertisingState{0};            // proxy advertising state marker (1=on, 0=off)
     std::atomic<uint32_t> proxyAdvertisingLastTransitionMs{0}; // millis() when proxy advertising state last changed
     std::atomic<uint32_t> proxyAdvertisingLastTransitionReason{0}; // PerfProxyAdvertisingTransitionReason
-    std::atomic<uint32_t> pushNowRetries{0};      // Non-blocking Push Now retry attempts
-    std::atomic<uint32_t> pushNowFailures{0};     // Non-blocking Push Now exhausted retries
-    std::atomic<uint32_t> alertPersistStarts{0};  // Persisted-alert sessions started
-    std::atomic<uint32_t> alertPersistStartsSkippedActive{0};  // startPersistence() called while a window was already active (expected idempotent no-op)
-    std::atomic<uint32_t> alertPersistStartsSkippedInvalid{0}; // startPersistence() called with no valid alert latched (caller-side invariant violation; should remain 0)
-    std::atomic<uint32_t> alertPersistExpires{0}; // Persisted-alert windows expired naturally
-    std::atomic<uint32_t> alertPersistClears{0};  // Persisted-alert state cleared explicitly
-    std::atomic<uint32_t> autoPushStarts{0};      // Auto-push runs initiated
-    std::atomic<uint32_t> autoPushCompletes{0};   // Auto-push runs completed
-    std::atomic<uint32_t> autoPushNoProfile{0};   // Auto-push slot had no configured profile
-    std::atomic<uint32_t> autoPushProfileLoadFail{0}; // Auto-push profile load failures
-    std::atomic<uint32_t> autoPushProfileWriteFail{0}; // Auto-push profile write exhausted retries
-    std::atomic<uint32_t> autoPushBusyRetries{0}; // Auto-push write-busy retries
-    std::atomic<uint32_t> autoPushModeFail{0};    // Auto-push mode set failures
-    std::atomic<uint32_t> autoPushVolumeFail{0};  // Auto-push volume set failures
-    std::atomic<uint32_t> autoPushDisconnectAbort{0}; // Auto-push aborted due to disconnect
-    std::atomic<uint32_t> prioritySelectRowFlag{0};      // Priority chosen from alert-row isPriority bit
-    std::atomic<uint32_t> prioritySelectFirstUsable{0};  // Priority chosen from first usable alert fallback
-    std::atomic<uint32_t> prioritySelectFirstEntry{0};   // Priority fell back to entry 0 (last resort)
-    std::atomic<uint32_t> prioritySelectAmbiguousIndex{0}; // Alert table completed as both 0-based and 1-based
-    std::atomic<uint32_t> prioritySelectUnusableIndex{0};  // Row-priority candidate existed but was unusable
-    std::atomic<uint32_t> prioritySelectInvalidChosen{0};  // Chosen alert invalid/zero-freq non-laser
-    std::atomic<uint32_t> alertTablePublishes{0};          // Complete alert tables published
-    std::atomic<uint32_t> alertTablePublishes3Bogey{0};    // Complete tables published with count=3
-    std::atomic<uint32_t> alertTableRowReplacements{0};    // Duplicate row index replacements
-    std::atomic<uint32_t> alertTableAssemblyTimeouts{0};   // Partial table assemblies dropped on timeout
-    std::atomic<uint32_t> parserRowsBandNone{0};           // Alert rows decoded with BAND_NONE
-    std::atomic<uint32_t> parserRowsKuRaw{0};              // Alert rows with Ku raw band bit (0x10)
+    std::atomic<uint32_t> pushNowRetries{0};                       // Non-blocking Push Now retry attempts
+    std::atomic<uint32_t> pushNowFailures{0};                      // Non-blocking Push Now exhausted retries
+    std::atomic<uint32_t> alertPersistStarts{0};                   // Persisted-alert sessions started
+    std::atomic<uint32_t> alertPersistStartsSkippedActive{
+        0}; // startPersistence() called while a window was already active (expected idempotent no-op)
+    std::atomic<uint32_t> alertPersistStartsSkippedInvalid{
+        0}; // startPersistence() called with no valid alert latched (caller-side invariant violation; should remain 0)
+    std::atomic<uint32_t> alertPersistExpires{0};             // Persisted-alert windows expired naturally
+    std::atomic<uint32_t> alertPersistClears{0};              // Persisted-alert state cleared explicitly
+    std::atomic<uint32_t> autoPushStarts{0};                  // Auto-push runs initiated
+    std::atomic<uint32_t> autoPushCompletes{0};               // Auto-push runs completed
+    std::atomic<uint32_t> autoPushNoProfile{0};               // Auto-push slot had no configured profile
+    std::atomic<uint32_t> autoPushProfileLoadFail{0};         // Auto-push profile load failures
+    std::atomic<uint32_t> autoPushProfileWriteFail{0};        // Auto-push profile write exhausted retries
+    std::atomic<uint32_t> autoPushBusyRetries{0};             // Auto-push write-busy retries
+    std::atomic<uint32_t> autoPushModeFail{0};                // Auto-push mode set failures
+    std::atomic<uint32_t> autoPushVolumeFail{0};              // Auto-push volume set failures
+    std::atomic<uint32_t> autoPushDisconnectAbort{0};         // Auto-push aborted due to disconnect
+    std::atomic<uint32_t> prioritySelectRowFlag{0};           // Priority chosen from alert-row isPriority bit
+    std::atomic<uint32_t> prioritySelectFirstUsable{0};       // Priority chosen from first usable alert fallback
+    std::atomic<uint32_t> prioritySelectFirstEntry{0};        // Priority fell back to entry 0 (last resort)
+    std::atomic<uint32_t> prioritySelectAmbiguousIndex{0};    // Alert table completed as both 0-based and 1-based
+    std::atomic<uint32_t> prioritySelectUnusableIndex{0};     // Row-priority candidate existed but was unusable
+    std::atomic<uint32_t> prioritySelectInvalidChosen{0};     // Chosen alert invalid/zero-freq non-laser
+    std::atomic<uint32_t> alertTablePublishes{0};             // Complete alert tables published
+    std::atomic<uint32_t> alertTablePublishes3Bogey{0};       // Complete tables published with count=3
+    std::atomic<uint32_t> alertTableRowReplacements{0};       // Duplicate row index replacements
+    std::atomic<uint32_t> alertTableAssemblyTimeouts{0};      // Partial table assemblies dropped on timeout
+    std::atomic<uint32_t> parserRowsBandNone{0};              // Alert rows decoded with BAND_NONE
+    std::atomic<uint32_t> parserRowsKuRaw{0};                 // Alert rows with Ku raw band bit (0x10)
     std::atomic<uint32_t> displayLiveInvalidPrioritySkips{0}; // Live display update early-returned invalid priority
-    std::atomic<uint32_t> displayLiveFallbackToUsable{0};  // Live display used fallback usable alert
-    std::atomic<uint32_t> voiceAnnouncePriority{0};        // Voice priority announcements emitted
-    std::atomic<uint32_t> voiceAnnounceDirection{0};       // Voice direction/bogey announcements emitted
-    std::atomic<uint32_t> voiceAnnounceSecondary{0};       // Voice secondary announcements emitted
-    std::atomic<uint32_t> voiceAnnounceEscalation{0};      // Voice escalation announcements emitted
-    std::atomic<uint32_t> voiceDirectionThrottled{0};      // Voice direction announcements suppressed by throttle
-    std::atomic<uint32_t> powerAutoPowerArmed{0};    // Auto power-off armed on first V1 data
-    std::atomic<uint32_t> powerAutoPowerTimerStart{0}; // Auto power-off timer started
-    std::atomic<uint32_t> powerAutoPowerTimerCancel{0}; // Auto power-off timer cancelled on reconnect
-    std::atomic<uint32_t> powerAutoPowerTimerExpire{0}; // Auto power-off timer expired
-    std::atomic<uint32_t> powerCarModeAlpSilenceExpire{0}; // Car-mode ALP UART silence shutdown fired
-    std::atomic<uint32_t> powerCriticalWarn{0};      // Critical-battery warning shown
-    std::atomic<uint32_t> powerCriticalShutdown{0};  // Critical-battery shutdown triggered
-    std::atomic<uint32_t> perfUncleanShutdown{0};    // Boot saw cleanShutdn=false (previous run died uncleanly)
-    std::atomic<uint32_t> audioPlayCount{0};          // Audio play tasks successfully started
-    std::atomic<uint32_t> audioPlayBusy{0};           // Audio plays rejected because playback is active
-    std::atomic<uint32_t> audioTaskFail{0};           // Audio task creation failures
+    std::atomic<uint32_t> displayLiveFallbackToUsable{0};     // Live display used fallback usable alert
+    std::atomic<uint32_t> voiceAnnouncePriority{0};           // Voice priority announcements emitted
+    std::atomic<uint32_t> voiceAnnounceDirection{0};          // Voice direction/bogey announcements emitted
+    std::atomic<uint32_t> voiceAnnounceSecondary{0};          // Voice secondary announcements emitted
+    std::atomic<uint32_t> voiceAnnounceEscalation{0};         // Voice escalation announcements emitted
+    std::atomic<uint32_t> voiceDirectionThrottled{0};         // Voice direction announcements suppressed by throttle
+    std::atomic<uint32_t> powerAutoPowerArmed{0};             // Auto power-off armed on first V1 data
+    std::atomic<uint32_t> powerAutoPowerTimerStart{0};        // Auto power-off timer started
+    std::atomic<uint32_t> powerAutoPowerTimerCancel{0};       // Auto power-off timer cancelled on reconnect
+    std::atomic<uint32_t> powerAutoPowerTimerExpire{0};       // Auto power-off timer expired
+    std::atomic<uint32_t> powerCarModeAlpSilenceExpire{0};    // Car-mode ALP UART silence shutdown fired
+    std::atomic<uint32_t> powerCriticalWarn{0};               // Critical-battery warning shown
+    std::atomic<uint32_t> powerCriticalShutdown{0};           // Critical-battery shutdown triggered
+    std::atomic<uint32_t> perfUncleanShutdown{0}; // Boot saw cleanShutdn=false (previous run died uncleanly)
+    std::atomic<uint32_t> audioPlayCount{0};      // Audio play tasks successfully started
+    std::atomic<uint32_t> audioPlayBusy{0};       // Audio plays rejected because playback is active
+    std::atomic<uint32_t> audioTaskFail{0};       // Audio task creation failures
 
     void reset() {
         rxPackets.store(0, std::memory_order_relaxed);
@@ -329,7 +331,7 @@ struct PerfHistogramMs {
     uint32_t buckets[kBucketCount] = {0};
     uint32_t total = 0;
     uint32_t maxMs = 0;
-    uint32_t overflow = 0;  // Samples exceeding max bucket (>1000ms)
+    uint32_t overflow = 0; // Samples exceeding max bucket (>1000ms)
 
     void reset() {
         for (size_t i = 0; i < kBucketCount; ++i) {
@@ -422,12 +424,12 @@ enum class PerfDisplayRedrawReason : uint8_t {
     BogeyCounterChange = 10,
     RssiRefresh = 11,
     FlashTick = 12,
-    FullFlushForRedraw = 14,     // live-update dispatch: needsFullRedraw path
-    CacheHitSkipFlush = 15,      // live-update dispatch: DrawnRegion empty,
-                                 // canvas byte-identical to panel, no SPI push
-    UnionExceedsCap = 16,        // live-update dispatch: DrawnRegion union area
-                                 // ≥ 50% canvas, fell back to full flush
-    PartialRegionFlush = 17,     // live-update dispatch: flushRegion(union)
+    FullFlushForRedraw = 14, // live-update dispatch: needsFullRedraw path
+    CacheHitSkipFlush = 15,  // live-update dispatch: DrawnRegion empty,
+                             // canvas byte-identical to panel, no SPI push
+    UnionExceedsCap = 16,    // live-update dispatch: DrawnRegion union area
+                             // ≥ 50% canvas, fell back to full flush
+    PartialRegionFlush = 17, // live-update dispatch: flushRegion(union)
 };
 
 enum class PerfDisplayRenderScenario : uint8_t {
@@ -485,8 +487,8 @@ struct PerfExtendedMetrics {
     uint32_t v1FirmwareVersion = 0;
     uint32_t minFreeHeap = UINT32_MAX;
     uint32_t minLargestBlock = UINT32_MAX;
-    uint32_t minFreeDma = UINT32_MAX;         // DMA-capable internal SRAM (WiFi/SD contention)
-    uint32_t minLargestDma = UINT32_MAX;      // Largest DMA block (fragmentation detection)
+    uint32_t minFreeDma = UINT32_MAX;    // DMA-capable internal SRAM (WiFi/SD contention)
+    uint32_t minLargestDma = UINT32_MAX; // Largest DMA block (fragmentation detection)
     uint32_t wifiMaxUs = 0;
     uint32_t wifiHandleClientMaxUs = 0;
     uint32_t wifiMaintenanceMaxUs = 0;
@@ -503,87 +505,87 @@ struct PerfExtendedMetrics {
     uint32_t fsMaxUs = 0;
     uint32_t sdMaxUs = 0;
     // SD write latency histogram (window totals — reset each reporting window)
-    uint32_t sdWriteCount = 0;         // Total SD data writes recorded
-    uint32_t sdWriteLt1msCount = 0;    // < 1 ms (< 1000 us)
-    uint32_t sdWrite1to5msCount = 0;   // 1–4 ms (1000–4999 us)
-    uint32_t sdWrite5to10msCount = 0;  // 5–9 ms (5000–9999 us)
-    uint32_t sdWriteGe10msCount = 0;   // ≥ 10 ms (≥ 10000 us)
+    uint32_t sdWriteCount = 0;        // Total SD data writes recorded
+    uint32_t sdWriteLt1msCount = 0;   // < 1 ms (< 1000 us)
+    uint32_t sdWrite1to5msCount = 0;  // 1–4 ms (1000–4999 us)
+    uint32_t sdWrite5to10msCount = 0; // 5–9 ms (5000–9999 us)
+    uint32_t sdWriteGe10msCount = 0;  // ≥ 10 ms (≥ 10000 us)
     uint32_t flushMaxUs = 0;
-    uint32_t displayRenderMaxUs = 0;  // Full display render time (draw + flush)
+    uint32_t displayRenderMaxUs = 0; // Full display render time (draw + flush)
     uint32_t bleDrainMaxUs = 0;
     // BLE connection path timing (for diagnosing reconnect stalls)
-    uint32_t bleConnectMaxUs = 0;     // pClient->connect() duration
-    uint32_t bleDiscoveryMaxUs = 0;   // discoverAttributes() duration
-    uint32_t bleSubscribeMaxUs = 0;   // Max executeSubscribeStep() duration
-    uint32_t bleProcessMaxUs = 0;     // bleClient.process() total duration
-    uint32_t dispPipeMaxUs = 0;       // displayPipelineModule.handleParsed() duration
-    uint32_t touchMaxUs = 0;          // touchUiModule.process() duration
-    uint32_t obdMaxUs = 0;              // obdRuntimeModule.update() duration
+    uint32_t bleConnectMaxUs = 0;   // pClient->connect() duration
+    uint32_t bleDiscoveryMaxUs = 0; // discoverAttributes() duration
+    uint32_t bleSubscribeMaxUs = 0; // Max executeSubscribeStep() duration
+    uint32_t bleProcessMaxUs = 0;   // bleClient.process() total duration
+    uint32_t dispPipeMaxUs = 0;     // displayPipelineModule.handleParsed() duration
+    uint32_t touchMaxUs = 0;        // touchUiModule.process() duration
+    uint32_t obdMaxUs = 0;          // obdRuntimeModule.update() duration
     uint32_t obdConnectCallMaxUs = 0;
     uint32_t obdSecurityStartCallMaxUs = 0;
     uint32_t obdDiscoveryCallMaxUs = 0;
     uint32_t obdSubscribeCallMaxUs = 0;
     uint32_t obdWriteCallMaxUs = 0;
     uint32_t obdRssiCallMaxUs = 0;
-    uint32_t perfReportMaxUs = 0;      // perfMetricsCheckReport snapshot + enqueue
-    uint32_t uiToScanCount = 0;       // Screen transitions -> Scanning
-    uint32_t uiToRestCount = 0;       // Screen transitions -> Resting
-    uint32_t uiScanToRestCount = 0;   // Scanning -> Resting transitions
-    uint32_t uiFastScanExitCount = 0; // Scanning dwell < threshold before leaving
-    uint32_t uiLastScanDwellMs = 0;   // Last measured scanning dwell
+    uint32_t perfReportMaxUs = 0;           // perfMetricsCheckReport snapshot + enqueue
+    uint32_t uiToScanCount = 0;             // Screen transitions -> Scanning
+    uint32_t uiToRestCount = 0;             // Screen transitions -> Resting
+    uint32_t uiScanToRestCount = 0;         // Scanning -> Resting transitions
+    uint32_t uiFastScanExitCount = 0;       // Scanning dwell < threshold before leaving
+    uint32_t uiLastScanDwellMs = 0;         // Last measured scanning dwell
     uint32_t uiMinScanDwellMs = UINT32_MAX; // Session minimum scanning dwell
-    uint32_t uiLastScanEnteredMs = 0; // Internal marker for scanning dwell
-    uint32_t fadeDownCount = 0;       // Fade-down commands generated
-    uint32_t fadeRestoreCount = 0;    // Restore commands generated
-    uint32_t fadeSkipEqualCount = 0;  // Restore skipped because current == original
-    uint32_t fadeSkipNoBaselineCount = 0; // Restore skipped (baseline missing)
-    uint32_t fadeSkipNotFadedCount = 0;   // Restore skipped (session not faded)
-    uint8_t fadeLastDecision = 0;     // PerfFadeDecision
+    uint32_t uiLastScanEnteredMs = 0;       // Internal marker for scanning dwell
+    uint32_t fadeDownCount = 0;             // Fade-down commands generated
+    uint32_t fadeRestoreCount = 0;          // Restore commands generated
+    uint32_t fadeSkipEqualCount = 0;        // Restore skipped because current == original
+    uint32_t fadeSkipNoBaselineCount = 0;   // Restore skipped (baseline missing)
+    uint32_t fadeSkipNotFadedCount = 0;     // Restore skipped (session not faded)
+    uint8_t fadeLastDecision = 0;           // PerfFadeDecision
     uint8_t fadeLastCurrentVol = 0xFF;
     uint8_t fadeLastOriginalVol = 0xFF;
     uint32_t fadeLastDecisionMs = 0;
-    uint32_t speedVolDropCount = 0;         // Speed volume drops
-    uint32_t speedVolRestoreCount = 0;      // Speed volume restores issued
-    uint32_t speedVolRetryCount = 0;        // Speed volume retries
-    uint32_t bleScanStartMs = 0;      // First transition to SCANNING
-    uint32_t bleTargetFoundMs = 0;    // First "V1 found" scan-stop transition
-    uint32_t bleConnectStartMs = 0;   // First transition to CONNECTING
-    uint32_t bleConnectedMs = 0;      // First transition to CONNECTED
-    uint32_t bleFirstRxMs = 0;        // First packet observed in BLE drain path
-    uint32_t bleFollowupRequestAlertMaxUs = 0;   // Max REQUEST_ALERT_DATA followup duration
-    uint32_t bleFollowupRequestVersionMaxUs = 0; // Max REQUEST_VERSION followup duration
-    uint32_t bleConnectStableCallbackMaxUs = 0;  // Max stable-connect callback duration
-    uint32_t bleProxyStartMaxUs = 0;             // Max proxy advertising start duration
-    uint32_t displayVoiceMaxUs = 0;              // Max voice-decision branch duration
-    uint32_t displayGapRecoverMaxUs = 0;         // Max alert-gap recovery request duration
-    uint32_t displayFullRenderCount = 0;         // Full live render count
-    uint32_t displayRestingFullRenderCount = 0;  // Full resting render count
-    uint32_t displayRestingIncrementalRenderCount = 0; // Incremental resting render count
-    uint32_t displayPersistedRenderCount = 0;    // Persisted render count
-    uint32_t displayPreviewRenderCount = 0;      // Preview render count
-    uint32_t displayRestoreRenderCount = 0;      // Restore render count
-    uint32_t displayLiveScenarioRenderCount = 0;      // Scenario-tagged live render count
-    uint32_t displayRestingScenarioRenderCount = 0;   // Scenario-tagged resting render count
-    uint32_t displayPersistedScenarioRenderCount = 0; // Scenario-tagged persisted render count
-    uint32_t displayPreviewScenarioRenderCount = 0;   // Scenario-tagged preview render count
-    uint32_t displayRestoreScenarioRenderCount = 0;   // Scenario-tagged restore render count
-    uint32_t displayRestingFlushReasonFullRedrawCount = 0;      // Resting DISPLAY_FLUSH: screen/reset
-    uint32_t displayRestingFlushReasonPendingExternalCount = 0; // Resting DISPLAY_FLUSH: pre-frame draw
-    uint32_t displayRestingFlushReasonPaintedCount = 0;         // Resting DISPLAY_FLUSH: leaf repaint
-    uint32_t displayRestingFlushReasonCacheHitCount = 0;        // Resting no-flush cache hit
+    uint32_t speedVolDropCount = 0;                               // Speed volume drops
+    uint32_t speedVolRestoreCount = 0;                            // Speed volume restores issued
+    uint32_t speedVolRetryCount = 0;                              // Speed volume retries
+    uint32_t bleScanStartMs = 0;                                  // First transition to SCANNING
+    uint32_t bleTargetFoundMs = 0;                                // First "V1 found" scan-stop transition
+    uint32_t bleConnectStartMs = 0;                               // First transition to CONNECTING
+    uint32_t bleConnectedMs = 0;                                  // First transition to CONNECTED
+    uint32_t bleFirstRxMs = 0;                                    // First packet observed in BLE drain path
+    uint32_t bleFollowupRequestAlertMaxUs = 0;                    // Max REQUEST_ALERT_DATA followup duration
+    uint32_t bleFollowupRequestVersionMaxUs = 0;                  // Max REQUEST_VERSION followup duration
+    uint32_t bleConnectStableCallbackMaxUs = 0;                   // Max stable-connect callback duration
+    uint32_t bleProxyStartMaxUs = 0;                              // Max proxy advertising start duration
+    uint32_t displayVoiceMaxUs = 0;                               // Max voice-decision branch duration
+    uint32_t displayGapRecoverMaxUs = 0;                          // Max alert-gap recovery request duration
+    uint32_t displayFullRenderCount = 0;                          // Full live render count
+    uint32_t displayRestingFullRenderCount = 0;                   // Full resting render count
+    uint32_t displayRestingIncrementalRenderCount = 0;            // Incremental resting render count
+    uint32_t displayPersistedRenderCount = 0;                     // Persisted render count
+    uint32_t displayPreviewRenderCount = 0;                       // Preview render count
+    uint32_t displayRestoreRenderCount = 0;                       // Restore render count
+    uint32_t displayLiveScenarioRenderCount = 0;                  // Scenario-tagged live render count
+    uint32_t displayRestingScenarioRenderCount = 0;               // Scenario-tagged resting render count
+    uint32_t displayPersistedScenarioRenderCount = 0;             // Scenario-tagged persisted render count
+    uint32_t displayPreviewScenarioRenderCount = 0;               // Scenario-tagged preview render count
+    uint32_t displayRestoreScenarioRenderCount = 0;               // Scenario-tagged restore render count
+    uint32_t displayRestingFlushReasonFullRedrawCount = 0;        // Resting DISPLAY_FLUSH: screen/reset
+    uint32_t displayRestingFlushReasonPendingExternalCount = 0;   // Resting DISPLAY_FLUSH: pre-frame draw
+    uint32_t displayRestingFlushReasonPaintedCount = 0;           // Resting DISPLAY_FLUSH: leaf repaint
+    uint32_t displayRestingFlushReasonCacheHitCount = 0;          // Resting no-flush cache hit
     uint32_t displayPersistedFlushReasonFullRedrawCount = 0;      // Persisted DISPLAY_FLUSH: screen/reset
     uint32_t displayPersistedFlushReasonPendingExternalCount = 0; // Persisted DISPLAY_FLUSH: pre-frame draw
     uint32_t displayPersistedFlushReasonPaintedCount = 0;         // Persisted DISPLAY_FLUSH: leaf repaint
     uint32_t displayPersistedFlushReasonCacheHitCount = 0;        // Persisted no-flush cache hit
-    uint32_t displayStatusVolumePaintCount = 0;   // Status-strip volume cell repaints
-    uint32_t displayStatusRssiPaintCount = 0;     // Status-strip RSSI cell repaints
-    uint32_t displayStatusProfilePaintCount = 0;  // Profile label repaints
-    uint32_t displayStatusBatteryPaintCount = 0;  // Battery icon/percent repaints
-    uint32_t displayStatusBleProxyPaintCount = 0; // BLE proxy icon repaints
-    uint32_t displayStatusWifiPaintCount = 0;     // Wi-Fi icon repaints
-    uint32_t displayStatusObdPaintCount = 0;      // OBD badge repaints
-    uint32_t displayStatusGpsPaintCount = 0;      // GPS badge repaints
-    uint32_t displayStatusAlpPaintCount = 0;      // ALP badge repaints
+    uint32_t displayStatusVolumePaintCount = 0;                   // Status-strip volume cell repaints
+    uint32_t displayStatusRssiPaintCount = 0;                     // Status-strip RSSI cell repaints
+    uint32_t displayStatusProfilePaintCount = 0;                  // Profile label repaints
+    uint32_t displayStatusBatteryPaintCount = 0;                  // Battery icon/percent repaints
+    uint32_t displayStatusBleProxyPaintCount = 0;                 // BLE proxy icon repaints
+    uint32_t displayStatusWifiPaintCount = 0;                     // Wi-Fi icon repaints
+    uint32_t displayStatusObdPaintCount = 0;                      // OBD badge repaints
+    uint32_t displayStatusGpsPaintCount = 0;                      // GPS badge repaints
+    uint32_t displayStatusAlpPaintCount = 0;                      // ALP badge repaints
     uint32_t displayRedrawReasonFirstRunCount = 0;
     uint32_t displayRedrawReasonEnterLiveCount = 0;
     uint32_t displayRedrawReasonLeaveLiveCount = 0;
@@ -604,47 +606,47 @@ struct PerfExtendedMetrics {
     uint32_t displayRedrawReasonCacheHitSkipFlushCount = 0;  // union empty → no push
     uint32_t displayRedrawReasonUnionExceedsCapCount = 0;    // union ≥ 50% canvas → DISPLAY_FLUSH
     uint32_t displayRedrawReasonPartialRegionFlushCount = 0; // flushRegion(union)
-    uint32_t displayFullFlushCount = 0;          // Full-screen flush count
-    uint32_t displayPartialFlushCount = 0;       // Region flush count
-    uint32_t displayPartialFlushAreaPeakPx = 0;  // Peak partial flush area
-    uint32_t displayPartialFlushAreaTotalPx = 0; // Session total partial-flush pixels
-    uint32_t displayFlushEquivalentAreaTotalPx = 0; // Full + partial flush pixels
-    uint32_t displayFlushMaxAreaPx = 0;          // Area of the flush that set flushMaxUs
-    uint32_t displayPartialFlushLogicalWidthPeakPx = 0;  // Peak logical partial width
-    uint32_t displayPartialFlushLogicalHeightPeakPx = 0; // Peak logical partial height
-    uint32_t displayPartialFlushRowCallsPeak = 0;      // Peak physical row blits per partial flush
-    uint32_t displayPartialFlushPixelsPerRowPeakPx = 0;  // Peak pixels per physical row blit
-    uint32_t displayPartialFlushUsPeak = 0;            // Peak partial-only flush duration
-    uint32_t displayPartialFlushWorstUsLogicalWidthPx = 0;  // Logical width for partial time peak
-    uint32_t displayPartialFlushWorstUsLogicalHeightPx = 0; // Logical height for partial time peak
-    uint32_t displayPartialFlushWorstUsAreaPx = 0;        // Area for partial time peak
-    uint32_t displayPartialFlushWouldFullRows64Count = 0;  // Shadow row-cap=64 decisions
-    uint32_t displayPartialFlushWouldFullRows128Count = 0; // Shadow row-cap=128 decisions
-    uint32_t displayPartialFlushWouldFullRows256Count = 0; // Shadow row-cap=256 decisions
-    uint32_t displayUnionExceedsCapAreaPeakPx = 0;          // Peak over-cap dirty union
-    uint32_t displayUnionExceedsCapRectCountPeak = 0;       // Peak contributing rect count
-    uint32_t displayUnionExceedsCapAreaPeakSourceMask = 0;  // Source mask for area peak
-    uint32_t displayUnionExceedsCapWithFrequencyCount = 0;  // Over-cap unions touching frequency
-    uint32_t displayUnionExceedsCapWithBandsBarsCount = 0;  // Over-cap unions touching bands/bars
-    uint32_t displayUnionExceedsCapWithArrowsCount = 0;     // Over-cap unions touching arrows
-    uint32_t displayUnionExceedsCapWithStatusCount = 0;     // Over-cap unions touching status strip
-    uint32_t displayUnionExceedsCapWithIndicatorsCount = 0; // Over-cap unions touching OBD/GPS/ALP
-    uint32_t displayUnionExceedsCapWithExternalCount = 0;   // Over-cap unions including pending external paint
-    uint32_t displayUnionExceedsCapUnclassifiedCount = 0;   // Over-cap unions with unknown source
-    uint32_t displayBaseFrameMaxUs = 0;          // drawBaseFrame() stage max
-    uint32_t displayStatusStripMaxUs = 0;        // Status strip stage max
-    uint32_t displayFrequencyMaxUs = 0;          // Frequency stage max
-    uint32_t displayBandsBarsMaxUs = 0;          // Bands + bars stage max
-    uint32_t displayArrowsIconsMaxUs = 0;        // Arrows + icons stage max
-    uint32_t displayCardsMaxUs = 0;              // Card-row stage max
-    uint32_t displayFlushSubphaseMaxUs = 0;      // Inner render flush stage max
-    uint32_t displayLiveRenderMaxUs = 0;         // Scenario-tagged live render max
-    uint32_t displayRestingRenderMaxUs = 0;      // Scenario-tagged resting render max
-    uint32_t displayPersistedRenderMaxUs = 0;    // Scenario-tagged persisted render max
-    uint32_t displayPreviewRenderMaxUs = 0;      // Scenario-tagged preview render max
-    uint32_t displayRestoreRenderMaxUs = 0;      // Scenario-tagged restore render max
-    uint32_t displayPreviewFirstRenderMaxUs = 0; // First preview-frame render max
-    uint32_t displayPreviewSteadyRenderMaxUs = 0; // Later preview-frame render max
+    uint32_t displayFullFlushCount = 0;                      // Full-screen flush count
+    uint32_t displayPartialFlushCount = 0;                   // Region flush count
+    uint32_t displayPartialFlushAreaPeakPx = 0;              // Peak partial flush area
+    uint32_t displayPartialFlushAreaTotalPx = 0;             // Session total partial-flush pixels
+    uint32_t displayFlushEquivalentAreaTotalPx = 0;          // Full + partial flush pixels
+    uint32_t displayFlushMaxAreaPx = 0;                      // Area of the flush that set flushMaxUs
+    uint32_t displayPartialFlushLogicalWidthPeakPx = 0;      // Peak logical partial width
+    uint32_t displayPartialFlushLogicalHeightPeakPx = 0;     // Peak logical partial height
+    uint32_t displayPartialFlushRowCallsPeak = 0;            // Peak physical row blits per partial flush
+    uint32_t displayPartialFlushPixelsPerRowPeakPx = 0;      // Peak pixels per physical row blit
+    uint32_t displayPartialFlushUsPeak = 0;                  // Peak partial-only flush duration
+    uint32_t displayPartialFlushWorstUsLogicalWidthPx = 0;   // Logical width for partial time peak
+    uint32_t displayPartialFlushWorstUsLogicalHeightPx = 0;  // Logical height for partial time peak
+    uint32_t displayPartialFlushWorstUsAreaPx = 0;           // Area for partial time peak
+    uint32_t displayPartialFlushWouldFullRows64Count = 0;    // Shadow row-cap=64 decisions
+    uint32_t displayPartialFlushWouldFullRows128Count = 0;   // Shadow row-cap=128 decisions
+    uint32_t displayPartialFlushWouldFullRows256Count = 0;   // Shadow row-cap=256 decisions
+    uint32_t displayUnionExceedsCapAreaPeakPx = 0;           // Peak over-cap dirty union
+    uint32_t displayUnionExceedsCapRectCountPeak = 0;        // Peak contributing rect count
+    uint32_t displayUnionExceedsCapAreaPeakSourceMask = 0;   // Source mask for area peak
+    uint32_t displayUnionExceedsCapWithFrequencyCount = 0;   // Over-cap unions touching frequency
+    uint32_t displayUnionExceedsCapWithBandsBarsCount = 0;   // Over-cap unions touching bands/bars
+    uint32_t displayUnionExceedsCapWithArrowsCount = 0;      // Over-cap unions touching arrows
+    uint32_t displayUnionExceedsCapWithStatusCount = 0;      // Over-cap unions touching status strip
+    uint32_t displayUnionExceedsCapWithIndicatorsCount = 0;  // Over-cap unions touching OBD/GPS/ALP
+    uint32_t displayUnionExceedsCapWithExternalCount = 0;    // Over-cap unions including pending external paint
+    uint32_t displayUnionExceedsCapUnclassifiedCount = 0;    // Over-cap unions with unknown source
+    uint32_t displayBaseFrameMaxUs = 0;                      // drawBaseFrame() stage max
+    uint32_t displayStatusStripMaxUs = 0;                    // Status strip stage max
+    uint32_t displayFrequencyMaxUs = 0;                      // Frequency stage max
+    uint32_t displayBandsBarsMaxUs = 0;                      // Bands + bars stage max
+    uint32_t displayArrowsIconsMaxUs = 0;                    // Arrows + icons stage max
+    uint32_t displayCardsMaxUs = 0;                          // Card-row stage max
+    uint32_t displayFlushSubphaseMaxUs = 0;                  // Inner render flush stage max
+    uint32_t displayLiveRenderMaxUs = 0;                     // Scenario-tagged live render max
+    uint32_t displayRestingRenderMaxUs = 0;                  // Scenario-tagged resting render max
+    uint32_t displayPersistedRenderMaxUs = 0;                // Scenario-tagged persisted render max
+    uint32_t displayPreviewRenderMaxUs = 0;                  // Scenario-tagged preview render max
+    uint32_t displayRestoreRenderMaxUs = 0;                  // Scenario-tagged restore render max
+    uint32_t displayPreviewFirstRenderMaxUs = 0;             // First preview-frame render max
+    uint32_t displayPreviewSteadyRenderMaxUs = 0;            // Later preview-frame render max
 
     void reset() {
         notifyToDisplayMs.reset();
@@ -837,8 +839,7 @@ void perfRecordDisplayScenarioRenderUs(uint32_t us);
 void perfRecordDisplayRenderPath(PerfDisplayRenderPath path);
 void perfRecordDisplayRedrawReason(PerfDisplayRedrawReason reason);
 void perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase subphase, uint32_t us);
-void perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath path,
-                                    PerfDisplayFlushDecisionReason reason);
+void perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath path, PerfDisplayFlushDecisionReason reason);
 void perfRecordDisplayStatusPaint(PerfDisplayStatusPaint element);
 void perfSetDisplayRenderScenario(PerfDisplayRenderScenario scenario);
 PerfDisplayRenderScenario perfGetDisplayRenderScenario();
@@ -870,7 +871,8 @@ void perfRecordObdRssiCallUs(uint32_t us);
 // (Unknown/Scanning/Resting/Live/Persisted). Reserved compatibility values
 // remain valid enum members but should not be emitted by current production code.
 void perfRecordDisplayScreenTransition(PerfDisplayScreen from, PerfDisplayScreen to, uint32_t nowMs);
-void perfRecordVolumeFadeDecision(PerfFadeDecision decision, uint8_t currentVolume, uint8_t originalVolume, uint32_t nowMs);
+void perfRecordVolumeFadeDecision(PerfFadeDecision decision, uint8_t currentVolume, uint8_t originalVolume,
+                                  uint32_t nowMs);
 void perfRecordSpeedVolDrop();
 void perfRecordSpeedVolRestore();
 void perfRecordSpeedVolRetry();
@@ -906,9 +908,9 @@ struct PerfLatency {
     std::atomic<uint32_t> sampleCount{0};
 
     // Per-stage breakdown (for debugging bottlenecks)
-    std::atomic<uint32_t> notifyToQueueUs{0};    // notify callback → queue send
-    std::atomic<uint32_t> queueToParseUs{0};     // queue receive → parse done
-    std::atomic<uint32_t> parseToFlushUs{0};     // parse done → display flush
+    std::atomic<uint32_t> notifyToQueueUs{0}; // notify callback → queue send
+    std::atomic<uint32_t> queueToParseUs{0};  // queue receive → parse done
+    std::atomic<uint32_t> parseToFlushUs{0};  // parse done → display flush
 
     void reset() {
         minUs.store(UINT32_MAX, std::memory_order_relaxed);
@@ -933,19 +935,14 @@ extern PerfCounters perfCounters;
 
 #include "perf_snapshot_types.h"
 
-void perfSetConnectionCycleSnapshot(uint8_t stateCode,
-                                    uint32_t timeInStateMs,
-                                    uint32_t transitionsTotal,
-                                    uint32_t teardownDurationMs,
-                                    uint32_t obdRetryAttemptsTotal,
-                                    uint32_t wifiManualPhoneKicksTotal,
-                                    bool proxyNoClientLatched);
+void perfSetConnectionCycleSnapshot(uint8_t stateCode, uint32_t timeInStateMs, uint32_t transitionsTotal,
+                                    uint32_t teardownDurationMs, uint32_t obdRetryAttemptsTotal,
+                                    uint32_t wifiManualPhoneKicksTotal, bool proxyNoClientLatched);
 
 const char* perfConnectionCycleStateName(uint8_t stateCode);
 
-void perfCaptureRuntimeMetricsSnapshot(
-    PerfRuntimeMetricsSnapshot& snapshot,
-    PerfRuntimeSnapshotMode mode = PerfRuntimeSnapshotMode::PreserveWindowPeaks);
+void perfCaptureRuntimeMetricsSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
+                                       PerfRuntimeSnapshotMode mode = PerfRuntimeSnapshotMode::PreserveWindowPeaks);
 
 inline PhoneCmdDropMetricsSnapshot perfPhoneCmdDropMetricsSnapshot() {
     PhoneCmdDropMetricsSnapshot snapshot;
@@ -956,8 +953,7 @@ inline PhoneCmdDropMetricsSnapshot perfPhoneCmdDropMetricsSnapshot() {
     return snapshot;
 }
 
-inline void perfAppendPhoneCmdDropMetrics(JsonDocument& doc,
-                                          const PhoneCmdDropMetricsSnapshot& snapshot) {
+inline void perfAppendPhoneCmdDropMetrics(JsonDocument& doc, const PhoneCmdDropMetricsSnapshot& snapshot) {
     doc["phoneCmdDropsOverflow"] = snapshot.overflow;
     doc["phoneCmdDropsInvalid"] = snapshot.invalid;
     doc["phoneCmdDropsBleFail"] = snapshot.bleFail;
@@ -969,8 +965,8 @@ extern PerfLatency perfLatency;
 #endif
 
 #if PERF_METRICS && PERF_MONITORING
-extern bool perfDebugEnabled;        // Runtime debug print enable
-extern uint32_t perfLastReportMs;    // Last report timestamp
+extern bool perfDebugEnabled;     // Runtime debug print enable
+extern uint32_t perfLastReportMs; // Last report timestamp
 #endif
 
 // ============================================================================
@@ -981,14 +977,15 @@ extern uint32_t perfLastReportMs;    // Last report timestamp
 #define PERF_INC(counter) (perfCounters.counter++)
 #define PERF_ADD(counter, value) (perfCounters.counter += (value))
 #define PERF_SET(counter, value) (perfCounters.counter = (value))
-#define PERF_MAX(counter, value) do { \
-    const uint32_t _perfMaxValue = static_cast<uint32_t>(value); \
-    uint32_t _perfMaxCurrent = perfCounters.counter.load(std::memory_order_relaxed); \
-    while (_perfMaxValue > _perfMaxCurrent && \
-           !perfCounters.counter.compare_exchange_weak(_perfMaxCurrent, _perfMaxValue, \
-                                                       std::memory_order_relaxed, \
-                                                       std::memory_order_relaxed)) {} \
-} while(0)
+#define PERF_MAX(counter, value)                                                                                       \
+    do {                                                                                                               \
+        const uint32_t _perfMaxValue = static_cast<uint32_t>(value);                                                   \
+        uint32_t _perfMaxCurrent = perfCounters.counter.load(std::memory_order_relaxed);                               \
+        while (_perfMaxValue > _perfMaxCurrent &&                                                                      \
+               !perfCounters.counter.compare_exchange_weak(_perfMaxCurrent, _perfMaxValue, std::memory_order_relaxed,  \
+                                                           std::memory_order_relaxed)) {                               \
+        }                                                                                                              \
+    } while (0)
 
 // Timestamp capture (always on, but cheap)
 #define PERF_TIMESTAMP_US() ((uint32_t)esp_timer_get_time())
@@ -996,16 +993,19 @@ extern uint32_t perfLastReportMs;    // Last report timestamp
 #if PERF_METRICS && PERF_MONITORING
 
 // Sampled latency recording
-#define PERF_SAMPLE_LATENCY(startUs, endUs) do { \
-    static uint32_t _sampleCounter = 0; \
-    if ((++_sampleCounter & (PERF_SAMPLE_RATE - 1)) == 0) { \
-        uint32_t _lat = (endUs) - (startUs); \
-        if (_lat < perfLatency.minUs) perfLatency.minUs = _lat; \
-        if (_lat > perfLatency.maxUs) perfLatency.maxUs = _lat; \
-        perfLatency.totalUs += _lat; \
-        perfLatency.sampleCount++; \
-    } \
-} while(0)
+#define PERF_SAMPLE_LATENCY(startUs, endUs)                                                                            \
+    do {                                                                                                               \
+        static uint32_t _sampleCounter = 0;                                                                            \
+        if ((++_sampleCounter & (PERF_SAMPLE_RATE - 1)) == 0) {                                                        \
+            uint32_t _lat = (endUs) - (startUs);                                                                       \
+            if (_lat < perfLatency.minUs)                                                                              \
+                perfLatency.minUs = _lat;                                                                              \
+            if (_lat > perfLatency.maxUs)                                                                              \
+                perfLatency.maxUs = _lat;                                                                              \
+            perfLatency.totalUs += _lat;                                                                               \
+            perfLatency.sampleCount++;                                                                                 \
+        }                                                                                                              \
+    } while (0)
 
 // Stage timing (for debugging)
 #if PERF_VERBOSE
@@ -1016,22 +1016,23 @@ extern uint32_t perfLastReportMs;    // Last report timestamp
 
 // Threshold alert (immediate print if exceeded)
 #if PERF_VERBOSE
-#define PERF_ALERT_IF_SLOW(latencyUs) do { \
-    if (perfDebugEnabled && (latencyUs) > (PERF_LATENCY_ALERT_MS * 1000)) { \
-        Serial.printf("[PERF ALERT] latency=%luus\n", (unsigned long)(latencyUs)); \
-    } \
-} while(0)
+#define PERF_ALERT_IF_SLOW(latencyUs)                                                                                  \
+    do {                                                                                                               \
+        if (perfDebugEnabled && (latencyUs) > (PERF_LATENCY_ALERT_MS * 1000)) {                                        \
+            Serial.printf("[PERF ALERT] latency=%luus\n", (unsigned long)(latencyUs));                                 \
+        }                                                                                                              \
+    } while (0)
 #else
 #define PERF_ALERT_IF_SLOW(latencyUs) ((void)0)
 #endif
 
-#else  // PERF_METRICS == 0 or PERF_MONITORING == 0
+#else // PERF_METRICS == 0 or PERF_MONITORING == 0
 
 #define PERF_SAMPLE_LATENCY(startUs, endUs) ((void)0)
 #define PERF_STAGE_TIME(stage, value) ((void)0)
 #define PERF_ALERT_IF_SLOW(latencyUs) ((void)0)
 
-#endif  // PERF_METRICS && PERF_MONITORING
+#endif // PERF_METRICS && PERF_MONITORING
 
 // ============================================================================
 // API functions

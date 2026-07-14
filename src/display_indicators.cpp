@@ -31,10 +31,10 @@ void V1Display::drawBaseFrame() {
 }
 
 void V1Display::prepareFullRedrawNoClear() {
-    bleProxyDrawn_ = false;  // Force indicator redraw after full clears
-    dirty_.setIndicatorFlags();  // Sets obdIndicator + alpIndicator only; other fields untouched
-    elementCaches_.invalidateAll();     // Directly zeros all per-element render caches
-    drawBLEProxyIndicator();  // Redraw BLE icon after screen clear
+    bleProxyDrawn_ = false;         // Force indicator redraw after full clears
+    dirty_.setIndicatorFlags();     // Sets obdIndicator + alpIndicator only; other fields untouched
+    elementCaches_.invalidateAll(); // Directly zeros all per-element render caches
+    drawBLEProxyIndicator();        // Redraw BLE icon after screen clear
 }
 
 void V1Display::setSpeedVolZeroActive(bool active) {
@@ -59,7 +59,7 @@ void V1Display::setObdAttention(bool attention) {
     }
     obdAttention_ = attention;
     dirty_.obdIndicator = true;
-    elementCaches_.obd.invalidate();   // Direct cache invalidation at the source
+    elementCaches_.obd.invalidate(); // Direct cache invalidation at the source
 }
 
 void V1Display::setObdRuntimeModule(ObdRuntimeModule* m) {
@@ -77,9 +77,7 @@ void V1Display::syncTopIndicators(uint32_t nowMs) {
     }
     if (obdRtMod_) {
         const ObdRuntimeStatus obdStatus = obdRtMod_->snapshot(nowMs);
-        setObdStatus(obdStatus.enabled,
-                     obdStatus.connected,
-                     obdStatus.scanInProgress || obdStatus.manualScanPending);
+        setObdStatus(obdStatus.enabled, obdStatus.connected, obdStatus.scanInProgress || obdStatus.manualScanPending);
     }
     if (alpRtMod_) {
         const AlpStatus alpStatus = alpRtMod_->snapshot();
@@ -103,14 +101,11 @@ void V1Display::drawObdIndicator() {
     const bool curConnected = wantShow && obdConnected_;
     const bool curAttention = wantShow && !curConnected && (obdScanAttention_ || obdAttention_);
 
-    if (!dirty_.obdIndicator &&
-        elementCaches_.obd.valid &&
-        wantShow == elementCaches_.obd.lastShown &&
-        curConnected == elementCaches_.obd.lastConnected &&
-        curAttention == elementCaches_.obd.lastAttention) {
+    if (!dirty_.obdIndicator && elementCaches_.obd.valid && wantShow == elementCaches_.obd.lastShown &&
+        curConnected == elementCaches_.obd.lastConnected && curAttention == elementCaches_.obd.lastAttention) {
         return;
     }
-    dirty_.obdIndicator = false;     // Still cleared here — it's also read externally for flush
+    dirty_.obdIndicator = false; // Still cleared here — it's also read externally for flush
     elementCaches_.obd.valid = true;
     elementCaches_.obd.lastShown = wantShow;
     elementCaches_.obd.lastConnected = curConnected;
@@ -119,8 +114,7 @@ void V1Display::drawObdIndicator() {
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::obdBadgeRect();
 
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Obd);
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;
@@ -132,9 +126,7 @@ void V1Display::drawObdIndicator() {
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(textColor, PALETTE_BG);
-    GFX_drawString(tft_, "OBD",
-                   badgeRect.x + badgeRect.w / 2,
-                   badgeRect.y + badgeRect.h / 2);
+    GFX_drawString(tft_, "OBD", badgeRect.x + badgeRect.w / 2, badgeRect.y + badgeRect.h / 2);
 #endif
 }
 
@@ -148,22 +140,19 @@ void V1Display::drawGpsIndicator() {
     const bool wantShow = gs.enabled && gs.stableHasFix;
     const uint8_t sats = wantShow ? gs.stableSatellites : 0;
 
-    if (!dirty_.gpsIndicator &&
-        elementCaches_.gps.valid &&
-        wantShow == elementCaches_.gps.lastShown &&
+    if (!dirty_.gpsIndicator && elementCaches_.gps.valid && wantShow == elementCaches_.gps.lastShown &&
         sats == elementCaches_.gps.lastSats) {
         return;
     }
     dirty_.gpsIndicator = false;
-    elementCaches_.gps.valid    = true;
+    elementCaches_.gps.valid = true;
     elementCaches_.gps.lastShown = wantShow;
-    elementCaches_.gps.lastSats  = sats;
+    elementCaches_.gps.lastSats = sats;
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::gpsBadgeRect();
 
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Gps);
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;
@@ -173,10 +162,8 @@ void V1Display::drawGpsIndicator() {
     snprintf(buf, sizeof(buf), "G%u", sats);
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(2);
-    TFT_CALL(setTextColor)(0x07E0, PALETTE_BG);  // Green — stable GPS fix
-    GFX_drawString(tft_, buf,
-                   badgeRect.x + badgeRect.w / 2,
-                   badgeRect.y + badgeRect.h / 2);
+    TFT_CALL(setTextColor)(0x07E0, PALETTE_BG); // Green — stable GPS fix
+    GFX_drawString(tft_, buf, badgeRect.x + badgeRect.w / 2, badgeRect.y + badgeRect.h / 2);
 #endif
 }
 
@@ -192,7 +179,8 @@ void V1Display::refreshAlpIndicator(uint32_t nowMs) {
     if (previewIndicatorOverridesActive_) {
         return;
     }
-    if (!alpRtMod_) return;
+    if (!alpRtMod_)
+        return;
     const AlpStatus status = alpRtMod_->snapshot();
     // Badge context only — event-owned fields are updated via setAlpLaserEvent() (Phase 2)
     alpEnabled_ = (status.state != AlpState::OFF);
@@ -207,11 +195,8 @@ void V1Display::drawAlpIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
     const bool wantShow = alpEnabled_;
 
-    if (!dirty_.alpIndicator &&
-        elementCaches_.alp.valid &&
-        wantShow == elementCaches_.alp.lastShown &&
-        alpStateRaw_ == elementCaches_.alp.lastState &&
-        alpHbByte1_ == elementCaches_.alp.lastHbByte1 &&
+    if (!dirty_.alpIndicator && elementCaches_.alp.valid && wantShow == elementCaches_.alp.lastShown &&
+        alpStateRaw_ == elementCaches_.alp.lastState && alpHbByte1_ == elementCaches_.alp.lastHbByte1 &&
         alpHasLaserEvent_ == elementCaches_.alp.lastAlpEventActive) {
         return;
     }
@@ -225,8 +210,7 @@ void V1Display::drawAlpIndicator() {
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::alpBadgeRect();
 
     perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Alp);
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h,
-                         DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;
@@ -250,33 +234,31 @@ void V1Display::drawAlpIndicator() {
     const AlpState alpState = static_cast<AlpState>(alpStateRaw_);
     uint16_t textColor;
     if (alpState == AlpState::OFF || alpState == AlpState::IDLE) {
-        textColor = s.colorMuted;              // Grey — not connected
+        textColor = s.colorMuted; // Grey — not connected
     } else if (alpHasLaserEvent_) {
-        textColor = s.colorAlpAlert;           // Red — active laser alert
+        textColor = s.colorAlpAlert; // Red — active laser alert
     } else {
         switch (alpHbByte1_) {
-            case 0x04:
-                textColor = s.colorAlpLidActive; // Blue — LID active (above LID speed limit)
-                break;
-            case 0x03:
-                textColor = s.colorAlpDli;       // Orange — DLI active (below LID speed limit)
-                break;
-            case 0x02:
-            case 0x00:
-                textColor = s.colorAlpConnected; // Green — warm-up / pre-warm-up
-                break;
-            default:
-                textColor = s.colorAlpConnected; // Green — unknown byte1, treat as idle
-                break;
+        case 0x04:
+            textColor = s.colorAlpLidActive; // Blue — LID active (above LID speed limit)
+            break;
+        case 0x03:
+            textColor = s.colorAlpDli; // Orange — DLI active (below LID speed limit)
+            break;
+        case 0x02:
+        case 0x00:
+            textColor = s.colorAlpConnected; // Green — warm-up / pre-warm-up
+            break;
+        default:
+            textColor = s.colorAlpConnected; // Green — unknown byte1, treat as idle
+            break;
         }
     }
 
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(textColor, PALETTE_BG);
-    GFX_drawString(tft_, "ALP",
-                   badgeRect.x + badgeRect.w / 2,
-                   badgeRect.y + badgeRect.h / 2);
+    GFX_drawString(tft_, "ALP", badgeRect.x + badgeRect.w / 2, badgeRect.y + badgeRect.h / 2);
 #endif
 }
 
@@ -301,17 +283,12 @@ void V1Display::setPreviewIndicatorOverridesActive(bool active) {
 
 void V1Display::setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1) {
     const AlpState previewState = static_cast<AlpState>(state);
-    const bool nextHasLaserEvent = (previewState == AlpState::ALERT_ACTIVE ||
-                                   previewState == AlpState::NOISE_WINDOW ||
-                                   previewState == AlpState::TEARDOWN);
+    const bool nextHasLaserEvent = (previewState == AlpState::ALERT_ACTIVE || previewState == AlpState::NOISE_WINDOW ||
+                                    previewState == AlpState::TEARDOWN);
 
-    if (alpEnabled_ == enabled &&
-        alpStateRaw_ == state &&
-        alpHbByte1_ == hbByte1 &&
-        alpHasLaserEvent_ == nextHasLaserEvent &&
-        alpLaserEvent_.active == nextHasLaserEvent &&
-        alpLaserEvent_.gun == AlpGunType::UNKNOWN &&
-        alpLaserEvent_.direction == AlpLaserDirection::UNKNOWN &&
+    if (alpEnabled_ == enabled && alpStateRaw_ == state && alpHbByte1_ == hbByte1 &&
+        alpHasLaserEvent_ == nextHasLaserEvent && alpLaserEvent_.active == nextHasLaserEvent &&
+        alpLaserEvent_.gun == AlpGunType::UNKNOWN && alpLaserEvent_.direction == AlpLaserDirection::UNKNOWN &&
         !alpLaserEvent_.lidActive) {
         return;
     }
@@ -333,9 +310,7 @@ void V1Display::setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1)
 }
 
 void V1Display::setObdPreviewState(bool enabled, bool connected, bool scanAttention) {
-    if (obdEnabled_ == enabled &&
-        obdConnected_ == connected &&
-        obdScanAttention_ == scanAttention) {
+    if (obdEnabled_ == enabled && obdConnected_ == connected && obdScanAttention_ == scanAttention) {
         return;
     }
 
@@ -358,9 +333,7 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const uint8_t prevDirection = static_cast<uint8_t>(alpLaserEvent_.direction);
     const bool prevFreqOverride = alpFreqOverride_;
     const AlpGunType prevGun = alpLaserEvent_.gun;
-    const bool holdLiveGun = prevActive && ev.active &&
-                             ev.gun == AlpGunType::UNKNOWN &&
-                             prevGun != AlpGunType::UNKNOWN;
+    const bool holdLiveGun = prevActive && ev.active && ev.gun == AlpGunType::UNKNOWN && prevGun != AlpGunType::UNKNOWN;
     const AlpGunType effectiveGun = holdLiveGun ? prevGun : ev.gun;
     // A persisted ALP tail is allowed to keep gun text/direction while no
     // longer counting as a live ALP event. active gates live-only visuals;
@@ -369,12 +342,9 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const char* nextGunAbbr = nextFreqOverride ? alpGunAbbrev(effectiveGun) : "";
     const bool nextLidActive = nextFreqOverride ? ev.lidActive : false;
     const bool gunChanged = (prevFreqOverride != nextFreqOverride) ||
-                            (nextFreqOverride &&
-                             strncmp(alpFreqText_, nextGunAbbr, sizeof(alpFreqText_)) != 0);
-    const bool visualChanged = (ev.active != prevActive) ||
-                               (static_cast<uint8_t>(ev.direction) != prevDirection) ||
-                               gunChanged ||
-                               (nextLidActive != prevLidActive);
+                            (nextFreqOverride && strncmp(alpFreqText_, nextGunAbbr, sizeof(alpFreqText_)) != 0);
+    const bool visualChanged = (ev.active != prevActive) || (static_cast<uint8_t>(ev.direction) != prevDirection) ||
+                               gunChanged || (nextLidActive != prevLidActive);
 
     // Atomic write of all ALP event-owned fields
     alpLaserEvent_ = ev;
@@ -404,10 +374,12 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
         char detail[48];
         const char* gunStr = nextFreqOverride ? nextGunAbbr : "none";
         const char* dirStr = "UNKNOWN";
-        if (ev.direction == AlpLaserDirection::FRONT) dirStr = "FRONT";
-        else if (ev.direction == AlpLaserDirection::REAR) dirStr = "REAR";
-        snprintf(detail, sizeof(detail), "active=%d gun=%s dir=%s lid=%d",
-                 ev.active ? 1 : 0, gunStr, dirStr, nextLidActive ? 1 : 0);
+        if (ev.direction == AlpLaserDirection::FRONT)
+            dirStr = "FRONT";
+        else if (ev.direction == AlpLaserDirection::REAR)
+            dirStr = "REAR";
+        snprintf(detail, sizeof(detail), "active=%d gun=%s dir=%s lid=%d", ev.active ? 1 : 0, gunStr, dirStr,
+                 nextLidActive ? 1 : 0);
         if (alpRtMod_) {
             alpRtMod_->logDisplayDecision(millis(), "DISP_V1_EVENT", detail);
         }
@@ -419,9 +391,8 @@ void V1Display::setAlpFrequencyOverride(const char* gunAbbrev, bool lidActive) {
         clearAlpFrequencyOverride();
         return;
     }
-    const bool detailChanged = !alpFreqOverride_ ||
-                               alpLidActive_ != lidActive ||
-                               strncmp(alpFreqText_, gunAbbrev, sizeof(alpFreqText_)) != 0;
+    const bool detailChanged =
+        !alpFreqOverride_ || alpLidActive_ != lidActive || strncmp(alpFreqText_, gunAbbrev, sizeof(alpFreqText_)) != 0;
     alpFreqOverride_ = true;
     alpLidActive_ = lidActive;
     strncpy(alpFreqText_, gunAbbrev, sizeof(alpFreqText_));

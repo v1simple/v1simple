@@ -12,12 +12,12 @@
 #include "display_slider_math.h"
 
 // Slider-specific color constants (not theme-dependent — fixed hardware UI)
-static constexpr uint16_t SLIDER_WHITE         = 0xFFFF;  // Labels and thumb
-static constexpr uint16_t SLIDER_TRACK_BORDER  = 0x4208;  // Outer border of track
-static constexpr uint16_t SLIDER_TRACK_FILL    = 0x2104;  // Empty track fill
-static constexpr uint16_t SLIDER_BRIGHTNESS_FG = 0x07E0;  // Green — brightness fill
-static constexpr uint16_t SLIDER_VOLUME_FG     = 0x001F;  // Blue — volume fill
-static constexpr uint16_t SLIDER_HINT_TEXT     = 0x8410;  // Medium gray — hint text
+static constexpr uint16_t SLIDER_WHITE = 0xFFFF;         // Labels and thumb
+static constexpr uint16_t SLIDER_TRACK_BORDER = 0x4208;  // Outer border of track
+static constexpr uint16_t SLIDER_TRACK_FILL = 0x2104;    // Empty track fill
+static constexpr uint16_t SLIDER_BRIGHTNESS_FG = 0x07E0; // Green — brightness fill
+static constexpr uint16_t SLIDER_VOLUME_FG = 0x001F;     // Blue — volume fill
+static constexpr uint16_t SLIDER_HINT_TEXT = 0x8410;     // Medium gray — hint text
 
 // Settings screen with brightness and voice volume sliders.
 void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
@@ -27,7 +27,7 @@ void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel
     // Layout: 640x172 landscape - two horizontal sliders stacked.
     const int sliderMargin = 40;
     const int sliderHeight = 10;
-    const int sliderWidth = SCREEN_WIDTH - (sliderMargin * 2);  // 560 pixels
+    const int sliderWidth = SCREEN_WIDTH - (sliderMargin * 2); // 560 pixels
     const int sliderX = sliderMargin;
     const int brightnessY = 45;
     const int volumeY = 115;
@@ -52,12 +52,14 @@ void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel
 
     // Fill based on brightness level (80-255 range)
     int brightnessFill = computeBrightnessSliderFill(brightnessLevel, sliderWidth);
-    tft_->fillRect(sliderX, brightnessY, brightnessFill, sliderHeight, SLIDER_BRIGHTNESS_FG);  // Green
+    tft_->fillRect(sliderX, brightnessY, brightnessFill, sliderHeight, SLIDER_BRIGHTNESS_FG); // Green
 
     // Thumb
     int brightThumbX = sliderX + brightnessFill - 4;
-    if (brightThumbX < sliderX) brightThumbX = sliderX;
-    if (brightThumbX > sliderX + sliderWidth - 8) brightThumbX = sliderX + sliderWidth - 8;
+    if (brightThumbX < sliderX)
+        brightThumbX = sliderX;
+    if (brightThumbX > sliderX + sliderWidth - 8)
+        brightThumbX = sliderX + sliderWidth - 8;
     tft_->fillRect(brightThumbX, brightnessY - 4, 8, sliderHeight + 8, SLIDER_WHITE);
 
     // Percentage text
@@ -84,8 +86,10 @@ void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel
 
     // Thumb
     int volumeThumbX = sliderX + volumeFill - 4;
-    if (volumeThumbX < sliderX) volumeThumbX = sliderX;
-    if (volumeThumbX > sliderX + sliderWidth - 8) volumeThumbX = sliderX + sliderWidth - 8;
+    if (volumeThumbX < sliderX)
+        volumeThumbX = sliderX;
+    if (volumeThumbX > sliderX + sliderWidth - 8)
+        volumeThumbX = sliderX + sliderWidth - 8;
     tft_->fillRect(volumeThumbX, volumeY - 4, 8, sliderHeight + 8, SLIDER_WHITE);
 
     // Percentage text
@@ -96,7 +100,7 @@ void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel
 
     // Instructions at bottom
     tft_->setTextSize(1);
-    tft_->setTextColor(SLIDER_HINT_TEXT);  // Medium gray
+    tft_->setTextColor(SLIDER_HINT_TEXT); // Medium gray
     tft_->setCursor((SCREEN_WIDTH - 220) / 2, 155);
     tft_->print("Touch sliders - BOOT to save");
 
@@ -115,8 +119,10 @@ void V1Display::updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLev
 //   Low touch Y = bottom of display = volume slider
 //   High touch Y = top of display = brightness slider
 int V1Display::getActiveSliderFromTouch(int16_t touchY) {
-    if (touchY <= 60) return 1;
-    if (touchY >= 80) return 0;
+    if (touchY <= 60)
+        return 1;
+    if (touchY >= 80)
+        return 0;
     return -1;
 }
 

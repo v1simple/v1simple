@@ -6,7 +6,9 @@
 
 #include "touch_handler.h"
 
-#define TOUCH_LOGF(...) do { } while(0)
+#define TOUCH_LOGF(...)                                                                                                \
+    do {                                                                                                               \
+    } while (0)
 
 namespace {
 
@@ -18,21 +20,17 @@ inline bool isBeforeDeadlineMs(uint32_t now, uint32_t deadline) {
     return static_cast<int32_t>(now - deadline) < 0;
 }
 
-}  // namespace
+} // namespace
 
 // AXS15231B touch read command sequence
 static const uint8_t AXS_TOUCH_READ_CMD[] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x0e, 0x0, 0x0, 0x0};
 
 TouchHandler::TouchHandler()
-    : i2cAddr_(AXS_TOUCH_ADDR)
-    , rstPin_(-1)
-    , touchActive_(false)
-    , lastTouchTime_(0)
-    , lastReleaseTime_(0)
-    , touchDebounceMs_(200)  // 200ms debounce for touch detection
-    , releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register
-{
-}
+    : i2cAddr_(AXS_TOUCH_ADDR), rstPin_(-1), touchActive_(false), lastTouchTime_(0), lastReleaseTime_(0),
+      touchDebounceMs_(200) // 200ms debounce for touch detection
+      ,
+      releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register
+{}
 
 bool TouchHandler::begin(int sda, int scl, uint8_t addr, int rst) {
     sdaPin_ = sda;
@@ -49,7 +47,7 @@ bool TouchHandler::begin(int sda, int scl, uint8_t addr, int rst) {
     // Initialize I2C with specified pins
     configureWireBus();
 
-    delay(30);   // Conservative I2C/touch controller settle
+    delay(30); // Conservative I2C/touch controller settle
 
     // Reset the touch controller if reset pin is available
     if (rstPin_ >= 0) {
@@ -123,8 +121,7 @@ void TouchHandler::recordI2cSuccess() {
 }
 
 bool TouchHandler::isI2cPollBackoffActive(uint32_t now) const {
-    return nextI2cPollAllowedMs_ != 0 &&
-           isBeforeDeadlineMs(now, nextI2cPollAllowedMs_);
+    return nextI2cPollAllowedMs_ != 0 && isBeforeDeadlineMs(now, nextI2cPollAllowedMs_);
 }
 
 void TouchHandler::maybeRecoverI2cBus(uint32_t now) {
@@ -132,8 +129,7 @@ void TouchHandler::maybeRecoverI2cBus(uint32_t now) {
         return;
     }
 
-    if (i2cRecoveryCount_ != 0 &&
-        !hasElapsedMs(now, lastRecoveryMs_, I2C_RECOVERY_COOLDOWN_MS)) {
+    if (i2cRecoveryCount_ != 0 && !hasElapsedMs(now, lastRecoveryMs_, I2C_RECOVERY_COOLDOWN_MS)) {
         return;
     }
 
@@ -182,8 +178,7 @@ void TouchHandler::recoverI2cBus(uint32_t now) {
     configureWireBus();
 
     Serial.printf("[Touch] I2C recovery #%lu after %u consecutive failures (%s)\n",
-                  static_cast<unsigned long>(i2cRecoveryCount_),
-                  static_cast<unsigned>(failuresBeforeRecovery),
+                  static_cast<unsigned long>(i2cRecoveryCount_), static_cast<unsigned>(failuresBeforeRecovery),
                   sdaReleased ? "sda_released" : "sda_still_low");
 }
 
@@ -207,7 +202,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     Wire.beginTransmission(i2cAddr_);
     Wire.write(AXS_TOUCH_READ_CMD, sizeof(AXS_TOUCH_READ_CMD));
     uint32_t i2cStart = micros();
-    uint8_t err = Wire.endTransmission(false);  // Keep connection open for read
+    uint8_t err = Wire.endTransmission(false); // Keep connection open for read
 
     if (err != 0) {
         recordI2cFailure(now, micros() - i2cStart);
@@ -226,7 +221,8 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
         return false;
     }
 
-    if (i2cElapsed > i2cMaxUs_) i2cMaxUs_ = i2cElapsed;
+    if (i2cElapsed > i2cMaxUs_)
+        i2cMaxUs_ = i2cElapsed;
     for (int i = 0; i < 32; i++) {
         if (!Wire.available()) {
             recordI2cFailure(now, micros() - i2cStart);
@@ -258,8 +254,8 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     // Check if we're still within debounce period from last tap
     if (!hasElapsedMs(now, lastTouchTime_, touchDebounceMs_)) {
-        touchActive_ = true;  // Keep tracking that finger is down
-        return false;  // Still in debounce period
+        touchActive_ = true; // Keep tracking that finger is down
+        return false;        // Still in debounce period
     }
 
     // Detect new touch (rising edge) - require finger to have been lifted
@@ -270,18 +266,18 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
             touchActive_ = true;
             lastTouchTime_ = now;
             TOUCH_LOGF("[Touch] TAP at (%d, %d)\n", x, y);
-            return true;  // New touch event
+            return true; // New touch event
         }
     }
 
-    touchActive_ = true;  // Finger is down
-    return false;  // Touch held, not a new tap
+    touchActive_ = true; // Finger is down
+    return false;        // Touch held, not a new tap
 }
 
 uint8_t TouchHandler::readRegister(uint8_t reg) {
     Wire.beginTransmission(i2cAddr_);
     Wire.write(reg);
-    uint8_t err = Wire.endTransmission(false);  // Send restart
+    uint8_t err = Wire.endTransmission(false); // Send restart
 
     if (err != 0) {
         TOUCH_LOGF("[Touch] I2C error writing reg 0x%02X: %d\n", reg, err);

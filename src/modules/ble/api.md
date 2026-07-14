@@ -50,11 +50,11 @@ Drains the queue, frames packets out of the byte stream, parses, and forwards re
 
 #### `uint32_t getLastParsedTimestamp() const`
 Timestamp (millis) of the most recent successful parse — used by display latency tracking.
-**Source:** `ble_queue_module.h:34`.
+**Source:** `ble_queue_module.h:30`.
 
 #### `bool consumeParsedFlag()`
 Returns true if at least one packet was successfully parsed since the last call, then clears the flag.
-**Source:** `ble_queue_module.h:37`.
+**Source:** `ble_queue_module.h:33`.
 
 #### `unsigned long getLastRxMillis() const`
 Timestamp of last received notification (regardless of parse outcome).
@@ -78,14 +78,14 @@ Injects dependencies.
 
 #### `bool process(unsigned long nowMs)`
 Runs one tick of state-tracking. Returns true if currently connected.
-**Source:** `connection_state_module.h:33`.
+**Source:** `connection_state_module.h:29`.
 
 ### Constants
 
 - `DATA_STALE_MS = 2000` — data considered stale after 2 s of no traffic.
 - `DATA_REQUEST_INTERVAL_MS = 1000` — re-request alert data every 1 s while stale.
 
-**Source:** `connection_state_module.h:46-47`.
+**Source:** `connection_state_module.h:42-43`.
 
 ## Class: `ConnectionRuntimeModule`
 
@@ -123,7 +123,7 @@ Two overloads; second accepts non-default config.
 
 #### `ConnectionRuntimeSnapshot process(unsigned long nowMs, unsigned long nowUs, unsigned long lastLoopUs, bool bootSplashHoldActive, unsigned long bootSplashHoldUntilMs, bool initialScanningScreenShown)`
 Builds the per-tick snapshot from current signals.
-**Source:** `connection_runtime_module.h:36-41`.
+**Source:** `connection_runtime_module.h:36-38`.
 
 ## Class: `ConnectionStateCadenceModule`
 

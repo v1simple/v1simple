@@ -5,43 +5,36 @@
 namespace {
 
 bool isRenderableAlert(const AlertData& alert) {
-    return alert.isValid &&
-           alert.band != BAND_NONE &&
-           (alert.band == BAND_LASER || alert.frequency != 0);
+    return alert.isValid && alert.band != BAND_NONE && (alert.band == BAND_LASER || alert.frequency != 0);
 }
 
 bool alertsEquivalent(const AlertData& lhs, const AlertData& rhs) {
-    return lhs.isValid == rhs.isValid &&
-           lhs.band == rhs.band &&
-           lhs.direction == rhs.direction &&
-           lhs.frontStrength == rhs.frontStrength &&
-           lhs.rearStrength == rhs.rearStrength &&
-           lhs.frequency == rhs.frequency &&
-           lhs.isPriority == rhs.isPriority;
+    return lhs.isValid == rhs.isValid && lhs.band == rhs.band && lhs.direction == rhs.direction &&
+           lhs.frontStrength == rhs.frontStrength && lhs.rearStrength == rhs.rearStrength &&
+           lhs.frequency == rhs.frequency && lhs.isPriority == rhs.isPriority;
 }
 
 Direction alpDirectionToV1Direction(AlpLaserDirection direction) {
     switch (direction) {
-        case AlpLaserDirection::FRONT:
-            return DIR_FRONT;
+    case AlpLaserDirection::FRONT:
+        return DIR_FRONT;
 
-        case AlpLaserDirection::REAR:
-            return DIR_REAR;
+    case AlpLaserDirection::REAR:
+        return DIR_REAR;
 
-        case AlpLaserDirection::UNKNOWN:
-        default:
-            return DIR_NONE;
+    case AlpLaserDirection::UNKNOWN:
+    default:
+        return DIR_NONE;
     }
 }
 
-DisplayState synthesizeAlpPrimaryState(const DisplayState& base,
-                                       const AlpLaserEvent& event) {
+DisplayState synthesizeAlpPrimaryState(const DisplayState& base, const AlpLaserEvent& event) {
     DisplayState state = base;
     const Direction v1Direction = alpDirectionToV1Direction(event.direction);
     state.activeBands = BAND_LASER;
     state.arrows = v1Direction;
     state.priorityArrow = v1Direction;
-    state.signalBars = 8;  // Laser = full local 8-slot meter
+    state.signalBars = 8; // Laser = full local 8-slot meter
     state.flashBits = 0;
     state.bandFlashBits = 0;
     // ALP is the authoritative source for laser alerts — it owns both the
@@ -102,9 +95,7 @@ AlertData firstRenderableFilteredAlert(const V1Snapshot& v1, bool suppressLaser)
     return AlertData{};
 }
 
-void appendFilteredV1Alerts(RenderFrame& frame,
-                            const V1Snapshot& v1,
-                            bool suppressLaser,
+void appendFilteredV1Alerts(RenderFrame& frame, const V1Snapshot& v1, bool suppressLaser,
                             const AlertData* skipPriority) {
     if (!v1.alerts || v1.alertCount <= 0) {
         return;
@@ -127,11 +118,9 @@ void appendFilteredV1Alerts(RenderFrame& frame,
     }
 }
 
-}  // namespace
+} // namespace
 
-RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1,
-                                         const AlpSnapshot& alp,
-                                         const V1Settings& /*settings*/,
+RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& /*settings*/,
                                          uint32_t /*nowMs*/) const {
     RenderFrame frame;
     frame.context = v1.state;
@@ -146,8 +135,7 @@ RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1,
     const bool hasFilteredPriority = isRenderableAlert(filteredPriority);
 
     if (hasAlpLive || hasAlpPersisted) {
-        frame.primaryKind = hasAlpLive ? RenderFramePrimaryKind::ALP_LIVE
-                                       : RenderFramePrimaryKind::ALP_PERSISTED;
+        frame.primaryKind = hasAlpLive ? RenderFramePrimaryKind::ALP_LIVE : RenderFramePrimaryKind::ALP_PERSISTED;
         frame.alpPrimary = hasAlpLive ? alp.event : alp.latchedEvent;
         frame.primaryState = synthesizeAlpPrimaryState(v1.state, frame.alpPrimary);
         appendFilteredV1Alerts(frame, v1, suppressV1Laser, nullptr);

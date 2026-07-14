@@ -56,8 +56,8 @@
         "description": "> barCount clamp drops exact max by one",
         "impact": "Signal bar strength off-by-one causes visual glitch at max bars",
         "file": "src/display_bands.cpp",
-        "search": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength > barCount) strength = barCount;",
-        "replace": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength >= barCount) strength = barCount - 1;",
+        "search": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength > barCount)\n        strength = barCount;",
+        "replace": "    uint8_t strength = std::max(frontStrength, rearStrength);\n    if (strength >= barCount)\n        strength = barCount - 1;",
         "tests": [
           "test_display_rendering_bands",
           "test_display"
@@ -153,8 +153,8 @@
         "description": "release debounce 100ms -> 99ms constant",
         "impact": "Touch release bouncing not fully debounced, rapid re-triggers possible",
         "file": "src/touch_handler.cpp",
-        "search": "    , releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register",
-        "replace": "    , releaseDebounceMs_(99) // 100ms of no-touch required before new tap can register",
+        "search": "      releaseDebounceMs_(100) // 100ms of no-touch required before new tap can register",
+        "replace": "      releaseDebounceMs_(99) // 100ms of no-touch required before new tap can register",
         "tests": [
           "test_touch_handler"
         ]

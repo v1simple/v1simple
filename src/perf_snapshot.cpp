@@ -112,16 +112,12 @@ static RuntimeSnapshotCaptureContext captureRuntimeSnapshotContext() {
     ctx.sdDmaStarvation = StorageManager::sdDmaStarvationCount.load(std::memory_order_relaxed);
     ctx.connectionCycleStateCode = sConnectionCycleStateCode.load(std::memory_order_relaxed);
     ctx.connectionCycleTimeInStateMs = sConnectionCycleTimeInStateMs.load(std::memory_order_relaxed);
-    ctx.connectionCycleTransitionsTotal =
-        sConnectionCycleTransitionsTotal.load(std::memory_order_relaxed);
-    ctx.connectionCycleTeardownDurationMs =
-        sConnectionCycleTeardownDurationMs.load(std::memory_order_relaxed);
-    ctx.connectionCycleObdRetryAttemptsTotal =
-        sConnectionCycleObdRetryAttemptsTotal.load(std::memory_order_relaxed);
+    ctx.connectionCycleTransitionsTotal = sConnectionCycleTransitionsTotal.load(std::memory_order_relaxed);
+    ctx.connectionCycleTeardownDurationMs = sConnectionCycleTeardownDurationMs.load(std::memory_order_relaxed);
+    ctx.connectionCycleObdRetryAttemptsTotal = sConnectionCycleObdRetryAttemptsTotal.load(std::memory_order_relaxed);
     ctx.connectionCycleWifiManualPhoneKicksTotal =
         sConnectionCycleWifiManualPhoneKicksTotal.load(std::memory_order_relaxed);
-    ctx.connectionCycleProxyNoClientLatched =
-        sConnectionCycleProxyNoClientLatched.load(std::memory_order_relaxed) != 0;
+    ctx.connectionCycleProxyNoClientLatched = sConnectionCycleProxyNoClientLatched.load(std::memory_order_relaxed) != 0;
     return ctx;
 }
 
@@ -202,36 +198,30 @@ static void resetPerfExtendedWindowPeaks() {
     perfExtended.minLargestBlock = UINT32_MAX;
 }
 
-static void capturePerfExtendedSnapshot(PerfExtendedSnapshot& snapshot,
-                                        const RuntimeSnapshotCaptureContext& ctx,
+static void capturePerfExtendedSnapshot(PerfExtendedSnapshot& snapshot, const RuntimeSnapshotCaptureContext& ctx,
                                         PerfRuntimeSnapshotMode mode) {
     portENTER_CRITICAL(&sPerfSnapshotMux);
-    if (mode == PerfRuntimeSnapshotMode::CaptureAndResetWindowPeaks &&
-        ctx.freeDmaCap < sDmaFreeCapMin) {
+    if (mode == PerfRuntimeSnapshotMode::CaptureAndResetWindowPeaks && ctx.freeDmaCap < sDmaFreeCapMin) {
         sDmaFreeCapMin = ctx.freeDmaCap;
     }
-    if (mode == PerfRuntimeSnapshotMode::CaptureAndResetWindowPeaks &&
-        ctx.largestDmaCap < sDmaLargestCapMin) {
+    if (mode == PerfRuntimeSnapshotMode::CaptureAndResetWindowPeaks && ctx.largestDmaCap < sDmaLargestCapMin) {
         sDmaLargestCapMin = ctx.largestDmaCap;
     }
     snapshot.dmaFreeMin = (sDmaFreeCapMin == UINT32_MAX) ? ctx.freeDmaCap : sDmaFreeCapMin;
-    snapshot.dmaLargestMin =
-        (sDmaLargestCapMin == UINT32_MAX) ? ctx.largestDmaCap : sDmaLargestCapMin;
+    snapshot.dmaLargestMin = (sDmaLargestCapMin == UINT32_MAX) ? ctx.largestDmaCap : sDmaLargestCapMin;
     snapshot.metrics = perfExtended;
 
     if (mode == PerfRuntimeSnapshotMode::CaptureAndResetWindowPeaks) {
         sPrevWindowLoopMaxUs.store(snapshot.metrics.loopMaxUs, std::memory_order_relaxed);
         sPrevWindowWifiMaxUs.store(snapshot.metrics.wifiMaxUs, std::memory_order_relaxed);
-        sPrevWindowBleProcessMaxUs.store(snapshot.metrics.bleProcessMaxUs,
-                                         std::memory_order_relaxed);
+        sPrevWindowBleProcessMaxUs.store(snapshot.metrics.bleProcessMaxUs, std::memory_order_relaxed);
         sPrevWindowDispPipeMaxUs.store(snapshot.metrics.dispPipeMaxUs, std::memory_order_relaxed);
         resetPerfExtendedWindowPeaks();
     }
     portEXIT_CRITICAL(&sPerfSnapshotMux);
 }
 
-static void populateFlatSnapshot(PerfSdSnapshot& flat,
-                                 const RuntimeSnapshotCaptureContext& ctx,
+static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCaptureContext& ctx,
                                  PerfRuntimeSnapshotMode mode) {
     flat = {};
     flat.millisTs = ctx.nowMs;
@@ -252,8 +242,7 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
     flat.reconn = perfCounters.reconnects.load(std::memory_order_relaxed);
 
     flat.alertPersistStarts = perfCounters.alertPersistStarts.load(std::memory_order_relaxed);
-    flat.alertPersistStartsSkippedActive =
-        perfCounters.alertPersistStartsSkippedActive.load(std::memory_order_relaxed);
+    flat.alertPersistStartsSkippedActive = perfCounters.alertPersistStartsSkippedActive.load(std::memory_order_relaxed);
     flat.alertPersistStartsSkippedInvalid =
         perfCounters.alertPersistStartsSkippedInvalid.load(std::memory_order_relaxed);
     flat.alertPersistExpires = perfCounters.alertPersistExpires.load(std::memory_order_relaxed);
@@ -307,16 +296,14 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
     const PerfExtendedMetrics& metrics = extended.metrics;
 
     flat.freeDmaMin = (metrics.minFreeDma == UINT32_MAX) ? ctx.freeDma : metrics.minFreeDma;
-    flat.largestDmaMin =
-        (metrics.minLargestDma == UINT32_MAX) ? ctx.largestDma : metrics.minLargestDma;
+    flat.largestDmaMin = (metrics.minLargestDma == UINT32_MAX) ? ctx.largestDma : metrics.minLargestDma;
     flat.bleState = bleClient.getBLEStateCode();
     flat.subscribeStep = bleClient.getSubscribeStepCode();
     flat.connectInProgress = bleClient.isConnectInProgress() ? 1 : 0;
     flat.asyncConnectPending = bleClient.isAsyncConnectPending() ? 1 : 0;
     flat.pendingDisconnectCleanup = bleClient.hasPendingDisconnectCleanup() ? 1 : 0;
     flat.proxyAdvertising = perfGetProxyAdvertisingState() != 0 ? 1 : 0;
-    flat.proxyAdvertisingLastTransitionReason =
-        static_cast<uint8_t>(perfGetProxyAdvertisingLastTransitionReason());
+    flat.proxyAdvertisingLastTransitionReason = static_cast<uint8_t>(perfGetProxyAdvertisingLastTransitionReason());
     flat.wifiPriorityMode = bleClient.isWifiPriority() ? 1 : 0;
 
     flat.dmaFreeMin = extended.dmaFreeMin;
@@ -342,10 +329,9 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
     const float selectedSpeedMph = speedSelectedValid ? ctx.speedStatus.selectedSpeedMph : 0.0f;
     flat.speedSourceSelected = static_cast<uint8_t>(ctx.speedStatus.selectedSource);
     flat.speedSourceValid = speedSelectedValid ? 1 : 0;
-    flat.speedSelectedMph_x10 =
-        (speedSelectedValid && std::isfinite(selectedSpeedMph) && selectedSpeedMph > 0.0f)
-            ? static_cast<uint32_t>(std::lround(selectedSpeedMph * 10.0f))
-            : 0;
+    flat.speedSelectedMph_x10 = (speedSelectedValid && std::isfinite(selectedSpeedMph) && selectedSpeedMph > 0.0f)
+                                    ? static_cast<uint32_t>(std::lround(selectedSpeedMph * 10.0f))
+                                    : 0;
     flat.speedSelectedAgeMs = speedSelectedValid ? ctx.speedStatus.selectedAgeMs : UINT32_MAX;
     flat.speedSourceSwitches = ctx.speedStatus.sourceSwitches;
     flat.speedNoSourceSelections = ctx.speedStatus.noSourceSelections;
@@ -366,24 +352,22 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
             flat.utcEpochMs = 0;
         }
         const GpsRuntimeStatus gpsStatus = gpsRuntimeModule.snapshot(nowMs);
-        flat.gpsSentencesOk           = gpsStatus.sentencesParsed;
+        flat.gpsSentencesOk = gpsStatus.sentencesParsed;
         flat.gpsSentencesChecksumFail = gpsStatus.checksumFailures;
-        flat.gpsSentencesUnknown      = gpsStatus.sentencesUnknown;
-        flat.gpsBufferOverruns        = gpsStatus.bufferOverruns;
-        flat.gpsBytesIn               = gpsStatus.bytesRead;
-        flat.gpsFirstFixMs            = gpsStatus.firstFixMs;
-        flat.gpsLastSentenceAgeMs     = (gpsStatus.lastSentenceTsMs != 0)
-                                            ? (nowMs - gpsStatus.lastSentenceTsMs)
-                                            : UINT32_MAX;
-        flat.gpsFixAgeMs              = gpsStatus.fixAgeMs;
-        flat.gpsStableFixAgeMs        = gpsStatus.stableFixAgeMs;
-        flat.gpsSatellitesInUse       = gpsStatus.satellites;
-        flat.gpsHdopX10               = std::isnan(gpsStatus.hdop)
-                                            ? UINT16_MAX
-                                            : static_cast<uint16_t>(gpsStatus.hdop * 10.0f + 0.5f);
-        flat.gpsHasFix                = gpsStatus.hasFix;
-        flat.gpsStableHasFix          = gpsStatus.stableHasFix;
-        flat.gpsEnableTransitions     = gpsStatus.enableTransitions;
+        flat.gpsSentencesUnknown = gpsStatus.sentencesUnknown;
+        flat.gpsBufferOverruns = gpsStatus.bufferOverruns;
+        flat.gpsBytesIn = gpsStatus.bytesRead;
+        flat.gpsFirstFixMs = gpsStatus.firstFixMs;
+        flat.gpsLastSentenceAgeMs =
+            (gpsStatus.lastSentenceTsMs != 0) ? (nowMs - gpsStatus.lastSentenceTsMs) : UINT32_MAX;
+        flat.gpsFixAgeMs = gpsStatus.fixAgeMs;
+        flat.gpsStableFixAgeMs = gpsStatus.stableFixAgeMs;
+        flat.gpsSatellitesInUse = gpsStatus.satellites;
+        flat.gpsHdopX10 =
+            std::isnan(gpsStatus.hdop) ? UINT16_MAX : static_cast<uint16_t>(gpsStatus.hdop * 10.0f + 0.5f);
+        flat.gpsHasFix = gpsStatus.hasFix;
+        flat.gpsStableHasFix = gpsStatus.stableHasFix;
+        flat.gpsEnableTransitions = gpsStatus.enableTransitions;
     }
     flat.wifiMaxUs = metrics.wifiMaxUs;
     flat.wifiHandleClientMaxUs = metrics.wifiHandleClientMaxUs;
@@ -411,16 +395,14 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
     flat.bleSubscribeMaxUs = metrics.bleSubscribeMaxUs;
     flat.dispPipeMaxUs = metrics.dispPipeMaxUs;
     flat.perfReportMaxUs = metrics.perfReportMaxUs;
-    flat.minLargestBlock =
-        (metrics.minLargestBlock == UINT32_MAX) ? 0 : metrics.minLargestBlock;
+    flat.minLargestBlock = (metrics.minLargestBlock == UINT32_MAX) ? 0 : metrics.minLargestBlock;
 
     flat.uiToScanCount = metrics.uiToScanCount;
     flat.uiToRestCount = metrics.uiToRestCount;
     flat.uiScanToRestCount = metrics.uiScanToRestCount;
     flat.uiFastScanExitCount = metrics.uiFastScanExitCount;
     flat.uiLastScanDwellMs = metrics.uiLastScanDwellMs;
-    flat.uiMinScanDwellMs =
-        (metrics.uiMinScanDwellMs == UINT32_MAX) ? 0 : metrics.uiMinScanDwellMs;
+    flat.uiMinScanDwellMs = (metrics.uiMinScanDwellMs == UINT32_MAX) ? 0 : metrics.uiMinScanDwellMs;
     flat.fadeDownCount = metrics.fadeDownCount;
     flat.fadeRestoreCount = metrics.fadeRestoreCount;
     flat.fadeSkipEqualCount = metrics.fadeSkipEqualCount;
@@ -530,8 +512,7 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat,
     flat.displayPreviewSteadyRenderMaxUs = metrics.displayPreviewSteadyRenderMaxUs;
 }
 
-static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
-                                    const RuntimeSnapshotCaptureContext& ctx,
+static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot, const RuntimeSnapshotCaptureContext& ctx,
                                     PerfRuntimeSnapshotMode mode) {
     snapshot = {};
     populateFlatSnapshot(snapshot.flat, ctx, mode);
@@ -539,21 +520,17 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
     snapshot.phoneCmdDrops = ctx.phoneCmdDropMetrics;
     snapshot.uptimeMs = ctx.nowMs;
     snapshot.connectionDispatchRuns = perfCounters.connectionDispatchRuns.load(std::memory_order_relaxed);
-    snapshot.connectionCadenceDisplayDue =
-        perfCounters.connectionCadenceDisplayDue.load(std::memory_order_relaxed);
+    snapshot.connectionCadenceDisplayDue = perfCounters.connectionCadenceDisplayDue.load(std::memory_order_relaxed);
     snapshot.connectionCadenceHoldScanDwell =
         perfCounters.connectionCadenceHoldScanDwell.load(std::memory_order_relaxed);
-    snapshot.connectionStateProcessRuns =
-        perfCounters.connectionStateProcessRuns.load(std::memory_order_relaxed);
-    snapshot.connectionStateWatchdogForces =
-        perfCounters.connectionStateWatchdogForces.load(std::memory_order_relaxed);
+    snapshot.connectionStateProcessRuns = perfCounters.connectionStateProcessRuns.load(std::memory_order_relaxed);
+    snapshot.connectionStateWatchdogForces = perfCounters.connectionStateWatchdogForces.load(std::memory_order_relaxed);
     snapshot.connectionStateProcessGapMaxMs =
         perfCounters.connectionStateProcessGapMaxMs.load(std::memory_order_relaxed);
     snapshot.bleScanStateEntries = perfCounters.bleScanStateEntries.load(std::memory_order_relaxed);
     snapshot.bleScanStateExits = perfCounters.bleScanStateExits.load(std::memory_order_relaxed);
     snapshot.bleScanTargetFound = perfCounters.bleScanTargetFound.load(std::memory_order_relaxed);
-    snapshot.bleScanNoTargetExits =
-        perfCounters.bleScanNoTargetExits.load(std::memory_order_relaxed);
+    snapshot.bleScanNoTargetExits = perfCounters.bleScanNoTargetExits.load(std::memory_order_relaxed);
     snapshot.bleScanDwellMaxMs = perfCounters.bleScanDwellMaxMs.load(std::memory_order_relaxed);
     snapshot.uuid128FallbackHits = perfCounters.uuid128FallbackHits.load(std::memory_order_relaxed);
     snapshot.wifiStopGraceful = perfCounters.wifiStopGraceful.load(std::memory_order_relaxed);
@@ -561,16 +538,14 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
     snapshot.wifiStopManual = perfCounters.wifiStopManual.load(std::memory_order_relaxed);
     snapshot.wifiStopTimeout = perfCounters.wifiStopTimeout.load(std::memory_order_relaxed);
     snapshot.wifiStopNoClients = perfCounters.wifiStopNoClients.load(std::memory_order_relaxed);
-    snapshot.wifiStopNoClientsAuto =
-        perfCounters.wifiStopNoClientsAuto.load(std::memory_order_relaxed);
+    snapshot.wifiStopNoClientsAuto = perfCounters.wifiStopNoClientsAuto.load(std::memory_order_relaxed);
     snapshot.wifiStopLowDma = perfCounters.wifiStopLowDma.load(std::memory_order_relaxed);
     snapshot.wifiStopPoweroff = perfCounters.wifiStopPoweroff.load(std::memory_order_relaxed);
     snapshot.wifiStopOther = perfCounters.wifiStopOther.load(std::memory_order_relaxed);
     snapshot.wifiApDropLowDma = perfCounters.wifiApDropLowDma.load(std::memory_order_relaxed);
     snapshot.wifiApDropIdleSta = perfCounters.wifiApDropIdleSta.load(std::memory_order_relaxed);
     snapshot.wifiApUpTransitions = perfCounters.wifiApUpTransitions.load(std::memory_order_relaxed);
-    snapshot.wifiApDownTransitions =
-        perfCounters.wifiApDownTransitions.load(std::memory_order_relaxed);
+    snapshot.wifiApDownTransitions = perfCounters.wifiApDownTransitions.load(std::memory_order_relaxed);
     snapshot.wifiProcessMaxUs = perfCounters.wifiProcessMaxUs.load(std::memory_order_relaxed);
     const BLEState bleState = bleClient.getBLEState();
     snapshot.bleState = bleStateToString(bleState);
@@ -582,7 +557,8 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
     snapshot.pendingDisconnectCleanup = snapshot.flat.pendingDisconnectCleanup != 0;
     snapshot.proxyAdvertising = snapshot.flat.proxyAdvertising != 0;
     snapshot.proxyAdvertisingOnTransitions = perfCounters.proxyAdvertisingOnTransitions.load(std::memory_order_relaxed);
-    snapshot.proxyAdvertisingOffTransitions = perfCounters.proxyAdvertisingOffTransitions.load(std::memory_order_relaxed);
+    snapshot.proxyAdvertisingOffTransitions =
+        perfCounters.proxyAdvertisingOffTransitions.load(std::memory_order_relaxed);
     snapshot.proxyAdvertisingLastTransitionMs = perfGetProxyAdvertisingLastTransitionMs();
     snapshot.proxyAdvertisingLastTransitionReasonCode = perfGetProxyAdvertisingLastTransitionReason();
     snapshot.proxyAdvertisingLastTransitionReason =
@@ -595,8 +571,7 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
     snapshot.wifiApActive = perfGetWifiApState();
     snapshot.wifiApLastTransitionMs = perfGetWifiApLastTransitionMs();
     snapshot.wifiApLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
-    snapshot.wifiApLastTransitionReason =
-        perfWifiApTransitionReasonName(snapshot.wifiApLastTransitionReasonCode);
+    snapshot.wifiApLastTransitionReason = perfWifiApTransitionReasonName(snapshot.wifiApLastTransitionReasonCode);
     snapshot.perfSdLockFail = perfCounters.perfSdLockFail.load(std::memory_order_relaxed);
     snapshot.perfSdDirFail = perfCounters.perfSdDirFail.load(std::memory_order_relaxed);
     snapshot.perfSdOpenFail = perfCounters.perfSdOpenFail.load(std::memory_order_relaxed);
@@ -648,7 +623,8 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
 
     snapshot.speedSource.selected = SpeedSourceSelector::sourceName(ctx.speedStatus.selectedSource);
     snapshot.speedSource.selectedValueValid = ctx.speedStatus.selectedSource != SpeedSource::NONE;
-    snapshot.speedSource.selectedMph = snapshot.speedSource.selectedValueValid ? ctx.speedStatus.selectedSpeedMph : 0.0f;
+    snapshot.speedSource.selectedMph =
+        snapshot.speedSource.selectedValueValid ? ctx.speedStatus.selectedSpeedMph : 0.0f;
     snapshot.speedSource.selectedAgeMs = snapshot.speedSource.selectedValueValid ? ctx.speedStatus.selectedAgeMs : 0;
     snapshot.speedSource.sourceSwitches = ctx.speedStatus.sourceSwitches;
     snapshot.speedSource.gpsSelections = ctx.speedStatus.gpsSelections;
@@ -695,13 +671,11 @@ static void populateRuntimeSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
     snapshot.connectionCycle.timeInStateMs = ctx.connectionCycleTimeInStateMs;
     snapshot.connectionCycle.teardownDurationMs = ctx.connectionCycleTeardownDurationMs;
     snapshot.connectionCycle.obdRetryAttemptsTotal = ctx.connectionCycleObdRetryAttemptsTotal;
-    snapshot.connectionCycle.wifiManualPhoneKicksTotal =
-        ctx.connectionCycleWifiManualPhoneKicksTotal;
-    snapshot.connectionCycle.proxyNoClientLatched =
-        ctx.connectionCycleProxyNoClientLatched;
+    snapshot.connectionCycle.wifiManualPhoneKicksTotal = ctx.connectionCycleWifiManualPhoneKicksTotal;
+    snapshot.connectionCycle.proxyNoClientLatched = ctx.connectionCycleProxyNoClientLatched;
 }
 
-}  // namespace
+} // namespace
 
 void captureSdSnapshot(PerfSdSnapshot& snapshot) {
     // loopTask has an 8 KB stack budget. Keep the periodic SD snapshot on the
@@ -723,8 +697,7 @@ void perfMetricsResetSessionWindow() {
     portEXIT_CRITICAL(&sPerfSnapshotMux);
 }
 
-void perfCaptureRuntimeMetricsSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
-                                       PerfRuntimeSnapshotMode mode) {
+void perfCaptureRuntimeMetricsSnapshot(PerfRuntimeMetricsSnapshot& snapshot, PerfRuntimeSnapshotMode mode) {
     const RuntimeSnapshotCaptureContext ctx = captureRuntimeSnapshotContext();
     populateRuntimeSnapshot(snapshot, ctx, mode);
 }

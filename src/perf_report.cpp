@@ -35,7 +35,7 @@ const char* stackLocationLabel(bool active, bool inPsram) {
     }
     return inPsram ? "psram" : "internal";
 }
-}  // namespace
+} // namespace
 
 static void reportTaskStackHighWaterMarks() {
 #ifndef UNIT_TEST
@@ -53,37 +53,30 @@ static void reportTaskStackHighWaterMarks() {
     const uint32_t audioPcmFreeBytes = audio_pcm_stack_high_water_bytes();
     const uint32_t audioSdFreeBytes = audio_sd_stack_high_water_bytes();
     const uint32_t discoveryFreeBytes = bleClient.discoveryTaskStackMinFreeBytes();
-    const uint32_t bleBondFreeBytes =
-        bleBondBackupWriterStats().writerStackMinFreeBytes;
+    const uint32_t bleBondFreeBytes = bleBondBackupWriterStats().writerStackMinFreeBytes;
     const bool audioPcmSampled = audioPcmFreeBytes != UINT32_MAX;
     const bool audioSdSampled = audioSdFreeBytes != UINT32_MAX;
     const bool discoverySampled = discoveryFreeBytes != UINT32_MAX;
     const bool bleBondSampled = bleBondFreeBytes != UINT32_MAX;
-    if (!perfActive && !alpActive && !obdActive &&
-        !audioPcmSampled && !audioSdSampled && !discoverySampled &&
+    if (!perfActive && !alpActive && !obdActive && !audioPcmSampled && !audioSdSampled && !discoverySampled &&
         !bleBondSampled) {
         return;
     }
 
-    Serial.printf("[STACK] aux_free_bytes perfSd=%lu/%s alpSd=%lu/%s obd=%lu/%s "
-                  "audioPcm=%lu/%s audioSd=%lu/%s discovery=%lu/%s bleBond=%lu/%s\n",
-                  static_cast<unsigned long>(
-                      perfActive ? perfSdLogger.writerStackHighWaterBytes() : 0),
-                  stackLocationLabel(perfActive, perfSdLogger.writerTaskStackInPsram()),
-                  static_cast<unsigned long>(
-                      alpActive ? alpSdLogger.writerStackHighWaterBytes() : 0),
-                  stackLocationLabel(alpActive, alpSdLogger.writerTaskStackInPsram()),
-                  static_cast<unsigned long>(
-                      obdActive ? obdRuntimeModule.transportStackHighWaterBytes() : 0),
-                  stackLocationLabel(obdActive, obdRuntimeModule.transportTaskStackInPsram()),
-                  static_cast<unsigned long>(audioPcmSampled ? audioPcmFreeBytes : 0),
-                  stackLocationLabel(audioPcmSampled, true),
-                  static_cast<unsigned long>(audioSdSampled ? audioSdFreeBytes : 0),
-                  stackLocationLabel(audioSdSampled, false),
-                  static_cast<unsigned long>(discoverySampled ? discoveryFreeBytes : 0),
-                  stackLocationLabel(discoverySampled, false),
-                  static_cast<unsigned long>(bleBondSampled ? bleBondFreeBytes : 0),
-                  stackLocationLabel(bleBondSampled, false));
+    Serial.printf(
+        "[STACK] aux_free_bytes perfSd=%lu/%s alpSd=%lu/%s obd=%lu/%s "
+        "audioPcm=%lu/%s audioSd=%lu/%s discovery=%lu/%s bleBond=%lu/%s\n",
+        static_cast<unsigned long>(perfActive ? perfSdLogger.writerStackHighWaterBytes() : 0),
+        stackLocationLabel(perfActive, perfSdLogger.writerTaskStackInPsram()),
+        static_cast<unsigned long>(alpActive ? alpSdLogger.writerStackHighWaterBytes() : 0),
+        stackLocationLabel(alpActive, alpSdLogger.writerTaskStackInPsram()),
+        static_cast<unsigned long>(obdActive ? obdRuntimeModule.transportStackHighWaterBytes() : 0),
+        stackLocationLabel(obdActive, obdRuntimeModule.transportTaskStackInPsram()),
+        static_cast<unsigned long>(audioPcmSampled ? audioPcmFreeBytes : 0), stackLocationLabel(audioPcmSampled, true),
+        static_cast<unsigned long>(audioSdSampled ? audioSdFreeBytes : 0), stackLocationLabel(audioSdSampled, false),
+        static_cast<unsigned long>(discoverySampled ? discoveryFreeBytes : 0),
+        stackLocationLabel(discoverySampled, false), static_cast<unsigned long>(bleBondSampled ? bleBondFreeBytes : 0),
+        stackLocationLabel(bleBondSampled, false));
 #endif
 }
 
@@ -110,8 +103,7 @@ bool perfMetricsCheckReport() {
 
     // Check DMA free threshold
     if (snapshot.freeDmaCap < 8192) {
-        Serial.printf("[HEAP] WARNING: DMA free critically low: %lu bytes\n",
-                      (unsigned long)snapshot.freeDmaCap);
+        Serial.printf("[HEAP] WARNING: DMA free critically low: %lu bytes\n", (unsigned long)snapshot.freeDmaCap);
     }
 
     if (perfSdLogger.isEnabled() && !perfMetricsIsSdCapturePaused()) {

@@ -1,8 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
-#include "packet_parser.h"  // For AlertData, Band, Direction
-#include "display.h"        // For V1Display, DisplayState
+#include "packet_parser.h" // For AlertData, Band, Direction
+#include "display.h"       // For V1Display, DisplayState
 
 /**
  * DisplayPreviewModule - comprehensive display test / color preview
@@ -36,7 +36,7 @@
  * - Touch real runtime modules (uses preview setters for ALP/OBD)
  */
 class DisplayPreviewModule {
-public:
+  public:
     DisplayPreviewModule();
 
     void begin(V1Display* display);
@@ -56,11 +56,11 @@ public:
     // ── Step table definition ────────────────────────────────────────
 
     // Flags for per-step indicator overrides
-    static constexpr uint8_t FLAG_NONE         = 0;
-    static constexpr uint8_t FLAG_MUTED        = (1 << 0);
-    static constexpr uint8_t FLAG_PHOTO        = (1 << 1);
-    static constexpr uint8_t FLAG_FLASH_ARROW  = (1 << 2);
-    static constexpr uint8_t FLAG_FLASH_BAND   = (1 << 3);
+    static constexpr uint8_t FLAG_NONE = 0;
+    static constexpr uint8_t FLAG_MUTED = (1 << 0);
+    static constexpr uint8_t FLAG_PHOTO = (1 << 1);
+    static constexpr uint8_t FLAG_FLASH_ARROW = (1 << 2);
+    static constexpr uint8_t FLAG_FLASH_BAND = (1 << 3);
 
     struct PreviewStep {
         // Primary alert
@@ -69,7 +69,7 @@ public:
         uint32_t freqMHz;
         uint8_t frontBars;
         uint8_t rearBars;
-        uint8_t flags;            // FLAG_* bitfield
+        uint8_t flags; // FLAG_* bitfield
 
         // Secondary alert context — band BAND_NONE means no secondary
         Band secBand;
@@ -86,13 +86,13 @@ public:
         uint8_t thirdRearBars;
 
         // Status overrides (-1 = don't change, use previous)
-        int8_t bogeyChar;         // Character for bogey counter (-1 = auto from alert count)
-        int8_t modeChar;          // 'A', 'l', 'L', 0=none, -1=don't change
-        int8_t profileSlot;       // 0-2 or -1=don't change
+        int8_t bogeyChar;   // Character for bogey counter (-1 = auto from alert count)
+        int8_t modeChar;    // 'A', 'l', 'L', 0=none, -1=don't change
+        int8_t profileSlot; // 0-2 or -1=don't change
 
         // ALP simulation: alpState < 0 means don't change
-        int8_t alpState;          // AlpState enum cast, -1=don't change
-        int8_t alpHbByte1;        // Heartbeat byte1 for LISTENING sub-state
+        int8_t alpState;   // AlpState enum cast, -1=don't change
+        int8_t alpHbByte1; // Heartbeat byte1 for LISTENING sub-state
 
         // OBD simulation: obdState < 0 means don't change
         // 0=off, 1=connected, 2=scanning, -1=don't change
@@ -175,12 +175,12 @@ public:
     int pinnedStep() const { return visualPinned_ ? visualPinnedStep_ : -1; }
     uint32_t pinnedRenderSeq() const { return visualPinnedRenderSeq_; }
 
-private:
+  private:
     static const PreviewStep STEPS[];
     static const int STEP_COUNT;
 
-    static constexpr uint32_t STEP_DURATION_MS = 2000;  // 2 seconds per step
-    static constexpr uint32_t PREVIEW_TAIL_MS  = 600;   // Extra time after last step
+    static constexpr uint32_t STEP_DURATION_MS = 2000; // 2 seconds per step
+    static constexpr uint32_t PREVIEW_TAIL_MS = 600;   // Extra time after last step
 
     V1Display* display_ = nullptr;
 
@@ -197,7 +197,7 @@ private:
     // Carry-forward state for indicators that persist across steps
     int8_t currentModeChar_ = 0;
     int8_t currentProfileSlot_ = 0;
-    int8_t currentAlpState_ = 0;    // AlpState::OFF
+    int8_t currentAlpState_ = 0; // AlpState::OFF
     int8_t currentAlpHb_ = 0;
     int8_t currentObdState_ = 0;
     int8_t currentBleState_ = 0;

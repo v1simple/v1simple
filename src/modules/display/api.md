@@ -174,7 +174,7 @@ ALP-side inputs — `AlpLaserEvent`, ownership flag (`ownsLaserDisplay`), persis
 
 #### `RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& settings, uint32_t nowMs) const`
 Pure composition. `RenderFrame` (defined in `include/render_frame.h`) is the union frame consumed by `V1Display`.
-**Source:** `render_frame_composer.h:23-26`.
+**Source:** `render_frame_composer.h:23-25`.
 
 ## Edge logging — `display_edge_log.{h,cpp}`
 

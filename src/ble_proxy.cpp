@@ -79,8 +79,7 @@ uint32_t V1BLEClient::getPhoneCmdDropsLockBusy() const {
 bool V1BLEClient::enqueueProxyCallbackEvent(const ProxyCallbackEvent& event) {
     taskENTER_CRITICAL(&proxyCallbackEventMux_);
     if (proxyCallbackEventQueueCount_ >= PROXY_CALLBACK_EVENT_QUEUE_DEPTH) {
-        proxyCallbackEventQueueHead_ =
-            (proxyCallbackEventQueueHead_ + 1) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
+        proxyCallbackEventQueueHead_ = (proxyCallbackEventQueueHead_ + 1) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
         proxyCallbackEventQueueCount_--;
     }
 
@@ -100,8 +99,7 @@ bool V1BLEClient::popProxyCallbackEvent(ProxyCallbackEvent& event) {
     }
 
     event = proxyCallbackEventQueue_[proxyCallbackEventQueueHead_];
-    proxyCallbackEventQueueHead_ =
-        (proxyCallbackEventQueueHead_ + 1) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
+    proxyCallbackEventQueueHead_ = (proxyCallbackEventQueueHead_ + 1) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
     proxyCallbackEventQueueCount_--;
     taskEXIT_CRITICAL(&proxyCallbackEventMux_);
     return true;
@@ -109,18 +107,15 @@ bool V1BLEClient::popProxyCallbackEvent(ProxyCallbackEvent& event) {
 
 void V1BLEClient::clearProxyAdvertisingSchedule() {
     proxyAdvertisingStartMs_ = 0;
-    proxyAdvertisingStartReasonCode_ =
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
+    proxyAdvertisingStartReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
 }
 
-void V1BLEClient::armProxyFastAdvertisingWindow(const uint32_t nowMs,
-                                                const uint32_t durationMs) {
+void V1BLEClient::armProxyFastAdvertisingWindow(const uint32_t nowMs, const uint32_t durationMs) {
     proxyFastAdvertisingUntilMs_ = nowMs + durationMs;
 }
 
 bool V1BLEClient::proxyFastAdvertisingActive(const uint32_t nowMs) const {
-    return proxyFastAdvertisingUntilMs_ != 0 &&
-           static_cast<int32_t>(nowMs - proxyFastAdvertisingUntilMs_) < 0;
+    return proxyFastAdvertisingUntilMs_ != 0 && static_cast<int32_t>(nowMs - proxyFastAdvertisingUntilMs_) < 0;
 }
 
 void V1BLEClient::applyProxyAdvertisingCadence(const bool fastCadence) {
@@ -139,8 +134,7 @@ void V1BLEClient::applyProxyAdvertisingCadence(const bool fastCadence) {
     proxyAdvertisingFastCadence_ = fastCadence;
 }
 
-void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs,
-                                                 const uint8_t reasonCode) {
+void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs, const uint8_t reasonCode) {
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     if (!pAdvertising || !pAdvertising->isAdvertising()) {
         return;
@@ -158,8 +152,7 @@ void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs,
     applyProxyAdvertisingCadence(fastCadence);
     if (NimBLEDevice::startAdvertising()) {
         perfRecordProxyAdvertisingTransition(true, reasonCode, nowMs);
-        Serial.printf("[BLE] Proxy advertising cadence=%s\n",
-                      fastCadence ? "fast" : "slow");
+        Serial.printf("[BLE] Proxy advertising cadence=%s\n", fastCadence ? "fast" : "slow");
     }
 }
 
@@ -174,8 +167,7 @@ void V1BLEClient::stopProxyAdvertisingFromMainLoop(uint8_t reasonCode) {
 }
 
 void V1BLEClient::stopProxyAdvertising() {
-    stopProxyAdvertisingFromMainLoop(
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
+    stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
 }
 
 bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
@@ -209,8 +201,7 @@ bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
     }
 
     clearProxyAdvertisingSchedule();
-    stopProxyAdvertisingFromMainLoop(
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
+    stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
     disconnectProxyPhones();
     proxyClientConnected_ = false;
     proxyEnabled_ = false;
@@ -236,12 +227,10 @@ void V1BLEClient::disconnectProxyPhones() {
 }
 
 bool V1BLEClient::isProxyFullyStopped() const {
-    NimBLEAdvertising* pAdv =
-        (proxyEnabled_ && proxyServerInitialized_) ? NimBLEDevice::getAdvertising() : nullptr;
+    NimBLEAdvertising* pAdv = (proxyEnabled_ && proxyServerInitialized_) ? NimBLEDevice::getAdvertising() : nullptr;
     const bool advertisingActive = pAdv && pAdv->isAdvertising();
     const bool phoneConnected =
-        (pServer_ && pServer_->getConnectedCount() > 0) ||
-        proxyClientConnected_.load(std::memory_order_relaxed);
+        (pServer_ && pServer_->getConnectedCount() > 0) || proxyClientConnected_.load(std::memory_order_relaxed);
     return !advertisingActive && !phoneConnected && proxyAdvertisingStartMs_ == 0;
 }
 
@@ -308,46 +297,40 @@ void V1BLEClient::adoptV1AdvertisedNameForProxy(const char* advertisedName) {
     if (proxyServerInitialized_) {
         configureProxyAdvertisingPayload(proxyName_.c_str());
     }
-    Serial.printf("[BLE] Proxy advertising name auto-set from V1: %s\n",
-                  proxyName_.c_str());
+    Serial.printf("[BLE] Proxy advertising name auto-set from V1: %s\n", proxyName_.c_str());
 }
 
 void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
     switch (event.type) {
-        case ProxyCallbackEventType::APP_CONNECTED:
-            if (pServer_ && pServer_->getConnectedCount() > 0) {
-                // Request Android-compatible connection parameters from the main loop.
-                pServer_->updateConnParams(event.connHandle, 12, 36, 0, 400);
-            }
-            setProxyClientConnected(true);
-            proxyFastAdvertisingUntilMs_ = 0;
-            proxySuppressedForObdHold_ = false;
-            proxyDisconnectRequestedByCoordinator_ = false;
-            proxySuppressedResumeReasonCode_ =
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
-            perfRecordProxyAdvertisingTransition(
-                false,
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopAppConnected),
-                static_cast<uint32_t>(millis()));
-            return;
+    case ProxyCallbackEventType::APP_CONNECTED:
+        if (pServer_ && pServer_->getConnectedCount() > 0) {
+            // Request Android-compatible connection parameters from the main loop.
+            pServer_->updateConnParams(event.connHandle, 12, 36, 0, 400);
+        }
+        setProxyClientConnected(true);
+        proxyFastAdvertisingUntilMs_ = 0;
+        proxySuppressedForObdHold_ = false;
+        proxyDisconnectRequestedByCoordinator_ = false;
+        proxySuppressedResumeReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
+        perfRecordProxyAdvertisingTransition(
+            false, static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopAppConnected),
+            static_cast<uint32_t>(millis()));
+        return;
 
-        case ProxyCallbackEventType::APP_DISCONNECTED:
-            proxyClientConnected_ = false;
-            proxyDisconnectRequestedByCoordinator_ = false;
-            clearProxyAdvertisingSchedule();
-            armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()),
-                                          PROXY_FAST_RECONNECT_WINDOW_MS);
-            return;
+    case ProxyCallbackEventType::APP_DISCONNECTED:
+        proxyClientConnected_ = false;
+        proxyDisconnectRequestedByCoordinator_ = false;
+        clearProxyAdvertisingSchedule();
+        armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_RECONNECT_WINDOW_MS);
+        return;
 
-        case ProxyCallbackEventType::V1_DISCONNECTED:
-            proxyClientConnected_ = false;
-            proxySuppressedForObdHold_ = false;
-            proxyDisconnectRequestedByCoordinator_ = false;
-            proxySuppressedResumeReasonCode_ =
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
-            stopProxyAdvertisingFromMainLoop(
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopV1Disconnect));
-            return;
+    case ProxyCallbackEventType::V1_DISCONNECTED:
+        proxyClientConnected_ = false;
+        proxySuppressedForObdHold_ = false;
+        proxyDisconnectRequestedByCoordinator_ = false;
+        proxySuppressedResumeReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
+        stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopV1Disconnect));
+        return;
     }
 }
 
@@ -401,19 +384,16 @@ bool V1BLEClient::allocateProxyQueues() {
         const size_t bytes = sizeof(ProxyPacket) * count;
         allocatedInPsram = false;
 
-        ProxyPacket* buffer = static_cast<ProxyPacket*>(
-            heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+        ProxyPacket* buffer = static_cast<ProxyPacket*>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
         if (buffer) {
             allocatedInPsram = true;
             memset(buffer, 0, bytes);
             return buffer;
         }
 
-        Serial.printf("[BLE] WARN: %s PSRAM allocation failed (%lu bytes), falling back to internal SRAM\n",
-                      label,
+        Serial.printf("[BLE] WARN: %s PSRAM allocation failed (%lu bytes), falling back to internal SRAM\n", label,
                       static_cast<unsigned long>(bytes));
-        buffer = static_cast<ProxyPacket*>(
-            heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
+        buffer = static_cast<ProxyPacket*>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
         if (buffer) {
             memset(buffer, 0, bytes);
         }
@@ -440,8 +420,7 @@ bool V1BLEClient::allocateProxyQueues() {
     proxyMetrics_.reset();
 
     Serial.printf("[BLE] Proxy queues allocated (proxy=%s phone=%s)\n",
-                  proxyQueueAllocatedInPsram ? "PSRAM" : "INTERNAL",
-                  phoneQueueAllocatedInPsram ? "PSRAM" : "INTERNAL");
+                  proxyQueueAllocatedInPsram ? "PSRAM" : "INTERNAL", phoneQueueAllocatedInPsram ? "PSRAM" : "INTERNAL");
     return true;
 }
 
@@ -487,44 +466,31 @@ bool V1BLEClient::initProxyServer(const char* deviceName) {
     // 92A0BAD4 - Write with response
 
     // Primary notify characteristic - display/alert data
-    pProxyNotifyChar_ = pProxyService_->createCharacteristic(
-        "92A0B2CE-9E05-11E2-AA59-F23C91AEC05E",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-    );
+    pProxyNotifyChar_ = pProxyService_->createCharacteristic("92A0B2CE-9E05-11E2-AA59-F23C91AEC05E",
+                                                             NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
     // V1 out LONG - notify (stores responses like voltage)
-    pProxyNotifyLongChar_ = pProxyService_->createCharacteristic(
-        "92A0B4E0-9E05-11E2-AA59-F23C91AEC05E",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-    );
+    pProxyNotifyLongChar_ = pProxyService_->createCharacteristic("92A0B4E0-9E05-11E2-AA59-F23C91AEC05E",
+                                                                 NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
     // Client write SHORT - primary command input
-    pProxyWriteChar_ = pProxyService_->createCharacteristic(
-        "92A0B6D4-9E05-11E2-AA59-F23C91AEC05E",
-        NIMBLE_PROPERTY::WRITE_NR
-    );
+    pProxyWriteChar_ =
+        pProxyService_->createCharacteristic("92A0B6D4-9E05-11E2-AA59-F23C91AEC05E", NIMBLE_PROPERTY::WRITE_NR);
 
     // Client write LONG
-    NimBLECharacteristic* pWriteLong = pProxyService_->createCharacteristic(
-        "92A0B8D2-9E05-11E2-AA59-F23C91AEC05E",
-        NIMBLE_PROPERTY::WRITE_NR
-    );
+    NimBLECharacteristic* pWriteLong =
+        pProxyService_->createCharacteristic("92A0B8D2-9E05-11E2-AA59-F23C91AEC05E", NIMBLE_PROPERTY::WRITE_NR);
 
     // Additional notify characteristic - compatibility stub.
     // The V1 Gen2 exposes this UUID, and some companion apps (V1Driver, JBV1, etc.)
     // verify its presence when enumerating the V1 service. The proxy never notifies
     // on it, but the characteristic must exist in the attribute table for those
     // apps to recognize this device as a V1. Do not remove.
-    pProxyService_->createCharacteristic(
-        V1_NOTIFY_ALT_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-    );
+    pProxyService_->createCharacteristic(V1_NOTIFY_ALT_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
     // Alternate write with response
     NimBLECharacteristic* pWriteAlt = pProxyService_->createCharacteristic(
-        "92A0BAD4-9E05-11E2-AA59-F23C91AEC05E",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
+        "92A0BAD4-9E05-11E2-AA59-F23C91AEC05E", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
 
     // 4. Set characteristic callbacks - all write chars forward to V1
     pProxyWriteCallbacks_.reset(new ProxyWriteCallbacks(this));
@@ -556,8 +522,7 @@ bool V1BLEClient::initProxyServer(const char* deviceName) {
 }
 
 bool V1BLEClient::isProxyAdvertising() const {
-    return proxyEnabled_ && proxyServerInitialized_ &&
-           NimBLEDevice::getAdvertising()->isAdvertising();
+    return proxyEnabled_ && proxyServerInitialized_ && NimBLEDevice::getAdvertising()->isAdvertising();
 }
 
 bool V1BLEClient::forceProxyAdvertising(bool enable, uint8_t reasonCode) {
@@ -565,12 +530,10 @@ bool V1BLEClient::forceProxyAdvertising(bool enable, uint8_t reasonCode) {
         return false;
     }
 
-    const uint8_t startReason = reasonCode == 0
-                                    ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartDirect)
-                                    : reasonCode;
-    const uint8_t stopReason = reasonCode == 0
-                                   ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther)
-                                   : reasonCode;
+    const uint8_t startReason =
+        reasonCode == 0 ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartDirect) : reasonCode;
+    const uint8_t stopReason =
+        reasonCode == 0 ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther) : reasonCode;
 
     if (enable) {
         if (!connected_.load(std::memory_order_relaxed)) {
@@ -578,8 +541,7 @@ bool V1BLEClient::forceProxyAdvertising(bool enable, uint8_t reasonCode) {
         }
         // Explicit debug/test control refreshes fast discovery so transition
         // drive flaps do not inherit a stale boot-time cadence.
-        armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()),
-                                      PROXY_FAST_START_WINDOW_MS);
+        armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_START_WINDOW_MS);
         startProxyAdvertising(startReason, true);
         return isProxyAdvertising();
     }
@@ -647,7 +609,8 @@ void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t so
 
     if (!proxyQueue_) {
         proxyMetrics_.dropCount++;
-        if (bleNotifyMutex_) xSemaphoreGive(bleNotifyMutex_);
+        if (bleNotifyMutex_)
+            xSemaphoreGive(bleNotifyMutex_);
         return;
     }
 
@@ -688,7 +651,7 @@ int V1BLEClient::processProxyQueue() {
     // HOT PATH: try-lock only, skip if busy (another iteration will process)
     SemaphoreGuard lock(bleNotifyMutex_, 0);
     if (!lock.locked()) {
-        return 0;  // Skip this cycle, try again next loop (counter incremented in SemaphoreGuard)
+        return 0; // Skip this cycle, try again next loop (counter incremented in SemaphoreGuard)
     }
 
     int sent = 0;
@@ -779,7 +742,7 @@ int V1BLEClient::processPhoneCommandQueue() {
 
     // Try pending packet first (from previous pacing/lock deferral)
     if (hasPending) {
-        configASSERT(pendingPkt.length <= sizeof(pendingPkt.data));  // Belt-and-suspenders: validated at enqueue
+        configASSERT(pendingPkt.length <= sizeof(pendingPkt.data)); // Belt-and-suspenders: validated at enqueue
         memcpy(pktCopy.data, pendingPkt.data, pendingPkt.length);
         pktCopy.length = pendingPkt.length;
         charUUID = pendingCharUUID;
@@ -788,7 +751,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         // Dequeue one packet under lock
         if (phone2v1QueueCount_ > 0) {
             ProxyPacket& pkt = phone2v1Queue_[phone2v1QueueTail_];
-            configASSERT(pkt.length <= sizeof(pkt.data));  // Belt-and-suspenders: validated at enqueue
+            configASSERT(pkt.length <= sizeof(pkt.data)); // Belt-and-suspenders: validated at enqueue
             memcpy(pktCopy.data, pkt.data, pkt.length);
             pktCopy.length = pkt.length;
             charUUID = pkt.charUUID;
@@ -826,7 +789,7 @@ int V1BLEClient::processPhoneCommandQueue() {
                 result = SendResult::SENT;
             } else {
                 PERF_INC(cmdBleBusy);
-                result = SendResult::NOT_YET;  // Transient - retry
+                result = SendResult::NOT_YET; // Transient - retry
             }
         } else {
             result = sendCommandWithResult(pktCopy.data, pktCopy.length);
@@ -846,7 +809,7 @@ int V1BLEClient::processPhoneCommandQueue() {
                 result = SendResult::SENT;
             } else {
                 PERF_INC(cmdBleBusy);
-                result = SendResult::NOT_YET;  // Transient - retry
+                result = SendResult::NOT_YET; // Transient - retry
             }
         } else {
             result = sendCommandWithResult(pktCopy.data, pktCopy.length);
@@ -854,22 +817,22 @@ int V1BLEClient::processPhoneCommandQueue() {
     }
 
     switch (result) {
-        case SendResult::SENT:
-            // Successfully sent - clear pending state
-            hasPending = false;
-            return 1;
-        case SendResult::NOT_YET:
-            // Pacing: store in pending for next iteration
-            memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
-            pendingPkt.length = pktCopy.length;
-            pendingCharUUID = charUUID;
-            hasPending = true;
-            return 0;
-        case SendResult::FAILED:
-        default:
-            // Hard failure: drop packet, clear pending, count error
-            hasPending = false;
-            PERF_INC(phoneCmdDropsBleFail);
-            return 0;
+    case SendResult::SENT:
+        // Successfully sent - clear pending state
+        hasPending = false;
+        return 1;
+    case SendResult::NOT_YET:
+        // Pacing: store in pending for next iteration
+        memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
+        pendingPkt.length = pktCopy.length;
+        pendingCharUUID = charUUID;
+        hasPending = true;
+        return 0;
+    case SendResult::FAILED:
+    default:
+        // Hard failure: drop packet, clear pending, count error
+        hasPending = false;
+        PERF_INC(phoneCmdDropsBleFail);
+        return 0;
     }
 }

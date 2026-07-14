@@ -29,11 +29,10 @@ struct DisplayFontManager {
     bool segment7Ready = false;
 
     // --- Top-counter glyph bounds cache ---
-    static constexpr int16_t BOUNDS_INVALID =
-        static_cast<int16_t>(-32768);
+    static constexpr int16_t BOUNDS_INVALID = static_cast<int16_t>(-32768);
     int16_t topCounterXMin[128][2];
     int16_t topCounterXMax[128][2];
-    bool    topCounterBoundsReady = false;
+    bool topCounterBoundsReady = false;
 
     // --- Lifecycle ---
 
@@ -55,27 +54,23 @@ struct DisplayFontManager {
 
     /// Small fixed-size LRU cache for OFR text widths.
     struct WidthCacheEntry {
-        bool valid    = false;
+        bool valid = false;
         char text[16] = {0};
-        int  width    = 0;
+        int width = 0;
     };
 
     /// Look up (or compute + cache) the pixel width of @p text at @p fontSize.
     /// The cache is stored in the caller's local static array so that each
     /// rendering path maintains its own independent history.
     template <size_t N>
-    static int cachedTextWidth(OpenFontRender& renderer, int fontSize,
-                               const char* text,
-                               WidthCacheEntry (&cache)[N],
+    static int cachedTextWidth(OpenFontRender& renderer, int fontSize, const char* text, WidthCacheEntry (&cache)[N],
                                uint8_t& nextSlot);
-
 };
 
 // --- Template implementation (must be visible to all callers) ---
 template <size_t N>
-int DisplayFontManager::cachedTextWidth(
-        OpenFontRender& renderer, int fontSize, const char* text,
-        WidthCacheEntry (&cache)[N], uint8_t& nextSlot) {
+int DisplayFontManager::cachedTextWidth(OpenFontRender& renderer, int fontSize, const char* text,
+                                        WidthCacheEntry (&cache)[N], uint8_t& nextSlot) {
 
     for (size_t i = 0; i < N; ++i) {
         if (cache[i].valid && strcmp(cache[i].text, text) == 0) {
@@ -84,8 +79,7 @@ int DisplayFontManager::cachedTextWidth(
     }
 
     renderer.setFontSize(fontSize);
-    FT_BBox bbox = renderer.calculateBoundingBox(
-        0, 0, fontSize, Align::Left, Layout::Horizontal, text);
+    FT_BBox bbox = renderer.calculateBoundingBox(0, 0, fontSize, Align::Left, Layout::Horizontal, text);
     int width = bbox.xMax - bbox.xMin;
 
     WidthCacheEntry& dst = cache[nextSlot];

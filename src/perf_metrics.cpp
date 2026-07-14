@@ -54,8 +54,7 @@ std::atomic<uint32_t> sConnectionCycleTeardownDurationMs{0};
 std::atomic<uint32_t> sConnectionCycleObdRetryAttemptsTotal{0};
 std::atomic<uint32_t> sConnectionCycleWifiManualPhoneKicksTotal{0};
 std::atomic<uint8_t> sConnectionCycleProxyNoClientLatched{0};
-static std::atomic<uint8_t> sDisplayRenderScenario{
-    static_cast<uint8_t>(PerfDisplayRenderScenario::None)};
+static std::atomic<uint8_t> sDisplayRenderScenario{static_cast<uint8_t>(PerfDisplayRenderScenario::None)};
 static std::atomic<bool> sSdCapturePaused{false};
 portMUX_TYPE sPerfSnapshotMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -75,8 +74,7 @@ void perfMetricsInit() {
     sConnectionCycleObdRetryAttemptsTotal.store(0, std::memory_order_relaxed);
     sConnectionCycleWifiManualPhoneKicksTotal.store(0, std::memory_order_relaxed);
     sConnectionCycleProxyNoClientLatched.store(0, std::memory_order_relaxed);
-    sDisplayRenderScenario.store(
-        static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
+    sDisplayRenderScenario.store(static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
     sSdCapturePaused.store(false, std::memory_order_relaxed);
 #if PERF_METRICS
     perfLatency.reset();
@@ -103,8 +101,7 @@ void perfMetricsReset() {
     sConnectionCycleObdRetryAttemptsTotal.store(0, std::memory_order_relaxed);
     sConnectionCycleWifiManualPhoneKicksTotal.store(0, std::memory_order_relaxed);
     sConnectionCycleProxyNoClientLatched.store(0, std::memory_order_relaxed);
-    sDisplayRenderScenario.store(
-        static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
+    sDisplayRenderScenario.store(static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
     sSdCapturePaused.store(false, std::memory_order_relaxed);
 #if PERF_METRICS
     perfLatency.reset();
@@ -112,82 +109,79 @@ void perfMetricsReset() {
 }
 
 namespace {
-static constexpr uint32_t kLatencyBucketsMs[PerfHistogramMs::kBucketCount] = {
-    1, 2, 5, 10, 20, 50, 100, 200, 500, 1000
-};
+static constexpr uint32_t kLatencyBucketsMs[PerfHistogramMs::kBucketCount] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000};
 // Keep aligned with UI scan dwell target so "fast exit" remains actionable.
 static constexpr uint32_t kFastScanExitThresholdMs = 400;
 
 static PerfDisplayRenderScenario currentDisplayRenderScenario() {
-    return static_cast<PerfDisplayRenderScenario>(
-        sDisplayRenderScenario.load(std::memory_order_relaxed));
+    return static_cast<PerfDisplayRenderScenario>(sDisplayRenderScenario.load(std::memory_order_relaxed));
 }
 
 static void recordDisplayScenarioRenderCount(PerfDisplayRenderScenario scenario) {
     switch (scenario) {
-        case PerfDisplayRenderScenario::Live:
-            perfExtended.displayLiveScenarioRenderCount++;
-            break;
-        case PerfDisplayRenderScenario::Resting:
-            perfExtended.displayRestingScenarioRenderCount++;
-            break;
-        case PerfDisplayRenderScenario::Persisted:
-            perfExtended.displayPersistedScenarioRenderCount++;
-            break;
-        case PerfDisplayRenderScenario::PreviewFirstFrame:
-        case PerfDisplayRenderScenario::PreviewSteadyFrame:
-            perfExtended.displayPreviewScenarioRenderCount++;
-            break;
-        case PerfDisplayRenderScenario::Restore:
-            perfExtended.displayRestoreScenarioRenderCount++;
-            break;
-        case PerfDisplayRenderScenario::None:
-        default:
-            break;
+    case PerfDisplayRenderScenario::Live:
+        perfExtended.displayLiveScenarioRenderCount++;
+        break;
+    case PerfDisplayRenderScenario::Resting:
+        perfExtended.displayRestingScenarioRenderCount++;
+        break;
+    case PerfDisplayRenderScenario::Persisted:
+        perfExtended.displayPersistedScenarioRenderCount++;
+        break;
+    case PerfDisplayRenderScenario::PreviewFirstFrame:
+    case PerfDisplayRenderScenario::PreviewSteadyFrame:
+        perfExtended.displayPreviewScenarioRenderCount++;
+        break;
+    case PerfDisplayRenderScenario::Restore:
+        perfExtended.displayRestoreScenarioRenderCount++;
+        break;
+    case PerfDisplayRenderScenario::None:
+    default:
+        break;
     }
 }
 
 static void recordDisplayScenarioRenderMax(PerfDisplayRenderScenario scenario, uint32_t us) {
     switch (scenario) {
-        case PerfDisplayRenderScenario::Live:
-            if (us > perfExtended.displayLiveRenderMaxUs) {
-                perfExtended.displayLiveRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::Resting:
-            if (us > perfExtended.displayRestingRenderMaxUs) {
-                perfExtended.displayRestingRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::Persisted:
-            if (us > perfExtended.displayPersistedRenderMaxUs) {
-                perfExtended.displayPersistedRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::PreviewFirstFrame:
-            if (us > perfExtended.displayPreviewRenderMaxUs) {
-                perfExtended.displayPreviewRenderMaxUs = us;
-            }
-            if (us > perfExtended.displayPreviewFirstRenderMaxUs) {
-                perfExtended.displayPreviewFirstRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::PreviewSteadyFrame:
-            if (us > perfExtended.displayPreviewRenderMaxUs) {
-                perfExtended.displayPreviewRenderMaxUs = us;
-            }
-            if (us > perfExtended.displayPreviewSteadyRenderMaxUs) {
-                perfExtended.displayPreviewSteadyRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::Restore:
-            if (us > perfExtended.displayRestoreRenderMaxUs) {
-                perfExtended.displayRestoreRenderMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderScenario::None:
-        default:
-            break;
+    case PerfDisplayRenderScenario::Live:
+        if (us > perfExtended.displayLiveRenderMaxUs) {
+            perfExtended.displayLiveRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::Resting:
+        if (us > perfExtended.displayRestingRenderMaxUs) {
+            perfExtended.displayRestingRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::Persisted:
+        if (us > perfExtended.displayPersistedRenderMaxUs) {
+            perfExtended.displayPersistedRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::PreviewFirstFrame:
+        if (us > perfExtended.displayPreviewRenderMaxUs) {
+            perfExtended.displayPreviewRenderMaxUs = us;
+        }
+        if (us > perfExtended.displayPreviewFirstRenderMaxUs) {
+            perfExtended.displayPreviewFirstRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::PreviewSteadyFrame:
+        if (us > perfExtended.displayPreviewRenderMaxUs) {
+            perfExtended.displayPreviewRenderMaxUs = us;
+        }
+        if (us > perfExtended.displayPreviewSteadyRenderMaxUs) {
+            perfExtended.displayPreviewSteadyRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::Restore:
+        if (us > perfExtended.displayRestoreRenderMaxUs) {
+            perfExtended.displayRestoreRenderMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderScenario::None:
+    default:
+        break;
     }
 }
 
@@ -208,29 +202,21 @@ static void addLatencySample(PerfHistogramMs& hist, uint32_t ms) {
 }
 } // namespace
 
-void perfSetConnectionCycleSnapshot(uint8_t stateCode,
-                                    uint32_t timeInStateMs,
-                                    uint32_t transitionsTotal,
-                                    uint32_t teardownDurationMs,
-                                    uint32_t obdRetryAttemptsTotal,
-                                    uint32_t wifiManualPhoneKicksTotal,
-                                    bool proxyNoClientLatched) {
+void perfSetConnectionCycleSnapshot(uint8_t stateCode, uint32_t timeInStateMs, uint32_t transitionsTotal,
+                                    uint32_t teardownDurationMs, uint32_t obdRetryAttemptsTotal,
+                                    uint32_t wifiManualPhoneKicksTotal, bool proxyNoClientLatched) {
     sConnectionCycleStateCode.store(stateCode, std::memory_order_relaxed);
     sConnectionCycleTimeInStateMs.store(timeInStateMs, std::memory_order_relaxed);
     sConnectionCycleTransitionsTotal.store(transitionsTotal, std::memory_order_relaxed);
     sConnectionCycleTeardownDurationMs.store(teardownDurationMs, std::memory_order_relaxed);
-    sConnectionCycleObdRetryAttemptsTotal.store(obdRetryAttemptsTotal,
-                                                std::memory_order_relaxed);
-    sConnectionCycleWifiManualPhoneKicksTotal.store(wifiManualPhoneKicksTotal,
-                                                    std::memory_order_relaxed);
-    sConnectionCycleProxyNoClientLatched.store(proxyNoClientLatched ? 1 : 0,
-                                               std::memory_order_relaxed);
+    sConnectionCycleObdRetryAttemptsTotal.store(obdRetryAttemptsTotal, std::memory_order_relaxed);
+    sConnectionCycleWifiManualPhoneKicksTotal.store(wifiManualPhoneKicksTotal, std::memory_order_relaxed);
+    sConnectionCycleProxyNoClientLatched.store(proxyNoClientLatched ? 1 : 0, std::memory_order_relaxed);
 }
 
 void perfRecordNotifyToDisplayMs(uint32_t ms) {
     addLatencySample(perfExtended.notifyToDisplayMs, ms);
 }
-
 
 void perfRecordLoopJitterUs(uint32_t us) {
     if (us > perfExtended.loopMaxUs) {
@@ -454,123 +440,122 @@ void perfRecordDisplayScenarioRenderUs(uint32_t us) {
 
 void perfRecordDisplayRenderPath(PerfDisplayRenderPath path) {
     switch (path) {
-        case PerfDisplayRenderPath::Full:
-            perfExtended.displayFullRenderCount++;
-            break;
-        case PerfDisplayRenderPath::RestingFull:
-            perfExtended.displayRestingFullRenderCount++;
-            break;
-        case PerfDisplayRenderPath::RestingIncremental:
-            perfExtended.displayRestingIncrementalRenderCount++;
-            break;
-        case PerfDisplayRenderPath::Persisted:
-            perfExtended.displayPersistedRenderCount++;
-            break;
-        case PerfDisplayRenderPath::Preview:
-            perfExtended.displayPreviewRenderCount++;
-            break;
-        case PerfDisplayRenderPath::Restore:
-            perfExtended.displayRestoreRenderCount++;
-            break;
-        default:
-            break;
+    case PerfDisplayRenderPath::Full:
+        perfExtended.displayFullRenderCount++;
+        break;
+    case PerfDisplayRenderPath::RestingFull:
+        perfExtended.displayRestingFullRenderCount++;
+        break;
+    case PerfDisplayRenderPath::RestingIncremental:
+        perfExtended.displayRestingIncrementalRenderCount++;
+        break;
+    case PerfDisplayRenderPath::Persisted:
+        perfExtended.displayPersistedRenderCount++;
+        break;
+    case PerfDisplayRenderPath::Preview:
+        perfExtended.displayPreviewRenderCount++;
+        break;
+    case PerfDisplayRenderPath::Restore:
+        perfExtended.displayRestoreRenderCount++;
+        break;
+    default:
+        break;
     }
 }
 
 void perfRecordDisplayRedrawReason(PerfDisplayRedrawReason reason) {
     switch (reason) {
-        case PerfDisplayRedrawReason::FirstRun:
-            perfExtended.displayRedrawReasonFirstRunCount++;
-            break;
-        case PerfDisplayRedrawReason::EnterLive:
-            perfExtended.displayRedrawReasonEnterLiveCount++;
-            break;
-        case PerfDisplayRedrawReason::LeaveLive:
-            perfExtended.displayRedrawReasonLeaveLiveCount++;
-            break;
-        case PerfDisplayRedrawReason::LeavePersisted:
-            perfExtended.displayRedrawReasonLeavePersistedCount++;
-            break;
-        case PerfDisplayRedrawReason::ForceRedraw:
-            perfExtended.displayRedrawReasonForceRedrawCount++;
-            break;
-        case PerfDisplayRedrawReason::FrequencyChange:
-            perfExtended.displayRedrawReasonFrequencyChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::BandSetChange:
-            perfExtended.displayRedrawReasonBandSetChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::ArrowChange:
-            perfExtended.displayRedrawReasonArrowChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::SignalBarChange:
-            perfExtended.displayRedrawReasonSignalBarChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::VolumeChange:
-            perfExtended.displayRedrawReasonVolumeChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::BogeyCounterChange:
-            perfExtended.displayRedrawReasonBogeyCounterChangeCount++;
-            break;
-        case PerfDisplayRedrawReason::RssiRefresh:
-            perfExtended.displayRedrawReasonRssiRefreshCount++;
-            break;
-        case PerfDisplayRedrawReason::FlashTick:
-            perfExtended.displayRedrawReasonFlashTickCount++;
-            break;
-        case PerfDisplayRedrawReason::FullFlushForRedraw:
-            perfExtended.displayRedrawReasonFullFlushForRedrawCount++;
-            break;
-        case PerfDisplayRedrawReason::CacheHitSkipFlush:
-            perfExtended.displayRedrawReasonCacheHitSkipFlushCount++;
-            break;
-        case PerfDisplayRedrawReason::UnionExceedsCap:
-            perfExtended.displayRedrawReasonUnionExceedsCapCount++;
-            break;
-        case PerfDisplayRedrawReason::PartialRegionFlush:
-            perfExtended.displayRedrawReasonPartialRegionFlushCount++;
-            break;
-        default:
-            break;
+    case PerfDisplayRedrawReason::FirstRun:
+        perfExtended.displayRedrawReasonFirstRunCount++;
+        break;
+    case PerfDisplayRedrawReason::EnterLive:
+        perfExtended.displayRedrawReasonEnterLiveCount++;
+        break;
+    case PerfDisplayRedrawReason::LeaveLive:
+        perfExtended.displayRedrawReasonLeaveLiveCount++;
+        break;
+    case PerfDisplayRedrawReason::LeavePersisted:
+        perfExtended.displayRedrawReasonLeavePersistedCount++;
+        break;
+    case PerfDisplayRedrawReason::ForceRedraw:
+        perfExtended.displayRedrawReasonForceRedrawCount++;
+        break;
+    case PerfDisplayRedrawReason::FrequencyChange:
+        perfExtended.displayRedrawReasonFrequencyChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::BandSetChange:
+        perfExtended.displayRedrawReasonBandSetChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::ArrowChange:
+        perfExtended.displayRedrawReasonArrowChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::SignalBarChange:
+        perfExtended.displayRedrawReasonSignalBarChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::VolumeChange:
+        perfExtended.displayRedrawReasonVolumeChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::BogeyCounterChange:
+        perfExtended.displayRedrawReasonBogeyCounterChangeCount++;
+        break;
+    case PerfDisplayRedrawReason::RssiRefresh:
+        perfExtended.displayRedrawReasonRssiRefreshCount++;
+        break;
+    case PerfDisplayRedrawReason::FlashTick:
+        perfExtended.displayRedrawReasonFlashTickCount++;
+        break;
+    case PerfDisplayRedrawReason::FullFlushForRedraw:
+        perfExtended.displayRedrawReasonFullFlushForRedrawCount++;
+        break;
+    case PerfDisplayRedrawReason::CacheHitSkipFlush:
+        perfExtended.displayRedrawReasonCacheHitSkipFlushCount++;
+        break;
+    case PerfDisplayRedrawReason::UnionExceedsCap:
+        perfExtended.displayRedrawReasonUnionExceedsCapCount++;
+        break;
+    case PerfDisplayRedrawReason::PartialRegionFlush:
+        perfExtended.displayRedrawReasonPartialRegionFlushCount++;
+        break;
+    default:
+        break;
     }
 }
 
-void perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath path,
-                                    PerfDisplayFlushDecisionReason reason) {
+void perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath path, PerfDisplayFlushDecisionReason reason) {
     uint32_t* target = nullptr;
     switch (path) {
-        case PerfDisplayFlushDecisionPath::Resting:
-            switch (reason) {
-                case PerfDisplayFlushDecisionReason::FullRedraw:
-                    target = &perfExtended.displayRestingFlushReasonFullRedrawCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::PendingExternal:
-                    target = &perfExtended.displayRestingFlushReasonPendingExternalCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::Painted:
-                    target = &perfExtended.displayRestingFlushReasonPaintedCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::CacheHit:
-                    target = &perfExtended.displayRestingFlushReasonCacheHitCount;
-                    break;
-            }
+    case PerfDisplayFlushDecisionPath::Resting:
+        switch (reason) {
+        case PerfDisplayFlushDecisionReason::FullRedraw:
+            target = &perfExtended.displayRestingFlushReasonFullRedrawCount;
             break;
-        case PerfDisplayFlushDecisionPath::Persisted:
-            switch (reason) {
-                case PerfDisplayFlushDecisionReason::FullRedraw:
-                    target = &perfExtended.displayPersistedFlushReasonFullRedrawCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::PendingExternal:
-                    target = &perfExtended.displayPersistedFlushReasonPendingExternalCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::Painted:
-                    target = &perfExtended.displayPersistedFlushReasonPaintedCount;
-                    break;
-                case PerfDisplayFlushDecisionReason::CacheHit:
-                    target = &perfExtended.displayPersistedFlushReasonCacheHitCount;
-                    break;
-            }
+        case PerfDisplayFlushDecisionReason::PendingExternal:
+            target = &perfExtended.displayRestingFlushReasonPendingExternalCount;
             break;
+        case PerfDisplayFlushDecisionReason::Painted:
+            target = &perfExtended.displayRestingFlushReasonPaintedCount;
+            break;
+        case PerfDisplayFlushDecisionReason::CacheHit:
+            target = &perfExtended.displayRestingFlushReasonCacheHitCount;
+            break;
+        }
+        break;
+    case PerfDisplayFlushDecisionPath::Persisted:
+        switch (reason) {
+        case PerfDisplayFlushDecisionReason::FullRedraw:
+            target = &perfExtended.displayPersistedFlushReasonFullRedrawCount;
+            break;
+        case PerfDisplayFlushDecisionReason::PendingExternal:
+            target = &perfExtended.displayPersistedFlushReasonPendingExternalCount;
+            break;
+        case PerfDisplayFlushDecisionReason::Painted:
+            target = &perfExtended.displayPersistedFlushReasonPaintedCount;
+            break;
+        case PerfDisplayFlushDecisionReason::CacheHit:
+            target = &perfExtended.displayPersistedFlushReasonCacheHitCount;
+            break;
+        }
+        break;
     }
     if (target) {
         ++(*target);
@@ -579,75 +564,75 @@ void perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath path,
 
 void perfRecordDisplayStatusPaint(PerfDisplayStatusPaint element) {
     switch (element) {
-        case PerfDisplayStatusPaint::Volume:
-            perfExtended.displayStatusVolumePaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Rssi:
-            perfExtended.displayStatusRssiPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Profile:
-            perfExtended.displayStatusProfilePaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Battery:
-            perfExtended.displayStatusBatteryPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::BleProxy:
-            perfExtended.displayStatusBleProxyPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Wifi:
-            perfExtended.displayStatusWifiPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Obd:
-            perfExtended.displayStatusObdPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Gps:
-            perfExtended.displayStatusGpsPaintCount++;
-            break;
-        case PerfDisplayStatusPaint::Alp:
-            perfExtended.displayStatusAlpPaintCount++;
-            break;
+    case PerfDisplayStatusPaint::Volume:
+        perfExtended.displayStatusVolumePaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Rssi:
+        perfExtended.displayStatusRssiPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Profile:
+        perfExtended.displayStatusProfilePaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Battery:
+        perfExtended.displayStatusBatteryPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::BleProxy:
+        perfExtended.displayStatusBleProxyPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Wifi:
+        perfExtended.displayStatusWifiPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Obd:
+        perfExtended.displayStatusObdPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Gps:
+        perfExtended.displayStatusGpsPaintCount++;
+        break;
+    case PerfDisplayStatusPaint::Alp:
+        perfExtended.displayStatusAlpPaintCount++;
+        break;
     }
 }
 
 void perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase subphase, uint32_t us) {
     switch (subphase) {
-        case PerfDisplayRenderSubphase::BaseFrame:
-            if (us > perfExtended.displayBaseFrameMaxUs) {
-                perfExtended.displayBaseFrameMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::StatusStrip:
-            if (us > perfExtended.displayStatusStripMaxUs) {
-                perfExtended.displayStatusStripMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::Frequency:
-            if (us > perfExtended.displayFrequencyMaxUs) {
-                perfExtended.displayFrequencyMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::BandsBars:
-            if (us > perfExtended.displayBandsBarsMaxUs) {
-                perfExtended.displayBandsBarsMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::ArrowsIcons:
-            if (us > perfExtended.displayArrowsIconsMaxUs) {
-                perfExtended.displayArrowsIconsMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::Cards:
-            if (us > perfExtended.displayCardsMaxUs) {
-                perfExtended.displayCardsMaxUs = us;
-            }
-            break;
-        case PerfDisplayRenderSubphase::Flush:
-            if (us > perfExtended.displayFlushSubphaseMaxUs) {
-                perfExtended.displayFlushSubphaseMaxUs = us;
-            }
-            break;
-        default:
-            break;
+    case PerfDisplayRenderSubphase::BaseFrame:
+        if (us > perfExtended.displayBaseFrameMaxUs) {
+            perfExtended.displayBaseFrameMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::StatusStrip:
+        if (us > perfExtended.displayStatusStripMaxUs) {
+            perfExtended.displayStatusStripMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::Frequency:
+        if (us > perfExtended.displayFrequencyMaxUs) {
+            perfExtended.displayFrequencyMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::BandsBars:
+        if (us > perfExtended.displayBandsBarsMaxUs) {
+            perfExtended.displayBandsBarsMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::ArrowsIcons:
+        if (us > perfExtended.displayArrowsIconsMaxUs) {
+            perfExtended.displayArrowsIconsMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::Cards:
+        if (us > perfExtended.displayCardsMaxUs) {
+            perfExtended.displayCardsMaxUs = us;
+        }
+        break;
+    case PerfDisplayRenderSubphase::Flush:
+        if (us > perfExtended.displayFlushSubphaseMaxUs) {
+            perfExtended.displayFlushSubphaseMaxUs = us;
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -835,27 +820,28 @@ void perfRecordDisplayScreenTransition(PerfDisplayScreen from, PerfDisplayScreen
     portEXIT_CRITICAL(&sPerfSnapshotMux);
 }
 
-void perfRecordVolumeFadeDecision(PerfFadeDecision decision, uint8_t currentVolume, uint8_t originalVolume, uint32_t nowMs) {
+void perfRecordVolumeFadeDecision(PerfFadeDecision decision, uint8_t currentVolume, uint8_t originalVolume,
+                                  uint32_t nowMs) {
     portENTER_CRITICAL(&sPerfSnapshotMux);
     switch (decision) {
-        case PerfFadeDecision::FadeDown:
-            perfExtended.fadeDownCount++;
-            break;
-        case PerfFadeDecision::RestoreApplied:
-            perfExtended.fadeRestoreCount++;
-            break;
-        case PerfFadeDecision::RestoreSkippedEqual:
-            perfExtended.fadeSkipEqualCount++;
-            break;
-        case PerfFadeDecision::RestoreSkippedNoBaseline:
-            perfExtended.fadeSkipNoBaselineCount++;
-            break;
-        case PerfFadeDecision::RestoreSkippedNotFaded:
-            perfExtended.fadeSkipNotFadedCount++;
-            break;
-        case PerfFadeDecision::None:
-        default:
-            break;
+    case PerfFadeDecision::FadeDown:
+        perfExtended.fadeDownCount++;
+        break;
+    case PerfFadeDecision::RestoreApplied:
+        perfExtended.fadeRestoreCount++;
+        break;
+    case PerfFadeDecision::RestoreSkippedEqual:
+        perfExtended.fadeSkipEqualCount++;
+        break;
+    case PerfFadeDecision::RestoreSkippedNoBaseline:
+        perfExtended.fadeSkipNoBaselineCount++;
+        break;
+    case PerfFadeDecision::RestoreSkippedNotFaded:
+        perfExtended.fadeSkipNotFadedCount++;
+        break;
+    case PerfFadeDecision::None:
+    default:
+        break;
     }
     perfExtended.fadeLastDecision = static_cast<uint8_t>(decision);
     perfExtended.fadeLastCurrentVol = currentVolume;
@@ -863,7 +849,6 @@ void perfRecordVolumeFadeDecision(PerfFadeDecision decision, uint8_t currentVolu
     perfExtended.fadeLastDecisionMs = nowMs;
     portEXIT_CRITICAL(&sPerfSnapshotMux);
 }
-
 
 void perfRecordSpeedVolDrop() {
     portENTER_CRITICAL(&sPerfSnapshotMux);
@@ -887,23 +872,23 @@ void perfRecordBleTimelineEvent(PerfBleTimelineEvent event, uint32_t nowMs) {
     portENTER_CRITICAL(&sPerfSnapshotMux);
     uint32_t* target = nullptr;
     switch (event) {
-        case PerfBleTimelineEvent::ScanStart:
-            target = &perfExtended.bleScanStartMs;
-            break;
-        case PerfBleTimelineEvent::TargetFound:
-            target = &perfExtended.bleTargetFoundMs;
-            break;
-        case PerfBleTimelineEvent::ConnectStart:
-            target = &perfExtended.bleConnectStartMs;
-            break;
-        case PerfBleTimelineEvent::Connected:
-            target = &perfExtended.bleConnectedMs;
-            break;
-        case PerfBleTimelineEvent::FirstRx:
-            target = &perfExtended.bleFirstRxMs;
-            break;
-        default:
-            break;
+    case PerfBleTimelineEvent::ScanStart:
+        target = &perfExtended.bleScanStartMs;
+        break;
+    case PerfBleTimelineEvent::TargetFound:
+        target = &perfExtended.bleTargetFoundMs;
+        break;
+    case PerfBleTimelineEvent::ConnectStart:
+        target = &perfExtended.bleConnectStartMs;
+        break;
+    case PerfBleTimelineEvent::Connected:
+        target = &perfExtended.bleConnectedMs;
+        break;
+    case PerfBleTimelineEvent::FirstRx:
+        target = &perfExtended.bleFirstRxMs;
+        break;
+    default:
+        break;
     }
     if (target && *target == 0) {
         *target = nowMs;
@@ -928,8 +913,7 @@ void perfRecordWifiApTransition(bool apActive, uint8_t reasonCode, uint32_t nowM
 
 void perfRecordProxyAdvertisingTransition(bool advertising, uint8_t reasonCode, uint32_t nowMs) {
     const uint32_t newState = advertising ? 1u : 0u;
-    const uint32_t previousState =
-        perfCounters.proxyAdvertisingState.exchange(newState, std::memory_order_relaxed);
+    const uint32_t previousState = perfCounters.proxyAdvertisingState.exchange(newState, std::memory_order_relaxed);
     if (previousState == newState) {
         return;
     }
@@ -942,8 +926,12 @@ void perfRecordProxyAdvertisingTransition(bool advertising, uint8_t reasonCode, 
     perfCounters.proxyAdvertisingLastTransitionReason.store(reasonCode, std::memory_order_relaxed);
 }
 
-uint32_t perfGetMinFreeHeap() { return perfExtended.minFreeHeap == UINT32_MAX ? 0 : perfExtended.minFreeHeap; }
-uint32_t perfGetMinFreeDma() { return perfExtended.minFreeDma == UINT32_MAX ? 0 : perfExtended.minFreeDma; }
+uint32_t perfGetMinFreeHeap() {
+    return perfExtended.minFreeHeap == UINT32_MAX ? 0 : perfExtended.minFreeHeap;
+}
+uint32_t perfGetMinFreeDma() {
+    return perfExtended.minFreeDma == UINT32_MAX ? 0 : perfExtended.minFreeDma;
+}
 uint32_t perfGetPrevWindowLoopMaxUs() {
     return sPrevWindowLoopMaxUs.load(std::memory_order_relaxed);
 }
@@ -987,7 +975,7 @@ void perfMetricsSetDebug(bool enabled) {
 #if PERF_METRICS && PERF_MONITORING
     perfDebugEnabled = enabled;
     if (enabled) {
-        perfLastReportMs = millis();  // Reset report timer
+        perfLastReportMs = millis(); // Reset report timer
     }
 #else
     (void)enabled;

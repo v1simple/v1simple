@@ -23,8 +23,8 @@ namespace {
 // largest-block guard.
 static constexpr uint32_t BACKGROUND_SAVE_AGED_DMA_FREE = 16896;
 static constexpr uint32_t BACKGROUND_SAVE_AGED_DMA_BLOCK = 10240;
-static constexpr uint32_t BACKGROUND_SAVE_MAX_DIRTY_AGE_MS = 90000;  // 90 seconds
-static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000;    // 60 seconds
+static constexpr uint32_t BACKGROUND_SAVE_MAX_DIRTY_AGE_MS = 90000; // 90 seconds
+static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000;     // 60 seconds
 
 struct SaveDmaThresholds {
     uint32_t minFree = 0;
@@ -103,26 +103,18 @@ SaveDmaThresholds getSaveDmaThresholds() {
     return thresholds;
 }
 
-inline bool hasDmaHeadroomForBackgroundSave(uint32_t& freeDma,
-                                            uint32_t& largestDma,
+inline bool hasDmaHeadroomForBackgroundSave(uint32_t& freeDma, uint32_t& largestDma,
                                             const SaveDmaThresholds& thresholds) {
     freeDma = heap_caps_get_free_size(MALLOC_CAP_DMA);
     largestDma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
-    const bool freeOk =
-        (freeDma >= thresholds.minFree) ||
-        withinDeficitTolerance(freeDma,
-                               thresholds.minFree,
-                               thresholds.freeJitterTolerance);
-    const bool blockOk =
-        (largestDma >= thresholds.minBlock) ||
-        withinDeficitTolerance(largestDma,
-                               thresholds.minBlock,
-                               thresholds.blockJitterTolerance);
+    const bool freeOk = (freeDma >= thresholds.minFree) ||
+                        withinDeficitTolerance(freeDma, thresholds.minFree, thresholds.freeJitterTolerance);
+    const bool blockOk = (largestDma >= thresholds.minBlock) ||
+                         withinDeficitTolerance(largestDma, thresholds.minBlock, thresholds.blockJitterTolerance);
     return freeOk && blockOk;
 }
 
-inline bool hasAgedDmaHeadroomForBackgroundSave(uint32_t freeDma,
-                                                uint32_t largestDma,
+inline bool hasAgedDmaHeadroomForBackgroundSave(uint32_t freeDma, uint32_t largestDma,
                                                 const SaveDmaThresholds& thresholds) {
     return (freeDma >= thresholds.agedFree) && (largestDma >= thresholds.agedBlock);
 }
@@ -147,33 +139,26 @@ void maybeLogSaveDiag(const char* tag, SaveDiagStats& stats, uint32_t nowMs) {
     }
     stats.lastReportMs = nowMs;
     stats.lastReportedAttempts = stats.attempts;
-    Serial.printf("[%s] SaveDiag attempts=%lu ok=%lu fail=%lu deferLow=%lu deferBusy=%lu agedTry=%lu minOk=%lu/%lu minFail=%lu/%lu minDeferLow=%lu/%lu recoveries=%lu lastDeferMs=%lu maxDeferMs=%lu\n",
-                  tag,
-                  static_cast<unsigned long>(stats.attempts),
-                  static_cast<unsigned long>(stats.success),
-                  static_cast<unsigned long>(stats.fail),
-                  static_cast<unsigned long>(stats.deferLowDma),
-                  static_cast<unsigned long>(stats.deferSdBusy),
-                  static_cast<unsigned long>(stats.agedRetryAttempts),
-                  sampleOrZero(stats.minFreeOnSuccess),
-                  sampleOrZero(stats.minBlockOnSuccess),
-                  sampleOrZero(stats.minFreeOnFail),
-                  sampleOrZero(stats.minBlockOnFail),
-                  sampleOrZero(stats.minFreeOnDeferLow),
-                  sampleOrZero(stats.minBlockOnDeferLow),
-                  static_cast<unsigned long>(stats.deferRecoveries),
-                  static_cast<unsigned long>(stats.lastDeferToSaveMs),
-                  static_cast<unsigned long>(stats.maxDeferToSaveMs));
+    Serial.printf(
+        "[%s] SaveDiag attempts=%lu ok=%lu fail=%lu deferLow=%lu deferBusy=%lu agedTry=%lu minOk=%lu/%lu "
+        "minFail=%lu/%lu minDeferLow=%lu/%lu recoveries=%lu lastDeferMs=%lu maxDeferMs=%lu\n",
+        tag, static_cast<unsigned long>(stats.attempts), static_cast<unsigned long>(stats.success),
+        static_cast<unsigned long>(stats.fail), static_cast<unsigned long>(stats.deferLowDma),
+        static_cast<unsigned long>(stats.deferSdBusy), static_cast<unsigned long>(stats.agedRetryAttempts),
+        sampleOrZero(stats.minFreeOnSuccess), sampleOrZero(stats.minBlockOnSuccess), sampleOrZero(stats.minFreeOnFail),
+        sampleOrZero(stats.minBlockOnFail), sampleOrZero(stats.minFreeOnDeferLow),
+        sampleOrZero(stats.minBlockOnDeferLow), static_cast<unsigned long>(stats.deferRecoveries),
+        static_cast<unsigned long>(stats.lastDeferToSaveMs), static_cast<unsigned long>(stats.maxDeferToSaveMs));
 }
-}  // namespace
+} // namespace
 
 // --- Generic dirty-save state machine ---
 
 struct DirtySaveConfig {
-    const char* tag;           // Log prefix, e.g. "V1DeviceStore"
-    const char* filePath;      // Destination file path
-    uint32_t saveIntervalMs;   // Minimum interval between successful saves
-    uint32_t retryMs;          // Minimum interval between attempts
+    const char* tag;         // Log prefix, e.g. "V1DeviceStore"
+    const char* filePath;    // Destination file path
+    uint32_t saveIntervalMs; // Minimum interval between successful saves
+    uint32_t retryMs;        // Minimum interval between attempts
 
     // Data source callbacks (no virtual overhead)
     bool (*isDirty)();
@@ -209,8 +194,7 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
         state.deferredSinceMs = 0;
     }
 
-    if (cfg.isDirty() && storageManager.isReady() &&
-        (nowMs - state.lastSaveMs) >= cfg.saveIntervalMs &&
+    if (cfg.isDirty() && storageManager.isReady() && (nowMs - state.lastSaveMs) >= cfg.saveIntervalMs &&
         (nowMs - state.lastAttemptMs) >= cfg.retryMs) {
         state.diag.attempts++;
         state.lastAttemptMs = nowMs;
@@ -229,11 +213,9 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                 uint32_t largestDma = 0;
                 const bool normalHeadroom = hasDmaHeadroomForBackgroundSave(freeDma, largestDma, thresholds);
                 const uint32_t dirtyAgeMs = (state.dirtySinceMs == 0) ? 0 : (nowMs - state.dirtySinceMs);
-                const bool allowAgedRetry =
-                    thresholds.allowAgedRetry &&
-                    !normalHeadroom &&
-                    (dirtyAgeMs >= BACKGROUND_SAVE_MAX_DIRTY_AGE_MS) &&
-                    hasAgedDmaHeadroomForBackgroundSave(freeDma, largestDma, thresholds);
+                const bool allowAgedRetry = thresholds.allowAgedRetry && !normalHeadroom &&
+                                            (dirtyAgeMs >= BACKGROUND_SAVE_MAX_DIRTY_AGE_MS) &&
+                                            hasAgedDmaHeadroomForBackgroundSave(freeDma, largestDma, thresholds);
                 hadDmaSample = true;
                 sampledFreeDma = freeDma;
                 sampledLargestDma = largestDma;
@@ -245,10 +227,8 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                         if ((nowMs - lastAgedRetryLogMs) >= 10000) {
                             lastAgedRetryLogMs = nowMs;
                             Serial.printf("[%s] Save retry (aged dirty=%lus free=%lu block=%lu relaxed>=%lu/%lu)\n",
-                                          cfg.tag,
-                                          static_cast<unsigned long>(dirtyAgeMs / 1000),
-                                          static_cast<unsigned long>(freeDma),
-                                          static_cast<unsigned long>(largestDma),
+                                          cfg.tag, static_cast<unsigned long>(dirtyAgeMs / 1000),
+                                          static_cast<unsigned long>(freeDma), static_cast<unsigned long>(largestDma),
                                           static_cast<unsigned long>(thresholds.agedFree),
                                           static_cast<unsigned long>(thresholds.agedBlock));
                         }
@@ -273,14 +253,12 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                     static uint32_t lastLowDmaLogMs = 0;
                     if ((nowMs - lastLowDmaLogMs) >= 10000) {
                         lastLowDmaLogMs = nowMs;
-                        Serial.printf("[%s] Save deferred (low DMA heap mode=%s free=%lu block=%lu need>=%lu/%lu dirty=%lus)\n",
-                                      cfg.tag,
-                                      thresholds.modeLabel,
-                                      static_cast<unsigned long>(freeDma),
-                                      static_cast<unsigned long>(largestDma),
-                                      static_cast<unsigned long>(thresholds.minFree),
-                                      static_cast<unsigned long>(thresholds.minBlock),
-                                      static_cast<unsigned long>(dirtyAgeMs / 1000));
+                        Serial.printf(
+                            "[%s] Save deferred (low DMA heap mode=%s free=%lu block=%lu need>=%lu/%lu dirty=%lus)\n",
+                            cfg.tag, thresholds.modeLabel, static_cast<unsigned long>(freeDma),
+                            static_cast<unsigned long>(largestDma), static_cast<unsigned long>(thresholds.minFree),
+                            static_cast<unsigned long>(thresholds.minBlock),
+                            static_cast<unsigned long>(dirtyAgeMs / 1000));
                     }
                 }
             } else {
@@ -297,8 +275,7 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                 if (deferLatencyMs > state.diag.maxDeferToSaveMs) {
                     state.diag.maxDeferToSaveMs = deferLatencyMs;
                 }
-                Serial.printf("[%s] Save recovered after defer latency=%lus dirty=%lus\n",
-                              cfg.tag,
+                Serial.printf("[%s] Save recovered after defer latency=%lus dirty=%lus\n", cfg.tag,
                               static_cast<unsigned long>(deferLatencyMs / 1000),
                               static_cast<unsigned long>(dirtyAgeMs / 1000));
                 state.deferredSinceMs = 0;

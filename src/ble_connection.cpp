@@ -36,7 +36,7 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     // the V1 service UUID without a readable name in the advertisement payload.
     bool nameLooksV1 = false;
     if (name.length() >= 3) {
-        const char c0 = static_cast<char>(name[0] | 0x20);  // lowercase
+        const char c0 = static_cast<char>(name[0] | 0x20); // lowercase
         const char c1 = static_cast<char>(name[1] | 0x20);
         const char c2 = static_cast<char>(name[2] | 0x20);
         // Field variants: V1G..., V1C..., and V1-... have all been observed.
@@ -63,10 +63,7 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     // callback can therefore never overwrite an active connection session.
     // Do not copy NimBLEAdvertisedDevice: it allocates under heap pressure.
     portENTER_CRITICAL(&pendingAddrMux);
-    snprintf(bleClient->pendingScanTargetAddress_,
-             sizeof(bleClient->pendingScanTargetAddress_),
-             "%s",
-             addrStr.c_str());
+    snprintf(bleClient->pendingScanTargetAddress_, sizeof(bleClient->pendingScanTargetAddress_), "%s", addrStr.c_str());
     bleClient->pendingScanTargetAddressType_ = static_cast<uint8_t>(advAddrType);
     bleClient->pendingScanTargetUpdate_.store(true, std::memory_order_release);
     portEXIT_CRITICAL(&pendingAddrMux);
@@ -99,14 +96,12 @@ void V1BLEClient::ClientCallbacks::onPhyUpdate(NimBLEClient* pClient_, uint8_t t
 void V1BLEClient::ClientCallbacks::onConnect(NimBLEClient* pClient_) {
     // NOTE: BLE callback - keep fast, no blocking operations
     if (instancePtr) {
-        const uint32_t callbackGeneration =
-            instancePtr->sessionGeneration_.load(std::memory_order_acquire);
+        const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
         // A connect completion can race a timeout/cancel edge. Once quiescing
         // begins, never publish that late completion into the next session.
         if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) ||
             !instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
-            instancePtr->quiescingConnectionHandle_.store(
-                pClient_->getConnHandle(), std::memory_order_release);
+            instancePtr->quiescingConnectionHandle_.store(pClient_->getConnHandle(), std::memory_order_release);
             instancePtr->disconnectCallbackPending_.store(true, std::memory_order_relaxed);
             instancePtr->asyncConnectSuccess_.store(false, std::memory_order_relaxed);
             instancePtr->asyncConnectPending_.store(false, std::memory_order_release);
@@ -116,8 +111,7 @@ void V1BLEClient::ClientCallbacks::onConnect(NimBLEClient* pClient_) {
             return;
         }
 
-        instancePtr->activeConnectionHandle_.store(
-            pClient_->getConnHandle(), std::memory_order_release);
+        instancePtr->activeConnectionHandle_.store(pClient_->getConnHandle(), std::memory_order_release);
 
         // Signal async connect success (non-blocking atomic write)
         instancePtr->asyncConnectSuccess_ = true;
@@ -126,8 +120,7 @@ void V1BLEClient::ClientCallbacks::onConnect(NimBLEClient* pClient_) {
         // can close acceptClientCallbacks_ immediately after the acquire above.
         // Main-loop processing rechecks that gate before publishing link state;
         // subscribe completion later confirms the fully usable session.
-        instancePtr->pendingConnectStateGeneration_.store(
-            callbackGeneration, std::memory_order_relaxed);
+        instancePtr->pendingConnectStateGeneration_.store(callbackGeneration, std::memory_order_relaxed);
         instancePtr->pendingConnectStateUpdate_.store(true, std::memory_order_release);
     }
 }
@@ -149,12 +142,10 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
     // NOTE: BLE callback - minimize blocking. Log disconnect reason for diagnostics.
     if (instancePtr) {
         const uint16_t callbackHandle = pClient_->getConnHandle();
-        const bool accepting =
-            instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire);
-        const uint16_t expectedHandle =
-            accepting
-                ? instancePtr->activeConnectionHandle_.load(std::memory_order_acquire)
-                : instancePtr->quiescingConnectionHandle_.load(std::memory_order_acquire);
+        const bool accepting = instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire);
+        const uint16_t expectedHandle = accepting
+                                            ? instancePtr->activeConnectionHandle_.load(std::memory_order_acquire)
+                                            : instancePtr->quiescingConnectionHandle_.load(std::memory_order_acquire);
         // NimBLE invokes onDisconnect before it clears m_connHandle. Rejecting
         // a mismatched handle prevents a delayed callback from an older link
         // from tearing down the current session.
@@ -163,7 +154,7 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         }
     }
 
-    PERF_INC(disconnects);  // Count V1 disconnections
+    PERF_INC(disconnects); // Count V1 disconnections
     // If the disconnect was unexpected (e.g., V1 powered off), clear bonding info
     // to ensure a clean reconnect next time.
     // NOTE: deleteBond() does NVS flash write — defer to main loop to avoid
@@ -180,8 +171,7 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
     }
 
     if (instancePtr) {
-        instancePtr->lastV1ConnectionEventMs_.store(static_cast<uint32_t>(millis()),
-                                                    std::memory_order_relaxed);
+        instancePtr->lastV1ConnectionEventMs_.store(static_cast<uint32_t>(millis()), std::memory_order_relaxed);
         instancePtr->verifyPushMatchEdgePending_.store(false, std::memory_order_relaxed);
         ProxyCallbackEvent event{};
         event.type = ProxyCallbackEventType::V1_DISCONNECTED;
@@ -216,8 +206,7 @@ bool V1BLEClient::connectToServer() {
     // discoverAttributes() mutates/deletes the client's cached services. Never
     // let a new connection begin until the prior discovery task has published
     // its final completion and exited the client-mutating portion.
-    if (bleState_ == BLEState::QUIESCING ||
-        discoveryTaskRunning_.load(std::memory_order_acquire)) {
+    if (bleState_ == BLEState::QUIESCING || discoveryTaskRunning_.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -232,8 +221,7 @@ bool V1BLEClient::connectToServer() {
 
     // Start a fresh ownership generation. Retries within this connection
     // sequence share it; teardown invalidates it before releasing the client.
-    uint32_t nextGeneration =
-        sessionGeneration_.load(std::memory_order_relaxed) + 1;
+    uint32_t nextGeneration = sessionGeneration_.load(std::memory_order_relaxed) + 1;
     if (nextGeneration == 0) {
         nextGeneration = 1;
     }
@@ -247,17 +235,16 @@ bool V1BLEClient::connectToServer() {
     // per loop() pass to avoid monopolizing a single iteration.
     connectInProgress_ = true;
     connectStartMs_ = static_cast<uint32_t>(millis());
-    connectAttemptNumber_ = 0;  // Reset for new connection sequence
+    connectAttemptNumber_ = 0; // Reset for new connection sequence
     asyncConnectPending_ = false;
     asyncConnectSuccess_ = false;
-    connectPhaseStartUs_ = micros();  // Start timing connect phase
+    connectPhaseStartUs_ = micros(); // Start timing connect phase
     setBLEState(BLEState::CONNECTING, "connectToServer");
     return true;
 }
 
 bool V1BLEClient::startAsyncConnect() {
-    if (bleState_ == BLEState::QUIESCING ||
-        discoveryTaskRunning_.load(std::memory_order_acquire)) {
+    if (bleState_ == BLEState::QUIESCING || discoveryTaskRunning_.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -267,9 +254,7 @@ bool V1BLEClient::startAsyncConnect() {
     if (proxyEnabled_ && NimBLEDevice::getAdvertising()->isAdvertising()) {
         NimBLEDevice::stopAdvertising();
         perfRecordProxyAdvertisingTransition(
-            false,
-            static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopBeforeV1Connect),
-            millis());
+            false, static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopBeforeV1Connect), millis());
         // No delay - stopAdvertising is quick, radio will settle during connect
     }
 
@@ -298,10 +283,8 @@ bool V1BLEClient::startAsyncConnect() {
     }
 
     // Connection parameters: 12-24 (15-30ms interval), balanced for stability
-    pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN,
-                                 NIMBLE_CONN_INTERVAL_MAX,
-                                 NIMBLE_CONN_LATENCY,
-                                 NIMBLE_CONN_SUPERVISION_TIMEOUT);
+    pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN, NIMBLE_CONN_INTERVAL_MAX, NIMBLE_CONN_LATENCY,
+                                  NIMBLE_CONN_SUPERVISION_TIMEOUT);
     // Preserve current active-connect timeout behavior.
     pClient_->setConnectTimeout(NIMBLE_CONNECT_TIMEOUT_ACTIVE_MS);
     // NimBLE 2.5.0 added a built-in connect retry (default=2). Disable it:
@@ -333,8 +316,7 @@ bool V1BLEClient::startAsyncConnect() {
     if (!initiated) {
         int err = pClient_->getLastError();
         static BleLogRateLimitState connectInitiationFailedLog;
-        if (shouldLogBleConnectionEvent(connectInitiationFailedLog,
-                                        static_cast<uint32_t>(millis()))) {
+        if (shouldLogBleConnectionEvent(connectInitiationFailedLog, static_cast<uint32_t>(millis()))) {
             Serial.printf("[BLE] Async connect initiation failed (error: %d)\n", err);
         }
         asyncConnectPending_ = false;
@@ -342,7 +324,7 @@ bool V1BLEClient::startAsyncConnect() {
         // Check if we should retry
         if (connectAttemptNumber_ < MAX_CONNECT_ATTEMPTS) {
             // Retry next loop pass; don't spin multiple attempts in one process() call.
-            return true;  // Keep state machine going
+            return true; // Keep state machine going
         }
 
         // All attempts exhausted
@@ -369,11 +351,9 @@ bool V1BLEClient::startAsyncConnect() {
 // Called from CONNECTING_WAIT when async connect succeeds.
 // Post-connect setup before service discovery.
 bool V1BLEClient::finishConnection() {
-    const uint32_t currentGeneration =
-        sessionGeneration_.load(std::memory_order_acquire);
+    const uint32_t currentGeneration = sessionGeneration_.load(std::memory_order_acquire);
     if (!acceptClientCallbacks_.load(std::memory_order_acquire) ||
-        !sessionPublicationGate_.accepts(currentGeneration) ||
-        discoveryTaskRunning_.load(std::memory_order_acquire)) {
+        !sessionPublicationGate_.accepts(currentGeneration) || discoveryTaskRunning_.load(std::memory_order_acquire)) {
         beginClientQuiesce("late connect completion");
         return false;
     }
@@ -384,13 +364,13 @@ bool V1BLEClient::finishConnection() {
 
     // Record connect phase time
     perfRecordBleConnectUs(micros() - connectPhaseStartUs_);
-    PERF_INC(reconnects);  // Count successful (re)connections
+    PERF_INC(reconnects); // Count successful (re)connections
 
     // Log the negotiated connection parameters (interval units = 1.25ms, timeout units = 10ms)
     logConnParams("post-connect");
 
     // Transition to discovery phase
-    connectPhaseStartUs_ = micros();  // Reset timer for discovery phase
+    connectPhaseStartUs_ = micros(); // Reset timer for discovery phase
     activeDiscoveryGeneration_ = currentGeneration;
     discoveryTaskDone_.store(false, std::memory_order_relaxed);
     discoveryTaskResult_.store(false, std::memory_order_relaxed);
@@ -427,7 +407,7 @@ void V1BLEClient::processConnectingWait() {
             connectStartMs_ = 0;
             beginClientQuiesce("connect timeout");
         }
-        return;  // Still waiting
+        return; // Still waiting
     }
 
     // Async connect failed (asyncConnectPending_ cleared without asyncConnectSuccess_)
@@ -439,7 +419,7 @@ void V1BLEClient::processConnectingWait() {
 
     // Check if we should retry
     if (connectAttemptNumber_ < MAX_CONNECT_ATTEMPTS) {
-        if (err == 13) {  // EBUSY - defer via backoff instead of blocking main loop
+        if (err == 13) { // EBUSY - defer via backoff instead of blocking main loop
             nextConnectAllowedMs_ = 0;
             connectInProgress_ = false;
             connectStartMs_ = 0;
@@ -477,8 +457,7 @@ void V1BLEClient::beginClientQuiesce(const char* reason, bool requestHardReset) 
         acceptClientCallbacks_.store(false, std::memory_order_release);
         sessionPublicationGate_.close();
         connected_.store(false, std::memory_order_release);
-        uint32_t nextGeneration =
-            sessionGeneration_.load(std::memory_order_relaxed) + 1;
+        uint32_t nextGeneration = sessionGeneration_.load(std::memory_order_relaxed) + 1;
         if (nextGeneration == 0) {
             nextGeneration = 1;
         }
@@ -506,8 +485,7 @@ void V1BLEClient::beginClientQuiesce(const char* reason, bool requestHardReset) 
         pClient_->cancelConnect();
     }
 
-    if (pClient_ && pClient_->isConnected() &&
-        !disconnectCallbackPending_.load(std::memory_order_acquire)) {
+    if (pClient_ && pClient_->isConnected() && !disconnectCallbackPending_.load(std::memory_order_acquire)) {
         disconnectCallbackPending_.store(true, std::memory_order_release);
         if (!pClient_->disconnect()) {
             // Retry from processClientQuiesce(); never block the loop here.
@@ -524,28 +502,22 @@ void V1BLEClient::processClientQuiesce() {
     }
 
     const bool waitingForConnectCancel = quiesceAwaitingConnectCancel_;
-    const bool waitingForDiscovery =
-        discoveryTaskRunning_.load(std::memory_order_acquire);
-    const bool waitingForDisconnect =
-        disconnectCallbackPending_.load(std::memory_order_acquire);
+    const bool waitingForDiscovery = discoveryTaskRunning_.load(std::memory_order_acquire);
+    const bool waitingForDisconnect = disconnectCallbackPending_.load(std::memory_order_acquire);
     const bool clientStillConnected = pClient_ && pClient_->isConnected();
     const uint32_t now = static_cast<uint32_t>(millis());
 
     // Apply one deadline to every incomplete teardown path, including the
     // case where disconnect() repeatedly refuses the request while NimBLE
     // continues to report the client connected.
-    if ((waitingForConnectCancel || waitingForDiscovery || waitingForDisconnect ||
-         clientStillConnected) &&
+    if ((waitingForConnectCancel || waitingForDiscovery || waitingForDisconnect || clientStillConnected) &&
         bleQuiesceDeadlineExpired(now, quiesceStartedMs_, QUIESCE_FATAL_TIMEOUT_MS)) {
         quiesceTimeoutRecoveryCount_.fetch_add(1, std::memory_order_relaxed);
         Serial.printf(
             "[BLE] FATAL quiesce timeout: cancel=%u discovery=%u disconnect=%u connected=%u handle=%u; restarting\n",
-            waitingForConnectCancel ? 1u : 0u,
-            waitingForDiscovery ? 1u : 0u,
-            waitingForDisconnect ? 1u : 0u,
+            waitingForConnectCancel ? 1u : 0u, waitingForDiscovery ? 1u : 0u, waitingForDisconnect ? 1u : 0u,
             clientStillConnected ? 1u : 0u,
-            static_cast<unsigned>(
-                quiescingConnectionHandle_.load(std::memory_order_relaxed)));
+            static_cast<unsigned>(quiescingConnectionHandle_.load(std::memory_order_relaxed)));
         ESP.restart();
         return;
     }
@@ -615,12 +587,10 @@ void V1BLEClient::discoveryTaskFunc(void* param) {
 
     // This task is short-lived, so capture its minimum remaining stack at exit
     // rather than relying on a periodic poll that will usually miss it.
-    const uint32_t stackFreeBytes =
-        static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+    const uint32_t stackFreeBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
     uint32_t observed = self->discoveryTaskStackMinFreeBytes_.load(std::memory_order_relaxed);
-    while (stackFreeBytes < observed &&
-           !self->discoveryTaskStackMinFreeBytes_.compare_exchange_weak(
-               observed, stackFreeBytes, std::memory_order_relaxed)) {
+    while (stackFreeBytes < observed && !self->discoveryTaskStackMinFreeBytes_.compare_exchange_weak(
+                                            observed, stackFreeBytes, std::memory_order_relaxed)) {
     }
 
     self->discoveryTaskResult_.store(result, std::memory_order_relaxed);
@@ -659,16 +629,15 @@ void V1BLEClient::processDiscovering() {
     // Spawn discovery task on first entry
     // Guard: wait for any prior discovery task to finish (e.g. after timeout/disconnect)
     if (discoveryTaskRunning_.load()) {
-        return;  // Previous task still winding down — yield
+        return; // Previous task still winding down — yield
     }
     if (!discoveryTaskDone_.load()) {
         discoveryTaskContext_.owner = this;
         discoveryTaskContext_.client = pClient_;
         discoveryTaskContext_.generation = activeDiscoveryGeneration_;
         discoveryTaskRunning_.store(true, std::memory_order_release);
-        BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(
-            discoveryTaskFunc, "disc", 4096, &discoveryTaskContext_, 1, nullptr, tskNO_AFFINITY,
-            MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(discoveryTaskFunc, "disc", 4096, &discoveryTaskContext_, 1,
+                                                        nullptr, tskNO_AFFINITY, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
         if (rc != pdPASS) {
             // Never run discovery synchronously on the main loop; back off and retry.
             static BleLogRateLimitState discoveryTaskCreateFailedLog;
@@ -690,13 +659,12 @@ void V1BLEClient::processDiscovering() {
             connectStartMs_ = 0;
             beginClientQuiesce("discovery task create failed");
         }
-        return;  // Yield to loop while task runs
+        return; // Yield to loop while task runs
     }
 
     perfRecordBleDiscoveryUs(micros() - connectPhaseStartUs_);
 
-    const uint32_t completedGeneration =
-        discoveryCompletedGeneration_.load(std::memory_order_acquire);
+    const uint32_t completedGeneration = discoveryCompletedGeneration_.load(std::memory_order_acquire);
     if (completedGeneration != activeDiscoveryGeneration_ ||
         completedGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
         beginClientQuiesce("stale discovery completion");
@@ -715,7 +683,7 @@ void V1BLEClient::processDiscovering() {
     }
 
     // Transition to subscribe phase (uses step machine to break up CCCD writes)
-    connectPhaseStartUs_ = micros();  // Reset timer for subscribe phase
+    connectPhaseStartUs_ = micros(); // Reset timer for subscribe phase
     subscribeStep_ = SubscribeStep::GET_SERVICE;
     subscribeStepStartUs_ = micros();
     setBLEState(BLEState::SUBSCRIBING, "discovery complete");
@@ -737,7 +705,7 @@ void V1BLEClient::processSubscribing() {
         }
         perfRecordBleSubscribeUs(micros() - connectPhaseStartUs_);
         {
-            SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));  // COLD: subscribe timeout
+            SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: subscribe timeout
             shouldConnect_ = false;
             hasTargetDevice_ = false;
         }
@@ -766,8 +734,7 @@ void V1BLEClient::processSubscribing() {
         const uint32_t completedGeneration = activeDiscoveryGeneration_;
         const auto sessionStillAccepted = [this, completedGeneration]() {
             return acceptClientCallbacks_.load(std::memory_order_acquire) &&
-                   sessionGeneration_.load(std::memory_order_acquire) ==
-                       completedGeneration &&
+                   sessionGeneration_.load(std::memory_order_acquire) == completedGeneration &&
                    sessionPublicationGate_.accepts(completedGeneration);
         };
         if (!sessionStillAccepted()) {
@@ -780,8 +747,7 @@ void V1BLEClient::processSubscribing() {
         // optimistic store. If claim() wins first, teardown's later false
         // store is ordered after this one and therefore remains authoritative.
         connected_.store(true, std::memory_order_release);
-        if (!sessionPublicationGate_.claim(completedGeneration) ||
-            !sessionStillAccepted()) {
+        if (!sessionPublicationGate_.claim(completedGeneration) || !sessionStillAccepted()) {
             connected_.store(false, std::memory_order_release);
             beginClientQuiesce("subscribe publication invalidated");
             return;
@@ -827,124 +793,119 @@ void V1BLEClient::processSubscribeYield() {
 // Execute one subscribe step, return true when all steps complete
 bool V1BLEClient::executeSubscribeStep() {
     switch (subscribeStep_) {
-        case SubscribeStep::GET_SERVICE: {
-            pRemoteService_ = pClient_->getService(V1_SERVICE_UUID);
-            if (!pRemoteService_) {
-                static BleLogRateLimitState subscribeFailServiceLog;
-                if (shouldLogBleConnectionEvent(subscribeFailServiceLog,
-                                                static_cast<uint32_t>(millis()))) {
-                    Serial.println("[BLE] FAIL service");
-                }
-                return false;  // Will trigger failure handling
+    case SubscribeStep::GET_SERVICE: {
+        pRemoteService_ = pClient_->getService(V1_SERVICE_UUID);
+        if (!pRemoteService_) {
+            static BleLogRateLimitState subscribeFailServiceLog;
+            if (shouldLogBleConnectionEvent(subscribeFailServiceLog, static_cast<uint32_t>(millis()))) {
+                Serial.println("[BLE] FAIL service");
             }
-            subscribeStep_ = SubscribeStep::GET_DISPLAY_CHAR;
-            return false;  // More steps to do
+            return false; // Will trigger failure handling
         }
-
-        case SubscribeStep::GET_DISPLAY_CHAR: {
-            pDisplayDataChar_ = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_UUID);
-            if (!pDisplayDataChar_) {
-                static BleLogRateLimitState subscribeFailDisplayCharLog;
-                if (shouldLogBleConnectionEvent(subscribeFailDisplayCharLog,
-                                                static_cast<uint32_t>(millis()))) {
-                    Serial.println("[BLE] FAIL display char");
-                }
-                return false;
-            }
-            notifyShortChar_.store(pDisplayDataChar_, std::memory_order_release);
-            notifyShortCharId_.store(shortUuid(pDisplayDataChar_->getUUID()), std::memory_order_release);
-            subscribeStep_ = SubscribeStep::GET_COMMAND_CHAR;
-            return false;
-        }
-
-        case SubscribeStep::GET_COMMAND_CHAR: {
-            pCommandChar_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_UUID);
-            NimBLERemoteCharacteristic* altCommandChar = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_ALT_UUID);
-
-            // Prefer primary, fall back to alt if needed
-            if (!pCommandChar_ || (!pCommandChar_->canWrite() && !pCommandChar_->canWriteNoResponse())) {
-                if (altCommandChar && (altCommandChar->canWrite() || altCommandChar->canWriteNoResponse())) {
-                    pCommandChar_ = altCommandChar;
-                } else {
-                    pCommandChar_ = nullptr;
-                    static BleLogRateLimitState subscribeFailCommandCharLog;
-                    if (shouldLogBleConnectionEvent(subscribeFailCommandCharLog,
-                                                    static_cast<uint32_t>(millis()))) {
-                        Serial.println("[BLE] FAIL command char");
-                    }
-                    return false;
-                }
-            }
-            subscribeStep_ = SubscribeStep::GET_COMMAND_LONG;
-            return false;
-        }
-
-        case SubscribeStep::GET_COMMAND_LONG: {
-            pCommandCharLong_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_LONG_UUID);
-            // B8D2 is optional - don't log either way
-            subscribeStep_ = SubscribeStep::SUBSCRIBE_DISPLAY;
-            return false;
-        }
-
-        case SubscribeStep::SUBSCRIBE_DISPLAY: {
-            bool subscribed = false;
-            if (pDisplayDataChar_->canNotify()) {
-                subscribed = pDisplayDataChar_->subscribe(true, notifyCallback, true);
-            } else if (pDisplayDataChar_->canIndicate()) {
-                subscribed = pDisplayDataChar_->subscribe(false, notifyCallback);
-            }
-
-            if (!subscribed) {
-                static BleLogRateLimitState subscribeFailB2ceLog;
-                if (shouldLogBleConnectionEvent(subscribeFailB2ceLog,
-                                                static_cast<uint32_t>(millis()))) {
-                    Serial.println("[BLE] FAIL subscribe B2CE");
-                }
-                return false;
-            }
-            subscribeStep_ = SubscribeStep::GET_DISPLAY_LONG;
-            return false;
-        }
-
-        case SubscribeStep::GET_DISPLAY_LONG: {
-            // Get B4E0 characteristic (non-critical, used for voltage passthrough)
-            NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
-            notifyLongChar_.store(pDisplayLong, std::memory_order_release);
-            notifyLongCharId_.store(pDisplayLong ? shortUuid(pDisplayLong->getUUID()) : 0,
-                                   std::memory_order_release);
-            if (pDisplayLong && pDisplayLong->canNotify()) {
-                subscribeStep_ = SubscribeStep::SUBSCRIBE_LONG;
-            } else {
-                subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;  // Skip LONG subscribe
-            }
-            return false;
-        }
-
-        case SubscribeStep::SUBSCRIBE_LONG: {
-            NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
-            if (pDisplayLong && pDisplayLong->subscribe(true, notifyCallback, true)) {
-                subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;
-            } else {
-                subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;
-            }
-            return false;
-        }
-
-        case SubscribeStep::REQUEST_ALERT_DATA: {
-            subscribeStep_ = SubscribeStep::REQUEST_VERSION;
-            return false;
-        }
-
-        case SubscribeStep::REQUEST_VERSION: {
-            subscribeStep_ = SubscribeStep::COMPLETE;
-            return true;  // All done!
-        }
-
-        case SubscribeStep::COMPLETE:
-            return true;  // Already complete
+        subscribeStep_ = SubscribeStep::GET_DISPLAY_CHAR;
+        return false; // More steps to do
     }
 
-    return true;  // Shouldn't reach here
+    case SubscribeStep::GET_DISPLAY_CHAR: {
+        pDisplayDataChar_ = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_UUID);
+        if (!pDisplayDataChar_) {
+            static BleLogRateLimitState subscribeFailDisplayCharLog;
+            if (shouldLogBleConnectionEvent(subscribeFailDisplayCharLog, static_cast<uint32_t>(millis()))) {
+                Serial.println("[BLE] FAIL display char");
+            }
+            return false;
+        }
+        notifyShortChar_.store(pDisplayDataChar_, std::memory_order_release);
+        notifyShortCharId_.store(shortUuid(pDisplayDataChar_->getUUID()), std::memory_order_release);
+        subscribeStep_ = SubscribeStep::GET_COMMAND_CHAR;
+        return false;
+    }
+
+    case SubscribeStep::GET_COMMAND_CHAR: {
+        pCommandChar_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_UUID);
+        NimBLERemoteCharacteristic* altCommandChar = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_ALT_UUID);
+
+        // Prefer primary, fall back to alt if needed
+        if (!pCommandChar_ || (!pCommandChar_->canWrite() && !pCommandChar_->canWriteNoResponse())) {
+            if (altCommandChar && (altCommandChar->canWrite() || altCommandChar->canWriteNoResponse())) {
+                pCommandChar_ = altCommandChar;
+            } else {
+                pCommandChar_ = nullptr;
+                static BleLogRateLimitState subscribeFailCommandCharLog;
+                if (shouldLogBleConnectionEvent(subscribeFailCommandCharLog, static_cast<uint32_t>(millis()))) {
+                    Serial.println("[BLE] FAIL command char");
+                }
+                return false;
+            }
+        }
+        subscribeStep_ = SubscribeStep::GET_COMMAND_LONG;
+        return false;
+    }
+
+    case SubscribeStep::GET_COMMAND_LONG: {
+        pCommandCharLong_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_LONG_UUID);
+        // B8D2 is optional - don't log either way
+        subscribeStep_ = SubscribeStep::SUBSCRIBE_DISPLAY;
+        return false;
+    }
+
+    case SubscribeStep::SUBSCRIBE_DISPLAY: {
+        bool subscribed = false;
+        if (pDisplayDataChar_->canNotify()) {
+            subscribed = pDisplayDataChar_->subscribe(true, notifyCallback, true);
+        } else if (pDisplayDataChar_->canIndicate()) {
+            subscribed = pDisplayDataChar_->subscribe(false, notifyCallback);
+        }
+
+        if (!subscribed) {
+            static BleLogRateLimitState subscribeFailB2ceLog;
+            if (shouldLogBleConnectionEvent(subscribeFailB2ceLog, static_cast<uint32_t>(millis()))) {
+                Serial.println("[BLE] FAIL subscribe B2CE");
+            }
+            return false;
+        }
+        subscribeStep_ = SubscribeStep::GET_DISPLAY_LONG;
+        return false;
+    }
+
+    case SubscribeStep::GET_DISPLAY_LONG: {
+        // Get B4E0 characteristic (non-critical, used for voltage passthrough)
+        NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
+        notifyLongChar_.store(pDisplayLong, std::memory_order_release);
+        notifyLongCharId_.store(pDisplayLong ? shortUuid(pDisplayLong->getUUID()) : 0, std::memory_order_release);
+        if (pDisplayLong && pDisplayLong->canNotify()) {
+            subscribeStep_ = SubscribeStep::SUBSCRIBE_LONG;
+        } else {
+            subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA; // Skip LONG subscribe
+        }
+        return false;
+    }
+
+    case SubscribeStep::SUBSCRIBE_LONG: {
+        NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
+        if (pDisplayLong && pDisplayLong->subscribe(true, notifyCallback, true)) {
+            subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;
+        } else {
+            subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;
+        }
+        return false;
+    }
+
+    case SubscribeStep::REQUEST_ALERT_DATA: {
+        subscribeStep_ = SubscribeStep::REQUEST_VERSION;
+        return false;
+    }
+
+    case SubscribeStep::REQUEST_VERSION: {
+        subscribeStep_ = SubscribeStep::COMPLETE;
+        return true; // All done!
+    }
+
+    case SubscribeStep::COMPLETE:
+        return true; // Already complete
+    }
+
+    return true; // Shouldn't reach here
 }
 
 // --- helpers ---
@@ -959,9 +920,7 @@ void V1BLEClient::logConnParams(const char* tag) {
 
     static BleLogRateLimitState connParamsLog;
     if (shouldLogBleConnectionEvent(connParamsLog, static_cast<uint32_t>(millis()))) {
-        Serial.printf("[BLE] Conn params (%s): interval=%.2f ms latency=%u\n",
-                      tag ? tag : "n/a",
-                      intervalMs,
+        Serial.printf("[BLE] Conn params (%s): interval=%.2f ms latency=%u\n", tag ? tag : "n/a", intervalMs,
                       info.getConnLatency());
     }
 }
@@ -970,10 +929,7 @@ void V1BLEClient::logConnParams(const char* tag) {
 
 // Subscription setup now runs through the non-blocking executeSubscribeStep()
 // state machine instead of a single monolithic helper.
-void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar,
-                                  uint8_t* pData,
-                                  size_t length,
-                                  bool isNotify) {
+void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
     if (!pData || !instancePtr || !pChar) {
         return;
     }

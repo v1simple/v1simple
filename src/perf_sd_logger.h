@@ -21,7 +21,7 @@
 struct PerfSdSnapshot;
 
 class PerfSdLogger {
-public:
+  public:
 #ifdef UNIT_TEST
     ~PerfSdLogger();
 #endif
@@ -50,7 +50,7 @@ public:
     /// Returns true once the queue is empty and the persistent handle is closed.
     bool tryDrainAndClose();
 
-private:
+  private:
     static void writerTaskEntry(void* param);
     void writerTaskLoop();
     bool receiveSnapshot(PerfSdSnapshot& snapshot, TickType_t timeoutTicks);
@@ -86,7 +86,7 @@ private:
     std::atomic<uint32_t> pendingWrites_{0};
 
 #ifdef UNIT_TEST
-public:
+  public:
     void releaseForTest();
 
     bool receiveSnapshotForTest(PerfSdSnapshot& snapshot, TickType_t timeoutTicks) {

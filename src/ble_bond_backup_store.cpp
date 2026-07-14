@@ -25,8 +25,7 @@ int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
     }
 
     const size_t fileSize = file.size();
-    const size_t maxSize = sizeof(BondBackupHeader) +
-                           2 * kMaxBleBondEntries * sizeof(struct ble_store_value_sec);
+    const size_t maxSize = sizeof(BondBackupHeader) + 2 * kMaxBleBondEntries * sizeof(struct ble_store_value_sec);
     if (fileSize < sizeof(BondBackupHeader) || fileSize > maxSize) {
         file.close();
         Serial.printf("[BLE] Bond backup file size invalid: %u\n", static_cast<unsigned>(fileSize));
@@ -51,8 +50,7 @@ int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
         return -1;
     }
 
-    const size_t expectedSize = sizeof(BondBackupHeader) +
-                                header.ourSecCount * sizeof(struct ble_store_value_sec) +
+    const size_t expectedSize = sizeof(BondBackupHeader) + header.ourSecCount * sizeof(struct ble_store_value_sec) +
                                 header.peerSecCount * sizeof(struct ble_store_value_sec);
     if (fileSize < expectedSize) {
         file.close();
@@ -94,7 +92,7 @@ int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
     return restored;
 }
 
-}  // namespace
+} // namespace
 
 int restoreBleBondBackup(fs::FS& fs, const char* livePath) {
     if (!livePath || livePath[0] == '\0') {

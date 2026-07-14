@@ -28,16 +28,16 @@
 
 // AXS15231B Touch Controller I2C address and registers
 // (integrated into the display controller on Waveshare ESP32-S3-Touch-LCD-3.49)
-#define AXS_TOUCH_ADDR      0x3B
-#define AXS_REG_STATUS      0x01
-#define AXS_REG_XPOS_HIGH   0x03
-#define AXS_REG_XPOS_LOW    0x04
-#define AXS_REG_YPOS_HIGH   0x05
-#define AXS_REG_YPOS_LOW    0x06
-#define AXS_REG_CHIP_ID     0xA3
+#define AXS_TOUCH_ADDR 0x3B
+#define AXS_REG_STATUS 0x01
+#define AXS_REG_XPOS_HIGH 0x03
+#define AXS_REG_XPOS_LOW 0x04
+#define AXS_REG_YPOS_HIGH 0x05
+#define AXS_REG_YPOS_LOW 0x06
+#define AXS_REG_CHIP_ID 0xA3
 
 class TouchHandler {
-public:
+  public:
     TouchHandler();
 
     // Initialize touch controller with I2C
@@ -60,21 +60,21 @@ public:
 
     bool isAvailable() const { return touchAvailable_; }
 
-private:
+  private:
     uint8_t i2cAddr_;
     int rstPin_;
     bool touchAvailable_ = false;
     bool touchActive_;
     uint32_t lastTouchTime_;
-    uint32_t lastReleaseTime_;      // When finger was last released
+    uint32_t lastReleaseTime_; // When finger was last released
     uint32_t touchDebounceMs_;
-    uint32_t releaseDebounceMs_;    // Time finger must be lifted before new tap
+    uint32_t releaseDebounceMs_; // Time finger must be lifted before new tap
 
     // I2C stall tracking
-    uint32_t i2cStallCount_ = 0;          // Transactions that returned error
-    uint32_t i2cMaxUs_ = 0;               // Longest I2C transaction observed
+    uint32_t i2cStallCount_ = 0; // Transactions that returned error
+    uint32_t i2cMaxUs_ = 0;      // Longest I2C transaction observed
 
-public:
+  public:
     uint32_t getI2cStallCount() const { return i2cStallCount_; }
     uint32_t getI2cMaxUs() const { return i2cMaxUs_; }
     uint32_t getI2cRecoveryCount() const { return i2cRecoveryCount_; }
@@ -85,7 +85,7 @@ public:
         consecutiveI2cFailures_ = 0;
     }
 
-private:
+  private:
     static constexpr uint8_t I2C_RECOVERY_THRESHOLD = 3;
     static constexpr uint32_t I2C_RECOVERY_COOLDOWN_MS = 250;
     static constexpr uint32_t I2C_RECOVERY_BACKOFF_MS = 50;
@@ -111,4 +111,4 @@ private:
     uint8_t consecutiveI2cFailures_ = 0;
     uint32_t i2cRecoveryCount_ = 0;
 };
-#endif  // TOUCH_HANDLER_H
+#endif // TOUCH_HANDLER_H

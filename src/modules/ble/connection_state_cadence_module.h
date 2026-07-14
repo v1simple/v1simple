@@ -19,12 +19,12 @@ struct ConnectionStateCadenceDecision {
 
 // Governs when connectionStateModule.process() is allowed to run in loop().
 class ConnectionStateCadenceModule {
-public:
+  public:
     void reset();
     void onScanningScreenShown(unsigned long nowMs);
     ConnectionStateCadenceDecision process(const ConnectionStateCadenceContext& ctx);
 
-private:
+  private:
     unsigned long lastDisplayUpdateMs_ = 0;
     unsigned long scanScreenEnteredMs_ = 0;
     bool scanScreenDwellActive_ = false;

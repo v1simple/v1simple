@@ -15,19 +15,15 @@ class PowerModule;
 class V1ProfileManager;
 
 class BleQueueModule {
-public:
+  public:
     struct Config {
         size_t queueDepth;
         size_t rxBufferCap;
         Config() : queueDepth(24), rxBufferCap(512) {}
     };
 
-    bool begin(V1BLEClient* bleClient,
-               PacketParser* parser,
-               V1ProfileManager* profileMgr,
-               DisplayPreviewModule* previewModule,
-               PowerModule* powerModule,
-               SystemEventBus* eventBus = nullptr,
+    bool begin(V1BLEClient* bleClient, PacketParser* parser, V1ProfileManager* profileMgr,
+               DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus = nullptr,
                Config cfg = Config());
 
     // Release the FreeRTOS queue created by begin(). The firmware never tears
@@ -42,7 +38,11 @@ public:
     uint32_t getLastParsedTimestamp() const { return lastParsedTsMs_; }
 
     // Returns true if a packet was successfully parsed since last check (and clears flag)
-    bool consumeParsedFlag() { bool had = hadSuccessfulParse_; hadSuccessfulParse_ = false; return had; }
+    bool consumeParsedFlag() {
+        bool had = hadSuccessfulParse_;
+        hadSuccessfulParse_ = false;
+        return had;
+    }
 
     // Callback entry from BLE notifications.
     void onNotify(const uint8_t* data, size_t length, uint16_t charUUID);
@@ -53,7 +53,7 @@ public:
     unsigned long getLastRxMillis() const { return lastRxMillis_; }
     bool isBackpressured() const { return backpressureActive_; }
 
-private:
+  private:
     struct BLEDataPacket {
         uint8_t data[256];
         size_t length;
@@ -75,11 +75,11 @@ private:
 
     std::vector<uint8_t> rxBuffer_;
     bool rxBufferReady_ = false;
-    size_t rxReadPos_ = 0;  // Logical read pointer into rxBuffer (avoids front erases)
+    size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;
     uint32_t lastNotifyTsMs_ = 0;
-    uint32_t lastParsedTsMs_ = 0;      // Timestamp of last successful parse (for display latency)
-    bool hadSuccessfulParse_ = false;  // Flag: at least one packet parsed since last check
+    uint32_t lastParsedTsMs_ = 0;     // Timestamp of last successful parse (for display latency)
+    bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
     uint32_t parsedEventSeq_ = 0;
     bool backpressureActive_ = false;
     BleLogRateLimitState tooLargeWarningLog_;
@@ -87,5 +87,4 @@ private:
 
     Config config_;
     void refreshBackpressureState();
-
 };

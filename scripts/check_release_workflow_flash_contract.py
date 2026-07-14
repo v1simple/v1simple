@@ -132,9 +132,56 @@ def check_production_env_is_tested(errors: list[str]) -> None:
         errors.append("release.yml must run scripts/ci-test.sh before building release firmware")
 
 
+def check_release_version_automation(errors: list[str]) -> None:
+    """Keep the one-click release path safe, ordered, and idempotent."""
+
+    release_text = RELEASE_YML.read_text(encoding="utf-8")
+    for required in (
+        "description: Semantic version bump",
+        "type: choice",
+        "- patch",
+        "- minor",
+        "- major",
+        "persist-credentials: false",
+        'python3 scripts/prepare_release.py --lookup-run-id "$RELEASE_RUN_ID"',
+        'git checkout --detach "$RESUME_SHA"',
+        'python3 scripts/prepare_release.py --bump "$RELEASE_BUMP"',
+        'git commit -m "chore(release): prepare $RELEASE_TAG"',
+        'EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"',
+        "Release-Run-ID: $RELEASE_RUN_ID",
+        "push --atomic origin",
+        "HEAD:refs/heads/main",
+        '"refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"',
+        "generate_release_notes: true",
+    ):
+        require_contains(release_text, required, ".github/workflows/release.yml", errors)
+
+    for forbidden in (
+        "body_path: RELEASE_NOTES.md",
+        "git push --tags",
+        "git push --force",
+        "GITHUB_SHA",
+        "Bump FIRMWARE_VERSION in include/config.h before releasing",
+    ):
+        if forbidden in release_text:
+            errors.append(f"release.yml contains retired release behavior: {forbidden!r}")
+
+    prepare_index = release_text.find("--bump \"$RELEASE_BUMP\"")
+    resume_index = release_text.find("--lookup-run-id")
+    ci_index = release_text.find("./scripts/ci-test.sh")
+    publish_index = release_text.find("Publish release commit and tag")
+    if -1 not in (resume_index, prepare_index, ci_index, publish_index) and not (
+        resume_index < prepare_index < ci_index < publish_index
+    ):
+        errors.append(
+            "release.yml must resolve reruns, prepare the commit, run CI, then publish"
+        )
+
+
 def main() -> int:
     errors: list[str] = []
     check_production_env_is_tested(errors)
+    check_release_version_automation(errors)
 
     try:
         expected = {

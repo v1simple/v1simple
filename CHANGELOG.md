@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The manual Release workflow now accepts a `patch`, `minor`, or `major` choice,
+  prepares the firmware version and changelog automatically, validates the
+  exact release commit, and atomically publishes that commit with its tag.
+- Release notes are generated from merged changes instead of reusing the static
+  1.0.1 release-notes document.
+
 ## [1.0.1] - 2026-07-13
 
 First supported release. v1simple is a standalone display and BLE proxy for the

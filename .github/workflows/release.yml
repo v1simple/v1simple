@@ -1,23 +1,29 @@
 name: Release
 
-# Manual release workflow. Keep this off push-to-main so creating or updating
-# the public repository cannot publish a release accidentally.
-#
-# Bump FIRMWARE_VERSION in include/config.h before running.
+# One-click manual release workflow. Keep this off push-to-main so creating or
+# updating the public repository cannot publish a release accidentally.
 #
 # Steps:
-#   1. Run ci-test.sh
-#   2. Read version from include/config.h
-#   3. Guard against conflicting tag collision
-#   4. Build firmware + filesystem using web assets deployed by ci-test.sh
-#   5. Merge binaries for ESP Web Tools
-#   6. Stage the GitHub Pages web installer
-#   7. Create or reuse git tag for this commit
-#   8. Create GitHub Release
-#   9. Deploy the web installer to GitHub Pages
+#   1. Calculate and commit the selected semantic-version bump locally
+#   2. Run ci-test.sh on that exact release commit
+#   3. Build firmware + filesystem using web assets deployed by ci-test.sh
+#   4. Merge binaries and stage the GitHub Pages web installer
+#   5. Atomically push the release commit and its immutable tag
+#   6. Create or update the GitHub Release with generated notes
+#   7. Deploy the web installer to GitHub Pages
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version bump
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: read
@@ -39,7 +45,69 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Refresh repository refs
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Releases must be dispatched from main."
+            exit 1
+          fi
+          git fetch --force origin main
+          git fetch --force --tags origin
+
+      - name: Find prior publication for this run
+        id: resume
+        env:
+          RELEASE_RUN_ID: ${{ github.run_id }}
+        run: python3 scripts/prepare_release.py --lookup-run-id "$RELEASE_RUN_ID"
+
+      - name: Select release base
+        id: base
+        env:
+          RESUME_SHA: ${{ steps.resume.outputs.resume_sha }}
+          RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
+        run: |
+          if [ -n "$RESUME_TAG" ]; then
+            if [ "$(git rev-parse "$RESUME_TAG^{commit}")" != "$RESUME_SHA" ]; then
+              echo "::error::Recorded release tag $RESUME_TAG no longer resolves to $RESUME_SHA."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$RESUME_SHA" origin/main; then
+              echo "::error::Recorded release $RESUME_TAG is no longer in main history."
+              exit 1
+            fi
+            git checkout --detach "$RESUME_SHA"
+            echo "Resuming $RESUME_TAG at $RESUME_SHA for this workflow run."
+          else
+            git checkout --detach origin/main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release version
+        id: version
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: python3 scripts/prepare_release.py --bump "$RELEASE_BUMP"
+
+      - name: Create local release commit
+        id: release_commit
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- include/config.h CHANGELOG.md; then
+            git add include/config.h CHANGELOG.md
+            git diff --cached --check
+            git commit -m "chore(release): prepare $RELEASE_TAG"
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Release preparation left unexpected working-tree changes."
+            git status --short
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
@@ -68,33 +136,6 @@ jobs:
 
       - name: Run ci-test.sh gate
         run: ./scripts/ci-test.sh
-
-      - name: Read version from config.h
-        id: version
-        run: |
-          VERSION=$(grep '#define FIRMWARE_VERSION' include/config.h | sed 's/.*"\(.*\)".*/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not parse FIRMWARE_VERSION from include/config.h"
-            exit 1
-          fi
-          echo "Version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Guard against tag collision
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git fetch --tags --force origin
-          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
-            EXISTING_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
-            if [ "$EXISTING_SHA" = "$GITHUB_SHA" ]; then
-              echo "Tag $RELEASE_TAG already points at this commit; continuing release rerun."
-            else
-              echo "::error::Tag $RELEASE_TAG already exists at $EXISTING_SHA. Bump FIRMWARE_VERSION in include/config.h before releasing."
-              exit 1
-            fi
-          fi
 
       - name: Build firmware
         run: pio run -e waveshare-349 -j 1
@@ -194,18 +235,50 @@ jobs:
         with:
           path: release/pages
 
-      - name: Create and push tag
+      - name: Publish release commit and tag
+        id: publish
         env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_SHA: ${{ steps.release_commit.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Tag $RELEASE_TAG already exists at this commit; reusing it."
-          else
-            git tag "$RELEASE_TAG"
-            git push origin "$RELEASE_TAG"
+          if [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]; then
+            echo "::error::Release SHA no longer matches the tested working tree."
+            exit 1
           fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Refusing to publish a dirty release working tree."
+            git status --short
+            exit 1
+          fi
+
+          git fetch --force origin main
+          git fetch --force --tags origin
+          if git rev-parse --verify "$RELEASE_TAG^{commit}" >/dev/null 2>&1; then
+            EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"
+            if [ "$EXISTING_SHA" != "$RELEASE_SHA" ]; then
+              echo "::error::Tag $RELEASE_TAG already exists at $EXISTING_SHA; it will not be moved."
+              exit 1
+            fi
+            echo "Tag $RELEASE_TAG already points at tested commit $RELEASE_SHA; reusing it."
+          else
+            REMOTE_MAIN_SHA="$(git rev-parse origin/main)"
+            if [ "$REMOTE_MAIN_SHA" != "$BASE_SHA" ]; then
+              echo "::error::main advanced from $BASE_SHA to $REMOTE_MAIN_SHA during the release. Rerun from current main."
+              exit 1
+            fi
+            git tag -a "$RELEASE_TAG" "$RELEASE_SHA" \
+              -m "Release $RELEASE_TAG" \
+              -m "Release-Run-ID: $RELEASE_RUN_ID"
+            AUTH_VALUE="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_VALUE" \
+              push --atomic origin \
+              HEAD:refs/heads/main \
+              "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          fi
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         # v3.0.2, pinned so a mutable tag cannot change code running with contents:write.
@@ -213,7 +286,6 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             release/*.bin
@@ -237,11 +309,13 @@ jobs:
           {
             echo "## Released ${{ steps.version.outputs.tag }}"
             echo ""
-            echo "- Tag created or reused for this commit"
+            echo "- Firmware version and changelog prepared automatically"
+            echo "- Tested release commit: ${{ steps.publish.outputs.sha }}"
+            echo "- Release commit and tag published atomically or safely reused"
             echo "- GitHub Release published with firmware, filesystem, merged installer binary, and ESP Web Tools manifest"
             echo "- Third-party notices and runtime license texts published with the release and installer"
             echo "- Image-info report uploaded as workflow evidence"
-            echo "- GitHub Pages installer deployed from the same manifest and merged image"
+            echo "- GitHub Pages installer artifact staged from the same manifest and merged image"
           } >> $GITHUB_STEP_SUMMARY
 
   deploy-pages:

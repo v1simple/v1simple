@@ -30,6 +30,29 @@ void test_release_action_and_permission_scope_contract() {
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         workflow.find("timeout-minutes: 45\n    permissions:\n      contents: write\n      pages: write"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("persist-credentials: false"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("python3 scripts/prepare_release.py"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("--lookup-run-id \"$RELEASE_RUN_ID\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("git checkout --detach \"$RESUME_SHA\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("push --atomic origin"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("generate_release_notes: true"));
+    TEST_ASSERT_EQUAL(std::string::npos,
+                      workflow.find("body_path: RELEASE_NOTES.md"));
+    TEST_ASSERT_EQUAL(std::string::npos, workflow.find("GITHUB_SHA"));
+
+    const std::string::size_type prepare =
+        workflow.find("python3 scripts/prepare_release.py");
+    const std::string::size_type ci = workflow.find("./scripts/ci-test.sh");
+    const std::string::size_type publish =
+        workflow.find("Publish release commit and tag");
+    TEST_ASSERT_TRUE(prepare < ci);
+    TEST_ASSERT_TRUE(ci < publish);
 }
 
 void test_runtime_dependency_notices_bundle_required_license_terms() {

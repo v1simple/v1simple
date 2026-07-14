@@ -1,7 +1,7 @@
 name: CI
 
 # Push to main or open PR to main → run tests.
-# Bump FIRMWARE_VERSION manually before an intentional release.
+# The manual Release workflow prepares its selected version automatically.
 
 on:
   push:

@@ -1,0 +1,80 @@
+name: Firmware Coverage
+
+# Out-of-band firmware C++ coverage lane.
+#
+# This does NOT run in the PR gate. Putting it there would add a whole second
+# native run to ci-test.sh: measured on one host, the 149 native suites take
+# 170.7s uninstrumented vs 206.6s instrumented (1.21x), plus ~24s of gcovr
+# aggregation — roughly +230s on a lane that already runs ~531s against a 1200s
+# budget (tools/ci_time_budgets.json), and GitHub runners are slower than that
+# host. So it runs after merge to main and on demand instead.
+#
+# Scope: the native envs set test_build_src = false, so this measures the
+# firmware code the native suites actually compile — not whole-firmware
+# coverage. Device-only driver code stays covered by the mutation gate and the
+# device suites. See .artifacts/test_reports/coverage/coverage_scope.txt in the
+# uploaded artifact for the exact measured denominator.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: firmware-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install Python toolchain
+        run: pip install "platformio>=6.1.19,<7" "cryptography>=41" "Pillow>=10.4,<13" "gcovr>=8.0,<9"
+
+      - name: Coverage ratchet regression tests
+        run: python3 scripts/test_check_firmware_coverage.py
+
+      - name: Measure firmware coverage
+        run: |
+          set -o pipefail
+          python3 scripts/run_firmware_coverage.py 2>&1 | tee coverage.log
+
+      # Advisory until the Track C file splits land and the baseline is
+      # refreshed against them. Promote to a hard failure after that.
+      - name: Coverage ratchet
+        continue-on-error: true
+        run: python3 scripts/check_firmware_coverage.py
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: firmware-coverage-${{ github.sha }}
+          path: |
+            .artifacts/test_reports/coverage/
+            coverage.log
+          retention-days: 14

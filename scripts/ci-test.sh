@@ -12,6 +12,41 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/ci-test.sh [--with-coverage] [--help]
+
+  --with-coverage   Also run the firmware C++ coverage lane (native-coverage
+                    suites + gcovr + ratchet check). OFF by default: the lane is
+                    a whole second native run (measured: 170.7s uninstrumented
+                    vs 206.6s instrumented for 149 suites, plus ~24s of gcovr),
+                    so the PR gate does not carry it. It runs out-of-band in
+                    .github/workflows/coverage.yml. When this flag is passed the
+                    coverage section runs AFTER the budget check, so it is not
+                    charged against the 1200s ci-test budget.
+  --help            Show this message.
+EOF
+}
+
+WITH_COVERAGE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-coverage)
+      WITH_COVERAGE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo -e "${RED}Unknown argument: $1${NC}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
 START_TIME=$(date +%s)
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
 if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
@@ -153,6 +188,21 @@ echo "{\"elapsed_seconds\": ${ELAPSED}, \"lane\": \"ci-test\"}" > "$TIMING_DIR/t
 
 section "Budget Check"
 run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TIMING_DIR/timing.json"
+
+# Opt-in only, and deliberately sequenced AFTER the budget check: the coverage
+# lane is not part of the authoritative PR gate, so its wall clock must not be
+# charged against the 1200s ci-test budget. Without --with-coverage nothing
+# below runs and the gate is unchanged.
+if [[ "$WITH_COVERAGE" -eq 1 ]]; then
+  section "Firmware Coverage (opt-in, outside the ci-test budget)"
+  COVERAGE_START=$(date +%s)
+  run_step "Firmware coverage ratchet regression tests" python3 scripts/test_check_firmware_coverage.py
+  run_step "Firmware coverage measurement" python3 scripts/run_firmware_coverage.py
+  # Advisory until the Track C file splits land and the baseline is refreshed.
+  run_advisory_step "Firmware coverage ratchet" python3 scripts/check_firmware_coverage.py
+  COVERAGE_ELAPSED=$(($(date +%s) - COVERAGE_START))
+  echo -e "${YELLOW}[info] coverage lane took ${COVERAGE_ELAPSED}s (not charged to the ci-test budget)${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}All gates passed in ${ELAPSED}s${NC}"

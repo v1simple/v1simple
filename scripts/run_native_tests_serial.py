@@ -26,7 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
 BUILD_ROOT = ROOT / ".artifacts" / "serial_test_builds"
 
-VALID_ENVS = {"native", "native-car", "native_car", "native-sanitized"}
+VALID_ENVS = {
+    "native",
+    "native-car",
+    "native_car",
+    "native-coverage",
+    "native-sanitized",
+}
 
 
 def discover_native_tests(env: str) -> list[str]:

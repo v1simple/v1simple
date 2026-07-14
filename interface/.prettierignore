@@ -1,0 +1,8 @@
+# Build output and generated artifacts
+build/
+.svelte-kit/
+coverage/
+node_modules/
+
+# Lockfile is machine-managed
+package-lock.json

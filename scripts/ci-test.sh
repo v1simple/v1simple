@@ -87,9 +87,12 @@ run_step "Modified font reserved-name contract" python3 scripts/check_modified_f
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py
 run_step "Stabilization manifest contract" python3 scripts/check_stabilization_manifest.py
+run_step "Native linked-source manifest contract" python3 scripts/native_test_source_manifest.py --check
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
-run_advisory_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
+run_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native_car
+run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch
+run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch
 run_step "Functional scenarios" ./scripts/run_functional_tests.sh
 
 section "Critical Mutation Gate"
@@ -104,6 +107,7 @@ run_step "Perf CSV import regression tests" python3 scripts/test_perf_csv_import
 run_step "Soak metrics parser regression tests" python3 scripts/test_soak_parse_metrics.py
 run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
+run_step "OBD/proxy qualification validator regression tests" python3 scripts/test_obd_proxy_qualification.py
 run_step "Release evidence manifest regression tests" python3 scripts/test_release_evidence_manifest.py
 
 section "Compatibility Guards"
@@ -126,6 +130,7 @@ section "Docs Hygiene"
 run_step "Perf SLO doc/json contract" python3 scripts/check_perf_slo_contract.py
 run_step "Build instruction contract" python3 scripts/check_build_instruction_contract.py
 run_step "Build dist contract" python3 scripts/check_build_dist_contract.py
+run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
 run_step "Release workflow flash contract" python3 scripts/check_release_workflow_flash_contract.py
 run_step "Web installer page contract" python3 scripts/check_web_installer_page.py --site-dir web-installer --template-only
 run_step "API docs source contract" python3 scripts/check_api_doc_sources.py

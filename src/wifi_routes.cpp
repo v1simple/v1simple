@@ -19,6 +19,7 @@
 #include "modules/wifi/wifi_status_api_service.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_audio_api_service.h"
+#include "modules/wifi/wifi_maintenance_write_policy.h"
 #include "modules/wifi/wifi_static_path_guard.h"
 #include "modules/wifi/wifi_v1_profile_api_service.h"
 #include "modules/wifi/wifi_v1_devices_api_service.h"
@@ -33,12 +34,25 @@
 #include <LittleFS.h>
 
 bool WiFiManager::requireMaintenanceApiWriteHeader() {
-    if (server_.hasHeader(maintenanceApiWriteHeader()) &&
-        server_.header(maintenanceApiWriteHeader()) == maintenanceApiWriteHeaderValue()) {
-        return true;
+    const bool hasValidWriteHeader =
+        server_.hasHeader(maintenanceApiWriteHeader()) &&
+        server_.header(maintenanceApiWriteHeader()) == maintenanceApiWriteHeaderValue();
+    const WifiMaintenanceWritePolicy::Decision decision =
+        WifiMaintenanceWritePolicy::evaluate(maintenanceBootMode_, hasValidWriteHeader);
+
+    switch (decision) {
+        case WifiMaintenanceWritePolicy::Decision::Allow:
+            return true;
+        case WifiMaintenanceWritePolicy::Decision::RejectNotMaintenance:
+            Serial.printf("[HTTP] REJECT maintenance write outside maintenance boot %s\n",
+                          server_.uri().c_str());
+            break;
+        case WifiMaintenanceWritePolicy::Decision::RejectHeader:
+            Serial.printf("[HTTP] REJECT invalid maintenance write header %s\n",
+                          server_.uri().c_str());
+            break;
     }
 
-    Serial.printf("[HTTP] REJECT missing maintenance write header %s\n", server_.uri().c_str());
     server_.send(403, "application/json", "{\"success\":false,\"error\":\"forbidden\"}");
     return false;
 }

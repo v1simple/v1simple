@@ -63,6 +63,18 @@ If no representative OBD/proxy hardware rig exists for this terminal release, do
 
 Any actual OBD/proxy hardware pass that is run should still be recorded. Treat any executed hardware step result other than `PASS` or `NO_BASELINE` as a release blocker until it is triaged and documented.
 
+A claimed `PASS` must use the versioned case inventory in
+`tools/obd_proxy_qualification_profile_v1.json`. The qualification artifact
+must identify the release commit, firmware, DUT, and rig; cover every required
+case exactly once; cite a nonempty relative evidence log for each case; and
+report zero watchdog resets and panics. Validate it before adding it to the
+release manifest:
+
+```bash
+python3 scripts/check_obd_proxy_qualification.py \
+  --artifact .artifacts/obd-proxy/<run-id>/qualification_result.json
+```
+
 ### 4c. Evidence manifest
 
 Before merging, write a local evidence manifest that points at the bench result
@@ -82,7 +94,8 @@ and any extra hardware artifacts required by section 4b:
       "id": "obd-proxy-arbitration",
       "kind": "accepted-risk",
       "result": "ACCEPTED_RISK",
-      "rationale": "No representative OBD/proxy hardware qualification rig exists for this terminal release; optional feature accepted based on unit/contract/build gates."
+      "rationale": "No representative OBD/proxy hardware qualification rig exists for this terminal release; optional feature accepted based on unit/contract/build gates.",
+      "scope": ["OBD", "BLE proxy", "connection arbitration"]
     }
   ]
 }
@@ -97,8 +110,10 @@ python3 scripts/check_release_evidence_manifest.py \
 
 The manifest stays local under `.artifacts/`, but the release PR/release notes
 should cite the manifest path plus the underlying artifact paths or accepted-risk
-rationales. A `WARN` bench result requires explicit investigation; use
-`--allow-bench-warn` only when that investigation is documented.
+rationales and scope. `obd-proxy-arbitration` may not be omitted: it must be a
+validated `hardware-qualification` PASS or a structured `accepted-risk` entry.
+A `WARN` bench result requires explicit investigation; use `--allow-bench-warn`
+only when that investigation is documented.
 
 ## 5. Merge and release procedure
 

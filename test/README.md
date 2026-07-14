@@ -21,6 +21,10 @@ pio test -e native -v
 pio test -e native --filter test_display
 pio test -e native --filter test_packet_parser
 pio test -e native --filter test_wifi_boot_policy
+
+# Compile the allow-listed AlpEventLatch production source separately
+python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch
+python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch
 ```
 
 ## Device Test Suite

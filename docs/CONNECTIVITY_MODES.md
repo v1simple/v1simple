@@ -68,11 +68,13 @@ Use this when a companion phone app should be the authority.
 ## Maintenance-mode security model
 
 The maintenance web server is reachable only after an explicit maintenance boot:
-normal drive runtime keeps WiFi and the HTTP API off. The WPA2 AP password (or a
-saved STA network's own security) is the app-layer security boundary; the HTTP
-routes do not add sessions or per-request authentication. Mutating API POST
-routes require the bundled UI's `X-V1Simple-Request: maintenance-ui` header so
-ordinary cross-origin forms cannot trigger maintenance writes. Change the
-default AP password before using maintenance mode in any shared RF environment.
-Treat backup exports as sensitive when credential export is explicitly
-requested, because they can include saved WiFi passwords.
+normal drive runtime keeps WiFi and the HTTP API off. The central write guard
+also verifies that authoritative maintenance-boot state before accepting any
+mutating API POST. The WPA2 AP password (or a saved STA network's own security)
+is the peer-admission boundary; the HTTP routes do not add sessions or
+per-request authentication. Mutating API POST routes additionally require the
+bundled UI's `X-V1Simple-Request: maintenance-ui` header so ordinary
+cross-origin forms cannot trigger maintenance writes. Change the default AP
+password before using maintenance mode in any shared RF environment. Network
+backup exports omit AP and saved STA passwords; local SD recovery backups remain
+sensitive and should be handled as device credentials.

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include "esp_system.h"      // esp_reset_reason_t
+#include "main_runtime_services.h"
 
 class QuietCoordinatorModule;
 
@@ -62,7 +63,7 @@ void initializeStorageAndProfiles();
 void prepareForShutdown(void* context);
 
 /// Initialize perf/observation CSV loggers and return the boot session id.
-uint32_t initializeBootPerformanceLoggers();
+uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services);
 
 /// Initialize touch hardware and apply persisted display controls.
 void initializeTouchAndDisplayControls();

@@ -325,6 +325,36 @@ def find_api_write_guard_errors(source: str) -> List[str]:
     return errors
 
 
+def find_api_write_guard_policy_errors(source: str) -> List[str]:
+    body = extract_method_body(source, "requireMaintenanceApiWriteHeader")
+    if not body:
+        return ["missing requireMaintenanceApiWriteHeader() definition"]
+
+    errors: List[str] = []
+    required_fragments = {
+        "header presence check": "server_.hasHeader(maintenanceApiWriteHeader())",
+        "header value check": (
+            "server_.header(maintenanceApiWriteHeader()) == maintenanceApiWriteHeaderValue()"
+        ),
+        "not-maintenance rejection": "Decision::RejectNotMaintenance",
+        "header rejection": "Decision::RejectHeader",
+    }
+    for label, fragment in required_fragments.items():
+        if fragment not in body:
+            errors.append(f"maintenance write guard missing {label}")
+
+    evaluates_mode_and_header = re.search(
+        r"WifiMaintenanceWritePolicy::evaluate\s*\(\s*maintenanceBootMode_\s*,\s*"
+        r"hasValidWriteHeader\s*\)",
+        body,
+    )
+    if not evaluates_mode_and_header:
+        errors.append(
+            "maintenance write guard must evaluate maintenance mode and validated header together"
+        )
+    return errors
+
+
 def read_expected_lines(path: Path) -> List[str]:
     if not path.exists():
         return []
@@ -441,13 +471,20 @@ def main() -> int:
             print(f"  - {error}")
         ok = False
 
+    api_write_guard_policy_errors = find_api_write_guard_policy_errors(source)
+    if api_write_guard_policy_errors:
+        print("[contract] api-write-guard-policy mismatch")
+        for error in api_write_guard_policy_errors:
+            print(f"  - {error}")
+        ok = False
+
     if not ok:
         print("\nRun with --update only when intentionally changing contract.")
         return 1
 
     print(
         "[contract] route, policy, shim-absence, local-handler-route, "
-        "delegate placement, and api-write-guard contracts match"
+        "delegate placement, api-write-guard, and api-write-guard-policy contracts match"
     )
     return 0
 

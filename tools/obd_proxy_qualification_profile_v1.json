@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "profile_id": "obd-proxy-arbitration-v1",
+  "profile_version": 1,
+  "required_cases": [
+    {
+      "id": "obd_pair_connect_pid",
+      "description": "Pair with the representative OBD adapter, connect, and observe valid PID activity."
+    },
+    {
+      "id": "obd_power_cycle_reconnect",
+      "description": "Power-cycle the OBD adapter and verify that the device reconnects."
+    },
+    {
+      "id": "v1_power_cycle_reconnect_with_obd",
+      "description": "Power-cycle the V1 while OBD is enabled and verify that the V1 reconnects."
+    },
+    {
+      "id": "proxy_phone_connect",
+      "description": "Connect a representative proxy phone client."
+    },
+    {
+      "id": "proxy_takeover_stops_obd",
+      "description": "Verify that proxy takeover stops OBD scan, connect, and active-client work."
+    },
+    {
+      "id": "obd_recovery_after_proxy_exit",
+      "description": "Exit proxy mode and verify that OBD operation can recover."
+    },
+    {
+      "id": "sustained_obd",
+      "description": "Run a sustained representative OBD workload without a watchdog reset or panic."
+    },
+    {
+      "id": "sustained_proxy",
+      "description": "Run a sustained representative proxy workload without a watchdog reset or panic."
+    }
+  ]
+}

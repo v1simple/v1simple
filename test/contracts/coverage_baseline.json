@@ -157,7 +157,7 @@
       "test_wifi_v1_profile_api_service",
       "test_wifi_visual_sync_module"
     ],
-    "measured_file_count": 187,
+    "measured_file_count": 188,
     "filters": [
       "^src/",
       "^include/"
@@ -1028,15 +1028,20 @@
       "line_total": 409,
       "line_covered": 330
     },
+    "src/settings_backup_doc.cpp": {
+      "line_percent": 71.5,
+      "line_total": 491,
+      "line_covered": 351
+    },
     "src/settings_nvs.cpp": {
       "line_percent": 70.6,
       "line_total": 690,
       "line_covered": 487
     },
     "src/settings_restore.cpp": {
-      "line_percent": 64.4,
-      "line_total": 826,
-      "line_covered": 532
+      "line_percent": 54.0,
+      "line_total": 335,
+      "line_covered": 181
     },
     "src/settings_runtime_sync.h": {
       "line_percent": 100.0,

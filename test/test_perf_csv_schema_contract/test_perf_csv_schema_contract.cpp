@@ -143,9 +143,9 @@ void test_perf_csv_header_includes_display_attribution_columns() {
 }
 
 void test_perf_metrics_exports_render_and_connect_burst_sources() {
-    const std::string source = readTextFile("src/perf_metrics.cpp");
+    const std::string source = readTextFile("src/perf_snapshot.cpp");
 
-    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_metrics.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "failed to read src/perf_snapshot.cpp");
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         source.find("flat.dispMaxUs = metrics.displayRenderMaxUs;"));
@@ -196,10 +196,10 @@ void test_perf_metrics_exports_render_and_connect_burst_sources() {
 
 void test_perf_csv_header_includes_gps_utc_and_observability_columns() {
     const std::string sdLogger = readTextFile("src/perf_sd_logger.cpp");
-    const std::string metrics  = readTextFile("src/perf_metrics.cpp");
+    const std::string metrics  = readTextFile("src/perf_snapshot.cpp");
 
     TEST_ASSERT_FALSE_MESSAGE(sdLogger.empty(), "failed to read src/perf_sd_logger.cpp");
-    TEST_ASSERT_FALSE_MESSAGE(metrics.empty(),  "failed to read src/perf_metrics.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(metrics.empty(),  "failed to read src/perf_snapshot.cpp");
 
     // UTC column at position 2 (after millis)
     TEST_ASSERT_NOT_EQUAL(std::string::npos, sdLogger.find("millis,utc,rx,"));
@@ -211,7 +211,7 @@ void test_perf_csv_header_includes_gps_utc_and_observability_columns() {
     // UTC helper present in row writer
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
         sdLogger.find("appendCsvUtcField(line, lineBufferLen, offset, snapshot.utcEpochMs, snapshot.utcValid)"));
-    // GPS fields populated in perf_metrics.cpp
+    // GPS fields populated in perf_snapshot.cpp
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
         metrics.find("flat.gpsSentencesOk           = gpsStatus.sentencesParsed;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

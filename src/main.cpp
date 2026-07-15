@@ -557,6 +557,21 @@ void loop() {
         wifiManager.process();
         settingsManager.serviceDeferredPersist(static_cast<uint32_t>(now));
         settingsManager.serviceDeferredBackup(static_cast<uint32_t>(now));
+
+        // Keep the maintenance screen's shown address current: the STA/DHCP IP
+        // once we've joined a configured network, otherwise the setup AP's
+        // default IP. Redraw only when it actually changes (a handful of times
+        // per session) so we don't reflush the panel every loop.
+        static String maintenanceShownIp;
+        static bool maintenanceShownStation = false;
+        const bool maintenanceStaConnected = wifiManager.isConnected();
+        String maintenanceIp = maintenanceStaConnected ? wifiManager.getIPAddress() : wifiManager.getAPIPAddress();
+        if (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation) {
+            maintenanceShownIp = maintenanceIp;
+            maintenanceShownStation = maintenanceStaConnected;
+            display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
+        }
+
         static unsigned long bootButtonPressStartMs = 0;
         static bool exitRequestFired = false;
         static bool idleHeapLogged = false;

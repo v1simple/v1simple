@@ -74,7 +74,11 @@ class V1Display {
 
     // Show connection status
     void showDisconnected();
-    void showMaintenanceMode();
+    // Maintenance/setup screen. ipAddress: device network address to display
+    // (nullptr/empty = none available yet). stationMode: true when ipAddress is
+    // the STA/DHCP address (device joined a configured network); false when it
+    // is the setup AP's default address.
+    void showMaintenanceMode(const char* ipAddress = nullptr, bool stationMode = false);
     void showResting(bool forceRedraw = false);        // idle/rest screen
     void showScanning();                               // scanning screen (like resting but with SCAN text)
     void showStealth(float speedMph, bool speedValid); // stealth: blank screen with OBD speed

@@ -57,6 +57,8 @@ public:
     int showRestingCalls = 0;
     int showDisconnectedCalls = 0;
     int showMaintenanceModeCalls = 0;
+    char lastMaintenanceIp[24] = "";
+    bool lastMaintenanceStationMode = false;
     int updateCalls = 0;
     int updatePersistedCalls = 0;
     int clearCalls = 0;
@@ -124,6 +126,8 @@ public:
         showRestingCalls = 0;
         showDisconnectedCalls = 0;
         showMaintenanceModeCalls = 0;
+        lastMaintenanceIp[0] = '\0';
+        lastMaintenanceStationMode = false;
         updateCalls = 0;
         updatePersistedCalls = 0;
         clearCalls = 0;
@@ -204,7 +208,16 @@ public:
     void showScanning() { showScanningCalls++; }
     void showResting() { showRestingCalls++; }
     void showDisconnected() { showDisconnectedCalls++; }
-    void showMaintenanceMode() { showMaintenanceModeCalls++; }
+    void showMaintenanceMode(const char* ip = nullptr, bool stationMode = false) {
+        showMaintenanceModeCalls++;
+        if (ip != nullptr) {
+            std::strncpy(lastMaintenanceIp, ip, sizeof(lastMaintenanceIp) - 1);
+            lastMaintenanceIp[sizeof(lastMaintenanceIp) - 1] = '\0';
+        } else {
+            lastMaintenanceIp[0] = '\0';
+        }
+        lastMaintenanceStationMode = stationMode;
+    }
     
     void update(const DisplayState& /*state*/) { updateCalls++; renderSeq++; }
     void update(const AlertData& priority, const AlertData* /*alerts*/,

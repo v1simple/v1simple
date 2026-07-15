@@ -16,6 +16,11 @@ struct Runtime {
     const char* firmwareVersion = nullptr;
     const char* firmwareSha = nullptr;
     bool maintenanceBootActive = false;
+    // Network address to restore onto the maintenance screen after a preview is
+    // cleared. stationMode=true → maintenanceIp is the STA/DHCP address; false →
+    // the setup AP's default address. Empty until WiFi is up.
+    String maintenanceIp;
+    bool maintenanceStationMode = false;
 };
 
 void handleSteps(WebServer& server, const Runtime& runtime);

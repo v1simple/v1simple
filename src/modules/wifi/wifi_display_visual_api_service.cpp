@@ -1262,7 +1262,7 @@ void handleClear(WebServer& server, const Runtime& runtime) {
         return;
     }
     runtime.preview->clearVisualPin();
-    runtime.display->showMaintenanceMode();
+    runtime.display->showMaintenanceMode(runtime.maintenanceIp.c_str(), runtime.maintenanceStationMode);
     server.send(200, "application/json", "{\"success\":true,\"active\":false,\"restored\":true}");
 }
 

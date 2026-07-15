@@ -40,7 +40,7 @@ void V1Display::showDisconnected() {
 // showMaintenanceMode
 // ============================================================================
 
-void V1Display::showMaintenanceMode() {
+void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
     persistedMode_ = false;
@@ -50,17 +50,34 @@ void V1Display::showMaintenanceMode() {
     drawBaseFrame();
 
     GFX_setTextDatum(MC_DATUM);
+
+    // Title on a single line so the network address has room below it.
     TFT_CALL(setTextSize)(3);
     TFT_CALL(setTextColor)(0x07FF, PALETTE_BG); // Cyan
-    GFX_drawString(tft_, "MAINTENANCE", SCREEN_WIDTH / 2, 48);
-    GFX_drawString(tft_, "MODE", SCREEN_WIDTH / 2, 82);
+    GFX_drawString(tft_, "MAINTENANCE MODE", SCREEN_WIDTH / 2, 48);
 
+    const bool hasIp = (ipAddress != nullptr && ipAddress[0] != '\0');
+
+    // Context line: explains the address shown below. Falls back to the
+    // original copy while WiFi is still coming up (no address yet).
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(PALETTE_TEXT, PALETTE_BG);
-    GFX_drawString(tft_, "WiFi setup active", SCREEN_WIDTH / 2, 120);
+    const char* label = !hasIp ? "WiFi setup active" : (stationMode ? "Browse to:" : "Join WiFi, then browse to:");
+    GFX_drawString(tft_, label, SCREEN_WIDTH / 2, 84);
 
-    TFT_CALL(setTextSize)(1);
-    TFT_CALL(setTextColor)(PALETTE_GRAY, PALETTE_BG);
+    // Network address — legible size, drawn in green so it stands out from the
+    // cyan title, white label, and grey hint.
+    if (hasIp) {
+        TFT_CALL(setTextSize)(3);
+        TFT_CALL(setTextColor)(0x07E0, PALETTE_BG); // Green
+        GFX_drawString(tft_, ipAddress, SCREEN_WIDTH / 2, 118);
+    }
+
+    // Exit hint: PALETTE_GRAY is the near-black "resting" colour (0x1082 ≈
+    // RGB 16,16,16) and is almost invisible on the black background, so draw
+    // this at a legible size in mid-grey.
+    TFT_CALL(setTextSize)(2);
+    TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Mid-grey
     GFX_drawString(tft_, "Hold BOOT 4s to exit", SCREEN_WIDTH / 2, 150);
 
     drawWiFiIndicator();

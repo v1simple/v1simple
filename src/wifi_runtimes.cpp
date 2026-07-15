@@ -235,6 +235,11 @@ WifiDisplayVisualApiService::Runtime WiFiManager::makeDisplayVisualRuntime() {
     r.firmwareVersion = FIRMWARE_VERSION;
     r.firmwareSha = getBuildGitSha();
     r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    // Resolve the address shown when a display preview is cleared: STA/DHCP IP
+    // when joined to a configured network, otherwise the setup AP's default IP.
+    const bool staConnected = isConnected();
+    r.maintenanceStationMode = staConnected;
+    r.maintenanceIp = staConnected ? getIPAddress() : getAPIPAddress();
     return r;
 }
 

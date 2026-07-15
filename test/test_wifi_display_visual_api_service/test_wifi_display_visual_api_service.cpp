@@ -609,6 +609,33 @@ void test_clear_releases_pin_and_restores_maintenance_screen() {
     TEST_ASSERT_EQUAL_INT(1, display.showMaintenanceModeCalls);
 }
 
+void test_clear_restores_maintenance_screen_with_station_ip() {
+    auto runtime = makeRuntime();
+    runtime.maintenanceIp = "192.168.1.50";
+    runtime.maintenanceStationMode = true;
+
+    WebServer clearServer(80);
+    WifiDisplayVisualApiService::handleClear(clearServer, runtime);
+
+    TEST_ASSERT_EQUAL_INT(200, clearServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, display.showMaintenanceModeCalls);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.50", display.lastMaintenanceIp);
+    TEST_ASSERT_TRUE(display.lastMaintenanceStationMode);
+}
+
+void test_clear_restores_maintenance_screen_with_ap_ip() {
+    auto runtime = makeRuntime();
+    runtime.maintenanceIp = "192.168.4.1";
+    runtime.maintenanceStationMode = false;
+
+    WebServer clearServer(80);
+    WifiDisplayVisualApiService::handleClear(clearServer, runtime);
+
+    TEST_ASSERT_EQUAL_INT(200, clearServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", display.lastMaintenanceIp);
+    TEST_ASSERT_FALSE(display.lastMaintenanceStationMode);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_steps_requires_maintenance_boot);
@@ -624,5 +651,7 @@ int main() {
     RUN_TEST(test_flushshadow_serves_shadow_bytes_with_contract_headers);
     RUN_TEST(test_flushshadow_fails_closed_when_not_pinned_or_unavailable);
     RUN_TEST(test_clear_releases_pin_and_restores_maintenance_screen);
+    RUN_TEST(test_clear_restores_maintenance_screen_with_station_ip);
+    RUN_TEST(test_clear_restores_maintenance_screen_with_ap_ip);
     return UNITY_END();
 }

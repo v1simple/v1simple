@@ -7,6 +7,10 @@ namespace {
 // If no V1 connects within this window, advance past SCAN_V1 so WiFi
 // (and other downstream phases) can proceed without a V1 present.
 constexpr uint32_t kScanV1FallbackMs = 30000;
+// Auto-push begins only after the V1 connection burst settles (up to 2.5 s),
+// so its terminal deadline must remain distinct from the shorter configurable
+// quiet fallback used when auto-push is not blocking the phase.
+constexpr uint32_t kV1SettleHardDeadlineMs = 10000;
 
 bool hasElapsed(const uint32_t nowMs, const uint32_t startMs, const uint32_t durationMs) {
     return static_cast<int32_t>(nowMs - startMs) >= static_cast<int32_t>(durationMs);
@@ -117,6 +121,7 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         v1VerifyPushMatchedAtMs_ = ctx.nowMs;
     }
 
+    const bool v1Connected = !wasV1Connected_ && ctx.v1GattConnected;
     const bool v1Dropped = wasV1Connected_ && !ctx.v1GattConnected;
     if (v1Dropped && state_ != CycleState::TEARDOWN && state_ != CycleState::SCAN_V1) {
         enterTeardown(ctx.nowMs);
@@ -136,7 +141,12 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         ctx.v1GattConnected && v1VerifyPushMatched_ && hasElapsed(ctx.nowMs, v1QuietAnchorMs, v1SettleQuietMs_);
     const bool v1SettledByFallback =
         ctx.v1GattConnected && !autoPushBlocksV1Settle && hasElapsed(ctx.nowMs, ctx.v1LastEventMs, v1SettleFallbackMs_);
-    const bool v1Settled = v1SettledByVerifyPush || v1SettledByFallback;
+    // Auto-push can complete the phase early through VerifyPush, but a missing
+    // verification edge or continuing V1 traffic must never make V1_SETTLING
+    // absorbing.
+    const bool v1SettledByDeadline =
+        ctx.v1GattConnected && hasElapsed(ctx.nowMs, stateEnteredMs_, kV1SettleHardDeadlineMs);
+    const bool v1Settled = v1SettledByVerifyPush || v1SettledByFallback || v1SettledByDeadline;
     const bool obdSettled =
         ctx.obdConnected && ctx.obdState == ObdConnectionState::POLLING && ctx.obdHasValidSpeedSample;
 
@@ -208,13 +218,17 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         break;
 
     case CycleState::WIFI_OPEN:
-        if (ctx.wifiActive || hasElapsed(ctx.nowMs, stateEnteredMs_, wifiOpenTimeoutMs_)) {
+        if (v1Connected) {
+            transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
+        } else if (ctx.wifiActive || hasElapsed(ctx.nowMs, stateEnteredMs_, wifiOpenTimeoutMs_)) {
             transitionTo(CycleState::STEADY, ctx.nowMs);
         }
         break;
 
     case CycleState::STEADY:
-        if (ctx.wifiManualStartIntentLatched && ctx.proxyClientConnected) {
+        if (v1Connected) {
+            transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
+        } else if (ctx.wifiManualStartIntentLatched && ctx.proxyClientConnected) {
             manualWifiPreemptRequested_ = true;
             totalWifiManualPhoneKicks_++;
             if (providers.disconnectProxyPhone) {

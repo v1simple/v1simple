@@ -193,20 +193,69 @@ void test_auto_push_disabled_fallback_transitions_to_obd_scan() {
                             static_cast<uint8_t>(module.state()));
 }
 
-void test_auto_push_enabled_without_verification_holds_obd_settle() {
+void test_auto_push_enabled_without_verification_exits_at_hard_deadline() {
     driveToSettling(100, true);
 
-    CycleContext ctx = makeContext(1600);
-    ctx.v1GattConnected = true;
-    ctx.autoPushEnabled = true;
-    ctx.v1LastEventMs = 100;
-    ctx.obdEnabled = true;
-    module.update(ctx);
+    CycleContext earlyCtx = makeContext(100 + kV1SettleHardDeadlineMs - 1);
+    earlyCtx.v1GattConnected = true;
+    earlyCtx.autoPushEnabled = true;
+    earlyCtx.v1LastEventMs = earlyCtx.nowMs;
+    earlyCtx.obdEnabled = true;
+    module.update(earlyCtx);
 
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::V1_SETTLING),
                             static_cast<uint8_t>(module.state()));
     TEST_ASSERT_FALSE(module.obdScanAllowed());
     TEST_ASSERT_FALSE(module.proxyAdvertisingAllowed());
+
+    CycleContext deadlineCtx = earlyCtx;
+    deadlineCtx.nowMs = 100 + kV1SettleHardDeadlineMs;
+    deadlineCtx.v1LastEventMs = deadlineCtx.nowMs;
+    module.update(deadlineCtx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::OBD_SCAN),
+                            static_cast<uint8_t>(module.state()));
+    TEST_ASSERT_TRUE(module.obdScanAllowed());
+    TEST_ASSERT_TRUE(module.obdConnectAllowed());
+}
+
+void test_hard_settle_deadline_reaches_steady_when_downstream_modes_are_disabled() {
+    driveToSettling(100, true);
+
+    CycleContext ctx = makeContext(100 + kV1SettleHardDeadlineMs);
+    ctx.v1GattConnected = true;
+    ctx.autoPushEnabled = true;
+    ctx.v1LastEventMs = ctx.nowMs;
+    ctx.obdEnabled = false;
+    ctx.proxyEnabled = false;
+    ctx.wifiEnabled = false;
+    module.update(ctx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::STEADY),
+                            static_cast<uint8_t>(module.state()));
+}
+
+void test_hard_settle_deadline_is_rollover_safe() {
+    const uint32_t connectedAtMs = UINT32_MAX - 4999u;
+    driveToSettling(connectedAtMs, true);
+
+    CycleContext earlyCtx = makeContext(connectedAtMs + kV1SettleHardDeadlineMs - 1);
+    earlyCtx.v1GattConnected = true;
+    earlyCtx.autoPushEnabled = true;
+    earlyCtx.v1LastEventMs = earlyCtx.nowMs;
+    earlyCtx.obdEnabled = true;
+    module.update(earlyCtx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::V1_SETTLING),
+                            static_cast<uint8_t>(module.state()));
+
+    CycleContext deadlineCtx = earlyCtx;
+    deadlineCtx.nowMs = connectedAtMs + kV1SettleHardDeadlineMs;
+    deadlineCtx.v1LastEventMs = deadlineCtx.nowMs;
+    module.update(deadlineCtx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::OBD_SCAN),
+                            static_cast<uint8_t>(module.state()));
 }
 
 void test_obd_disabled_skips_to_proxy_open_after_settle() {
@@ -666,13 +715,74 @@ void test_scan_v1_timeout_transitions_to_steady_without_manual_intent() {
                             static_cast<uint8_t>(module.state()));
 }
 
+void test_late_v1_edge_from_steady_reenters_settling_before_manual_wifi() {
+    CycleContext ctx = makeContext(500);
+    module.update(ctx);
+
+    ctx = makeContext(30500);
+    module.update(ctx);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::STEADY),
+                            static_cast<uint8_t>(module.state()));
+
+    ctx = makeContext(30501);
+    ctx.v1GattConnected = true;
+    ctx.autoPushEnabled = true;
+    ctx.v1LastEventMs = ctx.nowMs;
+    ctx.proxyClientConnected = true;
+    ctx.wifiManualStartIntentLatched = true;
+    module.update(ctx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::V1_SETTLING),
+                            static_cast<uint8_t>(module.state()));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD),
+                            static_cast<uint8_t>(module.arbitrationRequest()));
+    TEST_ASSERT_FALSE(module.obdScanAllowed());
+    TEST_ASSERT_FALSE(module.proxyAdvertisingAllowed());
+    TEST_ASSERT_FALSE(module.wifiAutoStartAllowed());
+    TEST_ASSERT_EQUAL(0, providerState.disconnectProxyPhoneCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, module.totalWifiManualPhoneKicks());
+
+    const uint32_t transitionCount = module.totalTransitionCount();
+    ctx.nowMs++;
+    ctx.wifiManualStartIntentLatched = false;
+    module.update(ctx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::V1_SETTLING),
+                            static_cast<uint8_t>(module.state()));
+    TEST_ASSERT_EQUAL_UINT32(transitionCount, module.totalTransitionCount());
+    TEST_ASSERT_EQUAL_UINT32(1, module.timeInStateMs(ctx.nowMs));
+}
+
+void test_late_v1_edge_from_wifi_open_wins_over_active_and_timeout() {
+    CycleContext ctx = makeContext(500);
+    ctx.wifiManualStartIntentLatched = true;
+    ctx.wifiOpenTimeoutMs = 1000;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::WIFI_OPEN),
+                            static_cast<uint8_t>(module.state()));
+
+    ctx = makeContext(1500);
+    ctx.v1GattConnected = true;
+    ctx.autoPushEnabled = true;
+    ctx.v1LastEventMs = ctx.nowMs;
+    ctx.wifiActive = true;
+    ctx.wifiOpenTimeoutMs = 1000;
+    module.update(ctx);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CycleState::V1_SETTLING),
+                            static_cast<uint8_t>(module.state()));
+    TEST_ASSERT_FALSE(module.wifiAutoStartAllowed());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_initial_state_is_scan_v1);
     RUN_TEST(test_v1_connect_transitions_to_v1_settling);
     RUN_TEST(test_verifypush_match_and_quiet_window_transition_to_obd_scan);
     RUN_TEST(test_auto_push_disabled_fallback_transitions_to_obd_scan);
-    RUN_TEST(test_auto_push_enabled_without_verification_holds_obd_settle);
+    RUN_TEST(test_auto_push_enabled_without_verification_exits_at_hard_deadline);
+    RUN_TEST(test_hard_settle_deadline_reaches_steady_when_downstream_modes_are_disabled);
+    RUN_TEST(test_hard_settle_deadline_is_rollover_safe);
     RUN_TEST(test_obd_disabled_skips_to_proxy_open_after_settle);
     RUN_TEST(test_explicit_proxy_mode_ignores_auto_push_for_app_window);
     RUN_TEST(test_explicit_proxy_mode_keeps_advertising_available_for_late_app_launch);
@@ -693,5 +803,7 @@ int main() {
     RUN_TEST(test_wifi_open_transitions_to_steady_when_wifi_active);
     RUN_TEST(test_scan_v1_manual_wifi_intent_transitions_to_wifi_open);
     RUN_TEST(test_scan_v1_timeout_transitions_to_steady_without_manual_intent);
+    RUN_TEST(test_late_v1_edge_from_steady_reenters_settling_before_manual_wifi);
+    RUN_TEST(test_late_v1_edge_from_wifi_open_wins_over_active_and_timeout);
     return UNITY_END();
 }

@@ -119,39 +119,38 @@ void tearDown() {}
 
 // -- Invariant 1: boot-to-STEADY bound -------------------------------------
 
-void test_boot_to_steady_within_bound() {
-    // Happy path: V1 connects, autoPush disabled so fallback settles; OBD
-    // never finds an adapter (scan window times out); proxy opens passively
-    // with no client (window times out); wifi then becomes active and we
-    // reach STEADY.
+void test_boot_to_steady_with_auto_push_without_verify_within_bound() {
+    // Failure path: V1 connects with auto-push enabled, but no VerifyPush
+    // edge arrives. The hard deadline still advances to OBD; the remaining
+    // phase windows then retain the overall boot-to-STEADY bound.
     const uint32_t connectMs = 1000;
 
     // Tick 1: V1 connects → V1_SETTLING
     CycleContext ctx = makeContext(connectMs);
     ctx.v1GattConnected = true;
-    ctx.autoPushEnabled = false;
+    ctx.autoPushEnabled = true;
     ctx.v1LastEventMs = connectMs;
     ctx.obdEnabled = true;
     module.update(ctx);
 
-    // Tick 2: settle fallback elapsed → OBD_SCAN
-    ctx = makeContext(connectMs + kShortSettleFallbackMs + 10);
+    // Tick 2: hard settle deadline elapsed despite continuing traffic → OBD_SCAN
+    ctx = makeContext(connectMs + kV1SettleHardDeadlineMs);
     ctx.v1GattConnected = true;
-    ctx.autoPushEnabled = false;
-    ctx.v1LastEventMs = connectMs;
+    ctx.autoPushEnabled = true;
+    ctx.v1LastEventMs = ctx.nowMs;
     ctx.obdEnabled = true;
     module.update(ctx);
 
     // Tick 3: obd scan window elapsed, obd never found → PROXY_OPEN
-    ctx = makeContext(connectMs + kShortSettleFallbackMs + kShortObdScanWindowMs + 20);
+    ctx = makeContext(connectMs + kV1SettleHardDeadlineMs + kShortObdScanWindowMs + 10);
     ctx.v1GattConnected = true;
     ctx.v1LastEventMs = connectMs;
     ctx.obdEnabled = true;
     module.update(ctx);
 
     // Tick 4: proxy open window elapsed, no client → WIFI_OPEN
-    ctx = makeContext(connectMs + kShortSettleFallbackMs + kShortObdScanWindowMs +
-                      kShortProxyOpenWindowMs + 30);
+    ctx = makeContext(connectMs + kV1SettleHardDeadlineMs + kShortObdScanWindowMs +
+                      kShortProxyOpenWindowMs + 20);
     ctx.v1GattConnected = true;
     ctx.v1LastEventMs = connectMs;
     ctx.obdEnabled = true;
@@ -159,8 +158,8 @@ void test_boot_to_steady_within_bound() {
 
     // Tick 5: wifi becomes active → STEADY
     const uint32_t steadyNowMs =
-        connectMs + kShortSettleFallbackMs + kShortObdScanWindowMs +
-        kShortProxyOpenWindowMs + 40;
+        connectMs + kV1SettleHardDeadlineMs + kShortObdScanWindowMs +
+        kShortProxyOpenWindowMs + 30;
     ctx = makeContext(steadyNowMs);
     ctx.v1GattConnected = true;
     ctx.v1LastEventMs = connectMs;
@@ -173,7 +172,7 @@ void test_boot_to_steady_within_bound() {
                             static_cast<uint8_t>(module.state()));
 
     const uint32_t totalElapsed = steadyNowMs - connectMs;
-    const uint32_t bound = kShortSettleFallbackMs + kShortObdScanWindowMs +
+    const uint32_t bound = kV1SettleHardDeadlineMs + kShortObdScanWindowMs +
                            kShortProxyOpenWindowMs + kShortWifiOpenTimeoutMs +
                            1000;  // 1s slack
     TEST_ASSERT_LESS_OR_EQUAL_UINT32(bound, totalElapsed);
@@ -390,7 +389,7 @@ void test_counters_monotonic_through_full_cycle_and_reentry() {
 
 int main() {
     UNITY_BEGIN();
-    RUN_TEST(test_boot_to_steady_within_bound);
+    RUN_TEST(test_boot_to_steady_with_auto_push_without_verify_within_bound);
     RUN_TEST(test_predicates_monotonic_within_steady);
     RUN_TEST(test_counters_monotonic_through_full_cycle_and_reentry);
     return UNITY_END();

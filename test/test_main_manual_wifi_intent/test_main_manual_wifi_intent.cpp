@@ -226,6 +226,8 @@ void test_loop_uses_coordinator_owned_ble_arbitration_and_obd_policy() {
     TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(loopBody, "setObdBleArbitrationRequest("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("connectionCycleCoordinatorModule.arbitrationRequest()"));
+    TEST_ASSERT_TRUE(loopBody.find("connectionCycleCoordinatorModule.update(cycleContext)") <
+                     loopBody.find("connectionCycleCoordinatorModule.arbitrationRequest()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("obdStatus.manualScanPending"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

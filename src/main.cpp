@@ -682,10 +682,6 @@ void loop() {
         const ObdRuntimeStatus obdStatus = obdRuntimeModule.snapshot(now);
         const V1Settings& currentSettings = settingsManager.get();
         const bool wifiManualStartIntentLatched = mainRuntimeState.wifiManualStartIntentLatched;
-        ObdBleArbitrationRequest bleArbitrationRequest = connectionCycleCoordinatorModule.arbitrationRequest();
-        if (obdStatus.manualScanPending) {
-            bleArbitrationRequest = ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
-        }
         const CycleContext cycleContext{
             now,
             mainRuntimeState.bootReady,
@@ -714,6 +710,10 @@ void loop() {
             currentSettings.cycleTeardownAckTimeoutMs,
         };
         connectionCycleCoordinatorModule.update(cycleContext);
+        ObdBleArbitrationRequest bleArbitrationRequest = connectionCycleCoordinatorModule.arbitrationRequest();
+        if (obdStatus.manualScanPending) {
+            bleArbitrationRequest = ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
+        }
         bleClient.setConnectionCycleState(static_cast<uint8_t>(connectionCycleCoordinatorModule.state()),
                                           connectionCycleCoordinatorModule.timeInStateMs(now));
         const bool proxyModeEnabled = currentSettings.proxyBLE && bleClient.isProxyEnabled();

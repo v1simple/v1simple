@@ -32,7 +32,7 @@ Scope
 When to update
 --------------
 If a legitimate new edge is added to the coordinator, add it to WHITELIST
-below and document the trigger in `docs/ARCHITECTURE.md`.
+below and document the trigger in `src/modules/system/api.md`.
 
 If `nextPostObdState` ever gains a fourth return path, update
 `HELPER_EXPANSIONS` below.
@@ -95,9 +95,11 @@ WHITELIST: set[tuple[str, str]] = {
     ("PROXY_OPEN", "WIFI_OPEN"),
     ("PROXY_OPEN", "TEARDOWN"),
     # From WIFI_OPEN
+    ("WIFI_OPEN", "V1_SETTLING"),  # Late V1 edge takes priority over WiFi completion
     ("WIFI_OPEN", "STEADY"),
     ("WIFI_OPEN", "TEARDOWN"),
     # From STEADY
+    ("STEADY", "V1_SETTLING"),  # Late V1 edge restarts normal connection sequencing
     ("STEADY", "WIFI_OPEN"),
     ("STEADY", "TEARDOWN"),
     # From TEARDOWN

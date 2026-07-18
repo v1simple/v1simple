@@ -113,6 +113,24 @@ void test_loop_short_circuits_normal_runtime_during_maintenance_boot() {
                           loopBody.find("return;"));
 }
 
+void test_maintenance_loop_services_power_before_wifi_work() {
+    const std::string text = readFile(projectRoot() + "/src/main.cpp");
+    const std::string loopBody = extractFunctionBody(text, "void loop()");
+
+    const size_t maintenanceGate = loopBody.find("if (mainRuntimeState.maintenanceBootActive)");
+    const size_t powerProcess = loopBody.find("powerModule.process(now);", maintenanceGate);
+    const size_t wifiProcess = loopBody.find("wifiManager.process();", powerProcess);
+    const size_t maintenanceReturn = loopBody.find("return;", wifiProcess);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, powerProcess);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, wifiProcess);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceReturn);
+    TEST_ASSERT_TRUE(maintenanceGate < powerProcess);
+    TEST_ASSERT_TRUE(powerProcess < wifiProcess);
+    TEST_ASSERT_TRUE(wifiProcess < maintenanceReturn);
+}
+
 void test_setup_consumes_maintenance_request_before_runtime_init() {
     const std::filesystem::path source =
         std::filesystem::path(projectRoot() + "/src/main.cpp");
@@ -491,6 +509,7 @@ int main() {
     RUN_TEST(test_main_runtime_state_tracks_maintenance_boot_mode);
     RUN_TEST(test_boot_button_routes_to_maintenance_reboot_wrapper);
     RUN_TEST(test_loop_short_circuits_normal_runtime_during_maintenance_boot);
+    RUN_TEST(test_maintenance_loop_services_power_before_wifi_work);
     RUN_TEST(test_setup_consumes_maintenance_request_before_runtime_init);
     RUN_TEST(test_maintenance_boot_uses_dedicated_device_screen);
     RUN_TEST(test_maintenance_wifi_recovery_uses_reachability_and_retries);

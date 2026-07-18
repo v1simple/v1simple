@@ -557,6 +557,7 @@ void loop() {
         audio_process_amp_timeout();
         const unsigned long now = millis();
 
+        powerModule.process(now);
         wifiManager.process();
 
         // The maintenance session exists to serve the web UI, so it must not

@@ -3,7 +3,7 @@
 
 #include "obd_ble_client.h"
 
-#ifndef UNIT_TEST
+#if !defined(UNIT_TEST) || defined(V1_LINKED_TEST_OBD_BLE_CLIENT)
 
 #include <Arduino.h>
 #include <cstring>
@@ -14,10 +14,14 @@
 // controller-level address resolution during OBD scans and re-enable afterward.
 // ble_hs_pvcy_set_resolve_enabled is compiled when BLE_HOST_BASED_PRIVACY==0
 // (ESP32-S3 with controller-based privacy).
+#ifndef UNIT_TEST
 extern "C" {
 int ble_hs_pvcy_set_resolve_enabled(int enable);
 #include "nimble/nimble/host/include/host/ble_hs.h"
 }
+#else
+extern "C" int ble_hs_pvcy_set_resolve_enabled(int enable);
+#endif
 
 #include "obd_runtime_module.h"
 #include "obd_scan_policy.h"
@@ -118,17 +122,30 @@ void ObdClientCallback::onIdentity(NimBLEConnInfo& connInfo) {
 }
 
 void ObdBleClient::clearLinkState(bool clearErrors) {
-    connectPending_ = false;
-    securityPending_ = false;
-    securityReady_ = false;
-    encrypted_ = false;
-    bonded_ = false;
-    authenticated_ = false;
+    connectPending_.store(false, std::memory_order_release);
+    securityPending_.store(false, std::memory_order_release);
+    securityReady_.store(false, std::memory_order_release);
+    encrypted_.store(false, std::memory_order_release);
+    bonded_.store(false, std::memory_order_release);
+    authenticated_.store(false, std::memory_order_release);
+    if (clearErrors) {
+        lastBleError_.store(0, std::memory_order_release);
+        lastSecurityError_.store(0, std::memory_order_release);
+    }
+}
+
+void ObdBleClient::clearCharacteristicHandles() {
     pTxChar_ = nullptr;
     pRxChar_ = nullptr;
-    if (clearErrors) {
-        lastBleError_ = 0;
-        lastSecurityError_ = 0;
+}
+
+void ObdBleClient::serviceDeferredLinkState() {
+    uint32_t generation = 0;
+    int reason = 0;
+    if (linkDownFence_.consume(generation, reason)) {
+        (void)generation;
+        (void)reason;
+        clearCharacteristicHandles();
     }
 }
 
@@ -138,52 +155,63 @@ void ObdBleClient::syncSecurityStateFromConnInfo() {
     }
 
     NimBLEConnInfo info = pClient_->getConnInfo();
-    encrypted_ = info.isEncrypted();
-    bonded_ = info.isBonded();
-    authenticated_ = info.isAuthenticated();
-    if (encrypted_) {
-        securityReady_ = true;
-        securityPending_ = false;
-        lastSecurityError_ = 0;
+    const bool encrypted = info.isEncrypted();
+    encrypted_.store(encrypted, std::memory_order_release);
+    bonded_.store(info.isBonded(), std::memory_order_release);
+    authenticated_.store(info.isAuthenticated(), std::memory_order_release);
+    if (encrypted) {
+        securityReady_.store(true, std::memory_order_release);
+        securityPending_.store(false, std::memory_order_release);
+        lastSecurityError_.store(0, std::memory_order_release);
     }
 }
 
 void ObdBleClient::handleConnected() {
-    connectPending_ = false;
-    lastBleError_ = 0;
-    securityPending_ = false;
-    securityReady_ = false;
-    encrypted_ = false;
-    bonded_ = false;
-    authenticated_ = false;
+    connectPending_.store(false, std::memory_order_release);
+    lastBleError_.store(0, std::memory_order_release);
+    securityPending_.store(false, std::memory_order_release);
+    securityReady_.store(false, std::memory_order_release);
+    encrypted_.store(false, std::memory_order_release);
+    bonded_.store(false, std::memory_order_release);
+    authenticated_.store(false, std::memory_order_release);
     syncSecurityStateFromConnInfo();
 }
 
 void ObdBleClient::handleDisconnected(int reason) {
-    lastBleError_ = reason;
-    if (securityPending_ && !securityReady_ && lastSecurityError_ == 0) {
-        lastSecurityError_ = reason;
+    lastBleError_.store(reason, std::memory_order_release);
+    if (securityPending_.load(std::memory_order_acquire) && !securityReady_.load(std::memory_order_acquire) &&
+        lastSecurityError_.load(std::memory_order_acquire) == 0) {
+        lastSecurityError_.store(reason, std::memory_order_release);
     }
     clearLinkState(false);
+    const uint32_t generation = activeLinkGeneration_.load(std::memory_order_acquire);
+    confirmedDownGeneration_.store(generation, std::memory_order_release);
+    linkDownFence_.publish(generation, reason);
 }
 
 void ObdBleClient::handleAuthenticationComplete(const NimBLEConnInfo& connInfo) {
-    encrypted_ = connInfo.isEncrypted();
-    bonded_ = connInfo.isBonded();
-    authenticated_ = connInfo.isAuthenticated();
-    securityPending_ = false;
-    securityReady_ = encrypted_;
-    lastBleError_ = encrypted_ ? 0 : lastBleError_;
-    lastSecurityError_ = encrypted_ ? 0 : lastBleError_;
+    const bool encrypted = connInfo.isEncrypted();
+    encrypted_.store(encrypted, std::memory_order_release);
+    bonded_.store(connInfo.isBonded(), std::memory_order_release);
+    authenticated_.store(connInfo.isAuthenticated(), std::memory_order_release);
+    securityPending_.store(false, std::memory_order_release);
+    securityReady_.store(encrypted, std::memory_order_release);
+    if (encrypted) {
+        lastBleError_.store(0, std::memory_order_release);
+        lastSecurityError_.store(0, std::memory_order_release);
+    } else {
+        lastSecurityError_.store(lastBleError_.load(std::memory_order_acquire), std::memory_order_release);
+    }
 }
 
 void ObdBleClient::handleIdentityResolved(const NimBLEConnInfo& connInfo) {
-    bonded_ = connInfo.isBonded();
-    authenticated_ = connInfo.isAuthenticated();
-    encrypted_ = connInfo.isEncrypted();
-    if (encrypted_) {
-        securityReady_ = true;
-        securityPending_ = false;
+    bonded_.store(connInfo.isBonded(), std::memory_order_release);
+    authenticated_.store(connInfo.isAuthenticated(), std::memory_order_release);
+    const bool encrypted = connInfo.isEncrypted();
+    encrypted_.store(encrypted, std::memory_order_release);
+    if (encrypted) {
+        securityReady_.store(true, std::memory_order_release);
+        securityPending_.store(false, std::memory_order_release);
     }
 }
 
@@ -239,36 +267,63 @@ bool ObdBleClient::connect(const char* address, uint8_t addrType, uint32_t timeo
     if (pClient_->isConnected())
         return true;
 
+    serviceDeferredLinkState();
+    clearCharacteristicHandles();
     clearLinkState(true);
+    uint32_t generation = activeLinkGeneration_.load(std::memory_order_relaxed) + 1;
+    if (generation == 0) {
+        generation = 1;
+    }
+    activeLinkGeneration_.store(generation, std::memory_order_release);
 
     NimBLEAddress addr{std::string(address), addrType};
     pClient_->setConnectTimeout(timeoutMs);
-    connectPending_ = true;
+    connectPending_.store(true, std::memory_order_release);
     // exchangeMTU=false: the global MTU is 517 (set for V1 BLE 5.x) which can
     // race with GATT discovery on the BLE 4.2 OBDLink CX.  OBD responses are
     // ~10 bytes so the default 23-byte ATT MTU is sufficient.
     const bool ok = pClient_->connect(addr, !preferCachedAttributes, true, false);
     if (!ok) {
         Serial.println("[OBD] connect() returned false");
-        lastBleError_ = pClient_->getLastError();
-        connectPending_ = false;
+        lastBleError_.store(pClient_->getLastError(), std::memory_order_release);
+        connectPending_.store(false, std::memory_order_release);
+        confirmedDownGeneration_.store(generation, std::memory_order_release);
     }
     return ok;
 }
 
-void ObdBleClient::disconnect() {
+bool ObdBleClient::disconnect() {
+    serviceDeferredLinkState();
     if (!pClient_) {
         clearLinkState(false);
-        return;
+        clearCharacteristicHandles();
+        confirmedDownGeneration_.store(activeLinkGeneration_.load(std::memory_order_acquire),
+                                       std::memory_order_release);
+        return true;
     }
 
-    if (!pClient_->isConnected()) {
-        pClient_->cancelConnect();
-    } else {
-        pClient_->disconnect();
+    const bool connected = pClient_->isConnected();
+    const bool connectPending = connectPending_.load(std::memory_order_acquire);
+    const bool hasConnectionHandle = pClient_->getConnHandle() != static_cast<uint16_t>(-1);
+    if (!connected && !connectPending && !hasConnectionHandle) {
+        clearLinkState(false);
+        clearCharacteristicHandles();
+        confirmedDownGeneration_.store(activeLinkGeneration_.load(std::memory_order_acquire),
+                                       std::memory_order_release);
+        return true;
     }
 
-    clearLinkState(false);
+    const bool accepted = connected || hasConnectionHandle ? pClient_->disconnect() : pClient_->cancelConnect();
+    if (!accepted) {
+        lastBleError_.store(pClient_->getLastError(), std::memory_order_release);
+        return false;
+    }
+
+    // The transport owner has fenced all new work, so handles can be retired
+    // now. Callback-visible connection state remains authoritative until the
+    // actual link-down callback arrives.
+    clearCharacteristicHandles();
+    return true;
 }
 
 bool ObdBleClient::isConnected() const {
@@ -277,28 +332,29 @@ bool ObdBleClient::isConnected() const {
 
 bool ObdBleClient::beginSecurity() {
     if (!pClient_ || !pClient_->isConnected()) {
-        lastSecurityError_ = BLE_HS_ENOTCONN;
+        lastSecurityError_.store(BLE_HS_ENOTCONN, std::memory_order_release);
         return false;
     }
 
     syncSecurityStateFromConnInfo();
-    if (securityReady_) {
+    if (securityReady_.load(std::memory_order_acquire)) {
         return true;
     }
-    if (securityPending_) {
+    if (securityPending_.load(std::memory_order_acquire)) {
         return true;
     }
 
-    lastSecurityError_ = 0;
+    lastSecurityError_.store(0, std::memory_order_release);
     const bool ok = pClient_->secureConnection(true);
     if (!ok) {
-        lastSecurityError_ = pClient_->getLastError();
-        lastBleError_ = lastSecurityError_;
-        securityPending_ = false;
+        const int error = pClient_->getLastError();
+        lastSecurityError_.store(error, std::memory_order_release);
+        lastBleError_.store(error, std::memory_order_release);
+        securityPending_.store(false, std::memory_order_release);
         return false;
     }
 
-    securityPending_ = true;
+    securityPending_.store(true, std::memory_order_release);
     return true;
 }
 
@@ -306,28 +362,28 @@ bool ObdBleClient::isSecurityReady() const {
     if (pClient_ && pClient_->isConnected()) {
         const_cast<ObdBleClient*>(this)->syncSecurityStateFromConnInfo();
     }
-    return securityReady_;
+    return securityReady_.load(std::memory_order_acquire);
 }
 
 bool ObdBleClient::isEncrypted() const {
     if (pClient_ && pClient_->isConnected()) {
         const_cast<ObdBleClient*>(this)->syncSecurityStateFromConnInfo();
     }
-    return encrypted_;
+    return encrypted_.load(std::memory_order_acquire);
 }
 
 bool ObdBleClient::isBonded() const {
     if (pClient_ && pClient_->isConnected()) {
         const_cast<ObdBleClient*>(this)->syncSecurityStateFromConnInfo();
     }
-    return bonded_;
+    return bonded_.load(std::memory_order_acquire);
 }
 
 bool ObdBleClient::isAuthenticated() const {
     if (pClient_ && pClient_->isConnected()) {
         const_cast<ObdBleClient*>(this)->syncSecurityStateFromConnInfo();
     }
-    return authenticated_;
+    return authenticated_.load(std::memory_order_acquire);
 }
 
 bool ObdBleClient::deleteBond(const char* address, uint8_t addrType) {
@@ -356,13 +412,14 @@ bool ObdBleClient::deleteBond(const char* address, uint8_t addrType) {
 }
 
 bool ObdBleClient::discoverServices() {
+    serviceDeferredLinkState();
     if (!pClient_ || !pClient_->isConnected()) {
         Serial.println("[OBD] discoverServices: not connected");
         return false;
     }
 
     syncSecurityStateFromConnInfo();
-    connectPending_ = false;
+    connectPending_.store(false, std::memory_order_release);
     // Force a full GATT attribute refresh before accessing services.
     // Main's working flow calls discoverAttributes() explicitly — without it,
     // NimBLE may use stale/missing attribute handles and silently fail.
@@ -373,7 +430,7 @@ bool ObdBleClient::discoverServices() {
     NimBLERemoteService* svc = pClient_->getService(kCxServiceUuid);
     if (!svc) {
         Serial.println("[OBD] discoverServices: FFF0 service not found");
-        lastBleError_ = pClient_->getLastError();
+        lastBleError_.store(pClient_->getLastError(), std::memory_order_release);
         return false;
     }
 
@@ -381,35 +438,38 @@ bool ObdBleClient::discoverServices() {
     pRxChar_ = svc->getCharacteristic(kCxWriteUuid);
     if (!pTxChar_ || !pRxChar_) {
         Serial.printf("[OBD] discoverServices: char missing tx=%d rx=%d\n", pTxChar_ != nullptr, pRxChar_ != nullptr);
-        lastBleError_ = pClient_->getLastError();
-        pTxChar_ = nullptr;
-        pRxChar_ = nullptr;
+        lastBleError_.store(pClient_->getLastError(), std::memory_order_release);
+        clearCharacteristicHandles();
         return false;
     }
 
     if (!pTxChar_->canNotify() || !(pRxChar_->canWrite() || pRxChar_->canWriteNoResponse())) {
         Serial.printf("[OBD] discoverServices: capability mismatch notify=%d write=%d writeNR=%d\n",
                       pTxChar_->canNotify(), pRxChar_->canWrite(), pRxChar_->canWriteNoResponse());
-        lastBleError_ = pClient_->getLastError();
-        pTxChar_ = nullptr;
-        pRxChar_ = nullptr;
+        lastBleError_.store(pClient_->getLastError(), std::memory_order_release);
+        clearCharacteristicHandles();
         return false;
     }
 
-    return true;
+    return !linkDownFence_.pending();
 }
 
 bool ObdBleClient::writeCommand(const char* cmd, bool withResponse) {
-    if (!pRxChar_ || !pClient_ || !pClient_->isConnected() || !cmd)
+    serviceDeferredLinkState();
+    NimBLERemoteCharacteristic* const rxChar = pRxChar_;
+    if (!rxChar || !pClient_ || !pClient_->isConnected() || !cmd || linkDownFence_.pending())
         return false;
     syncSecurityStateFromConnInfo();
-    const bool ok = pRxChar_->writeValue(reinterpret_cast<const uint8_t*>(cmd), strlen(cmd), withResponse);
-    lastBleError_ = ok ? 0 : pClient_->getLastError();
-    return ok;
+    const bool ok = rxChar->writeValue(reinterpret_cast<const uint8_t*>(cmd), strlen(cmd), withResponse);
+    const bool linkStayedUp = !linkDownFence_.pending();
+    lastBleError_.store(ok && linkStayedUp ? 0 : pClient_->getLastError(), std::memory_order_release);
+    return ok && linkStayedUp;
 }
 
 bool ObdBleClient::subscribeNotify(void (*callback)(const uint8_t* data, size_t len)) {
-    if (!pTxChar_)
+    serviceDeferredLinkState();
+    NimBLERemoteCharacteristic* const txChar = pTxChar_;
+    if (!txChar || linkDownFence_.pending())
         return false;
     if (!pClient_ || !pClient_->isConnected()) {
         Serial.println("[OBD] subscribeNotify: connection lost before subscribe");
@@ -421,17 +481,19 @@ bool ObdBleClient::subscribeNotify(void (*callback)(const uint8_t* data, size_t 
     // defaults to CCCD write-no-response.  The DA14531 rejects
     // write-with-response for CCCD, and trying it first can leave the GATT
     // state machine confused, so match main exactly.
-    const bool ok = pTxChar_->subscribe(
+    const bool ok = txChar->subscribe(
         true, [callback](NimBLERemoteCharacteristic* /*chr*/, uint8_t* data, size_t length, bool /*isNotify*/) {
             if (callback && data && length > 0) {
                 callback(data, length);
             }
         });
-    lastBleError_ = ok ? 0 : pClient_->getLastError();
-    if (!ok) {
-        Serial.printf("[OBD] subscribeNotify: failed rc=%d\n", lastBleError_);
+    const bool linkStayedUp = !linkDownFence_.pending();
+    const int error = ok && linkStayedUp ? 0 : pClient_->getLastError();
+    lastBleError_.store(error, std::memory_order_release);
+    if (!ok || !linkStayedUp) {
+        Serial.printf("[OBD] subscribeNotify: failed rc=%d\n", error);
     }
-    return ok;
+    return ok && linkStayedUp;
 }
 
 int8_t ObdBleClient::getRssi(uint32_t nowMs) {
@@ -445,4 +507,4 @@ int8_t ObdBleClient::getRssi(uint32_t nowMs) {
     return cachedRssi_;
 }
 
-#endif // UNIT_TEST
+#endif // !UNIT_TEST || V1_LINKED_TEST_OBD_BLE_CLIENT

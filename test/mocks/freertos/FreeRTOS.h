@@ -154,6 +154,13 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue, void* out, TickType_t) {
     return pdTRUE;
 }
 
+inline BaseType_t xQueueReset(QueueHandle_t queue) {
+    if (!queue) return pdFALSE;
+    MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    q->items.clear();
+    return pdTRUE;
+}
+
 inline UBaseType_t uxQueueMessagesWaiting(QueueHandle_t queue) {
     if (!queue) return 0;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);

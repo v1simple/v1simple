@@ -22,6 +22,10 @@ LINKED_NATIVE_TEST_SPECS = {
         sources=("src/modules/alp/alp_event_latch.cpp",),
         define="V1_LINKED_TEST_ALP_EVENT_LATCH",
     ),
+    "test_obd_ble_client_race": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_ble_client.cpp",),
+        define="V1_LINKED_TEST_OBD_BLE_CLIENT",
+    ),
 }
 
 

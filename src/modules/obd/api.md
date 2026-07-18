@@ -6,6 +6,8 @@ OBD is part of the explicit OBD / Standalone operating mode. Selecting Proxy / A
 
 The OBD pipeline owns its own NimBLE client — it does **not** share `V1BLEClient`. This is structural: OBD and V1 connection lifecycles are independent and can race; the arbitration enum (`obd_ble_arbitration.h`) handles the cases where they do.
 
+The `ObdTransport` task is the sole owner of the OBD NimBLE client and discovered GATT characteristic handles. NimBLE callbacks publish generation-tagged link-down state through an atomic fence, and main-loop paths enqueue a coalesced priority disconnect. An atomic dispatch epoch rejects outgoing-session work that was dequeued but not yet claimed. The transport task optionally deletes the bond, retries rejected terminate/cancel commands, and acknowledges only after the matching link generation is confirmed down.
+
 ## Files
 
 | File | Class / role |
@@ -13,8 +15,10 @@ The OBD pipeline owns its own NimBLE client — it does **not** share `V1BLEClie
 | `obd_runtime_module.{h,cpp}` | Main runtime — state machine, scan/connect orchestration, speed publication. |
 | `obd_runtime_state_machine.cpp` | State machine implementation (no separate header — internal). |
 | `obd_runtime_commands.cpp` | Command/PID dispatch plus failure-reason classification and error counters. |
-| `obd_runtime_transport.cpp` | BLE write/read transport layer. |
+| `obd_runtime_transport.cpp` | Transport task, priority disconnect queue, BLE write/read dispatch. |
 | `obd_ble_client.{h,cpp}` | OBD-owned `NimBLEClient` + scan/disconnect callbacks. Independent of `V1BLEClient`. |
+| `obd_transport_control_dispatch.h` | Priority-control state machine and stale-request epoch claim. |
+| `obd_transport_link_fence.h` | Atomic callback-to-transport link-down handoff. |
 | `obd_ble_arbitration.h` | Arbitration enum for V1 ↔ OBD scan/connect contention. |
 | `obd_elm327_parser.{h,cpp}` | ELM327 response parser (PIDs, DIDs, VIN, temperatures). |
 | `obd_settings_sync_module.{h,cpp}` | Watches settings for OBD-config changes; debounces and calls runtime hooks. |
@@ -69,72 +73,76 @@ Wires the OBD-owned BLE client and any other dependencies.
 
 #### `void setEnabled(bool enabled)` / `bool isEnabled() const`
 Runtime enable/disable.
-**Source:** `obd_runtime_module.h:135`.
+**Source:** `obd_runtime_module.h:137`.
 
 #### `void setMinRssi(int8_t minRssi)`
 Adjusts the RSSI gate used by the scan callback (default `-80` per `obd_ble_client.h:21`).
-**Source:** `obd_runtime_module.h:136`.
+**Source:** `obd_runtime_module.h:138`.
 
 ### Pump
 
 #### `void update(uint32_t nowMs, const ObdBleContext& bootReadyContext)`
 Main pump. Drives the state machine using BLE / V1 / proxy context.
 If `bootReadyContext.proxyClientConnected` is true, the pump treats the companion app as the authority and drops all OBD work to idle before any scan/connect/poll transition can run.
-**Source:** `obd_runtime_module.h:128`.
+**Source:** `obd_runtime_module.h:130`.
 
 #### `void update(uint32_t nowMs, bool bootReady, bool v1Connected, bool bleScanIdle)`
 Convenience overload.
-**Source:** `obd_runtime_module.h:128`.
+**Source:** `obd_runtime_module.h:131`.
 
 ### Scan / connect control
 
 #### `bool startScan()` / `void stopActiveScan()`
 Programmatic scan start/stop.
-**Source:** `obd_runtime_module.h:149`.
+**Source:** `obd_runtime_module.h:151`.
 
 #### `bool requestManualPairScan(uint32_t nowMs)`
 User-requested scan via `/api/obd/scan`. Returns false if already in progress / disabled.
-**Source:** `obd_runtime_module.h:151`.
+**Source:** `obd_runtime_module.h:153`.
 
 #### `void cancelPendingConnect()` / `void forgetDevice()`
 Cancel outstanding connect attempt; forget saved device.
-**Source:** `obd_runtime_module.h:152`.
+**Source:** `obd_runtime_module.h:154`.
+
+#### `bool disconnectForShutdown(uint32_t timeoutMs)`
+Queues a transport-owned disconnect and waits only for the supplied bounded window for callback-confirmed link-down. The shutdown path never calls the low-level OBD client from the main task and reports queue rejection or timeout as failure.
+**Source:** `obd_runtime_module.h:155`.
 
 #### `bool isScanStopped() const` / `bool isConnectIdle() const`
 State predicates.
-**Source:** `obd_runtime_module.h:154`.
+**Source:** `obd_runtime_module.h:157-158`.
 
 ### Status
 
 #### `ObdRuntimeStatus snapshot(uint32_t nowMs) const`
 Builds the JSON-ready status snapshot. Used by `/api/obd/status`.
-**Source:** `obd_runtime_module.h:132`.
+**Source:** `obd_runtime_module.h:134`.
 
 #### `bool getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const`
 Latest speed if younger than `obd::SPEED_MAX_AGE_MS` (3000 ms). Used by speed-mute.
-**Source:** `obd_runtime_module.h:144`.
+**Source:** `obd_runtime_module.h:146`.
 
 #### `const char* getSavedAddress() const` / `uint8_t getSavedAddrType() const`
 Saved device address + type (BLE address-type byte).
-**Source:** `obd_runtime_module.h:146`.
+**Source:** `obd_runtime_module.h:148-149`.
 
 #### `ObdConnectionState getState() const`
 Current state-machine state.
-**Source:** `obd_runtime_module.h:133`.
+**Source:** `obd_runtime_module.h:135`.
 
 ### BLE callbacks (called from `ObdBleClient` callbacks)
 
 #### `void onDeviceFound(const char* name, const char* address, int rssi, uint8_t addrType = 0)`
 Scan callback hit — the OBD scan callback found a candidate.
-**Source:** `obd_runtime_module.h:157`.
+**Source:** `obd_runtime_module.h:160`.
 
 #### `void onBleDisconnect(int reason = 0)`
 BLE link dropped. Triggers state-machine transition to `DISCONNECTED`.
-**Source:** `obd_runtime_module.h:158`.
+**Source:** `obd_runtime_module.h:161`.
 
 #### `void onBleData(const uint8_t* data, size_t len)`
 Data received from ELM327. Forwarded to the parser path.
-**Source:** `obd_runtime_module.h:159`.
+**Source:** `obd_runtime_module.h:162`.
 
 ### Test seams (UNIT_TEST only)
 
@@ -152,21 +160,27 @@ The test surface is unusually large because the state machine has many failure p
 
 OBD-owned `NimBLEClient` plus scan/disconnect callbacks. **Created once at boot, never deleted** — the comment at line 5 calls out the heap-safety rule. NimBLE does not handle client teardown gracefully; recreating it leaks resources or crashes on some firmware versions.
 
+`pTxChar_` and `pRxChar_` are plain pointers by design because they have one owner: `ObdTransport`. Callback-visible status/error fields are atomic. Each connect attempt receives a generation; disconnect callbacks confirm and publish that generation without clearing or dereferencing either characteristic.
+
 ### `class ObdScanCallback : public NimBLEScanCallbacks`
-**Source:** `obd_ble_client.h:13-22`.
+**Source:** `obd_ble_client.h:16-25`.
 
 - `void configure(ObdRuntimeModule* parent, int8_t minRssi)`
 - `void onResult(const NimBLEAdvertisedDevice* device) override` — filters for `OBDLink CX` name + RSSI gate.
 - `void onScanEnd(const NimBLEScanResults& results, int reason) override`.
 
 ### `class ObdClientCallback : public NimBLEClientCallbacks`
-**Source:** `obd_ble_client.h:25-37`.
+**Source:** `obd_ble_client.h:28-40`.
 
 - `void configure(ObdBleClient* owner, ObdRuntimeModule* parent)`
 - `void onConnect(NimBLEClient*) override`
 - `void onConnectFail(NimBLEClient*, int reason) override`
 
 (Plus other NimBLE callback overrides for disconnect/MTU/security — see header.)
+
+#### `void serviceDeferredLinkState()`
+Transport-owner hook that consumes a callback-published link-down fence and clears the outgoing session's characteristic handles. It runs before and after GATT operations.
+**Source:** `obd_ble_client.h:99`.
 
 ## ELM327 parser — `obd_elm327_parser.{h,cpp}`
 

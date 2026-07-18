@@ -14,6 +14,8 @@
 
 // BLE security / pairing constants
 static constexpr int BLE_HS_ETIMEOUT            = 5;
+static constexpr int BLE_HS_ENOTCONN             = 7;
+static constexpr uint16_t BLE_HS_CONN_HANDLE_NONE = 0xFFFF;
 static constexpr int BLE_SM_IO_CAP_NO_IO        = 3;
 static constexpr int BLE_SM_PAIR_KEY_DIST_ENC   = 0x01;
 static constexpr int BLE_SM_PAIR_KEY_DIST_ID    = 0x02;
@@ -79,6 +81,7 @@ public:
         : value_(value), type_(type) {}
     bool isNull() const { return value_.empty(); }
     std::string toString() const { return value_; }
+    uint8_t getType() const { return type_; }
     bool operator==(const NimBLEAddress& other) const {
         return value_ == other.value_ && type_ == other.type_;
     }
@@ -193,10 +196,28 @@ public:
     uint16_t getConnHandle() const { return 1; }
     uint16_t getConnInterval() const { return 12; }
     uint16_t getConnLatency() const { return 0; }
+    bool isEncrypted() const { return encrypted_; }
+    bool isBonded() const { return bonded_; }
+    bool isAuthenticated() const { return authenticated_; }
+    NimBLEAddress getIdAddress() const { return idAddress_; }
+
+    void setSecurityState(bool encrypted, bool bonded, bool authenticated) {
+        encrypted_ = encrypted;
+        bonded_ = bonded;
+        authenticated_ = authenticated;
+    }
+    void setIdAddress(const NimBLEAddress& address) { idAddress_ = address; }
+
+private:
+    bool encrypted_ = false;
+    bool bonded_ = false;
+    bool authenticated_ = false;
+    NimBLEAddress idAddress_;
 };
 
 class NimBLEAdvertisedDevice {
 public:
+    bool haveName() const { return !getName().empty(); }
     std::string getName() const { return ""; }
     NimBLEAddress getAddress() const { return NimBLEAddress(); }
     int getRSSI() const { return -70; }
@@ -210,8 +231,16 @@ class NimBLERemoteCharacteristic;
 
 class NimBLERemoteService {
 public:
-    NimBLERemoteCharacteristic* getCharacteristic(const NimBLEUUID&) { return nullptr; }
-    NimBLERemoteCharacteristic* getCharacteristic(const char*) { return nullptr; }
+    NimBLERemoteCharacteristic* getCharacteristic(const NimBLEUUID& uuid);
+    NimBLERemoteCharacteristic* getCharacteristic(const char* uuid);
+    void addCharacteristic(NimBLERemoteCharacteristic* characteristic) {
+        if (characteristic) {
+            characteristics_.push_back(characteristic);
+        }
+    }
+
+private:
+    std::vector<NimBLERemoteCharacteristic*> characteristics_;
 };
 
 class NimBLERemoteDescriptor {
@@ -224,7 +253,13 @@ public:
     explicit NimBLERemoteCharacteristic(const char* uuid = "")
         : uuid_(uuid ? uuid : "") {}
 
-    bool writeValue(const uint8_t*, size_t, bool) { return true; }
+    bool writeValue(const uint8_t*, size_t, bool) {
+        writeValueCalls_++;
+        if (writeEntryHook_) {
+            writeEntryHook_();
+        }
+        return writeValueResult_;
+    }
     bool canWrite() const { return true; }
     bool canWriteNoResponse() const { return false; }
     bool canNotify() const { return true; }
@@ -233,6 +268,10 @@ public:
     bool subscribe(bool notify,
                    std::function<void(NimBLERemoteCharacteristic*, uint8_t*, size_t, bool)> callback,
                    bool = false) {
+        subscribeCalls_++;
+        if (subscribeEntryHook_) {
+            subscribeEntryHook_();
+        }
         notify_ = notify;
         callback_ = callback;
         return subscribeResult_;
@@ -240,6 +279,11 @@ public:
     NimBLEUUID getUUID() const { return NimBLEUUID(uuid_.c_str()); }
     NimBLERemoteDescriptor* getDescriptor(const NimBLEUUID&) { return nullptr; }
     void setSubscribeResult(bool ok) { subscribeResult_ = ok; }
+    void setWriteValueResult(bool ok) { writeValueResult_ = ok; }
+    void setWriteEntryHook(std::function<void()> hook) { writeEntryHook_ = std::move(hook); }
+    void setSubscribeEntryHook(std::function<void()> hook) { subscribeEntryHook_ = std::move(hook); }
+    uint32_t writeValueCalls() const { return writeValueCalls_; }
+    uint32_t subscribeCalls() const { return subscribeCalls_; }
     void emit(uint8_t* data, size_t length) {
         if (callback_) {
             callback_(this, data, length, notify_);
@@ -249,9 +293,27 @@ public:
 private:
     std::string uuid_;
     std::function<void(NimBLERemoteCharacteristic*, uint8_t*, size_t, bool)> callback_;
+    std::function<void()> writeEntryHook_;
+    std::function<void()> subscribeEntryHook_;
     bool notify_ = true;
     bool subscribeResult_ = true;
+    bool writeValueResult_ = true;
+    uint32_t writeValueCalls_ = 0;
+    uint32_t subscribeCalls_ = 0;
 };
+
+inline NimBLERemoteCharacteristic* NimBLERemoteService::getCharacteristic(const NimBLEUUID& uuid) {
+    for (NimBLERemoteCharacteristic* characteristic : characteristics_) {
+        if (characteristic && characteristic->getUUID().toString() == uuid.toString()) {
+            return characteristic;
+        }
+    }
+    return nullptr;
+}
+
+inline NimBLERemoteCharacteristic* NimBLERemoteService::getCharacteristic(const char* uuid) {
+    return getCharacteristic(NimBLEUUID(uuid));
+}
 
 class NimBLEAttValue {
 public:
@@ -356,26 +418,71 @@ class NimBLEClientCallbacks;
 
 class NimBLEClient {
 public:
-    void setClientCallbacks(NimBLEClientCallbacks*) {}
+    void setClientCallbacks(NimBLEClientCallbacks* callbacks) { callbacks_ = callbacks; }
     void setConnectionParams(uint16_t, uint16_t, uint16_t, uint16_t) {}
     void setConnectTimeout(unsigned long) {}
     void setConnectRetries(uint8_t) {}
     bool isConnected() const { return connected_; }
-    bool disconnect() { connected_ = false; return true; }
-    bool cancelConnect() const { return true; }
+    bool disconnect() {
+        disconnectCalls_++;
+        if (disconnectEntryHook_) {
+            disconnectEntryHook_();
+        }
+        if (!disconnectResult_) {
+            return false;
+        }
+        connected_ = false;
+        return true;
+    }
+    bool cancelConnect() const { return cancelConnectResult_; }
     int getRssi() const { return -60; }
     uint16_t getConnHandle() const { return connHandle_; }
     NimBLEConnInfo getConnInfo() const { return NimBLEConnInfo(); }
     NimBLEAddress getPeerAddress() const { return NimBLEAddress(); }
-    bool connect(const NimBLEAddress&, bool = false, bool = false) { connected_ = true; return true; }
-    int getLastError() const { return 0; }
+    bool connect(const NimBLEAddress&, bool = false, bool = false, bool = true) {
+        connected_ = true;
+        return true;
+    }
+    bool secureConnection(bool = true) { return secureConnectionResult_; }
+    int getLastError() const { return lastError_; }
     bool discoverAttributes() { return true; }
-    NimBLERemoteService* getService(const NimBLEUUID&) { return nullptr; }
-    NimBLERemoteService* getService(const char*) { return nullptr; }
+    NimBLERemoteService* getService(const NimBLEUUID&) { return service_; }
+    NimBLERemoteService* getService(const char*) { return service_; }
+    void setService(NimBLERemoteService* service) { service_ = service; }
+    void setConnected(bool connected) {
+        connected_ = connected;
+        connHandle_ = connected ? 1 : BLE_HS_CONN_HANDLE_NONE;
+    }
+    void setLastError(int error) { lastError_ = error; }
+    void setDisconnectResult(bool result) { disconnectResult_ = result; }
+    void setCancelConnectResult(bool result) { cancelConnectResult_ = result; }
+    void setDisconnectEntryHook(std::function<void()> hook) { disconnectEntryHook_ = std::move(hook); }
+    uint32_t disconnectCalls() const { return disconnectCalls_; }
+    void emitDisconnect(int reason);
+    void reset() {
+        callbacks_ = nullptr;
+        service_ = nullptr;
+        connected_ = false;
+        lastError_ = 0;
+        secureConnectionResult_ = true;
+        disconnectResult_ = true;
+        cancelConnectResult_ = true;
+        connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+        disconnectEntryHook_ = nullptr;
+        disconnectCalls_ = 0;
+    }
 
 private:
+    NimBLEClientCallbacks* callbacks_ = nullptr;
+    NimBLERemoteService* service_ = nullptr;
     bool connected_ = false;
-    uint16_t connHandle_ = 0;
+    bool secureConnectionResult_ = true;
+    bool disconnectResult_ = true;
+    bool cancelConnectResult_ = true;
+    int lastError_ = 0;
+    uint16_t connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    std::function<void()> disconnectEntryHook_;
+    uint32_t disconnectCalls_ = 0;
 };
 
 class NimBLEAdvertisementData {
@@ -479,7 +586,7 @@ public:
     static uint8_t getNumBonds() { return g_mock_nimble_state.bondCount; }
     static void deleteAllBonds() {}
     static bool isBonded(const NimBLEAddress&) { return false; }
-    static void deleteBond(const NimBLEAddress&) {}
+    static bool deleteBond(const NimBLEAddress&) { return true; }
     static NimBLEAddress getAddress() { return NimBLEAddress(); }
     static void setSecurityAuth(bool, bool, bool) {}
     static void setSecurityIOCap(int) {}
@@ -493,8 +600,19 @@ public:
     virtual void onConnect(NimBLEClient*) {}
     virtual void onConnectFail(NimBLEClient*, int) {}
     virtual void onDisconnect(NimBLEClient*, int) {}
+    virtual void onAuthenticationComplete(NimBLEConnInfo&) {}
+    virtual void onIdentity(NimBLEConnInfo&) {}
     virtual void onPhyUpdate(NimBLEClient*, uint8_t, uint8_t) {}
 };
+
+inline void NimBLEClient::emitDisconnect(int reason) {
+    connected_ = false;
+    lastError_ = reason;
+    if (callbacks_) {
+        callbacks_->onDisconnect(this, reason);
+    }
+    connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+}
 
 class NimBLEScanCallbacks {
 public:

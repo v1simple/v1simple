@@ -127,6 +127,18 @@ void test_wait_boot_connects_without_v1_when_allowed() {
     TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
 }
 
+void test_disconnect_fence_blocks_new_connect_until_acknowledged() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+    obdRuntimeModule.setTransportDisconnectPendingForTest(true);
+
+    obdRuntimeModule.update(5000, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::WAIT_BOOT, obdRuntimeModule.getState());
+
+    obdRuntimeModule.setTransportDisconnectPendingForTest(false);
+    obdRuntimeModule.update(5001, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
+}
+
 void test_ble_reason_name_decodes_unacceptable_connection_interval() {
     TEST_ASSERT_EQUAL_STRING("unacceptable_conn_interval",
                              ObdRuntimeModule::bleReasonNameForTest(13));
@@ -545,9 +557,13 @@ void test_three_connect_failures_preserve_saved_address_and_stop_retries_for_ses
 
 void test_proxy_client_drops_obd_to_idle() {
     obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+    obdRuntimeModule.stageTransportStateForTest(ObdTransportOp::WRITE);
 
     obdRuntimeModule.update(5000, makeBleContext(true, true, true, false, false, true));
     TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_FALSE(obdRuntimeModule.transportRequestActiveForTest());
+    TEST_ASSERT_FALSE(obdRuntimeModule.transportResultReadyForTest());
     TEST_ASSERT_EQUAL(ObdBleArbitrationRequest::NONE,
                       obdRuntimeModule.getBleArbitrationRequest());
 }
@@ -1347,6 +1363,7 @@ int main() {
     RUN_TEST(test_wait_boot_transitions_when_v1_connected);
     RUN_TEST(test_wait_boot_respects_coordinator_connect_gate);
     RUN_TEST(test_wait_boot_connects_without_v1_when_allowed);
+    RUN_TEST(test_disconnect_fence_blocks_new_connect_until_acknowledged);
     RUN_TEST(test_ble_reason_name_decodes_unacceptable_connection_interval);
     RUN_TEST(test_idle_no_scan_at_boot_without_saved_addr);
     RUN_TEST(test_disabled_module_never_transitions);

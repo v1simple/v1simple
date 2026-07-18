@@ -117,6 +117,14 @@ void ObdRuntimeModule::resetForBegin() {
     nextTransportRequestId_ = 0;
     clearTransportRequest();
     readyTransportResult_ = {};
+    transportDisconnectPending_ = false;
+    transportDisconnectQueued_ = false;
+    pendingDisconnectDeleteBond_ = false;
+    pendingDisconnectFollowupDeleteBond_ = false;
+    lastDisconnectSucceeded_ = false;
+    pendingDisconnectRequestId_ = 0;
+    pendingDisconnectAddress_[0] = '\0';
+    pendingDisconnectAddrType_ = 0;
     clearSpeedState();
     resetPollingSchedule(0);
     initIndex_ = 0;
@@ -293,6 +301,9 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
 // ======================================================================
 
 void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyContext) {
+    // Disconnect acknowledgements must drain even while OBD is disabled;
+    // otherwise re-enabling could inherit a permanently closed transport gate.
+    pumpTransportResults();
     if (!enabled_)
         return;
 
@@ -301,8 +312,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     if (pendingTransportTimedOut(nowMs)) {
         pendingTransportTimedOut_ = true;
     }
-    pumpTransportResults();
-
     const bool bootReady = bootReadyContext.bootReady;
     const bool v1Connected = bootReadyContext.v1Connected;
     const bool bleScanIdle = bootReadyContext.bleScanIdle;
@@ -321,6 +330,12 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
 
     if (bootReady && bootReadyMs_ == 0) {
         bootReadyMs_ = nowMs == 0 ? 1 : nowMs;
+    }
+
+    // The priority disconnect is a transport fence. Do not start a scan,
+    // reconnect, or another GATT operation until its acknowledgement drains.
+    if (transportDisconnectPending_) {
+        return;
     }
 
     const bool justEntered = stateEntryPending_;
@@ -783,13 +798,12 @@ bool ObdRuntimeModule::isConnectIdle() const {
         transportRequestActive_ &&
         (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
          pendingTransportOp_ == ObdTransportOp::DISCOVER || pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
-    return !connectStateActive && !connectTransportActive && !isBleConnected();
+    return !connectStateActive && !connectTransportActive && !transportDisconnectPending_ && !isBleConnected();
 }
 
 void ObdRuntimeModule::forgetDevice() {
     stopBleScan();
-    disconnectBle();
-    deleteBleBond();
+    disconnectBle(true);
     clearBleEventQueue();
     setSavedAddressFromBuffer("");
     pendingAddress_[0] = '\0';

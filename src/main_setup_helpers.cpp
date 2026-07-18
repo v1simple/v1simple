@@ -38,7 +38,7 @@
 #include "modules/auto_push/auto_push_module.h"
 #include "modules/ble/connection_state_module.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
-#include "modules/obd/obd_ble_client.h"
+#include "modules/obd/obd_runtime_module.h"
 #include "modules/perf/debug_macros.h"
 #include "modules/touch/tap_gesture_module.h"
 #include <driver/gpio.h>
@@ -107,7 +107,9 @@ void prepareForShutdown(void* /*context*/) {
     // only; the stack is destroyed moments later by power-off anyway.
     Serial.println("[Battery] Disconnecting BLE peripherals before shutdown...");
     bleClient.disconnect();
-    obdBleClient.disconnect();
+    if (!obdRuntimeModule.disconnectForShutdown(100)) {
+        Serial.println("[Battery] WARN: OBD transport disconnect did not acknowledge before shutdown");
+    }
     // Stop any active scan so the controller isn't mid-operation at power-off.
     NimBLEScan* pScan = NimBLEDevice::getScan();
     if (pScan && pScan->isScanning()) {

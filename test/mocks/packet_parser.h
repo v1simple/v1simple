@@ -36,6 +36,7 @@ public:
         parseCalls = 0;
         parseReturnValue = true;
         resetAlertAssemblyCalls = 0;
+        resetAlertStateCalls = 0;
     }
 
     // Test helpers — set state
@@ -83,6 +84,18 @@ public:
     // Reset methods
     int resetAlertAssemblyCalls = 0;
     void resetAlertAssembly() { resetAlertAssemblyCalls++; }
+    int resetAlertStateCalls = 0;
+    void resetAlertState() {
+        resetAlertStateCalls++;
+        alerts.clear();
+        priorityAlert = AlertData();
+        hasAlertsFlag = false;
+        state.priorityArrow = DIR_NONE;
+        state.v1PriorityIndex = 0;
+        state.hasJunkAlert = false;
+        state.hasPhotoAlert = false;
+        state.hasKuAlert = false;
+    }
 };
 
 #endif // PACKET_PARSER_H

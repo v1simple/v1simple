@@ -9,12 +9,20 @@ public:
     uint32_t lastParsedTimestamp = 0;
     bool backpressured = false;
     bool parsedFlag = false;
+    bool sessionOpen = true;
+    uint32_t sessionGeneration = 0;
+    int openSessionCalls = 0;
+    int closeSessionCalls = 0;
     
     void reset() {
         lastRxMillis = 0;
         lastParsedTimestamp = 0;
         backpressured = false;
         parsedFlag = false;
+        sessionOpen = true;
+        sessionGeneration = 0;
+        openSessionCalls = 0;
+        closeSessionCalls = 0;
     }
     
     void setLastRxMillis(unsigned long ms) {
@@ -49,5 +57,21 @@ public:
         bool had = parsedFlag;
         parsedFlag = false;
         return had;
+    }
+
+    void openSession(uint32_t generation) {
+        openSessionCalls++;
+        sessionOpen = true;
+        sessionGeneration = generation;
+    }
+
+    void closeSession() {
+        closeSessionCalls++;
+        sessionOpen = false;
+        sessionGeneration = 0;
+        lastRxMillis = 0;
+        lastParsedTimestamp = 0;
+        parsedFlag = false;
+        backpressured = false;
     }
 };

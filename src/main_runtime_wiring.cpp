@@ -300,7 +300,8 @@ static void configureSystemLoopCoreModules() {
         fatalBootError("BLE queue init failed", true);
     }
     configureConnectionRuntimeModule();
-    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &systemEventBus);
+    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule,
+                                &systemEventBus);
     configureConnectionStateDispatchModule();
     configurePeriodicMaintenanceModule();
     configureLoopTailModule();

@@ -55,6 +55,9 @@ class PacketParser {
     // Clear any partially assembled alert chunks (used when we re-request alert data)
     void resetAlertAssembly();
 
+    // Clear partial and published alert state at a V1 session boundary.
+    void resetAlertState();
+
 #ifdef UNIT_TEST
     bool validatePacketForTest(const uint8_t* data, size_t length) { return validatePacket(data, length); }
 #endif
@@ -79,6 +82,7 @@ class PacketParser {
     bool validatePacket(const uint8_t* data, size_t length);
     void clearAlertCache();
     void clearAlertCacheForCount(uint8_t count);
+    void clearPublishedAlerts();
 
     // Data extraction
     Band decodeBand(uint8_t bandArrow) const;

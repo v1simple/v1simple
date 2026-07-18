@@ -36,6 +36,7 @@
 #include "v1_profiles.h"
 #include "wifi_manager.h"
 #include "modules/auto_push/auto_push_module.h"
+#include "modules/ble/connection_state_module.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/obd/obd_ble_client.h"
 #include "modules/perf/debug_macros.h"
@@ -150,10 +151,19 @@ void prepareForShutdown(void* /*context*/) {
 
 void onV1ConnectImmediate() {
     mainRuntimeState.v1ConnectedAtMs = millis();
+    connectionStateModule.handleConnected(mainRuntimeState.v1ConnectedAtMs, bleClient.sessionGeneration());
 
     // Start a new perf CSV session so scoring tools can isolate
     // V1-connected data from idle boot noise.
     perfSdLogger.startNewSession();
+}
+
+void onV1SessionOpened(uint32_t sessionGeneration) {
+    connectionStateModule.handleSessionOpened(sessionGeneration);
+}
+
+void onV1SessionClosed(uint32_t sessionGeneration) {
+    connectionStateModule.handleSessionClosed(millis(), sessionGeneration);
 }
 
 void onV1Connected() {

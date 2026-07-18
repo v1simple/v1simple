@@ -540,6 +540,69 @@ void test_alert_stream_count_zero_clears_alerts() {
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_FALSE(state.hasJunkAlert);
     TEST_ASSERT_FALSE(state.hasPhotoAlert);
+    TEST_ASSERT_FALSE(state.hasKuAlert);
+    TEST_ASSERT_EQUAL_UINT8(DIR_NONE, state.priorityArrow);
+    TEST_ASSERT_EQUAL_UINT8(0, state.v1PriorityIndex);
+    TEST_ASSERT_FALSE(parser.getAllAlerts()[0].isValid);
+}
+
+void test_reset_alert_state_clears_published_and_partial_tables() {
+    PacketParser parser;
+
+    const auto oldRow1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24150, 0x90, 0x00, 0x24, 0x00));
+    const auto oldRow2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 13450, 0xA0, 0x00, 0x30, 0xC1));
+    TEST_ASSERT_TRUE(parsePacket(parser, oldRow1, 1000));
+    TEST_ASSERT_TRUE(parsePacket(parser, oldRow2, 1001));
+
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(parser.getAlertCount()));
+    TEST_ASSERT_TRUE(parser.getAllAlerts()[0].isValid);
+    TEST_ASSERT_TRUE(parser.getAllAlerts()[1].isValid);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().v1PriorityIndex);
+    TEST_ASSERT_EQUAL_UINT8(DIR_FRONT, parser.getDisplayState().priorityArrow);
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasJunkAlert);
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasPhotoAlert);
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasKuAlert);
+
+    // Begin a new table before the disconnect reset. This row must not be
+    // allowed to combine with rows from the next V1 session.
+    const auto stalePartial =
+        makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 3, 10525, 0x88, 0x00, 0xA8, 0x80));
+    TEST_ASSERT_TRUE(parsePacket(parser, stalePartial, 1100));
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+
+    parser.resetAlertState();
+
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(parser.getAlertCount()));
+    TEST_ASSERT_FALSE(parser.getPriorityAlert().isValid);
+    AlertData renderable;
+    TEST_ASSERT_FALSE(parser.getRenderablePriorityAlert(renderable));
+    for (const AlertData& alert : parser.getAllAlerts()) {
+        TEST_ASSERT_FALSE(alert.isValid);
+        TEST_ASSERT_EQUAL_UINT8(BAND_NONE, alert.band);
+        TEST_ASSERT_EQUAL_UINT32(0, alert.frequency);
+    }
+    const DisplayState& resetState = parser.getDisplayState();
+    TEST_ASSERT_EQUAL_UINT8(DIR_NONE, resetState.priorityArrow);
+    TEST_ASSERT_EQUAL_UINT8(0, resetState.v1PriorityIndex);
+    TEST_ASSERT_FALSE(resetState.hasJunkAlert);
+    TEST_ASSERT_FALSE(resetState.hasPhotoAlert);
+    TEST_ASSERT_FALSE(resetState.hasKuAlert);
+
+    const auto freshRow2 =
+        makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 3, 33800, 0xA0, 0x00, 0x22, 0x00));
+    const auto freshRow3 =
+        makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(3, 3, 34700, 0xB0, 0x00, 0x22, 0x00));
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow2, 1200));
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow3, 1201));
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+
+    const auto freshRow1 =
+        makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 3, 24150, 0x90, 0x00, 0x24, 0x80));
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow1, 1202));
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    assertContainsThreeFrequencies(parser, 24150, 33800, 34700);
 }
 
 void test_alert_stream_stale_row_not_reused_for_completion() {
@@ -758,6 +821,7 @@ int main() {
     RUN_TEST(test_alert_stream_unusable_row_priority_falls_back_to_first_usable);
     RUN_TEST(test_alert_stream_missing_row_keeps_previous_complete_table);
     RUN_TEST(test_alert_stream_count_zero_clears_alerts);
+    RUN_TEST(test_reset_alert_state_clears_published_and_partial_tables);
     RUN_TEST(test_alert_stream_stale_row_not_reused_for_completion);
     RUN_TEST(test_alert_stream_partial_timeout_restarts_assembly);
     RUN_TEST(test_alert_stream_three_bogey_publishes_only_when_complete);

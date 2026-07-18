@@ -211,8 +211,8 @@ QualificationSerialModule qualificationSerialModule;
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
-void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID) {
-    bleQueueModule.onNotify(data, length, charUUID);
+void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);
 }
 
 template <typename StageLogger>
@@ -331,6 +331,8 @@ static void initializeBlePreInitAndScan(const CheckpointLogger& logBootCheckpoin
         // Scan starts in setup; connection state-machine work still waits for
         // the boot-ready gate later in setup().
         bleClient.onDataReceived(onV1Data);
+        bleClient.onV1SessionOpened(onV1SessionOpened);
+        bleClient.onV1SessionClosed(onV1SessionClosed);
         bleClient.onV1ConnectImmediate(onV1ConnectImmediate);
         bleClient.onV1Connected(onV1Connected);
         logBootCheckpoint("ble_callbacks_registered");

@@ -70,8 +70,24 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     bus_ = eventBus;
     config_ = cfg;
 
-    queueHandle_ = xQueueCreate(config_.queueDepth, sizeof(BLEDataPacket));
+    if (queueHandle_ != nullptr) {
+        end();
+    }
+
+    rxBuffer_.clear();
     rxReadPos_ = 0;
+    lastRxMillis_ = 0;
+    lastNotifyTsMs_ = 0;
+    lastParsedTsMs_ = 0;
+    hadSuccessfulParse_ = false;
+    parsedEventSeq_ = 0;
+    backpressureActive_ = false;
+    tooLargeWarningLog_ = BleLogRateLimitState{};
+    missingEndWarningLog_ = BleLogRateLimitState{};
+    sessionGeneration_.store(0, std::memory_order_relaxed);
+    acceptNotifications_.store(false, std::memory_order_release);
+
+    queueHandle_ = xQueueCreate(config_.queueDepth, sizeof(BLEDataPacket));
     rxBufferReady_ = false;
     if (!queueHandle_) {
         Serial.printf("[BLE_QUEUE] FATAL: queue allocation failed (depth=%u item=%u)\n",
@@ -96,6 +112,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
 }
 
 void BleQueueModule::end() {
+    acceptNotifications_.store(false, std::memory_order_release);
     if (queueHandle_ != nullptr) {
         vQueueDelete(queueHandle_);
         queueHandle_ = nullptr;
@@ -104,8 +121,33 @@ void BleQueueModule::end() {
     backpressureActive_ = false;
 }
 
-void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID) {
-    if (!queueHandle_)
+void BleQueueModule::openSession(uint32_t sessionGeneration) {
+    // Purge again before opening: an outgoing callback may have completed its
+    // queue send after closeSession() drained the queue.
+    closeSession();
+    sessionGeneration_.store(sessionGeneration, std::memory_order_release);
+    acceptNotifications_.store(true, std::memory_order_release);
+}
+
+void BleQueueModule::closeSession() {
+    acceptNotifications_.store(false, std::memory_order_release);
+
+    BLEDataPacket discarded;
+    while (queueHandle_ && xQueueReceive(queueHandle_, &discarded, 0) == pdTRUE) {
+    }
+
+    rxBuffer_.clear();
+    rxReadPos_ = 0;
+    lastRxMillis_ = 0;
+    lastNotifyTsMs_ = 0;
+    lastParsedTsMs_ = 0;
+    hadSuccessfulParse_ = false;
+    backpressureActive_ = false;
+}
+
+void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+    if (!queueHandle_ || !acceptNotifications_.load(std::memory_order_acquire) ||
+        sessionGeneration != sessionGeneration_.load(std::memory_order_acquire))
         return;
 
     if (length > 0 && length <= sizeof(BLEDataPacket::data)) {
@@ -116,12 +158,19 @@ void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charU
         pkt.length = length;
         pkt.charUUID = charUUID;
         pkt.tsMs = millis();
+        pkt.sessionGeneration = sessionGeneration;
+
+        // closeSession() can race this callback between its first admission
+        // check and packet construction. Recheck before publishing; if it
+        // races after this point, process() rejects the stamped generation.
+        if (!acceptNotifications_.load(std::memory_order_acquire) ||
+            sessionGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
+            return;
+        }
 
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
         if (result != pdTRUE) {
             PERF_INC(queueDrops);
-            xQueueReceive(queueHandle_, &dropScratch_, 0);
-            xQueueSend(queueHandle_, &pkt, 0);
         }
         UBaseType_t depth = uxQueueMessagesWaiting(queueHandle_);
         PERF_MAX(queueHighWater, depth);
@@ -129,6 +178,22 @@ void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charU
         PERF_INC(oversizeDrops);
     }
 }
+
+#ifdef UNIT_TEST
+bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, uint16_t charUUID,
+                                           uint32_t sessionGeneration) {
+    if (!queueHandle_ || !data || length == 0 || length > sizeof(BLEDataPacket::data)) {
+        return false;
+    }
+    BLEDataPacket pkt{};
+    memcpy(pkt.data, data, length);
+    pkt.length = length;
+    pkt.charUUID = charUUID;
+    pkt.tsMs = millis();
+    pkt.sessionGeneration = sessionGeneration;
+    return xQueueSend(queueHandle_, &pkt, 0) == pdTRUE;
+}
+#endif
 
 void BleQueueModule::refreshBackpressureState() {
     const size_t unreadBytes = (rxReadPos_ < rxBuffer_.size()) ? (rxBuffer_.size() - rxReadPos_) : 0;
@@ -147,9 +212,14 @@ void BleQueueModule::process() {
 
     BLEDataPacket pkt;
     uint32_t latestPktTs = 0;
+    const uint32_t activeSessionGeneration = sessionGeneration_.load(std::memory_order_acquire);
+    const bool sessionOpen = acceptNotifications_.load(std::memory_order_acquire);
     queueDepthBeforeDrain = queueHandle_ ? uxQueueMessagesWaiting(queueHandle_) : 0;
 
     while (queueHandle_ && xQueueReceive(queueHandle_, &pkt, 0) == pdTRUE) {
+        if (!sessionOpen || pkt.sessionGeneration != activeSessionGeneration) {
+            continue;
+        }
         appendRxClamped(rxBuffer_, rxReadPos_, pkt.data, pkt.length);
         latestPktTs = pkt.tsMs;
     }

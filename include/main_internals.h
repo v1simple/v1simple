@@ -52,6 +52,10 @@ void fatalBootError(const char* message, bool displayAvailable);
 /// Callback invoked immediately when BLE subscribe completes.
 void onV1ConnectImmediate();
 
+/// Callbacks invoked at authoritative main-loop V1 session boundaries.
+void onV1SessionOpened(uint32_t sessionGeneration);
+void onV1SessionClosed(uint32_t sessionGeneration);
+
 /// Callback invoked once the BLE connect burst has settled.
 void onV1Connected();
 

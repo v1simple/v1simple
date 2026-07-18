@@ -52,6 +52,8 @@ void AlertPersistenceModule::startPersistence(unsigned long now) {
 }
 
 void AlertPersistenceModule::clearPersistence() {
+    persistedAlert_ = AlertData{};
+    alertClearedTime_ = 0;
     alertPersistenceActive_ = false;
 }
 
@@ -230,6 +232,10 @@ void test_handle_parsed_updates_resting_display_when_idle() {
 
 void test_handle_parsed_prefers_persisted_alert_when_configured() {
     settingsManager.slotAlertPersistSec[0] = 2;
+    // Establish the active persistence slot before preloading a previously
+    // live alert; production clears persistence on slot changes.
+    module.handleParsed(900);
+    display.reset();
     alertPersistence.setPersistedAlert(makeKAlert());
 
     mockMillis = 1000;
@@ -242,6 +248,31 @@ void test_handle_parsed_prefers_persisted_alert_when_configured() {
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(0, display.updateCalls);
     TEST_ASSERT_EQUAL(1, display.updatePersistedCalls);
+}
+
+void test_first_post_disconnect_display_frame_is_idle_not_stale_v1() {
+    settingsManager.slotAlertPersistSec[0] = 2;
+    parser.setAlerts({makeKAlert(24150)});
+    alertPersistence.setPersistedAlert(makeKAlert(24150));
+    alertPersistence.startPersistence(900);
+
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+
+    parser.resetAlertState();
+    alertPersistence.clearPersistence();
+    display.reset();
+
+    module.handleParsed(1100);
+
+    TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
+    TEST_ASSERT_TRUE(display.hasLastRenderFrame);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(0, display.updatePersistedCalls);
+    TEST_ASSERT_FALSE(display.hasLastPriorityAlert);
+    TEST_ASSERT_EQUAL(0, display.lastAlertUpdateCount);
 }
 
 void test_handle_parsed_defers_secondary_cards_while_connect_burst_settles() {
@@ -926,6 +957,7 @@ int main() {
     RUN_TEST(test_handle_parsed_updates_live_display_when_alert_present);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);
     RUN_TEST(test_handle_parsed_prefers_persisted_alert_when_configured);
+    RUN_TEST(test_first_post_disconnect_display_frame_is_idle_not_stale_v1);
     RUN_TEST(test_handle_parsed_defers_secondary_cards_while_connect_burst_settles);
     RUN_TEST(test_restore_current_owner_shows_scanning_when_ble_is_disconnected);
     RUN_TEST(test_restore_current_owner_ble_disconnected_restores_alp_live_when_active);

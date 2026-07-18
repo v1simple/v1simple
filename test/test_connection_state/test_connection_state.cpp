@@ -24,6 +24,7 @@ static unsigned long mockMillis = 0;
 #include "../mocks/packet_parser.h"
 #include "../mocks/modules/power/power_module.h"
 #include "../mocks/modules/ble/ble_queue_module.h"
+#include "../mocks/modules/alert_persistence/alert_persistence_module.h"
 
 // Globals for mocks
 #ifndef ARDUINO
@@ -36,6 +37,7 @@ static V1Display display;
 static PacketParser parser;
 static PowerModule powerModule;
 static BleQueueModule bleQueueModule;
+static AlertPersistenceModule alertPersistenceModule;
 
 // Compile the REAL module too: the replica below pins the logic pattern, but
 // only the real translation unit can kill catalog mutations against
@@ -61,7 +63,8 @@ struct ConnectionStateLogic {
     
     // Returns true if connected
     bool process(unsigned long nowMs, V1BLEClient* ble, PacketParser* parserPtr,
-                 V1Display* displayPtr, PowerModule* power, BleQueueModule* bleQueue) {
+                 V1Display* displayPtr, PowerModule* power, BleQueueModule* bleQueue,
+                 AlertPersistenceModule* alertPersistence = nullptr) {
         bool isConnected = ble->isConnected();
         
         // Handle state transitions
@@ -71,11 +74,20 @@ struct ConnectionStateLogic {
             }
             
             if (isConnected) {
+                if (bleQueue) {
+                    bleQueue->openSession(ble->sessionGeneration());
+                }
                 displayPtr->showResting();
             } else {
                 displayPtr->setBleContext(DisplayBleContext{});
                 displayPtr->setBLEProxyStatus(false, false, false);
-                parserPtr->resetAlertAssembly();
+                if (bleQueue) {
+                    bleQueue->closeSession();
+                }
+                parserPtr->resetAlertState();
+                if (alertPersistence) {
+                    alertPersistence->clearPersistence();
+                }
                 displayPtr->resetChangeTracking();
                 displayPtr->showScanning();
             }
@@ -123,7 +135,8 @@ void test_connect_transition_shows_resting() {
     // Simulate connection
     bleClient.setConnected(true);
     mockMillis = 1000;
-    bool result = connectionState.process(mockMillis, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
+    bool result = connectionState.process(mockMillis, &bleClient, &parser, &display, &powerModule, &bleQueueModule,
+                                          &alertPersistenceModule);
     
     TEST_ASSERT_TRUE(result);  // Now connected
     TEST_ASSERT_EQUAL(1, display.showRestingCalls);
@@ -143,7 +156,8 @@ void test_disconnect_transition_shows_scanning() {
     display.resetChangeTrackingCalls = 0;
     bleClient.setConnected(false);
     mockMillis = 1000;
-    bool result = connectionState.process(mockMillis, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
+    bool result = connectionState.process(mockMillis, &bleClient, &parser, &display, &powerModule, &bleQueueModule,
+                                          &alertPersistenceModule);
     
     TEST_ASSERT_FALSE(result);  // Now disconnected
     TEST_ASSERT_EQUAL(1, display.showScanningCalls);
@@ -151,7 +165,9 @@ void test_disconnect_transition_shows_scanning() {
     TEST_ASSERT_FALSE(powerModule.lastConnectionState);
     
     // Parser state should be reset
-    TEST_ASSERT_EQUAL(1, parser.resetAlertAssemblyCalls);
+    TEST_ASSERT_EQUAL(1, parser.resetAlertStateCalls);
+    TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
+    TEST_ASSERT_EQUAL(1, alertPersistenceModule.clearPersistenceCalls);
     TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
     TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
     TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
@@ -315,7 +331,7 @@ void test_connected_skips_indicator_refresh() {
 // kill mutations applied to the module source.
 void test_real_module_data_stale_boundary_is_exclusive() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
 
     bleClient.setConnected(true);
     bleQueueModule.setLastRxMillis(10000);
@@ -333,7 +349,7 @@ void test_real_module_data_stale_boundary_is_exclusive() {
 
 void test_real_module_disconnect_clears_ble_display_state() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
 
     bleClient.setConnected(true);
     real.process(1000);
@@ -341,6 +357,9 @@ void test_real_module_disconnect_clears_ble_display_state() {
     display.reset();
     parser.reset();
     powerModule.reset();
+    AlertData persisted;
+    persisted.isValid = true;
+    alertPersistenceModule.setPersistedAlert(persisted);
     bleClient.setConnected(false);
 
     TEST_ASSERT_FALSE(real.process(1100));
@@ -354,9 +373,39 @@ void test_real_module_disconnect_clears_ble_display_state() {
     TEST_ASSERT_FALSE(display.lastBleProxyConnected);
     TEST_ASSERT_FALSE(display.lastBleReceiving);
     TEST_ASSERT_EQUAL(1, display.showScanningCalls);
-    TEST_ASSERT_EQUAL(1, parser.resetAlertAssemblyCalls);
+    TEST_ASSERT_EQUAL(1, parser.resetAlertStateCalls);
+    TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
+    TEST_ASSERT_FALSE(bleQueueModule.sessionOpen);
+    TEST_ASSERT_EQUAL(1, alertPersistenceModule.clearPersistenceCalls);
+    TEST_ASSERT_FALSE(alertPersistenceModule.persistedAlert.isValid);
     TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
     TEST_ASSERT_FALSE(powerModule.lastConnectionState);
+}
+
+void test_real_module_generation_change_forces_session_reset() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.process(1000);
+
+    parser.reset();
+    powerModule.reset();
+    bleQueueModule.closeSessionCalls = 0;
+    alertPersistenceModule.clearPersistenceCalls = 0;
+
+    // Model disconnect+reconnect between cadence samples: the boolean stays
+    // true, but the authoritative BLE generation advances.
+    bleClient.setSessionGeneration(9);
+    TEST_ASSERT_TRUE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, parser.resetAlertStateCalls);
+    TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
+    TEST_ASSERT_EQUAL(1, alertPersistenceModule.clearPersistenceCalls);
+    TEST_ASSERT_TRUE(bleQueueModule.sessionOpen);
+    TEST_ASSERT_EQUAL_UINT32(9, bleQueueModule.sessionGeneration);
+    TEST_ASSERT_EQUAL(2, powerModule.onV1ConnectionChangeCalls);
+    TEST_ASSERT_TRUE(powerModule.lastConnectionState);
 }
 
 void setUp() {
@@ -366,6 +415,7 @@ void setUp() {
     parser.reset();
     powerModule.reset();
     bleQueueModule.reset();
+    alertPersistenceModule.reset();
     display.resetChangeTrackingCalls = 0;
 }
 
@@ -388,6 +438,7 @@ void runAllTests() {
     // Real-module mutation pins
     RUN_TEST(test_real_module_data_stale_boundary_is_exclusive);
     RUN_TEST(test_real_module_disconnect_clears_ble_display_state);
+    RUN_TEST(test_real_module_generation_change_forces_session_reset);
 }
 
 #ifdef ARDUINO

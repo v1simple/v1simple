@@ -11,6 +11,7 @@ extern "C" int64_t esp_timer_get_time(void) {
 #include "../mocks/Arduino.h"
 #include "../mocks/ble_client.h"
 #include "../mocks/display.h"
+#include "../mocks/settings.h"
 #include "../mocks/v1_profiles.h"
 #include "../mocks/modules/display/display_preview_module.h"
 #include "../mocks/modules/power/power_module.h"
@@ -68,6 +69,8 @@ void perfRecordV1FirmwareVersion(uint32_t /*version*/) {}  // stub
 #include "../../src/packet_parser_alerts.cpp"
 #include "../../src/modules/system/system_event_bus.h"
 #include "../../src/modules/ble/ble_queue_module.cpp"
+#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
+#include "../../src/modules/ble/connection_state_module.cpp"
 #undef Serial
 #undef millis
 
@@ -78,8 +81,13 @@ static PacketParser parser;
 static V1ProfileManager profiles;
 static DisplayPreviewModule preview;
 static PowerModule power;
+static V1Display display;
+static SettingsManager settings;
+static AlertPersistenceModule alertPersistence;
 static SystemEventBus eventBus;
 static BleQueueModule bleQueue;
+static ConnectionStateModule connectionState;
+static constexpr uint32_t kTestSessionGeneration = 1;
 
 static std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> packet;
@@ -134,13 +142,18 @@ void setUp() {
     profiles.reset();
     preview = DisplayPreviewModule{};
     power.reset();
+    display.reset();
+    alertPersistence = AlertPersistenceModule{};
+    alertPersistence.begin(&ble, &parser, &display, &settings);
     eventBus.reset();
     perfCounters.reset();
     perfExtended.reset();
     g_millisCallCount = 0;
     countedSerial.reset();
-    bleQueue = BleQueueModule{};
     bleQueue.begin(&ble, &parser, &profiles, &preview, &power, &eventBus);
+    bleQueue.openSession(kTestSessionGeneration);
+    connectionState = ConnectionStateModule{};
+    connectionState.begin(&ble, &parser, &display, &power, &bleQueue, &alertPersistence, &eventBus);
 }
 
 void tearDown() {
@@ -170,9 +183,9 @@ void test_ble_queue_parses_display_packet_into_display_state() {
     mockMillis = 2500;
     mockMicros = 2500 * 1000UL;
     // Mute requires 2 consecutive display packets with bit set.
-    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE);
+    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
-    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE);
+    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     const DisplayState& state = parser.getDisplayState();
@@ -196,7 +209,7 @@ void test_ble_queue_publishes_parsed_event_to_bus() {
 
     mockMillis = 1234;
     mockMicros = 1234 * 1000UL;
-    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE);
+    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     SystemEvent event{};
@@ -221,8 +234,8 @@ void test_ble_queue_coalesces_parsed_events_per_process_cycle() {
 
     mockMillis = 7777;
     mockMicros = 7777 * 1000UL;
-    bleQueue.onNotify(packetA.data(), packetA.size(), 0xB2CE);
-    bleQueue.onNotify(packetB.data(), packetB.size(), 0xB2CE);
+    bleQueue.onNotify(packetA.data(), packetA.size(), 0xB2CE, kTestSessionGeneration);
+    bleQueue.onNotify(packetB.data(), packetB.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     SystemEvent event{};
@@ -250,7 +263,7 @@ void test_ble_queue_alert_burst_uses_single_millis_sample() {
     mockMillis = 9000;
     mockMicros = 9000 * 1000UL;
     g_millisCallCount = 0;
-    bleQueue.onNotify(burst.data(), burst.size(), 0xB2CE);
+    bleQueue.onNotify(burst.data(), burst.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     TEST_ASSERT_EQUAL_UINT32(1, g_millisCallCount);
@@ -283,7 +296,7 @@ void test_ble_queue_corrupt_burst_throttles_resync_logs_and_recovers() {
     mockMillis = 5100;
     mockMicros = 5100 * 1000UL;
     countedSerial.reset();
-    bleQueue.onNotify(burst.data(), burst.size(), 0xB2CE);
+    bleQueue.onNotify(burst.data(), burst.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     TEST_ASSERT_EQUAL_UINT32(1, countedSerial.totalLogs());
@@ -302,19 +315,19 @@ void test_ble_queue_corrupt_resync_logs_are_time_throttled_across_cycles() {
 
     mockMillis = 7000;
     mockMicros = 7000 * 1000UL;
-    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE);
+    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
     TEST_ASSERT_EQUAL_UINT32(1, countedSerial.totalLogs());
 
     mockMillis = 7500;
     mockMicros = 7500 * 1000UL;
-    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE);
+    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
     TEST_ASSERT_EQUAL_UINT32(1, countedSerial.totalLogs());
 
     mockMillis = 8000;
     mockMicros = 8000 * 1000UL;
-    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE);
+    bleQueue.onNotify(corrupt.data(), corrupt.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
     TEST_ASSERT_EQUAL_UINT32(2, countedSerial.totalLogs());
 }
@@ -329,7 +342,7 @@ void test_ble_queue_resyncs_after_corrupt_prefix_in_single_notify() {
 
     mockMillis = 4321;
     mockMicros = 4321 * 1000UL;
-    bleQueue.onNotify(bytes.data(), bytes.size(), 0xB2CE);
+    bleQueue.onNotify(bytes.data(), bytes.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     const DisplayState& state = parser.getDisplayState();
@@ -356,7 +369,7 @@ void test_ble_queue_recovers_after_buffer_without_start_marker() {
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    bleQueue.onNotify(garbage.data(), garbage.size(), 0xB2CE);
+    bleQueue.onNotify(garbage.data(), garbage.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     SystemEvent event{};
@@ -367,7 +380,7 @@ void test_ble_queue_recovers_after_buffer_without_start_marker() {
 
     mockMillis = 2600;
     mockMicros = 2600 * 1000UL;
-    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE);
+    bleQueue.onNotify(packet.data(), packet.size(), 0xB2CE, kTestSessionGeneration);
     bleQueue.process();
 
     TEST_ASSERT_TRUE(bleQueue.consumeParsedFlag());
@@ -377,6 +390,137 @@ void test_ble_queue_recovers_after_buffer_without_start_marker() {
     TEST_ASSERT_FALSE(eventBus.consumeByType(SystemEventType::BLE_FRAME_PARSED, event));
     TEST_ASSERT_EQUAL_UINT32(2600, event.tsMs);
     TEST_ASSERT_EQUAL_UINT16(PACKET_ID_DISPLAY_DATA, event.detail);
+}
+
+void test_disconnect_purges_outgoing_ble_session_and_reconnects_without_ghost_alert() {
+    ble.setSessionGeneration(1);
+    connectionState.handleSessionOpened(1);
+    connectionState.handleConnected(1000, 1);
+
+    const std::vector<uint8_t> oldRow1 = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 2, 24150, 0x90, 0x00, 0x24, 0x00));
+    const std::vector<uint8_t> oldRow2 = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(2, 2, 13450, 0xA0, 0x00, 0x30, 0xC1));
+    std::vector<uint8_t> oldTable;
+    appendPacket(oldTable, oldRow1);
+    appendPacket(oldTable, oldRow2);
+
+    mockMillis = 1000;
+    mockMicros = 1000 * 1000UL;
+    bleQueue.onNotify(oldTable.data(), oldTable.size(), 0xB2CE, 1);
+    bleQueue.process();
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(24150, parser.getAllAlerts()[0].frequency);
+    alertPersistence.setPersistedAlert(parser.getPriorityAlert());
+    alertPersistence.startPersistence(1000);
+    TEST_ASSERT_TRUE(alertPersistence.isPersistenceActive());
+
+    // Leave outgoing data in both buffering layers: half a frame in the RX
+    // accumulator, then a complete frame still waiting in the FreeRTOS queue.
+    const std::vector<uint8_t> stalePartial = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 10525, 0x88, 0x00, 0xA8, 0x80));
+    const size_t split = stalePartial.size() / 2;
+    bleQueue.onNotify(stalePartial.data(), split, 0xB2CE, 1);
+    bleQueue.process();
+    const std::vector<uint8_t> staleQueued = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 34700, 0x90, 0x00, 0x24, 0x80));
+    bleQueue.onNotify(staleQueued.data(), staleQueued.size(), 0xB2CE, 1);
+
+    connectionState.handleSessionClosed(1100, 2);
+
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(parser.getAlertCount()));
+    for (const AlertData& alert : parser.getAllAlerts()) {
+        TEST_ASSERT_FALSE(alert.isValid);
+        TEST_ASSERT_EQUAL_UINT8(BAND_NONE, alert.band);
+        TEST_ASSERT_EQUAL_UINT32(0, alert.frequency);
+    }
+    TEST_ASSERT_FALSE(alertPersistence.isPersistenceActive());
+    TEST_ASSERT_FALSE(alertPersistence.getPersistedAlert().isValid);
+    TEST_ASSERT_EQUAL_UINT8(BAND_NONE, alertPersistence.getPersistedAlert().band);
+    TEST_ASSERT_EQUAL_UINT32(0, alertPersistence.getPersistedAlert().frequency);
+    TEST_ASSERT_EQUAL_UINT32(0, bleQueue.getLastRxMillis());
+    TEST_ASSERT_EQUAL_UINT32(0, bleQueue.getLastParsedTimestamp());
+    TEST_ASSERT_FALSE(bleQueue.consumeParsedFlag());
+    SystemEvent event{};
+    TEST_ASSERT_FALSE(eventBus.consumeByType(SystemEventType::BLE_FRAME_PARSED, event));
+
+    const int rxCallsAfterClose = power.onV1DataReceivedCalls;
+    bleQueue.onNotify(staleQueued.data(), staleQueued.size(), 0xB2CE, 1);
+    ble.setSessionGeneration(3);
+    connectionState.handleSessionOpened(3);
+    connectionState.handleConnected(1200, 3);
+    bleQueue.process();
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL(rxCallsAfterClose, power.onV1DataReceivedCalls);
+
+    const std::vector<uint8_t> displayOnly = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        std::vector<uint8_t>{0x3F, 0x00, 0x01, 0x02, 0x02, 0x00, 0x00, 0x41, 0x00});
+    bleQueue.onNotify(displayOnly.data(), displayOnly.size(), 0xB2CE, 3);
+    bleQueue.process();
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_FALSE(alertPersistence.getPersistedAlert().isValid);
+
+    const std::vector<uint8_t> freshAlert = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 33800, 0x90, 0x00, 0x24, 0x80));
+    bleQueue.onNotify(freshAlert.data(), freshAlert.size(), 0xB2CE, 3);
+    bleQueue.process();
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(1, static_cast<uint32_t>(parser.getAlertCount()));
+    TEST_ASSERT_EQUAL_UINT32(33800, parser.getAllAlerts()[0].frequency);
+}
+
+void test_ble_queue_rejects_old_generation_item_committed_after_close_purge() {
+    const std::vector<uint8_t> alert = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 24150, 0x90, 0x00, 0x24, 0x80));
+
+    bleQueue.closeSession();
+    bleQueue.openSession(2);
+    TEST_ASSERT_TRUE(bleQueue.enqueueStampedForTest(alert.data(), alert.size(), 0xB2CE, 1));
+    bleQueue.process();
+
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_FALSE(bleQueue.consumeParsedFlag());
+    TEST_ASSERT_EQUAL_UINT32(0, bleQueue.getLastParsedTimestamp());
+    TEST_ASSERT_EQUAL(0, power.onV1DataReceivedCalls);
+    SystemEvent event{};
+    TEST_ASSERT_FALSE(eventBus.consumeByType(SystemEventType::BLE_FRAME_PARSED, event));
+
+    bleQueue.onNotify(alert.data(), alert.size(), 0xB2CE, 2);
+    bleQueue.process();
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_TRUE(bleQueue.consumeParsedFlag());
+    TEST_ASSERT_EQUAL(1, power.onV1DataReceivedCalls);
+}
+
+void test_ble_queue_full_drops_incoming_without_evicting_valid_head() {
+    bleQueue.end();
+    BleQueueModule::Config config;
+    config.queueDepth = 1;
+    TEST_ASSERT_TRUE(bleQueue.begin(&ble, &parser, &profiles, &preview, &power, &eventBus, config));
+    bleQueue.openSession(1);
+
+    const std::vector<uint8_t> first = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 24150, 0x90, 0x00, 0x24, 0x80));
+    const std::vector<uint8_t> overflow = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 34700, 0x90, 0x00, 0x24, 0x80));
+
+    bleQueue.onNotify(first.data(), first.size(), 0xB2CE, 1);
+    bleQueue.onNotify(overflow.data(), overflow.size(), 0xB2CE, 1);
+    bleQueue.process();
+
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(24150, parser.getPriorityAlert().frequency);
+    TEST_ASSERT_EQUAL_UINT32(1, perfCounters.queueDrops.load(std::memory_order_relaxed));
 }
 
 int main() {
@@ -389,5 +533,8 @@ int main() {
     RUN_TEST(test_ble_queue_corrupt_resync_logs_are_time_throttled_across_cycles);
     RUN_TEST(test_ble_queue_resyncs_after_corrupt_prefix_in_single_notify);
     RUN_TEST(test_ble_queue_recovers_after_buffer_without_start_marker);
+    RUN_TEST(test_disconnect_purges_outgoing_ble_session_and_reconnects_without_ghost_alert);
+    RUN_TEST(test_ble_queue_rejects_old_generation_item_committed_after_close_purge);
+    RUN_TEST(test_ble_queue_full_drops_incoming_without_evicting_valid_head);
     return UNITY_END();
 }

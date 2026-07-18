@@ -25,10 +25,12 @@ class V1BLEClient;
 // data: pointer to packet data
 // length: number of bytes
 // charUUID: last 16-bit of source characteristic UUID (0xB2CE, 0xB4E0, etc)
-typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID);
+// sessionGeneration: immutable V1 link generation captured by the notify callback
+typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
 
 // Callback for V1 connection events
 typedef void (*ConnectionCallback)();
+typedef void (*SessionBoundaryCallback)(uint32_t sessionGeneration);
 
 // BLE Connection State Machine
 // Centralized state to prevent overlapping operations and race conditions
@@ -190,6 +192,12 @@ class V1BLEClient {
     // Register callback for immediate V1 connect work (critical path only).
     void onV1ConnectImmediate(ConnectionCallback callback);
 
+    // Register authoritative main-loop session boundaries. Open fires after a
+    // connect callback is accepted and before characteristic subscription;
+    // close fires when quiescence invalidates the outgoing generation.
+    void onV1SessionOpened(SessionBoundaryCallback callback);
+    void onV1SessionClosed(SessionBoundaryCallback callback);
+
     // Register callback for stable V1 connection work after the connect burst settles.
     void onV1Connected(ConnectionCallback callback);
 
@@ -198,6 +206,7 @@ class V1BLEClient {
     void noteDisplayPipelineDuration(uint32_t us);
     bool isConnectBurstSettling() const;
     uint32_t lastV1ConnectionEventMs() const { return lastV1ConnectionEventMs_.load(std::memory_order_relaxed); }
+    uint32_t sessionGeneration() const { return sessionGeneration_.load(std::memory_order_acquire); }
     bool consumeVerifyPushMatchEdge() { return verifyPushMatchEdgePending_.exchange(false, std::memory_order_acq_rel); }
 
     // Send command to V1 (e.g., request alert data)
@@ -422,6 +431,8 @@ class V1BLEClient {
 
     DataCallback dataCallback_;
     ConnectionCallback connectImmediateCallback_;
+    SessionBoundaryCallback sessionOpenedCallback_;
+    SessionBoundaryCallback sessionClosedCallback_;
     ConnectionCallback connectStableCallback_;
     std::atomic<bool> connected_{false}; // Standalone connection flag; use atomic load/store for all direct accesses
     std::atomic<bool> shouldConnect_{false};             // Atomic for thread safety (set from BLE callbacks)

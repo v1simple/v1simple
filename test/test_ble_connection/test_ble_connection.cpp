@@ -1046,7 +1046,7 @@ void test_command_write_uses_one_main_loop_owned_handle_snapshot() {
     TEST_ASSERT_EQUAL(std::string::npos, body.find("pCommandChar_->"));
 }
 
-void test_notify_queue_full_path_reuses_member_drop_scratch() {
+void test_notify_queue_full_path_drops_incoming_without_evicting_queue_head() {
     const std::string headerText = readFile(
         std::filesystem::path(projectRoot() + "/src/modules/ble/ble_queue_module.h"));
     const std::string queueText = readFile(
@@ -1054,12 +1054,64 @@ void test_notify_queue_full_path_reuses_member_drop_scratch() {
     const std::string body =
         extractFunctionBody(queueText, "void BleQueueModule::onNotify");
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          headerText.find("BLEDataPacket dropScratch_{};"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          body.find("xQueueReceive(queueHandle_, &dropScratch_, 0)"));
+    TEST_ASSERT_EQUAL(std::string::npos, headerText.find("BLEDataPacket dropScratch_{};"));
+    TEST_ASSERT_EQUAL(std::string::npos, body.find("xQueueReceive(queueHandle_"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("PERF_INC(queueDrops)"));
     TEST_ASSERT_EQUAL(std::string::npos, body.find("BLEDataPacket dropped"));
     TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(body, "BLEDataPacket pkt"));
+}
+
+void test_session_open_boundary_precedes_subscription_work() {
+    const std::string runtimeText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp"));
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    const size_t acceptedEdge = processBody.find("connected_.store(edgeStillAccepted");
+    const size_t openBoundary = processBody.find("sessionOpenedCallback_(edgeGeneration)");
+    const size_t stateMachine = processBody.find("switch (bleState_)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, acceptedEdge);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, openBoundary);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stateMachine);
+    TEST_ASSERT_TRUE(acceptedEdge < openBoundary);
+    TEST_ASSERT_TRUE(openBoundary < stateMachine);
+}
+
+void test_session_close_boundary_follows_generation_invalidation_once() {
+    const std::string connectionText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp"));
+    const std::string quiesceBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::beginClientQuiesce");
+    const std::string disconnectBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::ClientCallbacks::onDisconnect");
+
+    const size_t closeGate = quiesceBody.find("sessionPublicationGate_.close();");
+    const size_t generationStore = quiesceBody.find("sessionGeneration_.store(nextGeneration");
+    const size_t closeBoundary = quiesceBody.find("sessionClosedCallback_(nextGeneration)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, closeGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationStore);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, closeBoundary);
+    TEST_ASSERT_TRUE(closeGate < generationStore);
+    TEST_ASSERT_TRUE(generationStore < closeBoundary);
+    TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(quiesceBody, "sessionClosedCallback_("));
+    TEST_ASSERT_EQUAL(std::string::npos, disconnectBody.find("sessionClosedCallback_("));
+}
+
+void test_notify_callback_propagates_only_revalidated_session_generation() {
+    const std::string connectionText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp"));
+    const std::string notifyBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::notifyCallback");
+
+    const size_t generationCapture = notifyBody.find("const uint32_t callbackGeneration");
+    const size_t generationRecheck = notifyBody.find(
+        "sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration");
+    const size_t dataPublish = notifyBody.find(
+        "dataCallback_(pData, length, charId, callbackGeneration)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationCapture);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationRecheck);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, dataPublish);
+    TEST_ASSERT_TRUE(generationCapture < generationRecheck);
+    TEST_ASSERT_TRUE(generationRecheck < dataPublish);
 }
 
 int main() {
@@ -1109,6 +1161,9 @@ int main() {
     RUN_TEST(test_discovery_task_publishes_generation_and_exit_stack_before_releasing_owner);
     RUN_TEST(test_hard_reset_is_nonblocking_and_uses_quiescence_state);
     RUN_TEST(test_command_write_uses_one_main_loop_owned_handle_snapshot);
-    RUN_TEST(test_notify_queue_full_path_reuses_member_drop_scratch);
+    RUN_TEST(test_notify_queue_full_path_drops_incoming_without_evicting_queue_head);
+    RUN_TEST(test_session_open_boundary_precedes_subscription_work);
+    RUN_TEST(test_session_close_boundary_follows_generation_invalidation_once);
+    RUN_TEST(test_notify_callback_propagates_only_revalidated_session_generation);
     return UNITY_END();
 }

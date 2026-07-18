@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -45,7 +46,13 @@ class BleQueueModule {
     }
 
     // Callback entry from BLE notifications.
-    void onNotify(const uint8_t* data, size_t length, uint16_t charUUID);
+    void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
+
+    // Open/close the V1 notification boundary. closeSession() rejects new
+    // notifications and discards every queued, buffered, and parsed signal
+    // from the outgoing link; openSession(generation) admits the new link.
+    void openSession(uint32_t sessionGeneration);
+    void closeSession();
 
     // Drain queue, frame packets, parse, and forward to display pipeline.
     void process();
@@ -53,12 +60,17 @@ class BleQueueModule {
     unsigned long getLastRxMillis() const { return lastRxMillis_; }
     bool isBackpressured() const { return backpressureActive_; }
 
+#ifdef UNIT_TEST
+    bool enqueueStampedForTest(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
+#endif
+
   private:
     struct BLEDataPacket {
         uint8_t data[256];
         size_t length;
         uint16_t charUUID;
         uint32_t tsMs;
+        uint32_t sessionGeneration;
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -68,11 +80,8 @@ class BleQueueModule {
     PowerModule* power_ = nullptr;
     SystemEventBus* bus_ = nullptr;
     QueueHandle_t queueHandle_ = nullptr;
-    // onNotify() runs on the serialized NimBLE host callback task. Reuse this
-    // member when evicting the oldest queue entry so the callback does not put
-    // a second ~272-byte BLEDataPacket on its limited stack.
-    BLEDataPacket dropScratch_{};
-
+    std::atomic<bool> acceptNotifications_{false};
+    std::atomic<uint32_t> sessionGeneration_{0};
     std::vector<uint8_t> rxBuffer_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)

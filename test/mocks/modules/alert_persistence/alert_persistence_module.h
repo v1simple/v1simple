@@ -50,6 +50,8 @@ public:
     
     void clearPersistence() {
         clearPersistenceCalls++;
+        persistedAlert = AlertData{};
+        persistenceStartMs = 0;
         persistenceActive = false;
     }
     

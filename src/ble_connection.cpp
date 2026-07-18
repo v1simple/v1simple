@@ -463,6 +463,9 @@ void V1BLEClient::beginClientQuiesce(const char* reason, bool requestHardReset) 
             nextGeneration = 1;
         }
         sessionGeneration_.store(nextGeneration, std::memory_order_release);
+        if (sessionClosedCallback_) {
+            sessionClosedCallback_(nextGeneration);
+        }
         connectInProgress_ = false;
         connectStartMs_ = 0;
         connectedFollowupStep_ = ConnectedFollowupStep::NONE;
@@ -934,7 +937,9 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (!pData || !instancePtr || !pChar) {
         return;
     }
-    if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire)) {
+    const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
+    if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) ||
+        !instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
         return;
     }
 
@@ -972,7 +977,9 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     }
 
     // Call user callback for display processing (queued to main loop for SPI safety)
-    if (instancePtr->dataCallback_) {
-        instancePtr->dataCallback_(pData, length, charId);
+    if (instancePtr->dataCallback_ && instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) &&
+        instancePtr->sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration &&
+        instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
+        instancePtr->dataCallback_(pData, length, charId, callbackGeneration);
     }
 }

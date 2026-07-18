@@ -26,6 +26,9 @@ void V1BLEClient::process() {
                                            acceptClientCallbacks_.load(std::memory_order_acquire) &&
                                            sessionPublicationGate_.accepts(edgeGeneration);
             connected_.store(edgeStillAccepted, std::memory_order_release);
+            if (edgeStillAccepted && sessionOpenedCallback_) {
+                sessionOpenedCallback_(edgeGeneration);
+            }
             // Don't set CONNECTED state here - async state machine handles transitions
             // Just set the connected_ flag; state machine will transition via asyncConnectSuccess_
         }

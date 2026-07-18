@@ -461,6 +461,8 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
     client.proxyClientConnected_.store(true, std::memory_order_relaxed);
     client.bleNotifyMutex_ = xSemaphoreCreateMutex();
     client.acceptClientCallbacks_.store(true, std::memory_order_release);
+    client.sessionGeneration_.store(1, std::memory_order_release);
+    client.sessionPublicationGate_.open(1);
 
     NimBLERemoteCharacteristic shortRemote(V1_DISPLAY_DATA_UUID);
     NimBLERemoteCharacteristic longRemote(V1_DISPLAY_DATA_LONG_UUID);

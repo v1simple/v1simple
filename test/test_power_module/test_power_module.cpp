@@ -83,8 +83,39 @@ void test_perform_shutdown_request_delegates_to_battery_power_off() {
     module.performShutdownRequestForTest();
 
     TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
+#ifndef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(1, display.clearCalls);
+#endif
     TEST_ASSERT_TRUE(battery.powerOffCalled);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+}
+
+void test_shutdown_leaves_panel_frame_black_before_power_handoff() {
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
+#ifndef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(1, display.clearCalls);
+#else
+    TEST_ASSERT_EQUAL(0, display.clearCalls);
+#endif
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+}
+
+void test_failed_shutdown_restores_visible_disconnected_screen() {
+    testSettings.settings.brightness = 173;
+    battery.powerOffResult = false;
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(1, display.showDisconnectedCalls);
+    TEST_ASSERT_EQUAL(1, display.flushCalls);
+    TEST_ASSERT_EQUAL(1, display.setBrightnessCalls);
+    TEST_ASSERT_EQUAL_UINT8(173, display.lastBrightness);
+    TEST_ASSERT_TRUE(display.showDisconnectedSequence > 0);
+    TEST_ASSERT_TRUE(display.showDisconnectedSequence < display.flushSequence);
+    TEST_ASSERT_TRUE(display.flushSequence < display.setBrightnessSequence);
 }
 
 void test_set_shutdown_preparation_callback_runs_before_shutdown_tail() {
@@ -299,6 +330,8 @@ int main() {
     RUN_TEST(test_critical_battery_shows_warning_before_shutdown);
 #endif
     RUN_TEST(test_perform_shutdown_request_delegates_to_battery_power_off);
+    RUN_TEST(test_shutdown_leaves_panel_frame_black_before_power_handoff);
+    RUN_TEST(test_failed_shutdown_restores_visible_disconnected_screen);
     RUN_TEST(test_set_shutdown_preparation_callback_runs_before_shutdown_tail);
     RUN_TEST(test_null_shutdown_preparation_callback_is_tolerated);
 #ifndef CAR_MODE_PWR_SHORT

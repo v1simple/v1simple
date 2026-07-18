@@ -121,6 +121,31 @@ void test_disconnect_callback_still_defers_bond_heal() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("pendingDeleteBond_ = true"));
 }
 
+void test_disconnect_reason_is_deferred_then_logged_from_main_loop() {
+    const std::filesystem::path headerSource =
+        std::filesystem::path(projectRoot() + "/src/ble_client.h");
+    const std::filesystem::path connectionSource =
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp");
+    const std::filesystem::path runtimeSource =
+        std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp");
+    const std::string headerText = readFile(headerSource);
+    const std::string connectionText = readFile(connectionSource);
+    const std::string runtimeText = readFile(runtimeSource);
+    const std::string disconnectBody =
+        extractFunctionBody(connectionText, "void V1BLEClient::ClientCallbacks::onDisconnect");
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          headerText.find("std::atomic<int> pendingDisconnectReason_{0};"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          disconnectBody.find("pendingDisconnectReason_.store(reason"));
+    TEST_ASSERT_EQUAL(std::string::npos, disconnectBody.find("Serial.printf"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          processBody.find("pendingDisconnectReason_.exchange(0"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          processBody.find("Applying V1 disconnect reason=%d eventMs=%lu"));
+}
+
 void test_disconnect_callback_no_longer_stops_proxy_advertising_inline() {
     const std::filesystem::path source =
         std::filesystem::path(projectRoot() + "/src/ble_connection.cpp");
@@ -1042,6 +1067,7 @@ int main() {
     RUN_TEST(test_ble_connection_log_rate_limit_allows_first_then_bounds_burst);
     RUN_TEST(test_async_connect_does_not_delete_bond);
     RUN_TEST(test_disconnect_callback_still_defers_bond_heal);
+    RUN_TEST(test_disconnect_reason_is_deferred_then_logged_from_main_loop);
     RUN_TEST(test_disconnect_callback_no_longer_stops_proxy_advertising_inline);
     RUN_TEST(test_v1_connection_event_timestamp_is_written_on_connect_and_disconnect);
     RUN_TEST(test_verify_push_edge_state_is_tracked_in_header_and_commands);

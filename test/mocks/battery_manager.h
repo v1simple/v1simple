@@ -37,12 +37,15 @@ public:
         ++processPowerButtonCalls;
         return processPowerButtonResult;
     }
-    void powerOff(bool sdLogEnabled = false) {
+    bool powerOff(bool sdLogEnabled = false) {
         ++powerOffCalls;
         powerOffCalled = true;
         lastPowerOffSdLog = sdLogEnabled;
+        return powerOffResult;
     }
-    void enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled = false, uint64_t pullupMask = 0) {
+    void enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled = false, uint64_t pullupMask = 0,
+                        const char* outcome = nullptr) {
+        (void)outcome;
         ++deepSleepCalls;
         deepSleepCalled = true;
         lastDeepSleepWakeMask = wakeMask;
@@ -76,6 +79,7 @@ public:
         processPowerButtonResult = false;
         powerOffCalls = 0;
         powerOffCalled = false;
+        powerOffResult = true;
         lastPowerOffSdLog = false;
         deepSleepCalls = 0;
         deepSleepCalled = false;
@@ -89,6 +93,7 @@ public:
     bool processPowerButtonResult = false;
     int powerOffCalls = 0;
     bool powerOffCalled = false;
+    bool powerOffResult = true;
     bool lastPowerOffSdLog = false;
     int deepSleepCalls = 0;
     bool deepSleepCalled = false;

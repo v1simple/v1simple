@@ -428,6 +428,7 @@ class V1BLEClient {
     std::atomic<bool> pendingConnectStateUpdate_{false}; // Deferred update from BLE callbacks
     std::atomic<uint32_t> pendingConnectStateGeneration_{0};
     std::atomic<bool> pendingDisconnectCleanup_{false};  // Deferred cleanup from BLE callbacks
+    std::atomic<int> pendingDisconnectReason_{0};        // NimBLE reason, logged from the main loop
     std::atomic<bool> pendingDeleteBond_{false};         // Deferred bond deletion from BLE callback
     NimBLEAddress pendingDeleteBondAddr_;                // Address to delete bond for
     std::atomic<bool> pendingLastV1AddressValid_{false}; // Deferred settings save from BLE scan callback

@@ -46,6 +46,8 @@ The HTTP-handler files are referenced from `src/wifi_routes.cpp`. Per-route docu
 | `wifi_client_api_service.{h,cpp}` | `/api/wifi/*` (status, scan, disconnect, forget, enable, saved-network management). |
 | `wifi_portal_api_service.{h,cpp}` | Captive-portal probes (`/ping`, `/generate_204`, `/hotspot-detect.html`, etc.). |
 | `backup_api_service.{h,cpp}` | `/api/settings/backup`, `/api/settings/backup-now`, `/api/settings/restore`. |
+| `wifi_diagnostics_api_service.{h,cpp}` | Maintenance-only allowlisted SD diagnostics plus the internal LittleFS panic breadcrumb, with bounded streaming downloads. |
+| `wifi_system_api_service.{h,cpp}` | Clean maintenance-to-normal reboot orchestration. |
 
 For the full per-route HTTP reference (params, response shapes), see `docs/API.md`.
 

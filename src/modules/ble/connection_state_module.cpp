@@ -52,10 +52,19 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
                 bus_->publish(event);
             }
         } else {
-            // Just disconnected - reset stale state
+            // Just disconnected - reset stale state. Clear the BLE display
+            // context before showScanning() performs its full-panel flush.
+            //
+            // The earlier display-orchestration pass may be skipped for an
+            // overloaded loop. Without this edge-owned clear, showScanning()
+            // can redraw the previous BLE badge and a later framebuffer-only
+            // clear has no disconnected packet stream to drive another flush.
+            display_->setBleContext(DisplayBleContext{});
+            display_->setBLEProxyStatus(false, false, false);
             parser_->resetAlertAssembly();
             display_->resetChangeTracking();
             display_->showScanning();
+            Serial.printf("[BLE] V1 disconnected; cleared LCD BLE state at %lu ms\n", nowMs);
             CONN_LOG("[BLE] V1 disconnected - scanning");
             if (bus_) {
                 SystemEvent event;

@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include "../../include/battery_math.h"
+#include "../../include/poweroff_policy.h"
 
 namespace {
 
@@ -83,6 +84,39 @@ void test_threshold_values_match_expected_device_profile() {
     TEST_ASSERT_EQUAL_UINT16(3250, kCriticalMv);
 }
 
+void test_poweroff_policy_uses_latch_cut_only_on_battery() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(poweroff_policy::Strategy::HARD_LATCH_CUT),
+                          static_cast<int>(poweroff_policy::selectStrategy(true)));
+    TEST_ASSERT_EQUAL_STRING("hard_latch_cut", poweroff_policy::strategyName(poweroff_policy::selectStrategy(true)));
+}
+
+void test_poweroff_policy_uses_deep_sleep_for_external_power() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(poweroff_policy::Strategy::DEEP_SLEEP_EXTERNAL_POWER),
+                          static_cast<int>(poweroff_policy::selectStrategy(false)));
+    TEST_ASSERT_EQUAL_STRING("deep_sleep_external_power",
+                             poweroff_policy::strategyName(poweroff_policy::selectStrategy(false)));
+}
+
+void test_external_power_wake_never_uses_asserted_pwr_gpio16() {
+    const auto normal = poweroff_policy::planExternalPowerWake();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(poweroff_policy::WakeInput::BOOT_GPIO0), static_cast<int>(normal.input));
+    TEST_ASSERT_TRUE(poweroff_policy::wakePlanIsInactive(normal, false, true));
+    TEST_ASSERT_FALSE(poweroff_policy::wakePlanIsInactive(normal, false, false));
+    TEST_ASSERT_EQUAL_STRING("BOOT_GPIO0", poweroff_policy::wakeInputName(normal.input));
+}
+
+void test_battery_fallback_prefers_released_pwr_then_falls_back_to_boot() {
+    const auto pwrReleased = poweroff_policy::planBatteryFallbackWake(true);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(poweroff_policy::WakeInput::PWR_GPIO16),
+                          static_cast<int>(pwrReleased.input));
+    TEST_ASSERT_TRUE(poweroff_policy::wakePlanIsInactive(pwrReleased, true, true));
+
+    const auto pwrHeld = poweroff_policy::planBatteryFallbackWake(false);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(poweroff_policy::WakeInput::BOOT_GPIO0), static_cast<int>(pwrHeld.input));
+    TEST_ASSERT_TRUE(poweroff_policy::wakePlanIsInactive(pwrHeld, false, true));
+    TEST_ASSERT_FALSE(poweroff_policy::wakePlanIsInactive(pwrHeld, false, false));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_percent_caps_at_full_and_above);
@@ -94,5 +128,9 @@ int main() {
     RUN_TEST(test_critical_uses_strict_critical_boundary);
     RUN_TEST(test_critical_implies_low_for_nonzero_voltage);
     RUN_TEST(test_threshold_values_match_expected_device_profile);
+    RUN_TEST(test_poweroff_policy_uses_latch_cut_only_on_battery);
+    RUN_TEST(test_poweroff_policy_uses_deep_sleep_for_external_power);
+    RUN_TEST(test_external_power_wake_never_uses_asserted_pwr_gpio16);
+    RUN_TEST(test_battery_fallback_prefers_released_pwr_then_falls_back_to_boot);
     return UNITY_END();
 }

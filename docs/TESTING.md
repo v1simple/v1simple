@@ -269,7 +269,7 @@ Bench result language is intentionally small:
 - `mutation_test.py` / `mutation_test.sh` — mutation testing harness; `--critical` runs the tracked catalog.
 - `analyze_alp_fingerprints.py` — ALP frame fingerprint analysis.
 - `pio-size.sh` — size report wrapper.
-- `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, maintenance 409 gating, the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
+- `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, the published maintenance deadline, diagnostics listing, live-push maintenance gating, every production page (including Logs), the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
 - `check_obd_proxy_qualification.py` — validates a typed OBD/proxy hardware evidence pack against `tools/obd_proxy_qualification_profile_v1.json`; normal CI exercises only its synthetic regression suite.
 
 

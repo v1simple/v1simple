@@ -186,6 +186,7 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         instancePtr->asyncConnectSuccess_.store(false, std::memory_order_relaxed);
         instancePtr->asyncConnectPending_.store(false, std::memory_order_release);
         instancePtr->disconnectCallbackPending_.store(false, std::memory_order_release);
+        instancePtr->pendingDisconnectReason_.store(reason, std::memory_order_relaxed);
         instancePtr->pendingDisconnectCleanup_.store(true, std::memory_order_release);
     }
 }

@@ -34,6 +34,9 @@ void V1BLEClient::process() {
         SemaphoreGuard lock(bleMutex_, 0);
         if (lock.locked()) {
             pendingDisconnectCleanup_ = false;
+            const int disconnectReason = pendingDisconnectReason_.exchange(0, std::memory_order_relaxed);
+            Serial.printf("[BLE] Applying V1 disconnect reason=%d eventMs=%lu\n", disconnectReason,
+                          static_cast<unsigned long>(lastV1ConnectionEventMs_.load(std::memory_order_relaxed)));
             const bool disconnectWasExpected = bleState_ == BLEState::QUIESCING;
             connected_.store(false, std::memory_order_relaxed);
             connectInProgress_ = false;

@@ -195,6 +195,13 @@ void handleApiPushNow(WebServer& server, const Runtime& runtime, bool (*checkRat
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
 
+    if (runtime.maintenanceBootActive) {
+        server.send(409, "application/json",
+                    "{\"success\":false,\"error\":\"live_push_unavailable_in_maintenance\","
+                    "\"message\":\"Live V1 push is unavailable in maintenance mode\"}");
+        return;
+    }
+
     if (!server.hasArg("slot")) {
         server.send(400, "application/json", "{\"error\":\"Missing slot parameter\"}");
         return;

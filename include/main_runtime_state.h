@@ -1,5 +1,9 @@
 #pragma once
 
+namespace MainRuntimePolicy {
+constexpr unsigned long MaintenanceBootTimeoutMs = 10UL * 60UL * 1000UL;
+}
+
 struct MainRuntimeState {
     bool bootReady = false;
     unsigned long bootReadyDeadlineMs = 0;

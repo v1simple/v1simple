@@ -28,12 +28,38 @@ void PowerModule::performShutdown() {
     if (display_) {
         display_->showShutdown();
         delay(1000);
+#ifndef CAR_MODE_PWR_SHORT
+        // Leave panel GRAM black before the battery manager drops the latch or
+        // enters deep sleep. The LCD controller can otherwise retain the
+        // GOODBYE frame while its backlight is off and briefly reveal it when
+        // a wake press restores power/backlight.
+        display_->clear();
+#endif
     }
 
     POWER_PERF_FLUSH_NOW();
     if (battery_) {
         const bool sdLog = settings_ && settings_->get().powerOffSdLog;
-        battery_->powerOff(sdLog);
+        const uint8_t savedBrightness = settings_ ? settings_->get().brightness : 0;
+        Serial.printf("[Power] Shutdown handoff: source=%s sdLog=%d\n",
+                      battery_->isOnBattery() ? "battery" : "external", sdLog ? 1 : 0);
+        const bool shutdownCompleted = battery_->powerOff(sdLog);
+        if (!shutdownCompleted) {
+            Serial.println("[Power] ERROR: shutdown hardware tail returned; device remains awake");
+            if (display_) {
+                // BatteryManager deliberately returns with the inverted
+                // backlight pin HIGH/off. Flush a safe frame while it remains
+                // dark, then restore the user's saved brightness so retained
+                // GOODBYE pixels can never be exposed.
+                display_->showDisconnected();
+                display_->flush();
+                if (settings_) {
+                    display_->setBrightness(savedBrightness);
+                    Serial.printf("[Power] Restored display brightness=%u after shutdown abort\n",
+                                  static_cast<unsigned>(savedBrightness));
+                }
+            }
+        }
     }
 }
 

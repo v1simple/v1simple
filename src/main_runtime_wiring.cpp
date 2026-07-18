@@ -107,6 +107,7 @@ void configureWifiRuntimeModule() {
                     mainRuntimeState.maintenanceBootActive && mainRuntimeState.maintenanceBootStartedMs != 0
                         ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
                         : 0;
+                obj["maintenanceBootTimeoutMs"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;
                 StatusObservabilityPayload::WifiStatusSnapshot wifiStatus;
                 wifiStatus.apLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
                 wifiStatus.apLastTransitionReason =

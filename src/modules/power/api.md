@@ -27,7 +27,18 @@ Registers a hook that runs before `performShutdown()` actually drops power. Use 
 ### Shutdown control
 
 #### `void performShutdown()`
-Graceful shutdown — fires the preparation callback, then drops the latch.
+Graceful shutdown — fires the preparation callback, shows `GOODBYE` for one
+second, flushes a black frame to the panel, then hands off to `BatteryManager`.
+On battery power the hardware latch is dropped. With USB/external power still
+attached, the battery path is isolated and the ESP32 enters BOOT-button-wake
+deep sleep; firmware cannot physically remove an attached supply. External-power
+sleep always uses active-low BOOT/GPIO0 with its RTC pull-up enabled because
+PWR/GPIO16 reads LOW while external power is attached. A battery fallback waits
+up to 1.5 seconds for PWR/GPIO16 to return HIGH; if it remains asserted, it uses
+BOOT/GPIO0 instead. The selected wake input is checked immediately before sleep,
+and an aborted shutdown draws the disconnected screen while the backlight is
+still off, then restores the saved brightness rather than leaving a
+black-but-awake device or exposing retained `GOODBYE` pixels.
 **Source:** `power_module.h:18`.
 
 In `CAR_MODE_PWR_SHORT` builds, this is a no-op (`docs/HARDWARE_NOTES.md`).

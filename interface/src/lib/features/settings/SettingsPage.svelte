@@ -17,7 +17,8 @@
         ap_ssid: '',
         ap_password: '',
         autoPowerOffMinutes: 0,
-        apTimeoutMinutes: 0
+        apTimeoutMinutes: 0,
+        powerOffSdLog: false
     });
 
     let loading = $state(true);
@@ -63,11 +64,16 @@
     });
     let wifiPoll = null;
     let wifiStatusFetchInFlight = false;
+    let wifiTestRunId = 0;
     let SettingsWifiModalComponent = $state(null);
     let wifiModalLoading = $state(false);
     const WIFI_STATUS_ERROR_TEXT = 'Failed to load WiFi status';
     const WIFI_NETWORKS_ERROR_TEXT = 'Failed to load saved WiFi networks';
+    const WIFI_SCAN_START_ERROR_TEXT = 'Failed to start WiFi scan';
     const WIFI_SCAN_ERROR_TEXT = 'Failed to update WiFi scan';
+    const WIFI_TEST_POLL_INTERVAL_MS = 1000;
+    const WIFI_TEST_STATUS_TIMEOUT_MS = 1500;
+    const WIFI_TEST_TIMEOUT_MS = 20_000;
     const RECOGNIZED_BACKUP_TYPES = new Set(['v1simple_backup', 'v1simple_sd_backup']);
 
     onMount(() => {
@@ -79,6 +85,7 @@
         })();
 
         return () => {
+            wifiTestRunId += 1;
             releaseDeviceSettings();
             stopWifiPoll();
         };
@@ -128,23 +135,29 @@
         }
     }
 
-    async function fetchWifiStatus() {
-        if (wifiStatusFetchInFlight) return;
+    async function fetchWifiStatus({ reportError = true, timeoutMs = 5000 } = {}) {
+        if (wifiStatusFetchInFlight) return null;
         wifiStatusFetchInFlight = true;
         try {
-            const res = await fetchWithTimeout('/api/wifi/status');
+            const res = await fetchWithTimeout('/api/wifi/status', {}, timeoutMs);
             if (res.ok) {
                 const data = await res.json();
                 wifiStatus = { ...wifiStatus, ...data };
                 clearMessageText(WIFI_STATUS_ERROR_TEXT);
+                return data;
             } else {
-                message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
+                if (reportError) {
+                    message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
+                }
             }
         } catch (e) {
-            message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
+            if (reportError) {
+                message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
+            }
         } finally {
             wifiStatusFetchInFlight = false;
         }
+        return null;
     }
 
     function normalizeWifiSlot(slot, fallbackIndex = 0) {
@@ -284,12 +297,44 @@
         wifiPoll.start();
 
         try {
-            await fetchWithTimeout('/api/wifi/scan', { method: 'POST' });
+            const res = await fetchWithTimeout('/api/wifi/scan', { method: 'POST' });
+            if (!res.ok) {
+                message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
+                wifiScanning = false;
+                stopWifiPoll();
+                closeWifiModal({ force: true });
+                return;
+            }
+
+            const data = await res.json();
+            clearMessageText(WIFI_SCAN_START_ERROR_TEXT);
+            applyWifiScanResponse(data);
         } catch (e) {
-            message = { type: 'error', text: 'Failed to start WiFi scan' };
+            message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
             wifiScanning = false;
             stopWifiPoll();
+            closeWifiModal({ force: true });
         }
+    }
+
+    function applyWifiScanResponse(data) {
+        const networks = Array.isArray(data?.networks) ? data.networks : [];
+        if (data?.scanning) {
+            wifiScanning = true;
+            return;
+        }
+
+        // POST may return a scan that completed while the modal was closed. Keep
+        // that response instead of waiting for a GET after firmware has released
+        // its one-shot scan buffer.
+        // An already-scheduled GET can observe the now-released firmware buffer
+        // after this POST supplied the completed result. Do not let that empty
+        // follow-up erase the result the user has not had a chance to use yet.
+        if (networks.length > 0 || wifiNetworks.length === 0) {
+            wifiNetworks = networks;
+        }
+        wifiScanning = false;
+        stopWifiPoll();
     }
 
     async function pollWifiScan() {
@@ -298,20 +343,18 @@
             if (res.ok) {
                 const data = await res.json();
                 clearMessageText(WIFI_SCAN_ERROR_TEXT);
-                if (!data.scanning && data.networks.length > 0) {
-                    wifiNetworks = data.networks;
-                    wifiScanning = false;
-                    stopWifiPoll();
-                } else if (!data.scanning) {
-                    // Scan complete but no networks
-                    wifiScanning = false;
-                    stopWifiPoll();
-                }
+                applyWifiScanResponse(data);
             } else {
                 message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
+                wifiScanning = false;
+                stopWifiPoll();
+                closeWifiModal({ force: true });
             }
         } catch (e) {
             message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
+            wifiScanning = false;
+            stopWifiPoll();
+            closeWifiModal({ force: true });
         }
 
         // Also update status
@@ -365,7 +408,11 @@
 
     async function disconnectWifi() {
         try {
-            await fetchWithTimeout('/api/wifi/disconnect', { method: 'POST' });
+            const res = await fetchWithTimeout('/api/wifi/disconnect', { method: 'POST' });
+            if (!res.ok) {
+                message = { type: 'error', text: 'Failed to disconnect' };
+                return;
+            }
             await fetchWifiStatus();
             message = { type: 'success', text: 'Disconnected from WiFi' };
         } catch (e) {
@@ -512,6 +559,10 @@
     }
 
     async function testWifiSlot(slot) {
+        if (wifiTestingIndex !== null) return;
+
+        const runId = ++wifiTestRunId;
+        const deadlineMs = Date.now() + WIFI_TEST_TIMEOUT_MS;
         wifiTestingIndex = slot.index;
         try {
             const res = await fetchWithTimeout('/api/wifi/networks/test', {
@@ -523,12 +574,57 @@
                 message = { type: 'error', text: `Failed to test ${slot.ssid}` };
                 return;
             }
-            message = { type: 'success', text: `Testing connection to ${slot.ssid}...` };
-            await fetchWifiStatus();
+            message = { type: 'info', text: `Testing connection to ${slot.ssid}...` };
+
+            while (Date.now() < deadlineMs) {
+                const statusTimeoutMs = Math.min(
+                    WIFI_TEST_STATUS_TIMEOUT_MS,
+                    deadlineMs - Date.now()
+                );
+                const status = await fetchWifiStatus({
+                    reportError: false,
+                    timeoutMs: statusTimeoutMs
+                });
+                if (runId !== wifiTestRunId) return;
+
+                if (status?.state === 'connected') {
+                    const connectedIndex = Number(status.connectedSlotIndex);
+                    const hasConnectedIndex =
+                        Number.isInteger(connectedIndex) && connectedIndex >= 0;
+                    const targetConnected = hasConnectedIndex
+                        ? connectedIndex === Number(slot.index)
+                        : status.connectedSSID === slot.ssid;
+                    if (targetConnected) {
+                        message = { type: 'success', text: `Connected to ${slot.ssid}` };
+                    } else {
+                        message = {
+                            type: 'error',
+                            text: `Connection test reached ${status.connectedSSID || 'another saved network'}, not ${slot.ssid}`
+                        };
+                    }
+                    return;
+                }
+
+                if (['failed', 'disabled', 'disconnected'].includes(status?.state)) {
+                    message = { type: 'error', text: `Could not connect to ${slot.ssid}` };
+                    return;
+                }
+
+                const remainingMs = deadlineMs - Date.now();
+                if (remainingMs <= 0) break;
+                await new Promise((resolve) =>
+                    setTimeout(resolve, Math.min(WIFI_TEST_POLL_INTERVAL_MS, remainingMs))
+                );
+                if (runId !== wifiTestRunId) return;
+            }
+
+            message = { type: 'error', text: `Connection test timed out for ${slot.ssid}` };
         } catch (e) {
             message = { type: 'error', text: `Failed to test ${slot.ssid}` };
         } finally {
-            wifiTestingIndex = null;
+            if (runId === wifiTestRunId) {
+                wifiTestingIndex = null;
+            }
         }
     }
 
@@ -604,6 +700,7 @@
             formData.append('ap_password', settings.ap_password);
             formData.append('autoPowerOffMinutes', settings.autoPowerOffMinutes);
             formData.append('apTimeoutMinutes', settings.apTimeoutMinutes);
+            formData.append('powerOffSdLog', settings.powerOffSdLog ? 'true' : 'false');
 
             const res = await postSettingsForm(formData, '/api/device/settings');
 
@@ -764,7 +861,7 @@
 
                 <div class="field-control mt-4">
                     <label class="label cursor-pointer">
-                        <span class="field-label">AP Always On</span>
+                        <span class="field-label">Disable AP Inactivity Timeout</span>
                         <input
                             type="checkbox"
                             class="toggle toggle-primary"
@@ -773,6 +870,12 @@
                                 (settings.apTimeoutMinutes = e.target.checked ? 0 : 15)}
                         />
                     </label>
+                    <div class="label">
+                        <span class="field-hint">
+                            This controls AP inactivity only. The separate maintenance-session limit
+                            and remaining time are shown in the banner above.
+                        </span>
+                    </div>
                     {#if settings.apTimeoutMinutes > 0}
                         <label class="label" for="ap-timeout">
                             <span class="field-label">Auto-off after (minutes)</span>
@@ -916,7 +1019,7 @@
                                                 <button
                                                     class="btn btn-outline btn-xs"
                                                     onclick={() => testWifiSlot(slot)}
-                                                    disabled={wifiTestingIndex === slot.index}
+                                                    disabled={wifiTestingIndex !== null}
                                                 >
                                                     {#if wifiTestingIndex === slot.index}
                                                         <span

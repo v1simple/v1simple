@@ -63,6 +63,8 @@ void test_main_runtime_state_tracks_maintenance_boot_mode() {
                           headerText.find("bool maintenanceBootActive = false;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           headerText.find("unsigned long maintenanceBootStartedMs = 0;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          headerText.find("MaintenanceBootTimeoutMs = 10UL * 60UL * 1000UL;"));
 }
 
 void test_boot_button_routes_to_maintenance_reboot_wrapper() {
@@ -96,6 +98,12 @@ void test_loop_short_circuits_normal_runtime_during_maintenance_boot() {
                           loopBody.find("settingsManager.serviceDeferredPersist"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("settingsManager.serviceDeferredBackup"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("displayPreviewModule.update();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("displayPreviewModule.consumeEnded()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);"));
     const size_t yieldPos = loopBody.find("vTaskDelay(pdMS_TO_TICKS(1));");
     const size_t returnPos = loopBody.find("return;");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, yieldPos);
@@ -150,6 +158,8 @@ void test_status_callback_publishes_maintenance_boot_fields() {
                           body.find("obj[\"maintenanceBoot\"] = mainRuntimeState.maintenanceBootActive;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           body.find("obj[\"maintenanceBootUptimeMs\"]"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          body.find("obj[\"maintenanceBootTimeoutMs\"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           body.find("mainRuntimeState.maintenanceBootStartedMs"));
 }
@@ -383,6 +393,44 @@ void test_gps_config_save_skips_live_runtime_in_maintenance() {
     TEST_ASSERT_LESS_THAN(setEnabledCall, guardPos);
 }
 
+void test_gps_config_post_route_propagates_maintenance_boot_state() {
+    // The service-level guard is only effective when the route composition
+    // passes the boot mode through. Regression: POST /api/gps/config once
+    // constructed a default Runtime (maintenance=false) and started Serial1
+    // from maintenance mode despite the persist-only service contract.
+    const std::filesystem::path source =
+        std::filesystem::path(projectRoot() + "/src/wifi_routes.cpp");
+    const std::string text = readFile(source);
+
+    const size_t routeStart = text.find("server_.on(\"/api/gps/config\", HTTP_POST");
+    const size_t nextRoute = text.find("server_.on(\"/api/gps/status\", HTTP_GET", routeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, routeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, nextRoute);
+
+    const std::string routeBody = text.substr(routeStart, nextRoute - routeStart);
+    const size_t propagation = routeBody.find(
+        "r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;");
+    const size_t delegate = routeBody.find("GpsApiService::handleApiConfigSave(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, propagation);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, delegate);
+    TEST_ASSERT_LESS_THAN(delegate, propagation);
+}
+
+void test_autopush_runtime_propagates_maintenance_boot_state() {
+    const std::filesystem::path source =
+        std::filesystem::path(projectRoot() + "/src/wifi_runtimes.cpp");
+    const std::string text = readFile(source);
+    const std::string body = extractFunctionBody(
+        text, "WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime()");
+
+    const size_t propagation = body.find(
+        "runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;");
+    const size_t returnRuntime = body.find("return runtime;");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, propagation);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, returnRuntime);
+    TEST_ASSERT_LESS_THAN(returnRuntime, propagation);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_main_runtime_state_tracks_maintenance_boot_mode);
@@ -401,5 +449,7 @@ int main() {
     RUN_TEST(test_web_ui_runtime_saves_persist_nvs_before_deferred_sd_backup);
     RUN_TEST(test_obd_config_save_persists_immediately_in_maintenance);
     RUN_TEST(test_gps_config_save_skips_live_runtime_in_maintenance);
+    RUN_TEST(test_gps_config_post_route_propagates_maintenance_boot_state);
+    RUN_TEST(test_autopush_runtime_propagates_maintenance_boot_state);
     return UNITY_END();
 }

@@ -108,6 +108,7 @@ struct Runtime {
     void* setAutoPushEnabledCtx = nullptr;
     PushNowQueueResult (*queuePushNow)(const PushNowRequest& request, void* ctx) = nullptr;
     void* queuePushNowCtx = nullptr;
+    bool maintenanceBootActive = false;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);

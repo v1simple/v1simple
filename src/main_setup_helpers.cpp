@@ -318,10 +318,16 @@ void initializeEarlyBootDiagnostics() {
     // Wait for USB to stabilize after upload.
     delay(50);
 
-    // Release GPIO hold from deep-sleep fallback (backlight was held off).
-    // Harmless no-op on normal power-on; must happen before display init.
+    // Release the deep-sleep fallback hold without exposing the panel's retained
+    // GRAM. Preload the inverted backlight output HIGH (off), release the hold,
+    // then assert HIGH again before any slower battery/display initialization.
+    // Harmless on normal power-on; required to prevent a stale GOODBYE frame
+    // from flashing during a button wake.
+    pinMode(LCD_BL, OUTPUT);
+    digitalWrite(LCD_BL, HIGH);
     gpio_deep_sleep_hold_dis();
     gpio_hold_dis(static_cast<gpio_num_t>(LCD_BL));
+    digitalWrite(LCD_BL, HIGH);
 
     // Backlight is handled in display.begin() (inverted PWM for Waveshare).
     Serial.begin(115200);

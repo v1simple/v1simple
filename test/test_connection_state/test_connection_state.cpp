@@ -73,6 +73,8 @@ struct ConnectionStateLogic {
             if (isConnected) {
                 displayPtr->showResting();
             } else {
+                displayPtr->setBleContext(DisplayBleContext{});
+                displayPtr->setBLEProxyStatus(false, false, false);
                 parserPtr->resetAlertAssembly();
                 displayPtr->resetChangeTracking();
                 displayPtr->showScanning();
@@ -151,6 +153,13 @@ void test_disconnect_transition_shows_scanning() {
     // Parser state should be reset
     TEST_ASSERT_EQUAL(1, parser.resetAlertAssemblyCalls);
     TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
+    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
+    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
+    TEST_ASSERT_FALSE(display.lastBleContext.proxyConnected);
+    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_FALSE(display.lastBleProxyEnabled);
+    TEST_ASSERT_FALSE(display.lastBleProxyConnected);
+    TEST_ASSERT_FALSE(display.lastBleReceiving);
 }
 
 void test_no_transition_when_state_unchanged() {
@@ -322,6 +331,34 @@ void test_real_module_data_stale_boundary_is_exclusive() {
     TEST_ASSERT_EQUAL(1, bleClient.requestAlertDataCalls);
 }
 
+void test_real_module_disconnect_clears_ble_display_state() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule);
+
+    bleClient.setConnected(true);
+    real.process(1000);
+
+    display.reset();
+    parser.reset();
+    powerModule.reset();
+    bleClient.setConnected(false);
+
+    TEST_ASSERT_FALSE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
+    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
+    TEST_ASSERT_FALSE(display.lastBleContext.proxyConnected);
+    TEST_ASSERT_EQUAL(0, display.lastBleContext.v1Rssi);
+    TEST_ASSERT_EQUAL(0, display.lastBleContext.proxyRssi);
+    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_FALSE(display.lastBleProxyEnabled);
+    TEST_ASSERT_FALSE(display.lastBleProxyConnected);
+    TEST_ASSERT_FALSE(display.lastBleReceiving);
+    TEST_ASSERT_EQUAL(1, display.showScanningCalls);
+    TEST_ASSERT_EQUAL(1, parser.resetAlertAssemblyCalls);
+    TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
+    TEST_ASSERT_FALSE(powerModule.lastConnectionState);
+}
+
 void setUp() {
     mockMillis = 0;
     bleClient.reset();
@@ -350,6 +387,7 @@ void runAllTests() {
 
     // Real-module mutation pins
     RUN_TEST(test_real_module_data_stale_boundary_is_exclusive);
+    RUN_TEST(test_real_module_disconnect_clears_ble_display_state);
 }
 
 #ifdef ARDUINO

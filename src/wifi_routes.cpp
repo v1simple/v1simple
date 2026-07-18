@@ -10,6 +10,8 @@
 #include "littlefs_mount.h"
 #include "storage_manager.h"
 #include "modules/wifi/backup_api_service.h"
+#include "modules/wifi/wifi_diagnostics_api_service.h"
+#include "modules/wifi/wifi_system_api_service.h"
 #include "modules/wifi/wifi_quiet_api_service.h"
 #include "modules/wifi/wifi_client_api_service.h"
 #include "modules/wifi/wifi_display_colors_api_service.h"
@@ -31,6 +33,7 @@
 #include "modules/gps/gps_api_service.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "battery_manager.h"
+#include "main_internals.h"
 #include <LittleFS.h>
 
 bool WiFiManager::requireMaintenanceApiWriteHeader() {
@@ -342,6 +345,52 @@ bool WiFiManager::setupWebServer() {
             this, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
 
+    // Read-only, maintenance-only diagnostics. Keep the SD mutex held for the
+    // complete list/stream operation so background writers cannot race a file
+    // handle. The try-lock preserves the main-loop non-blocking invariant.
+    server_.on("/api/diagnostics/logs", HTTP_GET, [this]() {
+        const WifiDiagnosticsApiService::Runtime runtime = makeDiagnosticsRuntime();
+        if (!runtime.maintenanceBootActive) {
+            WifiDiagnosticsApiService::handleApiList(server_, runtime);
+            return;
+        }
+        StorageManager::SDTryLock lock(storageManager.getSDMutex());
+        if (!lock) {
+            markUiActivity();
+            server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");
+            return;
+        }
+        WifiDiagnosticsApiService::handleApiList(server_, runtime);
+    });
+    server_.on("/api/diagnostics/log", HTTP_GET, [this]() {
+        const WifiDiagnosticsApiService::Runtime runtime = makeDiagnosticsRuntime();
+        if (!runtime.maintenanceBootActive) {
+            WifiDiagnosticsApiService::handleApiDownload(server_, runtime);
+            return;
+        }
+        StorageManager::SDTryLock lock(storageManager.getSDMutex());
+        if (!lock) {
+            markUiActivity();
+            server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");
+            return;
+        }
+        WifiDiagnosticsApiService::handleApiDownload(server_, runtime);
+    });
+
+    server_.on("/api/system/reboot-normal", HTTP_POST, [this]() {
+        if (!requireMaintenanceApiWriteHeader())
+            return;
+        WifiSystemApiService::RebootRuntime runtime;
+        runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+        runtime.persistSettings = [](void*) { settingsManager.save(); };
+        runtime.markCleanShutdown = [](void*) { ::markCleanShutdown(); };
+        runtime.delayBeforeRestart = [](uint32_t delayMs, void*) { delay(delayMs); };
+        runtime.restart = [](void*) { ESP.restart(); };
+        runtime.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
+        runtime.ctx = this;
+        WifiSystemApiService::handleApiRebootNormal(server_, runtime);
+    });
+
     // WiFi client (STA) API routes - connect to external network
     server_.on("/api/wifi/status", HTTP_GET, [this]() {
         WifiClientApiService::handleApiStatus(
@@ -467,6 +516,7 @@ bool WiFiManager::setupWebServer() {
         GpsApiService::Runtime r;
         r.ctx = this;
         r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
+        r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
         if (!gpsRuntime_) {
             server_.send(503, "application/json", "{\"error\":\"gps runtime not wired\"}");
             return;

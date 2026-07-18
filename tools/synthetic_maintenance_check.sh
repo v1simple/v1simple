@@ -62,7 +62,8 @@ if python3 -c "import json,sys;sys.exit(0 if json.load(open('$TMP/status.json'))
 else
   bad "unit is not in maintenance boot (checks below may 409/timeout)"
 fi
-require_keys "/api/status" status.json wifi device battery v1_connected maintenanceBoot
+require_keys "/api/status" status.json \
+  wifi device battery v1_connected maintenanceBoot maintenanceBootUptimeMs maintenanceBootTimeoutMs
 
 # --- settings endpoints: keys each UI page consumes --------------------------
 fetch_json device_settings /api/device/settings &&
@@ -107,6 +108,9 @@ fetch_json obd_devices /api/obd/devices && require_keys "/api/obd/devices" obd_d
 fetch_json gps_config /api/gps/config &&
   require_keys "/api/gps/config" gps_config.json \
     gpsEnabled gpsBaud gpsEnablePinActiveHigh gpsLogUtcToPerf gpsLogUtcToAlp
+fetch_json diagnostics_logs /api/diagnostics/logs &&
+  require_keys "/api/diagnostics/logs" diagnostics_logs.json \
+    success maxListedFiles maxScannedEntries maxDownloadBytes files truncated
 
 # --- backup export ------------------------------------------------------------
 fetch_json backup /api/settings/backup
@@ -124,6 +128,8 @@ then ok "backup export: recognized _type, obfuscated apPassword, no STA password
 for p in /api/obd/status /api/gps/status /api/alp/status; do
   expect_code "GET $p returns maintenance 409" 409 "$BASE$p"
 done
+expect_code "POST Auto-Push live push returns maintenance 409" 409 \
+  -X POST -H "$HDR" "$BASE/api/autopush/push"
 
 # --- write-header enforcement + benign preview round-trip ----------------------
 expect_code "POST without header rejected" 403 -X POST "$BASE/api/display/preview/clear"
@@ -132,7 +138,7 @@ sleep 1
 expect_code "POST preview clear with header" 200 -X POST -H "$HDR" "$BASE/api/display/preview/clear"
 
 # --- static-path guard + SPA pages ---------------------------------------------
-for p in / /settings /colors /audio /profiles /devices /autopush /alp /obd /gps; do
+for p in / /settings /colors /audio /profiles /devices /autopush /alp /obd /gps /logs; do
   expect_code "page $p served" 200 "$BASE$p"
 done
 expect_code "/dev blocked in production" 404 "$BASE/dev"

@@ -39,8 +39,10 @@ LOCAL_HANDLER_ROUTE_CONTRACT_FILE = (
 API_WRITE_GUARD_CALL = "requireMaintenanceApiWriteHeader()"
 
 ROUTE_PREFIXES = (
+    "/api/diagnostics/",
     "/api/settings/backup",
     "/api/settings/restore",
+    "/api/system/",
 )
 POLICY_CALLBACK_PREFIXES: Tuple[str, ...] = ()
 LOCAL_HANDLER_ROUTE_KEYS: Tuple[str, ...] = (

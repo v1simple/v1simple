@@ -21,6 +21,7 @@ function createDefaultStatus() {
         },
         maintenanceBoot: false,
         maintenanceBootUptimeMs: 0,
+        maintenanceBootTimeoutMs: 10 * 60 * 1000,
         v1_connected: false,
         alert: null
     };

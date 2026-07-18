@@ -414,7 +414,6 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     displayPreviewModule.begin(&display);
 }
 
-static constexpr unsigned long MAINTENANCE_BOOT_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 static constexpr unsigned long MAINTENANCE_EXIT_LONG_PRESS_MS = 4000UL;
 
 static void logMaintenanceHeapSnapshot(const char* stage) {
@@ -432,7 +431,8 @@ template <typename StageLogger>
 static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, const uint32_t bootId,
                                           const esp_reset_reason_t resetReason, const StageLogger& logBootStage) {
     SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu\n", static_cast<unsigned long>(bootId),
-                     resetReasonToString(resetReason), static_cast<unsigned long>(MAINTENANCE_BOOT_TIMEOUT_MS));
+                     resetReasonToString(resetReason),
+                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs));
 
     logMaintenanceHeapSnapshot("pre_wifi");
     wifiManager.setMaintenanceBootMode(true);
@@ -566,9 +566,23 @@ void loop() {
         static bool maintenanceShownStation = false;
         const bool maintenanceStaConnected = wifiManager.isConnected();
         String maintenanceIp = maintenanceStaConnected ? wifiManager.getIPAddress() : wifiManager.getAPIPAddress();
-        if (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation) {
-            maintenanceShownIp = maintenanceIp;
-            maintenanceShownStation = maintenanceStaConnected;
+        const bool maintenancePreviewRunning = displayPreviewModule.isRunning();
+        if (!maintenancePreviewRunning &&
+            (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation)) {
+            display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
+        }
+        maintenanceShownIp = maintenanceIp;
+        maintenanceShownStation = maintenanceStaConnected;
+
+        // Normal runtime advances previews through DisplayOrchestrationModule,
+        // which is intentionally not initialized in maintenance boot. Service
+        // the shared preview module here so Colors/visual API previews actually
+        // render, then return ownership to the maintenance screen on expiry or
+        // cancellation.
+        if (maintenancePreviewRunning) {
+            displayPreviewModule.update();
+        }
+        if (displayPreviewModule.consumeEnded()) {
             display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
         }
 
@@ -598,7 +612,7 @@ void loop() {
         }
 
         if (mainRuntimeState.maintenanceBootStartedMs != 0 &&
-            (now - mainRuntimeState.maintenanceBootStartedMs) >= MAINTENANCE_BOOT_TIMEOUT_MS) {
+            (now - mainRuntimeState.maintenanceBootStartedMs) >= MainRuntimePolicy::MaintenanceBootTimeoutMs) {
             SerialLog.println("[MaintBoot] timeout -> rebooting normal runtime");
             settingsManager.save();
             markCleanShutdown();

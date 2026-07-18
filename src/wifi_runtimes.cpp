@@ -25,6 +25,7 @@
 #include "modules/wifi/wifi_v1_profile_api_service.h"
 #include "modules/wifi/wifi_v1_devices_api_service.h"
 #include "modules/wifi/backup_api_service.h"
+#include "modules/wifi/wifi_diagnostics_api_service.h"
 #include "modules/obd/obd_api_service.h"
 #include "backup_payload_builder.h"
 #include "storage_manager.h"
@@ -34,7 +35,7 @@
 #include "config.h"
 
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
-    return WifiAutoPushApiService::Runtime{
+    WifiAutoPushApiService::Runtime runtime{
         [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* /*ctx*/) {
             const V1Settings& s = settingsManager.get();
             snapshot.enabled = s.autoPushEnabled;
@@ -198,6 +199,8 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         },
         this,
     };
+    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    return runtime;
 }
 
 WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
@@ -581,6 +584,18 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // ctx
         this,
     };
+    return runtime;
+}
+
+WifiDiagnosticsApiService::Runtime WiFiManager::makeDiagnosticsRuntime() {
+    WifiDiagnosticsApiService::Runtime runtime;
+    runtime.filesystem = getFilesystem_ ? getFilesystem_(getFilesystemCtx_) : nullptr;
+    runtime.panicFilesystem = storageManager.getLittleFS();
+    runtime.storageReady = storageManager.isReady();
+    runtime.sdCard = storageManager.isSDCard();
+    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    runtime.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
+    runtime.ctx = this;
     return runtime;
 }
 

@@ -1,5 +1,8 @@
 # WiFi API route policy contract (ApiService endpoint lambdas)
 
+route=HTTP_GET /api/diagnostics/log rate_limit=0 ui_activity=1 delegates=WifiDiagnosticsApiService::handleApiDownload
+route=HTTP_GET /api/diagnostics/logs rate_limit=0 ui_activity=1 delegates=WifiDiagnosticsApiService::handleApiList
 route=HTTP_GET /api/settings/backup rate_limit=0 ui_activity=1 delegates=BackupApiService::handleApiBackup
 route=HTTP_POST /api/settings/backup-now rate_limit=1 ui_activity=1 delegates=BackupApiService::handleApiBackupNow
 route=HTTP_POST /api/settings/restore rate_limit=1 ui_activity=1 delegates=BackupApiService::handleApiRestore
+route=HTTP_POST /api/system/reboot-normal rate_limit=0 ui_activity=1 delegates=WifiSystemApiService::handleApiRebootNormal

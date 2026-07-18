@@ -5,6 +5,28 @@
 
 ---
 
+## Portable Shutdown and Wake
+
+The portable build has two distinct shutdown outcomes because firmware can cut
+the battery latch but cannot remove an attached USB/external supply:
+
+- On battery, firmware drops the TCA9554 power latch. If the rail remains alive,
+  it waits up to 1.5 seconds for PWR/GPIO16 to return HIGH before using it as an
+  active-low deep-sleep wake source. If PWR is still LOW, wake falls back to
+  active-low BOOT/GPIO0.
+- On USB/external power, firmware isolates the battery latch and enters deep
+  sleep using active-low BOOT/GPIO0. PWR/GPIO16 is deliberately excluded because
+  this board reads it LOW while external power is attached, which would make an
+  active-low wake condition already asserted.
+
+The selected wake pin receives an RTC pull-up and is checked both before EXT1 is
+armed and immediately before sleep entry. If it is LOW at either check, shutdown
+is aborted, the backlight sleep hold is released, and the disconnected screen is
+restored. `/poweroff.log` records `wake=BOOT_GPIO0` or `wake=PWR_GPIO16` with the
+terminal shutdown outcome when power-off SD logging is enabled.
+
+---
+
 ## Car Install (Permanent Vehicle Mount)
 
 ### Overview

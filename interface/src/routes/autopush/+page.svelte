@@ -3,6 +3,13 @@
     import { fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import {
+        isMaintenance,
+        retainRuntimeStatus,
+        runtimeStatus,
+        runtimeStatusError,
+        runtimeStatusLoading
+    } from '$lib/stores/runtimeStatus.svelte.js';
 
     let data = $state({
         enabled: false,
@@ -15,6 +22,11 @@
     let message = $state(null);
     let editingSlot = $state(null);
     let busy = $state(false);
+    const runtimeModeKnown = $derived(
+        !$runtimeStatusLoading &&
+            !$runtimeStatusError &&
+            typeof $runtimeStatus?.maintenanceBoot === 'boolean'
+    );
 
     const modeNames = {
         0: 'Unknown',
@@ -25,10 +37,16 @@
 
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
     const slotIcons = ['🏠', '🏎️', '👥'];
+    const MAINTENANCE_PUSH_NOTE =
+        'Live V1 pushes are unavailable in maintenance mode. You can still edit, save, and select the global default slot for normal runtime.';
 
-    onMount(async () => {
-        await Promise.all([fetchSlots(), fetchProfiles()]);
-        loading = false;
+    onMount(() => {
+        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+        void (async () => {
+            await Promise.all([fetchSlots(), fetchProfiles()]);
+            loading = false;
+        })();
+        return releaseRuntimeStatus;
     });
 
     async function fetchSlots() {
@@ -93,6 +111,20 @@
 
     async function pushNow(slot) {
         if (busy) return;
+        if (!runtimeModeKnown) {
+            message = {
+                type: 'warning',
+                text: 'Push Now is unavailable until device runtime mode can be verified.'
+            };
+            return;
+        }
+        if ($isMaintenance) {
+            message = {
+                type: 'info',
+                text: 'Push Now is unavailable in maintenance mode; no settings were sent to the V1.'
+            };
+            return;
+        }
         busy = true;
         message = { type: 'info', text: 'Pushing settings to V1...' };
         try {
@@ -107,8 +139,16 @@
             if (res.ok) {
                 message = { type: 'success', text: 'Settings pushed to V1!' };
             } else {
-                const err = await res.json();
-                message = { type: 'error', text: err.error || 'Push failed' };
+                let err = {};
+                try {
+                    err = await res.json();
+                } catch {
+                    // Fall back to the HTTP status when the device has no JSON error body.
+                }
+                message = {
+                    type: 'error',
+                    text: err.message || err.error || `Push failed (HTTP ${res.status})`
+                };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
@@ -166,7 +206,7 @@
 <div class="page-stack">
     <PageHeader
         title="Auto-Push Profiles"
-        subtitle="Manage automatic profile slots and activation."
+        subtitle="Configure saved Auto-Push slots and choose the global default."
     >
         <div class="badge {data.enabled ? 'badge-success' : 'badge-ghost'}">
             {data.enabled ? 'Enabled' : 'Disabled'}
@@ -177,10 +217,24 @@
 
     <div class="surface-note">
         <p>
-            Auto-Push automatically sends V1 settings when you connect. Configure 3 slots for
-            different driving scenarios and switch between them with a touch.
+            Auto-Push sends V1 settings when you connect during normal runtime. The global default
+            slot is used unless a saved V1 device override selects another slot.
         </p>
     </div>
+
+    {#if $runtimeStatusLoading}
+        <StatusAlert
+            message="Checking device runtime mode before enabling live V1 pushes…"
+            fallbackType="info"
+        />
+    {:else if !runtimeModeKnown}
+        <StatusAlert
+            message="Live V1 pushes are unavailable because device runtime mode could not be verified."
+            fallbackType="warning"
+        />
+    {:else if $isMaintenance}
+        <StatusAlert message={MAINTENANCE_PUSH_NOTE} fallbackType="info" />
+    {/if}
 
     {#if loading}
         <div class="state-loading">
@@ -209,7 +263,9 @@
                                         </h3>
                                     {/if}
                                     {#if data.activeSlot === i}
-                                        <span class="badge badge-primary badge-sm">Active</span>
+                                        <span class="badge badge-primary badge-sm"
+                                            >Global default</span
+                                        >
                                     {/if}
                                 </div>
                             </div>
@@ -409,7 +465,10 @@
                                 <button
                                     class="btn btn-primary btn-sm"
                                     onclick={() => pushNow(i)}
-                                    disabled={!slot.profile || busy}
+                                    disabled={!slot.profile ||
+                                        busy ||
+                                        !runtimeModeKnown ||
+                                        $isMaintenance}
                                 >
                                     Push Now
                                 </button>

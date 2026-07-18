@@ -3,15 +3,23 @@
     import { onMount } from 'svelte';
     import { page } from '$app/stores';
     import BrandMark from '$lib/components/BrandMark.svelte';
+    import { fetchWithTimeout } from '$lib/utils/poll';
     import {
         refreshDeviceSettings,
         retainDeviceSettings
     } from '$lib/stores/deviceSettings.svelte.js';
+    import {
+        isMaintenance,
+        retainRuntimeStatus,
+        runtimeStatus
+    } from '$lib/stores/runtimeStatus.svelte.js';
 
     let { children } = $props();
     let showPasswordWarning = $state(false);
     let warningDismissed = $state(false);
     let menuOpen = $state(false);
+    let maintenanceExitPending = $state(false);
+    let maintenanceExitMessage = $state('');
     const DEFAULT_PASSWORD_CACHE_KEY = 'v1simple:isDefaultPassword';
     const DEFAULT_PASSWORD_DISMISSED_KEY = 'passwordWarningDismissed';
     const DEFAULT_PASSWORD_DISMISSED_PERSIST_KEY = 'v1simple:passwordWarningDismissedPersist';
@@ -26,8 +34,25 @@
         { href: '/alp', label: 'ALP' },
         { href: '/obd', label: 'OBD' },
         { href: '/gps', label: 'GPS' },
+        { href: '/logs', label: 'Logs' },
         { href: '/settings', label: 'Settings' }
     ];
+    const maintenanceTimeoutMs = $derived(
+        Number($runtimeStatus.maintenanceBootTimeoutMs) > 0
+            ? Number($runtimeStatus.maintenanceBootTimeoutMs)
+            : 10 * 60 * 1000
+    );
+    const maintenanceRemainingMs = $derived(
+        Math.max(0, maintenanceTimeoutMs - Number($runtimeStatus.maintenanceBootUptimeMs || 0))
+    );
+    const maintenanceExpiringSoon = $derived(maintenanceRemainingMs <= 60 * 1000);
+
+    function formatRemaining(milliseconds) {
+        const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+        const minutes = Math.floor(seconds / 60);
+        const remainder = seconds % 60;
+        return `${minutes}m ${remainder.toString().padStart(2, '0')}s`;
+    }
 
     function runWhenIdle(callback, fallbackDelayMs = 250) {
         if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -52,6 +77,7 @@
     // Check if using default password on mount
     onMount(() => {
         const releaseDeviceSettings = retainDeviceSettings();
+        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
         const handlePasswordWarningPreferenceChange = (event) => {
             const dismissed = event?.detail?.dismissed === true;
             warningDismissed = dismissed;
@@ -91,6 +117,7 @@
 
         return () => {
             releaseDeviceSettings();
+            releaseRuntimeStatus();
             window.removeEventListener(
                 PASSWORD_WARNING_EVENT,
                 handlePasswordWarningPreferenceChange
@@ -111,6 +138,32 @@
         menuOpen = false;
     }
 
+    async function exitMaintenance() {
+        if (!$isMaintenance || maintenanceExitPending) return;
+
+        maintenanceExitPending = true;
+        maintenanceExitMessage = '';
+        try {
+            const response = await fetchWithTimeout('/api/system/reboot-normal', {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                let detail = '';
+                try {
+                    const body = await response.json();
+                    detail = body?.error || body?.message || '';
+                } catch {
+                    // The status code is still useful when the body is not JSON.
+                }
+                throw new Error(detail || `Request failed (${response.status})`);
+            }
+            maintenanceExitMessage = 'Reboot requested. Reconnect after normal startup.';
+        } catch (error) {
+            maintenanceExitPending = false;
+            maintenanceExitMessage = `Could not exit maintenance: ${error.message}`;
+        }
+    }
+
     function isActivePath(href) {
         const path = $page.url.pathname;
         if (href === '/') {
@@ -121,6 +174,35 @@
 </script>
 
 <div class="app-shell">
+    {#if $isMaintenance}
+        <div
+            class="surface-alert banner"
+            class:alert-warning={maintenanceExpiringSoon}
+            class:alert-info={!maintenanceExpiringSoon}
+            role="status"
+            aria-live="polite"
+        >
+            <div class="flex-1">
+                <h3 class="font-bold">Maintenance mode</h3>
+                <div class="copy-caption">
+                    {formatRemaining(maintenanceRemainingMs)} remaining before automatic normal reboot.
+                    Save any open edits before the timer expires.
+                </div>
+                {#if maintenanceExitMessage}
+                    <div class="copy-caption mt-1">{maintenanceExitMessage}</div>
+                {/if}
+            </div>
+            <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                disabled={maintenanceExitPending}
+                onclick={exitMaintenance}
+            >
+                {maintenanceExitPending ? 'Rebooting…' : 'Exit maintenance'}
+            </button>
+        </div>
+    {/if}
+
     <!-- Security Warning Banner -->
     {#if showPasswordWarning && !warningDismissed}
         <div class="surface-alert alert-warning banner" role="alert">
@@ -162,7 +244,7 @@
                     type="button"
                     aria-label="Open navigation menu"
                     aria-expanded={menuOpen}
-                    class="btn btn-ghost lg:hidden"
+                    class="btn btn-ghost xl:hidden"
                     onclick={toggleMenu}
                 >
                     <svg
@@ -198,7 +280,7 @@
                 <BrandMark compact />
             </a>
         </div>
-        <div class="navbar-center hidden lg:flex">
+        <div class="navbar-center hidden xl:flex">
             <ul class="menu menu-horizontal px-1">
                 {#each navLinks as link}
                     <li>

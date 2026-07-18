@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a maintenance-mode Diagnostics & Logs page with bounded, allowlisted
+  downloads for shutdown, panic, performance, and ALP evidence, plus a clean
+  reboot into normal runtime.
+
+### Changed
+
+- Maintenance pages now distinguish configuration that can be saved from live
+  operations that require normal runtime, show the automatic-reboot countdown,
+  and report Wi-Fi scan, disconnect, and saved-network outcomes explicitly.
+
+### Fixed
+
+- Power-off now selects only inactive wake inputs, uses battery latch-off or
+  external-power deep sleep as appropriate, clears the retained `GOODBYE`
+  frame, and records optional shutdown/next-boot evidence on the SD card.
+- V1 disconnects now clear stale BLE and proxy indicators immediately.
+- GPS settings and display previews now remain usable during maintenance mode,
+  while Auto-Push live writes fail closed until normal runtime is active.
 
 
 ## [1.0.4] - 2026-07-15

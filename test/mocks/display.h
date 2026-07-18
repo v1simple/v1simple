@@ -56,6 +56,12 @@ public:
     int showScanningCalls = 0;
     int showRestingCalls = 0;
     int showDisconnectedCalls = 0;
+    int setBrightnessCalls = 0;
+    uint8_t lastBrightness = 0;
+    uint32_t displayRecoverySequence = 0;
+    uint32_t showDisconnectedSequence = 0;
+    uint32_t flushSequence = 0;
+    uint32_t setBrightnessSequence = 0;
     int showMaintenanceModeCalls = 0;
     char lastMaintenanceIp[24] = "";
     bool lastMaintenanceStationMode = false;
@@ -125,6 +131,12 @@ public:
         showScanningCalls = 0;
         showRestingCalls = 0;
         showDisconnectedCalls = 0;
+        setBrightnessCalls = 0;
+        lastBrightness = 0;
+        displayRecoverySequence = 0;
+        showDisconnectedSequence = 0;
+        flushSequence = 0;
+        setBrightnessSequence = 0;
         showMaintenanceModeCalls = 0;
         lastMaintenanceIp[0] = '\0';
         lastMaintenanceStationMode = false;
@@ -207,7 +219,10 @@ public:
     // Display methods
     void showScanning() { showScanningCalls++; }
     void showResting() { showRestingCalls++; }
-    void showDisconnected() { showDisconnectedCalls++; }
+    void showDisconnected() {
+        showDisconnectedCalls++;
+        showDisconnectedSequence = ++displayRecoverySequence;
+    }
     void showMaintenanceMode(const char* ip = nullptr, bool stationMode = false) {
         showMaintenanceModeCalls++;
         if (ip != nullptr) {
@@ -287,7 +302,11 @@ public:
     }
     
     void clear() { clearCalls++; renderSeq++; }
-    void flush() { flushCalls++; renderSeq++; }
+    void flush() {
+        flushCalls++;
+        renderSeq++;
+        flushSequence = ++displayRecoverySequence;
+    }
     void forceNextRedraw() { forceNextRedrawCalls++; }
     
     void drawWiFiIndicator() { drawWiFiIndicatorCalls++; }
@@ -391,7 +410,11 @@ public:
         lastAlpLaserEvent = ev;
     }
 
-    void setBrightness(uint8_t /*level*/) {}
+    void setBrightness(uint8_t level) {
+        setBrightnessCalls++;
+        lastBrightness = level;
+        setBrightnessSequence = ++displayRecoverySequence;
+    }
     void showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
         showSettingsSlidersCalls++;
         lastSettingsBrightness = brightnessLevel;

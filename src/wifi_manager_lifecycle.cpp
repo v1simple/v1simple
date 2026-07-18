@@ -140,6 +140,18 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
             return true;
         }
 
+        const uint32_t reenablePreflightStartUs = PERF_TIMESTAMP_US();
+        uint32_t freeInternal = 0;
+        uint32_t largestInternal = 0;
+        if (!canStartSetupMode(&freeInternal, &largestInternal)) {
+            Serial.printf("[SetupMode] AP re-enable deferred: free=%lu largest=%lu cooldownMs=%lu\n",
+                          static_cast<unsigned long>(freeInternal), static_cast<unsigned long>(largestInternal),
+                          static_cast<unsigned long>(lowDmaCooldownRemainingMs()));
+            recordStartPreflight(PERF_TIMESTAMP_US() - reenablePreflightStartUs);
+            return false;
+        }
+        recordStartPreflight(PERF_TIMESTAMP_US() - reenablePreflightStartUs);
+
         const uint32_t apBringupStartUs = PERF_TIMESTAMP_US();
         if (apStaMode) {
             if (WiFi.getMode() != WIFI_AP_STA) {
@@ -153,7 +165,12 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
 
         resetReconnectFailures();
         WiFi.setTxPower(WIFI_POWER_5dBm);
-        setupAP();
+        if (!setupAP()) {
+            apInterfaceEnabled_ = false;
+            Serial.println("[SetupMode] ABORT: AP re-enable failed");
+            recordApBringup(PERF_TIMESTAMP_US() - apBringupStartUs);
+            return false;
+        }
         apInterfaceEnabled_ = true;
         lastClientSeenMs_ = millis();
         lastAnyClientSeenMs_ = lastClientSeenMs_;
@@ -230,7 +247,14 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     Serial.println("[WiFi] TX power 5dBm (low RF for BLE coex)");
 
     const uint32_t apBringupStartUs = PERF_TIMESTAMP_US();
-    setupAP();
+    if (!setupAP()) {
+        Serial.println("[SetupMode] ABORT: AP bring-up failed");
+        WiFi.mode(WIFI_OFF);
+        wifiClientState_ = WIFI_CLIENT_DISABLED;
+        currentConnectedSlotIndex_ = -1;
+        recordApBringup(PERF_TIMESTAMP_US() - apBringupStartUs);
+        return false;
+    }
     if (!setupWebServer()) {
         WiFi.mode(WIFI_OFF);
         recordApBringup(PERF_TIMESTAMP_US() - apBringupStartUs);
@@ -520,7 +544,7 @@ bool WiFiManager::stopSetupMode(bool manual, const char* reason) {
     return true;
 }
 
-void WiFiManager::setupAP() {
+bool WiFiManager::setupAP() {
     // Use saved SSID/password when available; fall back to defaults if missing/too short
     const V1Settings& settings = settingsManager.get();
     String apSSID = settings.apSSID.length() ? settings.apSSID : "V1-Simple";
@@ -531,11 +555,16 @@ void WiFiManager::setupAP() {
     IPAddress gateway(192, 168, 35, 5);
     IPAddress subnet(255, 255, 255, 0);
 
-    (void)WiFi.softAPConfig(apIP, gateway, subnet);
+    if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
+        Serial.println("[SetupMode] ERROR: softAPConfig failed");
+        return false;
+    }
 
     if (!WiFi.softAP(apSSID.c_str(), apPass.c_str())) {
-        return;
+        Serial.println("[SetupMode] ERROR: softAP start failed");
+        return false;
     }
+    return true;
 }
 
 void WiFiManager::checkAutoTimeout() {
@@ -561,6 +590,7 @@ void WiFiManager::checkAutoTimeout() {
     WifiAutoTimeoutInput timeoutInput;
     timeoutInput.timeoutMins = timeoutMins;
     timeoutInput.setupModeActive = isSetupModeActive();
+    timeoutInput.maintenanceBootMode = maintenanceBootMode_;
     timeoutInput.nowMs = now;
     timeoutInput.setupModeStartMs = setupModeStartTime_;
     timeoutInput.lastClientSeenMs = lastClientSeenMs_;
@@ -707,7 +737,7 @@ void WiFiManager::process() {
         lastClientSeenMs_ = now;
     }
 
-    if (apInterfaceActive && staConnectedNow && apClientCount == 0 && lastClientSeenMs_ != 0 &&
+    if (!maintenanceBootMode_ && apInterfaceActive && staConnectedNow && apClientCount == 0 && lastClientSeenMs_ != 0 &&
         (now - lastClientSeenMs_) >= WIFI_AP_IDLE_DROP_AFTER_STA_MS) {
         sWifiStopReasonModule.recordApDropIdleSta();
         Serial.printf("[WiFi] STA connected and AP idle for %lu ms - dropping AP\n",
@@ -736,23 +766,25 @@ void WiFiManager::process() {
         return;
     }
 
-    if (staConnectedNow || apClientCount > 0) {
+    WifiNoClientTimeoutInput noClientInput;
+    noClientInput.maintenanceBootMode = maintenanceBootMode_;
+    noClientInput.clientPresent = staConnectedNow || apClientCount > 0;
+    noClientInput.staConnectInProgress = wifiClientState_ == WIFI_CLIENT_CONNECTING;
+    noClientInput.autoStarted = wasAutoStarted_;
+    noClientInput.nowMs = now;
+    noClientInput.lastAnyClientSeenMs = lastAnyClientSeenMs_;
+    noClientInput.manualTimeoutMs = WIFI_NO_CLIENT_SHUTDOWN_MS;
+    noClientInput.autoTimeoutMs = WIFI_NO_CLIENT_SHUTDOWN_AUTO_MS;
+    const WifiNoClientTimeoutResult noClientResult = sWifiAutoTimeoutModule.evaluateNoClient(noClientInput);
+
+    if (noClientResult.refreshLastSeen) {
         lastAnyClientSeenMs_ = now;
-    } else if (wifiClientState_ == WIFI_CLIENT_CONNECTING) {
-        // STA connect in progress — hold the auto-stop timer while we are still
-        // trying. Reset the baseline so the countdown starts fresh from when
-        // the connect attempt either succeeds or gives up.
-        lastAnyClientSeenMs_ = now;
-    } else if (lastAnyClientSeenMs_ != 0) {
-        const unsigned long noClientLimit =
-            wasAutoStarted_ ? WIFI_NO_CLIENT_SHUTDOWN_AUTO_MS : WIFI_NO_CLIENT_SHUTDOWN_MS;
-        if ((now - lastAnyClientSeenMs_) >= noClientLimit) {
-            Serial.printf("[WiFi] No AP/STA clients for %lu ms (%s) - stopping WiFi\n",
-                          static_cast<unsigned long>(noClientLimit), wasAutoStarted_ ? "auto-start" : "manual");
-            stopSetupMode(false, wasAutoStarted_ ? "no_clients_auto" : "no_clients");
-            finalizeProcessTiming();
-            return;
-        }
+    } else if (noClientResult.shouldStop) {
+        Serial.printf("[WiFi] No AP/STA clients for %lu ms (%s) - stopping WiFi\n",
+                      static_cast<unsigned long>(noClientResult.timeoutMs), wasAutoStarted_ ? "auto-start" : "manual");
+        stopSetupMode(false, wasAutoStarted_ ? "no_clients_auto" : "no_clients");
+        finalizeProcessTiming();
+        return;
     }
 
     // Continue serving HTTP while STA remains online even after AP is retired.

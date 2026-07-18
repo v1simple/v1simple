@@ -53,6 +53,7 @@
 #include "modules/touch/touch_ui_module.h"
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
+#include "modules/wifi/wifi_maintenance_recovery_module.h"
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_state_module.h"
@@ -555,6 +556,27 @@ void loop() {
         const unsigned long now = millis();
 
         wifiManager.process();
+
+        // The maintenance session exists to serve the web UI, so it must not
+        // sit WiFi-dead for its bounded lifetime: the AP can fail to start at
+        // maintenance entry, and the emergency low-SRAM stop can take the
+        // service down mid-session. Neither has any other recovery until the
+        // maintenance timeout reboots. Ask the recovery policy whether a
+        // restart attempt is due and log every outcome so sessions are
+        // diagnosable from the serial log.
+        static WifiMaintenanceRecoveryModule wifiMaintenanceRecoveryModule;
+        WifiMaintenanceRecoveryInput wifiRecoveryInput;
+        wifiRecoveryInput.maintenanceBootActive = true;
+        wifiRecoveryInput.wifiServiceReachable = wifiManager.isWifiServiceReachable();
+        wifiRecoveryInput.nowMs = now;
+        const WifiMaintenanceRecoveryResult wifiRecovery = wifiMaintenanceRecoveryModule.evaluate(wifiRecoveryInput);
+        if (wifiRecovery.attemptRestart) {
+            SerialLog.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
+                             static_cast<unsigned long>(wifiRecovery.attemptNumber));
+            const bool wifiRestarted = wifiManager.startSetupMode(false);
+            SerialLog.printf("[MaintBoot] wifi_restart ok=%s\n", wifiRestarted ? "true" : "false");
+        }
+
         settingsManager.serviceDeferredPersist(static_cast<uint32_t>(now));
         settingsManager.serviceDeferredBackup(static_cast<uint32_t>(now));
 

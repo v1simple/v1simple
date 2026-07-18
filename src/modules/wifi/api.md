@@ -110,9 +110,32 @@ The module evaluates the gate condition each tick.
 **Source:** `wifi_auto_timeout_module.h`.
 
 #### `struct WifiAutoTimeoutInput`
-`timeoutMins`, `setupModeActive`, `nowMs`, `setupModeStartMs`, `lastClientSeenMs`, `lastUiActivityMs`, `staCount`, `inactivityGraceMs`.
+`timeoutMins`, `setupModeActive`, `maintenanceBootMode`, `nowMs`, `setupModeStartMs`, `lastClientSeenMs`, `lastUiActivityMs`, `staCount`, `inactivityGraceMs`.
 
-Decides when the AP should auto-shut-down due to idleness.
+Decides when the AP should auto-shut-down due to idleness. Suppressed
+entirely (`maintenanceSuppressed`) during maintenance boot: a deliberate
+maintenance session is already bounded by the maintenance reboot timeout, and
+a self-stopped AP there has no user-visible recovery.
+
+#### `struct WifiNoClientTimeoutInput`
+`maintenanceBootMode`, `clientPresent`, `staConnectInProgress`, `autoStarted`,
+`nowMs`, `lastAnyClientSeenMs`, `manualTimeoutMs`, `autoTimeoutMs`.
+
+Evaluates the separate whole-service no-client shutdown. Client presence and
+an in-flight STA connection refresh the activity baseline. Maintenance boot
+suppresses this shutdown entirely.
+
+### `WifiMaintenanceRecoveryModule`
+**Source:** `wifi_maintenance_recovery_module.h`.
+
+#### `struct WifiMaintenanceRecoveryInput`
+`maintenanceBootActive`, `wifiServiceReachable`, `nowMs`.
+
+Decides when the maintenance-boot loop should attempt to restart a down WiFi
+setup service (failed start at maintenance entry, emergency low-SRAM stop):
+first attempt `kFirstRetryDelayMs` after the service is observed down, then
+every `kRetryIntervalMs`; an active service resets the schedule. Attempts are
+1-numbered in `WifiMaintenanceRecoveryResult::attemptNumber` for logging.
 
 ### `WifiHeapGuardModule`
 **Source:** `wifi_heap_guard_module.h`.

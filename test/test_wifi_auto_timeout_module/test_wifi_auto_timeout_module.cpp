@@ -82,6 +82,77 @@ void test_setup_mode_inactive_never_stops() {
     TEST_ASSERT_FALSE(result.shouldStop);
 }
 
+// Regression (escaped-bug class, 2026-07): the idle auto-timeout must never
+// stop WiFi underneath a deliberate maintenance session — a stopped AP there
+// has no user-visible recovery besides waiting for the maintenance reboot.
+void test_maintenance_boot_suppresses_stop() {
+    WifiAutoTimeoutModule module;
+    WifiAutoTimeoutInput input = baseInput();  // would stop otherwise
+    input.maintenanceBootMode = true;
+
+    const WifiAutoTimeoutResult result = module.evaluate(input);
+    TEST_ASSERT_TRUE(result.timeoutEnabled);
+    TEST_ASSERT_TRUE(result.maintenanceSuppressed);
+    TEST_ASSERT_FALSE(result.shouldStop);
+}
+
+void test_non_maintenance_not_marked_suppressed() {
+    WifiAutoTimeoutModule module;
+    WifiAutoTimeoutInput input = baseInput();
+
+    const WifiAutoTimeoutResult result = module.evaluate(input);
+    TEST_ASSERT_FALSE(result.maintenanceSuppressed);
+    TEST_ASSERT_TRUE(result.shouldStop);
+}
+
+static WifiNoClientTimeoutInput baseNoClientInput() {
+    WifiNoClientTimeoutInput input;
+    input.nowMs = 61000UL;
+    input.lastAnyClientSeenMs = 1000UL;
+    input.manualTimeoutMs = 60000UL;
+    input.autoTimeoutMs = 30000UL;
+    return input;
+}
+
+void test_maintenance_boot_suppresses_no_client_stop() {
+    WifiAutoTimeoutModule module;
+    WifiNoClientTimeoutInput input = baseNoClientInput();
+    input.maintenanceBootMode = true;
+
+    const WifiNoClientTimeoutResult result = module.evaluateNoClient(input);
+    TEST_ASSERT_TRUE(result.maintenanceSuppressed);
+    TEST_ASSERT_TRUE(result.refreshLastSeen);
+    TEST_ASSERT_FALSE(result.shouldStop);
+}
+
+void test_no_client_timeout_uses_manual_and_auto_limits() {
+    WifiAutoTimeoutModule module;
+    WifiNoClientTimeoutInput input = baseNoClientInput();
+
+    WifiNoClientTimeoutResult result = module.evaluateNoClient(input);
+    TEST_ASSERT_EQUAL_UINT64(60000UL, result.timeoutMs);
+    TEST_ASSERT_TRUE(result.shouldStop);
+
+    input.autoStarted = true;
+    input.nowMs = 31000UL;
+    result = module.evaluateNoClient(input);
+    TEST_ASSERT_EQUAL_UINT64(30000UL, result.timeoutMs);
+    TEST_ASSERT_TRUE(result.shouldStop);
+}
+
+void test_client_or_pending_sta_connect_refreshes_no_client_baseline() {
+    WifiAutoTimeoutModule module;
+    WifiNoClientTimeoutInput input = baseNoClientInput();
+    input.clientPresent = true;
+    TEST_ASSERT_TRUE(module.evaluateNoClient(input).refreshLastSeen);
+
+    input.clientPresent = false;
+    input.staConnectInProgress = true;
+    const WifiNoClientTimeoutResult connecting = module.evaluateNoClient(input);
+    TEST_ASSERT_TRUE(connecting.refreshLastSeen);
+    TEST_ASSERT_FALSE(connecting.shouldStop);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_disabled_timeout_never_stops);
@@ -90,5 +161,10 @@ int main() {
     RUN_TEST(test_client_presence_blocks_stop);
     RUN_TEST(test_uses_newest_activity_between_ui_and_client);
     RUN_TEST(test_setup_mode_inactive_never_stops);
+    RUN_TEST(test_maintenance_boot_suppresses_stop);
+    RUN_TEST(test_non_maintenance_not_marked_suppressed);
+    RUN_TEST(test_maintenance_boot_suppresses_no_client_stop);
+    RUN_TEST(test_no_client_timeout_uses_manual_and_auto_limits);
+    RUN_TEST(test_client_or_pending_sta_connect_refreshes_no_client_baseline);
     return UNITY_END();
 }

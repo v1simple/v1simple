@@ -162,6 +162,7 @@ class WiFiManager {
 
     // Status
     bool isConnected() const { return !isStopping() && wifiClientState_ == WIFI_CLIENT_CONNECTED; }
+    bool isWifiServiceReachable() const { return isWifiServiceActive() && (isSetupModeActive() || isConnected()); }
     String getIPAddress() const; // STA IP when connected
     String getAPIPAddress() const;
 
@@ -372,7 +373,7 @@ class WiFiManager {
     bool maintenanceBootMode_ = false;
 
     // Setup functions
-    void setupAP();
+    bool setupAP();
     bool setupWebServer();
     void checkAutoTimeout();
     void processWifiClientConnectPhase();

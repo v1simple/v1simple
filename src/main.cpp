@@ -664,7 +664,7 @@ void loop() {
 
     // Process battery/power and touch UI.
     if (shouldReturnEarlyFromLoopPowerTouchPhase(now, loopStartUs)) {
-        mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs);
+        mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs, bleConnectedNow);
         return; // Skip normal loop processing while in settings mode.
     }
 

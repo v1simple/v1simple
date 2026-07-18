@@ -144,9 +144,9 @@ Late-loop BLE drain + yield + loop-duration finalization. Always runs last.
 Function-pointer seam: `timestampUs`, `runPerfReport`, etc.
 
 #### `struct Context`
-Loop pressure hints (`bleBackpressure`, `loopOverloaded`, `forceTailBleDrainPending`) used to defer the synchronous settings NVS writer.
+Connection and loop-pressure hints (`bleConnected`, `bleBackpressure`, `loopOverloaded`, `forceTailBleDrainPending`) used to schedule persistence without competing with critical BLE work.
 
-Periodic maintenance — perf report scheduling, log rotation, etc. Preserves call order across the various maintenance tasks that are admitted on the current loop.
+Periodic maintenance — perf report scheduling, settings synchronization, and deferred persistence. Hard pressure (BLE backpressure, loop overload, or a pending forced tail drain) blocks all deferred work. A BLE connection defers settings NVS persistence, settings backup, and V1 device-store saves for at most 10 seconds; an unpressured admission then rearms that 10-second window. If pressure blocks an aged window, it remains due until the next safe tick. Disconnect admits those writers immediately and resets the connected window. BLE bond backup service only snapshots and enqueues writer work, so it runs immediately on any unpressured tick. The module preserves settings-persist → settings-backup → device-store order whenever the write bundle is admitted.
 
 ## Class: `ConnectionCycleCoordinatorModule`
 

@@ -364,7 +364,7 @@ void WiFiManager::finalizeStopSetupMode() {
     perfRecordWifiApTransition(false, wifiApStopReasonCode(stopReason, stopManual), millis());
     wifiClientState_ = WIFI_CLIENT_DISABLED;
     currentConnectedSlotIndex_ = -1;
-    wifiScanRunning_ = false;
+    resetWifiScanState();
     wifiConnectStartMs_ = 0;
     wifiConnectPhase_ = WifiConnectPhase::IDLE;
     wifiConnectPhaseStartMs_ = 0;
@@ -372,6 +372,7 @@ void WiFiManager::finalizeStopSetupMode() {
     pendingConnectPassword_ = "";
     pendingConnectPersistCredentials_ = true;
     pendingConnectSlotIndex_ = -1;
+    maintenanceAutoConnectStaDropGate_.clear();
     lastUiActivityMs_ = 0;
     lastClientSeenMs_ = 0;
     lastAnyClientSeenMs_ = 0;

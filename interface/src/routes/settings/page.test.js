@@ -593,10 +593,51 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('keeps completed POST scan results when a closed scan is reopened', async () => {
+    it('does not poll before the scan POST settles', async () => {
+        vi.useFakeTimers();
+        const scanPost = createDeferred();
+        let getCalls = 0;
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/scan',
+                respond: () => scanPost.promise
+            },
+            {
+                method: 'GET',
+                match: '/api/wifi/scan',
+                respond: () => {
+                    getCalls += 1;
+                    return jsonResponse({
+                        scanning: false,
+                        networks: [{ ssid: 'DeferredAP', secure: true, rssi: -44 }]
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await openScanModal();
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(getCalls).toBe(0);
+
+        scanPost.resolve(jsonResponse({ scanning: true, networks: [] }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(getCalls).toBe(1);
+        await screen.findByRole('button', { name: /DeferredAP/i });
+
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(getCalls).toBe(1);
+
+        unmount();
+    });
+
+    it('ignores a stale scan response and polls the reopened scan', async () => {
         vi.useFakeTimers();
         let postCalls = 0;
-        const completedPost = createDeferred();
+        const reopenedPost = createDeferred();
         const staleGet = createDeferred();
         let getCalls = 0;
         installDefaultFetch([
@@ -605,10 +646,9 @@ describe('settings route page', () => {
                 match: '/api/wifi/scan',
                 respond: () => {
                     postCalls += 1;
-                    if (postCalls === 1) {
-                        return jsonResponse({ scanning: true, networks: [] });
-                    }
-                    return completedPost.promise;
+                    return postCalls === 1
+                        ? jsonResponse({ scanning: true, networks: [] })
+                        : reopenedPost.promise;
                 }
             },
             {
@@ -616,36 +656,42 @@ describe('settings route page', () => {
                 match: '/api/wifi/scan',
                 respond: () => {
                     getCalls += 1;
-                    return staleGet.promise;
+                    if (getCalls === 1) return staleGet.promise;
+                    return jsonResponse({
+                        scanning: false,
+                        networks: [{ ssid: 'ReopenedAP', secure: true, rssi: -42 }]
+                    });
                 }
             }
         ]);
         const { unmount } = render(Page);
 
         await openScanModal();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(getCalls).toBe(1);
+
         await fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
         await waitFor(() => {
             expect(screen.queryByText('Pick WiFi Network to Save')).not.toBeInTheDocument();
         });
 
         await openScanModal();
-        vi.advanceTimersByTime(1000);
-        await Promise.resolve();
-        await Promise.resolve();
-        expect(getCalls).toBe(1);
-
-        completedPost.resolve(
+        staleGet.resolve(
             jsonResponse({
                 scanning: false,
-                networks: [{ ssid: 'ReopenedAP', secure: true, rssi: -44 }]
+                networks: [{ ssid: 'OldAP', secure: true, rssi: -80 }]
             })
         );
-        await screen.findByRole('button', { name: /ReopenedAP/i });
+        await Promise.resolve();
+        await Promise.resolve();
 
-        staleGet.resolve(jsonResponse({ scanning: false, networks: [] }));
+        reopenedPost.resolve(jsonResponse({ scanning: true, networks: [] }));
         await Promise.resolve();
-        await Promise.resolve();
-        expect(screen.getByRole('button', { name: /ReopenedAP/i })).toBeInTheDocument();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(getCalls).toBe(2);
+        await screen.findByRole('button', { name: /ReopenedAP/i });
+        expect(screen.queryByRole('button', { name: /OldAP/i })).not.toBeInTheDocument();
 
         unmount();
     });
@@ -669,13 +715,22 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('shows WiFi scan polling errors in the page alert', async () => {
+    it('shows WiFi scan polling errors and clears them after a successful retry', async () => {
         vi.useFakeTimers();
+        let postCalls = 0;
         installDefaultFetch([
             {
                 method: 'POST',
                 match: '/api/wifi/scan',
-                respond: jsonResponse({ scanning: true, networks: [] })
+                respond: () => {
+                    postCalls += 1;
+                    return postCalls === 1
+                        ? jsonResponse({ scanning: true, networks: [] })
+                        : jsonResponse({
+                              scanning: false,
+                              networks: [{ ssid: 'RecoveredAP', secure: true, rssi: -38 }]
+                          });
+                }
             },
             {
                 method: 'GET',
@@ -690,6 +745,12 @@ describe('settings route page', () => {
 
         await screen.findByText('Failed to update WiFi scan');
         expect(screen.queryByText('Pick WiFi Network to Save')).not.toBeInTheDocument();
+
+        const retryButtons = await screen.findAllByRole('button', { name: /pick from scan/i });
+        await fireEvent.click(retryButtons[0]);
+
+        await screen.findByRole('button', { name: /RecoveredAP/i });
+        expect(screen.queryByText('Failed to update WiFi scan')).not.toBeInTheDocument();
 
         unmount();
     });

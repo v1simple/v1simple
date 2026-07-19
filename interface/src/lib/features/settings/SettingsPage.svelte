@@ -64,6 +64,7 @@
     });
     let wifiPoll = null;
     let wifiStatusFetchInFlight = false;
+    let wifiScanRunId = 0;
     let wifiTestRunId = 0;
     let SettingsWifiModalComponent = $state(null);
     let wifiModalLoading = $state(false);
@@ -85,6 +86,7 @@
         })();
 
         return () => {
+            wifiScanRunId += 1;
             wifiTestRunId += 1;
             releaseDeviceSettings();
             stopWifiPoll();
@@ -281,6 +283,8 @@
     }
 
     async function startWifiScan(targetIndex = wifiScanTargetIndex) {
+        const runId = ++wifiScanRunId;
+        stopWifiPoll();
         if (targetIndex === null || typeof targetIndex === 'number') {
             wifiScanTargetIndex = targetIndex;
         }
@@ -289,15 +293,9 @@
         showWifiModal = true;
         void ensureWifiModalLoaded();
 
-        // Start polling for scan results
-        stopWifiPoll();
-        wifiPoll = createPoll(async () => {
-            await pollWifiScan();
-        }, 1000);
-        wifiPoll.start();
-
         try {
             const res = await fetchWithTimeout('/api/wifi/scan', { method: 'POST' });
+            if (!isCurrentWifiScan(runId)) return;
             if (!res.ok) {
                 message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
                 wifiScanning = false;
@@ -307,9 +305,12 @@
             }
 
             const data = await res.json();
+            if (!isCurrentWifiScan(runId)) return;
             clearMessageText(WIFI_SCAN_START_ERROR_TEXT);
-            applyWifiScanResponse(data);
+            clearMessageText(WIFI_SCAN_ERROR_TEXT);
+            applyWifiScanResponse(data, runId);
         } catch (e) {
+            if (!isCurrentWifiScan(runId)) return;
             message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
             wifiScanning = false;
             stopWifiPoll();
@@ -317,33 +318,44 @@
         }
     }
 
-    function applyWifiScanResponse(data) {
+    function isCurrentWifiScan(runId) {
+        return runId === wifiScanRunId && showWifiModal;
+    }
+
+    function ensureWifiScanPoll(runId) {
+        if (!isCurrentWifiScan(runId) || wifiPoll) return;
+        wifiPoll = createPoll(async () => {
+            await pollWifiScan(runId);
+        }, 1000);
+        wifiPoll.start();
+    }
+
+    function applyWifiScanResponse(data, runId) {
+        if (!isCurrentWifiScan(runId)) return;
+
         const networks = Array.isArray(data?.networks) ? data.networks : [];
         if (data?.scanning) {
             wifiScanning = true;
+            ensureWifiScanPoll(runId);
             return;
         }
 
-        // POST may return a scan that completed while the modal was closed. Keep
-        // that response instead of waiting for a GET after firmware has released
-        // its one-shot scan buffer.
-        // An already-scheduled GET can observe the now-released firmware buffer
-        // after this POST supplied the completed result. Do not let that empty
-        // follow-up erase the result the user has not had a chance to use yet.
-        if (networks.length > 0 || wifiNetworks.length === 0) {
-            wifiNetworks = networks;
-        }
+        wifiNetworks = networks;
         wifiScanning = false;
         stopWifiPoll();
     }
 
-    async function pollWifiScan() {
+    async function pollWifiScan(runId) {
+        if (!isCurrentWifiScan(runId)) return;
+
         try {
             const res = await fetchWithTimeout('/api/wifi/scan');
+            if (!isCurrentWifiScan(runId)) return;
             if (res.ok) {
                 const data = await res.json();
+                if (!isCurrentWifiScan(runId)) return;
                 clearMessageText(WIFI_SCAN_ERROR_TEXT);
-                applyWifiScanResponse(data);
+                applyWifiScanResponse(data, runId);
             } else {
                 message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
                 wifiScanning = false;
@@ -351,6 +363,7 @@
                 closeWifiModal({ force: true });
             }
         } catch (e) {
+            if (!isCurrentWifiScan(runId)) return;
             message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
             wifiScanning = false;
             stopWifiPoll();
@@ -358,7 +371,9 @@
         }
 
         // Also update status
-        await fetchWifiStatus();
+        if (isCurrentWifiScan(runId)) {
+            await fetchWifiStatus();
+        }
     }
 
     function selectNetwork(network) {
@@ -448,7 +463,9 @@
     function closeWifiModal({ force = false } = {}) {
         if (wifiScanSaving && !force) return;
 
+        wifiScanRunId += 1;
         showWifiModal = false;
+        wifiScanning = false;
         selectedNetwork = null;
         wifiPassword = '';
         wifiScanTargetIndex = null;

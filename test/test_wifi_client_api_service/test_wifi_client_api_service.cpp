@@ -6,7 +6,7 @@
 #include "../mocks/esp_heap_caps.h"
 #include "../../src/modules/wifi/wifi_json_document.h"
 #include "../../src/modules/wifi/wifi_client_api_service.h"
-#include "../../src/modules/wifi/wifi_client_api_service.cpp"  // Pull implementation for UNIT_TEST.
+#include "../../src/modules/wifi/wifi_client_api_service.cpp" // Pull implementation for UNIT_TEST.
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -63,28 +63,42 @@ struct FakeRuntime {
 
 static WifiClientApiService::Runtime makeRuntime(FakeRuntime& rt) {
     return WifiClientApiService::Runtime{
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->enabled; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->savedSsid; }, &rt,
-        [](void* ctx) -> const char* { return static_cast<FakeRuntime*>(ctx)->stateName; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scanRunning; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connectedNetwork; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scanInProgress; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->hasCompletedResults; }, &rt,
-        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scannedNetworks; }, &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->enabled; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->savedSsid; },
+        &rt,
+        [](void* ctx) -> const char* { return static_cast<FakeRuntime*>(ctx)->stateName; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scanRunning; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connectedNetwork; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scanInProgress; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->hasCompletedResults; },
+        &rt,
+        [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->scannedNetworks; },
+        &rt,
         [](void* ctx) {
             auto* r = static_cast<FakeRuntime*>(ctx);
             r->startScanCalls++;
             return r->startScanReturn;
-        }, &rt,
-        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->disconnectCalls++; }, &rt,
-        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->forgetClientCalls++; }, &rt,
+        },
+        &rt,
+        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->disconnectCalls++; },
+        &rt,
+        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->forgetClientCalls++; },
+        &rt,
         [](void* ctx) {
             auto* r = static_cast<FakeRuntime*>(ctx);
             r->enableWithSavedNetworkCalls++;
             return r->enableWithSavedNetworkReturn;
-        }, &rt,
-        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->disableClientCalls++; }, &rt,
+        },
+        &rt,
+        [](void* ctx) { static_cast<FakeRuntime*>(ctx)->disableClientCalls++; },
+        &rt,
     };
 }
 
@@ -97,8 +111,7 @@ static WifiClientApiService::Runtime makeNetworkRuntime(FakeRuntime& rt) {
         return r->savedNetworks;
     };
     runtime.getSavedNetworksCtx = &rt;
-    runtime.upsertSavedNetwork = [](const WifiClientApiService::SavedNetworkUpsertPayload& request,
-                                    size_t& indexOut,
+    runtime.upsertSavedNetwork = [](const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut,
                                     void* ctx) {
         auto* r = static_cast<FakeRuntime*>(ctx);
         r->upsertSavedNetworkCalls++;
@@ -342,6 +355,28 @@ void test_handle_scan_starts_new_scan_when_no_results() {
     TEST_ASSERT_EQUAL_INT(1, rt.startScanCalls);
 }
 
+void test_handle_scan_post_requests_fresh_generation_before_serving_cached_results() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.scanRunning = false;
+    rt.scanInProgress = false;
+    rt.hasCompletedResults = true;
+    rt.startScanReturn = true;
+
+    WifiClientApiService::ScannedNetworkPayload stale;
+    stale.ssid = "StaleNetwork";
+    stale.rssi = -80;
+    stale.secure = true;
+    rt.scannedNetworks.push_back(stale);
+
+    WifiClientApiService::handleApiScan(server, makeRuntime(rt), nullptr, nullptr, nullptr, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "\"scanning\":true"));
+    TEST_ASSERT_FALSE(responseContains(server, "StaleNetwork"));
+    TEST_ASSERT_EQUAL_INT(1, rt.startScanCalls);
+}
+
 void test_handle_scan_status_does_not_start_new_scan() {
     WebServer server(80);
     FakeRuntime rt;
@@ -402,9 +437,8 @@ void test_handle_networks_save_upserts_manual_network() {
     WebServer server(80);
     FakeRuntime rt;
     rt.upsertSavedNetworkIndexOut = 3;
-    server.setArg("plain",
-                  "{\"index\":3,\"ssid\":\"PhoneHotspot\",\"password\":\"secret\","
-                  "\"label\":\"Phone\",\"priority\":1}");
+    server.setArg("plain", "{\"index\":3,\"ssid\":\"PhoneHotspot\",\"password\":\"secret\","
+                           "\"label\":\"Phone\",\"priority\":1}");
 
     WifiClientApiService::handleApiNetworksSave(server, makeNetworkRuntime(rt), nullptr, nullptr, nullptr, nullptr);
 
@@ -596,9 +630,7 @@ void test_handle_api_status_marks_ui_activity_and_delegates() {
     int uiActivityCalls = 0;
 
     WifiClientApiService::handleApiStatus(
-        server,
-        makeRuntime(rt),
-        [](void* ctx) { (*static_cast<int*>(ctx))++; }, &uiActivityCalls);
+        server, makeRuntime(rt), [](void* ctx) { (*static_cast<int*>(ctx))++; }, &uiActivityCalls);
 
     TEST_ASSERT_EQUAL_INT(1, uiActivityCalls);
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
@@ -611,14 +643,19 @@ void test_handle_api_scan_rate_limited_short_circuits() {
     int rateLimitCalls = 0;
     int uiActivityCalls = 0;
 
-    struct Ctx { int* rl; int* ui; };
-    Ctx ctx{ &rateLimitCalls, &uiActivityCalls };
+    struct Ctx {
+        int* rl;
+        int* ui;
+    };
+    Ctx ctx{&rateLimitCalls, &uiActivityCalls};
 
     WifiClientApiService::handleApiScan(
-        server,
-        makeRuntime(rt),
-        [](void* c) { (*static_cast<Ctx*>(c)->rl)++; return false; }, &ctx,
-        [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
+        server, makeRuntime(rt),
+        [](void* c) {
+            (*static_cast<Ctx*>(c)->rl)++;
+            return false;
+        },
+        &ctx, [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
 
     TEST_ASSERT_EQUAL_INT(1, rateLimitCalls);
     TEST_ASSERT_EQUAL_INT(0, uiActivityCalls);
@@ -632,14 +669,19 @@ void test_handle_api_disconnect_delegates_when_allowed() {
     int rateLimitCalls = 0;
     int uiActivityCalls = 0;
 
-    struct Ctx { int* rl; int* ui; };
-    Ctx ctx{ &rateLimitCalls, &uiActivityCalls };
+    struct Ctx {
+        int* rl;
+        int* ui;
+    };
+    Ctx ctx{&rateLimitCalls, &uiActivityCalls};
 
     WifiClientApiService::handleApiDisconnect(
-        server,
-        makeRuntime(rt),
-        [](void* c) { (*static_cast<Ctx*>(c)->rl)++; return true; }, &ctx,
-        [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
+        server, makeRuntime(rt),
+        [](void* c) {
+            (*static_cast<Ctx*>(c)->rl)++;
+            return true;
+        },
+        &ctx, [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
 
     TEST_ASSERT_EQUAL_INT(1, rateLimitCalls);
     TEST_ASSERT_EQUAL_INT(1, uiActivityCalls);
@@ -653,14 +695,19 @@ void test_handle_api_forget_delegates_when_allowed() {
     int rateLimitCalls = 0;
     int uiActivityCalls = 0;
 
-    struct Ctx { int* rl; int* ui; };
-    Ctx ctx{ &rateLimitCalls, &uiActivityCalls };
+    struct Ctx {
+        int* rl;
+        int* ui;
+    };
+    Ctx ctx{&rateLimitCalls, &uiActivityCalls};
 
     WifiClientApiService::handleApiForget(
-        server,
-        makeRuntime(rt),
-        [](void* c) { (*static_cast<Ctx*>(c)->rl)++; return true; }, &ctx,
-        [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
+        server, makeRuntime(rt),
+        [](void* c) {
+            (*static_cast<Ctx*>(c)->rl)++;
+            return true;
+        },
+        &ctx, [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
 
     TEST_ASSERT_EQUAL_INT(1, rateLimitCalls);
     TEST_ASSERT_EQUAL_INT(1, uiActivityCalls);
@@ -676,14 +723,19 @@ void test_handle_api_enable_delegates_when_allowed() {
     int rateLimitCalls = 0;
     int uiActivityCalls = 0;
 
-    struct Ctx { int* rl; int* ui; };
-    Ctx ctx{ &rateLimitCalls, &uiActivityCalls };
+    struct Ctx {
+        int* rl;
+        int* ui;
+    };
+    Ctx ctx{&rateLimitCalls, &uiActivityCalls};
 
     WifiClientApiService::handleApiEnable(
-        server,
-        makeRuntime(rt),
-        [](void* c) { (*static_cast<Ctx*>(c)->rl)++; return true; }, &ctx,
-        [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
+        server, makeRuntime(rt),
+        [](void* c) {
+            (*static_cast<Ctx*>(c)->rl)++;
+            return true;
+        },
+        &ctx, [](void* c) { (*static_cast<Ctx*>(c)->ui)++; }, &ctx);
 
     TEST_ASSERT_EQUAL_INT(1, rateLimitCalls);
     TEST_ASSERT_EQUAL_INT(1, uiActivityCalls);
@@ -704,6 +756,7 @@ int main() {
     RUN_TEST(test_handle_scan_in_progress_returns_scanning_true);
     RUN_TEST(test_handle_scan_completed_returns_networks);
     RUN_TEST(test_handle_scan_starts_new_scan_when_no_results);
+    RUN_TEST(test_handle_scan_post_requests_fresh_generation_before_serving_cached_results);
     RUN_TEST(test_handle_scan_status_does_not_start_new_scan);
     RUN_TEST(test_handle_networks_requires_maintenance_mode);
     RUN_TEST(test_handle_networks_returns_saved_slots_without_passwords);

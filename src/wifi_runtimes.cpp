@@ -347,7 +347,7 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         nullptr,
         [](void* ctx) { return wifiClientStateApiName(static_cast<WiFiManager*>(ctx)->wifiClientState_); },
         this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiScanRunning_; },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanRunning(); },
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiClientState_ == WIFI_CLIENT_CONNECTED; },
         this,
@@ -361,10 +361,10 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
             return payload;
         },
         this,
-        [](void* /*ctx*/) { return WiFi.scanComplete() == WIFI_SCAN_RUNNING; },
-        nullptr,
-        [](void* /*ctx*/) { return WiFi.scanComplete() > 0; },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanInProgress(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->hasCompletedWifiScanResults(); },
+        this,
         [](void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
             std::vector<ScannedNetwork> networks = self->getScannedNetworks();

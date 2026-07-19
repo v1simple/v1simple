@@ -87,6 +87,7 @@ section "Semantic Gates"
 run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
 run_step "Bug pattern scanner regression tests" python3 scripts/test_bug_pattern_scanner.py
 run_step "WiFi API contract regression tests" python3 scripts/test_check_wifi_api_contract.py
+run_step "WiFi API fixture generator regression tests" python3 scripts/test_generate_wifi_api_fixtures.py
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
 run_step "Release CI evidence regression tests" python3 scripts/test_check_ci_evidence.py
@@ -131,6 +132,7 @@ run_step "Release evidence manifest regression tests" python3 scripts/test_relea
 
 section "Compatibility Guards"
 run_step "WiFi API contracts" python3 scripts/check_wifi_api_contract.py
+run_step "WiFi API captured fixture drift" python3 scripts/generate_wifi_api_fixtures.py --check
 run_step "Reorder warning contract" python3 scripts/check_reorder_warning_contract.py
 run_step "Quiet coordinator contract" python3 scripts/check_quiet_coordinator_contract.py
 run_step "Connection cycle invariants contract" python3 scripts/check_connection_cycle_invariants.py

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as settingsLazyComponents from '$lib/features/settings/settingsLazyComponents.js';
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { apiFixtureMatchers, installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 const defaultSlots = [
@@ -60,31 +60,33 @@ function createDeferred() {
     return { promise, resolve, reject };
 }
 
+function rejectUnexpectedRequest({ method, url }) {
+    const path = new URL(String(url), 'http://v1simple.test').pathname;
+    throw new Error(`Unexpected settings fixture request: ${method} ${path}`);
+}
+
 function installDefaultFetch(
     overrides = [],
     { slots = defaultSlots, wifiStatus = undefined } = {}
 ) {
+    const wifiStatusMatchers =
+        wifiStatus === undefined
+            ? apiFixtureMatchers('wifi_status_default')
+            : [
+                  {
+                      method: 'GET',
+                      match: '/api/wifi/status',
+                      respond: jsonResponse(wifiStatus)
+                  }
+              ];
     return installFetchMock(
         [
             ...overrides,
+            ...wifiStatusMatchers,
             {
                 method: 'GET',
                 match: '/api/device/settings',
                 respond: jsonResponse({ ap_ssid: 'V1' })
-            },
-            {
-                method: 'GET',
-                match: '/api/wifi/status',
-                respond: jsonResponse(
-                    wifiStatus || {
-                        enabled: true,
-                        state: 'disconnected',
-                        savedSSID: '',
-                        connectedSSID: '',
-                        connectedSlotIndex: null,
-                        rssi: 0
-                    }
-                )
             },
             { method: 'GET', match: '/api/wifi/networks', respond: jsonResponse({ slots }) },
             {
@@ -129,7 +131,7 @@ function installDefaultFetch(
                 respond: jsonResponse({ success: true, index: 0 })
             }
         ],
-        jsonResponse({})
+        rejectUnexpectedRequest
     );
 }
 
@@ -495,24 +497,11 @@ describe('settings route page', () => {
 
     it('saves a network picked from scan results', async () => {
         vi.useFakeTimers();
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'POST',
-                match: '/api/wifi/scan',
-                respond: jsonResponse({ scanning: true, networks: [] })
-            },
-            {
-                method: 'GET',
-                match: '/api/wifi/scan',
-                respond: jsonResponse({
-                    scanning: false,
-                    networks: [{ ssid: 'BenchAP', secure: true, rssi: -42 }]
-                })
-            }
-        ]);
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_scan_success'));
         const { unmount } = render(Page);
 
         await openScanModal();
+        await vi.advanceTimersByTimeAsync(1000);
         await vi.advanceTimersByTimeAsync(1000);
         await fireEvent.click(await screen.findByRole('button', { name: /BenchAP/i }));
         await fireEvent.input(await screen.findByLabelText('Password'), {
@@ -528,6 +517,50 @@ describe('settings route page', () => {
         });
 
         unmount();
+    });
+
+    it('uses captured enable success and status-refetch responses', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_success'));
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        expect(toggle).not.toBeChecked();
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('WiFi client enabled');
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+            )
+        ).toBe(true);
+
+        unmount();
+    });
+
+    it('reflects the captured persisted enable state after a failed connection attempt', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_failure'));
+        const first = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const firstCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const firstToggle = firstCard.querySelector('input[type="checkbox"]');
+        expect(firstToggle).not.toBeChecked();
+
+        await fireEvent.click(firstToggle);
+
+        await screen.findByText('Failed to change WiFi setting');
+        expect(firstToggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            2
+        );
+
+        first.unmount();
     });
 
     it('lazy-loads the WiFi scan modal on first open and reuses it after closing', async () => {
@@ -792,14 +825,8 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('posts valid backups to restore endpoint', async () => {
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'POST',
-                match: '/api/settings/restore',
-                respond: jsonResponse({ success: true })
-            }
-        ]);
+    it('consumes captured restore success and refetches settings plus WiFi state', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('settings_restore_success'));
         vi.stubGlobal(
             'confirm',
             vi.fn(() => true)
@@ -809,12 +836,21 @@ describe('settings route page', () => {
 
         await startRestore(payload);
 
-        await screen.findByText('Settings restored! Refresh to see changes.');
+        await screen.findByText('Settings restored and reloaded.');
+        await waitFor(() => expect(screen.getByLabelText('AP Name')).toHaveValue('RestoredAP'));
+        await screen.findByText(/SSID: RestoredWifi/);
         expect(
             fetchMock.mock.calls.some(
                 ([url, init]) => url === '/api/settings/restore' && init?.body === payload
             )
         ).toBe(true);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/device/settings')).toHaveLength(
+            2
+        );
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            2
+        );
 
         unmount();
     });

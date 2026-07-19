@@ -2,7 +2,7 @@ import { createRawSnippet } from 'svelte';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../test/fetch-mock.js';
 
 const pageStore = vi.hoisted(() => {
     let value = { url: new URL('http://localhost/') };
@@ -134,30 +134,22 @@ describe('root layout', () => {
     });
 
     it('shows the maintenance deadline and can request a normal reboot', async () => {
-        const fetchMock = installFetchMock(
-            [
-                {
-                    method: 'GET',
-                    match: '/api/status',
-                    respond: jsonResponse({
-                        maintenanceBoot: true,
-                        maintenanceBootUptimeMs: 125000,
-                        maintenanceBootTimeoutMs: 600000
-                    })
-                },
-                {
-                    method: 'GET',
-                    match: '/api/device/settings',
-                    respond: jsonResponse({})
-                },
-                {
-                    method: 'POST',
-                    match: '/api/system/reboot-normal',
-                    respond: jsonResponse({ success: true, rebooting: true }, 202)
-                }
-            ],
-            jsonResponse({})
-        );
+        const fetchMock = installFixtureFetchMock('frontend_core_routes', [
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({
+                    maintenanceBoot: true,
+                    maintenanceBootUptimeMs: 125000,
+                    maintenanceBootTimeoutMs: 600000
+                })
+            },
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: jsonResponse({})
+            }
+        ]);
         const { unmount } = renderLayout();
 
         const status = await screen.findByRole('status');

@@ -427,9 +427,12 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled })
             });
+            // The firmware persists the requested enabled flag before the
+            // connection attempt can fail, so both success and HTTP-error
+            // responses require an authoritative state refresh.
+            await fetchWifiStatus({ reportError: false });
+            await fetchSavedWifiNetworks();
             if (res.ok) {
-                await fetchWifiStatus();
-                await fetchSavedWifiNetworks();
                 message = {
                     type: 'success',
                     text: enabled ? 'WiFi client enabled' : 'WiFi client disabled'
@@ -800,10 +803,13 @@
 
             const data = await res.json();
             if (res.ok && data.success) {
-                message = { type: 'success', text: 'Settings restored! Refresh to see changes.' };
+                message = { type: 'success', text: 'Settings restored and reloaded.' };
                 restoreFile = null;
-                // Refresh settings
-                await fetchSettings();
+                await Promise.all([
+                    fetchSettings({ force: true }),
+                    fetchWifiStatus(),
+                    fetchSavedWifiNetworks()
+                ]);
             } else {
                 message = { type: 'error', text: data.error || 'Failed to restore backup' };
             }

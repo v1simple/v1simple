@@ -1,56 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/status',
-                respond: jsonResponse({ maintenanceBoot: false, maintenanceBootUptimeMs: 0 })
-            },
-            {
-                method: 'GET',
-                match: '/api/v1/devices',
-                respond: jsonResponse({
-                    devices: [
-                        {
-                            address: 'AA:BB:CC:DD:EE:FF',
-                            name: 'Daily Driver',
-                            defaultProfile: 2,
-                            connected: true
-                        }
-                    ]
-                })
-            },
-            {
-                method: 'GET',
-                match: '/api/autopush/slots',
-                respond: jsonResponse({
-                    slots: [{ name: 'Default' }, { name: 'Highway' }, { name: 'Comfort' }]
-                })
-            },
-            {
-                method: 'POST',
-                match: '/api/v1/devices/name',
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: '/api/v1/devices/profile',
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: '/api/v1/devices/delete',
-                respond: jsonResponse({ success: true })
-            }
-        ],
-        jsonResponse({})
+    return installFixtureFetchMock(
+        ['frontend_core_routes', 'v1_device_routes', 'autopush_routes'],
+        overrides
     );
 }
 

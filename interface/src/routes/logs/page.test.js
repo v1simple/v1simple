@@ -1,13 +1,26 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 describe('diagnostics and logs route page', () => {
     afterEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
+    });
+
+    it('renders the real captured diagnostics listing', async () => {
+        installFixtureFetchMock('diagnostics_routes');
+        const { unmount } = render(Page);
+
+        await screen.findByText('perf_boot_7.csv');
+        expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute(
+            'href',
+            '/api/diagnostics/log?path=%2Fperf%2Fperf_boot_7.csv'
+        );
+
+        unmount();
     });
 
     it('groups maintenance logs, formats sizes, and exposes power-off evidence', async () => {

@@ -1,91 +1,35 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/status',
-                respond: jsonResponse({ maintenanceBoot: false, maintenanceBootUptimeMs: 0 })
-            },
-            {
-                method: 'GET',
-                match: '/api/autopush/slots',
-                respond: jsonResponse({
-                    enabled: true,
-                    activeSlot: 1,
-                    slots: [
-                        {
-                            name: 'Default',
-                            profile: 'Road Trip',
-                            mode: 2,
-                            volume: 6,
-                            muteVolume: 2,
-                            darkMode: false,
-                            muteToZero: false,
-                            alertPersist: 1,
-                            priorityArrowOnly: false
-                        },
-                        {
-                            name: 'Highway',
-                            profile: 'Quiet Commute',
-                            mode: 3,
-                            volume: 8,
-                            muteVolume: 2,
-                            darkMode: true,
-                            muteToZero: false,
-                            alertPersist: 2,
-                            priorityArrowOnly: true
-                        },
-                        {
-                            name: 'Comfort',
-                            profile: '',
-                            mode: 0,
-                            volume: 4,
-                            muteVolume: 1,
-                            darkMode: false,
-                            muteToZero: true,
-                            alertPersist: 0,
-                            priorityArrowOnly: false
-                        }
-                    ]
-                })
-            },
-            {
-                method: 'GET',
-                match: '/api/v1/profiles',
-                respond: jsonResponse({
-                    profiles: [{ name: 'Road Trip' }, { name: 'Quiet Commute' }]
-                })
-            },
-            {
-                method: 'POST',
-                match: '/api/autopush/activate',
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: '/api/autopush/push',
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: '/api/autopush/slot',
-                respond: jsonResponse({ success: true })
-            }
-        ],
-        jsonResponse({})
+    return installFixtureFetchMock(
+        ['frontend_core_routes', 'autopush_routes', 'v1_profile_routes'],
+        overrides
     );
 }
 
 describe('autopush route page', () => {
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it('surfaces a non-OK slots response instead of showing a silent empty page', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/autopush/slots',
+                respond: jsonResponse({ error: 'slots unavailable' }, 503)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Failed to load slots');
+        expect(screen.queryByText('Global default')).not.toBeInTheDocument();
+
+        unmount();
     });
 
     it('loads slots and opens the slot editor', async () => {

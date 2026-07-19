@@ -1,33 +1,16 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse, textResponse } from '../../test/fetch-mock.js';
+import {
+    installFixtureFetchMock,
+    installFetchMock,
+    jsonResponse,
+    textResponse
+} from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/status',
-                respond: jsonResponse({ maintenanceBoot: false, maintenanceBootUptimeMs: 0 })
-            },
-            {
-                method: 'GET',
-                match: '/api/v1/profiles',
-                respond: jsonResponse({ profiles: [{ name: 'Daily Drive' }] })
-            },
-            {
-                method: 'GET',
-                match: '/api/v1/current',
-                respond: jsonResponse({ connected: true, settings: {} })
-            },
-            { method: 'POST', match: '/api/v1/pull', respond: jsonResponse({ success: true }) },
-            { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
-        ],
-        jsonResponse({})
-    );
+    return installFixtureFetchMock(['frontend_core_routes', 'v1_profile_routes'], overrides);
 }
 
 describe('profiles route page', () => {
@@ -48,6 +31,22 @@ describe('profiles route page', () => {
         await waitFor(() => {
             expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/profiles')).toBe(true);
             expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/current')).toBe(true);
+        });
+
+        unmount();
+    });
+
+    it('requests a saved profile with its encoded query name', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Daily Drive');
+        await fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.some(([url]) => url === '/api/v1/profile?name=Daily%20Drive')
+            ).toBe(true);
         });
 
         unmount();

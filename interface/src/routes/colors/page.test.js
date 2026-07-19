@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cloneDefaultColors } from '$lib/utils/colors';
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 const DISPLAY_SETTINGS_ENDPOINT = '/api/display/settings';
@@ -12,52 +12,7 @@ const DISPLAY_PREVIEW_CLEAR_ENDPOINT = '/api/display/preview/clear';
 const QUIET_SETTINGS_ENDPOINT = '/api/quiet/settings';
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: DISPLAY_SETTINGS_ENDPOINT,
-                respond: jsonResponse({
-                    ...cloneDefaultColors(),
-                    hideBatteryIcon: false,
-                    showBatteryPercent: true,
-                    brightness: 123
-                })
-            },
-            {
-                method: 'POST',
-                match: DISPLAY_SETTINGS_ENDPOINT,
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: DISPLAY_PREVIEW_ENDPOINT,
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: DISPLAY_SETTINGS_RESET_ENDPOINT,
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'POST',
-                match: DISPLAY_PREVIEW_CLEAR_ENDPOINT,
-                respond: jsonResponse({ success: true })
-            },
-            {
-                method: 'GET',
-                match: QUIET_SETTINGS_ENDPOINT,
-                respond: jsonResponse({ stealthEnabled: false })
-            },
-            {
-                method: 'POST',
-                match: QUIET_SETTINGS_ENDPOINT,
-                respond: jsonResponse({ success: true })
-            }
-        ],
-        jsonResponse({})
-    );
+    return installFixtureFetchMock(['display_colors_success', 'quiet_settings_success'], overrides);
 }
 
 describe('colors route page', () => {
@@ -68,6 +23,23 @@ describe('colors route page', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.restoreAllMocks();
+    });
+
+    it('surfaces a synthetic rate-limited display preview failure', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: DISPLAY_PREVIEW_ENDPOINT,
+                respond: jsonResponse({ success: false, message: 'Too many requests' }, 429)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByRole('button', { name: 'Preview' });
+        await fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+
+        await screen.findByText('Failed to preview colors');
+        unmount();
     });
 
     it('opens the bar editor in advanced mode for the stepped default theme', async () => {

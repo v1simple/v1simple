@@ -205,10 +205,14 @@
     }
 
     async function testColors() {
+        message = null;
         try {
-            await fetchWithTimeout(DISPLAY_PREVIEW_ENDPOINT, { method: 'POST' });
+            const res = await fetchWithTimeout(DISPLAY_PREVIEW_ENDPOINT, { method: 'POST' });
+            if (!res.ok) {
+                message = { type: 'error', text: 'Failed to preview colors' };
+            }
         } catch (_) {
-            // Ignore preview failures.
+            message = { type: 'error', text: 'Failed to preview colors' };
         }
     }
 

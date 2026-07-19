@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function countCalls(fetchMock, url) {
@@ -9,50 +9,14 @@ function countCalls(fetchMock, url) {
 }
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/status',
-                respond: jsonResponse({ maintenanceBoot: false, maintenanceBootUptimeMs: 0 })
-            },
-            {
-                method: 'GET',
-                match: '/api/gps/config',
-                respond: jsonResponse({
-                    gpsEnabled: true,
-                    gpsBaud: 9600,
-                    gpsEnablePinActiveHigh: true,
-                    gpsLogUtcToPerf: true,
-                    gpsLogUtcToAlp: true
-                })
-            },
-            {
-                method: 'GET',
-                match: '/api/gps/status',
-                respond: jsonResponse({
-                    moduleDetected: true,
-                    hasFix: true,
-                    stableHasFix: true,
-                    satellites: 7,
-                    hdop: 1.2,
-                    fixAgeMs: 800,
-                    lastSentenceAgeMs: 300,
-                    parserActive: true,
-                    detectionTimedOut: false,
-                    counters: {
-                        sentencesParsed: 42,
-                        parseFailures: 1,
-                        checksumFailures: 0,
-                        bytesRead: 4096
-                    }
-                })
-            },
-            { method: 'POST', match: '/api/gps/config', respond: jsonResponse({ success: true }) }
-        ],
-        jsonResponse({})
-    );
+    return installFixtureFetchMock('gps_settings_and_status', [
+        ...overrides,
+        {
+            method: 'GET',
+            match: '/api/status',
+            respond: jsonResponse({ maintenanceBoot: false, maintenanceBootUptimeMs: 0 })
+        }
+    ]);
 }
 
 describe('gps route page', () => {

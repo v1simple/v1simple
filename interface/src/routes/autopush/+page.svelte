@@ -52,16 +52,18 @@
     async function fetchSlots() {
         try {
             const res = await fetchWithTimeout('/api/autopush/slots');
-            if (res.ok) {
-                const loaded = await res.json();
-                // Normalize defaults for new fields
-                loaded.slots = (loaded.slots || []).map((s) => ({
-                    ...s,
-                    alertPersist: s.alertPersist ?? 0,
-                    priorityArrowOnly: s.priorityArrowOnly ?? false
-                }));
-                data = loaded;
+            if (!res.ok) {
+                message = { type: 'error', text: 'Failed to load slots' };
+                return;
             }
+            const loaded = await res.json();
+            // Normalize defaults for new fields
+            loaded.slots = (loaded.slots || []).map((s) => ({
+                ...s,
+                alertPersist: s.alertPersist ?? 0,
+                priorityArrowOnly: s.priorityArrowOnly ?? false
+            }));
+            data = loaded;
         } catch (e) {
             message = { type: 'error', text: 'Failed to load slots' };
         }

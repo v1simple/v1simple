@@ -39,6 +39,11 @@ LINKED_NATIVE_TEST_SPECS = {
         define="V1_LINKED_TEST_API_MAINTENANCE_RUNTIME_MATRIX",
         library_include_dirs=("ArduinoJson/src",),
     ),
+    "test_ble_proxy_alloc": LinkedNativeTestSpec(
+        sources=("src/ble_proxy.cpp",),
+        define="V1_LINKED_TEST_BLE_PROXY_ALLOC",
+        library_include_dirs=("ArduinoJson/src",),
+    ),
     "test_alp_event_latch": LinkedNativeTestSpec(
         sources=("src/modules/alp/alp_event_latch.cpp",),
         define="V1_LINKED_TEST_ALP_EVENT_LATCH",

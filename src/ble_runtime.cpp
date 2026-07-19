@@ -15,6 +15,12 @@
 #include "ble_internals.h"
 
 void V1BLEClient::process() {
+    // Runtime proxy disable is non-blocking. Finish deferred queue teardown as
+    // soon as both short-lived callback locks are available.
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
+        tryFinalizeProxyQueueRelease();
+    }
+
     // Handle deferred BLE callback updates without blocking in callbacks
     if (pendingConnectStateUpdate_) {
         SemaphoreGuard lock(bleMutex_, 0);

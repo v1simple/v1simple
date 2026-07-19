@@ -21,6 +21,9 @@
 #define MALLOC_CAP_DEFAULT 0x00
 #endif
 
+using MockHeapCapsFreeObserver = void (*)(void*);
+inline MockHeapCapsFreeObserver g_mock_heap_caps_free_observer = nullptr;
+
 inline void* heap_caps_malloc(size_t size, uint32_t caps) {
     g_mock_heap_caps_malloc_calls++;
     g_mock_heap_caps_last_malloc_size = size;
@@ -75,6 +78,9 @@ inline void* heap_caps_realloc(void* ptr, size_t size, uint32_t caps) {
 }
 
 inline void heap_caps_free(void* ptr) {
+    if (g_mock_heap_caps_free_observer) {
+        g_mock_heap_caps_free_observer(ptr);
+    }
     g_mock_heap_caps_free_calls++;
     if (ptr != nullptr && g_mock_heap_caps_outstanding_allocations > 0u) {
         g_mock_heap_caps_outstanding_allocations--;

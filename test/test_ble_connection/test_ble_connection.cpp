@@ -624,6 +624,21 @@ void test_ble_mutex_trylocks_use_semaphore_guard_in_runtime_and_callbacks() {
     TEST_ASSERT_EQUAL(std::string::npos, connectionText.find("SemaphoreGuard lock(bleClient->bleMutex_, 0)"));
 }
 
+void test_runtime_process_retries_deferred_proxy_queue_release() {
+    const std::string runtimeText =
+        readFile(std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp"));
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    const size_t pendingGate = processBody.find("proxyQueueReleasePending_.load(std::memory_order_acquire)");
+    const size_t finalizeCall = processBody.find("tryFinalizeProxyQueueRelease()");
+    const size_t callbackDrain = processBody.find("pendingConnectStateUpdate_");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, pendingGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, finalizeCall);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, callbackDrain);
+    TEST_ASSERT_TRUE(pendingGate < finalizeCall);
+    TEST_ASSERT_TRUE(finalizeCall < callbackDrain);
+}
+
 void test_connected_flag_uses_explicit_atomic_load_store() {
     const std::filesystem::path clientSource =
         std::filesystem::path(projectRoot() + "/src/ble_client.cpp");
@@ -1143,6 +1158,7 @@ int main() {
     RUN_TEST(test_destructor_clears_instance_ptr_only_for_active_instance);
     RUN_TEST(test_connect_to_server_removes_unused_addr_type_local);
     RUN_TEST(test_ble_mutex_trylocks_use_semaphore_guard_in_runtime_and_callbacks);
+    RUN_TEST(test_runtime_process_retries_deferred_proxy_queue_release);
     RUN_TEST(test_connected_flag_uses_explicit_atomic_load_store);
     RUN_TEST(test_ble_timing_state_and_rssi_caches_use_uint32);
     RUN_TEST(test_v1_scan_starts_reassert_scan_callback_ownership);

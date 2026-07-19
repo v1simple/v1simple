@@ -421,6 +421,11 @@ class V1BLEClient {
     static constexpr size_t MAX_PHONE_CMDS_PER_LOOP = 4;
     ProxyPacket* phone2v1Queue_ = nullptr;
     bool proxyQueuesInPsram_ = false;
+    // Closes queue admission before runtime teardown. The main loop retries
+    // release until both callback-owned queue mutexes can be acquired.
+    std::atomic<bool> proxyQueueReleasePending_{false};
+    // Fences callbacks that began before a disable/re-enable allocation cycle.
+    std::atomic<uint32_t> proxyQueueEpoch_{0};
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};
@@ -605,6 +610,7 @@ class V1BLEClient {
 
     // Queue phone->V1 commands from BLE callback context
     bool enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID);
+    bool enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
     int processPhoneCommandQueue();
     // Diagnostic helper to log negotiated connection parameters
     void logConnParams(const char* tag);
@@ -671,6 +677,8 @@ class V1BLEClient {
     void adoptV1AdvertisedNameForProxy(const char* advertisedName);
     bool allocateProxyQueues();
     void releaseProxyQueues();
+    bool tryFinalizeProxyQueueRelease();
+    void forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
     bool enqueueProxyCallbackEvent(const ProxyCallbackEvent& event);
     bool popProxyCallbackEvent(ProxyCallbackEvent& event);
     void drainProxyCallbackEvents();

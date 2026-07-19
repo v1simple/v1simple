@@ -938,6 +938,7 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
         return;
     }
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
+    const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
     if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) ||
         !instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
         return;
@@ -969,7 +970,7 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     // phone app. Valentine's Law / mirror fidelity: relay every notification
     // on its true source characteristic.
     // Forward to proxy via the proxy queue only. Keep BLE callback path notify-free.
-    instancePtr->forwardToProxy(pData, length, charId);
+    instancePtr->forwardToProxyForEpoch(pData, length, charId, proxyQueueEpoch);
 
     if (instancePtr->connected_.load(std::memory_order_relaxed) &&
         instancePtr->firstRxAfterConnectMs_.load(std::memory_order_relaxed) == 0) {

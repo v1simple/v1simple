@@ -20,6 +20,14 @@ void sendMaintenanceModeError(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
+void sendRuntimeUnavailableError(WebServer& server) {
+    server.send(503, "application/json", "{\"error\":\"gps runtime not wired\"}");
+}
+
+bool requiresLiveRuntime(const Runtime& runtime) {
+    return !runtime.maintenanceBootActive;
+}
+
 } // namespace
 
 void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
@@ -35,10 +43,17 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule& gpsRuntime,
+void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule* gpsRuntimePtr,
                          const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
+
+    // Maintenance saves are intentionally persistence-only and must not
+    // require the live UART runtime that maintenance boot skips.
+    if (requiresLiveRuntime(runtime) && !gpsRuntimePtr) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
 
     JsonDocument body;
     if (server.hasArg("plain")) {
@@ -89,6 +104,7 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     }
 
     // Apply changes to the live runtime — no reboot required.
+    GpsRuntimeModule& gpsRuntime = *gpsRuntimePtr;
     const V1Settings& s = settings.get();
     if (update.hasGpsBaud) {
         gpsRuntime.setBaud(s.gpsBaud);
@@ -112,16 +128,20 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     WifiApiResponse::sendJsonDocument(server, 200, ok);
 }
 
-void handleApiStatus(WebServer& server, GpsRuntimeModule& gpsRuntime, const Runtime& runtime) {
+void handleApiStatus(WebServer& server, GpsRuntimeModule* gpsRuntime, const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
     }
+    if (!gpsRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
 
     const uint32_t nowMs = millis();
-    const GpsRuntimeStatus s = gpsRuntime.snapshot(nowMs);
+    const GpsRuntimeStatus s = gpsRuntime->snapshot(nowMs);
 
     JsonDocument doc;
 

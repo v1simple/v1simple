@@ -214,7 +214,9 @@ void handleApiPushNow(WebServer& server, const Runtime& runtime, bool (*checkRat
     }
 
     if (!runtime.queuePushNow) {
-        server.send(500, "application/json", "{\"error\":\"Failed to load profile\"}");
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"push_runtime_unavailable\","
+                    "\"message\":\"Live V1 push runtime is unavailable\"}");
         return;
     }
 

@@ -180,7 +180,7 @@ void test_config_save_allowed_in_maintenance_mode() {
     TEST_ASSERT_TRUE(responseContains(server, "\"success\":true"));
     TEST_ASSERT_TRUE(settingsManager.settings.obdEnabled);
     TEST_ASSERT_EQUAL_INT8(-55, settingsManager.settings.obdMinRssi);
-    TEST_ASSERT_EQUAL_INT(1, syncAfterConfigChangeCalls);
+    TEST_ASSERT_EQUAL_INT(0, syncAfterConfigChangeCalls);
     TEST_ASSERT_EQUAL_INT(1, settingsManager.saveCalls);
     TEST_ASSERT_EQUAL_INT(0, settingsManager.requestDeferredPersistCalls);
 }

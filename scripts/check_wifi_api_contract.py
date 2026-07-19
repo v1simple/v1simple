@@ -8,6 +8,9 @@ This script enforces WiFi API route/policy invariants across extracted WiFi rout
 3) WiFiManager handle* methods do not become thin ApiService shims again.
 4) ApiService delegates remain bound only in setupWebServer() route registration.
 5) Remaining local WiFi route families preserve route-level policy and handler bindings.
+6) Every /api/ ApiService route declares all four maintenance/runtime cells exactly once.
+7) Nullable ALP/GPS/OBD runtimes and maintenance state reach the service boundary.
+8) Every declared ApiService delegate has a qualified invocation in a native service test.
 
 Use --update to rewrite expected contract snapshots from current source.
 """
@@ -36,7 +39,46 @@ SHIM_ABSENCE_CONTRACT_FILE = (
 LOCAL_HANDLER_ROUTE_CONTRACT_FILE = (
     ROOT / "test" / "contracts" / "wifi_local_handler_route_contract.txt"
 )
+MAINTENANCE_RUNTIME_POLICY_CONTRACT_FILE = (
+    ROOT / "test" / "contracts" / "wifi_maintenance_runtime_policy_contract.txt"
+)
+NATIVE_API_SERVICE_TEST_GLOBS = (
+    "test/test_*api_service/*.cpp",
+    "test/test_api_maintenance_runtime_matrix/*.cpp",
+)
 API_WRITE_GUARD_CALL = "requireMaintenanceApiWriteHeader()"
+VALID_RUNTIME_FAMILIES = frozenset(
+    ("none", "alp", "display", "gps", "obd", "storage", "system", "v1", "wifi")
+)
+MATRIX_CELL_NAMES = (
+    "normal_absent",
+    "normal_present",
+    "maintenance_absent",
+    "maintenance_present",
+)
+VALID_MATRIX_EXPECTATIONS = frozenset(
+    ("serve", "runtime_unavailable", "maintenance_conflict", "maintenance_required")
+)
+# Closed shapes keep the manual matrix reviewable. A new policy shape must be
+# named here deliberately instead of being accepted as an arbitrary combination.
+VALID_MATRIX_SHAPES = frozenset(
+    (
+        ("serve", "serve", "serve", "serve"),
+        ("runtime_unavailable", "serve", "serve", "serve"),
+        (
+            "runtime_unavailable",
+            "serve",
+            "maintenance_conflict",
+            "maintenance_conflict",
+        ),
+        (
+            "maintenance_required",
+            "maintenance_required",
+            "runtime_unavailable",
+            "serve",
+        ),
+    )
+)
 
 ROUTE_PREFIXES = (
     "/api/diagnostics/",
@@ -116,6 +158,74 @@ HANDLE_METHOD_START_RE = re.compile(r"void\s+WiFiManager::(handle[A-Za-z0-9_]+)\
 METHOD_START_RE = re.compile(r"(?:void|bool)\s+WiFiManager::([A-Za-z0-9_]+)\s*\([^)]*\)\s*\{")
 DELEGATE_RE = re.compile(r"([A-Za-z0-9_]+ApiService::[A-Za-z0-9_]+)\s*\(")
 HANDLE_CALL_RE = re.compile(r"(?<!::)\b(handle[A-Za-z0-9_]+)\s*\(")
+MAINTENANCE_RUNTIME_POLICY_RE = re.compile(
+    r"^route=(HTTP_[A-Z]+ /api/\S+) runtime=(\S+) "
+    r"normal_absent=(\S+) normal_present=(\S+) "
+    r"maintenance_absent=(\S+) maintenance_present=(\S+) delegates=(\S+)$"
+)
+QUALIFIED_DELEGATE_CALL_RE = re.compile(
+    r"(?<![A-Za-z0-9_:])([A-Za-z0-9_]+ApiService::[A-Za-z0-9_]+)\s*\("
+)
+
+
+@dataclass(frozen=True)
+class NullableRuntimeRouteRequirement:
+    route: str
+    delegate: str
+    runtime_symbol: str
+    maintenance_source: str
+
+
+NULLABLE_RUNTIME_ROUTE_REQUIREMENTS = (
+    NullableRuntimeRouteRequirement(
+        "HTTP_GET /api/alp/status",
+        "AlpApiService::handleApiStatus",
+        "alpRuntime_",
+        "direct",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_POST /api/gps/config",
+        "GpsApiService::handleApiConfigSave",
+        "gpsRuntime_",
+        "local_runtime",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_GET /api/gps/status",
+        "GpsApiService::handleApiStatus",
+        "gpsRuntime_",
+        "local_runtime",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_GET /api/obd/status",
+        "ObdApiService::handleApiStatus",
+        "obdRuntime_",
+        "obd_factory",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_GET /api/obd/devices",
+        "ObdApiService::handleApiDevicesList",
+        "obdRuntime_",
+        "obd_factory",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_POST /api/obd/scan",
+        "ObdApiService::handleApiScan",
+        "obdRuntime_",
+        "obd_factory",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_POST /api/obd/forget",
+        "ObdApiService::handleApiForget",
+        "obdRuntime_",
+        "obd_factory",
+    ),
+    NullableRuntimeRouteRequirement(
+        "HTTP_POST /api/obd/config",
+        "ObdApiService::handleApiConfig",
+        "obdRuntime_",
+        "obd_factory",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -152,6 +262,37 @@ class LocalHandlerRoutePolicy:
             f"ui_activity={self.ui_activity} "
             f"handlers={handler_blob} "
             f"delegates={delegate_blob}"
+        )
+
+
+@dataclass(frozen=True)
+class MaintenanceRuntimePolicy:
+    route: str
+    runtime: str
+    normal_absent: str
+    normal_present: str
+    maintenance_absent: str
+    maintenance_present: str
+    delegates: Tuple[str, ...]
+
+    @property
+    def matrix(self) -> Tuple[str, str, str, str]:
+        return (
+            self.normal_absent,
+            self.normal_present,
+            self.maintenance_absent,
+            self.maintenance_present,
+        )
+
+    def to_line(self) -> str:
+        return (
+            f"route={self.route} "
+            f"runtime={self.runtime} "
+            f"normal_absent={self.normal_absent} "
+            f"normal_present={self.normal_present} "
+            f"maintenance_absent={self.maintenance_absent} "
+            f"maintenance_present={self.maintenance_present} "
+            f"delegates={','.join(self.delegates)}"
         )
 
 
@@ -302,6 +443,367 @@ def extract_local_handler_route_contract(source: str) -> List[str]:
     return [p.to_line() for p in out]
 
 
+def extract_api_service_route_rows(source: str) -> List[Tuple[str, Tuple[str, ...]]]:
+    out: List[Tuple[str, Tuple[str, ...]]] = []
+    for match in ROUTE_LAMBDA_START_RE.finditer(source):
+        route = f"{match.group(2)} {match.group(1)}"
+        _method, path = route.split(" ", 1)
+        if not path.startswith("/api/"):
+            continue
+        open_idx = match.end() - 1
+        close_idx = find_matching_brace(source, open_idx)
+        delegates = tuple(sorted(set(DELEGATE_RE.findall(source[open_idx + 1 : close_idx]))))
+        if delegates:
+            out.append((route, delegates))
+    return out
+
+
+def extract_api_service_routes(source: str) -> Dict[str, Tuple[str, ...]]:
+    return dict(extract_api_service_route_rows(source))
+
+
+def parse_maintenance_runtime_policy(
+    lines: List[str],
+) -> Tuple[Dict[str, MaintenanceRuntimePolicy], List[str]]:
+    policies: Dict[str, MaintenanceRuntimePolicy] = {}
+    errors: List[str] = []
+
+    for line_number, line in enumerate(lines, start=1):
+        match = MAINTENANCE_RUNTIME_POLICY_RE.fullmatch(line)
+        if not match:
+            errors.append(f"malformed policy row {line_number}: {line}")
+            continue
+
+        (
+            route,
+            runtime,
+            normal_absent,
+            normal_present,
+            maintenance_absent,
+            maintenance_present,
+            delegate_blob,
+        ) = match.groups()
+        if route in policies:
+            errors.append(f"duplicate policy row: {route}")
+            continue
+        if runtime not in VALID_RUNTIME_FAMILIES:
+            errors.append(f"invalid runtime family for {route}: {runtime}")
+
+        matrix = (normal_absent, normal_present, maintenance_absent, maintenance_present)
+        for cell_name, expectation in zip(MATRIX_CELL_NAMES, matrix):
+            if expectation not in VALID_MATRIX_EXPECTATIONS:
+                errors.append(
+                    f"invalid {cell_name} expectation for {route}: {expectation}"
+                )
+        if all(expectation in VALID_MATRIX_EXPECTATIONS for expectation in matrix):
+            if matrix not in VALID_MATRIX_SHAPES:
+                errors.append(
+                    f"unsupported four-cell matrix for {route}: {','.join(matrix)}"
+                )
+            if runtime == "none" and (
+                normal_absent != normal_present
+                or maintenance_absent != maintenance_present
+            ):
+                errors.append(
+                    f"runtime=none policy varies by runtime presence for {route}"
+                )
+
+        delegates = tuple(delegate_blob.split(","))
+        if len(delegates) != len(set(delegates)):
+            errors.append(f"duplicate delegate in policy row: {route}")
+        policies[route] = MaintenanceRuntimePolicy(
+            route,
+            runtime,
+            normal_absent,
+            normal_present,
+            maintenance_absent,
+            maintenance_present,
+            delegates,
+        )
+
+    return policies, errors
+
+
+def find_maintenance_runtime_policy_errors(source: str, lines: List[str]) -> List[str]:
+    actual_rows = extract_api_service_route_rows(source)
+    actual_route_counts = Counter(route for route, _delegates in actual_rows)
+    actual_routes = dict(actual_rows)
+    policies, errors = parse_maintenance_runtime_policy(lines)
+
+    for route, count in sorted(actual_route_counts.items()):
+        if count > 1:
+            errors.append(f"duplicate ApiService route registration: {route} x{count}")
+    for route in sorted(actual_routes.keys() - policies.keys()):
+        errors.append(f"missing policy row: {route}")
+    for route in sorted(policies.keys() - actual_routes.keys()):
+        errors.append(f"extra policy row: {route}")
+    for route in sorted(actual_routes.keys() & policies.keys()):
+        if policies[route].delegates != actual_routes[route]:
+            errors.append(
+                f"delegate mismatch for {route}: expected {','.join(actual_routes[route])}; "
+                f"contract has {','.join(policies[route].delegates)}"
+            )
+
+    return errors
+
+
+def native_api_service_test_paths(root: Path = ROOT) -> List[Path]:
+    """Return only native service-test translation units allowed to prove coverage."""
+
+    return sorted(
+        {
+            path
+            for pattern in NATIVE_API_SERVICE_TEST_GLOBS
+            for path in root.glob(pattern)
+            if path.is_file()
+        }
+    )
+
+
+def read_native_api_service_test_sources(root: Path = ROOT) -> Dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for path in native_api_service_test_paths(root)
+    }
+
+
+def _without_preprocessor_directives(source: str) -> str:
+    """Remove directives so an include or macro cannot masquerade as execution."""
+
+    lines = source.splitlines(keepends=True)
+    out: List[str] = []
+    in_directive = False
+    for line in lines:
+        stripped = line.lstrip()
+        if in_directive or stripped.startswith("#"):
+            out.append("\n" if line.endswith("\n") else "")
+            in_directive = line.rstrip().endswith("\\")
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def _find_matching_parenthesis(source: str, open_index: int) -> int:
+    depth = 0
+    quote = ""
+    escaped = False
+    for index in range(open_index, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _is_qualified_delegate_definition(source: str, match: re.Match[str]) -> bool:
+    """Reject an out-of-class definition while retaining calls in test bodies."""
+
+    open_index = source.find("(", match.end(1))
+    close_index = _find_matching_parenthesis(source, open_index)
+    if close_index < 0:
+        return False
+
+    suffix = source[close_index + 1 :]
+    definition_suffix = re.match(
+        r"\s*(?:(?:const|noexcept|override|final)\b\s*)*(?:->[^\{;]+\s*)?\{",
+        suffix,
+    )
+    return definition_suffix is not None
+
+
+def extract_qualified_delegate_invocations(source: str) -> set[str]:
+    """Extract explicit ApiService calls, excluding includes and definitions."""
+
+    source = _without_preprocessor_directives(source)
+    invocations: set[str] = set()
+    for match in QUALIFIED_DELEGATE_CALL_RE.finditer(source):
+        if not _is_qualified_delegate_definition(source, match):
+            invocations.add(match.group(1))
+    return invocations
+
+
+def find_native_delegate_coverage_errors(
+    policies: Dict[str, MaintenanceRuntimePolicy], test_sources: Dict[str, str]
+) -> List[str]:
+    required = {
+        delegate for policy in policies.values() for delegate in policy.delegates
+    }
+    invoked = {
+        delegate
+        for source in test_sources.values()
+        for delegate in extract_qualified_delegate_invocations(source)
+    }
+    return [
+        f"missing qualified native ApiService invocation: {delegate}"
+        for delegate in sorted(required - invoked)
+    ]
+
+
+def extract_call_arguments(body: str, qualified_name: str) -> Tuple[str, int] | None:
+    call_index = body.find(qualified_name)
+    if call_index < 0:
+        return None
+    open_index = body.find("(", call_index + len(qualified_name))
+    if open_index < 0:
+        return None
+
+    depth = 0
+    for index in range(open_index, len(body)):
+        char = body[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return body[open_index + 1 : index], call_index
+    return None
+
+
+def split_top_level_arguments(arguments: str) -> Tuple[str, ...]:
+    """Split a C++ call while preserving commas inside lambdas/calls/strings."""
+
+    out: List[str] = []
+    start = 0
+    paren_depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    quote = ""
+    escaped = False
+
+    for index, char in enumerate(arguments):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+        elif char == "," and not (paren_depth or bracket_depth or brace_depth):
+            out.append(arguments[start:index].strip())
+            start = index + 1
+
+    out.append(arguments[start:].strip())
+    return tuple(out)
+
+
+def extract_obd_runtime_factory_body(source: str) -> str:
+    match = re.search(
+        r"ObdApiService::Runtime\s+WiFiManager::makeObdRuntime\s*\(\s*\)\s*\{",
+        source,
+    )
+    if not match:
+        return ""
+    open_index = match.end() - 1
+    close_index = find_matching_brace(source, open_index)
+    return source[open_index + 1 : close_index]
+
+
+def find_nullable_runtime_route_composition_errors(source: str) -> List[str]:
+    """Pin nullable-runtime and maintenance precedence at route composition."""
+
+    routes = extract_all_route_lambda_bodies(source)
+    errors: List[str] = []
+
+    for requirement in NULLABLE_RUNTIME_ROUTE_REQUIREMENTS:
+        body = routes.get(requirement.route)
+        if body is None:
+            errors.append(f"missing nullable-runtime route: {requirement.route}")
+            continue
+
+        call = extract_call_arguments(body, requirement.delegate)
+        if call is None:
+            errors.append(
+                f"missing nullable-runtime delegate for {requirement.route}: "
+                f"{requirement.delegate}"
+            )
+            continue
+        arguments, call_index = call
+        call_arguments = split_top_level_arguments(arguments)
+
+        if requirement.runtime_symbol not in call_arguments:
+            errors.append(
+                f"nullable runtime not passed directly to service for {requirement.route}: "
+                f"{requirement.runtime_symbol}"
+            )
+        if any(
+            re.search(rf"\*\s*{re.escape(requirement.runtime_symbol)}\b", argument)
+            for argument in call_arguments
+        ):
+            errors.append(
+                f"runtime dereferenced before service for {requirement.route}: "
+                f"{requirement.runtime_symbol}"
+            )
+        if re.search(rf"\b{re.escape(requirement.runtime_symbol)}\b", body[:call_index]):
+            errors.append(
+                f"runtime accessed before service for {requirement.route}: "
+                f"{requirement.runtime_symbol}"
+            )
+
+        if requirement.maintenance_source == "direct":
+            if "mainRuntimeState.maintenanceBootActive" not in call_arguments:
+                errors.append(
+                    f"maintenance state not passed to service for {requirement.route}"
+                )
+        elif requirement.maintenance_source == "local_runtime":
+            assignment = re.search(
+                r"\br\.maintenanceBootActive\s*=\s*"
+                r"mainRuntimeState\.maintenanceBootActive\s*;",
+                body[:call_index],
+            )
+            if not assignment or "r" not in call_arguments:
+                errors.append(
+                    f"maintenance state not populated before service for {requirement.route}"
+                )
+        elif requirement.maintenance_source == "obd_factory":
+            if "makeObdRuntime()" not in call_arguments:
+                errors.append(
+                    f"maintenance runtime factory not passed to service for {requirement.route}"
+                )
+
+    obd_factory_body = extract_obd_runtime_factory_body(source)
+    if not obd_factory_body:
+        errors.append("missing makeObdRuntime() definition")
+    else:
+        maintenance_assignment = re.search(
+            r"\br\.maintenanceBootActive\s*=\s*"
+            r"mainRuntimeState\.maintenanceBootActive\s*;",
+            obd_factory_body,
+        )
+        return_match = re.search(r"\breturn\s+r\s*;", obd_factory_body)
+        if not maintenance_assignment or not return_match or maintenance_assignment.start() > return_match.start():
+            errors.append("makeObdRuntime() must propagate maintenance state before return")
+
+    return errors
+
+
 def find_delegate_placement_errors(source: str) -> List[str]:
     setup_body = extract_method_body(source, "setupWebServer")
     if not setup_body:
@@ -416,8 +918,45 @@ def main() -> int:
     policy_lines = [p.to_line() for p in policies]
     shim_absence_lines = extract_shim_absence_contract(source)
     local_handler_route_lines = extract_local_handler_route_contract(source)
+    maintenance_runtime_policy_lines = read_expected_lines(MAINTENANCE_RUNTIME_POLICY_CONTRACT_FILE)
+    maintenance_runtime_policy_errors = find_maintenance_runtime_policy_errors(
+        source, maintenance_runtime_policy_lines
+    )
+    maintenance_runtime_policies, _policy_parse_errors = (
+        parse_maintenance_runtime_policy(maintenance_runtime_policy_lines)
+    )
+    native_delegate_coverage_errors = find_native_delegate_coverage_errors(
+        maintenance_runtime_policies, read_native_api_service_test_sources()
+    )
+    nullable_runtime_route_composition_errors = (
+        find_nullable_runtime_route_composition_errors(source)
+    )
 
     if args.update:
+        if (
+            maintenance_runtime_policy_errors
+            or nullable_runtime_route_composition_errors
+            or native_delegate_coverage_errors
+        ):
+            if maintenance_runtime_policy_errors:
+                print("[contract] maintenance-runtime-policy mismatch")
+                for error in maintenance_runtime_policy_errors:
+                    print(f"  - {error}")
+            if nullable_runtime_route_composition_errors:
+                print("[contract] nullable-runtime-route-composition mismatch")
+                for error in nullable_runtime_route_composition_errors:
+                    print(f"  - {error}")
+            if native_delegate_coverage_errors:
+                print("[contract] native-delegate-coverage mismatch")
+                for error in native_delegate_coverage_errors:
+                    print(f"  - {error}")
+            print(
+                "\nMaintenance/runtime policy is manual; declare behavior for every route "
+                "and preserve nullable-runtime composition plus qualified native delegate "
+                "coverage before updating snapshots."
+            )
+            return 1
+
         write_lines(
             ROUTE_CONTRACT_FILE,
             "# WiFi API route contract (extracted ApiService endpoints)",
@@ -438,10 +977,19 @@ def main() -> int:
             "# WiFi API local-handler route contract (remaining non-ApiService route families)",
             local_handler_route_lines,
         )
+        maintenance_runtime_policies, _errors = parse_maintenance_runtime_policy(
+            maintenance_runtime_policy_lines
+        )
+        write_lines(
+            MAINTENANCE_RUNTIME_POLICY_CONTRACT_FILE,
+            "# WiFi API four-cell maintenance/runtime policy contract (manual)",
+            [maintenance_runtime_policies[route].to_line() for route in sorted(maintenance_runtime_policies)],
+        )
         print(f"Updated {ROUTE_CONTRACT_FILE}")
         print(f"Updated {POLICY_CONTRACT_FILE}")
         print(f"Updated {SHIM_ABSENCE_CONTRACT_FILE}")
         print(f"Updated {LOCAL_HANDLER_ROUTE_CONTRACT_FILE}")
+        print(f"Updated {MAINTENANCE_RUNTIME_POLICY_CONTRACT_FILE}")
         return 0
 
     expected_routes = read_expected_lines(ROUTE_CONTRACT_FILE)
@@ -462,6 +1010,24 @@ def main() -> int:
         ok = False
     if expected_local_handler_routes != local_handler_route_lines:
         print_diff(expected_local_handler_routes, local_handler_route_lines, "local-handler-route")
+        ok = False
+
+    if maintenance_runtime_policy_errors:
+        print("[contract] maintenance-runtime-policy mismatch")
+        for error in maintenance_runtime_policy_errors:
+            print(f"  - {error}")
+        ok = False
+
+    if nullable_runtime_route_composition_errors:
+        print("[contract] nullable-runtime-route-composition mismatch")
+        for error in nullable_runtime_route_composition_errors:
+            print(f"  - {error}")
+        ok = False
+
+    if native_delegate_coverage_errors:
+        print("[contract] native-delegate-coverage mismatch")
+        for error in native_delegate_coverage_errors:
+            print(f"  - {error}")
         ok = False
 
     delegate_placement_errors = find_delegate_placement_errors(source)
@@ -491,7 +1057,8 @@ def main() -> int:
 
     print(
         "[contract] route, policy, shim-absence, local-handler-route, "
-        "delegate placement, api-write-guard, and api-write-guard-policy contracts match"
+        "maintenance-runtime-policy, nullable-runtime-route-composition, native-delegate-"
+        "coverage, delegate placement, api-write-guard, and api-write-guard-policy contracts match"
     )
     return 0
 

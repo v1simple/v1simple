@@ -197,8 +197,8 @@ Callbacks/context: `void (*markUiActivity)(void* ctx)` for keep-alive signaling,
 ### Handlers
 
 - `void handleApiConfigGet(WebServer&, SettingsManager&, const Runtime&)` — `GET /api/gps/config`.
-- `void handleApiConfigSave(WebServer&, SettingsManager&, GpsRuntimeModule&, const Runtime&)` — `POST /api/gps/config`.
-- `void handleApiStatus(WebServer&, GpsRuntimeModule&, const Runtime&)` — `GET /api/gps/status`.
+- `void handleApiConfigSave(WebServer&, SettingsManager&, GpsRuntimeModule*, const Runtime&)` — `POST /api/gps/config`; a null runtime is valid only for maintenance-mode persistence-only saves.
+- `void handleApiStatus(WebServer&, GpsRuntimeModule*, const Runtime&)` — `GET /api/gps/status`; maintenance mode takes precedence over the null-runtime 503.
 
 All three call `markUiActivity` on entry.
 

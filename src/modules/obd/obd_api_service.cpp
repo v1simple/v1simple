@@ -75,6 +75,10 @@ void sendMaintenanceModeError(WebServer& server) {
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
+void sendRuntimeUnavailableError(WebServer& server) {
+    server.send(503, "application/json", "{\"error\":\"obd runtime not wired\"}");
+}
+
 } // namespace
 
 void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
@@ -94,14 +98,18 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiStatus(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtime& runtime) {
+void handleApiStatus(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
     }
-    ObdRuntimeStatus status = obdRuntime.snapshot(millis());
+    if (!obdRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
+    ObdRuntimeStatus status = obdRuntime->snapshot(millis());
     JsonDocument doc;
     doc["enabled"] = status.enabled;
     doc["connected"] = status.connected;
@@ -115,7 +123,7 @@ void handleApiStatus(WebServer& server, ObdRuntimeModule& obdRuntime, const Runt
     doc["scanInProgress"] = status.scanInProgress;
     doc["manualScanPending"] = status.manualScanPending;
     doc["savedAddressValid"] = status.savedAddressValid;
-    doc["savedAddress"] = status.savedAddressValid ? String(obdRuntime.getSavedAddress()) : "";
+    doc["savedAddress"] = status.savedAddressValid ? String(obdRuntime->getSavedAddress()) : "";
     doc["connectAttempts"] = status.connectAttempts;
     doc["connectSuccesses"] = status.connectSuccesses;
     doc["connectFailures"] = status.connectFailures;
@@ -138,7 +146,7 @@ void handleApiStatus(WebServer& server, ObdRuntimeModule& obdRuntime, const Runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiDevicesList(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
+void handleApiDevicesList(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsManager& settings,
                           const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
@@ -152,7 +160,7 @@ void handleApiDevicesList(WebServer& server, ObdRuntimeModule& obdRuntime, Setti
         JsonObject obj = arr.add<JsonObject>();
         obj["address"] = address;
         obj["name"] = s.obdSavedName;
-        obj["connected"] = obdRuntime.snapshot(millis()).connected;
+        obj["connected"] = !runtime.maintenanceBootActive && obdRuntime && obdRuntime->snapshot(millis()).connected;
         obj["active"] = true;
     }
 
@@ -189,7 +197,7 @@ void handleApiDeviceNameSave(WebServer& server, SettingsManager& settings, const
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiScan(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtime& runtime) {
+void handleApiScan(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
@@ -198,14 +206,18 @@ void handleApiScan(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtim
         sendMaintenanceModeError(server);
         return;
     }
-    if (!obdRuntime.isEnabled()) {
+    if (!obdRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
+    if (!obdRuntime->isEnabled()) {
         JsonDocument doc;
         doc["success"] = false;
         doc["message"] = "OBD is disabled";
         WifiApiResponse::sendJsonDocument(server, 409, doc);
         return;
     }
-    if (!obdRuntime.requestManualPairScan(millis())) {
+    if (!obdRuntime->requestManualPairScan(millis())) {
         JsonDocument doc;
         doc["success"] = false;
         doc["message"] = "OBD scan already requested or in progress";
@@ -213,7 +225,7 @@ void handleApiScan(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtim
         return;
     }
 
-    const ObdRuntimeStatus status = obdRuntime.snapshot(millis());
+    const ObdRuntimeStatus status = obdRuntime->snapshot(millis());
     JsonDocument doc;
     doc["success"] = true;
     doc["requested"] = true;
@@ -222,14 +234,18 @@ void handleApiScan(WebServer& server, ObdRuntimeModule& obdRuntime, const Runtim
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiForget(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
+void handleApiForget(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsManager& settings,
                      const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
         return;
+    if (!runtime.maintenanceBootActive && !obdRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
     if (!runtime.maintenanceBootActive) {
-        obdRuntime.forgetDevice();
+        obdRuntime->forgetDevice();
     }
     ObdSettingsUpdate update;
     update.hasSavedAddress = true;
@@ -246,12 +262,17 @@ void handleApiForget(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsMa
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiConfig(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsManager& settings,
+void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsManager& settings,
                      const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
         return;
+
+    if (!runtime.maintenanceBootActive && !obdRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
 
     if (!server.hasArg("plain") || server.arg("plain").length() == 0) {
         JsonDocument errDoc;
@@ -315,7 +336,7 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule& obdRuntime, SettingsMa
     const bool changed = settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
                                                                      ? SettingsPersistMode::Immediate
                                                                      : SettingsPersistMode::ImmediateNvsDeferredBackup);
-    if (changed && runtime.syncAfterConfigChange) {
+    if (changed && !runtime.maintenanceBootActive && runtime.syncAfterConfigChange) {
         runtime.syncAfterConfigChange(runtime.ctx);
     }
 

@@ -188,7 +188,7 @@ These paths handle the probes that iOS, Android, ChromeOS, and Windows fire when
 ### POST `/api/autopush/push`
 **Description:** Triggers immediate profile push from a slot, with optional profile/mode override.
 **Params:** `slot` (int 0-2, required), `profile` (string, optional override), `mode` (int, optional override).
-**Response:** `{ "success": true, "queued": true }` (200), `{ "success": false, "error": "live_push_unavailable_in_maintenance", "message": "Live V1 push is unavailable in maintenance mode" }` (409), `{ "error": "V1 not connected" }` (503), `{ "error": "Push already in progress" }` (409), `{ "error": "No profile configured for this slot" }` (400), or `{ "error": "Failed to load profile" }` (500).
+**Response:** `{ "success": true, "queued": true }` (200), `{ "success": false, "error": "live_push_unavailable_in_maintenance", "message": "Live V1 push is unavailable in maintenance mode" }` (409), `{ "success": false, "error": "push_runtime_unavailable", "message": "Live V1 push runtime is unavailable" }` (503), `{ "error": "V1 not connected" }` (503), `{ "error": "Push already in progress" }` (409), `{ "error": "No profile configured for this slot" }` (400), or `{ "error": "Failed to load profile" }` (500).
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_autopush_api_service.cpp`.
 
 ## Display

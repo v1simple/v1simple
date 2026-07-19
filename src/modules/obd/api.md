@@ -248,12 +248,12 @@ HTTP handlers for `/api/obd/*` routes. All take a `Runtime` callbacks struct.
 #### Handlers
 
 - `handleApiConfigGet(WebServer&, SettingsManager&, const Runtime&)` — `GET /api/obd/config`.
-- `handleApiStatus(WebServer&, ObdRuntimeModule&, const Runtime&)` — `GET /api/obd/status`.
-- `handleApiDevicesList(WebServer&, ObdRuntimeModule&, SettingsManager&, const Runtime&)` — `GET /api/obd/devices`.
+- `handleApiStatus(WebServer&, ObdRuntimeModule*, const Runtime&)` — `GET /api/obd/status`; maintenance mode takes precedence over the null-runtime 503.
+- `handleApiDevicesList(WebServer&, ObdRuntimeModule*, SettingsManager&, const Runtime&)` — `GET /api/obd/devices`; the persisted list remains available without a live runtime.
 - `handleApiDeviceNameSave(WebServer&, ...)` — `POST /api/obd/devices/name`.
 - `handleApiScan(WebServer&, ...)` — `POST /api/obd/scan`.
-- `handleApiForget(WebServer&, ...)` — `POST /api/obd/forget`.
-- `handleApiConfig(WebServer&, ...)` — `POST /api/obd/config`.
+- `handleApiForget(WebServer&, ...)` — `POST /api/obd/forget`; maintenance mode permits persistence-only operation with a null runtime.
+- `handleApiConfig(WebServer&, ...)` — `POST /api/obd/config`; maintenance mode permits persistence-only operation with a null runtime.
 
 **Source:** `obd_api_service.h`.
 

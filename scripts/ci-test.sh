@@ -86,6 +86,7 @@ run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version
 section "Semantic Gates"
 run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
 run_step "Bug pattern scanner regression tests" python3 scripts/test_bug_pattern_scanner.py
+run_step "WiFi API contract regression tests" python3 scripts/test_check_wifi_api_contract.py
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
 run_step "Release CI evidence regression tests" python3 scripts/test_check_ci_evidence.py
@@ -109,8 +110,8 @@ run_step "Native linked-source manifest contract" python3 scripts/native_test_so
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native_car
-run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch test_obd_ble_client_race
-run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch test_obd_ble_client_race
+run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_obd_ble_client_race
+run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_obd_ble_client_race
 run_step "Functional scenarios" ./scripts/run_functional_tests.sh
 
 section "Critical Mutation Gate"

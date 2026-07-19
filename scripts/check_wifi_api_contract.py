@@ -11,6 +11,7 @@ This script enforces WiFi API route/policy invariants across extracted WiFi rout
 6) Every /api/ ApiService route declares all four maintenance/runtime cells exactly once.
 7) Nullable ALP/GPS/OBD runtimes and maintenance state reach the service boundary.
 8) Every declared ApiService delegate has a qualified invocation in a native service test.
+9) WiFi client enable stages through the tested transaction before persistence.
 
 Use --update to rewrite expected contract snapshots from current source.
 """
@@ -23,7 +24,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_FILES = [
@@ -864,6 +865,265 @@ def find_api_write_guard_policy_errors(source: str) -> List[str]:
     return errors
 
 
+def extract_assigned_lambda_body(source: str, assignment: str) -> Optional[str]:
+    """Return the body of a lambda assigned to a named transaction callback."""
+
+    match = re.search(
+        rf"{re.escape(assignment)}\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*"
+        rf"(?:mutable\s*)?(?:->\s*[^{{]+)?\s*{{",
+        source,
+    )
+    if not match:
+        return None
+    open_index = match.end() - 1
+    close_index = find_matching_brace(source, open_index)
+    return source[open_index + 1 : close_index]
+
+
+def normalize_cpp_tokens(source: str) -> str:
+    """Collapse formatting so a semantic guard can pin a small C++ seam."""
+
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    source = re.sub(r"//[^\n]*", "", source)
+    return re.sub(r"\s+", "", source)
+
+
+WIFI_ENABLE_TRANSACTION_BODY_CONTRACT = """
+    struct EnableContext {
+        WiFiManager* manager;
+        WifiClientState priorState;
+        int priorConnectedSlotIndex;
+    };
+
+    const bool wasEnabled = settingsManager.get().wifiClientEnabled;
+    EnableContext transaction{this, wifiClientState_, currentConnectedSlotIndex_};
+
+    WifiClientEnableTransaction::Runtime runtime;
+    runtime.ctx = &transaction;
+    runtime.persistedEnabled = wasEnabled;
+    runtime.lifecycleAdmitted = wifiClientState_ == WIFI_CLIENT_CONNECTING ||
+                                wifiClientState_ == WIFI_CLIENT_CONNECTED ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+    runtime.attemptStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        WiFiManager* self = transaction->manager;
+        if (self->maintenanceBootMode_) {
+            if (self->beginMaintenanceAutoConnectScan(true)) {
+                return true;
+            }
+            return !settingsManager.get().hasConfiguredWifiStaSlot();
+        }
+
+        const String savedSsid = settingsManager.get().wifiClientSSID;
+        if (savedSsid.length() == 0) {
+            self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            self->currentConnectedSlotIndex_ = -1;
+            return true;
+        }
+
+        if (self->connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
+            return true;
+        }
+
+        self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        self->currentConnectedSlotIndex_ = -1;
+        return false;
+    };
+    runtime.rollbackFailedStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        transaction->manager->wifiClientState_ = transaction->priorState;
+        transaction->manager->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
+    };
+    runtime.commitEnabled = [](void*) { settingsManager.setWifiClientEnabled(true); };
+    return WifiClientEnableTransaction::execute(runtime);
+"""
+
+
+def find_wifi_enable_transaction_errors(source: str) -> List[str]:
+    """Pin the unhosted WiFiManager method to the linked transaction seam."""
+
+    body = extract_method_body(source, "enableWifiClientFromSavedCredentials")
+    if not body:
+        return ["missing enableWifiClientFromSavedCredentials() definition"]
+
+    errors: List[str] = []
+    if normalize_cpp_tokens(body) != normalize_cpp_tokens(
+        WIFI_ENABLE_TRANSACTION_BODY_CONTRACT
+    ):
+        errors.append("wifi enable transaction differs from reviewed manager wiring")
+
+    required_fragments = {
+        "transaction start callback": "runtime.attemptStart",
+        "transaction rollback callback": "runtime.rollbackFailedStart",
+        "transaction commit callback": "runtime.commitEnabled",
+        "transaction execution": "WifiClientEnableTransaction::execute(runtime)",
+    }
+    positions: Dict[str, int] = {}
+    for label, fragment in required_fragments.items():
+        position = body.find(fragment)
+        positions[label] = position
+        if position < 0:
+            errors.append(f"wifi enable transaction missing {label}")
+
+    persisted_snapshots = re.findall(
+        r"const\s+bool\s+wasEnabled\s*=\s*"
+        r"settingsManager\.get\(\)\.wifiClientEnabled\s*;",
+        body,
+    )
+    persisted_assignments = re.findall(
+        r"runtime\.persistedEnabled\s*=\s*(.*?);", body, re.DOTALL
+    )
+    if (
+        len(persisted_snapshots) != 1
+        or len(persisted_assignments) != 1
+        or normalize_cpp_tokens(persisted_assignments[0]) != "wasEnabled"
+    ):
+        errors.append("wifi enable transaction missing persisted enable snapshot")
+
+    prior_runtime = re.search(
+        r"EnableContext\s+transaction\s*{\s*this\s*,\s*wifiClientState_\s*,\s*"
+        r"currentConnectedSlotIndex_\s*}\s*;",
+        body,
+    )
+    if not prior_runtime:
+        errors.append("wifi enable transaction missing prior runtime snapshot")
+
+    context_assignments = re.findall(
+        r"runtime\.ctx\s*=\s*(.*?);", body, re.DOTALL
+    )
+    if (
+        len(context_assignments) != 1
+        or normalize_cpp_tokens(context_assignments[0]) != "&transaction"
+    ):
+        errors.append("wifi enable transaction missing canonical transaction context")
+
+    lifecycle_assignments = re.findall(
+        r"runtime\.lifecycleAdmitted\s*=\s*(.*?);", body, re.DOTALL
+    )
+    expected_lifecycle_assignment = normalize_cpp_tokens(
+        """
+        wifiClientState_ == WIFI_CLIENT_CONNECTING ||
+        wifiClientState_ == WIFI_CLIENT_CONNECTED ||
+        maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
+        maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING
+        """
+    )
+    if (
+        len(lifecycle_assignments) != 1
+        or normalize_cpp_tokens(lifecycle_assignments[0])
+        != expected_lifecycle_assignment
+    ):
+        errors.append("wifi enable transaction missing lifecycle admission snapshot")
+
+    callback_assignments = {
+        "start": "runtime.attemptStart",
+        "rollback": "runtime.rollbackFailedStart",
+        "commit": "runtime.commitEnabled",
+    }
+    callback_bodies = {
+        label: extract_assigned_lambda_body(body, assignment)
+        for label, assignment in callback_assignments.items()
+    }
+    for label, callback_body in callback_bodies.items():
+        assignment_count = len(
+            re.findall(
+                rf"{re.escape(callback_assignments[label])}\s*=", body
+            )
+        )
+        if assignment_count != 1:
+            errors.append(
+                f"wifi enable transaction {label} callback must be assigned exactly once"
+            )
+        if callback_body is None:
+            errors.append(f"wifi enable transaction {label} callback must remain a lambda")
+
+    start_body = callback_bodies["start"] or ""
+    rollback_body = callback_bodies["rollback"] or ""
+    commit_body = callback_bodies["commit"] or ""
+
+    explicit_admission = "beginMaintenanceAutoConnectScan(true)"
+    if start_body.count(explicit_admission) != 1 or body.count(explicit_admission) != 1:
+        errors.append("wifi enable transaction missing explicit maintenance enable admission")
+    expected_start_body = normalize_cpp_tokens(
+        """
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        WiFiManager* self = transaction->manager;
+        if (self->maintenanceBootMode_) {
+            if (self->beginMaintenanceAutoConnectScan(true)) {
+                return true;
+            }
+            return !settingsManager.get().hasConfiguredWifiStaSlot();
+        }
+        const String savedSsid = settingsManager.get().wifiClientSSID;
+        if (savedSsid.length() == 0) {
+            self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            self->currentConnectedSlotIndex_ = -1;
+            return true;
+        }
+        if (self->connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
+            return true;
+        }
+        self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        self->currentConnectedSlotIndex_ = -1;
+        return false;
+        """
+    )
+    if normalize_cpp_tokens(start_body) != expected_start_body:
+        errors.append("wifi enable start callback differs from reviewed admission flow")
+
+    rollback_requirements = {
+        "client state": (
+            r"wifiClientState_\s*=\s*transaction->priorState\s*;"
+        ),
+        "connected slot": (
+            r"currentConnectedSlotIndex_\s*=\s*"
+            r"transaction->priorConnectedSlotIndex\s*;"
+        ),
+    }
+    for label, pattern in rollback_requirements.items():
+        if not re.search(pattern, rollback_body):
+            errors.append(f"wifi enable rollback missing prior {label} restoration")
+    expected_rollback_body = normalize_cpp_tokens(
+        """
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        transaction->manager->wifiClientState_ = transaction->priorState;
+        transaction->manager->currentConnectedSlotIndex_ =
+            transaction->priorConnectedSlotIndex;
+        """
+    )
+    if normalize_cpp_tokens(rollback_body) != expected_rollback_body:
+        errors.append(
+            "wifi enable rollback must remain an unconditional prior-state restoration"
+        )
+
+    setter = "settingsManager.setWifiClientEnabled(true)"
+    setter_positions = [match.start() for match in re.finditer(re.escape(setter), body)]
+    if len(setter_positions) != 1:
+        errors.append(
+            "wifi enable transaction must contain exactly one enabled persistence commit"
+        )
+    if normalize_cpp_tokens(commit_body) != normalize_cpp_tokens(f"{setter};"):
+        errors.append("wifi enable persistence must remain inside the commit callback")
+
+    ordered_labels = (
+        "transaction start callback",
+        "transaction rollback callback",
+        "transaction commit callback",
+        "transaction execution",
+    )
+    ordered_positions = [positions[label] for label in ordered_labels]
+    if all(position >= 0 for position in ordered_positions) and ordered_positions != sorted(
+        ordered_positions
+    ):
+        errors.append("wifi enable transaction callbacks must be wired before execution")
+
+    if body.count("WifiClientEnableTransaction::execute(runtime)") != 1:
+        errors.append("wifi enable transaction must execute exactly once")
+
+    return errors
+
+
 def read_expected_lines(path: Path) -> List[str]:
     if not path.exists():
         return []
@@ -931,12 +1191,14 @@ def main() -> int:
     nullable_runtime_route_composition_errors = (
         find_nullable_runtime_route_composition_errors(source)
     )
+    wifi_enable_transaction_errors = find_wifi_enable_transaction_errors(source)
 
     if args.update:
         if (
             maintenance_runtime_policy_errors
             or nullable_runtime_route_composition_errors
             or native_delegate_coverage_errors
+            or wifi_enable_transaction_errors
         ):
             if maintenance_runtime_policy_errors:
                 print("[contract] maintenance-runtime-policy mismatch")
@@ -949,6 +1211,10 @@ def main() -> int:
             if native_delegate_coverage_errors:
                 print("[contract] native-delegate-coverage mismatch")
                 for error in native_delegate_coverage_errors:
+                    print(f"  - {error}")
+            if wifi_enable_transaction_errors:
+                print("[contract] wifi-enable-transaction mismatch")
+                for error in wifi_enable_transaction_errors:
                     print(f"  - {error}")
             print(
                 "\nMaintenance/runtime policy is manual; declare behavior for every route "
@@ -1030,6 +1296,12 @@ def main() -> int:
             print(f"  - {error}")
         ok = False
 
+    if wifi_enable_transaction_errors:
+        print("[contract] wifi-enable-transaction mismatch")
+        for error in wifi_enable_transaction_errors:
+            print(f"  - {error}")
+        ok = False
+
     delegate_placement_errors = find_delegate_placement_errors(source)
     if delegate_placement_errors:
         print("[contract] delegate-placement mismatch")
@@ -1058,7 +1330,8 @@ def main() -> int:
     print(
         "[contract] route, policy, shim-absence, local-handler-route, "
         "maintenance-runtime-policy, nullable-runtime-route-composition, native-delegate-"
-        "coverage, delegate placement, api-write-guard, and api-write-guard-policy contracts match"
+        "coverage, wifi-enable-transaction, delegate placement, api-write-guard, and "
+        "api-write-guard-policy contracts match"
     )
     return 0
 

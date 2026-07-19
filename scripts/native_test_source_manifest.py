@@ -56,6 +56,10 @@ LINKED_NATIVE_TEST_SPECS = {
         sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),
         define="V1_LINKED_TEST_WIFI_SCAN_RESULT_OWNER",
     ),
+    "test_wifi_client_enable_transaction": LinkedNativeTestSpec(
+        sources=("src/modules/wifi/wifi_client_enable_transaction.cpp",),
+        define="V1_LINKED_TEST_WIFI_CLIENT_ENABLE_TRANSACTION",
+    ),
 }
 
 

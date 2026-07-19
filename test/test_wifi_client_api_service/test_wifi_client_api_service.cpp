@@ -94,6 +94,9 @@ static WifiClientApiService::Runtime makeRuntime(FakeRuntime& rt) {
         [](void* ctx) {
             auto* r = static_cast<FakeRuntime*>(ctx);
             r->enableWithSavedNetworkCalls++;
+            if (r->enableWithSavedNetworkReturn) {
+                r->enabled = true;
+            }
             return r->enableWithSavedNetworkReturn;
         },
         &rt,
@@ -592,6 +595,7 @@ void test_handle_enable_true_with_saved_credentials_returns_500_when_connect_fai
     TEST_ASSERT_TRUE(responseContains(server, "\"message\":\"Failed to start connection\""));
     TEST_ASSERT_EQUAL_INT(1, rt.enableWithSavedNetworkCalls);
     TEST_ASSERT_EQUAL_INT(0, rt.disableClientCalls);
+    TEST_ASSERT_FALSE(rt.enabled);
 }
 
 void test_handle_enable_true_without_saved_credentials_sets_disconnected_state() {

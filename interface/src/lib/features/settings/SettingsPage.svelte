@@ -63,7 +63,10 @@
         hasExistingPassword: false
     });
     let wifiPoll = null;
-    let wifiStatusFetchInFlight = false;
+    let wifiStatusFetchPromise = null;
+    let wifiToggleInFlight = $state(false);
+    let wifiToggleRunId = 0;
+    let componentMounted = false;
     let wifiScanRunId = 0;
     let wifiTestRunId = 0;
     let SettingsWifiModalComponent = $state(null);
@@ -78,6 +81,7 @@
     const RECOGNIZED_BACKUP_TYPES = new Set(['v1simple_backup', 'v1simple_sd_backup']);
 
     onMount(() => {
+        componentMounted = true;
         const releaseDeviceSettings = retainDeviceSettings();
         void (async () => {
             await fetchSettings();
@@ -86,8 +90,10 @@
         })();
 
         return () => {
+            componentMounted = false;
             wifiScanRunId += 1;
             wifiTestRunId += 1;
+            wifiToggleRunId += 1;
             releaseDeviceSettings();
             stopWifiPoll();
         };
@@ -137,29 +143,55 @@
         }
     }
 
-    async function fetchWifiStatus({ reportError = true, timeoutMs = 5000 } = {}) {
-        if (wifiStatusFetchInFlight) return null;
-        wifiStatusFetchInFlight = true;
-        try {
-            const res = await fetchWithTimeout('/api/wifi/status', {}, timeoutMs);
-            if (res.ok) {
-                const data = await res.json();
-                wifiStatus = { ...wifiStatus, ...data };
-                clearMessageText(WIFI_STATUS_ERROR_TEXT);
-                return data;
-            } else {
-                if (reportError) {
+    async function fetchWifiStatus({
+        reportError = true,
+        timeoutMs = 5000,
+        forceFresh = false
+    } = {}) {
+        if (forceFresh) {
+            while (wifiStatusFetchPromise) {
+                await wifiStatusFetchPromise;
+            }
+        } else if (wifiStatusFetchPromise) {
+            return await wifiStatusFetchPromise;
+        }
+
+        if (!componentMounted) return null;
+
+        const request = (async () => {
+            try {
+                const res = await fetchWithTimeout('/api/wifi/status', {}, timeoutMs);
+                if (res.ok) {
+                    const data = await res.json();
+                    const normalizedStatus =
+                        data && typeof data === 'object' && !Array.isArray(data) ? { ...data } : {};
+                    if (typeof normalizedStatus.enabled !== 'boolean') {
+                        delete normalizedStatus.enabled;
+                    }
+                    if (componentMounted) {
+                        wifiStatus = { ...wifiStatus, ...normalizedStatus };
+                        clearMessageText(WIFI_STATUS_ERROR_TEXT);
+                    }
+                    return normalizedStatus;
+                } else if (reportError && componentMounted) {
+                    message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
+                }
+            } catch (e) {
+                if (reportError && componentMounted) {
                     message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
                 }
             }
-        } catch (e) {
-            if (reportError) {
-                message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
-            }
+            return null;
+        })();
+
+        wifiStatusFetchPromise = request;
+        try {
+            return await request;
         } finally {
-            wifiStatusFetchInFlight = false;
+            if (wifiStatusFetchPromise === request) {
+                wifiStatusFetchPromise = null;
+            }
         }
-        return null;
     }
 
     function normalizeWifiSlot(slot, fallbackIndex = 0) {
@@ -435,28 +467,59 @@
         }
     }
 
+    function handleWifiToggleChange(event) {
+        const requestedEnabled = event.currentTarget.checked;
+        event.currentTarget.checked = wifiStatus.enabled;
+        void toggleWifiClient(requestedEnabled);
+    }
+
     async function toggleWifiClient(enabled) {
+        if (wifiToggleInFlight) return;
+
+        const runId = ++wifiToggleRunId;
+        let response = null;
+        let transportFailed = false;
+        wifiToggleInFlight = true;
         try {
-            const res = await fetchWithTimeout('/api/wifi/enable', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled })
+            try {
+                response = await fetchWithTimeout('/api/wifi/enable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+            } catch (e) {
+                transportFailed = true;
+            }
+            if (runId !== wifiToggleRunId) return;
+
+            const refreshedStatus = await fetchWifiStatus({
+                reportError: false,
+                forceFresh: true
             });
-            // The firmware persists the requested enabled flag before the
-            // connection attempt can fail, so both success and HTTP-error
-            // responses require an authoritative state refresh.
-            await fetchWifiStatus({ reportError: false });
+            if (runId !== wifiToggleRunId) return;
+
             await fetchSavedWifiNetworks();
-            if (res.ok) {
-                message = {
-                    type: 'success',
-                    text: enabled ? 'WiFi client enabled' : 'WiFi client disabled'
-                };
+            if (runId !== wifiToggleRunId) return;
+
+            if (transportFailed) {
+                message = { type: 'error', text: 'Connection error' };
+            } else if (response?.ok) {
+                const confirmed =
+                    typeof refreshedStatus?.enabled === 'boolean' &&
+                    refreshedStatus.enabled === enabled;
+                message = confirmed
+                    ? {
+                          type: 'success',
+                          text: enabled ? 'WiFi client enabled' : 'WiFi client disabled'
+                      }
+                    : { type: 'error', text: 'Failed to confirm WiFi setting' };
             } else {
                 message = { type: 'error', text: 'Failed to change WiFi setting' };
             }
-        } catch (e) {
-            message = { type: 'error', text: 'Connection error' };
+        } finally {
+            if (runId === wifiToggleRunId) {
+                wifiToggleInFlight = false;
+            }
         }
     }
 
@@ -933,7 +996,8 @@
                         type="checkbox"
                         class="toggle toggle-primary"
                         checked={wifiStatus.enabled}
-                        onchange={(e) => toggleWifiClient(e.target.checked)}
+                        disabled={wifiToggleInFlight}
+                        onchange={handleWifiToggleChange}
                     />
                 </CardSectionHead>
 

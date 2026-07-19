@@ -280,7 +280,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     // everywhere else so AP/STA transitions have one owner.
     if (apStaMode) {
         if (maintenanceBootMode_) {
-            (void)beginMaintenanceAutoConnectScan();
+            (void)beginMaintenanceAutoConnectScan(false);
         } else {
             Serial.printf("[SetupMode] STA connect queued for '%s'\n", settings.wifiClientSSID.c_str());
             (void)connectToNetwork(settings.wifiClientSSID, settingsManager.getWifiClientPassword(), false);

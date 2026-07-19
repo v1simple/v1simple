@@ -89,6 +89,12 @@ ObdApiService::Runtime WiFiManager::makeObdRuntime() {
 }
 """
 
+ENABLE_TRANSACTION_SOURCE = (
+    "bool WiFiManager::enableWifiClientFromSavedCredentials() {\n"
+    f"{CONTRACT.WIFI_ENABLE_TRANSACTION_BODY_CONTRACT}\n"
+    "}\n"
+)
+
 
 class MaintenanceRuntimePolicyContractTest(unittest.TestCase):
     def test_complete_policy_covers_each_api_service_route(self) -> None:
@@ -375,6 +381,176 @@ class NullableRuntimeRouteCompositionTest(unittest.TestCase):
         self.assertIn(
             "makeObdRuntime() must propagate maintenance state before return", errors
         )
+
+
+class WifiEnableTransactionContractTest(unittest.TestCase):
+    def test_transactional_manager_wiring_matches(self) -> None:
+        self.assertEqual(
+            CONTRACT.find_wifi_enable_transaction_errors(ENABLE_TRANSACTION_SOURCE),
+            [],
+        )
+
+    def test_prestart_persistence_fails(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "WifiClientEnableTransaction::Runtime runtime;",
+            "settingsManager.setWifiClientEnabled(true);\n"
+            "    WifiClientEnableTransaction::Runtime runtime;",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction must contain exactly one enabled persistence commit",
+            errors,
+        )
+
+    def test_automatic_maintenance_gate_cannot_replace_explicit_intent(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "beginMaintenanceAutoConnectScan(true)",
+            "beginMaintenanceAutoConnectScan(false)",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction missing explicit maintenance enable admission",
+            errors,
+        )
+
+    def test_manager_cannot_bypass_transaction_execution(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "return WifiClientEnableTransaction::execute(runtime);",
+            "return true;",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn("wifi enable transaction missing transaction execution", errors)
+
+    def test_persistence_cannot_move_outside_commit_lambda(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "runtime.commitEnabled = [](void*) { "
+            "settingsManager.setWifiClientEnabled(true); };",
+            "runtime.commitEnabled = [](void*) {};\n"
+            "    settingsManager.setWifiClientEnabled(true);",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable persistence must remain inside the commit callback", errors
+        )
+
+    def test_rollback_lambda_cannot_drop_prior_runtime_restoration(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "runtime.rollbackFailedStart = [](void* ctx) {\n"
+            "        auto* transaction = static_cast<EnableContext*>(ctx);\n"
+            "        transaction->manager->wifiClientState_ = transaction->priorState;\n"
+            "        transaction->manager->currentConnectedSlotIndex_ = "
+            "transaction->priorConnectedSlotIndex;\n"
+            "    };",
+            "runtime.rollbackFailedStart = [](void*) {};",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable rollback missing prior client state restoration", errors
+        )
+        self.assertIn(
+            "wifi enable rollback missing prior connected slot restoration", errors
+        )
+
+    def test_lifecycle_idempotence_must_include_maintenance_connecting(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING",
+            "false",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction missing lifecycle admission snapshot", errors
+        )
+
+    def test_lifecycle_idempotence_cannot_change_or_to_and(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "wifiClientState_ == WIFI_CLIENT_CONNECTING ||",
+            "wifiClientState_ == WIFI_CLIENT_CONNECTING &&",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction missing lifecycle admission snapshot", errors
+        )
+
+    def test_transaction_snapshots_cannot_be_overwritten(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "runtime.attemptStart = [](void* ctx) {",
+            "runtime.persistedEnabled = false;\n"
+            "    runtime.lifecycleAdmitted = false;\n"
+            "    runtime.attemptStart = [](void* ctx) {",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn("wifi enable transaction missing persisted enable snapshot", errors)
+        self.assertIn(
+            "wifi enable transaction missing lifecycle admission snapshot", errors
+        )
+
+    def test_commit_cannot_be_made_conditional(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "settingsManager.setWifiClientEnabled(true);",
+            "if (false) { settingsManager.setWifiClientEnabled(true); }",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable persistence must remain inside the commit callback", errors
+        )
+
+    def test_rollback_cannot_be_made_conditional(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "transaction->manager->wifiClientState_ = transaction->priorState;",
+            "if (false) {\n"
+            "            transaction->manager->wifiClientState_ = transaction->priorState;\n"
+            "        }",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable rollback must remain an unconditional prior-state restoration",
+            errors,
+        )
+
+    def test_transaction_context_cannot_be_removed(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace("    runtime.ctx = &transaction;\n", "")
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction missing canonical transaction context", errors
+        )
+
+    def test_callbacks_cannot_be_overwritten(self) -> None:
+        replacements = {
+            "start": "runtime.attemptStart = [](void*) { return true; };",
+            "rollback": "runtime.rollbackFailedStart = [](void*) {};",
+            "commit": "runtime.commitEnabled = [](void*) {};",
+        }
+        for label, overwrite in replacements.items():
+            with self.subTest(label=label):
+                source = ENABLE_TRANSACTION_SOURCE.replace(
+                    "    return WifiClientEnableTransaction::execute(runtime);",
+                    f"    {overwrite}\n"
+                    "    return WifiClientEnableTransaction::execute(runtime);",
+                )
+                errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+                self.assertIn(
+                    f"wifi enable transaction {label} callback must be assigned exactly once",
+                    errors,
+                )
+
+    def test_explicit_maintenance_admission_cannot_be_guarded_false(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "if (self->beginMaintenanceAutoConnectScan(true))",
+            "if (false && self->beginMaintenanceAutoConnectScan(true))",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable start callback differs from reviewed admission flow", errors
+        )
+
+    def test_transaction_cannot_execute_twice(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "return WifiClientEnableTransaction::execute(runtime);",
+            "(void)WifiClientEnableTransaction::execute(runtime);\n"
+            "    return WifiClientEnableTransaction::execute(runtime);",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn("wifi enable transaction must execute exactly once", errors)
 
 
 if __name__ == "__main__":

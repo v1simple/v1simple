@@ -7,6 +7,7 @@
 #include "perf_metrics.h"
 #include "settings.h"
 #include "settings_sanitize.h"
+#include "modules/wifi/wifi_client_enable_transaction.h"
 #include "modules/wifi/wifi_sta_slot_policy.h"
 #include <vector>
 
@@ -277,30 +278,54 @@ bool WiFiManager::connectToNetwork(const String& ssid, const String& password, b
 }
 
 bool WiFiManager::enableWifiClientFromSavedCredentials() {
-    settingsManager.setWifiClientEnabled(true);
+    struct EnableContext {
+        WiFiManager* manager;
+        WifiClientState priorState;
+        int priorConnectedSlotIndex;
+    };
 
-    if (maintenanceBootMode_) {
-        if (beginMaintenanceAutoConnectScan()) {
+    const bool wasEnabled = settingsManager.get().wifiClientEnabled;
+    EnableContext transaction{this, wifiClientState_, currentConnectedSlotIndex_};
+
+    WifiClientEnableTransaction::Runtime runtime;
+    runtime.ctx = &transaction;
+    runtime.persistedEnabled = wasEnabled;
+    runtime.lifecycleAdmitted = wifiClientState_ == WIFI_CLIENT_CONNECTING ||
+                                wifiClientState_ == WIFI_CLIENT_CONNECTED ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+    runtime.attemptStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        WiFiManager* self = transaction->manager;
+        if (self->maintenanceBootMode_) {
+            if (self->beginMaintenanceAutoConnectScan(true)) {
+                return true;
+            }
+            return !settingsManager.get().hasConfiguredWifiStaSlot();
+        }
+
+        const String savedSsid = settingsManager.get().wifiClientSSID;
+        if (savedSsid.length() == 0) {
+            self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            self->currentConnectedSlotIndex_ = -1;
             return true;
         }
-        const V1Settings& settings = settingsManager.get();
-        return !settings.hasConfiguredWifiStaSlot();
-    }
 
-    const String savedSsid = settingsManager.get().wifiClientSSID;
-    if (savedSsid.length() == 0) {
-        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-        currentConnectedSlotIndex_ = -1;
-        return true;
-    }
+        if (self->connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
+            return true;
+        }
 
-    if (connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
-        return true;
-    }
-
-    wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-    currentConnectedSlotIndex_ = -1;
-    return false;
+        self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        self->currentConnectedSlotIndex_ = -1;
+        return false;
+    };
+    runtime.rollbackFailedStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        transaction->manager->wifiClientState_ = transaction->priorState;
+        transaction->manager->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
+    };
+    runtime.commitEnabled = [](void* /*ctx*/) { settingsManager.setWifiClientEnabled(true); };
+    return WifiClientEnableTransaction::execute(runtime);
 }
 
 void WiFiManager::disconnectFromNetwork() {
@@ -407,7 +432,7 @@ void WiFiManager::processWifiClientConnectPhase() {
     }
 }
 
-bool WiFiManager::beginMaintenanceAutoConnectScan() {
+bool WiFiManager::beginMaintenanceAutoConnectScan(bool explicitEnableRequest) {
     cancelMaintenanceAutoConnect("restart_scan");
 
     if (!maintenanceBootMode_) {
@@ -415,9 +440,14 @@ bool WiFiManager::beginMaintenanceAutoConnectScan() {
     }
 
     const V1Settings& settings = settingsManager.get();
-    if (!settings.wifiClientEnabled || !settings.hasConfiguredWifiStaSlot()) {
+    if (!settings.hasConfiguredWifiStaSlot()) {
         Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: no saved slots");
         wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        return false;
+    }
+    if (!settings.wifiClientEnabled && !explicitEnableRequest) {
+        Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: client disabled");
+        wifiClientState_ = WIFI_CLIENT_DISABLED;
         return false;
     }
 

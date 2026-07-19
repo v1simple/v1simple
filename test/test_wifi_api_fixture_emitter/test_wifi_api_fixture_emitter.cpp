@@ -15,6 +15,8 @@
 #include "../../src/modules/wifi/wifi_audio_api_service.h"
 #include "../../src/modules/wifi/wifi_autopush_api_service.h"
 #include "../../src/modules/wifi/wifi_client_api_service.h"
+#include "../../src/modules/wifi/wifi_client_enable_transaction.h"
+#include "../../src/modules/wifi/wifi_client_enable_transaction.cpp"
 #include "../../src/modules/wifi/wifi_display_colors_api_service.h"
 #include "../../src/modules/wifi/wifi_quiet_api_service.h"
 #include "../../src/modules/wifi/wifi_settings_api_service.h"
@@ -186,10 +188,20 @@ WifiClientApiService::Runtime makeRuntime(FakeRuntime& state) {
     runtime.getSavedNetworksCtx = &state;
     runtime.enableWithSavedNetwork = [](void* ctx) {
         auto* state = static_cast<FakeRuntime*>(ctx);
-        // Mirrors WiFiManager::enableWifiClientFromSavedCredentials(): the
-        // persisted enabled flag changes before a connection attempt can fail.
-        state->enabled = true;
-        return state->enableResult;
+        WifiClientEnableTransaction::Runtime transaction;
+        transaction.ctx = state;
+        transaction.attemptStart = [](void* transactionCtx) {
+            return static_cast<FakeRuntime*>(transactionCtx)->enableResult;
+        };
+        transaction.rollbackFailedStart = [](void* transactionCtx) {
+            auto* transactionState = static_cast<FakeRuntime*>(transactionCtx);
+            transactionState->stateName = "disabled";
+        };
+        transaction.commitEnabled = [](void* transactionCtx) {
+            auto* transactionState = static_cast<FakeRuntime*>(transactionCtx);
+            transactionState->enabled = true;
+        };
+        return WifiClientEnableTransaction::execute(transaction);
     };
     runtime.enableWithSavedNetworkCtx = &state;
     runtime.disableClient = [](void*) {};
@@ -371,9 +383,16 @@ void emitFixture() {
     captureStatus(captures, "wifi_enable_success", enableSuccessAfter);
 
     FakeRuntime enableFailureBefore;
+    enableFailureBefore.maintenanceBootActive = true;
+    enableFailureBefore.savedSsid = "GarageNet";
+    WifiClientApiService::SavedNetworkSlotPayload configuredSlot;
+    configuredSlot.index = 0;
+    configuredSlot.ssid = "GarageNet";
+    configuredSlot.configured = true;
+    enableFailureBefore.savedNetworks.push_back(configuredSlot);
     captureStatus(captures, "wifi_enable_failure", enableFailureBefore);
 
-    FakeRuntime enableFailure;
+    FakeRuntime enableFailure = enableFailureBefore;
     enableFailure.enableResult = false;
     WebServer enableFailureServer(80);
     enableFailureServer.setArg("plain", "{\"enabled\":true}");

@@ -380,7 +380,7 @@ class WiFiManager {
     bool testSavedNetwork(size_t index);
     int selectSlotForNetworkConnect(const String& ssid) const;
     int findConfiguredSlotBySsid(const String& ssid) const;
-    bool beginMaintenanceAutoConnectScan();
+    bool beginMaintenanceAutoConnectScan(bool explicitEnableRequest);
     void processMaintenanceAutoConnect();
     bool queueNextMaintenanceAutoConnectSlot();
     void finishMaintenanceAutoConnect(const char* reason, bool dropStaRadio);

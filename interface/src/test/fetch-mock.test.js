@@ -47,7 +47,7 @@ describe('firmware-captured fetch fixtures', () => {
         });
     });
 
-    it('preserves the real enable failure status and status-refetch sequence', async () => {
+    it('preserves the transactional enable failure and status-refetch sequence', async () => {
         installFixtureFetchMock('wifi_enable_failure');
 
         const before = await fetch('/api/wifi/status');
@@ -60,7 +60,7 @@ describe('firmware-captured fetch fixtures', () => {
             success: false
         });
         expect(await before.json()).toMatchObject({ enabled: false });
-        expect(await after.json()).toMatchObject({ enabled: true });
+        expect(await after.json()).toMatchObject({ enabled: false });
     });
 
     it('serves every captured remaining OBD route with its real maintenance response', async () => {

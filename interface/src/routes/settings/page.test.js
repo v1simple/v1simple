@@ -542,7 +542,7 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('reflects the captured persisted enable state after a failed connection attempt', async () => {
+    it('keeps the captured enable state disabled after a failed connection attempt', async () => {
         const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_failure'));
         const first = render(Page);
 
@@ -554,13 +554,353 @@ describe('settings route page', () => {
         await fireEvent.click(firstToggle);
 
         await screen.findByText('Failed to change WiFi setting');
-        expect(firstToggle).toBeChecked();
+        expect(firstToggle).not.toBeChecked();
         expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
         expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
             2
         );
 
         first.unmount();
+    });
+
+    it('reconciles WiFi status after the enable request rejects', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : jsonResponse({ enabled: true, state: 'connecting' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => Promise.reject(new Error('request lost'))
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Connection error');
+        expect(statusCalls).toBe(2);
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('keeps a newer in-flight status when the forced reconciliation fails', async () => {
+        const activeStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? activeStatus.promise
+                        : Promise.reject(new Error('forced status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        activeStatus.resolve(jsonResponse({ enabled: true, state: 'connecting' }));
+
+        await waitFor(() => expect(statusCalls).toBe(2));
+        await screen.findByText('Failed to change WiFi setting');
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('queues a fresh status read behind an older in-flight request', async () => {
+        const staleStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? staleStatus.promise
+                        : jsonResponse({ enabled: false, state: 'disabled' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        staleStatus.resolve(jsonResponse({ enabled: true, state: 'connecting' }));
+
+        await waitFor(() => expect(statusCalls).toBe(2));
+        await screen.findByText('Failed to change WiFi setting');
+        expect(toggle).not.toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('does not report enable success when status confirmation fails', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : Promise.reject(new Error('status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to confirm WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).not.toBeChecked();
+        expect(screen.queryByText('WiFi client enabled')).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('does not confirm disable or poison state from a non-boolean enabled field', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: true, state: 'connected' })
+                        : jsonResponse({ enabled: null, state: 'disabled' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await waitFor(() => expect(toggle).toBeChecked());
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to confirm WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).toBeChecked();
+        expect(screen.queryByText('WiFi client disabled')).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('restores the last authoritative toggle state when reconciliation fails', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : Promise.reject(new Error('status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to change WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).not.toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('disables the WiFi toggle while one mutation is pending', async () => {
+        const enableResponse = createDeferred();
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: jsonResponse({ enabled: false, state: 'disabled' })
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => enableResponse.promise
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+        const disabledWhilePending = toggle.disabled;
+        const checkedWhilePending = toggle.checked;
+        await fireEvent.click(toggle);
+        const postCallsWhilePending = fetchMock.mock.calls.filter(
+            ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+        ).length;
+
+        enableResponse.resolve(jsonResponse({ success: false }, 500));
+        await screen.findByText('Failed to change WiFi setting');
+
+        expect(disabledWhilePending).toBe(true);
+        expect(checkedWhilePending).toBe(false);
+        expect(postCallsWhilePending).toBe(1);
+        expect(toggle).not.toBeDisabled();
+
+        unmount();
+    });
+
+    it('does not reconcile a deferred toggle after unmount', async () => {
+        const enableResponse = createDeferred();
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: jsonResponse({ enabled: false, state: 'disabled' })
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => enableResponse.promise
+            }
+        ]);
+        const view = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')
+            ).toHaveLength(1);
+        });
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        const statusCallsBeforeUnmount = fetchMock.mock.calls.filter(
+            ([url]) => url === '/api/wifi/status'
+        ).length;
+        const networkCallsBeforeUnmount = fetchMock.mock.calls.filter(
+            ([url]) => url === '/api/wifi/networks'
+        ).length;
+        view.unmount();
+
+        enableResponse.resolve(jsonResponse({ success: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(
+            statusCallsBeforeUnmount
+        );
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            networkCallsBeforeUnmount
+        );
+    });
+
+    it('does not launch a queued status reconciliation after unmount', async () => {
+        const activeStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return activeStatus.promise;
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const view = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.filter(
+                    ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+                )
+            ).toHaveLength(1);
+        });
+
+        view.unmount();
+        activeStatus.resolve(jsonResponse({ enabled: false, state: 'disabled' }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(statusCalls).toBe(1);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(1);
     });
 
     it('lazy-loads the WiFi scan modal on first open and reuses it after closing', async () => {

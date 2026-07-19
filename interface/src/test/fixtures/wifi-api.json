@@ -743,7 +743,7 @@
         {
           "body": {
             "enabled": false,
-            "savedSSID": "",
+            "savedSSID": "GarageNet",
             "scanRunning": false,
             "state": "disabled"
           },
@@ -752,8 +752,8 @@
         },
         {
           "body": {
-            "enabled": true,
-            "savedSSID": "",
+            "enabled": false,
+            "savedSSID": "GarageNet",
             "scanRunning": false,
             "state": "disabled"
           },

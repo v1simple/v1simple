@@ -101,7 +101,10 @@ User-requested scan via `/api/obd/scan`. Returns false if already in progress / 
 **Source:** `obd_runtime_module.h:153`.
 
 #### `void cancelPendingConnect()` / `void forgetDevice()`
-Cancel outstanding connect attempt; forget saved device.
+Cancel an outstanding connect attempt or tear down an already-active link; a
+late physical connection is rejected from `IDLE`/`DISCONNECTED` on the next
+runtime pump rather than adopted without a state-machine session. Forget the
+saved device.
 **Source:** `obd_runtime_module.h:154`.
 
 #### `bool disconnectForShutdown(uint32_t timeoutMs)`

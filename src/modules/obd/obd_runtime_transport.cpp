@@ -407,7 +407,7 @@ bool ObdRuntimeModule::connectBle(uint32_t timeoutMs, bool preferCachedAttribute
 
 bool ObdRuntimeModule::isBleConnected() const {
 #ifndef UNIT_TEST
-    return bleClient_->isConnected();
+    return bleClient_ && bleClient_->isConnected();
 #else
     return testBleConnected_;
 #endif

@@ -304,8 +304,16 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     // Disconnect acknowledgements must drain even while OBD is disabled;
     // otherwise re-enabling could inherit a permanently closed transport gate.
     pumpTransportResults();
-    if (!enabled_)
+    if (!enabled_) {
+        // Qualification/proxy teardown can disable the runtime immediately
+        // after cancellation. Reject a connection that surfaces afterward;
+        // disabled IDLE/DISCONNECTED states cannot own a physical link.
+        if (!transportDisconnectPending_ &&
+            (state_ == ObdConnectionState::IDLE || state_ == ObdConnectionState::DISCONNECTED) && isBleConnected()) {
+            disconnectBle();
+        }
         return;
+    }
 
     drainBleEventQueue();
 
@@ -369,6 +377,13 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
 
     switch (state_) {
     case ObdConnectionState::IDLE:
+        // Cancellation can win the state-machine race while an in-flight
+        // transport connect still becomes established. IDLE has no session
+        // that can own such a link, so reconcile it before admitting scans.
+        if (isBleConnected()) {
+            disconnectBle();
+            break;
+        }
         if (manualScanPreemptProxy_ && (proxyAdvertising || proxyClientConnected)) {
             break;
         }
@@ -576,11 +591,20 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
         }
         break;
 
-    case ObdConnectionState::DISCONNECTED:
+    case ObdConnectionState::DISCONNECTED: {
+        // A late connect may arrive after the one-shot entry cleanup was
+        // consumed. Re-check physical ownership on every settled pass before
+        // retrying or scanning, while preserving the normal entry cleanup.
+        const bool unownedLinkConnected = isBleConnected();
         if (justEntered) {
             clearBleResponseState();
             resetCommandState();
             disconnectBle();
+        } else if (unownedLinkConnected) {
+            disconnectBle();
+        }
+        if (unownedLinkConnected) {
+            break;
         }
         if (scanRequested_ && (manualScanPending_ || obdScanAllowed) && bleScanIdle && !v1ConnectInProgress) {
             if (startBleScan()) {
@@ -601,6 +625,7 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
             }
         }
         break;
+    }
 
     case ObdConnectionState::ECU_IDLE:
         if (justEntered) {

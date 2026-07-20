@@ -41,7 +41,8 @@ still off, then restores the saved brightness rather than leaving a
 black-but-awake device or exposing retained `GOODBYE` pixels.
 **Source:** `power_module.h:18`.
 
-In `CAR_MODE_PWR_SHORT` builds, this is a no-op (`docs/HARDWARE_NOTES.md`).
+In `CAR_MODE_PWR_SHORT` builds, this returns before the preparation callback,
+display changes, metrics flush, or battery handoff (`docs/HARDWARE_NOTES.md`).
 
 ### Notifications
 
@@ -51,21 +52,26 @@ Logs initial battery status. Call once after display init.
 
 #### `void onV1DataReceived()`
 Mark that real V1 data has been seen. Arms auto-power-off on subsequent V1 disconnect.
-**Source:** `power_module.h:24`.
+This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
+**Source:** `power_module.h:25`.
 
 #### `void onV1ConnectionChange(bool connected)`
 Notifies of V1 BLE connect/disconnect. Drives the auto-power-off timer.
-**Source:** `power_module.h:27`.
+This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
+**Source:** `power_module.h:28`.
 
 #### `void onAlpSignalChange(bool active)`
 Notifies of ALP heartbeat presence. ALP heartbeats also count as "device in use" for auto-power-off purposes — losing both V1 and ALP signal triggers the timer.
-**Source:** `power_module.h:30`.
+This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
+**Source:** `power_module.h:31`.
 
 ### Pump
 
 #### `void process(unsigned long nowMs)`
 Per-tick: battery polling, critical-shutdown check, auto-power-off timer evaluation.
-**Source:** `power_module.h:33`.
+Car builds retain battery polling but compile out the button, critical-battery,
+and auto-power shutdown paths.
+**Source:** `power_module.h:34`.
 
 ### Test seams (UNIT_TEST only)
 
@@ -86,10 +92,19 @@ Per-tick: battery polling, critical-shutdown check, auto-power-off timer evaluat
 
 ## Notes for maintainers
 
-The "auto power-off armed" semantic is: "we have seen real V1 data at least once, so we know the user is using the device." Losing the signal then triggers the timer. Without this gate, devices that boot and never see a V1 would auto-power-off mid-search.
+In standard builds, the "auto power-off armed" semantic is: "we have seen real
+V1 data at least once, so we know the user is using the device." Losing the
+signal then triggers the timer. Without this gate, devices that boot and never
+see a V1 would auto-power-off mid-search.
 
-Both V1 and ALP presence count toward "device in use." If the user has only ALP attached (no V1 paired), `onAlpSignalChange(true)` keeps the timer disarmed. Don't simplify this to V1-only without first checking ALP-only install scenarios.
+Both V1 and ALP presence count toward "device in use" in standard builds. If the
+user has only ALP attached (no V1 paired), `onAlpSignalChange(true)` keeps the
+timer disarmed. Don't simplify this to V1-only without first checking ALP-only
+install scenarios.
 
 The shutdown preparation callback is the one chance for other modules to flush state. SD loggers and settings writers should hook here. Don't add long-running work — the callback is on the path to actually dropping power.
 
-In `CAR_MODE_PWR_SHORT` builds, several methods compile to no-ops via preprocessor gates (see the .cpp). If you add a method that should also be a no-op in car mode, follow the pattern in the existing implementation file.
+In `CAR_MODE_PWR_SHORT` builds, every shutdown entry point and auto-power
+notification compiles to a no-op via preprocessor gates (see the .cpp). If you
+add a shutdown path, preserve the early coordinator guard so preparation and UI
+side effects cannot run before the low-level battery safeguard.

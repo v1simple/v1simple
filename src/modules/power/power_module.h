@@ -14,22 +14,23 @@ class PowerModule {
 
     void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context);
 
-    // Perform a graceful shutdown.
+    // Perform a graceful shutdown. Ignored before side effects in car builds.
     void performShutdown();
 
     // Log initial battery status after display init.
     void logStartupStatus();
 
     // Mark that we have seen real V1 data (arms auto power-off on disconnect).
+    // No-op in car builds.
     void onV1DataReceived();
 
-    // Notify connection changes to manage auto power-off timers.
+    // Notify connection changes to manage auto power-off timers. No-op in car builds.
     void onV1ConnectionChange(bool connected);
 
-    // Notify ALP heartbeat-presence changes to manage auto power-off timers.
+    // Notify ALP heartbeat-presence changes to manage auto power-off timers. No-op in car builds.
     void onAlpSignalChange(bool active);
 
-    // Run periodic tasks: battery polling, critical shutdown, auto power-off timer.
+    // Run periodic tasks. Car builds retain battery polling but disable shutdown paths.
     void process(unsigned long nowMs);
 
 #ifdef UNIT_TEST

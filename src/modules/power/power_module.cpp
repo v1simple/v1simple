@@ -21,6 +21,10 @@ void PowerModule::performShutdownRequest() {
 }
 
 void PowerModule::performShutdown() {
+#ifdef CAR_MODE_PWR_SHORT
+    Serial.println("[Power] Shutdown request ignored (CAR_MODE_PWR_SHORT)");
+    return;
+#else
     if (shutdownPreparationCallback_) {
         shutdownPreparationCallback_(shutdownPreparationContext_);
     }
@@ -28,13 +32,11 @@ void PowerModule::performShutdown() {
     if (display_) {
         display_->showShutdown();
         delay(1000);
-#ifndef CAR_MODE_PWR_SHORT
         // Leave panel GRAM black before the battery manager drops the latch or
         // enters deep sleep. The LCD controller can otherwise retain the
         // GOODBYE frame while its backlight is off and briefly reveal it when
         // a wake press restores power/backlight.
         display_->clear();
-#endif
     }
 
     POWER_PERF_FLUSH_NOW();
@@ -61,6 +63,7 @@ void PowerModule::performShutdown() {
             }
         }
     }
+#endif
 }
 
 void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings) {
@@ -85,14 +88,19 @@ void PowerModule::logStartupStatus() {
 }
 
 void PowerModule::onV1DataReceived() {
+#ifndef CAR_MODE_PWR_SHORT
     if (!autoPowerOffArmed_) {
         autoPowerOffArmed_ = true;
         POWER_PERF_INC(powerAutoPowerArmed);
         Serial.println("[AutoPowerOff] Armed - V1 data received");
     }
+#endif
 }
 
 void PowerModule::onV1ConnectionChange(bool connected) {
+#ifdef CAR_MODE_PWR_SHORT
+    (void)connected;
+#else
     if (!battery_ || !settings_)
         return;
 
@@ -100,9 +108,13 @@ void PowerModule::onV1ConnectionChange(bool connected) {
     v1SignalPresent_ = connected;
 
     reevaluateAutoPowerOffTimer(s, millis());
+#endif
 }
 
 void PowerModule::onAlpSignalChange(bool active) {
+#ifdef CAR_MODE_PWR_SHORT
+    (void)active;
+#else
     if (!battery_ || !settings_)
         return;
 
@@ -117,9 +129,14 @@ void PowerModule::onAlpSignalChange(bool active) {
     alpSignalPresent_ = active;
 
     reevaluateAutoPowerOffTimer(s, millis());
+#endif
 }
 
 void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long nowMs) {
+#ifdef CAR_MODE_PWR_SHORT
+    (void)s;
+    (void)nowMs;
+#else
     if (v1SignalPresent_ || alpSignalPresent_) {
         if (autoPowerOffTimerStart_ != 0) {
             Serial.println("[AutoPowerOff] Timer cancelled - activity resumed");
@@ -134,13 +151,16 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
         POWER_PERF_INC(powerAutoPowerTimerStart);
         Serial.printf("[AutoPowerOff] Timer started: %d minutes\n", s.autoPowerOffMinutes);
     }
+#endif
 }
 
 void PowerModule::process(unsigned long nowMs) {
     if (!battery_ || !display_ || !settings_)
         return;
 
-    const V1Settings& s = settings_->get();
+#ifdef CAR_MODE_PWR_SHORT
+    (void)nowMs;
+#endif
 
     battery_->update();
 #ifndef CAR_MODE_PWR_SHORT
@@ -173,7 +193,10 @@ void PowerModule::process(unsigned long nowMs) {
     }
 #endif
 
-    // Auto power-off timer check
+#ifndef CAR_MODE_PWR_SHORT
+    // Auto power-off is disabled in car installs. Ignition power controls the
+    // device lifetime, so no signal transition may tear down a still-running unit.
+    const V1Settings& s = settings_->get();
     if (autoPowerOffTimerStart_ != 0) {
         unsigned long elapsedMs = nowMs - autoPowerOffTimerStart_;
         unsigned long timeoutMs = (unsigned long)s.autoPowerOffMinutes * 60UL * 1000UL;
@@ -186,4 +209,5 @@ void PowerModule::process(unsigned long nowMs) {
             return;
         }
     }
+#endif
 }

@@ -50,6 +50,11 @@ void advanceTime(unsigned long deltaMs) {
     setTime(mockMillis + deltaMs);
 }
 
+void recordShutdownPreparation(void* context) {
+    auto* calls = static_cast<int*>(context);
+    ++(*calls);
+}
+
 std::string readProjectFile(const char* relativePath) {
     const std::filesystem::path path = std::filesystem::path(PROJECT_DIR) / relativePath;
     std::ifstream in(path);
@@ -132,29 +137,39 @@ void test_car_mode_critical_battery_never_triggers_shutdown() {
 // boundary (i.e. that the gates in power_module.cpp prevent powerOff() from
 // being reached at all in the first place).
 
-// ─── Auto-power-off still works (not gated) ────────────────────────────────
+// ─── All shutdown requests are disabled ────────────────────────────────────
 
-void test_car_mode_auto_power_off_still_fires_on_v1_disconnect() {
-    // Auto-power-off is architecturally correct for car installs too:
-    // if the V1 disconnects and the car powers off, we want the display
-    // to eventually shut down.  The powerOff() noop ensures no hardware
-    // damage — the firmware just logs and continues.
+void test_car_mode_shutdown_request_is_ignored_before_side_effects() {
+    int shutdownPreparationCalls = 0;
+    module.setShutdownPreparationCallback(recordShutdownPreparation, &shutdownPreparationCalls);
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(0, shutdownPreparationCalls);
+    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(0, display.clearCalls);
+    TEST_ASSERT_FALSE(battery.powerOffCalled);
+}
+
+void test_car_mode_auto_power_off_is_compiled_out() {
     testSettings.settings.autoPowerOffMinutes = 1;
+
     module.onV1DataReceived();
+    TEST_ASSERT_FALSE(module.autoPowerOffArmedForTest());
+
     setTime(1000);
     module.onV1ConnectionChange(false);
+    module.onAlpSignalChange(true);
+    TEST_ASSERT_FALSE(module.autoPowerOffArmedForTest());
+    module.onAlpSignalChange(false);
+    TEST_ASSERT_EQUAL(0, module.autoPowerOffTimerStartForTest());
 
-    advanceTime(30000);
+    advanceTime(60001);
     module.process(mockMillis);
+
+    TEST_ASSERT_EQUAL(1, battery.updateCalls);
+    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
     TEST_ASSERT_FALSE(battery.powerOffCalled);
-
-    advanceTime(30001);
-    module.process(mockMillis);
-
-    // Auto-power-off calls batteryManager.powerOff() — the mock records it.
-    // In production, the CAR_MODE_PWR_SHORT guard makes that a noop.
-    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
-    TEST_ASSERT_TRUE(battery.powerOffCalled);
 }
 
 // ─── Pure button logic still works (the state machine is unchanged) ────────
@@ -189,7 +204,8 @@ int main() {
     RUN_TEST(test_car_mode_process_does_not_call_processPowerButton);
     RUN_TEST(test_car_mode_critical_battery_does_not_show_warning);
     RUN_TEST(test_car_mode_critical_battery_never_triggers_shutdown);
-    RUN_TEST(test_car_mode_auto_power_off_still_fires_on_v1_disconnect);
+    RUN_TEST(test_car_mode_shutdown_request_is_ignored_before_side_effects);
+    RUN_TEST(test_car_mode_auto_power_off_is_compiled_out);
     RUN_TEST(test_pure_button_logic_still_triggers_at_2000ms);
     RUN_TEST(test_car_mode_maintenance_entry_uses_boot_button_not_power_button);
     return UNITY_END();

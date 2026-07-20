@@ -63,8 +63,10 @@ void configureLoopRuntimeSnapshotModule() {
         return static_cast<WiFiManager*>(ctx)->canStartSetupMode(nullptr, nullptr);
     };
     loopRuntimeSnapshotProviders.canStartDmaContext = &wifiManager;
+    // Keep connection-state display transitions gated through the ended-but-
+    // not-yet-restored interval as well as while preview frames are active.
     loopRuntimeSnapshotProviders.readDisplayPreviewRunning =
-        ProviderCallbackBindings::member<DisplayPreviewModule, &DisplayPreviewModule::isRunning>;
+        ProviderCallbackBindings::member<DisplayPreviewModule, &DisplayPreviewModule::ownsPresentation>;
     loopRuntimeSnapshotProviders.displayPreviewContext = &displayPreviewModule;
     loopRuntimeSnapshotModule.begin(loopRuntimeSnapshotProviders);
 }

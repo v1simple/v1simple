@@ -23,9 +23,12 @@ class AlertPersistenceModule;
  */
 class ConnectionStateModule {
   public:
+    using DisplayOwnerRestoreCallback = bool (*)(void* context, uint32_t nowMs);
+
     void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule,
                BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence,
                SystemEventBus* eventBus = nullptr);
+    void setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCallback callback, void* context);
 
     // Call once per loop iteration; returns true if connected
     bool process(unsigned long nowMs);
@@ -48,13 +51,23 @@ class ConnectionStateModule {
     SystemEventBus* bus_ = nullptr;
 
     bool wasConnected_ = false;
+    // Connection admission/power/event state is committed by the immediate
+    // subscribe-completion callback, but display presentation must wait for
+    // process(). Its cadence gate keeps full-panel work out of
+    // V1BLEClient::process() and holds it while boot/preview owns the screen.
+    bool connectedPresentationPending_ = false;
     bool disconnectPresentationPending_ = false;
+    bool disconnectDisplayCleanupPending_ = false;
     uint32_t observedSessionGeneration_ = 0;
     uint32_t openedSessionGeneration_ = 0;
     unsigned long lastDataRequestMs_ = 0;
+    DisplayOwnerRestoreCallback displayOwnerRestoreCallback_ = nullptr;
+    void* displayOwnerRestoreContext_ = nullptr;
 
     static constexpr unsigned long DATA_STALE_MS = 2000;            // Consider data stale after 2s
     static constexpr unsigned long DATA_REQUEST_INTERVAL_MS = 1000; // Re-request every 1s when stale
 
+    void presentConnected();
     void presentDisconnected(unsigned long nowMs);
+    void presentPendingOwner(unsigned long nowMs, bool v1Connected, uint32_t sessionGeneration);
 };

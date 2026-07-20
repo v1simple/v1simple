@@ -22,7 +22,7 @@ int scenarioSetCalls = 0;
 int scenarioClearCalls = 0;
 int scenarioRenderCalls = 0;
 uint32_t lastScenarioRenderUs = 0;
-}
+} // namespace
 
 void perfSetDisplayRenderScenario(PerfDisplayRenderScenario scenario) {
     lastScenario = scenario;
@@ -122,7 +122,9 @@ void test_preview_honors_short_requested_duration() {
     preview.update();
 
     TEST_ASSERT_FALSE(preview.isRunning());
+    TEST_ASSERT_TRUE(preview.ownsPresentation());
     TEST_ASSERT_TRUE(preview.consumeEnded());
+    TEST_ASSERT_FALSE(preview.ownsPresentation());
     TEST_ASSERT_EQUAL_INT_MESSAGE(updatesBeforeExpiry, testDisplay.updateCalls,
                                   "expired short preview must not render another frame");
     TEST_ASSERT_EQUAL_INT(clearsBeforeExpiry + 1, testDisplay.clearAlpFrequencyOverrideCalls);
@@ -131,6 +133,18 @@ void test_preview_honors_short_requested_duration() {
     TEST_ASSERT_FALSE(testDisplay.lastBleProxyEnabled);
     TEST_ASSERT_EQUAL_INT(2, testDisplay.setPreviewIndicatorOverridesActiveCalls);
     TEST_ASSERT_FALSE(testDisplay.lastPreviewIndicatorOverridesActive);
+}
+
+void test_cancel_keeps_presentation_owned_until_restore_consumes_end() {
+    preview.requestHold(5500);
+    TEST_ASSERT_TRUE(preview.ownsPresentation());
+
+    preview.cancel();
+
+    TEST_ASSERT_FALSE(preview.isRunning());
+    TEST_ASSERT_TRUE(preview.ownsPresentation());
+    TEST_ASSERT_TRUE(preview.consumeEnded());
+    TEST_ASSERT_FALSE(preview.ownsPresentation());
 }
 
 void test_preview_fast_forward_preserves_carry_state_for_rendered_step() {
@@ -326,6 +340,7 @@ int main() {
     RUN_TEST(test_preview_renders_first_step_on_initial_update);
     RUN_TEST(test_preview_skips_missed_steps_without_catchup_burst);
     RUN_TEST(test_preview_honors_short_requested_duration);
+    RUN_TEST(test_cancel_keeps_presentation_owned_until_restore_consumes_end);
     RUN_TEST(test_preview_fast_forward_preserves_carry_state_for_rendered_step);
     RUN_TEST(test_long_requested_preview_loops_visual_sequence);
     RUN_TEST(test_resolve_step_uses_shared_main_meter_scaling_and_carry_state);

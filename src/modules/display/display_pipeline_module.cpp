@@ -609,18 +609,19 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     renderComposedFrame(nowMs, frame, false, "DISP_BLINK");
 }
 
-void DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
+bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
     if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
-        return;
+        return false;
     }
 
+    const bool v1Connected = ble_->isConnected();
     const V1Settings& settingsRef = settings_->get();
 
-    if (!ble_->isConnected()) {
+    if (!v1Connected) {
         const RenderFrame frame = buildDisconnectedRestoreFrame(nowMs, settingsRef);
         if (isAlpPrimaryKind(frame.primaryKind)) {
             renderComposedFrame(nowMs, frame, true, "DISP_RESTORE", true);
-            return;
+            return true;
         }
 
         const AlpLaserEvent& alpEvent = alp_ ? alp_->currentEvent() : sAlpEventEmpty;
@@ -642,7 +643,7 @@ void DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
         display_->showScanning();
         perfClearDisplayRenderScenario();
         *displayMode_ = DisplayMode::IDLE;
-        return;
+        return true;
     }
 
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
@@ -653,6 +654,7 @@ void DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
         frame.stealthSpeedValid = spd.valid;
     }
     renderComposedFrame(nowMs, frame, true, "DISP_RESTORE", true);
+    return true;
 }
 
 bool DisplayPipelineModule::allowsObdPairGesture(uint32_t nowMs) const {

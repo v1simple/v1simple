@@ -337,6 +337,21 @@ void test_restore_current_owner_restores_live_display_when_alerts_present() {
     TEST_ASSERT_EQUAL(1, display.forceNextRedrawCalls);
 }
 
+void test_restore_current_owner_restores_v1_persisted_owner() {
+    settingsManager.slotAlertPersistSec[0] = 2;
+    module.handleParsed(900); // Establish the active persistence slot.
+    alertPersistence.setPersistedAlert(makeKAlert());
+    display.reset();
+
+    TEST_ASSERT_TRUE(module.restoreCurrentOwner(1000));
+
+    TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
+    TEST_ASSERT_TRUE(display.hasLastRenderFrame);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(1, display.updatePersistedCalls);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+}
+
 // ── ALP synthetic alert path ──────────────────────────────────────────
 //
 // When ALP reports an active laser event, the composer promotes it to the
@@ -729,9 +744,27 @@ void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
 }
 
+void test_restore_current_owner_restores_alp_persisted_owner() {
+    settingsManager.alpAlertPersistSec = 2;
+    configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::REAR);
+    module.handleParsed(1000);
+
+    alpModule.testSetState(AlpState::TEARDOWN);
+    alpModule.testCloseSession();
+    display.reset();
+
+    TEST_ASSERT_TRUE(module.restoreCurrentOwner(1500));
+
+    TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
+    TEST_ASSERT_TRUE(display.hasLastRenderFrame);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+}
+
 void test_restore_current_owner_prioritizes_alp_laser_over_v1_radar() {
-    configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
-                              AlpLaserDirection::REAR);
+    configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::REAR);
     parser.setAlerts({makeKAlert(24210), makeKaAlert(34520)});
 
     mockMillis = 3100;
@@ -962,6 +995,7 @@ int main() {
     RUN_TEST(test_restore_current_owner_shows_scanning_when_ble_is_disconnected);
     RUN_TEST(test_restore_current_owner_ble_disconnected_restores_alp_live_when_active);
     RUN_TEST(test_restore_current_owner_restores_live_display_when_alerts_present);
+    RUN_TEST(test_restore_current_owner_restores_v1_persisted_owner);
     RUN_TEST(test_handle_parsed_synthesizes_laser_alert_when_alp_active_and_no_v1);
     RUN_TEST(test_handle_parsed_keeps_unknown_alp_direction_off_screen);
     RUN_TEST(test_handle_parsed_prioritizes_alp_laser_over_v1_radar);
@@ -974,6 +1008,7 @@ int main() {
     RUN_TEST(test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_updates);
     RUN_TEST(test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap);
     RUN_TEST(test_restore_current_owner_synthesizes_laser_alert_when_alp_active);
+    RUN_TEST(test_restore_current_owner_restores_alp_persisted_owner);
     RUN_TEST(test_restore_current_owner_prioritizes_alp_laser_over_v1_radar);
     RUN_TEST(test_handle_parsed_keeps_latched_alp_event_within_persist_window);
     RUN_TEST(test_handle_parsed_clears_latched_alp_event_after_persist_window);

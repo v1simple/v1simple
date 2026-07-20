@@ -22,9 +22,12 @@ bool DisplayRestoreModule::process() {
         return false;
     }
 
+    bool restored = false;
+
     if (displayPipelineModule_) {
-        displayPipelineModule_->restoreCurrentOwner(millis());
-    } else if (display_ && parser_ && bleClient_) {
+        restored = displayPipelineModule_->restoreCurrentOwner(millis());
+    }
+    if (!restored && display_ && parser_ && bleClient_) {
         // Defensive fallback for tests or partial wiring; production should use the pipeline.
         display_->forceNextRedraw();
         perfSetDisplayRenderScenario(PerfDisplayRenderScenario::Restore);
@@ -36,9 +39,12 @@ bool DisplayRestoreModule::process() {
         }
         perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
         perfClearDisplayRenderScenario();
+        restored = true;
     }
 
-    Serial.println("[Display] Color preview ended - restored display_");
+    if (restored) {
+        Serial.println("[Display] Color preview ended - restored display_");
+    }
 
-    return true;
+    return restored;
 }

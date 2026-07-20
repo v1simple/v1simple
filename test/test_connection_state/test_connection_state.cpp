@@ -39,6 +39,39 @@ static PowerModule powerModule;
 static BleQueueModule bleQueueModule;
 static AlertPersistenceModule alertPersistenceModule;
 
+struct OwnerPresenterHarness {
+    V1Display* display = nullptr;
+    PacketParser* parser = nullptr;
+    V1BLEClient* ble = nullptr;
+    int calls = 0;
+    uint32_t lastNowMs = 0;
+    bool lastConnected = false;
+    uint32_t lastSessionGeneration = 0;
+    bool mutateAfterRender = false;
+    bool mutationConnected = false;
+    uint32_t mutationSessionGeneration = 0;
+    bool restored = true;
+};
+
+static bool restoreAuthoritativeOwner(void* context, uint32_t nowMs) {
+    auto* harness = static_cast<OwnerPresenterHarness*>(context);
+    ++harness->calls;
+    harness->lastNowMs = nowMs;
+    harness->lastConnected = harness->ble->isConnected();
+    harness->lastSessionGeneration = harness->ble->sessionGeneration();
+    const bool proxyConnected = harness->ble->isProxyClientConnected();
+    harness->display->setBleContext({harness->lastConnected, proxyConnected, harness->ble->getConnectionRssi(),
+                                     harness->ble->getProxyClientRssi()});
+    harness->display->setBLEProxyStatus(harness->lastConnected, proxyConnected, false);
+    harness->display->update(harness->parser->getDisplayState());
+    if (harness->mutateAfterRender) {
+        harness->mutateAfterRender = false;
+        harness->ble->setConnected(harness->mutationConnected);
+        harness->ble->setSessionGeneration(harness->mutationSessionGeneration);
+    }
+    return harness->restored;
+}
+
 // Compile the REAL module too: the replica below pins the logic pattern, but
 // only the real translation unit can kill catalog mutations against
 // src/modules/ble/connection_state_module.cpp (critical-020 survived while
@@ -382,6 +415,166 @@ void test_real_module_disconnect_clears_ble_display_state() {
     TEST_ASSERT_FALSE(powerModule.lastConnectionState);
 }
 
+void test_real_module_immediate_connect_defers_display_but_commits_state() {
+    ConnectionStateModule real;
+    SystemEventBus eventBus;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, &eventBus);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+
+    // Models onV1ConnectImmediate(), which runs synchronously inside
+    // V1BLEClient::process(). Session admission, power state and the event must
+    // commit now, but a full display transition must not run in that callback.
+    real.handleConnected(1000, 7);
+
+    TEST_ASSERT_TRUE(bleQueueModule.sessionOpen);
+    TEST_ASSERT_EQUAL(1, bleQueueModule.openSessionCalls);
+    TEST_ASSERT_EQUAL_UINT32(7, bleQueueModule.sessionGeneration);
+    TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
+    TEST_ASSERT_TRUE(powerModule.lastConnectionState);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+
+    SystemEvent event;
+    TEST_ASSERT_TRUE(eventBus.consume(event));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SystemEventType::BLE_CONNECTED), static_cast<uint8_t>(event.type));
+    TEST_ASSERT_EQUAL_UINT32(1000, event.tsMs);
+    TEST_ASSERT_FALSE(eventBus.consume(event));
+
+    // Normal connection-state dispatch runs only after the boot/preview/dwell
+    // gates release. Presentation happens once at that safe boundary.
+    TEST_ASSERT_TRUE(real.process(1050));
+    TEST_ASSERT_EQUAL(1, display.showRestingCalls);
+    TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
+    TEST_ASSERT_FALSE(eventBus.consume(event));
+    TEST_ASSERT_TRUE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, display.showRestingCalls);
+}
+
+void test_real_module_disconnect_discards_pending_connected_presentation() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.handleConnected(1000, 7);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+
+    // If the session closes while preview/boot still owns the screen, the old
+    // connected presentation must never appear after those gates release.
+    bleClient.setConnected(false);
+    bleClient.setSessionGeneration(8);
+    real.handleSessionClosed(1010, 8);
+
+    TEST_ASSERT_FALSE(real.process(1050));
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+    TEST_ASSERT_EQUAL(1, display.showScanningCalls);
+    TEST_ASSERT_EQUAL(2, powerModule.onV1ConnectionChangeCalls);
+    TEST_ASSERT_FALSE(powerModule.lastConnectionState);
+}
+
+void test_pending_connect_uses_authoritative_owner_presenter_not_show_resting() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    OwnerPresenterHarness presenter{&display, &parser, &bleClient};
+    real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.handleConnected(1000, 7);
+
+    // The production callback refreshes the live BLE display context before
+    // restoring the authoritative owner, so same-loop post-ingest dispatch
+    // cannot flush displayEarly's stale disconnected context.
+    TEST_ASSERT_TRUE(real.process(1050));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_TRUE(presenter.lastConnected);
+    TEST_ASSERT_EQUAL_UINT32(7, presenter.lastSessionGeneration);
+    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
+    TEST_ASSERT_TRUE(display.lastBleContext.v1Connected);
+    TEST_ASSERT_EQUAL(-70, display.lastBleContext.v1Rssi);
+    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(1, display.updateCalls);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+
+    TEST_ASSERT_TRUE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+}
+
+void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scanning() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.process(1000);
+    display.reset();
+
+    OwnerPresenterHarness presenter{&display, &parser, &bleClient};
+    real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
+    bleClient.setConnected(false);
+    bleClient.setSessionGeneration(8);
+    real.handleSessionClosed(1050, 8);
+
+    TEST_ASSERT_EQUAL(0, display.setBleContextCalls);
+    TEST_ASSERT_EQUAL(0, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(0, display.resetChangeTrackingCalls);
+
+    TEST_ASSERT_FALSE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_FALSE(presenter.lastConnected);
+    TEST_ASSERT_EQUAL_UINT32(8, presenter.lastSessionGeneration);
+    TEST_ASSERT_EQUAL(0, display.showScanningCalls);
+    TEST_ASSERT_EQUAL(2, display.setBleContextCalls);
+    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
+    TEST_ASSERT_EQUAL(2, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
+}
+
+void test_owner_presenter_state_change_does_not_clear_new_pending() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    OwnerPresenterHarness presenter{&display, &parser, &bleClient};
+    presenter.mutateAfterRender = true;
+    presenter.mutationConnected = false;
+    presenter.mutationSessionGeneration = 8;
+    real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.handleConnected(1000, 7);
+
+    TEST_ASSERT_TRUE(real.process(1050));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+
+    TEST_ASSERT_FALSE(real.process(1100));
+    TEST_ASSERT_EQUAL(2, presenter.calls);
+    TEST_ASSERT_FALSE(presenter.lastConnected);
+    TEST_ASSERT_EQUAL_UINT32(8, presenter.lastSessionGeneration);
+    TEST_ASSERT_EQUAL(0, display.showScanningCalls);
+}
+
+void test_declined_owner_presenter_state_change_skips_obsolete_fallback() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    OwnerPresenterHarness presenter{&display, &parser, &bleClient};
+    presenter.restored = false;
+    presenter.mutateAfterRender = true;
+    presenter.mutationConnected = false;
+    presenter.mutationSessionGeneration = 8;
+    real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.handleConnected(1000, 7);
+
+    TEST_ASSERT_TRUE(real.process(1050));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_EQUAL(0, display.showRestingCalls);
+    TEST_ASSERT_EQUAL(0, display.showScanningCalls);
+}
+
 void test_real_module_generation_change_forces_session_reset() {
     ConnectionStateModule real;
     real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
@@ -438,6 +631,12 @@ void runAllTests() {
     // Real-module mutation pins
     RUN_TEST(test_real_module_data_stale_boundary_is_exclusive);
     RUN_TEST(test_real_module_disconnect_clears_ble_display_state);
+    RUN_TEST(test_real_module_immediate_connect_defers_display_but_commits_state);
+    RUN_TEST(test_real_module_disconnect_discards_pending_connected_presentation);
+    RUN_TEST(test_pending_connect_uses_authoritative_owner_presenter_not_show_resting);
+    RUN_TEST(test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scanning);
+    RUN_TEST(test_owner_presenter_state_change_does_not_clear_new_pending);
+    RUN_TEST(test_declined_owner_presenter_state_change_skips_obsolete_fallback);
     RUN_TEST(test_real_module_generation_change_forces_session_reset);
 }
 

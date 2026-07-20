@@ -28,10 +28,19 @@ void ConnectionStateModule::begin(V1BLEClient* bleClient, PacketParser* parserPt
     alertPersistence_ = alertPersistence;
     bus_ = eventBus;
     wasConnected_ = false;
+    connectedPresentationPending_ = false;
     disconnectPresentationPending_ = false;
+    disconnectDisplayCleanupPending_ = false;
     observedSessionGeneration_ = 0;
     openedSessionGeneration_ = 0;
     lastDataRequestMs_ = 0;
+    displayOwnerRestoreCallback_ = nullptr;
+    displayOwnerRestoreContext_ = nullptr;
+}
+
+void ConnectionStateModule::setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCallback callback, void* context) {
+    displayOwnerRestoreCallback_ = callback;
+    displayOwnerRestoreContext_ = context;
 }
 
 void ConnectionStateModule::handleSessionOpened(uint32_t sessionGeneration) {
@@ -65,6 +74,7 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
         if (power_) {
             power_->onV1ConnectionChange(false);
         }
+        disconnectDisplayCleanupPending_ = true;
         disconnectPresentationPending_ = true;
         if (bus_) {
             SystemEvent event;
@@ -75,18 +85,20 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
     }
 
     wasConnected_ = false;
+    connectedPresentationPending_ = false;
     observedSessionGeneration_ = sessionGeneration;
     openedSessionGeneration_ = 0;
 }
 
+void ConnectionStateModule::presentConnected() {
+    display_->showResting();
+    CONN_LOG("[BLE] V1 connected");
+}
+
 void ConnectionStateModule::presentDisconnected(unsigned long nowMs) {
-    display_->setBleContext(DisplayBleContext{});
-    display_->setBLEProxyStatus(false, false, false);
-    display_->resetChangeTracking();
     display_->showScanning();
     Serial.printf("[BLE] V1 disconnected; cleared LCD BLE state at %lu ms\n", nowMs);
     CONN_LOG("[BLE] V1 disconnected - scanning");
-    disconnectPresentationPending_ = false;
 }
 
 void ConnectionStateModule::handleConnected(unsigned long nowMs, uint32_t sessionGeneration) {
@@ -100,12 +112,12 @@ void ConnectionStateModule::handleConnected(unsigned long nowMs, uint32_t sessio
     if (openedSessionGeneration_ != sessionGeneration) {
         handleSessionOpened(sessionGeneration);
     }
+    connectedPresentationPending_ = true;
     disconnectPresentationPending_ = false;
+    disconnectDisplayCleanupPending_ = false;
     if (power_) {
         power_->onV1ConnectionChange(true);
     }
-    display_->showResting();
-    CONN_LOG("[BLE] V1 connected");
     if (bus_) {
         SystemEvent event;
         event.type = SystemEventType::BLE_CONNECTED;
@@ -118,6 +130,41 @@ void ConnectionStateModule::handleConnected(unsigned long nowMs, uint32_t sessio
 
 void ConnectionStateModule::handleDisconnected(unsigned long nowMs) {
     handleSessionClosed(nowMs, ble_ ? ble_->sessionGeneration() : observedSessionGeneration_);
+}
+
+void ConnectionStateModule::presentPendingOwner(unsigned long nowMs, bool v1Connected, uint32_t sessionGeneration) {
+    bool restored = false;
+    if (displayOwnerRestoreCallback_) {
+        restored = displayOwnerRestoreCallback_(displayOwnerRestoreContext_, static_cast<uint32_t>(nowMs));
+    }
+
+    if (!restored) {
+        // A callback may decline after the live edge changes. Do not let the
+        // generic fallback briefly paint the now-obsolete captured owner.
+        if (!ble_ || ble_->isConnected() != v1Connected || ble_->sessionGeneration() != sessionGeneration) {
+            return;
+        }
+        if (v1Connected) {
+            presentConnected();
+        } else {
+            presentDisconnected(nowMs);
+        }
+        restored = true;
+    }
+
+    if (!restored || !ble_ || ble_->isConnected() != v1Connected || ble_->sessionGeneration() != sessionGeneration) {
+        return;
+    }
+
+    // Only this owner-aware path may fulfill a queued edge. Ambient parsed,
+    // blink and preview-restore renders can run with a BLE display context
+    // sampled earlier in the loop, so they deliberately cannot clear it.
+    if (v1Connected && wasConnected_ && observedSessionGeneration_ == sessionGeneration) {
+        connectedPresentationPending_ = false;
+    } else if (!v1Connected && !wasConnected_ && observedSessionGeneration_ == sessionGeneration &&
+               !disconnectDisplayCleanupPending_) {
+        disconnectPresentationPending_ = false;
+    }
 }
 
 bool ConnectionStateModule::process(unsigned long nowMs) {
@@ -142,8 +189,26 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
         observedSessionGeneration_ = sessionGeneration;
     }
 
-    if (!isConnected && disconnectPresentationPending_) {
-        presentDisconnected(nowMs);
+    // Lifecycle callbacks remain display-free. Apply disconnect-derived
+    // context cleanup here immediately before the authoritative owner render.
+    if (!isConnected && disconnectDisplayCleanupPending_) {
+        display_->setBleContext(DisplayBleContext{});
+        display_->setBLEProxyStatus(false, false, false);
+        display_->resetChangeTracking();
+        disconnectDisplayCleanupPending_ = false;
+        disconnectPresentationPending_ = true;
+    } else if (isConnected) {
+        disconnectDisplayCleanupPending_ = false;
+    }
+
+    // process() is dispatched only after the boot-splash, display-preview and
+    // scan-dwell cadence gates release. Keep full display work here rather
+    // than in handleConnected(), which runs synchronously inside
+    // V1BLEClient::process() at subscribe completion.
+    if (isConnected && connectedPresentationPending_) {
+        presentPendingOwner(nowMs, true, sessionGeneration);
+    } else if (!isConnected && disconnectPresentationPending_) {
+        presentPendingOwner(nowMs, false, sessionGeneration);
     }
 
     // If connected but not seeing traffic, periodically re-request alert data

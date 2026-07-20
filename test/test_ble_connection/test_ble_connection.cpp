@@ -516,11 +516,14 @@ void test_ble_queue_append_uses_resize_memcpy_and_resync_logs_are_time_gated() {
     const std::string processBody =
         extractFunctionBody(text, "void BleQueueModule::process()");
 
+    // The append is `length`-based, not `toCopy`-based: a chunk is now admitted
+    // whole or refused whole, so there is no partial-copy count to name. The
+    // resize+memcpy contract (never std::vector::insert) is unchanged.
     TEST_ASSERT_EQUAL(std::string::npos, appendBody.find("rxBuffer.insert("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          appendBody.find("rxBuffer.resize(oldSize + toCopy);"));
+                          appendBody.find("rxBuffer.resize(oldSize + length);"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          appendBody.find("memcpy(rxBuffer.data() + oldSize, data, toCopy);"));
+                          appendBody.find("memcpy(rxBuffer.data() + oldSize, data, length);"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           headerText.find("BleLogRateLimitState tooLargeWarningLog_;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

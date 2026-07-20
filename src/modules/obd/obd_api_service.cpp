@@ -1,11 +1,13 @@
 #include "obd_api_service.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include <ArduinoJson.h>
 
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/wifi/wifi_api_response.h"
+#include "modules/wifi/wifi_json_document.h"
 #include "settings.h"
 
 namespace ObdApiService {
@@ -69,7 +71,7 @@ String sanitizeObdDeviceName(const String& raw) {
 }
 
 void sendMaintenanceModeError(WebServer& server) {
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["error"] = "maintenance_mode";
     doc["message"] = "OBD runtime endpoints are not available in maintenance mode";
     WifiApiResponse::sendJsonDocument(server, 409, doc);
@@ -79,13 +81,56 @@ void sendRuntimeUnavailableError(WebServer& server) {
     server.send(503, "application/json", "{\"error\":\"obd runtime not wired\"}");
 }
 
+void sendFieldTypeError(WebServer& server, const char* key, const char* expected) {
+    char message[96];
+    snprintf(message, sizeof(message), "Field '%s' must be %s", key, expected);
+    WifiJson::Document errDoc;
+    WifiApiResponse::setErrorAndMessage(errDoc, message);
+    WifiApiResponse::sendJsonDocument(server, 400, errDoc);
+}
+
+// /api/obd/config takes partial updates, so an omitted key legitimately means
+// "leave this setting alone". A key that is present but of the wrong type is a
+// client bug, and answering it with a bare {"success":true} hides the fact that
+// nothing was applied. Report it the way the rest of this service reports bad
+// input: a 400 carrying error/message via WifiApiResponse::setErrorAndMessage,
+// naming the offending field. Validation runs before any settings are applied, so
+// a rejected request never lands a partial update.
+bool readOptionalBool(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, bool& out) {
+    JsonVariantConst value = body[key];
+    if (value.isNull()) {
+        return true;
+    }
+    if (!value.is<bool>()) {
+        sendFieldTypeError(server, key, "a boolean");
+        return false;
+    }
+    hasValue = true;
+    out = value.as<bool>();
+    return true;
+}
+
+bool readOptionalInt(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, int& out) {
+    JsonVariantConst value = body[key];
+    if (value.isNull()) {
+        return true;
+    }
+    if (!value.is<int>()) {
+        sendFieldTypeError(server, key, "an integer");
+        return false;
+    }
+    hasValue = true;
+    out = value.as<int>();
+    return true;
+}
+
 } // namespace
 
 void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     const V1Settings& s = settings.get();
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["enabled"] = s.obdEnabled;
     doc["minRssi"] = s.obdMinRssi;
     doc["obdScanWindowMs"] = s.obdScanWindowMs;
@@ -110,7 +155,7 @@ void handleApiStatus(WebServer& server, ObdRuntimeModule* obdRuntime, const Runt
         return;
     }
     ObdRuntimeStatus status = obdRuntime->snapshot(millis());
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["enabled"] = status.enabled;
     doc["connected"] = status.connected;
     doc["securityReady"] = status.securityReady;
@@ -151,7 +196,7 @@ void handleApiDevicesList(WebServer& server, ObdRuntimeModule* obdRuntime, Setti
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     JsonArray arr = doc["devices"].to<JsonArray>();
 
     const V1Settings& s = settings.get();
@@ -211,14 +256,14 @@ void handleApiScan(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtim
         return;
     }
     if (!obdRuntime->isEnabled()) {
-        JsonDocument doc;
+        WifiJson::Document doc;
         doc["success"] = false;
         doc["message"] = "OBD is disabled";
         WifiApiResponse::sendJsonDocument(server, 409, doc);
         return;
     }
     if (!obdRuntime->requestManualPairScan(millis())) {
-        JsonDocument doc;
+        WifiJson::Document doc;
         doc["success"] = false;
         doc["message"] = "OBD scan already requested or in progress";
         WifiApiResponse::sendJsonDocument(server, 409, doc);
@@ -226,7 +271,7 @@ void handleApiScan(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtim
     }
 
     const ObdRuntimeStatus status = obdRuntime->snapshot(millis());
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["success"] = true;
     doc["requested"] = true;
     doc["scanInProgress"] = status.scanInProgress;
@@ -257,7 +302,7 @@ void handleApiForget(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
     settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
                                                 ? SettingsPersistMode::Immediate
                                                 : SettingsPersistMode::ImmediateNvsDeferredBackup);
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["success"] = true;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
@@ -275,17 +320,17 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
     }
 
     if (!server.hasArg("plain") || server.arg("plain").length() == 0) {
-        JsonDocument errDoc;
+        WifiJson::Document errDoc;
         WifiApiResponse::setErrorAndMessage(errDoc, "Missing JSON body");
         WifiApiResponse::sendJsonDocument(server, 400, errDoc);
         return;
     }
 
     const String requestBody = server.arg("plain");
-    JsonDocument body;
+    WifiJson::Document body;
     DeserializationError err = deserializeJson(body, requestBody);
     if (err) {
-        JsonDocument errDoc;
+        WifiJson::Document errDoc;
         WifiApiResponse::setErrorAndMessage(errDoc, "Invalid JSON");
         WifiApiResponse::sendJsonDocument(server, 400, errDoc);
         return;
@@ -293,44 +338,44 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
 
     ObdSettingsUpdate update;
 
-    if (body["enabled"].is<bool>()) {
-        update.hasEnabled = true;
-        update.enabled = body["enabled"].as<bool>();
+    if (!readOptionalBool(server, body, "enabled", update.hasEnabled, update.enabled)) {
+        return;
     }
-    if (!body["minRssi"].isNull()) {
-        int rssi = body["minRssi"].as<int>();
-        rssi = std::max(-90, std::min(rssi, -40));
+
+    int rssi = 0;
+    bool hasRssi = false;
+    if (!readOptionalInt(server, body, "minRssi", hasRssi, rssi)) {
+        return;
+    }
+    if (hasRssi) {
         update.hasMinRssi = true;
-        update.minRssi = static_cast<int8_t>(rssi);
+        update.minRssi = static_cast<int8_t>(std::max(-90, std::min(rssi, -40)));
     }
-    if (body["obdScanWindowMs"].is<int>()) {
-        update.hasObdScanWindowMs = true;
-        update.obdScanWindowMs = static_cast<uint32_t>(std::max(0, body["obdScanWindowMs"].as<int>()));
-    }
-    if (body["obdRetryIntervalMs"].is<int>()) {
-        update.hasObdRetryIntervalMs = true;
-        update.obdRetryIntervalMs = static_cast<uint32_t>(std::max(0, body["obdRetryIntervalMs"].as<int>()));
-    }
-    if (body["proxyOpenWindowMs"].is<int>()) {
-        update.hasProxyOpenWindowMs = true;
-        update.proxyOpenWindowMs = static_cast<uint32_t>(std::max(0, body["proxyOpenWindowMs"].as<int>()));
-    }
-    if (body["wifiOpenTimeoutMs"].is<int>()) {
-        update.hasWifiOpenTimeoutMs = true;
-        update.wifiOpenTimeoutMs = static_cast<uint32_t>(std::max(0, body["wifiOpenTimeoutMs"].as<int>()));
-    }
-    if (body["v1SettleQuietMs"].is<int>()) {
-        update.hasV1SettleQuietMs = true;
-        update.v1SettleQuietMs = static_cast<uint32_t>(std::max(0, body["v1SettleQuietMs"].as<int>()));
-    }
-    if (body["v1SettleFallbackMs"].is<int>()) {
-        update.hasV1SettleFallbackMs = true;
-        update.v1SettleFallbackMs = static_cast<uint32_t>(std::max(0, body["v1SettleFallbackMs"].as<int>()));
-    }
-    if (body["cycleTeardownAckTimeoutMs"].is<int>()) {
-        update.hasCycleTeardownAckTimeoutMs = true;
-        update.cycleTeardownAckTimeoutMs =
-            static_cast<uint32_t>(std::max(0, body["cycleTeardownAckTimeoutMs"].as<int>()));
+
+    struct DurationField {
+        const char* key;
+        bool* has;
+        uint32_t* value;
+    };
+    const DurationField durationFields[] = {
+        {"obdScanWindowMs", &update.hasObdScanWindowMs, &update.obdScanWindowMs},
+        {"obdRetryIntervalMs", &update.hasObdRetryIntervalMs, &update.obdRetryIntervalMs},
+        {"proxyOpenWindowMs", &update.hasProxyOpenWindowMs, &update.proxyOpenWindowMs},
+        {"wifiOpenTimeoutMs", &update.hasWifiOpenTimeoutMs, &update.wifiOpenTimeoutMs},
+        {"v1SettleQuietMs", &update.hasV1SettleQuietMs, &update.v1SettleQuietMs},
+        {"v1SettleFallbackMs", &update.hasV1SettleFallbackMs, &update.v1SettleFallbackMs},
+        {"cycleTeardownAckTimeoutMs", &update.hasCycleTeardownAckTimeoutMs, &update.cycleTeardownAckTimeoutMs},
+    };
+    for (const DurationField& field : durationFields) {
+        int raw = 0;
+        bool hasField = false;
+        if (!readOptionalInt(server, body, field.key, hasField, raw)) {
+            return;
+        }
+        if (hasField) {
+            *field.has = true;
+            *field.value = static_cast<uint32_t>(std::max(0, raw));
+        }
     }
 
     const bool changed = settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
@@ -340,7 +385,7 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
         runtime.syncAfterConfigChange(runtime.ctx);
     }
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["success"] = true;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }

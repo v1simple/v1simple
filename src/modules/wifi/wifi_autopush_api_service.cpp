@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
+#include "wifi_json_document.h"
 
 namespace WifiAutoPushApiService {
 
@@ -14,7 +15,7 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
         runtime.loadSlotsSnapshot(snapshot, runtime.loadSlotsSnapshotCtx);
     }
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["enabled"] = snapshot.enabled;
     doc["activeSlot"] = snapshot.activeSlot;
 

@@ -12,6 +12,7 @@
 #include "display_layout.h"
 #include "display_visual_contract.h"
 #include "json_stream_response.h"
+#include "wifi_json_document.h"
 #include "modules/alp/alp_runtime_module.h"
 
 namespace WifiDisplayVisualApiService {
@@ -1106,7 +1107,7 @@ template <typename Sink> void writeLayoutPayload(Sink& sink, const Runtime& runt
 }
 
 bool parsePinBody(WebServer& server, int& index, bool& clear) {
-    JsonDocument doc;
+    WifiJson::Document doc;
     if (server.hasArg("plain")) {
         String body = server.arg("plain");
         DeserializationError err = deserializeJson(doc, body.c_str());
@@ -1167,7 +1168,7 @@ void handlePin(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)
         return;
     }
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["success"] = true;
     doc["index"] = index;
     doc["clear"] = clear;

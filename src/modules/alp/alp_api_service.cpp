@@ -5,13 +5,14 @@
 
 #include "modules/alp/alp_runtime_module.h"
 #include "modules/wifi/wifi_api_response.h"
+#include "modules/wifi/wifi_json_document.h"
 
 namespace AlpApiService {
 
 namespace {
 
 void sendMaintenanceModeError(WebServer& server) {
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["error"] = "maintenance_mode";
     doc["message"] = "ALP runtime status is not available in maintenance mode";
     WifiApiResponse::sendJsonDocument(server, 409, doc);
@@ -40,7 +41,7 @@ void handleApiStatus(WebServer& server, AlpRuntimeModule* alpRuntime, void (*mar
     const AlertSession& session = alpRuntime->currentSession();
     const uint32_t nowMs = millis();
 
-    JsonDocument doc;
+    WifiJson::Document doc;
 
     // ── Module-level status ──────────────────────────────────────────
     doc["enabled"] = alpRuntime->isEnabled();

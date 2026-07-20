@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
+#include "wifi_json_document.h"
 
 namespace WifiQuietApiService {
 
@@ -16,7 +17,7 @@ void handleApiGet(WebServer& server, const Runtime& runtime) {
 
     const V1Settings& settings = runtime.getSettings(runtime.ctx);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["alertVolumeFadeEnabled"] = settings.alertVolumeFadeEnabled;
     doc["alertVolumeFadeDelaySec"] = settings.alertVolumeFadeDelaySec;
     doc["alertVolumeFadeVolume"] = settings.alertVolumeFadeVolume;

@@ -32,6 +32,31 @@ static void compactRxBuffer(std::vector<uint8_t>& rxBuffer, size_t& readPos) {
     readPos = 0;
 }
 
+// RX overflow policy: a chunk is admitted whole or not at all.
+//
+// This buffer reassembles a *framed* byte stream (ESP_PACKET_START .. length ..
+// ESP_PACKET_END) out of BLE notifications: one V1 packet may span several
+// notifications, and one notification may carry several packets. Copying only the
+// head of a chunk and discarding its tail splices unrelated wire bytes together
+// *inside* the buffer. That is worse than losing the chunk: an interior splice can
+// forge a frame that still passes the start/length/end-marker check, so the parser
+// publishes a well-formed alert row built from two unrelated notifications and has
+// no way to detect it. Refusing the chunk outright keeps every buffered byte a
+// contiguous run of the wire stream, and costs at most one notification that the
+// parser resyncs past by scanning to the next ESP_PACKET_START.
+//
+// Which end to drop is set by the other overflow point on this same path: when the
+// notification queue is full, onNotify()'s xQueueSend() with a 0-tick timeout keeps
+// the already-queued head and rejects the incoming packet
+// (test_ble_queue_full_drops_incoming_without_evicting_valid_head pins that
+// deliberately). Evicting the head there would destroy the front of a packet the RX
+// buffer is mid-way through reassembling, so both ends preserve what has already
+// been committed and refuse the newest whole unit instead. This function now
+// follows the same rule at chunk granularity.
+//
+// Refusing input cannot wedge the buffer: process() compacts consumed bytes every
+// cycle and clears the buffer outright when no start marker is present, so space is
+// reclaimed as soon as the parser catches up.
 static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer, size_t& readPos, const uint8_t* data, size_t length) {
     if (!data || length == 0) {
         return 0;
@@ -45,18 +70,14 @@ static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer, size_t& readPos, c
     }
 
     const size_t unread = (readPos < rxBuffer.size()) ? (rxBuffer.size() - readPos) : 0;
-    if (unread >= RX_BUFFER_MAX) {
-        return 0;
-    }
-    const size_t remaining = RX_BUFFER_MAX - unread;
-    const size_t toCopy = std::min(remaining, length);
-    if (toCopy == 0) {
+    if (unread >= RX_BUFFER_MAX || (unread + length) > RX_BUFFER_MAX) {
+        // Does not fit whole after compaction - drop the whole chunk.
         return 0;
     }
     const size_t oldSize = rxBuffer.size();
-    rxBuffer.resize(oldSize + toCopy);
-    memcpy(rxBuffer.data() + oldSize, data, toCopy);
-    return toCopy;
+    rxBuffer.resize(oldSize + length);
+    memcpy(rxBuffer.data() + oldSize, data, length);
+    return length;
 }
 
 bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,

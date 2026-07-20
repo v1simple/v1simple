@@ -249,6 +249,121 @@ void test_config_rejects_missing_json_body() {
     TEST_ASSERT_EQUAL_INT(0, settingsManager.requestDeferredPersistCalls);
 }
 
+// /api/obd/config used to test each field with is<int>() and silently skip
+// anything of the wrong type, then answer {"success":true} regardless of what it
+// actually applied - so POSTing {"minRssi":"loud"} returned 200 with the field
+// dropped. Type-mismatched fields are now rejected with a 400 naming the field.
+void test_config_rejects_type_mismatched_field_and_applies_nothing() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    settingsManager.settings.obdMinRssi = -70;
+    settingsManager.settings.obdEnabled = false;
+    syncAfterConfigChangeCalls = 0;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    // "enabled" is valid and would have applied under the old handler; the whole
+    // request must be rejected before any settings are touched.
+    server.setArg("plain", "{\"enabled\":true,\"minRssi\":\"loud\"}");
+
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "minRssi"));
+    TEST_ASSERT_TRUE(responseContains(server, "\"error\":"));
+    TEST_ASSERT_TRUE(responseContains(server, "\"message\":"));
+    TEST_ASSERT_FALSE(responseContains(server, "\"success\":true"));
+    TEST_ASSERT_EQUAL_INT8(-70, settingsManager.settings.obdMinRssi);
+    TEST_ASSERT_FALSE(settingsManager.settings.obdEnabled);
+    TEST_ASSERT_EQUAL_INT(0, syncAfterConfigChangeCalls);
+    TEST_ASSERT_EQUAL_INT(0, settingsManager.saveCalls);
+    TEST_ASSERT_EQUAL_INT(0, settingsManager.saveDeferredBackupCalls);
+}
+
+void test_config_rejects_type_mismatched_duration_field() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    settingsManager.settings.obdScanWindowMs = 12000;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    server.setArg("plain", "{\"obdScanWindowMs\":\"soon\"}");
+
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "obdScanWindowMs"));
+    TEST_ASSERT_EQUAL_UINT32(12000u, settingsManager.settings.obdScanWindowMs);
+}
+
+void test_config_rejects_non_boolean_enabled() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    settingsManager.settings.obdEnabled = false;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    server.setArg("plain", "{\"enabled\":\"yes\"}");
+
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "enabled"));
+    TEST_ASSERT_FALSE(settingsManager.settings.obdEnabled);
+}
+
+// An omitted key still means "leave this setting alone" - partial updates are the
+// normal case for this endpoint and must keep working.
+void test_config_accepts_partial_update_and_leaves_absent_fields() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    settingsManager.settings.obdMinRssi = -70;
+    settingsManager.settings.obdScanWindowMs = 12000;
+    syncAfterConfigChangeCalls = 0;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    server.setArg("plain", "{\"minRssi\":-55}");
+
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "\"success\":true"));
+    TEST_ASSERT_EQUAL_INT8(-55, settingsManager.settings.obdMinRssi);
+    TEST_ASSERT_EQUAL_UINT32(12000u, settingsManager.settings.obdScanWindowMs);
+    TEST_ASSERT_EQUAL_INT(1, syncAfterConfigChangeCalls);
+}
+
+// A JSON null is "not supplied", matching the previous isNull() behaviour and the
+// UI's cleared-number-input case.
+void test_config_treats_null_field_as_absent() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    settingsManager.settings.obdMinRssi = -70;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    server.setArg("plain", "{\"minRssi\":null}");
+
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "\"success\":true"));
+    TEST_ASSERT_EQUAL_INT8(-70, settingsManager.settings.obdMinRssi);
+}
+
+// minRssi keeps its clamp on values that are the right type but out of range.
+void test_config_clamps_out_of_range_min_rssi() {
+    WebServer server(80);
+    SettingsManager settingsManager;
+    obdRuntimeModule.begin(nullptr, false, "", 0, -80);
+
+    server.setArg("plain", "{\"minRssi\":-120}");
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT8(-90, settingsManager.settings.obdMinRssi);
+
+    server.setArg("plain", "{\"minRssi\":0}");
+    ObdApiService::handleApiConfig(server, obdRuntimeModule, settingsManager, makeTestRuntime());
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT8(-40, settingsManager.settings.obdMinRssi);
+}
+
 void test_scan_rejects_when_obd_is_disabled() {
     WebServer server(80);
     obdRuntimeModule.begin(nullptr, false, "", 0, -80);
@@ -339,6 +454,12 @@ int main() {
     RUN_TEST(test_forget_clears_saved_address_and_persists_setting);
     RUN_TEST(test_forget_allowed_in_maintenance_clears_settings_only);
     RUN_TEST(test_config_rejects_missing_json_body);
+    RUN_TEST(test_config_rejects_type_mismatched_field_and_applies_nothing);
+    RUN_TEST(test_config_rejects_type_mismatched_duration_field);
+    RUN_TEST(test_config_rejects_non_boolean_enabled);
+    RUN_TEST(test_config_accepts_partial_update_and_leaves_absent_fields);
+    RUN_TEST(test_config_treats_null_field_as_absent);
+    RUN_TEST(test_config_clamps_out_of_range_min_rssi);
     RUN_TEST(test_scan_rejects_when_obd_is_disabled);
     RUN_TEST(test_scan_rejects_maintenance_mode);
     RUN_TEST(test_scan_reports_requested_when_obd_is_enabled);

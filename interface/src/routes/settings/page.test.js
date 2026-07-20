@@ -495,6 +495,62 @@ describe('settings route page', () => {
         unmount();
     });
 
+    // /api/wifi/status stops emitting connectedSSID / connectedSlotIndex / ip / rssi
+    // once the STA link is down - WifiClientApiService::sendStatus() gates them
+    // behind includeConnectedFields. The old spread-merge kept the previous values,
+    // so a stale connectedSSID outlived the disconnect and badged the network we
+    // just left as "Connecting" alongside the one actually being connected to.
+    it('drops stale connection fields when wifi status omits them after a disconnect', async () => {
+        let disconnected = false;
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/disconnect',
+                respond: () => {
+                    disconnected = true;
+                    return jsonResponse({ success: true });
+                }
+            },
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () =>
+                    disconnected
+                        ? // Link down, now reconnecting elsewhere: no connection fields at all.
+                          jsonResponse({
+                              enabled: true,
+                              state: 'connecting',
+                              savedSSID: 'PhoneHotspot'
+                          })
+                        : jsonResponse({
+                              enabled: true,
+                              state: 'connected',
+                              savedSSID: 'HomeWifi',
+                              connectedSSID: 'HomeWifi',
+                              connectedSlotIndex: 0,
+                              ip: '192.168.1.50',
+                              rssi: -48
+                          })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Garage');
+        expect(screen.getAllByText('-48 dBm').length).toBeGreaterThan(0);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /^Disconnect$/i }));
+        await screen.findByText('Disconnected from WiFi');
+
+        // Only the network actually being connected to may carry the badge. With the
+        // stale connectedSSID retained, Garage picked one up too.
+        const connecting = await screen.findAllByText('Connecting');
+        expect(connecting).toHaveLength(1);
+        expect(screen.getByText('Phone').closest('.rounded-box')).toContainElement(connecting[0]);
+        expect(screen.queryByText('-48 dBm')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
     it('saves a network picked from scan results', async () => {
         vi.useFakeTimers();
         const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_scan_success'));

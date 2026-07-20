@@ -523,8 +523,70 @@ void test_ble_queue_full_drops_incoming_without_evicting_valid_head() {
     TEST_ASSERT_EQUAL_UINT32(1, perfCounters.queueDrops.load(std::memory_order_relaxed));
 }
 
+void test_rx_append_admits_chunk_whole_or_not_at_all() {
+    std::vector<uint8_t> rxBuffer;
+    size_t readPos = 0;
+
+    // Fill 1000 of the 1024-byte RX cap with whole 200-byte chunks.
+    const std::vector<uint8_t> filler(200, 0x5A);
+    for (int i = 0; i < 5; ++i) {
+        TEST_ASSERT_EQUAL_UINT32(
+            200, static_cast<uint32_t>(appendRxClamped(rxBuffer, readPos, filler.data(), filler.size())));
+    }
+    TEST_ASSERT_EQUAL_UINT32(1000, static_cast<uint32_t>(rxBuffer.size()));
+
+    // 200 more overflows by 176. The old clamp copied the first 24 bytes and
+    // silently dropped the newest 176, leaving a fragment that can only splice
+    // against unrelated wire bytes. The chunk must be refused whole instead.
+    const std::vector<uint8_t> overflow(200, 0xC3);
+    TEST_ASSERT_EQUAL_UINT32(
+        0, static_cast<uint32_t>(appendRxClamped(rxBuffer, readPos, overflow.data(), overflow.size())));
+    TEST_ASSERT_EQUAL_UINT32(1000, static_cast<uint32_t>(rxBuffer.size()));
+    for (uint8_t value : rxBuffer) {
+        TEST_ASSERT_EQUAL_UINT8(0x5A, value);  // no partial tail spliced in
+    }
+
+    // A chunk that still fits whole is admitted.
+    const std::vector<uint8_t> fits(24, 0x11);
+    TEST_ASSERT_EQUAL_UINT32(
+        24, static_cast<uint32_t>(appendRxClamped(rxBuffer, readPos, fits.data(), fits.size())));
+    TEST_ASSERT_EQUAL_UINT32(1024, static_cast<uint32_t>(rxBuffer.size()));
+
+    // Consuming the backlog reclaims room, so refusing input is self-limiting.
+    readPos = rxBuffer.size();
+    TEST_ASSERT_EQUAL_UINT32(
+        200, static_cast<uint32_t>(appendRxClamped(rxBuffer, readPos, overflow.data(), overflow.size())));
+    TEST_ASSERT_EQUAL_UINT32(200, static_cast<uint32_t>(rxBuffer.size()));
+}
+
+void test_ble_queue_rx_overflow_refuses_partial_chunk_and_keeps_room_for_whole_packet() {
+    // process() empties the queue into the RX buffer before parsing anything, so
+    // queueing more than the 1024-byte cap exercises the overflow branch with no
+    // consumption in between.
+    const std::vector<uint8_t> filler(250, 0x00);  // contains no ESP_PACKET_START
+    for (int i = 0; i < 6; ++i) {
+        bleQueue.onNotify(filler.data(), filler.size(), 0xB2CE, kTestSessionGeneration);
+    }
+
+    const std::vector<uint8_t> alert = makePacket(
+        PACKET_ID_ALERT_DATA,
+        makeAlertPayload(1, 1, 24150, 0x90, 0x00, 0x24, 0x80));
+    bleQueue.onNotify(alert.data(), alert.size(), 0xB2CE, kTestSessionGeneration);
+    bleQueue.process();
+
+    // Four chunks (1000 bytes) are admitted whole; the 5th and 6th no longer fit
+    // and are refused whole, leaving 24 bytes free. The 13-byte alert therefore
+    // still lands intact and parses. Under the old clamp the 5th chunk's first 24
+    // bytes were copied in, filling the buffer to the cap with a fragment that was
+    // going to be lost anyway - and that fragment crowded out this real packet.
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL_UINT32(24150, parser.getPriorityAlert().frequency);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_rx_append_admits_chunk_whole_or_not_at_all);
+    RUN_TEST(test_ble_queue_rx_overflow_refuses_partial_chunk_and_keeps_room_for_whole_packet);
     RUN_TEST(test_ble_queue_parses_display_packet_into_display_state);
     RUN_TEST(test_ble_queue_publishes_parsed_event_to_bus);
     RUN_TEST(test_ble_queue_coalesces_parsed_events_per_process_cycle);

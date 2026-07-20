@@ -80,6 +80,34 @@
     const WIFI_TEST_TIMEOUT_MS = 20_000;
     const RECOGNIZED_BACKUP_TYPES = new Set(['v1simple_backup', 'v1simple_sd_backup']);
 
+    // /api/wifi/status only emits these keys while the STA link is up — see
+    // WifiClientApiService::sendStatus(), which gates them behind
+    // includeConnectedFields. A plain spread-merge keeps whatever was there before,
+    // so after a disconnect the UI went on showing the old SSID, IP and signal
+    // strength. These four keys are authoritative-replace: absent in the payload
+    // means absent here, and they fall back to the same values wifiStatus is
+    // initialised with.
+    //
+    // Scoped deliberately to the connection-status fields. The rest of the payload
+    // still merges, because `enabled` is dropped above when it is not a boolean and
+    // is meant to retain its previous value in that case.
+    const WIFI_CONNECTION_FIELD_DEFAULTS = {
+        connectedSSID: '',
+        connectedSlotIndex: null,
+        ip: '',
+        rssi: 0
+    };
+
+    function mergeWifiStatus(previous, payload) {
+        const merged = { ...previous, ...payload };
+        for (const [key, fallback] of Object.entries(WIFI_CONNECTION_FIELD_DEFAULTS)) {
+            if (!Object.prototype.hasOwnProperty.call(payload, key)) {
+                merged[key] = fallback;
+            }
+        }
+        return merged;
+    }
+
     onMount(() => {
         componentMounted = true;
         const releaseDeviceSettings = retainDeviceSettings();
@@ -169,7 +197,7 @@
                         delete normalizedStatus.enabled;
                     }
                     if (componentMounted) {
-                        wifiStatus = { ...wifiStatus, ...normalizedStatus };
+                        wifiStatus = mergeWifiStatus(wifiStatus, normalizedStatus);
                         clearMessageText(WIFI_STATUS_ERROR_TEXT);
                     }
                     return normalizedStatus;

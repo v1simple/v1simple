@@ -4,6 +4,7 @@
 
 #include "../../settings_sanitize.h"
 #include "wifi_api_response.h"
+#include "wifi_json_document.h"
 
 namespace WifiSettingsApiService {
 
@@ -27,7 +28,7 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
 
     const V1Settings& settings = runtime.getSettings(runtime.ctx);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["ap_ssid"] = settings.apSSID;
     doc["ap_password"] = "********"; // Don't send actual password
     doc["isDefaultPassword"] = (settings.apPassword == "setupv1simple");

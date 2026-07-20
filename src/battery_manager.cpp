@@ -166,6 +166,7 @@ bool BatteryManager::begin() {
     // positively confirms USB the device reports BATTERY, so a PWR-button wake
     // (button still held, GPIO16 LOW) can no longer report USB.
     sourceState_ = battery_source_policy::State{};
+    classifierStartedMs_ = static_cast<uint32_t>(millis());
     Serial.printf("[Battery] Power classification rounds=%u samples=%u spacingMs=%lu\n",
                   static_cast<unsigned>(kBootClassificationRounds),
                   static_cast<unsigned>(kSourcePolicy.samplesPerRound),
@@ -445,6 +446,14 @@ battery_source_policy::Result BatteryManager::observeSourceRound(uint32_t nowMs)
 
 bool BatteryManager::isOnBattery() const {
     return onBattery_;
+}
+
+bool BatteryManager::batteryIndicatorReady() const {
+    battery_source_policy::IndicatorGateInputs gate;
+    gate.classification = sourceState_.classification;
+    gate.nowMs = static_cast<uint32_t>(millis());
+    gate.classifierStartedMs = classifierStartedMs_;
+    return battery_source_policy::batteryIndicatorShouldPaint(gate);
 }
 
 bool BatteryManager::hasBattery() const {

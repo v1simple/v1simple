@@ -595,8 +595,78 @@ void test_battery_manager_power_button_is_not_gated_on_has_battery() {
                               "defect C: the PWR button must not be gated on ADC-dependent hasBattery()");
 }
 
+
+// ---------------------------------------------------------------------------
+// Indicator gating (bench regression: ble_process_max_peak_us 840 -> 47728)
+//
+// The classifier reports battery while Unknown as a safety default. Painting
+// that default and then correcting it cost a status repaint plus a full-flush
+// redraw at boot, and the render burst landed inside the V1BLEClient::process
+// timing window. These pin the suppression and its grace bound.
+// ---------------------------------------------------------------------------
+
+void test_indicator_suppressed_while_classification_unknown() {
+    battery_source_policy::IndicatorGateInputs gate;
+    gate.classification = battery_source_policy::Source::Unknown;
+    gate.classifierStartedMs = 1000;
+    gate.nowMs = 1000;
+    TEST_ASSERT_FALSE(battery_source_policy::batteryIndicatorShouldPaint(gate));
+    gate.nowMs = 1000 + gate.resolveGraceMs - 1;
+    TEST_ASSERT_FALSE_MESSAGE(battery_source_policy::batteryIndicatorShouldPaint(gate),
+                              "must stay suppressed right up to the grace boundary");
+}
+
+void test_indicator_paints_as_soon_as_classification_resolves() {
+    battery_source_policy::IndicatorGateInputs gate;
+    gate.classifierStartedMs = 1000;
+    gate.nowMs = 1005; // far inside the grace window
+    gate.classification = battery_source_policy::Source::Usb;
+    TEST_ASSERT_TRUE(battery_source_policy::batteryIndicatorShouldPaint(gate));
+    gate.classification = battery_source_policy::Source::Battery;
+    TEST_ASSERT_TRUE(battery_source_policy::batteryIndicatorShouldPaint(gate));
+}
+
+void test_indicator_grace_expiry_paints_the_safe_default() {
+    // A pathologically suppressed classifier (stuck-LOW pin with a button
+    // interaction permanently in flight) must not hide the indicator forever.
+    battery_source_policy::IndicatorGateInputs gate;
+    gate.classification = battery_source_policy::Source::Unknown;
+    gate.classifierStartedMs = 1000;
+    gate.nowMs = 1000 + gate.resolveGraceMs;
+    TEST_ASSERT_TRUE(battery_source_policy::batteryIndicatorShouldPaint(gate));
+}
+
+void test_indicator_grace_is_rollover_safe() {
+    battery_source_policy::IndicatorGateInputs gate;
+    gate.classification = battery_source_policy::Source::Unknown;
+    gate.classifierStartedMs = 0xFFFFFFFFu - 100u;
+
+    // The discriminating case for `now >= start + grace`: start + grace has
+    // already wrapped to a small number while now has NOT wrapped yet, so the
+    // unsafe form compares a huge now against a tiny sum and reports expiry
+    // after 5 ms. Elapsed-difference arithmetic reports 5 ms and suppresses.
+    // A post-wrap now does NOT discriminate — both forms agree there — so
+    // testing only that case lets the unsafe rewrite survive.
+    gate.nowMs = gate.classifierStartedMs + 5u; // 5 ms elapsed, still pre-wrap
+    TEST_ASSERT_FALSE_MESSAGE(battery_source_policy::batteryIndicatorShouldPaint(gate),
+                              "5ms elapsed must not read as grace-expired when start+grace wraps");
+
+    // Still suppressed once now has wrapped but the grace has not elapsed.
+    gate.nowMs = 50u; // 151 ms elapsed across the wrap
+    TEST_ASSERT_FALSE_MESSAGE(battery_source_policy::batteryIndicatorShouldPaint(gate),
+                              "151ms elapsed across the wrap must not read as grace-expired");
+
+    // And it does expire at exactly the grace boundary, measured as elapsed.
+    gate.nowMs = static_cast<uint32_t>(gate.classifierStartedMs + gate.resolveGraceMs);
+    TEST_ASSERT_TRUE(battery_source_policy::batteryIndicatorShouldPaint(gate));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_indicator_suppressed_while_classification_unknown);
+    RUN_TEST(test_indicator_paints_as_soon_as_classification_resolves);
+    RUN_TEST(test_indicator_grace_expiry_paints_the_safe_default);
+    RUN_TEST(test_indicator_grace_is_rollover_safe);
 
     RUN_TEST(test_cold_start_has_no_classification_and_resolves_to_battery);
     RUN_TEST(test_cold_start_first_round_is_always_due);

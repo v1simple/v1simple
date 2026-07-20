@@ -51,6 +51,12 @@ class BatteryManager {
     // Check if a battery is present (detects battery even when on USB power)
     bool hasBattery() const;
 
+    // True once the source classifier has produced a real verdict, or once the
+    // resolve grace has expired. Until then isOnBattery() is reporting a safe
+    // default rather than an observation, and the battery indicator must not
+    // paint it — see battery_source_policy::batteryIndicatorShouldPaint.
+    bool batteryIndicatorReady() const;
+
     // Update cached battery readings (call in loop, voltage updates every 30s)
     void update();
 
@@ -122,6 +128,10 @@ class BatteryManager {
     // include/battery_source_policy.h so it can be unit tested; this class only
     // supplies pin samples and the clock. See bug #17.
     battery_source_policy::State sourceState_;
+
+    // millis() at which the classifier was seeded, for the indicator resolve
+    // grace. Separate from sourceState_ because the policy is clock-free.
+    uint32_t classifierStartedMs_ = 0;
 
     bool initADC();
     bool initTCA9554();

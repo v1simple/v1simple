@@ -311,6 +311,18 @@ void V1Display::drawProfileIndicator(int slot) {
 
 void V1Display::drawBatteryIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
+    // Nothing may be painted, cached, or marked dirty until the source
+    // classifier has a real verdict. Before that, isOnBattery() reports the
+    // safe default rather than an observation; rendering it produces a visibly
+    // wrong indicator that must then be repainted when the verdict lands, and
+    // that repaint drags a full-flush redraw with it. Returning here leaves the
+    // element caches untouched, so the eventual first paint is an ordinary
+    // first paint rather than a transition. See bug #17 and
+    // battery_source_policy::batteryIndicatorShouldPaint.
+    if (!batteryManager.batteryIndicatorReady()) {
+        return;
+    }
+
     const V1Settings& s = settingsManager.get();
 
     // Battery icon position - VERTICAL at bottom-right

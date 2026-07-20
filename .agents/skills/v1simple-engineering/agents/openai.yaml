@@ -1,0 +1,4 @@
+interface:
+  display_name: "V1Simple Engineering"
+  short_description: "Apply V1Simple engineering context safely"
+  default_prompt: "Use $v1simple-engineering to plan and implement this V1Simple engineering task."

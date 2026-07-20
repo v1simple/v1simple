@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 #include "battery_math.h"
+#include "battery_source_policy.h"
 #include <Wire.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -97,6 +98,9 @@ class BatteryManager {
 
   private:
     bool initialized_;
+    // Resolved view of sourceState_.classification. Kept as a plain bool so
+    // every existing caller of isOnBattery() is unaffected; the authoritative
+    // three-valued classification lives in sourceState_.
     bool onBattery_;
     uint16_t lastVoltage_;
     uint32_t lastButtonPress_;
@@ -114,11 +118,20 @@ class BatteryManager {
     // Debug simulation
     uint16_t simulatedVoltage_;
 
+    // Power-source classification state. All of the decision logic lives in
+    // include/battery_source_policy.h so it can be unit tested; this class only
+    // supplies pin samples and the clock. See bug #17.
+    battery_source_policy::State sourceState_;
+
     bool initADC();
     bool initTCA9554();
     bool setTCA9554Pin(uint8_t pin, bool high);
     bool setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t timeoutTicks, int maxRetries);
     uint16_t readADCMillivolts();
+
+    // Take one spaced sampling round of PWR_BUTTON_GPIO and hand it to the
+    // policy. Updates onBattery_ from the policy's resolved answer.
+    battery_source_policy::Result observeSourceRound(uint32_t nowMs);
 };
 
 extern BatteryManager batteryManager;

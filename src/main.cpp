@@ -434,9 +434,10 @@ static void logMaintenanceHeapSnapshot(const char* stage) {
 template <typename StageLogger>
 static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, const uint32_t bootId,
                                           const esp_reset_reason_t resetReason, const StageLogger& logBootStage) {
-    SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu\n", static_cast<unsigned long>(bootId),
-                     resetReasonToString(resetReason),
-                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs));
+    SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu maxSessionMs=%lu\n",
+                     static_cast<unsigned long>(bootId), resetReasonToString(resetReason),
+                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs),
+                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootMaxSessionMs));
 
     logMaintenanceHeapSnapshot("pre_wifi");
     wifiManager.setMaintenanceBootMode(true);
@@ -456,7 +457,13 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
     logBootStage("maintenance_wifi");
 
     mainRuntimeState.bootReady = true;
-    mainRuntimeState.maintenanceBootStartedMs = millis();
+    // Session start is immutable (it anchors the absolute cap); the deadline
+    // anchor starts equal to it and is republished every loop by the policy.
+    const unsigned long maintenanceSessionStartMs = millis();
+    mainRuntimeState.maintenanceBootSessionStartedMs =
+        (maintenanceSessionStartMs == 0) ? 1UL : maintenanceSessionStartMs;
+    mainRuntimeState.maintenanceLastUiActivityMs = 0;
+    mainRuntimeState.maintenanceBootStartedMs = mainRuntimeState.maintenanceBootSessionStartedMs;
     SerialLog.printf("[MaintBoot] setup total: %lu ms\n", millis() - setupStartMs);
 }
 
@@ -615,8 +622,11 @@ void loop() {
         static unsigned long bootButtonPressStartMs = 0;
         static bool exitRequestFired = false;
         static bool idleHeapLogged = false;
-        if (!idleHeapLogged && mainRuntimeState.maintenanceBootStartedMs != 0 &&
-            (now - mainRuntimeState.maintenanceBootStartedMs) >= 5000UL) {
+        // Anchored on the immutable session start, not the deadline anchor:
+        // the deadline anchor slides with UI activity, so it would delay or
+        // suppress this one-shot diagnostic on a session that is being used.
+        if (!idleHeapLogged && mainRuntimeState.maintenanceBootSessionStartedMs != 0 &&
+            static_cast<uint32_t>(now - mainRuntimeState.maintenanceBootSessionStartedMs) >= 5000UL) {
             idleHeapLogged = true;
             logMaintenanceHeapSnapshot("idle_5s");
         }
@@ -637,9 +647,41 @@ void loop() {
             ESP.restart();
         }
 
-        if (mainRuntimeState.maintenanceBootStartedMs != 0 &&
-            (now - mainRuntimeState.maintenanceBootStartedMs) >= MainRuntimePolicy::MaintenanceBootTimeoutMs) {
-            SerialLog.println("[MaintBoot] timeout -> rebooting normal runtime");
+        // ── Maintenance session lifetime ──────────────────────────────
+        // Bug #18: this used to be a bare elapsed-since-start comparison, so a
+        // user working in the maintenance web UI was rebooted mid-task at ten
+        // minutes. The deadline now extends on UI activity, bounded by an
+        // absolute cap. All of the decision logic lives in
+        // MainRuntimePolicy::evaluateMaintenanceSession (pure, host-tested in
+        // test/test_main_runtime_maintenance_policy) because nothing in this
+        // file can be compiled natively; this block only feeds it inputs and
+        // acts on its output.
+        //
+        // WiFiManager publishes UI activity as a predicate, not a timestamp,
+        // so sample it here and latch the observation time.
+        if (wifiManager.isUiActive(MainRuntimePolicy::MaintenanceUiActivityProbeMs)) {
+            mainRuntimeState.maintenanceLastUiActivityMs = (now == 0) ? 1UL : now;
+        }
+
+        MainRuntimePolicy::MaintenanceSessionInput maintenanceSessionInput;
+        maintenanceSessionInput.nowMs = static_cast<uint32_t>(now);
+        maintenanceSessionInput.sessionStartedMs =
+            static_cast<uint32_t>(mainRuntimeState.maintenanceBootSessionStartedMs);
+        maintenanceSessionInput.lastUiActivityMs = static_cast<uint32_t>(mainRuntimeState.maintenanceLastUiActivityMs);
+        maintenanceSessionInput.sessionActive = mainRuntimeState.maintenanceBootSessionStartedMs != 0;
+        const MainRuntimePolicy::MaintenanceSessionDecision maintenanceSession =
+            MainRuntimePolicy::evaluateMaintenanceSession(maintenanceSessionInput);
+
+        // Republish the deadline anchor so /api/status keeps reporting a
+        // countdown that agrees with the device. See the contract note on
+        // MaintenanceSessionDecision::deadlineAnchorMs.
+        mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;
+
+        if (maintenanceSession.shouldReboot) {
+            SerialLog.printf("[MaintBoot] timeout reason=%s sessionMs=%lu idleMs=%lu -> rebooting normal runtime\n",
+                             maintenanceSession.maxSessionReached ? "max_session" : "idle",
+                             static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
+                             static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
             settingsManager.save();
             markCleanShutdown();
             ESP.restart();

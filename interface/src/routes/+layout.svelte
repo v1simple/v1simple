@@ -3,7 +3,7 @@
     import { onMount } from 'svelte';
     import { page } from '$app/stores';
     import BrandMark from '$lib/components/BrandMark.svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { createPoll, fetchWithTimeout } from '$lib/utils/poll';
     import {
         refreshDeviceSettings,
         retainDeviceSettings
@@ -37,15 +37,42 @@
         { href: '/logs', label: 'Logs' },
         { href: '/settings', label: 'Settings' }
     ];
-    const maintenanceTimeoutMs = $derived(
-        Number($runtimeStatus.maintenanceBootTimeoutMs) > 0
-            ? Number($runtimeStatus.maintenanceBootTimeoutMs)
-            : 10 * 60 * 1000
-    );
+    // The maintenance deadline is no longer a fixed 10 minutes from boot: the
+    // firmware extends it while the UI is being used, bounded by a hard cap
+    // (see MainRuntimePolicy::evaluateMaintenanceSession in
+    // include/main_runtime_state.h). /api/status keeps reporting
+    // maintenanceBootUptimeMs as time elapsed against the CURRENT deadline, so
+    // `maintenanceBootTimeoutMs - maintenanceBootUptimeMs` is still the
+    // device's real remaining time — but only as of the last poll.
+    //
+    // Two things follow, and both are handled below:
+    //   * The value must be re-anchored on every poll rather than treated as a
+    //     monotonic function of boot time, otherwise an extended deadline makes
+    //     the countdown disagree with the device.
+    //   * Polls land every 3s, so a countdown driven only by them visibly jumps
+    //     (#19). Tick locally once a second between polls and reconcile on each
+    //     poll, which bounds drift at one poll interval.
+    const DEFAULT_MAINTENANCE_TIMEOUT_MS = 10 * 60 * 1000;
+    const MAINTENANCE_TICK_MS = 1000;
+    let maintenanceAnchorRemainingMs = $state(0);
+    let maintenanceAnchorAtMs = $state(0);
+    let maintenanceNowMs = $state(0);
     const maintenanceRemainingMs = $derived(
-        Math.max(0, maintenanceTimeoutMs - Number($runtimeStatus.maintenanceBootUptimeMs || 0))
+        Math.max(
+            0,
+            maintenanceAnchorRemainingMs - Math.max(0, maintenanceNowMs - maintenanceAnchorAtMs)
+        )
     );
     const maintenanceExpiringSoon = $derived(maintenanceRemainingMs <= 60 * 1000);
+
+    function reportedMaintenanceRemainingMs(status) {
+        const timeoutMs =
+            Number(status?.maintenanceBootTimeoutMs) > 0
+                ? Number(status.maintenanceBootTimeoutMs)
+                : DEFAULT_MAINTENANCE_TIMEOUT_MS;
+        const elapsedMs = Number(status?.maintenanceBootUptimeMs) || 0;
+        return Math.max(0, timeoutMs - elapsedMs);
+    }
 
     function formatRemaining(milliseconds) {
         const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
@@ -78,6 +105,22 @@
     onMount(() => {
         const releaseDeviceSettings = retainDeviceSettings();
         const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+
+        // Reconcile the maintenance countdown against every status snapshot,
+        // then tick it locally between polls.
+        const unsubscribeRuntimeStatus = runtimeStatus.subscribe((status) => {
+            maintenanceAnchorRemainingMs = reportedMaintenanceRemainingMs(status);
+            maintenanceAnchorAtMs = Date.now();
+            maintenanceNowMs = maintenanceAnchorAtMs;
+        });
+        // createPoll rather than a bare setInterval: the frontend HTTP
+        // resilience contract (scripts/check_frontend_http_resilience_contract.py)
+        // routes every recurring timer through the shared poll utility.
+        const maintenanceCountdown = createPoll(() => {
+            maintenanceNowMs = Date.now();
+        }, MAINTENANCE_TICK_MS);
+        maintenanceCountdown.start();
+
         const handlePasswordWarningPreferenceChange = (event) => {
             const dismissed = event?.detail?.dismissed === true;
             warningDismissed = dismissed;
@@ -116,6 +159,8 @@
         }
 
         return () => {
+            maintenanceCountdown.stop();
+            unsubscribeRuntimeStatus();
             releaseDeviceSettings();
             releaseRuntimeStatus();
             window.removeEventListener(

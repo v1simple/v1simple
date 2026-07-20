@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 45bcb18bc0add3394e16db7c9cfcff1ef2d0ed18321c9fa7912b384ab4269d46",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
             "timeout": 5,
             "statusMessage": "Loading V1Simple engineering context"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 45bcb18bc0add3394e16db7c9cfcff1ef2d0ed18321c9fa7912b384ab4269d46",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
             "timeout": 5
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 45bcb18bc0add3394e16db7c9cfcff1ef2d0ed18321c9fa7912b384ab4269d46",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
             "timeout": 5
           }
         ]

@@ -20,7 +20,7 @@ EVENT_MAP = {
     "SubagentStart": "subagent",
 }
 MAX_CONTEXT_BYTES = 8_000
-CONTEXT_TIMEOUT_SECONDS = 15
+CONTEXT_TIMEOUT_SECONDS = 4
 DEGRADED = (
     "[v1simple-context] Private engineering context is unavailable; "
     "continue with the standalone public repository and keep this limitation visible."
@@ -141,4 +141,3 @@ if __name__ == "__main__":
         # Hooks must never block public engineering work or expose private errors.
         _emit_common_warning(DEGRADED + " The bridge encountered an unexpected error.")
         raise SystemExit(0)
-

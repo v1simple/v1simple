@@ -175,6 +175,10 @@ def check_forwarding_and_safety() -> None:
                 "cwd": str(public),
             },
         }
+        injection_sentinel = base / "prompt-must-not-execute"
+        payloads["UserPromptSubmit"]["prompt"] = (
+            f"sensitive-example; touch {injection_sentinel}"
+        )
         mapped_events = {"SessionStart": "session", "UserPromptSubmit": "prompt", "SubagentStart": "subagent"}
         for hook_event, payload in payloads.items():
             result = run_wrapper(wrapper, digest, public, payload, environment)
@@ -182,6 +186,7 @@ def check_forwarding_and_safety() -> None:
             require(f"event={mapped_events[hook_event]}" in context, f"{hook_event} mapping is wrong")
             require("forwarded=True" in context, f"{hook_event} input was not forwarded unchanged")
             require("argv_clean=True" in context, f"{hook_event} prompt escaped stdin")
+        require(not injection_sentinel.exists(), "prompt text must never execute as a shell command")
 
         large = run_wrapper(
             wrapper,
@@ -232,10 +237,18 @@ def check_public_boundary() -> None:
     for phrase in ("standalone", "privacy boundary", "lowest practical layer", "main-only"):
         require(phrase in contract, f"AGENTS.md is missing {phrase!r}")
 
-    created_files = [AGENT_CONTRACT, HOOK_CONFIG, WRAPPER, SKILL, SKILL_METADATA]
+    created_files = [
+        AGENT_CONTRACT,
+        HOOK_CONFIG,
+        WRAPPER,
+        SKILL,
+        SKILL_METADATA,
+        Path(__file__).resolve(),
+    ]
     for path in created_files:
         content = path.read_text(encoding="utf-8")
-        require("/Users/" not in content, f"{path.relative_to(ROOT)} contains a local absolute path")
+        local_home_prefix = "/" + "Users/"
+        require(local_home_prefix not in content, f"{path.relative_to(ROOT)} contains a local absolute path")
 
     wrapper_source = WRAPPER.read_text(encoding="utf-8")
     require("stderr=subprocess.DEVNULL" in wrapper_source, "private stderr must be suppressed")

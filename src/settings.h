@@ -507,6 +507,21 @@ struct SettingsBackupApplyResult {
     int profilesRestored = 0;
 };
 
+/// Optional task-watchdog feed for applyBackupDocument().
+///
+/// A full restore rewrites the WiFi credential NVS namespace, re-saves every
+/// profile in the backup (one filesystem write each) and then performs the A/B
+/// settings NVS rewrite.  On a slow SD card that run can exceed the task
+/// watchdog window and panic mid-restore.  esp_task_wdt_reset() is ESP-IDF only,
+/// so the feed is injected as a plain function pointer: settings_backup_doc.cpp
+/// stays host-compilable and native tests can count the feeds and pin where they
+/// happen.  Default-constructed (feed == nullptr) means "never feed", which is
+/// what the boot-time SD restore path uses.
+struct SettingsRestoreWatchdog {
+    void (*feed)(void* ctx) = nullptr;
+    void* ctx = nullptr;
+};
+
 enum class SettingsPersistMode : uint8_t {
     Immediate,
     ImmediateNvsDeferredBackup,
@@ -952,7 +967,8 @@ class SettingsManager {
     bool deferredBackupPending() const;
     bool deferredBackupRetryScheduled() const;
     uint32_t deferredBackupNextAttemptAtMs() const;
-    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite);
+    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
+                                                  const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{});
     bool restoreFromSD();
     bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
 

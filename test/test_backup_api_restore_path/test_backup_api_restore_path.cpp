@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstring>
+#include <string>
 
 #include "../mocks/mock_heap_caps_state.h"
 #include "../mocks/esp_heap_caps.h"
@@ -160,6 +161,71 @@ void test_restore_missing_body_returns_400_without_apply_or_sync() {
     TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
 }
 
+// The 128 KB restore cap is a semantic/application limit, not a transport
+// bound — WebServer has already buffered the body by the time the handler runs.
+// It still has to reject oversize bodies before parsing or restoring anything.
+void test_restore_oversize_body_returns_413_without_parse_apply_or_sync() {
+    WebServer server(80);
+    FakeRuntime runtime;
+
+    std::string body = "{\"_type\":\"v1simple_backup\",\"pad\":\"";
+    body.append(128 * 1024, 'x');
+    body += "\"}";
+    server.setArg("plain", String(body.c_str()));
+
+    BackupApiService::handleApiRestore(server,
+                                       makeRuntime(runtime),
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr);
+
+    TEST_ASSERT_EQUAL_INT(413, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "Body too large"));
+    TEST_ASSERT_EQUAL_INT(0, runtime.applyBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
+}
+
+// A body sitting exactly on the cap must still restore, so the check cannot
+// regress into an off-by-one that rejects legitimate backups.
+void test_restore_body_exactly_at_cap_still_applies() {
+    WebServer server(80);
+    FakeRuntime runtime;
+
+    // Three padding fields keep each individual JSON string under ArduinoJson's
+    // 64 KB per-string limit while the whole body lands exactly on the cap.
+    const std::string prefix = "{\"_type\":\"v1simple_backup\"";
+    const std::string keys[3] = {",\"p0\":\"", ",\"p1\":\"", ",\"p2\":\""};
+    size_t overhead = prefix.size() + 1 /* closing brace */;
+    for (const std::string& key : keys) {
+        overhead += key.size() + 1 /* closing quote */;
+    }
+
+    const size_t fillerTotal = 128 * 1024 - overhead;
+    std::string body = prefix;
+    for (size_t i = 0; i < 3; ++i) {
+        const size_t chunk = (i == 0) ? fillerTotal - 2 * (fillerTotal / 3) : fillerTotal / 3;
+        body += keys[i];
+        body.append(chunk, 'x');
+        body += "\"";
+    }
+    body += "}";
+
+    TEST_ASSERT_EQUAL_UINT32(128u * 1024u, static_cast<uint32_t>(body.size()));
+    server.setArg("plain", String(body.c_str()));
+
+    BackupApiService::handleApiRestore(server,
+                                       makeRuntime(runtime),
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, runtime.applyBackupCalls);
+    TEST_ASSERT_EQUAL_INT(1, runtime.syncAfterRestoreCalls);
+}
+
 void test_restore_invalid_json_returns_400_without_apply_or_sync() {
     WebServer server(80);
     FakeRuntime runtime;
@@ -268,6 +334,8 @@ int main() {
     RUN_TEST(test_backup_default_uses_cached_snapshot_without_passwords);
     RUN_TEST(test_backup_legacy_include_passwords_query_still_returns_sanitized_cached_export);
     RUN_TEST(test_restore_missing_body_returns_400_without_apply_or_sync);
+    RUN_TEST(test_restore_oversize_body_returns_413_without_parse_apply_or_sync);
+    RUN_TEST(test_restore_body_exactly_at_cap_still_applies);
     RUN_TEST(test_restore_invalid_json_returns_400_without_apply_or_sync);
     RUN_TEST(test_restore_invalid_backup_type_returns_400_without_apply_or_sync);
     RUN_TEST(test_restore_apply_failure_returns_500_and_skips_sync);

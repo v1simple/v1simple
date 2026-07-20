@@ -55,6 +55,14 @@ struct BackupRuntime {
     void* ctx = nullptr;
 };
 
+/// Feeds the ESP-IDF task watchdog from the HTTP restore path.
+///
+/// The signature intentionally matches SettingsRestoreWatchdog::feed (settings.h)
+/// so wifi_runtimes.cpp can hand it straight to applyBackupDocument() without
+/// this header having to depend on settings.h. esp_task_wdt_reset() is ESP-IDF
+/// only, so this compiles to a no-op on host/native builds.
+void feedTaskWatchdog(void* ctx);
+
 /// GET /api/settings/backup handler with route-level UI activity callback.
 void handleApiBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
                      void (*markUiActivity)(void* ctx), void* uiActivityCtx, uint32_t (*millisFn)(void* ctx) = nullptr,

@@ -567,7 +567,11 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         [](void* /*ctx*/) -> bool { return settingsManager.backupToSD(); },
         // applyBackup
         [](const JsonDocument& doc, bool fullRestore, int& profilesRestored, void* /*ctx*/) -> bool {
-            const SettingsBackupApplyResult result = settingsManager.applyBackupDocument(doc, fullRestore);
+            // A restore rewrites NVS and re-saves every profile in the backup;
+            // on a slow SD that outruns the task watchdog. Feed it between
+            // restore phases so a large backup cannot panic mid-restore.
+            const SettingsBackupApplyResult result = settingsManager.applyBackupDocument(
+                doc, fullRestore, SettingsRestoreWatchdog{&BackupApiService::feedTaskWatchdog, nullptr});
             profilesRestored = result.profilesRestored;
             return result.success;
         },

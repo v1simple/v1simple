@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "accepted_risk": {
+    "id": "obd-proxy-arbitration",
+    "scope": [
+      "OBD",
+      "BLE proxy",
+      "connection arbitration",
+      "shared BLE scheduling"
+    ],
+    "minimum_rationale_characters": 20
+  }
+}

@@ -55,7 +55,7 @@ Expected release-ready shape:
 - final `./bench.sh` result: `PASS`
 - no `COLLECTION_FAILED`
 - no `FAIL`
-- any `WARN` is investigated before release.
+- no `WARN`; investigate and recollect until the final evidence is `PASS`.
 
 ### 4b. OBD/proxy/arbitration evidence when touched
 
@@ -67,7 +67,9 @@ If no representative OBD/proxy hardware rig exists for this terminal release, do
 - rationale: no stable OBD/proxy hardware qualification path exists for this release
 - scope: OBD, proxy mode, connection arbitration, or shared BLE scheduling areas covered only by unit/contract/build gates
 
-Any actual OBD/proxy hardware pass that is run should still be recorded. Treat any executed hardware step result other than `PASS` or `NO_BASELINE` as a release blocker until it is triaged and documented.
+Any actual OBD/proxy hardware pass that is run should still be recorded. Treat
+any executed hardware qualification result other than `PASS` as a release
+blocker; a failed run cannot be replaced with an accepted-risk waiver.
 
 A claimed `PASS` must use the versioned case inventory in
 `tools/obd_proxy_qualification_profile_v1.json`. The qualification artifact
@@ -81,45 +83,49 @@ python3 scripts/check_obd_proxy_qualification.py \
   --artifact .artifacts/obd-proxy/<run-id>/qualification_result.json
 ```
 
-### 4c. Evidence manifest
+### 4c. Generated evidence manifest
 
-Before merging, write a local evidence manifest that points at the bench result
-and any extra hardware artifacts required by section 4b:
+Never hand-edit the local evidence manifest. Generate it from typed artifacts;
+the command binds the bench and any OBD/proxy qualification to the clean
+checkout's full Git SHA, supplies accepted-risk scope from the versioned policy,
+writes atomically, and validates before replacing the prior manifest.
+Bench collection records whether its source worktree was clean; a run collected
+from uncommitted code is useful diagnostically but is rejected as release evidence.
 
-```json
-{
-  "schema_version": 1,
-  "evidence": [
-    {
-      "id": "core-display-bench",
-      "kind": "bench",
-      "result": "PASS",
-      "artifact_path": ".artifacts/bench/release/runs/<run-id>/bench_result.json"
-    },
-    {
-      "id": "obd-proxy-arbitration",
-      "kind": "accepted-risk",
-      "result": "ACCEPTED_RISK",
-      "rationale": "No representative OBD/proxy hardware qualification rig exists for this terminal release; optional feature accepted based on unit/contract/build gates.",
-      "scope": ["OBD", "BLE proxy", "connection arbitration"]
-    }
-  ]
-}
+With hardware qualification:
+
+```bash
+python3 scripts/prepare_release_evidence_manifest.py \
+  --bench-result .artifacts/bench/release/latest/bench_result.json \
+  --obd-qualification .artifacts/obd-proxy/<run-id>/qualification_result.json
 ```
 
-Validate it with:
+When the maintainer explicitly accepts the documented missing-rig risk, put the
+human-authored rationale in a text file and let the generator own the JSON and
+scope:
+
+```bash
+python3 scripts/prepare_release_evidence_manifest.py \
+  --bench-result .artifacts/bench/release/latest/bench_result.json \
+  --accept-obd-risk \
+  --risk-rationale-file .artifacts/release_evidence/obd-risk-rationale.txt
+```
+
+The generated manifest can be independently revalidated against the intended
+release commit:
 
 ```bash
 python3 scripts/check_release_evidence_manifest.py \
-  --manifest .artifacts/release_evidence/manifest.json
+  --manifest .artifacts/release_evidence/manifest.json \
+  --expected-git-sha "$(git rev-parse HEAD)"
 ```
 
 The manifest stays local under `.artifacts/`, but the release PR/release notes
 should cite the manifest path plus the underlying artifact paths or accepted-risk
 rationales and scope. `obd-proxy-arbitration` may not be omitted: it must be a
 validated `hardware-qualification` PASS or a structured `accepted-risk` entry.
-A `WARN` bench result requires explicit investigation; use `--allow-bench-warn`
-only when that investigation is documented.
+A `WARN` bench result is diagnostic, not release evidence. Investigate it and
+collect a clean `PASS`; the generator does not provide a manual WARN override.
 
 ## 5. Merge and release procedure
 

@@ -207,6 +207,9 @@ def classify_window(run_dir: Path, suite: str, catalog: dict[str, dict[str, Any]
     return {
         "suite": suite,
         "result": result,
+        "git_sha": manifest.get("git_sha", ""),
+        "git_ref": manifest.get("git_ref", ""),
+        "git_worktree_clean": window.get("git_worktree_clean") is True,
         "artifact_dir": str(window_dir),
         "csv_path": window.get("csv_path", ""),
         "rows": manifest.get("rows"),
@@ -283,10 +286,16 @@ def main() -> int:
     for window in windows:
         result = worse(result, str(window["result"]))
 
+    git_shas = {str(window.get("git_sha") or "").strip() for window in windows}
+    git_refs = {str(window.get("git_ref") or "").strip() for window in windows}
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bench_result",
         "run_dir": str(run_dir),
+        "git_sha": next(iter(git_shas)) if len(git_shas) == 1 else "",
+        "git_ref": next(iter(git_refs)) if len(git_refs) == 1 else "",
+        "git_worktree_clean": bool(windows)
+        and all(window.get("git_worktree_clean") is True for window in windows),
         "result": result,
         "windows": windows,
     }

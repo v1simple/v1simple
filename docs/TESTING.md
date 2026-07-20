@@ -113,7 +113,7 @@ path must move together.
 Not itemized section-by-section to keep this walkthrough readable; all fail CI:
 `check_modified_font_names.py`, `test_check_littlefs_image_compatibility.py`,
 `test_run_device_tests_script.py`, `test_obd_proxy_qualification.py`,
-`test_release_evidence_manifest.py`,
+`test_release_evidence_manifest.py`, `test_prepare_release_evidence_manifest.py`,
 `check_littlefs_mount_contract.py`, `check_build_dist_contract.py`,
 `check_release_workflow_flash_contract.py`, `check_web_installer_page.py`,
 `check_api_doc_sources.py`, `check_alp_protocol_docs_contract.py`,

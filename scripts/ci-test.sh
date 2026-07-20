@@ -129,6 +129,7 @@ run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
 run_step "OBD/proxy qualification validator regression tests" python3 scripts/test_obd_proxy_qualification.py
 run_step "Release evidence manifest regression tests" python3 scripts/test_release_evidence_manifest.py
+run_step "Release evidence generator regression tests" python3 scripts/test_prepare_release_evidence_manifest.py
 
 section "Compatibility Guards"
 run_step "WiFi API contracts" python3 scripts/check_wifi_api_contract.py

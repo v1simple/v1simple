@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--board-id", default=os.environ.get("BENCH_BOARD_ID", "release"))
     parser.add_argument("--git-sha", default="")
     parser.add_argument("--git-ref", default="")
+    parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
     parser.add_argument("--profile", default="drive_wifi_off")
     parser.add_argument("--segment", default="last")
     parser.add_argument(
@@ -424,6 +425,7 @@ def main() -> int:
                 "board_id": args.board_id,
                 "git_sha": args.git_sha,
                 "git_ref": args.git_ref,
+                "git_worktree_clean": args.git_worktree_clean == "1",
                 "duration_seconds": args.duration_seconds,
                 "port": port,
                 "csv_path": str(csv_path),
@@ -444,6 +446,7 @@ def main() -> int:
                 "board_id": args.board_id,
                 "git_sha": args.git_sha,
                 "git_ref": args.git_ref,
+                "git_worktree_clean": args.git_worktree_clean == "1",
                 "error": str(exc),
             },
         )

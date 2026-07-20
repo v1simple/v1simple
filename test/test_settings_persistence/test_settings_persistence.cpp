@@ -1096,6 +1096,31 @@ void test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_write
     TEST_ASSERT_EQUAL_UINT8(77, reloaded.get().brightness);
 }
 
+void test_touch_setters_persist_nvs_without_taking_blocking_sd_lock() {
+    fs::FS fs(g_tempRoot);
+    storageManager.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+
+    SettingsManager manager;
+
+    manager.setStealthEnabled(true, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    manager.setActiveSlot(2, SettingsPersistMode::ImmediateNvsDeferredBackup);
+
+    const String activeNs = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(activeNs.length() > 0);
+    TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    TEST_ASSERT_EQUAL_UINT32(0u, StorageManager::mockSdLockState.blockingAcquireCalls);
+    TEST_ASSERT_EQUAL_UINT32(0u, StorageManager::mockSdLockState.tryAcquireCalls);
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
+    TEST_ASSERT_EQUAL_UINT64(1u, mock_preferences::getUnsigned(activeNs.c_str(), kNvsStealthEnabled, 0));
+    TEST_ASSERT_EQUAL_UINT64(2u, mock_preferences::getUnsigned(activeNs.c_str(), kNvsActiveSlot, 0));
+
+    SettingsManager reloaded;
+    reloaded.load();
+    TEST_ASSERT_TRUE(reloaded.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_INT(2, reloaded.get().activeSlot);
+}
+
 void test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change() {
     SettingsManager manager;
 
@@ -1455,6 +1480,7 @@ int main() {
     RUN_TEST(test_quiet_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_display_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_writer);
+    RUN_TEST(test_touch_setters_persist_nvs_without_taking_blocking_sd_lock);
     RUN_TEST(test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change);
     RUN_TEST(test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_autopush_state_batch_update_skips_noop_persist_and_saves_once_on_change);

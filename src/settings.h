@@ -838,7 +838,7 @@ class SettingsManager {
     void setBrightness(uint8_t brightness);
     void setDisplayOff(bool off);
     void setAutoPushEnabled(bool enabled);
-    void setActiveSlot(int slot);
+    void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setSlot(int slotNum, const String& profileName, V1Mode mode);
     void setSlotName(int slotNum, const String& name);
     void setSlotColor(int slotNum, uint16_t color);
@@ -874,7 +874,7 @@ class SettingsManager {
     void setSecondaryX(bool enabled);
     void setAlertVolumeFade(bool enabled, uint8_t delaySec, uint8_t volume);
     void setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph);
-    void setStealthEnabled(bool enabled);
+    void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setLastV1Address(const String& addr);
 
     // Get active slot configuration
@@ -918,10 +918,12 @@ class SettingsManager {
     // Batch update methods (don't auto-save, call save() after)
     void updateBrightness(uint8_t brightness) { settings_.brightness = brightness; }
     void updateVoiceVolume(uint8_t volume) { settings_.voiceVolume = volume; }
-    // Save all settings to flash
+    // Persist settings atomically to NVS, then synchronously back them up to SD.
+    // Reserve this for explicit durability boundaries outside latency-sensitive
+    // loop paths.
     void save();
-    // Returns false when the atomic NVS persist failed (settings live in RAM
-    // only); restore paths must surface that instead of reporting success.
+    // Persist settings atomically to NVS, then coalesce a deferred SD backup.
+    // Returns false when the NVS persist failed (settings remain RAM-only).
     bool saveDeferredBackup();
     void requestDeferredPersist();
     void serviceDeferredPersist(uint32_t nowMs);

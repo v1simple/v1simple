@@ -236,6 +236,68 @@ void test_writer_setup_failure_drops_observably_without_sd_access() {
     TEST_ASSERT_EQUAL_UINT32(1, bleBondBackupWriterStats().droppedSnapshots);
 }
 
+void test_aborted_shutdown_reopens_bond_backup_writer_admission() {
+    gOurSecs = {makeSec(67)};
+    shutdownBleBondBackupWriter(0);
+
+    TEST_ASSERT_EQUAL(-1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
+
+    resumeBleBondBackupWriterAfterAbortedShutdown();
+
+    TEST_ASSERT_EQUAL(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT8(67, readFirstOurAddressByte());
+}
+
+void test_resume_handoffs_snapshot_queued_while_old_bond_writer_exits() {
+    gOurSecs = {makeSec(71)};
+    TEST_ASSERT_EQUAL(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.capsCalls);
+
+    // Model the bounded-timeout boundary: the old task has committed to exit,
+    // abort recovery reopens admission, and an event queues a snapshot before
+    // the old task publishes itself inactive.
+    gBondBackupWriterState.shutdownRequested.store(true, std::memory_order_release);
+    resumeBleBondBackupWriterAfterAbortedShutdown();
+    gOurSecs = {makeSec(79)};
+    TEST_ASSERT_EQUAL(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
+
+    TEST_ASSERT_TRUE(completeBondBackupWriterExit());
+
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_TRUE(gBondBackupWriterState.writerActive.load(std::memory_order_acquire));
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT8(79, readFirstOurAddressByte());
+}
+
+void test_shutdown_exit_drains_late_bond_snapshot_and_waits_for_admissions() {
+    gOurSecs = {makeSec(83)};
+    TEST_ASSERT_EQUAL(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
+
+    gBondBackupWriterState.writerActive.store(false, std::memory_order_release);
+    TEST_ASSERT_FALSE(bondBackupWriterQuiesced());
+    gBondBackupWriterState.writerActive.store(true, std::memory_order_release);
+
+    gBondBackupWriterState.shutdownRequested.store(true, std::memory_order_release);
+    TEST_ASSERT_TRUE(completeBondBackupWriterExit());
+    TEST_ASSERT_TRUE(gBondBackupWriterState.writerActive.load(std::memory_order_acquire));
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_FALSE(completeBondBackupWriterExit());
+    TEST_ASSERT_TRUE(bondBackupWriterQuiesced());
+    TEST_ASSERT_EQUAL_UINT8(83, readFirstOurAddressByte());
+
+    gBondBackupWriterState.writerAdmissionsInFlight.store(1, std::memory_order_release);
+    TEST_ASSERT_FALSE(bondBackupWriterQuiesced());
+    gBondBackupWriterState.writerAdmissionsInFlight.store(0, std::memory_order_release);
+    TEST_ASSERT_TRUE(bondBackupWriterQuiesced());
+}
+
 void test_writer_stack_minimum_preserves_zero_and_reset_restores_unsampled() {
     TEST_ASSERT_EQUAL_UINT32(
         UINT32_MAX, bleBondBackupWriterStats().writerStackMinFreeBytes);
@@ -308,6 +370,9 @@ int main() {
     RUN_TEST(test_full_queue_coalesces_to_latest_snapshot_without_waiting);
     RUN_TEST(test_writer_failure_retains_snapshot_for_retry);
     RUN_TEST(test_writer_setup_failure_drops_observably_without_sd_access);
+    RUN_TEST(test_aborted_shutdown_reopens_bond_backup_writer_admission);
+    RUN_TEST(test_resume_handoffs_snapshot_queued_while_old_bond_writer_exits);
+    RUN_TEST(test_shutdown_exit_drains_late_bond_snapshot_and_waits_for_admissions);
     RUN_TEST(test_writer_stack_minimum_preserves_zero_and_reset_restores_unsampled);
     RUN_TEST(test_runtime_callers_contain_no_sd_lock_or_filesystem_write);
     return UNITY_END();

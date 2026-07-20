@@ -477,10 +477,11 @@ constexpr uint32_t SETTINGS_DEFERRED_BACKUP_RETRY_BACKOFF_MS = 250;
 
 struct DeferredSettingsBackupState {
     QueueHandle_t queue = nullptr;
-    TaskHandle_t writerTask = nullptr;
     PsramQueueAllocation queueAllocation = {};
     bool queueInPsram = false;
     bool writerTaskStackInPsram = false;
+    std::atomic<bool> writerActive{false};
+    std::atomic<uint32_t> writerAdmissionsInFlight{0};
     std::atomic<bool> pendingRequest{false};
     std::atomic<bool> writerRetryPending{false};
     std::atomic<bool> shutdownRequested{false};
@@ -540,32 +541,93 @@ bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload) {
     return ok;
 }
 
-void deferredBackupWriterTaskEntry(void*) {
-    while (true) {
-        if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_relaxed)) {
-            // Drain any queued payloads on the way out so their heap allocations
-            // aren't leaked when we delete the queue from the shutdown caller.
-            SerializedSettingsBackupPayload payload;
-            while (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, 0) == pdTRUE) {
-                releaseSerializedSettingsBackupPayload(payload);
-            }
-            break;
-        }
+struct DeferredBackupWriterAdmission {
+    DeferredBackupWriterAdmission() {
+        gDeferredSettingsBackupState.writerAdmissionsInFlight.fetch_add(1, std::memory_order_acq_rel);
+    }
 
-        SerializedSettingsBackupPayload payload;
-        if (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            continue;
-        }
+    ~DeferredBackupWriterAdmission() {
+        gDeferredSettingsBackupState.writerAdmissionsInFlight.fetch_sub(1, std::memory_order_acq_rel);
+    }
+};
 
-        processDeferredBackupQueueItem(payload);
+void discardDeferredBackupPayloadsForShutdown() {
+    if (gDeferredSettingsBackupState.queue == nullptr) {
+        return;
+    }
+
+    SerializedSettingsBackupPayload payload;
+    while (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, 0) == pdTRUE) {
+        releaseSerializedSettingsBackupPayload(payload);
+    }
+}
+
+bool deferredBackupWriterQuiesced() {
+    return !gDeferredSettingsBackupState.writerActive.load(std::memory_order_acquire) &&
+           gDeferredSettingsBackupState.writerAdmissionsInFlight.load(std::memory_order_acquire) == 0 &&
+           (gDeferredSettingsBackupState.queue == nullptr ||
+            uxQueueMessagesWaiting(gDeferredSettingsBackupState.queue) == 0);
+}
+
+bool completeDeferredBackupWriterExit() {
+    // A producer that observed this task active keeps an admission token until
+    // its payload is queued. Wait for that bounded path before deciding whether
+    // this already-allocated task can exit or must reclaim the queue.
+    while (gDeferredSettingsBackupState.writerAdmissionsInFlight.load(std::memory_order_acquire) > 0) {
         taskYIELD();
     }
-    gDeferredSettingsBackupState.writerTask = nullptr;
+
+    if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
+        discardDeferredBackupPayloadsForShutdown();
+    }
+
+    gDeferredSettingsBackupState.writerActive.store(false, std::memory_order_release);
+
+    // Close the small check-to-publish window for a producer that observed the
+    // old task active immediately before writerActive became false.
+    while (gDeferredSettingsBackupState.writerAdmissionsInFlight.load(std::memory_order_acquire) > 0) {
+        taskYIELD();
+    }
+
+    if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
+        discardDeferredBackupPayloadsForShutdown();
+        return false;
+    }
+
+    if (gDeferredSettingsBackupState.queue == nullptr ||
+        uxQueueMessagesWaiting(gDeferredSettingsBackupState.queue) == 0) {
+        return false;
+    }
+
+    bool expectedInactive = false;
+    return gDeferredSettingsBackupState.writerActive.compare_exchange_strong(expectedInactive, true,
+                                                                             std::memory_order_acq_rel);
+}
+
+void deferredBackupWriterTaskEntry(void*) {
+    do {
+        while (true) {
+            if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
+                // Drain any queued payloads on the way out so their heap allocations
+                // aren't leaked when we delete the queue from the shutdown caller.
+                discardDeferredBackupPayloadsForShutdown();
+                break;
+            }
+
+            SerializedSettingsBackupPayload payload;
+            if (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                continue;
+            }
+
+            processDeferredBackupQueueItem(payload);
+            taskYIELD();
+        }
+    } while (completeDeferredBackupWriterExit());
     vTaskDeleteWithCaps(nullptr);
 }
 
 bool ensureDeferredBackupWriterReady() {
-    if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_relaxed)) {
+    if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
         // Shutdown has been requested; refuse to spin up (or respawn) the writer.
         return false;
     }
@@ -580,11 +642,15 @@ bool ensureDeferredBackupWriterReady() {
         }
     }
 
-    if (gDeferredSettingsBackupState.writerTask == nullptr) {
+    bool expectedInactive = false;
+    if (gDeferredSettingsBackupState.writerActive.compare_exchange_strong(expectedInactive, true,
+                                                                          std::memory_order_acq_rel)) {
+        TaskHandle_t createdTask = nullptr;
         const BaseType_t rc = createTaskPinnedToCoreInternalStack(
             deferredBackupWriterTaskEntry, "SettingsBackup", SETTINGS_DEFERRED_BACKUP_WRITER_STACK_SIZE, nullptr,
-            SETTINGS_DEFERRED_BACKUP_WRITER_PRIORITY, &gDeferredSettingsBackupState.writerTask, 0);
+            SETTINGS_DEFERRED_BACKUP_WRITER_PRIORITY, &createdTask, 0);
         if (rc != pdPASS) {
+            gDeferredSettingsBackupState.writerActive.store(false, std::memory_order_release);
             Serial.println("[Settings] ERROR: Failed to create deferred backup writer task");
             return false;
         }
@@ -621,7 +687,8 @@ void resetDeferredSettingsBackupStateForTest() {
         vQueueDelete(gDeferredSettingsBackupState.queue);
     }
     gDeferredSettingsBackupState.queue = nullptr;
-    gDeferredSettingsBackupState.writerTask = nullptr;
+    gDeferredSettingsBackupState.writerActive.store(false, std::memory_order_relaxed);
+    gDeferredSettingsBackupState.writerAdmissionsInFlight.store(0, std::memory_order_relaxed);
     if (gDeferredSettingsBackupState.queueAllocation.queueBuffer != nullptr) {
         heap_caps_free(gDeferredSettingsBackupState.queueAllocation.queueBuffer);
         gDeferredSettingsBackupState.queueAllocation.queueBuffer = nullptr;
@@ -664,20 +731,24 @@ void shutdownDeferredSettingsBackupWriter(uint32_t timeoutMs) {
     // 1-second timeout, so a caller-supplied timeoutMs of <1s may report a
     // timeout even when the task is healthy — pass at least 1500ms when
     // possible.
-    gDeferredSettingsBackupState.shutdownRequested.store(true, std::memory_order_relaxed);
+    gDeferredSettingsBackupState.shutdownRequested.store(true, std::memory_order_release);
 
-    if (gDeferredSettingsBackupState.writerTask == nullptr) {
+    if (deferredBackupWriterQuiesced()) {
         return;
     }
 
     const uint32_t startMs = millis();
-    while (gDeferredSettingsBackupState.writerTask != nullptr) {
+    while (!deferredBackupWriterQuiesced()) {
         if (millis() - startMs > timeoutMs) {
             Serial.println("[Settings] Shutdown timeout waiting for deferred backup writer to exit");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+
+void resumeDeferredSettingsBackupWriterAfterAbortedShutdown() {
+    gDeferredSettingsBackupState.shutdownRequested.store(false, std::memory_order_release);
 }
 
 bool SettingsManager::saveDeferredBackup() {
@@ -725,6 +796,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
         return;
     }
 
+    DeferredBackupWriterAdmission writerAdmission;
     if (!ensureDeferredBackupWriterReady()) {
         scheduleDeferredBackupRetry(nowMs);
         return;

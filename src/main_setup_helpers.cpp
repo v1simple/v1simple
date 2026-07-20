@@ -151,6 +151,19 @@ void prepareForShutdown(void* /*context*/) {
     markCleanShutdown();
 }
 
+void resumeAfterAbortedShutdown(void* /*context*/) {
+    Serial.println("[Battery] Shutdown aborted; restoring persistence services...");
+
+    // Correct the boot-integrity marker first. If power disappears again while
+    // recovery is still running, the next boot must classify this run as unclean.
+    markUncleanShutdown();
+
+    // Only reopen admission. Existing tasks/queues may still be draining after
+    // a bounded shutdown timeout; normal work will reuse or lazily respawn them.
+    resumeBleBondBackupWriterAfterAbortedShutdown();
+    resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
+}
+
 void onV1ConnectImmediate() {
     mainRuntimeState.v1ConnectedAtMs = millis();
     connectionStateModule.handleConnected(mainRuntimeState.v1ConnectedAtMs, bleClient.sessionGeneration());

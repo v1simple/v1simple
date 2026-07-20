@@ -48,6 +48,9 @@ void PowerModule::performShutdown() {
         const bool shutdownCompleted = battery_->powerOff(sdLog);
         if (!shutdownCompleted) {
             Serial.println("[Power] ERROR: shutdown hardware tail returned; device remains awake");
+            if (shutdownAbortCallback_) {
+                shutdownAbortCallback_(shutdownAbortContext_);
+            }
             if (display_) {
                 // BatteryManager deliberately returns with the inverted
                 // backlight pin HIGH/off. Flush a safe frame while it remains
@@ -75,6 +78,11 @@ void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsMan
 void PowerModule::setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context) {
     shutdownPreparationCallback_ = callback;
     shutdownPreparationContext_ = context;
+}
+
+void PowerModule::setShutdownAbortCallback(ShutdownAbortCallback callback, void* context) {
+    shutdownAbortCallback_ = callback;
+    shutdownAbortContext_ = context;
 }
 
 void PowerModule::logStartupStatus() {

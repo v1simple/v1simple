@@ -9,10 +9,12 @@
 class PowerModule {
   public:
     using ShutdownPreparationCallback = void (*)(void*);
+    using ShutdownAbortCallback = void (*)(void*);
 
     void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings);
 
     void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context);
+    void setShutdownAbortCallback(ShutdownAbortCallback callback, void* context);
 
     // Perform a graceful shutdown. Ignored before side effects in car builds.
     void performShutdown();
@@ -49,6 +51,8 @@ class PowerModule {
     SettingsManager* settings_ = nullptr;
     ShutdownPreparationCallback shutdownPreparationCallback_ = nullptr;
     void* shutdownPreparationContext_ = nullptr;
+    ShutdownAbortCallback shutdownAbortCallback_ = nullptr;
+    void* shutdownAbortContext_ = nullptr;
 
     bool lowBatteryWarningShown_ = false;
     unsigned long criticalBatteryTime_ = 0;

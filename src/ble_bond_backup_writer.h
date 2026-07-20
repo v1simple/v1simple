@@ -31,6 +31,10 @@ BleBondBackupWriterStats bleBondBackupWriterStats();
 // subsystem is bounded by timeoutMs from the caller's perspective.
 void shutdownBleBondBackupWriter(uint32_t timeoutMs);
 
+// Reopens writer admission when the hardware shutdown tail aborts. Existing
+// queue/task state is preserved; later work reuses or lazily respawns it.
+void resumeBleBondBackupWriterAfterAbortedShutdown();
+
 #ifdef UNIT_TEST
 void resetBleBondBackupWriterForTest();
 bool runBleBondBackupWriterOnceForTest();

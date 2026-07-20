@@ -168,8 +168,8 @@ uint32_t nextBootId() {
 // Semantics:
 //   - readAndResetCleanShutdownMarker() is called once at boot. It returns the
 //     previous value and immediately writes false, so the default assumption
-//     during the next run is "we died uncleanly." Only prepareForShutdown()
-//     flips it back to true.
+//     during the next run is "we died uncleanly." prepareForShutdown() flips
+//     it to true, and an aborted hardware tail immediately restores false.
 //   - If the marker reads false at boot, the previous run ended uncleanly.
 //     This is the normal case under car-power mode with no hold-up.
 
@@ -191,6 +191,19 @@ void markCleanShutdown() {
     }
     prefs.putBool(kNvsCleanShutdn, true);
     prefs.end();
+}
+
+void markUncleanShutdown() {
+    Preferences prefs;
+    if (!prefs.begin("v1boot", false)) {
+        Serial.println("[Battery] WARN: Failed to open clean-shutdown marker for abort recovery");
+        return;
+    }
+    const bool persisted = prefs.putBool(kNvsCleanShutdn, false) > 0;
+    prefs.end();
+    if (!persisted) {
+        Serial.println("[Battery] WARN: Failed to rewrite clean-shutdown marker after abort");
+    }
 }
 
 // --- maintenance boot marker ---

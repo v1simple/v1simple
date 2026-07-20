@@ -14,15 +14,25 @@ In car-install builds (`CAR_MODE_PWR_SHORT`), much of this module is compiled to
 Function-pointer signature for shutdown preparation hooks.
 **Source:** `power_module.h:11`.
 
+#### `using ShutdownAbortCallback = void (*)(void*)`
+Function-pointer signature for recovery after the hardware shutdown tail returns
+without completing shutdown.
+**Source:** `power_module.h:12`.
+
 ### Lifecycle
 
 #### `void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings)`
 Wires dependencies. Call once from `setup()`.
-**Source:** `power_module.h:13`.
+**Source:** `power_module.h:14`.
 
 #### `void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context)`
 Registers a hook that runs before `performShutdown()` actually drops power. Use for last-second cleanup (flush logs, save state, etc.).
-**Source:** `power_module.h:15`.
+**Source:** `power_module.h:16`.
+
+#### `void setShutdownAbortCallback(ShutdownAbortCallback callback, void* context)`
+Registers a hook that runs only after the hardware shutdown tail returns `false`.
+Use it to reverse shutdown-preparation latches before the awake UI is restored.
+**Source:** `power_module.h:17`.
 
 ### Shutdown control
 
@@ -38,8 +48,9 @@ up to 1.5 seconds for PWR/GPIO16 to return HIGH; if it remains asserted, it uses
 BOOT/GPIO0 instead. The selected wake input is checked immediately before sleep,
 and an aborted shutdown draws the disconnected screen while the backlight is
 still off, then restores the saved brightness rather than leaving a
-black-but-awake device or exposing retained `GOODBYE` pixels.
-**Source:** `power_module.h:18`.
+black-but-awake device or exposing retained `GOODBYE` pixels. The abort callback
+runs after the failed hardware handoff and before that UI restoration.
+**Source:** `power_module.h:20`.
 
 In `CAR_MODE_PWR_SHORT` builds, this returns before the preparation callback,
 display changes, metrics flush, or battery handoff (`docs/HARDWARE_NOTES.md`).
@@ -48,22 +59,22 @@ display changes, metrics flush, or battery handoff (`docs/HARDWARE_NOTES.md`).
 
 #### `void logStartupStatus()`
 Logs initial battery status. Call once after display init.
-**Source:** `power_module.h:21`.
+**Source:** `power_module.h:23`.
 
 #### `void onV1DataReceived()`
 Mark that real V1 data has been seen. Arms auto-power-off on subsequent V1 disconnect.
 This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
-**Source:** `power_module.h:25`.
+**Source:** `power_module.h:27`.
 
 #### `void onV1ConnectionChange(bool connected)`
 Notifies of V1 BLE connect/disconnect. Drives the auto-power-off timer.
 This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
-**Source:** `power_module.h:28`.
+**Source:** `power_module.h:30`.
 
 #### `void onAlpSignalChange(bool active)`
 Notifies of ALP heartbeat presence. ALP heartbeats also count as "device in use" for auto-power-off purposes — losing both V1 and ALP signal triggers the timer.
 This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
-**Source:** `power_module.h:31`.
+**Source:** `power_module.h:33`.
 
 ### Pump
 
@@ -71,7 +82,7 @@ This notification is a no-op in `CAR_MODE_PWR_SHORT` builds.
 Per-tick: battery polling, critical-shutdown check, auto-power-off timer evaluation.
 Car builds retain battery polling but compile out the button, critical-battery,
 and auto-power shutdown paths.
-**Source:** `power_module.h:34`.
+**Source:** `power_module.h:36`.
 
 ### Test seams (UNIT_TEST only)
 
@@ -80,7 +91,7 @@ and auto-power shutdown paths.
 - `bool autoPowerOffArmedForTest() const`
 - `void performShutdownRequestForTest()` — bypasses platform shutdown to exercise the request path.
 
-**Source:** `power_module.h:36-40`.
+**Source:** `power_module.h:38-42`.
 
 ## Dependencies
 
@@ -102,7 +113,10 @@ user has only ALP attached (no V1 paired), `onAlpSignalChange(true)` keeps the
 timer disarmed. Don't simplify this to V1-only without first checking ALP-only
 install scenarios.
 
-The shutdown preparation callback is the one chance for other modules to flush state. SD loggers and settings writers should hook here. Don't add long-running work — the callback is on the path to actually dropping power.
+The shutdown preparation callback is the one chance for other modules to flush
+state. SD loggers and settings writers should hook here. The abort callback must
+reverse any preparation state that permanently rejects later runtime work. Don't
+add long-running work to either hook.
 
 In `CAR_MODE_PWR_SHORT` builds, every shutdown entry point and auto-power
 notification compiles to a no-op via preprocessor gates (see the .cpp). If you

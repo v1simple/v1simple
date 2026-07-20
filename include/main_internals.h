@@ -36,6 +36,10 @@ bool readAndResetCleanShutdownMarker();
 /// prepareForShutdown() so the next boot can recognize a graceful exit.
 void markCleanShutdown();
 
+/// Rewrite the clean-shutdown marker to false when the hardware shutdown tail
+/// aborts and the current runtime remains active.
+void markUncleanShutdown();
+
 /// Request that the next boot enter maintenance mode. Returns false if the
 /// request could not be persisted to NVS.
 bool requestMaintenanceBoot();
@@ -65,6 +69,10 @@ void initializeStorageAndProfiles();
 
 /// Prepare persistence/runtime services for a power-off sequence before the final hardware tail runs.
 void prepareForShutdown(void* context);
+
+/// Restore persistence admission and the unclean marker after the hardware
+/// shutdown tail returns without powering down or entering deep sleep.
+void resumeAfterAbortedShutdown(void* context);
 
 /// Initialize perf/observation CSV loggers and return the boot session id.
 uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services);

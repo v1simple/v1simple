@@ -25,7 +25,14 @@ struct ShutdownPrepState {
     int powerOffCallsAtPrep = -1;
 };
 
+struct ShutdownAbortState {
+    int calls = 0;
+    int showDisconnectedCallsAtAbort = -1;
+    int powerOffCallsAtAbort = -1;
+};
+
 ShutdownPrepState shutdownPrepState;
+ShutdownAbortState shutdownAbortState;
 
 void recordShutdownPreparation(void* context) {
     auto* state = static_cast<ShutdownPrepState*>(context);
@@ -36,6 +43,17 @@ void recordShutdownPreparation(void* context) {
     state->calls++;
     state->showShutdownCallsAtPrep = display.showShutdownCalls;
     state->powerOffCallsAtPrep = battery.powerOffCalls;
+}
+
+void recordShutdownAbort(void* context) {
+    auto* state = static_cast<ShutdownAbortState*>(context);
+    if (!state) {
+        return;
+    }
+
+    state->calls++;
+    state->showDisconnectedCallsAtAbort = display.showDisconnectedCalls;
+    state->powerOffCallsAtAbort = battery.powerOffCalls;
 }
 
 void setTime(unsigned long nowMs) {
@@ -62,6 +80,7 @@ void setUp() {
     testSettings = SettingsManager{};
     testSettings.settings.autoPowerOffMinutes = 10;
     shutdownPrepState = ShutdownPrepState{};
+    shutdownAbortState = ShutdownAbortState{};
 
     module = PowerModule{};
     module.begin(&battery, &display, &testSettings);
@@ -116,6 +135,26 @@ void test_failed_shutdown_restores_visible_disconnected_screen() {
     TEST_ASSERT_TRUE(display.showDisconnectedSequence > 0);
     TEST_ASSERT_TRUE(display.showDisconnectedSequence < display.flushSequence);
     TEST_ASSERT_TRUE(display.flushSequence < display.setBrightnessSequence);
+}
+
+void test_failed_shutdown_invokes_abort_callback_after_hardware_return() {
+    battery.powerOffResult = false;
+    module.setShutdownAbortCallback(recordShutdownAbort, &shutdownAbortState);
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(1, shutdownAbortState.calls);
+    TEST_ASSERT_EQUAL(1, shutdownAbortState.powerOffCallsAtAbort);
+    TEST_ASSERT_EQUAL(0, shutdownAbortState.showDisconnectedCallsAtAbort);
+    TEST_ASSERT_EQUAL(1, display.showDisconnectedCalls);
+}
+
+void test_successful_shutdown_does_not_invoke_abort_callback() {
+    module.setShutdownAbortCallback(recordShutdownAbort, &shutdownAbortState);
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(0, shutdownAbortState.calls);
 }
 
 void test_set_shutdown_preparation_callback_runs_before_shutdown_tail() {
@@ -335,6 +374,8 @@ int main() {
     RUN_TEST(test_perform_shutdown_request_delegates_to_battery_power_off);
     RUN_TEST(test_shutdown_leaves_panel_frame_black_before_power_handoff);
     RUN_TEST(test_failed_shutdown_restores_visible_disconnected_screen);
+    RUN_TEST(test_failed_shutdown_invokes_abort_callback_after_hardware_return);
+    RUN_TEST(test_successful_shutdown_does_not_invoke_abort_callback);
     RUN_TEST(test_set_shutdown_preparation_callback_runs_before_shutdown_tail);
     RUN_TEST(test_null_shutdown_preparation_callback_is_tolerated);
     RUN_TEST(test_power_button_shutdown_request_routes_through_power_module);

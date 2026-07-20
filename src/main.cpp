@@ -387,6 +387,7 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     settingsManager.begin();
     powerModule.begin(&batteryManager, &display, &settingsManager);
     powerModule.setShutdownPreparationCallback(prepareForShutdown, nullptr);
+    powerModule.setShutdownAbortCallback(resumeAfterAbortedShutdown, nullptr);
     powerModule.logStartupStatus();
     logBootStage("settings");
 

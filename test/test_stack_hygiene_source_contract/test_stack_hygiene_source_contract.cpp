@@ -98,6 +98,32 @@ void test_graceful_shutdown_feeds_between_bounded_drain_steps() {
                           source.find("(void)esp_task_wdt_reset();"));
 }
 
+void test_aborted_shutdown_restores_persistence_admission_and_unclean_marker() {
+    const std::string helpers = readTextFile("src/main_setup_helpers.cpp");
+    const std::string mainSource = readTextFile("src/main.cpp");
+
+    TEST_ASSERT_FALSE_MESSAGE(helpers.empty(), "failed to read src/main_setup_helpers.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(mainSource.empty(), "failed to read src/main.cpp");
+
+    const size_t recoveryStart = helpers.find("void resumeAfterAbortedShutdown(void*");
+    const size_t recoveryEnd = helpers.find("void onV1ConnectImmediate()", recoveryStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, recoveryStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, recoveryEnd);
+    const std::string recovery = helpers.substr(recoveryStart, recoveryEnd - recoveryStart);
+
+    const size_t marker = recovery.find("markUncleanShutdown();");
+    const size_t bond = recovery.find("resumeBleBondBackupWriterAfterAbortedShutdown();");
+    const size_t settings = recovery.find("resumeDeferredSettingsBackupWriterAfterAbortedShutdown();");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, marker);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, bond);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, settings);
+    TEST_ASSERT_TRUE(marker < bond);
+    TEST_ASSERT_TRUE(marker < settings);
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        mainSource.find("powerModule.setShutdownAbortCallback(resumeAfterAbortedShutdown, nullptr);"));
+}
+
 void test_short_lived_task_stack_watermarks_are_reported() {
     const std::string source = readTextFile("src/perf_report.cpp");
 
@@ -128,6 +154,7 @@ int main() {
     RUN_TEST(test_sd_audio_uses_one_persistent_static_worker);
     RUN_TEST(test_main_loop_is_explicitly_watched_and_only_feeds_on_exit);
     RUN_TEST(test_graceful_shutdown_feeds_between_bounded_drain_steps);
+    RUN_TEST(test_aborted_shutdown_restores_persistence_admission_and_unclean_marker);
     RUN_TEST(test_short_lived_task_stack_watermarks_are_reported);
     return UNITY_END();
 }

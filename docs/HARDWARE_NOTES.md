@@ -22,8 +22,11 @@ the battery latch but cannot remove an attached USB/external supply:
 The selected wake pin receives an RTC pull-up and is checked both before EXT1 is
 armed and immediately before sleep entry. If it is LOW at either check, shutdown
 is aborted, the backlight sleep hold is released, and the disconnected screen is
-restored. `/poweroff.log` records `wake=BOOT_GPIO0` or `wake=PWR_GPIO16` with the
-terminal shutdown outcome when power-off SD logging is enabled.
+restored. The runtime also rewrites its clean-shutdown marker to unclean and
+reopens the BLE-bond and deferred-settings backup writers, preserving their
+existing queues and retry state. `/poweroff.log` records `wake=BOOT_GPIO0` or
+`wake=PWR_GPIO16` with the terminal shutdown outcome when power-off SD logging is
+enabled.
 
 ---
 

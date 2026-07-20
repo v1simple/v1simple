@@ -93,6 +93,15 @@ void test_maintenance_boot_request_reports_nvs_write_failure() {
     TEST_ASSERT_FALSE(readAndClearMaintenanceBootRequest());
 }
 
+void test_aborted_shutdown_rewrites_clean_marker_to_unclean() {
+    mock_preferences::reset();
+
+    markCleanShutdown();
+    markUncleanShutdown();
+
+    TEST_ASSERT_FALSE(readAndResetCleanShutdownMarker());
+}
+
 // -----------------------------------------------------------------------
 
 void setUp() {}
@@ -114,6 +123,7 @@ int main() {
     RUN_TEST(test_reset_reason_unknown);
     RUN_TEST(test_maintenance_boot_request_is_one_shot);
     RUN_TEST(test_maintenance_boot_request_reports_nvs_write_failure);
+    RUN_TEST(test_aborted_shutdown_rewrites_clean_marker_to_unclean);
 
     return UNITY_END();
 }

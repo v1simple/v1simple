@@ -45,6 +45,11 @@ void PowerModule::performShutdown() {
         const uint8_t savedBrightness = settings_ ? settings_->get().brightness : 0;
         Serial.printf("[Power] Shutdown handoff: source=%s sdLog=%d\n",
                       battery_->isOnBattery() ? "battery" : "external", sdLog ? 1 : 0);
+#ifdef UNIT_TEST
+        if (shutdownHandoffObserverForTest_) {
+            shutdownHandoffObserverForTest_(shutdownHandoffObserverContextForTest_);
+        }
+#endif
         const bool shutdownCompleted = battery_->powerOff(sdLog);
         if (!shutdownCompleted) {
             Serial.println("[Power] ERROR: shutdown hardware tail returned; device remains awake");

@@ -31,8 +31,15 @@ struct ShutdownAbortState {
     int powerOffCallsAtAbort = -1;
 };
 
+struct ShutdownHandoffState {
+    int calls = 0;
+    int powerOffCallsAtHandoff = -1;
+    DisplayMockLifecycleState displayState{};
+};
+
 ShutdownPrepState shutdownPrepState;
 ShutdownAbortState shutdownAbortState;
+ShutdownHandoffState shutdownHandoffState;
 
 void recordShutdownPreparation(void* context) {
     auto* state = static_cast<ShutdownPrepState*>(context);
@@ -54,6 +61,17 @@ void recordShutdownAbort(void* context) {
     state->calls++;
     state->showDisconnectedCallsAtAbort = display.showDisconnectedCalls;
     state->powerOffCallsAtAbort = battery.powerOffCalls;
+}
+
+void recordShutdownHandoff(void* context) {
+    auto* state = static_cast<ShutdownHandoffState*>(context);
+    if (!state) {
+        return;
+    }
+
+    state->calls++;
+    state->powerOffCallsAtHandoff = battery.powerOffCalls;
+    state->displayState = display.lifecycleState();
 }
 
 void setTime(unsigned long nowMs) {
@@ -81,6 +99,7 @@ void setUp() {
     testSettings.settings.autoPowerOffMinutes = 10;
     shutdownPrepState = ShutdownPrepState{};
     shutdownAbortState = ShutdownAbortState{};
+    shutdownHandoffState = ShutdownHandoffState{};
 
     module = PowerModule{};
     module.begin(&battery, &display, &testSettings);
@@ -110,15 +129,33 @@ void test_perform_shutdown_request_delegates_to_battery_power_off() {
 }
 
 void test_shutdown_leaves_panel_frame_black_before_power_handoff() {
+    module.setShutdownHandoffObserverForTest(recordShutdownHandoff, &shutdownHandoffState);
+
     module.performShutdownRequestForTest();
 
-    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
 #ifndef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
     TEST_ASSERT_EQUAL(1, display.clearCalls);
-#else
-    TEST_ASSERT_EQUAL(0, display.clearCalls);
-#endif
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(1, shutdownHandoffState.calls);
+    TEST_ASSERT_EQUAL(0, shutdownHandoffState.powerOffCallsAtHandoff);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::CLEARED),
+                            static_cast<uint8_t>(shutdownHandoffState.displayState.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::CLEAR),
+                            static_cast<uint8_t>(shutdownHandoffState.displayState.lastOperation));
+    TEST_ASSERT_TRUE(shutdownHandoffState.displayState.panelFrameBlack);
+    TEST_ASSERT_EQUAL_UINT32(shutdownHandoffState.displayState.sequence,
+                             shutdownHandoffState.displayState.clearSequence);
+#else
+    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(0, display.clearCalls);
+    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(0, shutdownHandoffState.calls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::NONE),
+                            static_cast<uint8_t>(display.lifecycleState().presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::NONE),
+                            static_cast<uint8_t>(display.lifecycleState().lastOperation));
+#endif
 }
 
 void test_failed_shutdown_restores_visible_disconnected_screen() {
@@ -135,6 +172,16 @@ void test_failed_shutdown_restores_visible_disconnected_screen() {
     TEST_ASSERT_TRUE(display.showDisconnectedSequence > 0);
     TEST_ASSERT_TRUE(display.showDisconnectedSequence < display.flushSequence);
     TEST_ASSERT_TRUE(display.flushSequence < display.setBrightnessSequence);
+    const auto& lifecycle = display.lifecycleState();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::DISCONNECTED),
+                            static_cast<uint8_t>(lifecycle.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::SET_BRIGHTNESS),
+                            static_cast<uint8_t>(lifecycle.lastOperation));
+    TEST_ASSERT_FALSE(lifecycle.panelFrameBlack);
+    TEST_ASSERT_EQUAL_UINT8(173, lifecycle.brightness);
+    TEST_ASSERT_TRUE(lifecycle.presentationSequence < lifecycle.flushSequence);
+    TEST_ASSERT_TRUE(lifecycle.flushSequence < lifecycle.brightnessSequence);
+    TEST_ASSERT_EQUAL_UINT32(lifecycle.sequence, lifecycle.brightnessSequence);
 }
 
 void test_failed_shutdown_invokes_abort_callback_after_hardware_return() {

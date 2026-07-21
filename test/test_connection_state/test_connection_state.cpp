@@ -388,6 +388,8 @@ void test_real_module_disconnect_clears_ble_display_state() {
     real.process(1000);
 
     display.reset();
+    display.setBleContext({true, true, -70, -55});
+    display.setBLEProxyStatus(true, true, true);
     parser.reset();
     powerModule.reset();
     AlertData persisted;
@@ -396,12 +398,26 @@ void test_real_module_disconnect_clears_ble_display_state() {
     bleClient.setConnected(false);
 
     TEST_ASSERT_FALSE(real.process(1100));
-    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
+    const auto& lifecycle = display.lifecycleState();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::SCANNING),
+                            static_cast<uint8_t>(lifecycle.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::SHOW_SCANNING),
+                            static_cast<uint8_t>(lifecycle.lastOperation));
+    TEST_ASSERT_FALSE(lifecycle.bleContext.v1Connected);
+    TEST_ASSERT_FALSE(lifecycle.bleContext.proxyConnected);
+    TEST_ASSERT_FALSE(lifecycle.bleProxyEnabled);
+    TEST_ASSERT_FALSE(lifecycle.bleProxyConnected);
+    TEST_ASSERT_FALSE(lifecycle.bleReceiving);
+    TEST_ASSERT_TRUE(lifecycle.bleContextSequence < lifecycle.bleProxyStatusSequence);
+    TEST_ASSERT_TRUE(lifecycle.bleProxyStatusSequence < lifecycle.resetChangeTrackingSequence);
+    TEST_ASSERT_TRUE(lifecycle.resetChangeTrackingSequence < lifecycle.presentationSequence);
+
+    TEST_ASSERT_EQUAL(2, display.setBleContextCalls);
     TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
     TEST_ASSERT_FALSE(display.lastBleContext.proxyConnected);
     TEST_ASSERT_EQUAL(0, display.lastBleContext.v1Rssi);
     TEST_ASSERT_EQUAL(0, display.lastBleContext.proxyRssi);
-    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(2, display.setBLEProxyStatusCalls);
     TEST_ASSERT_FALSE(display.lastBleProxyEnabled);
     TEST_ASSERT_FALSE(display.lastBleProxyConnected);
     TEST_ASSERT_FALSE(display.lastBleReceiving);
@@ -529,6 +545,17 @@ void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scannin
     TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
     TEST_ASSERT_EQUAL(2, display.setBLEProxyStatusCalls);
     TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
+
+    const auto& lifecycle = display.lifecycleState();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::CONTENT),
+                            static_cast<uint8_t>(lifecycle.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::UPDATE_CONTENT),
+                            static_cast<uint8_t>(lifecycle.lastOperation));
+    TEST_ASSERT_FALSE(lifecycle.bleContext.v1Connected);
+    TEST_ASSERT_FALSE(lifecycle.bleContext.proxyConnected);
+    TEST_ASSERT_FALSE(lifecycle.bleProxyEnabled);
+    TEST_ASSERT_FALSE(lifecycle.bleProxyConnected);
+    TEST_ASSERT_TRUE(lifecycle.resetChangeTrackingSequence < lifecycle.presentationSequence);
 }
 
 void test_owner_presenter_state_change_does_not_clear_new_pending() {

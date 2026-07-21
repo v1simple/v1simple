@@ -36,10 +36,16 @@ class PowerModule {
     void process(unsigned long nowMs);
 
 #ifdef UNIT_TEST
+    using ShutdownHandoffObserver = void (*)(void*);
+
     bool lowBatteryWarningShownForTest() const { return lowBatteryWarningShown_; }
     unsigned long autoPowerOffTimerStartForTest() const { return autoPowerOffTimerStart_; }
     bool autoPowerOffArmedForTest() const { return autoPowerOffArmed_; }
     void performShutdownRequestForTest() { performShutdownRequest(); }
+    void setShutdownHandoffObserverForTest(ShutdownHandoffObserver observer, void* context) {
+        shutdownHandoffObserverForTest_ = observer;
+        shutdownHandoffObserverContextForTest_ = context;
+    }
 #endif
 
   private:
@@ -53,6 +59,10 @@ class PowerModule {
     void* shutdownPreparationContext_ = nullptr;
     ShutdownAbortCallback shutdownAbortCallback_ = nullptr;
     void* shutdownAbortContext_ = nullptr;
+#ifdef UNIT_TEST
+    ShutdownHandoffObserver shutdownHandoffObserverForTest_ = nullptr;
+    void* shutdownHandoffObserverContextForTest_ = nullptr;
+#endif
 
     bool lowBatteryWarningShown_ = false;
     unsigned long criticalBatteryTime_ = 0;

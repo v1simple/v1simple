@@ -110,7 +110,7 @@ def require_contains(text: str, needle: str, label: str, errors: list[str]) -> N
 
 
 def check_production_env_is_tested(errors: list[str]) -> None:
-    """Guard the shared exact-artifact build and protected PR-gate contract."""
+    """Guard the shared exact-artifact build and main-push CI contract."""
 
     ci_test_text = CI_TEST.read_text(encoding="utf-8")
     production_text = PRODUCTION_BUILD.read_text(encoding="utf-8")
@@ -127,25 +127,25 @@ def check_production_env_is_tested(errors: list[str]) -> None:
     workflow_path = CI_YML.relative_to(ROOT).as_posix()
     if workflow_path != DEFAULT_WORKFLOW_PATH:
         errors.append(
-            "Protected CI workflow path does not match the authoritative workflow: "
+            "Authoritative CI workflow path does not match the configured identity: "
             f"{DEFAULT_WORKFLOW_PATH!r} != {workflow_path!r}"
         )
     for required in (
         f"name: {DEFAULT_WORKFLOW_NAME}",
         f"    name: {DEFAULT_JOB_NAME}",
         f"      - name: {DEFAULT_STEP_NAME}",
-        "pull_request:",
+        "push:",
         "workflow_dispatch:",
         "branches: [main]",
     ):
         require_contains(
             ci_workflow_text,
             required,
-            ".github/workflows/ci.yml protected-check identity",
+            ".github/workflows/ci.yml main-push identity",
             errors,
         )
-    if re.search(r"^\s{2}push:\s*$", ci_workflow_text, re.MULTILINE):
-        errors.append("ci.yml must not repeat the full PR gate after merge to main")
+    if re.search(r"^\s{2}pull_request:\s*$", ci_workflow_text, re.MULTILINE):
+        errors.append("ci.yml must not require a public development branch or PR")
     require_contains(
         ci_test_text,
         "./scripts/build_production_artifacts.sh",
@@ -188,7 +188,7 @@ def check_production_env_is_tested(errors: list[str]) -> None:
         )
 
     if "./scripts/ci-test.sh" in release_text:
-        errors.append("release.yml must not rerun the protected PR gate")
+        errors.append("release.yml must reuse green main CI evidence, not rerun the full gate")
     if "cd interface && npm ci" in ci_workflow_text:
         errors.append("ci.yml must not install frontend dependencies before ci-test.sh installs them")
     require_contains(
@@ -207,18 +207,30 @@ def check_production_env_is_tested(errors: list[str]) -> None:
 
 
 def check_release_version_automation(errors: list[str]) -> None:
-    """Keep the one-click release path safe, ordered, and idempotent."""
+    """Keep the CI-gated release path safe, ordered, and idempotent."""
 
     release_text = RELEASE_YML.read_text(encoding="utf-8")
     for required in (
-        "push:",
+        "workflow_run:",
+        "workflows: [CI]",
+        "types: [completed]",
         "branches: [main]",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.head_branch == 'main'",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "actions: read",
         "persist-credentials: false",
-        '"$GITHUB_EVENT_NAME" != "push"',
+        "ref: ${{ github.event.workflow_run.head_sha }}",
+        '"$GITHUB_EVENT_NAME" != "workflow_run"',
         'python3 scripts/prepare_release.py --lookup-run-id "$RELEASE_RUN_ID"',
         'git checkout --detach "$RESUME_SHA"',
-        'EVENT_SHA: ${{ github.sha }}',
+        "EVENT_SHA: ${{ github.event.workflow_run.head_sha }}",
         'git checkout --detach "$EVENT_SHA"',
+        "EXPECTED_CI_RUN_ID: ${{ github.event.workflow_run.id }}",
+        "python3 scripts/check_ci_evidence.py",
+        '--expected-run-id "$EXPECTED_CI_RUN_ID"',
+        "--wait-seconds 0",
         "RELEASE_BUMP: patch",
         'python3 scripts/prepare_release.py',
         '--bump "$RELEASE_BUMP"',
@@ -250,21 +262,38 @@ def check_release_version_automation(errors: list[str]) -> None:
         "GITHUB_SHA",
         "run: ./scripts/ci-test.sh",
         "Bump FIRMWARE_VERSION in include/config.h before releasing",
-        "python3 scripts/check_ci_evidence.py",
-        "actions: read",
         "workflow_dispatch:",
+        "pull_request:",
         "paths-ignore:",
     ):
         if forbidden in release_text:
             errors.append(f"release.yml contains retired release behavior: {forbidden!r}")
 
-    prepare_index = release_text.find("--bump \"$RELEASE_BUMP\"")
     resume_index = release_text.find("--lookup-run-id")
+    evidence_index = release_text.find("python3 scripts/check_ci_evidence.py")
+    prepare_index = release_text.find("--bump \"$RELEASE_BUMP\"")
     build_index = release_text.find("./scripts/build_production_artifacts.sh")
+    evidence_recheck_index = release_text.rfind("python3 scripts/check_ci_evidence.py")
     publish_index = release_text.find("Publish release commit and tag")
-    ordered = (resume_index, prepare_index, build_index, publish_index)
+    ordered = (
+        resume_index,
+        evidence_index,
+        prepare_index,
+        build_index,
+        evidence_recheck_index,
+        publish_index,
+    )
     if -1 not in ordered and list(ordered) != sorted(ordered):
-        errors.append("release.yml must resolve reruns, prepare, build, then publish")
+        errors.append(
+            "release.yml must resolve reruns, verify CI, prepare, build, "
+            "reconfirm CI, then publish"
+        )
+    if release_text.count("python3 scripts/check_ci_evidence.py") != 2:
+        errors.append("release.yml must verify triggering CI before preparation and publication")
+    if release_text.count('--expected-run-id "$EXPECTED_CI_RUN_ID"') != 2:
+        errors.append("release.yml must bind both CI evidence checks to the triggering run ID")
+    if re.search(r"^\s{2}push:\s*$", release_text, re.MULTILINE):
+        errors.append("release.yml must not publish directly from an unverified main push")
 
 
 def main() -> int:

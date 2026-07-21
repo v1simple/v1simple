@@ -245,39 +245,4 @@ constexpr bool powerButtonHandlingEnabled(const ButtonGateInputs& inputs) {
     return inputs.managerInitialized && resolveOnBattery(inputs.classification);
 }
 
-// ─── Battery indicator gating ─────────────────────────────────────────────
-//
-// While the classifier has not resolved, resolveOnBattery(Unknown) reports
-// battery. That is the correct *safety* default — it keeps low-battery
-// protection armed — but it is an assumption, not an observation, and it must
-// not be painted as though it were fact.
-//
-// Painting it costs more than a wrong icon. On a USB unit the pin reads LOW
-// immediately but USB is withheld for usbConfirmMs, so the indicator would
-// render "on battery" and then flip when the real verdict lands. That flip is
-// a visible wrong-state window plus a status repaint and a full-flush redraw,
-// and on a bench run the resulting render burst landed inside the
-// V1BLEClient::process timing window as a ~47 ms boot stall
-// (ble_process_max_peak_us 840 -> 47728). Suppressing the paint until the
-// verdict is real removes the transition rather than making it cheaper.
-//
-// The grace bound exists so a pathological classifier cannot hide the
-// indicator forever: if rounds stay suppressed (e.g. a stuck-LOW pin with a
-// button interaction permanently in flight) the indicator paints anyway on the
-// safe default once the grace expires. Normal resolution is far quicker —
-// about two round spacings on battery, usbConfirmMs on USB.
-
-struct IndicatorGateInputs {
-    Source classification = Source::Unknown;
-    uint32_t nowMs = 0;
-    uint32_t classifierStartedMs = 0;
-    uint32_t resolveGraceMs = 5000;
-};
-
-/// Is the source classification trustworthy enough to render?
-constexpr bool batteryIndicatorShouldPaint(const IndicatorGateInputs& inputs) {
-    return inputs.classification != Source::Unknown ||
-           static_cast<uint32_t>(inputs.nowMs - inputs.classifierStartedMs) >= inputs.resolveGraceMs;
-}
-
 } // namespace battery_source_policy

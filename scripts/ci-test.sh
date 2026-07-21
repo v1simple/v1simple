@@ -20,7 +20,7 @@ Usage: scripts/ci-test.sh [--with-coverage] [--help]
                     suites + gcovr + ratchet check). OFF by default: the lane is
                     a whole second native run (measured: 170.7s uninstrumented
                     vs 206.6s instrumented for 149 suites, plus ~24s of gcovr),
-                    so the PR gate does not carry it. It runs out-of-band in
+                    so the authoritative main gate does not carry it. It runs out-of-band in
                     .github/workflows/coverage.yml. When this flag is passed the
                     coverage section runs AFTER the budget check, so it is not
                     charged against the 1200s ci-test budget.
@@ -91,6 +91,7 @@ run_step "WiFi API fixture generator regression tests" python3 scripts/test_gene
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
 run_step "Release CI evidence regression tests" python3 scripts/test_check_ci_evidence.py
+run_step "Release workflow trigger contract regression tests" python3 scripts/test_release_workflow_flash_contract.py
 run_step "sdkconfig redefine guard (CONFIG_* -D vs framework header)" python3 scripts/check_sdkconfig_redefines.py
 run_step "BLE deletion semantic guard" python3 scripts/check_ble_deletion_contract.py
 run_step "Frontend HTTP resilience semantic guard" python3 scripts/check_frontend_http_resilience_contract.py
@@ -185,7 +186,7 @@ section "Budget Check"
 run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TIMING_DIR/timing.json"
 
 # Opt-in only, and deliberately sequenced AFTER the budget check: the coverage
-# lane is not part of the authoritative PR gate, so its wall clock must not be
+# lane is not part of the authoritative main gate, so its wall clock must not be
 # charged against the 1200s ci-test budget. Without --with-coverage nothing
 # below runs and the gate is unchanged.
 if [[ "$WITH_COVERAGE" -eq 1 ]]; then

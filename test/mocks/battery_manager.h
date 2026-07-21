@@ -25,7 +25,6 @@ public:
 
     bool isOnBattery() const { return onBattery_; }
     bool hasBattery() const { return hasBattery_; }
-    bool batteryIndicatorReady() const { return batteryIndicatorReady_; }
     int getBatteryPercent() const { return percent_; }
     uint8_t getPercentage() const { return static_cast<uint8_t>(percent_); }
     uint16_t getVoltageMillivolts() const { return static_cast<uint16_t>(voltage_ * 1000.0f); }
@@ -57,7 +56,6 @@ public:
     // Test helpers
     void setOnBattery(bool b) { onBattery_ = b; }
     void setHasBattery(bool b) { hasBattery_ = b; }
-    void setBatteryIndicatorReady(bool b) { batteryIndicatorReady_ = b; }
     void setBatteryPercent(int p) {
         percent_ = p;
         criticalOverrideEnabled_ = false;
@@ -71,7 +69,6 @@ public:
     void reset() {
         onBattery_ = false;
         hasBattery_ = false;
-        batteryIndicatorReady_ = true;
         percent_ = 100;
         voltage_ = 4.2f;
         charging_ = false;
@@ -107,9 +104,6 @@ public:
 private:
     bool onBattery_ = false;
     bool hasBattery_ = false;
-    // Defaults true so existing suites see pre-#17 paint behaviour unchanged;
-    // the boot-suppression path is exercised by setting it false explicitly.
-    bool batteryIndicatorReady_ = true;
     int percent_ = 100;
     float voltage_ = 4.2f;
     bool charging_ = false;

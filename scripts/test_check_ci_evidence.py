@@ -352,6 +352,21 @@ class ActionsEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence.job_id, JOB_ID)
         self.assertEqual(evidence.event, "push")
 
+    def test_binds_evidence_to_expected_triggering_run(self) -> None:
+        expected = run_record(run_number=17)
+        newer_same_sha = run_record(id=RUN_ID + 1, run_number=18)
+        evidence = self.verify(
+            FakeApi(run_snapshots=[[expected, newer_same_sha]]),
+            expected_run_id=RUN_ID,
+        )
+        self.assertEqual(evidence.run_id, RUN_ID)
+
+    def test_rejects_wrong_or_invalid_expected_triggering_run(self) -> None:
+        with self.assertRaisesRegex(CiEvidenceError, "does not match"):
+            self.verify(FakeApi(), expected_run_id=RUN_ID + 1)
+        with self.assertRaisesRegex(CiEvidenceError, "positive integer"):
+            self.verify(FakeApi(), expected_run_id=0)
+
     def test_accepts_exact_main_workflow_dispatch_as_recovery_evidence(self) -> None:
         dispatched = run_record(event="workflow_dispatch")
         evidence = self.verify(

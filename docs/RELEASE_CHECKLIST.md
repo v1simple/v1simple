@@ -3,8 +3,11 @@
 > Status: Active
 > Date: 2026-05-27
 
-Use this before merging a release-ready branch to `main`. Every green merge
-automatically publishes the next patch release.
+Use this before publishing a release-ready merge to the public `main` branch.
+The public remote is main-only: development branches remain local and are
+preserved through the private workflow. Publishing the candidate merge to
+`main` starts authoritative CI; only a successful push-origin run for that
+exact commit can start the automatic patch release.
 The workflow prepares the version commit and publishes both the GitHub Release
 assets and the GitHub Pages ESP Web Tools installer from the same generated
 manifest and merged firmware image. There is no second release button or
@@ -12,14 +15,15 @@ version choice in the normal path.
 
 ## 1. Branch and version
 
-- Prepare changes on a short-lived branch and merge them to `main` through a PR.
+- Prepare changes on a local short-lived branch and preserve that branch through
+  the private workflow. Never push a development branch to the public remote.
 - Working tree clean before the final gate.
 - Do not manually reuse or move a published version tag. The Release workflow
   derives the next stable semver from immutable tags.
-- Every merge uses a `patch` bump automatically. The workflow updates
-  `include/config.h`, opens the new changelog section, and rotates changelog
-  links automatically. A future minor/major policy should be added through a
-  normal reviewed PR rather than an extra publication path.
+- Every green `main` candidate uses a `patch` bump automatically. The workflow
+  updates `include/config.h`, opens the new changelog section, and rotates
+  changelog links automatically. A future minor/major policy should be added
+  through a normal reviewed change rather than an extra publication path.
 
 ## 2. Documentation gates
 
@@ -29,22 +33,32 @@ version choice in the normal path.
 
 ## 3. Local CI gate
 
-Run the authoritative local gate before merging release-ready changes:
+Run the authoritative local gate on the exact candidate commit before
+publishing release-ready changes:
 
 ```bash
 ./scripts/ci-test.sh
 ```
 
-Do not commit a change unless this passes.
+Do not publish a change unless this passes.
+
+Publishing the exact merge commit to public `main` runs the same gate in
+`.github/workflows/ci.yml`. A manual `workflow_dispatch` remains available for
+diagnostics, but it cannot start Release; release eligibility comes only from a
+successful CI run whose underlying event is the candidate's `main` push.
 
 The CI gate writes memory headroom JSON under `.artifacts/test_reports/memory-headroom/`.
-If IRAM is reported at zero headroom, flag it in the release PR before any framework, board package, BLE, display, or ISR/hot-path dependency changes are merged.
+If IRAM is reported at zero headroom, flag it in the release review record
+before any framework, board package, BLE, display, or ISR/hot-path dependency
+changes are merged.
 
 ## 4. Hardware evidence
 
 ### 4a. Core/display bench
 
-For release-board confidence, run at least one bench evidence pass after the final commit. The bench suite scores core/display metrics from SD perf CSV exports, not live Wi-Fi polling:
+For release-board confidence, run at least one bench evidence pass from a clean
+checkout after creating the final candidate commit. The bench suite scores
+core/display metrics from SD perf CSV exports, not live Wi-Fi polling:
 
 ```bash
 ./bench.sh
@@ -59,7 +73,10 @@ Expected release-ready shape:
 
 ### 4b. OBD/proxy/arbitration evidence when touched
 
-For releases that touch OBD, proxy mode, connection arbitration, or shared BLE scheduling, run the full hardware-mode OBD/proxy evidence pass and record the artifact path in the release PR or release notes when a representative hardware rig exists.
+For releases that touch OBD, proxy mode, connection arbitration, or shared BLE
+scheduling, run the full hardware-mode OBD/proxy evidence pass and record the
+artifact path in the private release review record or release notes when a
+representative hardware rig exists.
 
 If no representative OBD/proxy hardware rig exists for this terminal release, do **not** treat missing hardware evidence as an implicit blocker and do **not** remove the already-integrated optional feature late in release prep solely to satisfy this checklist. Instead, record an explicit accepted-risk waiver in the release evidence manifest and release notes:
 
@@ -120,45 +137,62 @@ python3 scripts/check_release_evidence_manifest.py \
   --expected-git-sha "$(git rev-parse HEAD)"
 ```
 
-The manifest stays local under `.artifacts/`, but the release PR/release notes
-should cite the manifest path plus the underlying artifact paths or accepted-risk
-rationales and scope. `obd-proxy-arbitration` may not be omitted: it must be a
-validated `hardware-qualification` PASS or a structured `accepted-risk` entry.
+The manifest stays local under `.artifacts/`, but the private release review
+record or release notes should cite the manifest path plus the underlying
+artifact paths or accepted-risk rationales and scope. `obd-proxy-arbitration`
+may not be omitted: it must be a validated `hardware-qualification` PASS or a
+structured `accepted-risk` entry.
 A `WARN` bench result is diagnostic, not release evidence. Investigate it and
 collect a clean `PASS`; the generator does not provide a manual WARN override.
 
 ## 5. Merge and release procedure
 
-- Push the release-ready branch only when explicitly intended.
-- Open a PR from the release-ready branch to `main`.
-- Merge with a merge commit, not squash, to avoid release/version history conflicts.
-- After the required PR check passes, merge to `main`. Every merge starts
-  `.github/workflows/release.yml` automatically with a patch bump. The
-  workflow:
+- Refresh local `main` from the public remote, then create the candidate locally
+  with a merge commit, not squash, to avoid release/version history conflicts.
+- On a clean checkout of that candidate merge commit, complete sections 3 and
+  4. The generated evidence manifest must validate against that exact commit's
+  full Git SHA.
+- Preserve the candidate through the private workflow, then publish only that
+  merge commit to public `main`; never publish its local development branch.
+  The public ruleset must restrict direct updates to the approved promotion
+  identity and reject force pushes and deletion. It must not require the
+  public-PR check that this main-only flow deliberately does not create.
+- The `main` push starts `.github/workflows/ci.yml`. A failure leaves `main`
+  unreleased. Correct a code failure with a new reviewed merge commit (or a
+  reviewed revert), repeat the local evidence gates, and let its push receive a
+  fresh CI run; never rewrite public `main` to hide the failed candidate.
+- A successful push-origin CI run starts `.github/workflows/release.yml`. The
+  release job binds both the triggering run ID and its full `head_sha`, then:
   1. refreshes current `main` and immutable version tags
-  2. selects the exact merged commit, safely peeling only annotated two-file
-     release commits when resuming the same run
-  3. applies the next patch bump; only the same recorded workflow run may reuse
+  2. selects the exact CI-tested commit, safely peeling only annotated two-file
+     release commits when resuming the same release run
+  3. verifies the authoritative workflow, repository, branch, SHA, run attempt,
+     job, and `ci-test.sh` step before preparing a release
+  4. applies the next patch bump; only the same recorded release run may reuse
      an existing tag
-  4. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
-  5. requires that commit to be a direct child changing exactly those two files,
+  5. prepares `FIRMWARE_VERSION` plus `CHANGELOG.md` and creates a local release commit
+  6. requires that commit to be a direct child changing exactly those two files,
      with `FIRMWARE_VERSION` the only changed configuration value
-  6. builds and validates the frontend, firmware, and filesystem once through
+  7. builds and validates the frontend, firmware, and filesystem once through
      `scripts/build_production_artifacts.sh`
-  7. validates the ESP Web Tools merged image with the DIO/80m/16MB policy
-  8. stages the GitHub Pages installer, notices, and runtime licenses
-  9. atomically pushes the fast-forward release commit and its single tag
+  8. validates the ESP Web Tools merged image with the DIO/80m/16MB policy and
+     stages the installer, notices, and runtime licenses
+  9. reconfirms the same CI run immediately before atomically pushing the
+     fast-forward release commit and its single tag
   10. publishes generated GitHub release notes and binary assets
   11. deploys the GitHub Pages installer
 
-If a run fails, use **Re-run jobs** on that original Actions run so its run ID
-is preserved. The same version is prepared again. If publication already
-pushed the release commit and tag, the rerun finds that run's annotated tag and
-resumes the exact tested commit. It may repair that release's missing assets,
-but it deploys Pages only when its tag is still the newest release, so a retry
-cannot roll the live installer backward. If `main` advances during a release
-build or publication, the older run refuses the race; the newer merge has its
-own queued release run.
+The generated release commit is pushed with the workflow's `GITHUB_TOKEN`, so
+it does not recursively start another CI or Release run. For transient CI
+failures, use **Re-run jobs** on the original push-origin CI run; a separate
+manual dispatch is diagnostic only and cannot publish. If Release fails, rerun
+that original Release run so its run ID is preserved and the same version is
+prepared again. If publication already pushed the release commit and tag, the
+rerun finds that run's annotated tag and resumes the exact tested commit. It may
+repair that release's missing assets, but it deploys Pages only when its tag is
+still newest. If `main` advances during a release build or publication, the
+older run refuses the race; the newer candidate has its own CI and queued
+release run.
 
 ## 6. Release assets
 

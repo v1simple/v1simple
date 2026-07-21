@@ -31,9 +31,9 @@ void test_release_action_and_permission_scope_contract() {
                           workflow.find("timeout-minutes: 45"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
-        workflow.find("permissions:\n      contents: write\n      pages: write"));
+        workflow.find("permissions:\n      actions: read\n      contents: write\n      pages: write"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          workflow.find("push:\n    branches: [main]"));
+                          workflow.find("workflow_run:\n    workflows: [CI]\n    types: [completed]\n    branches: [main]"));
     TEST_ASSERT_EQUAL(std::string::npos,
                       workflow.find("workflow_dispatch:"));
     TEST_ASSERT_EQUAL(std::string::npos,
@@ -41,7 +41,11 @@ void test_release_action_and_permission_scope_contract() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("persist-credentials: false"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          workflow.find("\"$GITHUB_EVENT_NAME\" != \"push\""));
+                          workflow.find("\"$GITHUB_EVENT_NAME\" != \"workflow_run\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("github.event.workflow_run.head_sha"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("github.event.workflow_run.id"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("python3 scripts/prepare_release.py"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
@@ -54,10 +58,12 @@ void test_release_action_and_permission_scope_contract() {
                           workflow.find("RELEASE_BUMP: patch"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           workflow.find("--resume-tag \"$RESUME_TAG\""));
-    TEST_ASSERT_EQUAL(std::string::npos,
-                      workflow.find("python3 scripts/check_ci_evidence.py"));
-    TEST_ASSERT_EQUAL(std::string::npos,
-                      workflow.find("actions: read"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("python3 scripts/check_ci_evidence.py"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("--expected-run-id \"$EXPECTED_CI_RUN_ID\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          workflow.find("actions: read"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         workflow.find("python3 scripts/check_release_config_change.py"));
@@ -85,13 +91,20 @@ void test_release_action_and_permission_scope_contract() {
                       workflow.find("run: ./scripts/ci-test.sh"));
 
     const std::string::size_type resume = workflow.find("--lookup-run-id");
+    const std::string::size_type evidence =
+        workflow.find("python3 scripts/check_ci_evidence.py");
     const std::string::size_type prepare = workflow.find("--bump \"$RELEASE_BUMP\"");
     const std::string::size_type build =
         workflow.find("./scripts/build_production_artifacts.sh");
+    const std::string::size_type evidenceRecheck =
+        workflow.rfind("python3 scripts/check_ci_evidence.py");
     const std::string::size_type publish =
         workflow.find("Publish release commit and tag");
-    TEST_ASSERT_TRUE(resume < prepare);
+    TEST_ASSERT_TRUE(resume < evidence);
+    TEST_ASSERT_TRUE(evidence < prepare);
     TEST_ASSERT_TRUE(prepare < build);
+    TEST_ASSERT_TRUE(build < evidenceRecheck);
+    TEST_ASSERT_TRUE(evidenceRecheck < publish);
     TEST_ASSERT_TRUE(build < publish);
 }
 

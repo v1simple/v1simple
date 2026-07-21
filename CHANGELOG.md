@@ -18,15 +18,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance pages now distinguish configuration that can be saved from live
   operations that require normal runtime, show the automatic-reboot countdown,
   and report Wi-Fi scan, disconnect, and saved-network outcomes explicitly.
+- Active maintenance sessions now use a 10-minute idle window that extends with
+  UI activity, while retaining a 30-minute absolute session cap.
+- Release evidence is now generated from typed bench and OBD/proxy artifacts,
+  bound to the clean checkout's full Git SHA, and rejected when a bench warning
+  or failed hardware qualification remains.
+- Automatic patch publication now waits for the exact public `main` commit's
+  successful push-origin CI run and reconfirms that same run immediately before
+  publishing the generated release commit and tag.
 
 ### Fixed
 
-- Power-off now selects only inactive wake inputs, uses battery latch-off or
-  external-power deep sleep as appropriate, clears the retained `GOODBYE`
-  frame, and records optional shutdown/next-boot evidence on the SD card.
-- V1 disconnects now clear stale BLE and proxy indicators immediately.
-- GPS settings and display previews now remain usable during maintenance mode,
-  while Auto-Push live writes fail closed until normal runtime is active.
+- **Power:** Power-off now selects only inactive wake inputs, uses battery
+  latch-off or external-power deep sleep as appropriate, clears the retained
+  `GOODBYE` frame, and records optional shutdown/next-boot evidence on the SD
+  card. Car-install builds no longer enter battery shutdown paths, and an
+  aborted shutdown restores persistence and the awake display state.
+- **Battery safety:** Maintenance mode continues servicing low-battery safety,
+  and battery-source classification now uses time-separated samples while
+  preserving power-button operation when ADC initialization fails.
+- **BLE and OBD:** V1 notifications and alerts are fenced to the active
+  connection session, while proxy teardown and disconnect display cleanup run
+  through their main-loop owners. OBD GATT handles and disconnects are owned by
+  the transport task, and cancelled connections can no longer be adopted by a
+  later state-machine cycle.
+- **Wi-Fi and maintenance:** Maintenance Wi-Fi recovers after failed startup or
+  an emergency memory stop, stays reachable while a saved network connects,
+  and is exempt from normal-runtime idle shutdown. Scan results now remain
+  valid for all consumers, and client enablement commits only after the request
+  is admitted.
+- **Settings and UI:** Connected persistence is deferred only for a bounded
+  window, touch-driven backups avoid the interactive path, and settings restore
+  feeds the watchdog across long phases. GPS settings and display previews
+  remain usable in maintenance mode, Auto-Push live writes fail closed there,
+  and stale Wi-Fi connection details are removed after disconnect.
 
 
 ## [1.0.4] - 2026-07-15

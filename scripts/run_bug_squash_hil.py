@@ -44,6 +44,50 @@ EXPECTED_DEVICE_SUITES = (
     "test_device_coexistence",
 )
 CASE_IDS = tuple(f"BSC-{index:02d}" for index in range(2, 15)) + ("BSC-16",)
+BSC03_CASE_ID = "BSC-03"
+BSC03_REQUIRED_RUNS = 3
+BSC03_ADMISSION_DEADLINE_MS = 10_000
+BSC03_CUT_NOT_BEFORE_MS = 10_000
+BSC03_LOOP_SLO_US = 250_000
+BSC03_ADAPTER_TIMEOUT_SECONDS = 600
+BSC03_DUT_CAPABILITIES = ("firmware-execution", "persistence", "serial")
+BSC03_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "bond-peer",
+    "obd-peer",
+    "power-control",
+    "sd-media",
+    "utc-time-source",
+    "v1-peer",
+    "vbus-isolation",
+)
+BSC03_EVENT_IDS = (
+    "mutate-four-persistence-classes",
+    "wait-for-persistence-admission",
+    "persistence-admitted",
+    "isolated-ignition-cut",
+    "ignition-restore",
+)
+BSC03_STATE_CLASSES = ("settings", "bond", "obd", "v1-device")
+BSC03_FACTS = (
+    "settings-state-survived",
+    "bond-state-survived",
+    "obd-state-survived",
+    "v1-device-state-survived",
+    "peers-reconnected-without-pairing",
+    "loop-slo-preserved",
+    "early-cut-durability-not-claimed",
+)
+BSC03_QUALIFICATION_BLOCKERS = (
+    "build-generator-provenance-not-authenticated",
+    "board-resolution-provenance-not-authenticated",
+    "hil-fault-control-not-implemented",
+    "case-source-provenance-not-authenticated",
+)
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+UTC_TIMESTAMP_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
+)
 
 
 class RunnerError(Exception):
@@ -158,6 +202,37 @@ def write_json(path: Path, payload: Mapping[str, object]) -> None:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except OSError as exc:
         raise RunnerError("artifact_write_failed", "runner artifact could not be written") from exc
+
+
+def write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RunnerError("artifact_write_failed", "runner checkpoint could not be written") from exc
+
+
+def require_no_symlink_components(path: Path, *, boundary: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    absolute_boundary = Path(os.path.abspath(boundary))
+    try:
+        relative = absolute.relative_to(absolute_boundary)
+    except ValueError as exc:
+        raise RunnerError("unsafe_output", "runner output is outside its allowed boundary") from exc
+    current = absolute_boundary
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            raise RunnerError("unsafe_output", "runner artifacts must not use symlink paths")
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -778,20 +853,906 @@ def run_device_suite(args: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def require_exact_object(
+    value: object,
+    expected_keys: set[str],
+    *,
+    code: str,
+    label: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise RunnerError(code, f"{label} does not match the typed BSC-03 contract")
+    return value
+
+
+def require_sha256(value: object, *, code: str, label: str) -> str:
+    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+        raise RunnerError(code, f"{label} is not a valid SHA-256 commitment")
+    if value == "0" * 64:
+        raise RunnerError(code, f"{label} must not use the all-zero commitment")
+    return value
+
+
+def parse_runner_utc(value: object, *, code: str, label: str) -> datetime:
+    if not isinstance(value, str) or UTC_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        raise RunnerError(code, f"{label} is not an RFC3339 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise RunnerError(code, f"{label} is not a valid UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise RunnerError(code, f"{label} is not UTC")
+    return parsed
+
+
+def bsc03_board_attestation(
+    *,
+    inventory: resolve_hil_board.Inventory,
+    alias: str,
+    required_capabilities: Sequence[str],
+    port_records: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], dict[str, object]]:
+    try:
+        resolution = resolve_hil_board.resolve_board(
+            inventory,
+            alias,
+            required_capabilities,
+            port_records=port_records,
+        )
+        board = inventory.boards[alias]
+        binding: dict[str, object] = {
+            "schema_version": 1,
+            "commitment_salt_hex": secrets.token_hex(32),
+            "inventory_record": {
+                "alias": board.alias,
+                "capabilities": list(board.capabilities),
+                "connection": {
+                    "lan_base_url": board.lan_base_url,
+                    "usb_serial": board.usb_serial,
+                },
+            },
+            "resolution": resolution,
+        }
+        attestation = qualification.build_board_inventory_attestation(binding)
+    except (resolve_hil_board.ResolverError, KeyError, ValueError) as exc:
+        message = getattr(exc, "message", "case board resolution failed")
+        raise RunnerError("case_board_resolution_failed", str(message)) from exc
+    return resolution, attestation
+
+
+def resolve_bsc03_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-03 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC03_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    rig_resolution, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC03_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-03 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def validate_bsc03_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "session_id",
+            "attempt_id",
+            "run_index",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "preconditions",
+            "events",
+            "admissions",
+            "state_commitments",
+            "mutation_commitment_sha256",
+            "hard_cut_commitment_sha256",
+            "boot_commitments",
+            "resets",
+            "performance",
+            "facts",
+        },
+        code=code,
+        label="case adapter record",
+    )
+    for field in (
+        "case_id",
+        "session_id",
+        "attempt_id",
+        "run_index",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"case adapter {field} is not runner-bound")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "case adapter schema version is invalid")
+    for field in (
+        "case_id",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+    ):
+        if not isinstance(record.get(field), str):
+            raise RunnerError(code, f"case adapter {field} type is invalid")
+    if type(record.get("run_index")) is not int or type(record.get("hardware_observed")) is not bool:
+        raise RunnerError(code, "case adapter run identity types are invalid")
+
+    preconditions = require_exact_object(
+        record.get("preconditions"),
+        {
+            "vbus_isolated",
+            "power_rig_qualified",
+            "power_rig_evidence_sha256",
+            "sd_media_present",
+            "v1_peer_ready",
+            "obd_peer_ready",
+            "bond_peer_ready",
+            "production_firmware_target_sha",
+        },
+        code=code,
+        label="case preconditions",
+    )
+    for field in (
+        "vbus_isolated",
+        "power_rig_qualified",
+        "sd_media_present",
+        "v1_peer_ready",
+        "obd_peer_ready",
+        "bond_peer_ready",
+    ):
+        if preconditions.get(field) is not True:
+            raise RunnerError(code, f"case precondition {field} was not verified")
+    require_sha256(
+        preconditions.get("power_rig_evidence_sha256"),
+        code=code,
+        label="power-rig evidence",
+    )
+    if preconditions.get("production_firmware_target_sha") != expected["target_sha"]:
+        raise RunnerError(code, "production firmware does not match the target commit")
+
+    started = parse_runner_utc(
+        record.get("started_at_utc"), code=code, label="case start"
+    )
+    completed = parse_runner_utc(
+        record.get("completed_at_utc"), code=code, label="case completion"
+    )
+    if completed < started:
+        raise RunnerError(code, "case completion precedes case start")
+    now = datetime.now(timezone.utc)
+    if completed > now.replace(microsecond=now.microsecond) and (
+        completed - now
+    ).total_seconds() > 2:
+        raise RunnerError(code, "case completion is in the future")
+    if command_started is not None and started < command_started.replace(
+        microsecond=0
+    ):
+        raise RunnerError(code, "physical case start predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(
+        microsecond=999999
+    ):
+        raise RunnerError(code, "physical case completion follows adapter execution")
+
+    events = record.get("events")
+    if not isinstance(events, list) or len(events) != len(BSC03_EVENT_IDS):
+        raise RunnerError(code, "case events are incomplete")
+    elapsed_values: list[int] = []
+    for sequence, (event, event_id) in enumerate(
+        zip(events, BSC03_EVENT_IDS, strict=True), start=1
+    ):
+        row = require_exact_object(
+            event,
+            {"id", "sequence", "elapsed_ms"},
+            code=code,
+            label="case event",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or isinstance(elapsed, bool)
+            or not isinstance(elapsed, int)
+            or elapsed < 0
+        ):
+            raise RunnerError(code, "case event order or timing is invalid")
+        elapsed_values.append(elapsed)
+    if any(later <= earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "case event times must increase strictly")
+    cut_after_mutation_ms = elapsed_values[3] - elapsed_values[0]
+    if cut_after_mutation_ms < BSC03_CUT_NOT_BEFORE_MS:
+        raise RunnerError(code, "ignition was cut before the ten-second durability boundary")
+    if elapsed_values[3] <= elapsed_values[2]:
+        raise RunnerError(code, "ignition was cut before persistence admission")
+    duration_ms = int((completed - started).total_seconds() * 1000)
+    if elapsed_values[-1] > duration_ms + 1000:
+        raise RunnerError(code, "case events exceed the recorded run duration")
+
+    commitments = require_exact_object(
+        record.get("state_commitments"),
+        set(BSC03_STATE_CLASSES),
+        code=code,
+        label="state commitments",
+    )
+    for state_class in BSC03_STATE_CLASSES:
+        pair = require_exact_object(
+            commitments[state_class],
+            {"before_sha256", "after_sha256"},
+            code=code,
+            label="state commitment pair",
+        )
+        before = require_sha256(
+            pair.get("before_sha256"), code=code, label="pre-cut state"
+        )
+        after = require_sha256(
+            pair.get("after_sha256"), code=code, label="post-cut state"
+        )
+        if before != after:
+            raise RunnerError(code, f"{state_class} state did not survive the hard cut")
+
+    admissions = require_exact_object(
+        record.get("admissions"),
+        set(BSC03_STATE_CLASSES),
+        code=code,
+        label="persistence admissions",
+    )
+    admission_elapsed_values: list[int] = []
+    for state_class in BSC03_STATE_CLASSES:
+        admission = require_exact_object(
+            admissions[state_class],
+            {"admitted_elapsed_ms", "state_commitment_sha256"},
+            code=code,
+            label="persistence admission",
+        )
+        admitted_elapsed = admission.get("admitted_elapsed_ms")
+        if (
+            isinstance(admitted_elapsed, bool)
+            or not isinstance(admitted_elapsed, int)
+            or admitted_elapsed <= elapsed_values[0]
+            or admitted_elapsed - elapsed_values[0] > BSC03_ADMISSION_DEADLINE_MS
+        ):
+            raise RunnerError(
+                code,
+                f"{state_class} persistence admission exceeded the ten-second window",
+            )
+        commitment_pair = commitments[state_class]
+        assert isinstance(commitment_pair, dict)
+        if admission.get("state_commitment_sha256") != commitment_pair.get("before_sha256"):
+            raise RunnerError(
+                code,
+                f"{state_class} admission is not bound to its mutated state",
+            )
+        admission_elapsed_values.append(admitted_elapsed)
+    aggregate_admission_elapsed = max(admission_elapsed_values)
+    if elapsed_values[2] != aggregate_admission_elapsed:
+        raise RunnerError(
+            code,
+            "aggregate persistence admission must equal the last per-class admission",
+        )
+    admission_ms = aggregate_admission_elapsed - elapsed_values[0]
+    require_sha256(
+        record.get("mutation_commitment_sha256"),
+        code=code,
+        label="mutation identity",
+    )
+    require_sha256(
+        record.get("hard_cut_commitment_sha256"),
+        code=code,
+        label="hard-cut identity",
+    )
+
+    boot = require_exact_object(
+        record.get("boot_commitments"),
+        {"before_sha256", "after_sha256"},
+        code=code,
+        label="boot commitments",
+    )
+    boot_before = require_sha256(
+        boot.get("before_sha256"), code=code, label="pre-cut boot identity"
+    )
+    boot_after = require_sha256(
+        boot.get("after_sha256"), code=code, label="post-cut boot identity"
+    )
+    if boot_before == boot_after:
+        raise RunnerError(code, "hard cut did not produce a distinct boot identity")
+
+    resets = require_exact_object(
+        record.get("resets"),
+        {"expected_kind", "planned", "observed", "unexpected"},
+        code=code,
+        label="reset record",
+    )
+    if (
+        resets.get("expected_kind") != "ignition-hard-cut"
+        or any(type(resets.get(field)) is not int for field in ("planned", "observed", "unexpected"))
+        or resets.get("planned") != 1
+        or resets.get("observed") != 1
+        or resets.get("unexpected") != 0
+    ):
+        raise RunnerError(code, "case reset evidence does not match one clean hard cut")
+
+    performance = require_exact_object(
+        record.get("performance"),
+        {"loop_max_us", "sample_count"},
+        code=code,
+        label="performance evidence",
+    )
+    loop_max = performance.get("loop_max_us")
+    sample_count = performance.get("sample_count")
+    if (
+        isinstance(loop_max, bool)
+        or not isinstance(loop_max, int)
+        or loop_max < 0
+        or loop_max > BSC03_LOOP_SLO_US
+        or isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count < 1
+    ):
+        raise RunnerError(code, "loop-latency evidence does not satisfy the pinned SLO")
+
+    facts = require_exact_object(
+        record.get("facts"),
+        {"persistence-admission-ms", *BSC03_FACTS},
+        code=code,
+        label="case facts",
+    )
+    if (
+        type(facts.get("persistence-admission-ms")) is not int
+        or facts.get("persistence-admission-ms") != admission_ms
+    ):
+        raise RunnerError(code, "persistence admission fact does not match event timing")
+    if any(facts.get(fact) is not True for fact in BSC03_FACTS):
+        raise RunnerError(code, "case acceptance facts are incomplete")
+    return record
+
+
+def load_bsc03_checkpoint(
+    state_path: Path,
+    *,
+    expected_identity: Mapping[str, object],
+) -> dict[str, object]:
+    payload = read_json(state_path, "BSC-03 checkpoint")
+    state = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "target_sha",
+            "session_id",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "runs_required",
+            "started_at_utc",
+            "runner_sha256",
+            "adapter_sha256",
+            "inventory_sha256",
+            "dut_attestation",
+            "rig_attestation",
+            "completed_attempts",
+            "active_attempt",
+            "abandoned_attempt_ids",
+        },
+        code="resume_state_invalid",
+        label="BSC-03 checkpoint",
+    )
+    if (
+        type(state.get("schema_version")) is not int
+        or state.get("schema_version") != 1
+        or state.get("case_id") != BSC03_CASE_ID
+    ):
+        raise RunnerError("resume_state_invalid", "BSC-03 checkpoint identity is invalid")
+    for field, expected in expected_identity.items():
+        if state.get(field) != expected:
+            raise RunnerError(
+                "resume_state_mismatch",
+                "BSC-03 checkpoint does not match the requested target and hardware",
+            )
+    completed = state.get("completed_attempts")
+    abandoned = state.get("abandoned_attempt_ids")
+    if not isinstance(completed, list) or not isinstance(abandoned, list):
+        raise RunnerError("resume_state_invalid", "BSC-03 checkpoint attempt lists are invalid")
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"attempt-[0-9a-f]{32}", value) is None
+        for value in abandoned
+    ) or len(abandoned) != len(set(abandoned)):
+        raise RunnerError("resume_state_invalid", "BSC-03 abandoned attempt list is invalid")
+    return state
+
+
+def validate_bsc03_completed_attempts(
+    state: Mapping[str, object],
+    *,
+    run_root: Path,
+    expected_base: Mapping[str, object],
+) -> list[dict[str, object]]:
+    rows = state["completed_attempts"]
+    assert isinstance(rows, list)
+    records: list[dict[str, object]] = []
+    seen_attempts: set[str] = set()
+    for run_index, raw in enumerate(rows, start=1):
+        row = require_exact_object(
+            raw,
+            {"run_index", "attempt_id", "artifact", "sha256"},
+            code="resume_state_invalid",
+            label="completed attempt",
+        )
+        attempt_id = row.get("attempt_id")
+        artifact = row.get("artifact")
+        if (
+            type(row.get("run_index")) is not int
+            or row.get("run_index") != run_index
+            or not isinstance(attempt_id, str)
+            or re.fullmatch(r"attempt-[0-9a-f]{32}", attempt_id) is None
+            or attempt_id in seen_attempts
+            or artifact != f"attempts/{attempt_id}.json"
+        ):
+            raise RunnerError("resume_state_invalid", "completed attempt identity is invalid")
+        seen_attempts.add(attempt_id)
+        artifact_path = run_root / artifact
+        expected_hash = require_sha256(
+            row.get("sha256"), code="resume_state_invalid", label="attempt artifact"
+        )
+        if (
+            not artifact_path.is_file()
+            or artifact_path.is_symlink()
+            or sha256_file(artifact_path) != expected_hash
+        ):
+            raise RunnerError("resume_evidence_changed", "completed attempt evidence changed")
+        record = read_json(artifact_path, "completed BSC-03 attempt")
+        expected = dict(expected_base)
+        expected.update({"run_index": run_index, "attempt_id": attempt_id})
+        records.append(validate_bsc03_adapter_record(record, expected=expected))
+    if len(records) > BSC03_REQUIRED_RUNS:
+        raise RunnerError("resume_state_invalid", "checkpoint contains too many completed runs")
+    abandoned = state["abandoned_attempt_ids"]
+    assert isinstance(abandoned, list)
+    if seen_attempts.intersection(abandoned):
+        raise RunnerError(
+            "resume_state_invalid",
+            "completed and abandoned BSC-03 attempts must be disjoint",
+        )
+    return records
+
+
+def run_bsc03_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC03_CASE_ID,
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC03_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-03 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-03 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-03 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-03 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-03 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc03_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def bsc03_result(
+    *,
+    state: Mapping[str, object],
+    run_root: Path,
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    run_rows = state["completed_attempts"]
+    assert isinstance(run_rows, list)
+    return {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc03-connected-persistence-hard-cut",
+        "case_id": BSC03_CASE_ID,
+        "target_sha": state["target_sha"],
+        "session_id": state["session_id"],
+        "dut_alias": state["dut_alias"],
+        "rig_alias": state["rig_alias"],
+        "execution_mode": state["execution_mode"],
+        "hardware_observed": state["execution_mode"] == "physical",
+        "authoritative": False,
+        "physical_collection_completed": state["execution_mode"] == "physical",
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(BSC03_QUALIFICATION_BLOCKERS),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "COLLECTION_COMPLETE"
+        if state["execution_mode"] == "physical"
+        else "TEST_PASS",
+        "runs_required": BSC03_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "early_cut_durability_claimed": False,
+        "started_at_utc": state["started_at_utc"],
+        "completed_at_utc": utc_now(),
+        "dut_attestation": state["dut_attestation"],
+        "rig_attestation": state["rig_attestation"],
+        "run_artifacts": run_rows,
+        "artifact_sha256": {
+            "runner": state["runner_sha256"],
+            "adapter": state["adapter_sha256"],
+            "checkpoint": sha256_file(run_root / "checkpoint.json"),
+        },
+    }
+
+
+def validate_bsc03_distinct_runs(records: Sequence[Mapping[str, object]]) -> None:
+    if len(records) != BSC03_REQUIRED_RUNS:
+        raise RunnerError("case_runs_incomplete", "BSC-03 requires exactly three completed runs")
+    for field in ("attempt_id", "mutation_commitment_sha256", "hard_cut_commitment_sha256"):
+        values = [record.get(field) for record in records]
+        if len(set(values)) != BSC03_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-03 run identities must be distinct")
+    commitments_by_class: dict[str, set[object]] = {
+        state_class: set() for state_class in BSC03_STATE_CLASSES
+    }
+    for record in records:
+        state_commitments = record["state_commitments"]
+        assert isinstance(state_commitments, dict)
+        for state_class in BSC03_STATE_CLASSES:
+            pair = state_commitments[state_class]
+            assert isinstance(pair, dict)
+            commitments_by_class[state_class].add(pair["before_sha256"])
+    if any(len(values) != BSC03_REQUIRED_RUNS for values in commitments_by_class.values()):
+        raise RunnerError(
+            "case_runs_reused",
+            "each BSC-03 run must use distinct mutated persistence state",
+        )
+
+
+def run_bsc03_case(args: argparse.Namespace) -> int:
+    if args.runs != BSC03_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-03 requires exactly three hard-cut runs")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-03 requires an opaque local rig alias")
+    if args.production_replay:
+        raise RunnerError("unsupported_mode", "BSC-03 has no production-replay role")
+    if not (
+        args.ack_vbus_isolated
+        and args.ack_destructive_hard_cuts
+        and args.ack_early_cut_not_qualified
+    ):
+        raise RunnerError(
+            "operator_preconditions_incomplete",
+            "BSC-03 requires all destructive-test and durability-boundary acknowledgements",
+        )
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-03 requires a clean target worktree")
+
+    if test_hooks_enabled():
+        pio_executable = Path(args.pio_command)
+    else:
+        expected_paths = {
+            "repo_root": ROOT,
+            "template": resolve_hil_board.DEFAULT_TEMPLATE,
+            "inventory": resolve_hil_board.DEFAULT_LOCAL_INVENTORY,
+        }
+        for field, expected in expected_paths.items():
+            if getattr(args, field).resolve() != expected.resolve():
+                raise RunnerError("untrusted_override", "authoritative BSC-03 paths are pinned")
+        if args.ports_json is not None or args.pio_command != "pio":
+            raise RunnerError("untrusted_override", "authoritative BSC-03 discovery is live and pinned")
+        if not args.inventory.resolve().is_file():
+            raise RunnerError(
+                "local_inventory_missing",
+                "BSC-03 requires the ignored local hardware inventory",
+            )
+        pio_executable = authoritative_platformio()
+
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc03_hardware(
+        args, pio_executable
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-03 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-03 serial endpoint is not present")
+
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError(
+                "untrusted_override",
+                "authoritative BSC-03 forbids an untracked rig adapter",
+            )
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-03 physical execution remains blocked until a tracked rig protocol exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-03 test execution requires a mocked adapter")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-03 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc03-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / run_id
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    output_boundary = (
+        Path(os.path.abspath(args.repo_root)).parent
+        if test_hooks_enabled()
+        else ROOT / ".artifacts"
+    )
+    require_no_symlink_components(run_root, boundary=output_boundary)
+    state_path = run_root / "checkpoint.json"
+    execution_mode = "simulated" if test_hooks_enabled() else "physical"
+    expected_identity: dict[str, object] = {
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": execution_mode,
+        "runs_required": BSC03_REQUIRED_RUNS,
+        "runner_sha256": sha256_file(Path(__file__)),
+        "adapter_sha256": adapter_sha,
+        "inventory_sha256": sha256_file(args.inventory.resolve()),
+    }
+
+    if args.resume:
+        if not state_path.is_file() or state_path.is_symlink():
+            raise RunnerError("resume_state_missing", "BSC-03 resume checkpoint is missing")
+        state = load_bsc03_checkpoint(state_path, expected_identity=expected_identity)
+        for field, current in (
+            ("dut_attestation", dut_attestation),
+            ("rig_attestation", rig_attestation),
+        ):
+            saved = state.get(field)
+            if (
+                not isinstance(saved, dict)
+                or saved.get("alias") != current.get("alias")
+                or saved.get("capabilities") != current.get("capabilities")
+                or saved.get("resolution_sha256") != current.get("resolution_sha256")
+            ):
+                raise RunnerError(
+                    "resume_state_mismatch",
+                    "BSC-03 resolved hardware changed since the checkpoint",
+                )
+    else:
+        if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+            raise RunnerError("output_not_empty", "BSC-03 output must be new unless --resume is used")
+        run_root.mkdir(parents=True, exist_ok=True)
+        state = {
+            "schema_version": 1,
+            "case_id": BSC03_CASE_ID,
+            **expected_identity,
+            "dut_attestation": dut_attestation,
+            "rig_attestation": rig_attestation,
+            "session_id": f"bsc03-{secrets.token_hex(16)}",
+            "started_at_utc": utc_now(),
+            "completed_attempts": [],
+            "active_attempt": None,
+            "abandoned_attempt_ids": [],
+        }
+        write_json_atomic(state_path, state)
+
+    active = state.get("active_attempt")
+    if active is not None:
+        active_row = require_exact_object(
+            active,
+            {"run_index", "attempt_id", "started_at_utc"},
+            code="resume_state_invalid",
+            label="active attempt",
+        )
+        if not args.ack_incomplete_run_recovered:
+            raise RunnerError(
+                "incomplete_run_recovery_required",
+                "an interrupted hard-cut attempt requires explicit rig recovery before retry",
+            )
+        abandoned = state["abandoned_attempt_ids"]
+        completed_attempts = state["completed_attempts"]
+        assert isinstance(abandoned, list)
+        assert isinstance(completed_attempts, list)
+        attempt_id = active_row.get("attempt_id")
+        completed_ids = {
+            row.get("attempt_id")
+            for row in completed_attempts
+            if isinstance(row, dict)
+        }
+        if (
+            type(active_row.get("run_index")) is not int
+            or active_row.get("run_index") != len(completed_attempts) + 1
+            or len(completed_attempts) >= BSC03_REQUIRED_RUNS
+            or not isinstance(attempt_id, str)
+            or re.fullmatch(r"attempt-[0-9a-f]{32}", attempt_id) is None
+            or attempt_id in abandoned
+            or attempt_id in completed_ids
+        ):
+            raise RunnerError("resume_state_invalid", "active attempt identity is invalid")
+        parse_runner_utc(
+            active_row.get("started_at_utc"),
+            code="resume_state_invalid",
+            label="active attempt start",
+        )
+        abandoned.append(attempt_id)
+        state["active_attempt"] = None
+        write_json_atomic(state_path, state)
+    elif args.ack_incomplete_run_recovered:
+        raise RunnerError(
+            "unexpected_recovery_ack",
+            "incomplete-run recovery was acknowledged without an interrupted attempt",
+        )
+
+    expected_base: dict[str, object] = {
+        "case_id": BSC03_CASE_ID,
+        "session_id": state["session_id"],
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": execution_mode,
+        "hardware_observed": execution_mode == "physical",
+    }
+    records = validate_bsc03_completed_attempts(
+        state,
+        run_root=run_root,
+        expected_base=expected_base,
+    )
+    environment = os.environ.copy()
+
+    for run_index in range(len(records) + 1, BSC03_REQUIRED_RUNS + 1):
+        require_unchanged_git_state(repository, git_state)
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        state["active_attempt"] = {
+            "run_index": run_index,
+            "attempt_id": attempt_id,
+            "started_at_utc": utc_now(),
+        }
+        write_json_atomic(state_path, state)
+        expected = dict(expected_base)
+        expected.update({"run_index": run_index, "attempt_id": attempt_id})
+        record = run_bsc03_adapter(
+            adapter=adapter,
+            repository=repository,
+            serial_port=serial_port,
+            expected=expected,
+            environment=environment,
+        )
+        require_unchanged_git_state(repository, git_state)
+        artifact_relative = f"attempts/{attempt_id}.json"
+        artifact_path = run_root / artifact_relative
+        write_json_atomic(artifact_path, record)
+        completed_attempts = state["completed_attempts"]
+        assert isinstance(completed_attempts, list)
+        completed_attempts.append(
+            {
+                "run_index": run_index,
+                "attempt_id": attempt_id,
+                "artifact": artifact_relative,
+                "sha256": sha256_file(artifact_path),
+            }
+        )
+        state["active_attempt"] = None
+        write_json_atomic(state_path, state)
+        records.append(record)
+
+    validate_bsc03_distinct_runs(records)
+    require_unchanged_git_state(repository, git_state)
+    result = bsc03_result(state=state, run_root=run_root, records=records)
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--run-device-suite", action="store_true")
     mode.add_argument("--case", choices=CASE_IDS)
     parser.add_argument("--board", required=True, help="opaque local board alias")
+    parser.add_argument("--rig", help="opaque local rig alias for typed case execution")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--production-replay", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--ack-vbus-isolated", action="store_true")
+    parser.add_argument("--ack-destructive-hard-cuts", action="store_true")
+    parser.add_argument("--ack-early-cut-not-qualified", action="store_true")
+    parser.add_argument("--ack-incomplete-run-recovered", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--template", type=Path, default=resolve_hil_board.DEFAULT_TEMPLATE)
     parser.add_argument("--inventory", type=Path, default=resolve_hil_board.DEFAULT_LOCAL_INVENTORY)
     parser.add_argument("--ports-json", type=Path)
     parser.add_argument("--pio-command", default="pio")
     parser.add_argument("--device-runner", type=Path, default=ROOT / "scripts" / "run_device_tests.sh")
+    parser.add_argument(
+        "--case-adapter",
+        type=Path,
+        help="mocked BSC-03 rig boundary; authoritative overrides are forbidden",
+    )
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -806,6 +1767,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"error": {"code": "invalid_runs", "message": "runs must be 1..10"}}))
         return 2
     if args.case is not None:
+        if args.case == BSC03_CASE_ID:
+            try:
+                return run_bsc03_case(args)
+            except RunnerError as exc:
+                print(
+                    json.dumps(
+                        {"error": {"code": exc.code, "message": exc.message}},
+                        sort_keys=True,
+                    )
+                )
+                return 1
+            except Exception:
+                print(
+                    json.dumps(
+                        {
+                            "error": {
+                                "code": "internal_error",
+                                "message": "BSC-03 failed closed without qualifying evidence",
+                            }
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 1
         error = {
             "error": {
                 "code": "case_driver_unavailable",

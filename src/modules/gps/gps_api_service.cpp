@@ -1,5 +1,7 @@
 #include "gps_api_service.h"
 
+#include <cstdio>
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
@@ -23,6 +25,49 @@ void sendMaintenanceModeError(WebServer& server) {
 
 void sendRuntimeUnavailableError(WebServer& server) {
     server.send(503, "application/json", "{\"error\":\"gps runtime not wired\"}");
+}
+
+void sendRequestError(WebServer& server, const char* message) {
+    WifiJson::Document errDoc;
+    WifiApiResponse::setErrorAndMessage(errDoc, message);
+    WifiApiResponse::sendJsonDocument(server, 400, errDoc);
+}
+
+void sendFieldTypeError(WebServer& server, const char* key, const char* expected) {
+    char message[96];
+    std::snprintf(message, sizeof(message), "Field '%s' must be %s", key, expected);
+    sendRequestError(server, message);
+}
+
+// Omitted fields preserve their current values, but a present field must match
+// the documented wire type. JsonVariantConst::isUnbound() distinguishes an
+// omitted key from an explicit JSON null, which is invalid input here.
+bool readOptionalBool(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, bool& out) {
+    JsonVariantConst value = body[key];
+    if (value.isUnbound()) {
+        return true;
+    }
+    if (!value.is<bool>()) {
+        sendFieldTypeError(server, key, "a boolean");
+        return false;
+    }
+    hasValue = true;
+    out = value.as<bool>();
+    return true;
+}
+
+bool readOptionalUint32(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, uint32_t& out) {
+    JsonVariantConst value = body[key];
+    if (value.isUnbound()) {
+        return true;
+    }
+    if (!value.is<uint32_t>()) {
+        sendFieldTypeError(server, key, "an unsigned integer");
+        return false;
+    }
+    hasValue = true;
+    out = value.as<uint32_t>();
+    return true;
 }
 
 bool requiresLiveRuntime(const Runtime& runtime) {
@@ -49,44 +94,65 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
 
-    // Maintenance saves are intentionally persistence-only and must not
-    // require the live UART runtime that maintenance boot skips.
+    // Normal runtime availability is the route's first executable precondition,
+    // matching the maintenance/runtime policy matrix and sibling OBD handler.
+    // Maintenance saves are persistence-only and do not require the UART runtime.
     if (requiresLiveRuntime(runtime) && !gpsRuntimePtr) {
         sendRuntimeUnavailableError(server);
         return;
     }
 
+    if (!server.hasArg("plain") || server.arg("plain").length() == 0) {
+        sendRequestError(server, "Missing JSON body");
+        return;
+    }
+
     WifiJson::Document body;
-    if (server.hasArg("plain")) {
-        const String requestBody = server.arg("plain");
-        const DeserializationError err = deserializeJson(body, requestBody.c_str());
-        if (err) {
-            WifiJson::Document errDoc;
-            WifiApiResponse::setErrorAndMessage(errDoc, "Invalid JSON");
-            WifiApiResponse::sendJsonDocument(server, 400, errDoc);
-            return;
-        }
+    const String requestBody = server.arg("plain");
+    const DeserializationError err = deserializeJson(body, requestBody.c_str());
+    if (err) {
+        sendRequestError(server, "Invalid JSON");
+        return;
+    }
+    if (!body.is<JsonObjectConst>()) {
+        sendRequestError(server, "JSON body must be an object");
+        return;
     }
 
     DeviceSettingsUpdate update{};
 
-    if (body["gpsEnabled"].is<bool>()) {
-        update.hasGpsEnabled = true;
-        update.gpsEnabled = body["gpsEnabled"].as<bool>();
+    if (!readOptionalBool(server, body, "gpsEnabled", update.hasGpsEnabled, update.gpsEnabled)) {
+        return;
     }
-    if (body["gpsBaud"].is<uint32_t>()) {
-        update.hasGpsBaud = true;
-        update.gpsBaud = sanitizeGpsBaudValue(body["gpsBaud"].as<uint32_t>());
+    if (!readOptionalUint32(server, body, "gpsBaud", update.hasGpsBaud, update.gpsBaud)) {
+        return;
     }
-    // Deprecated/no-op compatibility field. Supported GPS wiring does not drive
-    // EN, so old clients may send this key but it must not mutate live state.
-    if (body["gpsLogUtcToPerf"].is<bool>()) {
-        update.hasGpsLogUtcToPerf = true;
-        update.gpsLogUtcToPerf = body["gpsLogUtcToPerf"].as<bool>();
+    if (update.hasGpsBaud) {
+        update.gpsBaud = sanitizeGpsBaudValue(update.gpsBaud);
     }
-    if (body["gpsLogUtcToAlp"].is<bool>()) {
-        update.hasGpsLogUtcToAlp = true;
-        update.gpsLogUtcToAlp = body["gpsLogUtcToAlp"].as<bool>();
+    if (!readOptionalBool(server, body, "gpsLogUtcToPerf", update.hasGpsLogUtcToPerf, update.gpsLogUtcToPerf)) {
+        return;
+    }
+    if (!readOptionalBool(server, body, "gpsLogUtcToAlp", update.hasGpsLogUtcToAlp, update.gpsLogUtcToAlp)) {
+        return;
+    }
+
+    // Deprecated/no-op compatibility field. Old clients may include a boolean
+    // value alongside writable settings, but it does not count as an update and
+    // never reaches persistence or the live UART runtime.
+    bool hasDeprecatedPolarity = false;
+    bool ignoredDeprecatedPolarity = true;
+    if (!readOptionalBool(server, body, "gpsEnablePinActiveHigh", hasDeprecatedPolarity, ignoredDeprecatedPolarity)) {
+        return;
+    }
+    (void)hasDeprecatedPolarity;
+    (void)ignoredDeprecatedPolarity;
+
+    const bool hasWritableSetting =
+        update.hasGpsEnabled || update.hasGpsBaud || update.hasGpsLogUtcToPerf || update.hasGpsLogUtcToAlp;
+    if (!hasWritableSetting) {
+        sendRequestError(server, "No writable GPS settings provided");
+        return;
     }
 
     settings.applyDeviceSettingsUpdate(update, runtime.maintenanceBootActive

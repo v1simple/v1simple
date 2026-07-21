@@ -197,7 +197,7 @@ Callbacks/context: `void (*markUiActivity)(void* ctx)` for keep-alive signaling,
 ### Handlers
 
 - `void handleApiConfigGet(WebServer&, SettingsManager&, const Runtime&)` — `GET /api/gps/config`.
-- `void handleApiConfigSave(WebServer&, SettingsManager&, GpsRuntimeModule*, const Runtime&)` — `POST /api/gps/config`; a null runtime is valid only for maintenance-mode persistence-only saves.
+- `void handleApiConfigSave(WebServer&, SettingsManager&, GpsRuntimeModule*, const Runtime&)` — `POST /api/gps/config`; normal mode checks its runtime precondition before body parsing, while maintenance mode accepts a null runtime for persistence-only saves. It validates a non-empty object and every present supported field before atomically applying a partial update. At least one writable field is required. The deprecated `gpsEnablePinActiveHigh` compatibility field may accompany a writable update as a boolean but is ignored.
 - `void handleApiStatus(WebServer&, GpsRuntimeModule*, const Runtime&)` — `GET /api/gps/status`; maintenance mode takes precedence over the null-runtime 503.
 
 All three call `markUiActivity` on entry.

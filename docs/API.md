@@ -430,14 +430,14 @@ maintenance-only routes expose a narrow SD-card diagnostic allowlist.
 ### GET `/api/gps/config`
 **Description:** Current GPS settings.
 **Response:** `{ "gpsEnabled": bool, "gpsBaud": uint32, "gpsEnablePinActiveHigh": bool, "gpsLogUtcToPerf": bool, "gpsLogUtcToAlp": bool }` (200).
-**Note:** `gpsEnablePinActiveHigh` is a deprecated compatibility field. GPS EN is not driven on supported hardware; the value is served as normalized `true`, and submitted values are accepted but ignored.
+**Note:** `gpsEnablePinActiveHigh` is a deprecated compatibility field. GPS EN is not driven on supported hardware and the value is served as normalized `true`. The POST endpoint accepts it only as a boolean alongside at least one writable field, then ignores it.
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `gps_api_service.h`.
 
 ### POST `/api/gps/config`
 **Description:** Saves GPS settings (any subset of fields).
-**Params:** JSON body with GPS config fields.
-**Note:** `gpsEnablePinActiveHigh` is deprecated/no-op. Old clients may include it, but submitted values do not change live state or persisted settings.
-**Response:** `{ "success": true }` (200; in maintenance mode includes `"message": "GPS settings saved; live runtime resumes on next normal boot."`), `{ "error": "Invalid JSON", "message": "Invalid JSON" }` (400), or `{ "error": "gps runtime not wired" }` (503).
+**Params:** A non-empty JSON object containing at least one writable field: `gpsEnabled` (bool), `gpsBaud` (uint32), `gpsLogUtcToPerf` (bool), or `gpsLogUtcToAlp` (bool). Omitted writable fields keep their current values. Present fields, including explicit `null`, must use their documented types; the request is validated completely before any setting or live runtime change.
+**Note:** `gpsEnablePinActiveHigh` is deprecated/no-op. For compatibility, old clients may include a boolean value alongside at least one writable field, but the submitted value does not change live state or persisted settings. The deprecated field alone is not a writable update and returns 400.
+**Response:** `{ "success": true }` (200; in maintenance mode includes `"message": "GPS settings saved; live runtime resumes on next normal boot."`), a structured `{ "error": string, "message": string }` (400) for a missing, invalid, non-object, empty, or wrong-typed request, or `{ "error": "gps runtime not wired" }` (503). In normal mode, the runtime availability precondition is checked before request-body validation; maintenance-mode persistence-only saves do not require a live runtime.
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `gps_api_service.h`.
 
 ### GET `/api/gps/status`

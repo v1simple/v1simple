@@ -5,6 +5,7 @@
  */
 
 #include "settings_backup_doc.h"
+#include "v1_settings_json.h"
 
 bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPath, bool verboseErrors) {
     if (!fs) {
@@ -643,16 +644,15 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             if (++profilesProcessed % kProfileRestoreWatchdogFeedInterval == 0) {
                 feedWatchdog();
             }
-            if (!p["name"].is<const char*>() || !p["bytes"].is<JsonArrayConst>()) {
-                continue;
-            }
-
-            JsonArrayConst bytes = p["bytes"].as<JsonArrayConst>();
-            if (bytes.size() != 6) {
+            if (!p["name"].is<const char*>()) {
                 continue;
             }
 
             V1Profile profile;
+            const JsonVariantConst rawBytes = p["bytes"];
+            if (!V1SettingsJson::parseRawBytes(rawBytes, profile.settings.bytes)) {
+                continue;
+            }
             profile.name = sanitizeProfileNameValue(p["name"].as<String>());
             if (profile.name.length() == 0) {
                 continue;
@@ -668,10 +668,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
                 profile.mainVolume = clampSlotVolumeValue(p["mainVolume"].as<int>());
             if (p["mutedVolume"].is<int>())
                 profile.mutedVolume = clampSlotVolumeValue(p["mutedVolume"].as<int>());
-
-            for (int i = 0; i < 6; i++) {
-                profile.settings.bytes[i] = bytes[i].as<uint8_t>();
-            }
 
             ProfileSaveResult saveResult = v1ProfileManager.saveProfile(profile);
             if (saveResult.success) {

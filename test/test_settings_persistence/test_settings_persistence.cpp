@@ -909,6 +909,50 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
     TEST_ASSERT_EQUAL_UINT8(6, restoredProfile.settings.bytes[5]);
 }
 
+void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_sibling() {
+    fs::FS fs(g_tempRoot);
+    storageManager.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_http_backup";
+    JsonArray profiles = doc["profiles"].to<JsonArray>();
+
+    const char* invalidValues[] = {"\"6\"", "true", "null", "5.5", "-1", "256"};
+    for (size_t i = 0; i < sizeof(invalidValues) / sizeof(invalidValues[0]); ++i) {
+        JsonDocument profileDoc;
+        String profileJson = String("{\"name\":\"Invalid") + String(static_cast<unsigned long>(i)) +
+                             "\",\"bytes\":[1,2,3,4,5," + invalidValues[i] + "]}";
+        TEST_ASSERT_FALSE(deserializeJson(profileDoc, profileJson));
+        profiles.add(profileDoc.as<JsonObject>());
+    }
+
+    JsonObject validProfile = profiles.add<JsonObject>();
+    validProfile["name"] = "Valid";
+    validProfile["description"] = "Valid sibling";
+    JsonArray validBytes = validProfile["bytes"].to<JsonArray>();
+    const uint8_t expectedBytes[] = {0, 1, 127, 128, 254, 255};
+    for (uint8_t value : expectedBytes) {
+        validBytes.add(value);
+    }
+
+    SettingsManager manager;
+    const SettingsBackupApplyResult applyResult = manager.applyBackupDocument(doc, true);
+
+    TEST_ASSERT_TRUE(applyResult.success);
+    TEST_ASSERT_EQUAL_INT(1, applyResult.profilesRestored);
+    for (size_t i = 0; i < sizeof(invalidValues) / sizeof(invalidValues[0]); ++i) {
+        const String path = String("/v1profiles/Invalid") + String(static_cast<unsigned long>(i)) + ".json";
+        TEST_ASSERT_FALSE(fs.exists(path));
+    }
+
+    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Valid.json"));
+    V1Profile restoredProfile;
+    TEST_ASSERT_TRUE(v1ProfileManager.loadProfile("Valid", restoredProfile));
+    TEST_ASSERT_EQUAL_STRING("Valid sibling", restoredProfile.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedBytes, restoredProfile.settings.bytes, 6);
+}
+
 void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
     fs::FS fs(g_tempRoot);
     storageManager.setFilesystem(&fs, true);
@@ -1471,6 +1515,7 @@ int main() {
     RUN_TEST(test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots);
     RUN_TEST(test_legacy_wifi_client_credentials_migrate_to_slot0);
     RUN_TEST(test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore);
+    RUN_TEST(test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_sibling);
     RUN_TEST(test_serialized_backup_payload_matches_builder_and_writes_same_json);
     RUN_TEST(test_device_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_proxy_mode_disables_obd_setting);

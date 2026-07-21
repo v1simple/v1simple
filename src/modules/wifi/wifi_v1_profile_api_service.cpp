@@ -8,6 +8,7 @@
 #include "wifi_json_document.h"
 #include "../../settings.h"
 #include "../../v1_profile_push_policy.h"
+#include "v1_settings_json.h"
 
 namespace WifiV1ProfileApiService {
 
@@ -279,6 +280,7 @@ void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*che
 
     // Check if pushing a profile by name
     String profileName = doc["name"] | "";
+    const JsonVariantConst rawBytes = doc["bytes"];
     if (!profileName.isEmpty()) {
         if (!runtime.loadProfileSettings ||
             !runtime.loadProfileSettings(profileName, bytes, displayOn, runtime.loadProfileSettingsCtx)) {
@@ -289,14 +291,10 @@ void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*che
                       bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
     }
     // Check for bytes array
-    else if (doc["bytes"].is<JsonArray>()) {
-        JsonArray bytesArray = doc["bytes"];
-        if (bytesArray.size() != 6) {
+    else if (!rawBytes.isUnbound()) {
+        if (!V1SettingsJson::parseRawBytes(rawBytes, bytes)) {
             server.send(400, "application/json", "{\"error\":\"Invalid bytes array\"}");
             return;
-        }
-        for (int i = 0; i < 6; i++) {
-            bytes[i] = bytesArray[i].as<uint8_t>();
         }
         displayOn = doc["displayOn"] | true;
         Serial.println("[V1Settings] Using raw bytes from request");

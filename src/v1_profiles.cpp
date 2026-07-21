@@ -3,6 +3,7 @@
  */
 
 #include "v1_profiles.h"
+#include "v1_settings_json.h"
 #include <ArduinoJson.h>
 #include <vector>
 
@@ -315,18 +316,24 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
         return false;
     }
 
+    const JsonVariantConst rawBytes = doc["bytes"];
+    const bool hasRawBytes = !rawBytes.isUnbound();
+    uint8_t rawSettingsBytes[V1SettingsJson::kSettingsByteCount];
+    if (hasRawBytes) {
+        if (!V1SettingsJson::parseRawBytes(rawBytes, rawSettingsBytes)) {
+            lastError_ = "Invalid settings bytes";
+            Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
+            return false;
+        }
+    }
+
     // Validate CRC32 if present
     if (doc["crc32"].is<uint32_t>()) {
         uint32_t storedCrc = doc["crc32"].as<uint32_t>();
 
         // Calculate CRC of the 6 settings bytes
-        JsonArray bytesArr = doc["bytes"];
-        if (bytesArr && bytesArr.size() == 6) {
-            uint8_t settingsBytes[6];
-            for (int i = 0; i < 6; i++) {
-                settingsBytes[i] = bytesArr[i].as<uint8_t>();
-            }
-            uint32_t computedCrc = calculateCRC32(settingsBytes, 6);
+        if (hasRawBytes) {
+            uint32_t computedCrc = calculateCRC32(rawSettingsBytes, V1SettingsJson::kSettingsByteCount);
             if (storedCrc != computedCrc) {
                 lastError_ = "CRC mismatch - profile file corrupted";
                 Serial.printf("[V1Profiles] %s (stored: %08lX, computed: %08lX)\n", lastError_.c_str(),
@@ -344,10 +351,9 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
     profile.mutedVolume = doc["mutedVolume"] | 0xFF; // 0xFF = don't change
 
     // Parse settings bytes
-    JsonArray bytes = doc["bytes"];
-    if (bytes && bytes.size() == 6) {
-        for (int i = 0; i < 6; i++) {
-            profile.settings.bytes[i] = bytes[i].as<uint8_t>();
+    if (hasRawBytes) {
+        for (size_t i = 0; i < V1SettingsJson::kSettingsByteCount; i++) {
+            profile.settings.bytes[i] = rawSettingsBytes[i];
         }
     } else {
         // Try individual settings (legacy or human-readable format)
@@ -750,11 +756,13 @@ bool V1ProfileManager::jsonToSettings(const String& json, V1UserSettings& settin
 }
 
 bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSettings& settings) const {
-    // Try raw bytes first (skip if empty to use individual settings)
-    JsonArray bytes = settingsObj["bytes"];
-    if (bytes && bytes.size() == 6) {
-        for (int i = 0; i < 6; i++) {
-            settings.bytes[i] = bytes[i].as<uint8_t>();
+    // Try raw bytes first. A present raw field must be a strict six-byte array;
+    // only an absent field falls back to individual settings.
+    const JsonVariantConst rawBytes = settingsObj["bytes"];
+    if (!rawBytes.isUnbound()) {
+        if (!V1SettingsJson::parseRawBytes(rawBytes, settings.bytes)) {
+            Serial.println("[V1Profiles] Invalid raw settings bytes");
+            return false;
         }
         Serial.println("[V1Profiles] Loaded from raw bytes");
         return true;

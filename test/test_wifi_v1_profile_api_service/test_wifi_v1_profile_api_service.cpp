@@ -793,6 +793,35 @@ void test_profile_settings_push_raw_bytes_requires_six_items() {
     TEST_ASSERT_TRUE(responseContainsPushPull(server, "\"error\":\"Invalid bytes array\""));
 }
 
+void test_profile_settings_push_rejects_invalid_raw_bytes_without_side_effects() {
+    const char* invalidPayloads[] = {
+        "{\"bytes\":[1,2,3,4,5,\"6\"],\"displayOn\":false}",
+        "{\"bytes\":[1,2,3,4,5,true],\"displayOn\":false}",
+        "{\"bytes\":[1,2,3,4,5,null],\"displayOn\":false}",
+        "{\"bytes\":[1,2,3,4,5,5.5],\"displayOn\":false}",
+        "{\"bytes\":[1,2,3,4,5,-1],\"displayOn\":false}",
+        "{\"bytes\":[1,2,3,4,5,256],\"displayOn\":false}",
+    };
+
+    for (const char* payload : invalidPayloads) {
+        WebServer server(80);
+        FakeRuntime rt;
+        rt.connected = true;
+        server.setArg("plain", payload);
+
+        WifiV1ProfileApiService::handleApiSettingsPush(
+            server,
+            makeRuntime(rt),
+            [](void* /*ctx*/) { return true; }, nullptr);
+
+        TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+        TEST_ASSERT_TRUE(responseContainsPushPull(server, "\"error\":\"Invalid bytes array\""));
+        TEST_ASSERT_EQUAL_INT(0, rt.parseSettingsCalls);
+        TEST_ASSERT_EQUAL_INT(0, rt.writeCalls);
+        TEST_ASSERT_EQUAL_INT(0, rt.setDisplayCalls);
+    }
+}
+
 void test_profile_settings_push_raw_bytes_success() {
     WebServer server(80);
     FakeRuntime rt;
@@ -905,6 +934,7 @@ int main() {
     RUN_TEST(ProfilePushPull::test_profile_settings_push_disables_v1_laser_when_alp_policy_enabled);
     RUN_TEST(ProfilePushPull::test_profile_settings_push_keeps_v1_laser_when_alp_policy_disabled);
     RUN_TEST(ProfilePushPull::test_profile_settings_push_raw_bytes_requires_six_items);
+    RUN_TEST(ProfilePushPull::test_profile_settings_push_rejects_invalid_raw_bytes_without_side_effects);
     RUN_TEST(ProfilePushPull::test_profile_settings_push_raw_bytes_success);
     RUN_TEST(ProfilePushPull::test_profile_settings_push_settings_parse_failure_returns_400);
     RUN_TEST(ProfilePushPull::test_profile_settings_push_settings_root_fallback_success);

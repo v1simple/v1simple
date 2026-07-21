@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -61,6 +62,13 @@ std::string readFileToString(fs::FS& fs, const char* path) {
     }
     file.close();
     return output;
+}
+
+void writeFileFromString(fs::FS& fs, const char* path, const char* contents) {
+    File file = fs.open(path, FILE_WRITE);
+    TEST_ASSERT_TRUE(file);
+    TEST_ASSERT_EQUAL_UINT(std::strlen(contents), file.print(contents));
+    file.close();
 }
 
 size_t countFilesInProfileDir(const char* suffix = nullptr) {
@@ -183,6 +191,52 @@ void test_save_profile_normal_path_still_succeeds() {
     TEST_ASSERT_EQUAL_UINT8(35, loaded.settings.bytes[5]);
 }
 
+void test_load_profile_rejects_invalid_raw_bytes_without_mutating_output() {
+    const char* invalidProfiles[] = {
+        "{\"description\":\"bad-string\",\"bytes\":[1,2,3,4,5,\"6\"],\"crc32\":0}",
+        "{\"description\":\"bad-bool\",\"bytes\":[1,2,3,4,5,true],\"crc32\":0}",
+        "{\"description\":\"bad-null\",\"bytes\":[1,2,3,4,5,null],\"crc32\":0}",
+        "{\"description\":\"bad-fraction\",\"bytes\":[1,2,3,4,5,5.5],\"crc32\":0}",
+        "{\"description\":\"bad-low\",\"bytes\":[1,2,3,4,5,-1],\"crc32\":0}",
+        "{\"description\":\"bad-high\",\"bytes\":[1,2,3,4,5,256],\"crc32\":0}",
+    };
+
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    for (const char* profileJson : invalidProfiles) {
+        writeFileFromString(fs, "/v1profiles/Invalid.json", profileJson);
+        V1Profile output = makeProfile("Sentinel", 90, "unchanged");
+        const V1Profile before = output;
+
+        TEST_ASSERT_FALSE(manager.loadProfile("Invalid", output));
+        TEST_ASSERT_EQUAL_STRING(before.name.c_str(), output.name.c_str());
+        TEST_ASSERT_EQUAL_STRING(before.description.c_str(), output.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, output.settings.bytes, 6);
+    }
+}
+
+void test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output() {
+    const char* invalidSettings[] = {
+        "{\"bytes\":[1,2,3,4,5,\"6\"]}",
+        "{\"bytes\":[1,2,3,4,5,true]}",
+        "{\"bytes\":[1,2,3,4,5,null]}",
+        "{\"bytes\":[1,2,3,4,5,5.5]}",
+        "{\"bytes\":[1,2,3,4,5,-1]}",
+        "{\"bytes\":[1,2,3,4,5,256]}",
+    };
+
+    V1ProfileManager manager;
+    for (const char* settingsJson : invalidSettings) {
+        V1UserSettings settings = makeProfile("Sentinel", 100).settings;
+        const V1UserSettings before = settings;
+
+        TEST_ASSERT_FALSE(manager.jsonToSettings(String(settingsJson), settings));
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(before.bytes, settings.bytes, 6);
+    }
+}
+
 void test_rename_same_name_is_successful_noop() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
@@ -268,6 +322,8 @@ int main() {
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
+    RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
+    RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_rename_same_name_is_successful_noop);
     RUN_TEST(test_rename_sanitized_collision_updates_name_in_place);
     RUN_TEST(test_rename_existing_distinct_destination_fails_without_mutation);

@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 2,
+  "profile_version": 3,
   "qualification_status": "blocked",
   "blockers": [
+    {
+      "code": "build-generator-provenance-not-authenticated",
+      "affected_component": "build-evidence"
+    },
+    {
+      "code": "board-resolution-provenance-not-authenticated",
+      "affected_component": "board-resolver"
+    },
     {
       "code": "hil-fault-control-not-implemented",
       "affected_component": "hil-fault"
     },
     {
-      "code": "build-evidence-provenance-not-authenticated",
-      "affected_component": "build-evidence"
-    },
-    {
       "code": "case-source-provenance-not-authenticated",
       "affected_component": "case-source-evidence"
-    },
-    {
-      "code": "board-inventory-provenance-not-authenticated",
-      "affected_component": "board-resolution-evidence"
     }
   ],
   "activation_contract": {
@@ -43,6 +43,37 @@
         "status": "blocked"
       }
     ]
+  },
+  "build_provenance_contract": {
+    "schema_version": 1,
+    "status": "integrity-bound",
+    "commitment_algorithm": "sha256-domain-separated-canonical-json-v1",
+    "source_tree_scope": "full-git-tree",
+    "required_tool_identities": [
+      "esptool",
+      "git",
+      "platformio",
+      "python"
+    ]
+  },
+  "board_provenance_contract": {
+    "schema_version": 1,
+    "status": "integrity-bound",
+    "commitment_algorithm": "sha256-salted-inventory-canonical-json-v1",
+    "salt_bytes": 32
+  },
+  "case_driver_contract": {
+    "schema_version": 1,
+    "status": "blocked",
+    "runner_path": "scripts/run_bug_squash_hil.py",
+    "driver_source_paths": []
+  },
+  "fault_control_contract": {
+    "schema_version": 1,
+    "status": "blocked",
+    "build_kind": "hil-fault",
+    "implementation_source_paths": [],
+    "test_source_paths": []
   },
   "allowed_instrumentation_modes": [
     "automated",

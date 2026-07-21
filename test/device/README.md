@@ -100,12 +100,22 @@ python3 scripts/resolve_hil_board.py dut-bench-a \
   --attestation-output .artifacts/bug-squash-hil/<run-id>/resolver-attestation.json
 ```
 
-The attestation contains only the resolver schema, alias, requested
-capabilities, UTC observation time, and a stable SHA-256 of the complete local
-resolution. The qualification validator recomputes that digest from the unique
-ignored local resolution for every DUT and rig. This binds evidence to the
-actual resolver result without copying the USB identity, serial path, or LAN
-endpoint into the qualification manifest.
+The standalone resolver attestation contains only the resolver schema, alias,
+requested capabilities, UTC observation time, and a stable SHA-256 of the
+complete local resolution.
+
+The bug-squash HIL wrapper adds the qualification integrity layer. It stores a
+random 32-byte salt, the selected private inventory record, and the exact
+resolution together in an ignored local binding, then publishes a schema 2
+attestation containing the resolution digest and a salted inventory commitment.
+The qualification validator recomputes both from the unique local binding for
+every DUT and rig. The public attestation never exposes the salt, USB identity,
+serial path, LAN endpoint, or unrelated inventory records; changing any bound
+private inventory or resolution byte invalidates it.
+This detects mutation and prevents identifier disclosure, but it is not an
+origin proof because the local evidence author supplies the salt, record, and
+resolution. Qualification keeps board provenance blocked until an external
+signature or pinned inventory trust root is available.
 
 ## Suites
 

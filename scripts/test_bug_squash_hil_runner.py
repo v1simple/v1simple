@@ -320,11 +320,37 @@ def test_success_is_full_sha_bound_sanitized_and_restored() -> None:
         public_output = completed.stdout + completed.stderr + json.dumps(result)
         assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
         assert_true(str(fixture["port"]) not in public_output, public_output)
+        binding_path = out_dir / "raw" / "board-resolution-binding.json"
+        attestation_path = out_dir / "resolver-attestation.json"
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        assert_true(
+            binding["inventory_record"]["connection"]["usb_serial"]
+            == "SECRET-USB-IDENTITY",
+            "private inventory identity is retained only in the ignored raw binding",
+        )
+        assert_true(attestation["schema_version"] == 2, str(attestation))
+        assert_true(
+            attestation
+            == hil_runner.qualification.build_board_inventory_attestation(
+                binding,
+                observed_at_utc=attestation["observed_at_utc"],
+            ),
+            "published attestation exactly commits to the selected private inventory",
+        )
+        attestation_text = json.dumps(attestation)
+        assert_true("SECRET-USB-IDENTITY" not in attestation_text, attestation_text)
+        assert_true(str(fixture["port"]) not in attestation_text, attestation_text)
         hashes = result["device_artifact_sha256"]
         assert_true(len(hashes) == 30, str(hashes))
         assert_true(
             "manifest.json" in hashes and "test_device_boot.xml" in hashes,
             str(hashes),
+        )
+        assert_true(
+            result["artifact_sha256"]["board_resolution_binding"]
+            == hil_runner.sha256_file(binding_path),
+            "result binds the private board-resolution record without publishing it",
         )
 
 

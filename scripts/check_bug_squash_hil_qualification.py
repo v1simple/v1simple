@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import ipaddress
 import json
 import os
+import platform
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -22,9 +25,13 @@ import resolve_hil_board as hil_resolver
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "tools" / "bug_squash_hil_qualification_profile_v1.json"
 BUILD_EVIDENCE_GENERATOR = ROOT / "scripts" / "generate_bug_squash_build_evidence.py"
-PINNED_PROFILE_SHA256 = "c4c30d38e712626430bfa918ba97fdb2ab2887c67e58e8f143538936499e977c"
+PINNED_PROFILE_SHA256 = "b8b742b531580cdcfcb716f2b438525c4fbff1dca1e3278d43bed0faac1ed082"
 MINIMUM_READY_PROFILE_VERSION = 3
+INTEGRITY_PROVENANCE_VERIFIER_VERSION = 1
 AUTHENTICATED_PROVENANCE_VERIFIER_VERSION: int | None = None
+AUTHORITATIVE_GIT = Path("/usr/bin/git")
+COMMITMENT_ALGORITHM = "sha256-domain-separated-canonical-json-v1"
+BOARD_COMMITMENT_ALGORITHM = "sha256-salted-inventory-canonical-json-v1"
 EXPECTED_CASE_IDS = tuple(
     [f"BSC-{number:02d}" for number in range(2, 15)] + ["BSC-16"]
 )
@@ -89,6 +96,244 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_json_bytes(payload: Any) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def canonical_commitment(domain: str, payload: Any) -> str:
+    if not isinstance(domain, str) or not domain:
+        raise ValueError("commitment domain must be non-empty")
+    return sha256_bytes(domain.encode("ascii") + b"\0" + canonical_json_bytes(payload))
+
+
+def sanitized_git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "0",
+        }
+    )
+    return environment
+
+
+def run_authoritative_git(arguments: list[str], *, timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    if not AUTHORITATIVE_GIT.is_file():
+        raise OSError("authoritative Git executable is unavailable")
+    return subprocess.run(
+        [str(AUTHORITATIVE_GIT), *arguments],
+        cwd=ROOT,
+        env=sanitized_git_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def git_blob_sha256(target_sha: str, relative_path: str) -> str:
+    paths_errors: list[str] = []
+    parsed = parse_tracked_paths([relative_path], "tracked_path", paths_errors)
+    if not parsed or paths_errors:
+        raise ValueError("tracked provenance path is unsafe")
+    if not AUTHORITATIVE_GIT.is_file():
+        raise ValueError("authoritative Git executable is unavailable")
+    result = subprocess.run(
+        [str(AUTHORITATIVE_GIT), "show", f"{target_sha}:{relative_path}"],
+        cwd=ROOT,
+        env=sanitized_git_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise ValueError("tracked provenance source is missing from target commit")
+    return sha256_bytes(result.stdout)
+
+
+def git_tree_sha256(target_sha: str) -> str:
+    result = run_authoritative_git(
+        ["ls-tree", "-r", "-z", "--full-tree", target_sha],
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise ValueError("target Git tree could not be enumerated")
+    records: list[dict[str, str]] = []
+    for raw_record in result.stdout.split("\0"):
+        if not raw_record:
+            continue
+        metadata, separator, path = raw_record.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise ValueError("target Git tree record is malformed")
+        mode, object_type, object_id = fields
+        records.append(
+            {"mode": mode, "type": object_type, "object_id": object_id, "path": path}
+        )
+    if not records:
+        raise ValueError("target Git tree is empty")
+    return canonical_commitment("v1simple.hil.git-tree.v1", records)
+
+
+def authoritative_tool_environment(pio_executable: Path) -> dict[str, str]:
+    allowed = {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOGNAME",
+        "NO_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TMPDIR",
+        "TZ",
+        "USER",
+    }
+    environment = {key: value for key, value in os.environ.items() if key in allowed}
+    environment["PATH"] = os.pathsep.join(
+        (str(pio_executable.parent), "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+    )
+    return environment
+
+
+def hash_python_package(
+    module_name: str,
+    python_command: Path,
+    environment: dict[str, str],
+) -> str:
+    result = subprocess.run(
+        [
+            str(python_command),
+            "-I",
+            "-c",
+            (
+                "import importlib.util; "
+                f"spec=importlib.util.find_spec({module_name!r}); "
+                "print(spec.origin if spec is not None else '')"
+            ),
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
+    )
+    origin_raw = result.stdout.strip()
+    if result.returncode != 0 or not origin_raw:
+        raise ValueError(f"required Python package is unavailable: {module_name}")
+    origin = Path(origin_raw).resolve()
+    if not origin.is_file():
+        raise ValueError(f"required Python package has no importable origin: {module_name}")
+    root = origin.parent
+    records: list[dict[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"required Python package has unsafe files: {module_name}")
+        if not path.is_file():
+            continue
+        records.append(
+            {"path": relative.as_posix(), "sha256": file_sha256(path)}
+        )
+    if not records:
+        raise ValueError(f"required Python package is empty: {module_name}")
+    return canonical_commitment(f"v1simple.hil.python-package.{module_name}.v1", records)
+
+
+def _tool_version(
+    command: list[str],
+    pattern: str,
+    environment: dict[str, str],
+) -> str:
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=30,
+    )
+    match = re.search(pattern, result.stdout)
+    if result.returncode != 0 or match is None:
+        raise ValueError("required build tool identity could not be established")
+    return match.group(0)
+
+
+@lru_cache(maxsize=1)
+def current_build_tool_identity() -> dict[str, Any]:
+    pio_raw = shutil.which("pio")
+    if pio_raw is None:
+        raise ValueError("PlatformIO executable is unavailable")
+    pio = Path(pio_raw).resolve()
+    python_command = Path(sys.executable)
+    python = python_command.resolve()
+    git = AUTHORITATIVE_GIT.resolve()
+    if not pio.is_file() or not python.is_file() or not git.is_file():
+        raise ValueError("required build tool executable is unavailable")
+    environment = authoritative_tool_environment(pio)
+    tools = {
+        "schema_version": 1,
+        "platformio": {
+            "sha256": file_sha256(pio),
+            "package_sha256": hash_python_package(
+                "platformio",
+                python_command,
+                environment,
+            ),
+            "version": _tool_version(
+                [str(pio), "--version"],
+                r"PlatformIO Core, version \d+\.\d+\.\d+",
+                environment,
+            ),
+        },
+        "python": {
+            "sha256": file_sha256(python),
+            "version": platform.python_version(),
+        },
+        "git": {
+            "sha256": file_sha256(git),
+            "version": _tool_version(
+                [str(git), "--version"],
+                r"git version \d+\.\d+(?:\.\d+)?",
+                environment,
+            ),
+        },
+        "esptool": {
+            "sha256": hash_python_package(
+                "esptool",
+                python_command,
+                environment,
+            ),
+            "version": _tool_version(
+                [str(python_command), "-m", "esptool", "version"],
+                r"esptool v\d+\.\d+\.\d+",
+                environment,
+            ),
+        },
+    }
+    tools["identity_sha256"] = canonical_commitment(
+        "v1simple.hil.build-tools.v1",
+        tools,
+    )
+    return tools
 
 
 def load_json_bytes(content: bytes, label: str) -> Any:
@@ -229,6 +474,186 @@ def parse_safe_id(raw: Any, field: str, errors: list[str]) -> str | None:
     return raw
 
 
+def parse_tracked_paths(raw: Any, field: str, errors: list[str]) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        errors.append(f"{field} must be an array")
+        return ()
+    result: list[str] = []
+    for index, value in enumerate(raw):
+        prefix = f"{field}[{index}]"
+        if not isinstance(value, str) or not value or value != PurePosixPath(value).as_posix():
+            errors.append(f"{prefix} must be a canonical tracked path")
+            continue
+        parts = PurePosixPath(value).parts
+        if (
+            PurePosixPath(value).is_absolute()
+            or any(part in {".", ".."} for part in parts)
+            or any(SAFE_PATH_SEGMENT_RE.fullmatch(part) is None for part in parts)
+        ):
+            errors.append(f"{prefix} must be a safe relative tracked path")
+            continue
+        if value in result:
+            errors.append(f"{field} has duplicate path: {value}")
+            continue
+        result.append(value)
+    if result != sorted(result):
+        errors.append(f"{field} must be sorted")
+    return tuple(result)
+
+
+def validate_provenance_profile_contracts(
+    profile: dict[str, Any],
+    blocker_codes: set[str],
+    errors: list[str],
+) -> None:
+    build = profile.get("build_provenance_contract")
+    if not isinstance(build, dict):
+        errors.append("pinned profile build_provenance_contract must be an object")
+    else:
+        reject_unknown_keys(
+            build,
+            {
+                "schema_version",
+                "status",
+                "commitment_algorithm",
+                "source_tree_scope",
+                "required_tool_identities",
+            },
+            "pinned profile.build_provenance_contract",
+            errors,
+        )
+        if build.get("schema_version") != 1 or build.get("status") != "integrity-bound":
+            errors.append(
+                "pinned profile build provenance contract must be integrity-bound schema 1"
+            )
+        if build.get("commitment_algorithm") != COMMITMENT_ALGORITHM:
+            errors.append("pinned profile build provenance commitment algorithm mismatch")
+        if build.get("source_tree_scope") != "full-git-tree":
+            errors.append("pinned profile build provenance must bind the full Git tree")
+        if build.get("required_tool_identities") != [
+            "esptool",
+            "git",
+            "platformio",
+            "python",
+        ]:
+            errors.append("pinned profile build provenance tool identities mismatch")
+
+    board = profile.get("board_provenance_contract")
+    if not isinstance(board, dict):
+        errors.append("pinned profile board_provenance_contract must be an object")
+    else:
+        reject_unknown_keys(
+            board,
+            {"schema_version", "status", "commitment_algorithm", "salt_bytes"},
+            "pinned profile.board_provenance_contract",
+            errors,
+        )
+        if board.get("schema_version") != 1 or board.get("status") != "integrity-bound":
+            errors.append(
+                "pinned profile board provenance contract must be integrity-bound schema 1"
+            )
+        if board.get("commitment_algorithm") != BOARD_COMMITMENT_ALGORITHM:
+            errors.append("pinned profile board commitment algorithm mismatch")
+        if board.get("salt_bytes") != 32:
+            errors.append("pinned profile board commitment salt must be 32 bytes")
+
+    driver = profile.get("case_driver_contract")
+    driver_status: str | None = None
+    if not isinstance(driver, dict):
+        errors.append("pinned profile case_driver_contract must be an object")
+    else:
+        reject_unknown_keys(
+            driver,
+            {"schema_version", "status", "runner_path", "driver_source_paths"},
+            "pinned profile.case_driver_contract",
+            errors,
+        )
+        driver_status = driver.get("status") if isinstance(driver.get("status"), str) else None
+        if driver.get("schema_version") != 1 or driver_status not in {"active", "blocked"}:
+            errors.append("pinned profile case driver contract is invalid")
+        runner_paths = parse_tracked_paths(
+            [driver.get("runner_path")],
+            "pinned profile.case_driver_contract.runner_path",
+            errors,
+        )
+        source_paths = parse_tracked_paths(
+            driver.get("driver_source_paths"),
+            "pinned profile.case_driver_contract.driver_source_paths",
+            errors,
+        )
+        if not runner_paths:
+            errors.append("pinned profile case driver runner path is invalid")
+        if driver_status == "active" and not source_paths:
+            errors.append("active case driver contract needs tracked driver sources")
+        if driver_status == "blocked" and source_paths:
+            errors.append("blocked case driver contract must not claim driver sources")
+
+    fault = profile.get("fault_control_contract")
+    fault_status: str | None = None
+    if not isinstance(fault, dict):
+        errors.append("pinned profile fault_control_contract must be an object")
+    else:
+        reject_unknown_keys(
+            fault,
+            {
+                "schema_version",
+                "status",
+                "build_kind",
+                "implementation_source_paths",
+                "test_source_paths",
+            },
+            "pinned profile.fault_control_contract",
+            errors,
+        )
+        fault_status = fault.get("status") if isinstance(fault.get("status"), str) else None
+        if fault.get("schema_version") != 1 or fault_status not in {"active", "blocked"}:
+            errors.append("pinned profile fault control contract is invalid")
+        if fault.get("build_kind") != "hil-fault":
+            errors.append("pinned profile fault control build kind mismatch")
+        implementation_paths = parse_tracked_paths(
+            fault.get("implementation_source_paths"),
+            "pinned profile.fault_control_contract.implementation_source_paths",
+            errors,
+        )
+        test_paths = parse_tracked_paths(
+            fault.get("test_source_paths"),
+            "pinned profile.fault_control_contract.test_source_paths",
+            errors,
+        )
+        if fault_status == "active" and (not implementation_paths or not test_paths):
+            errors.append("active fault control contract needs implementation and tests")
+        if fault_status == "blocked" and (implementation_paths or test_paths):
+            errors.append("blocked fault control contract must not claim tracked controls")
+
+    activation = profile.get("activation_contract")
+    requirements = activation.get("requirements", []) if isinstance(activation, dict) else []
+    requirement_status = {
+        item.get("id"): item.get("status")
+        for item in requirements
+        if isinstance(item, dict)
+    }
+    expected_status = {
+        "authenticated-build-generator-provenance": "blocked",
+        "authenticated-board-inventory-resolver-provenance": "blocked",
+        "authenticated-case-driver-source-provenance": driver_status,
+        "bounded-hil-fault-control": fault_status,
+    }
+    if requirement_status != expected_status:
+        errors.append("pinned profile activation requirements do not match provenance contracts")
+    expected_blockers = {
+        code
+        for code, status in (
+            ("build-generator-provenance-not-authenticated", "blocked"),
+            ("board-resolution-provenance-not-authenticated", "blocked"),
+            ("case-source-provenance-not-authenticated", driver_status),
+            ("hil-fault-control-not-implemented", fault_status),
+        )
+        if status == "blocked"
+    }
+    if blocker_codes != expected_blockers:
+        errors.append("pinned profile blockers do not exactly match inactive contracts")
+
+
 def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
     actual_digest = sha256_bytes(content)
@@ -253,6 +678,10 @@ def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[
             "qualification_status",
             "blockers",
             "activation_contract",
+            "build_provenance_contract",
+            "board_provenance_contract",
+            "case_driver_contract",
+            "fault_control_contract",
             "allowed_instrumentation_modes",
             "build_contracts",
             "required_cases",
@@ -264,8 +693,8 @@ def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[
         errors.append("pinned profile schema_version must be 1")
     if profile.get("profile_id") != "bug-squash-hil-v1":
         errors.append("pinned profile_id mismatch")
-    if profile.get("profile_version") != 2:
-        errors.append("pinned profile_version must be 2")
+    if profile.get("profile_version") != 3:
+        errors.append("pinned profile_version must be 3")
     if profile.get("qualification_status") not in {"ready", "blocked"}:
         errors.append("pinned profile qualification_status must be ready or blocked")
     blockers = profile.get("blockers")
@@ -342,16 +771,6 @@ def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[
                     seen_requirements.add(requirement_id)
                 if requirement.get("status") not in {"blocked", "active"}:
                     errors.append(f"{prefix}.status must be blocked or active")
-        profile_version = profile.get("profile_version")
-        if type(profile_version) is int and profile_version < MINIMUM_READY_PROFILE_VERSION:
-            if profile.get("qualification_status") != "blocked":
-                errors.append(
-                    "pinned profile version 2 is non-activatable and must remain blocked"
-                )
-            if activation.get("status") != "blocked":
-                errors.append(
-                    "pinned profile version 2 activation_contract must remain blocked"
-                )
     cases = profile.get("required_cases")
     if not isinstance(cases, list):
         errors.append("pinned profile required_cases must be an array")
@@ -413,6 +832,7 @@ def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[
             errors.append("blocked pinned profile must declare at least one blocker")
         if profile.get("qualification_status") == "ready" and blocker_codes:
             errors.append("ready pinned profile must not declare blockers")
+    validate_provenance_profile_contracts(profile, blocker_codes, errors)
     return (profile if not errors else None), errors
 
 
@@ -446,47 +866,21 @@ def read_repository_state(
         return None, errors
 
     try:
-        command = subprocess.run(
+        command = run_authoritative_git(
             [
-                "git",
                 "show",
                 "-s",
                 "--format=%H%n%cI",
                 candidate,
             ],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
             timeout=5,
         )
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
+        head = run_authoritative_git(["rev-parse", "HEAD"], timeout=5)
+        config = run_authoritative_git(
+            ["show", f"{candidate}:include/config.h"], timeout=5
         )
-        config = subprocess.run(
-            ["git", "show", f"{candidate}:include/config.h"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
+        status = run_authoritative_git(
+            ["status", "--porcelain=v1", "--untracked-files=all"], timeout=5
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         errors.append(f"could not verify target_git_sha against the repository: {exc}")
@@ -677,9 +1071,11 @@ def profile_activation_errors(profile: dict[str, Any]) -> list[str]:
     if profile.get("qualification_status") != "ready":
         errors.append("qualification_status is not ready")
     activation = profile.get("activation_contract")
-    if not isinstance(activation, dict) or activation.get("status") != "active":
+    if not isinstance(activation, dict):
         errors.append("activation_contract is not active")
         return errors
+    if activation.get("status") != "active":
+        errors.append("activation_contract is not active")
     required_provenance_version = activation.get(
         "required_validator_provenance_version"
     )
@@ -700,6 +1096,99 @@ def profile_activation_errors(profile: dict[str, Any]) -> list[str]:
             )
             errors.append(f"activation requirement is not active: {requirement_id}")
     return errors
+
+
+def build_contracts_sha256(profile: dict[str, Any]) -> str:
+    return canonical_commitment(
+        "v1simple.hil.build-contracts.v1",
+        profile["build_contracts"],
+    )
+
+
+def case_definitions_sha256(profile: dict[str, Any]) -> str:
+    return canonical_commitment(
+        "v1simple.hil.case-definitions.v1",
+        profile["required_cases"],
+    )
+
+
+def expected_execution_provenance(
+    profile: dict[str, Any],
+    target_sha: str,
+) -> dict[str, Any]:
+    driver = profile["case_driver_contract"]
+    fault = profile["fault_control_contract"]
+    tracked_paths = sorted(
+        {
+            driver["runner_path"],
+            *driver["driver_source_paths"],
+            *fault["implementation_source_paths"],
+            *fault["test_source_paths"],
+        }
+    )
+    tracked_sources = [
+        {"path": path, "sha256": git_blob_sha256(target_sha, path)}
+        for path in tracked_paths
+    ]
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "target_git_sha": target_sha,
+        "profile_sha256": PINNED_PROFILE_SHA256,
+        "case_definitions_sha256": case_definitions_sha256(profile),
+        "case_driver_contract_sha256": canonical_commitment(
+            "v1simple.hil.case-driver-contract.v1",
+            driver,
+        ),
+        "fault_control_contract_sha256": canonical_commitment(
+            "v1simple.hil.fault-control-contract.v1",
+            fault,
+        ),
+        "tracked_sources": tracked_sources,
+    }
+    payload["provenance_sha256"] = canonical_commitment(
+        "v1simple.hil.execution-provenance.v1",
+        payload,
+    )
+    return payload
+
+
+def validate_execution_provenance(
+    payload: Any,
+    field: str,
+    profile: dict[str, Any],
+    target_sha: str | None,
+    errors: list[str],
+) -> str | None:
+    if not isinstance(payload, dict):
+        errors.append(f"{field} must be an object")
+        return None
+    reject_unknown_keys(
+        payload,
+        {
+            "schema_version",
+            "target_git_sha",
+            "profile_sha256",
+            "case_definitions_sha256",
+            "case_driver_contract_sha256",
+            "fault_control_contract_sha256",
+            "tracked_sources",
+            "provenance_sha256",
+        },
+        field,
+        errors,
+    )
+    if target_sha is None:
+        errors.append(f"{field} cannot be verified without a valid target commit")
+        return None
+    try:
+        expected = expected_execution_provenance(profile, target_sha)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"{field} tracked provenance could not be recomputed: {exc}")
+        return None
+    if payload != expected:
+        errors.append(f"{field} must exactly match target-tracked execution provenance")
+        return None
+    return expected["provenance_sha256"]
 
 
 def profile_cases(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -738,6 +1227,79 @@ def artifact_matches(
     return valid
 
 
+def build_board_inventory_attestation(
+    binding: Any,
+    *,
+    observed_at_utc: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(binding, dict) or set(binding) != {
+        "schema_version",
+        "commitment_salt_hex",
+        "inventory_record",
+        "resolution",
+    }:
+        raise ValueError("board binding must use the exact provenance schema")
+    if binding.get("schema_version") != 1:
+        raise ValueError("board binding schema_version must be 1")
+    salt = binding.get("commitment_salt_hex")
+    if not isinstance(salt, str) or re.fullmatch(r"[0-9a-f]{64}", salt) is None:
+        raise ValueError("board binding commitment salt must be 32 lowercase hex bytes")
+    inventory_record = binding.get("inventory_record")
+    if not isinstance(inventory_record, dict) or set(inventory_record) != {
+        "alias",
+        "capabilities",
+        "connection",
+    }:
+        raise ValueError("board binding inventory record is invalid")
+    alias = inventory_record.get("alias")
+    capabilities = inventory_record.get("capabilities")
+    connection = inventory_record.get("connection")
+    if (
+        not isinstance(alias, str)
+        or LOWER_SLUG_RE.fullmatch(alias) is None
+        or not isinstance(capabilities, list)
+        or not capabilities
+        or capabilities != sorted(capabilities)
+        or len(capabilities) != len(set(capabilities))
+        or any(
+            not isinstance(capability, str)
+            or LOWER_SLUG_RE.fullmatch(capability) is None
+            for capability in capabilities
+        )
+        or not isinstance(connection, dict)
+        or set(connection) != {"lan_base_url", "usb_serial"}
+        or any(
+            value is not None and (not isinstance(value, str) or not value)
+            for value in connection.values()
+        )
+    ):
+        raise ValueError("board binding inventory record fields are invalid")
+    resolution = binding.get("resolution")
+    base_attestation = hil_resolver.build_resolution_attestation(
+        resolution,
+        observed_at_utc=observed_at_utc,
+    )
+    if base_attestation["alias"] != alias or not set(
+        base_attestation["capabilities"]
+    ).issubset(capabilities):
+        raise ValueError("board binding resolution does not match inventory record")
+    inventory_commitment = canonical_commitment(
+        "v1simple.hil.board-inventory.v1",
+        {"commitment_salt_hex": salt, "inventory_record": inventory_record},
+    )
+    return {
+        "schema_version": 2,
+        "resolver_schema_version": base_attestation["resolver_schema_version"],
+        "board_provenance_schema_version": 1,
+        "commitment_algorithm": BOARD_COMMITMENT_ALGORITHM,
+        "alias": base_attestation["alias"],
+        "capabilities": base_attestation["capabilities"],
+        "resolution_sha256": base_attestation["resolution_sha256"],
+        "inventory_commitment_sha256": inventory_commitment,
+        "observed_at_utc": base_attestation["observed_at_utc"],
+    }
+
+
 def validate_resolver_attestation(
     payload: Any,
     field: str,
@@ -758,18 +1320,25 @@ def validate_resolver_attestation(
         {
             "schema_version",
             "resolver_schema_version",
+            "board_provenance_schema_version",
+            "commitment_algorithm",
             "alias",
             "capabilities",
             "resolution_sha256",
+            "inventory_commitment_sha256",
             "observed_at_utc",
         },
         field,
         errors,
     )
-    if payload.get("schema_version") != 1:
-        errors.append(f"{field}.schema_version must be 1")
+    if payload.get("schema_version") != 2:
+        errors.append(f"{field}.schema_version must be 2")
     if payload.get("resolver_schema_version") != 1:
         errors.append(f"{field}.resolver_schema_version must be 1")
+    if payload.get("board_provenance_schema_version") != 1:
+        errors.append(f"{field}.board_provenance_schema_version must be 1")
+    if payload.get("commitment_algorithm") != BOARD_COMMITMENT_ALGORITHM:
+        errors.append(f"{field}.commitment_algorithm must match the pinned board contract")
     if payload.get("alias") != dut_alias:
         errors.append(f"{field}.alias must match the approved board alias")
     capabilities = parse_slug_list(
@@ -780,6 +1349,11 @@ def validate_resolver_attestation(
     if capabilities != tuple(sorted(dut_capabilities)):
         errors.append(f"{field}.capabilities must exactly match approved board capabilities")
     valid_sha256(payload.get("resolution_sha256"), f"{field}.resolution_sha256", errors)
+    valid_sha256(
+        payload.get("inventory_commitment_sha256"),
+        f"{field}.inventory_commitment_sha256",
+        errors,
+    )
     append_time_errors(
         payload.get("observed_at_utc"),
         f"{field}.observed_at_utc",
@@ -798,9 +1372,9 @@ def validate_resolver_attestation(
         return
     assert local_path is not None
     try:
-        raw_resolution = load_json(local_path, f"{field}.local_resolution_path")
-        expected = hil_resolver.build_resolution_attestation(
-            raw_resolution,
+        raw_binding = load_json(local_path, f"{field}.local_resolution_path")
+        expected = build_board_inventory_attestation(
+            raw_binding,
             observed_at_utc=payload.get("observed_at_utc"),
         )
     except (ValueError, hil_resolver.ResolverError) as exc:
@@ -863,6 +1437,75 @@ def validate_firmware_image(
             )
 
 
+def build_input_commitment(
+    *,
+    target_git_sha: str,
+    target_tree_sha256: str,
+    firmware_version: str,
+    contract: dict[str, Any],
+    tools: dict[str, Any],
+) -> str:
+    return canonical_commitment(
+        "v1simple.hil.build-input.v1",
+        {
+            "target_git_sha": target_git_sha,
+            "target_tree_sha256": target_tree_sha256,
+            "firmware_version": firmware_version,
+            "build_contract": contract,
+            "tool_identity_sha256": tools.get("identity_sha256"),
+        },
+    )
+
+
+def build_output_commitment(
+    *,
+    binary_sha256: str,
+    log_sha256: str,
+    started_at_utc: str,
+    completed_at_utc: str,
+) -> str:
+    return canonical_commitment(
+        "v1simple.hil.build-output.v1",
+        {
+            "binary_sha256": binary_sha256,
+            "log_sha256": log_sha256,
+            "started_at_utc": started_at_utc,
+            "completed_at_utc": completed_at_utc,
+        },
+    )
+
+
+def with_provenance_commitment(domain: str, payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    result["provenance_sha256"] = canonical_commitment(domain, payload)
+    return result
+
+
+def expected_build_log_header(
+    *,
+    target_git_sha: str,
+    target_tree_sha256: str,
+    build_contract_sha256: str,
+    tool_identity_sha256: str,
+    kind: str,
+    environment: str,
+    started_at_utc: str,
+    completed_at_utc: str,
+) -> list[str]:
+    return [
+        "provenance_schema_version=1",
+        f"target_git_sha={target_git_sha}",
+        f"target_tree_sha256={target_tree_sha256}",
+        f"build_contract_sha256={build_contract_sha256}",
+        f"tool_identity_sha256={tool_identity_sha256}",
+        f"build_kind={kind}",
+        f"environment={environment}",
+        f"started_at_utc={started_at_utc}",
+        f"completed_at_utc={completed_at_utc}",
+        "exit_code=0",
+    ]
+
+
 def validate_build_manifest(
     payload: Any,
     field: str,
@@ -884,17 +1527,19 @@ def validate_build_manifest(
         {
             "schema_version",
             "target_git_sha",
+            "target_tree_sha256",
+            "build_contracts_sha256",
             "observed_at_utc",
-            "generator_sha256",
-            "platformio_version",
-            "esptool_version",
+            "generator",
+            "tools",
             "builds",
+            "provenance_sha256",
         },
         field,
         errors,
     )
-    if payload.get("schema_version") != 2:
-        errors.append(f"{field}.schema_version must be 2")
+    if payload.get("schema_version") != 3:
+        errors.append(f"{field}.schema_version must be 3")
     if target_sha is not None and payload.get("target_git_sha") != target_sha:
         errors.append(f"{field}.target_git_sha must match the qualification target")
     observed_at = append_time_errors(
@@ -905,34 +1550,53 @@ def validate_build_manifest(
         latest=qualification_end,
         now=now,
     )
-    try:
-        generator_sha = file_sha256(BUILD_EVIDENCE_GENERATOR)
-    except OSError as exc:
-        errors.append(f"could not hash the tracked build evidence generator: {exc}")
-        generator_sha = None
-    declared_generator_sha = valid_sha256(
-        payload.get("generator_sha256"),
-        f"{field}.generator_sha256",
+    expected_tree_sha: str | None = None
+    if target_sha is not None:
+        try:
+            expected_tree_sha = git_tree_sha256(target_sha)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{field}.target_tree_sha256 could not be recomputed: {exc}")
+    target_tree_sha = valid_sha256(
+        payload.get("target_tree_sha256"),
+        f"{field}.target_tree_sha256",
         errors,
     )
     if (
-        generator_sha is not None
-        and declared_generator_sha is not None
-        and declared_generator_sha != generator_sha
+        expected_tree_sha is not None
+        and target_tree_sha is not None
+        and target_tree_sha != expected_tree_sha
     ):
-        errors.append(f"{field}.generator_sha256 must match the tracked generator")
-    platformio_version = payload.get("platformio_version")
-    if not isinstance(platformio_version, str) or re.fullmatch(
-        r"PlatformIO Core, version \d+\.\d+\.\d+",
-        platformio_version,
-    ) is None:
-        errors.append(f"{field}.platformio_version must identify PlatformIO Core")
-    esptool_version = payload.get("esptool_version")
-    if not isinstance(esptool_version, str) or re.fullmatch(
-        r"esptool v\d+\.\d+\.\d+",
-        esptool_version,
-    ) is None:
-        errors.append(f"{field}.esptool_version must identify esptool")
+        errors.append(f"{field}.target_tree_sha256 must match the exact target Git tree")
+    expected_contracts_sha = build_contracts_sha256(profile)
+    if payload.get("build_contracts_sha256") != expected_contracts_sha:
+        errors.append(f"{field}.build_contracts_sha256 must match the pinned contracts")
+    generator = payload.get("generator")
+    if not isinstance(generator, dict):
+        errors.append(f"{field}.generator must be an object")
+    else:
+        reject_unknown_keys(generator, {"path", "sha256"}, f"{field}.generator", errors)
+        if generator.get("path") != "scripts/generate_bug_squash_build_evidence.py":
+            errors.append(f"{field}.generator.path must identify the tracked generator")
+        if target_sha is not None:
+            try:
+                expected_generator_sha = git_blob_sha256(target_sha, generator.get("path", ""))
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                errors.append(f"{field}.generator tracked bytes could not be verified: {exc}")
+            else:
+                if generator.get("sha256") != expected_generator_sha:
+                    errors.append(f"{field}.generator.sha256 must match target-tracked bytes")
+    tools = payload.get("tools")
+    if not isinstance(tools, dict):
+        errors.append(f"{field}.tools must be an object")
+        tools = {}
+    else:
+        try:
+            expected_tools = current_build_tool_identity()
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{field}.tools could not be independently established: {exc}")
+        else:
+            if tools != expected_tools:
+                errors.append(f"{field}.tools must match the independently hashed tool identity")
     raw_builds = payload.get("builds")
     if not isinstance(raw_builds, list):
         errors.append(f"{field}.builds must be an array")
@@ -953,12 +1617,17 @@ def validate_build_manifest(
                 "environment",
                 "commit_sha",
                 "build_command",
+                "build_contract_sha256",
                 "binary_artifact_id",
                 "binary_sha256",
                 "log_artifact_id",
+                "log_sha256",
                 "source_worktree_clean",
                 "started_at_utc",
                 "completed_at_utc",
+                "input_commitment_sha256",
+                "output_commitment_sha256",
+                "provenance_sha256",
             },
             prefix,
             errors,
@@ -971,6 +1640,12 @@ def validate_build_manifest(
             errors.append(f"{field}.builds has duplicate kind: {kind}")
         seen.add(kind)
         contract = contracts[kind]
+        contract_sha = canonical_commitment(
+            "v1simple.hil.build-contract.v1",
+            contract,
+        )
+        if build.get("build_contract_sha256") != contract_sha:
+            errors.append(f"{prefix}.build_contract_sha256 must match the pinned contract")
         if not isinstance(build.get("firmware_version"), str) or SEMVER_RE.fullmatch(
             build["firmware_version"]
         ) is None:
@@ -1025,14 +1700,47 @@ def validate_build_manifest(
         )
         if log_artifact_id is not None:
             references[log_artifact_id] = references.get(log_artifact_id, 0) + 1
+            log_artifact = artifacts.get(log_artifact_id)
             artifact_matches(
-                artifacts.get(log_artifact_id),
+                log_artifact,
                 scope="qualification",
                 role="build-log",
                 artifact_format="text",
                 field=f"{prefix}.log_artifact_id",
                 errors=errors,
             )
+            log_sha = valid_sha256(
+                build.get("log_sha256"),
+                f"{prefix}.log_sha256",
+                errors,
+            )
+            if (
+                log_artifact is not None
+                and log_sha is not None
+                and log_artifact.get("sha256") != log_sha
+            ):
+                errors.append(f"{prefix}.log_sha256 must match the retained build log")
+            log_path = log_artifact.get("_resolved_path") if log_artifact else None
+            if isinstance(log_path, Path):
+                try:
+                    log_lines = log_path.read_text(encoding="utf-8").splitlines()
+                except (OSError, UnicodeError) as exc:
+                    errors.append(f"{prefix}.log could not be parsed: {exc}")
+                else:
+                    expected_header = expected_build_log_header(
+                        target_git_sha=str(build.get("commit_sha")),
+                        target_tree_sha256=str(payload.get("target_tree_sha256")),
+                        build_contract_sha256=contract_sha,
+                        tool_identity_sha256=str(tools.get("identity_sha256")),
+                        kind=kind,
+                        environment=str(build.get("environment")),
+                        started_at_utc=str(build.get("started_at_utc")),
+                        completed_at_utc=str(build.get("completed_at_utc")),
+                    )
+                    if log_lines[: len(expected_header)] != expected_header:
+                        errors.append(f"{prefix}.log provenance header is forged or inconsistent")
+                    if len(log_lines) <= len(expected_header):
+                        errors.append(f"{prefix}.log must retain nonempty build process output")
         binary_sha = valid_sha256(build.get("binary_sha256"), f"{prefix}.binary_sha256", errors)
         if binary_sha is not None:
             if binary_sha in binary_digests:
@@ -1072,9 +1780,61 @@ def validate_build_manifest(
                     if isinstance(build.get("firmware_version"), str)
                     else None,
                 )
+        firmware_version = build.get("firmware_version")
+        binary_sha_value = build.get("binary_sha256")
+        log_sha_value = build.get("log_sha256")
+        started_value = build.get("started_at_utc")
+        completed_value = build.get("completed_at_utc")
+        if all(
+            isinstance(value, str)
+            for value in (
+                target_sha,
+                target_tree_sha,
+                firmware_version,
+                binary_sha_value,
+                log_sha_value,
+                started_value,
+                completed_value,
+            )
+        ) and tools:
+            expected_input = build_input_commitment(
+                target_git_sha=target_sha,
+                target_tree_sha256=target_tree_sha,
+                firmware_version=firmware_version,
+                contract=contract,
+                tools=tools,
+            )
+            expected_output = build_output_commitment(
+                binary_sha256=binary_sha_value,
+                log_sha256=log_sha_value,
+                started_at_utc=started_value,
+                completed_at_utc=completed_value,
+            )
+            if build.get("input_commitment_sha256") != expected_input:
+                errors.append(f"{prefix}.input_commitment_sha256 is not input-bound")
+            if build.get("output_commitment_sha256") != expected_output:
+                errors.append(f"{prefix}.output_commitment_sha256 is not output-bound")
+            build_without_provenance = {
+                key: value for key, value in build.items() if key != "provenance_sha256"
+            }
+            expected_provenance = canonical_commitment(
+                "v1simple.hil.build-provenance.v1",
+                build_without_provenance,
+            )
+            if build.get("provenance_sha256") != expected_provenance:
+                errors.append(f"{prefix}.provenance_sha256 does not bind the build record")
     for missing in contracts:
         if missing not in seen:
             errors.append(f"{field}.builds is missing required kind: {missing}")
+    manifest_without_provenance = {
+        key: value for key, value in payload.items() if key != "provenance_sha256"
+    }
+    expected_manifest_provenance = canonical_commitment(
+        "v1simple.hil.build-manifest.v1",
+        manifest_without_provenance,
+    )
+    if payload.get("provenance_sha256") != expected_manifest_provenance:
+        errors.append(f"{field}.provenance_sha256 does not bind the complete manifest")
 
 
 def validate_event_ids(
@@ -1215,6 +1975,9 @@ def validate_case_source(
     field: str,
     observation: dict[str, Any],
     role: dict[str, Any],
+    case_contract: dict[str, Any],
+    driver_contract: dict[str, Any],
+    execution_provenance_sha256: str | None,
     errors: list[str],
 ) -> None:
     if not isinstance(source, dict):
@@ -1222,7 +1985,17 @@ def validate_case_source(
         return
     reject_unknown_keys(
         source,
-        {"schema_version", "case_id", "role_id", "run_id", "records"},
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "run_id",
+            "case_definition_sha256",
+            "driver_contract_sha256",
+            "execution_provenance_sha256",
+            "records",
+            "source_commitment_sha256",
+        },
         field,
         errors,
     )
@@ -1231,6 +2004,28 @@ def validate_case_source(
     for key in ("case_id", "role_id", "run_id"):
         if source.get(key) != observation.get(key):
             errors.append(f"{field}.{key} must match its case observation")
+    expected_case_sha = canonical_commitment(
+        "v1simple.hil.case-definition.v1",
+        case_contract,
+    )
+    expected_driver_sha = canonical_commitment(
+        "v1simple.hil.case-driver-contract.v1",
+        driver_contract,
+    )
+    if source.get("case_definition_sha256") != expected_case_sha:
+        errors.append(f"{field}.case_definition_sha256 must bind the pinned case")
+    if source.get("driver_contract_sha256") != expected_driver_sha:
+        errors.append(f"{field}.driver_contract_sha256 must bind tracked driver definitions")
+    if (
+        execution_provenance_sha256 is None
+        or source.get("execution_provenance_sha256") != execution_provenance_sha256
+    ):
+        errors.append(
+            f"{field}.execution_provenance_sha256 must bind authenticated "
+            "target-tracked execution provenance"
+        )
+    if driver_contract.get("status") != "active":
+        errors.append(f"{field} cannot authenticate without an active tracked case driver")
 
     expected: dict[tuple[str, str], tuple[Any, Any]] = {}
     for event in observation.get("stimuli", []):
@@ -1315,6 +2110,15 @@ def validate_case_source(
             errors.append(f"{field}.records is missing source record: {key[0]}/{key[1]}")
     if len(records) != len(expected):
         errors.append(f"{field}.records must contain exactly the derived source set")
+    source_without_commitment = {
+        key: value for key, value in source.items() if key != "source_commitment_sha256"
+    }
+    expected_source_commitment = canonical_commitment(
+        "v1simple.hil.case-source.v1",
+        source_without_commitment,
+    )
+    if source.get("source_commitment_sha256") != expected_source_commitment:
+        errors.append(f"{field}.source_commitment_sha256 does not bind the source record")
 
 
 def validate_case_observation(
@@ -1322,6 +2126,9 @@ def validate_case_observation(
     field: str,
     case_id: str,
     role: dict[str, Any],
+    case_contract: dict[str, Any],
+    driver_contract: dict[str, Any],
+    execution_provenance_sha256: str | None,
     run_index: int,
     run_id: str,
     dut_alias: str,
@@ -1489,6 +2296,9 @@ def validate_case_observation(
             f"{field}.source",
             payload,
             role,
+            case_contract,
+            driver_contract,
+            execution_provenance_sha256,
             errors,
         )
 
@@ -1524,6 +2334,7 @@ def validate_artifact(
             "duts",
             "rigs",
             "build_manifest_artifact_id",
+            "execution_provenance_artifact_id",
             "evidence_artifacts",
             "cases",
         },
@@ -1855,6 +2666,31 @@ def validate_artifact(
                 errors,
             )
 
+    authenticated_execution_provenance_sha256: str | None = None
+    execution_provenance_id = parse_safe_id(
+        payload.get("execution_provenance_artifact_id"),
+        "execution_provenance_artifact_id",
+        errors,
+    )
+    if execution_provenance_id is not None:
+        references[execution_provenance_id] = references.get(execution_provenance_id, 0) + 1
+        provenance_artifact = artifacts.get(execution_provenance_id)
+        if artifact_matches(
+            provenance_artifact,
+            scope="qualification",
+            role="execution-provenance",
+            artifact_format="json",
+            field="execution_provenance_artifact_id",
+            errors=errors,
+        ):
+            authenticated_execution_provenance_sha256 = validate_execution_provenance(
+                artifact_content.get(execution_provenance_id),
+                "execution_provenance",
+                profile,
+                target_sha,
+                errors,
+            )
+
     cases_by_id = case_contracts
     raw_cases = payload.get("cases")
     seen_cases: set[str] = set()
@@ -1979,6 +2815,9 @@ def validate_artifact(
                             f"{role_prefix}.observation",
                             case_id,
                             role_contract,
+                            case_contract,
+                            profile["case_driver_contract"],
+                            authenticated_execution_provenance_sha256,
                             run_index,
                             run_id,
                             dut_alias if isinstance(dut_alias, str) else "",

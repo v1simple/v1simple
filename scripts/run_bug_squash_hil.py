@@ -19,6 +19,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from typing import Mapping, Sequence
 import xml.etree.ElementTree as ET
 
 import resolve_hil_board
+import check_bug_squash_hil_qualification as qualification
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,7 +175,7 @@ def resolve_device_board(
     inventory_path: Path,
     ports_json: Path | None,
     pio_command: str,
-) -> tuple[dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     try:
         inventory = resolve_hil_board.load_inventory(template, inventory_path)
         port_records = (
@@ -189,10 +191,24 @@ def resolve_device_board(
             ("device-tests", "serial"),
             port_records=port_records,
         )
-        attestation = resolve_hil_board.build_resolution_attestation(resolution)
+        board = inventory.boards[alias]
+        binding: dict[str, object] = {
+            "schema_version": 1,
+            "commitment_salt_hex": secrets.token_hex(32),
+            "inventory_record": {
+                "alias": board.alias,
+                "capabilities": list(board.capabilities),
+                "connection": {
+                    "lan_base_url": board.lan_base_url,
+                    "usb_serial": board.usb_serial,
+                },
+            },
+            "resolution": resolution,
+        }
+        attestation = qualification.build_board_inventory_attestation(binding)
     except resolve_hil_board.ResolverError as exc:
         raise RunnerError("board_resolution_failed", exc.message) from exc
-    return resolution, attestation
+    return resolution, binding, attestation
 
 
 def validate_device_manifest(
@@ -600,7 +616,7 @@ def run_device_suite(args: argparse.Namespace) -> int:
     if not git_state.tracked_clean:
         raise RunnerError("dirty_target", "final device suite requires a clean worktree")
 
-    resolution, attestation = resolve_device_board(
+    resolution, board_binding, attestation = resolve_device_board(
         alias=args.board,
         template=args.template,
         inventory_path=args.inventory,
@@ -625,7 +641,7 @@ def run_device_suite(args: argparse.Namespace) -> int:
     raw_root = run_root / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
     write_json(run_root / "resolver-attestation.json", attestation)
-    write_json(raw_root / "resolver-resolution.json", resolution)
+    write_json(raw_root / "board-resolution-binding.json", board_binding)
 
     device_root = raw_root / "device-suite"
     device_stdout = raw_root / "device-suite.stdout.log"
@@ -739,7 +755,9 @@ def run_device_suite(args: argparse.Namespace) -> int:
             "production_restore_stdout": sha256_file(restore_stdout),
             "production_restore_stderr": sha256_file(restore_stderr),
             "resolver_attestation": sha256_file(run_root / "resolver-attestation.json"),
-            "resolver_resolution": sha256_file(raw_root / "resolver-resolution.json"),
+            "board_resolution_binding": sha256_file(
+                raw_root / "board-resolution-binding.json"
+            ),
             "runner": sha256_file(Path(__file__)),
             "device_runner": sha256_optional_file(args.device_runner),
             "resolver": sha256_file(Path(resolve_hil_board.__file__)),

@@ -91,6 +91,7 @@ def preflight_build_contracts(
     seen_kinds: set[str] = set()
     seen_environments: set[str] = set()
     missing: list[str] = []
+    active_contracts: list[dict[str, Any]] = []
     for contract in contracts:
         if not isinstance(contract, dict):
             raise GenerationError("pinned profile has an invalid build contract")
@@ -98,27 +99,33 @@ def preflight_build_contracts(
         implementation_status = contract.get("implementation_status")
         environment = contract.get("environment")
         command = contract.get("build_command")
+        if not isinstance(kind, str) or kind in seen_kinds:
+            raise GenerationError("pinned build kinds must be valid and unique")
+        seen_kinds.add(kind)
+        if implementation_status == "blocked":
+            if environment is not None or command != [] or not contract.get("blocker_code"):
+                raise GenerationError("blocked pinned build contract is inconsistent")
+            continue
         if implementation_status != "active":
-            blocker = contract.get("blocker_code")
-            raise GenerationError(
-                f"pinned build kind {kind!s} is blocked: {blocker!s}"
-            )
+            raise GenerationError("pinned build implementation status is invalid")
         if not isinstance(kind, str) or not isinstance(environment, str):
             raise GenerationError("pinned build identity is invalid")
-        if kind in seen_kinds or environment in seen_environments:
-            raise GenerationError("pinned build identities must be unique")
-        seen_kinds.add(kind)
+        if environment in seen_environments:
+            raise GenerationError("pinned build environments must be unique")
         seen_environments.add(environment)
         if command != ["pio", "run", "-e", environment]:
             raise GenerationError("pinned build command must select its exact environment")
         if environment not in declared_environments:
             missing.append(environment)
+        active_contracts.append(contract)
     if missing:
         raise GenerationError(
             "pinned PlatformIO environments are not implemented: "
             + ", ".join(sorted(missing))
         )
-    return contracts
+    if not active_contracts:
+        raise GenerationError("pinned profile has no active build contracts")
+    return active_contracts
 
 
 def evidence_entry(
@@ -154,19 +161,31 @@ def main() -> int:
             profile["build_contracts"],
             declared_platformio_environments(),
         )
-        head = run_checked(["git", "rev-parse", "HEAD"])
+        head_result = qualification.run_authoritative_git(["rev-parse", "HEAD"])
+        if head_result.returncode != 0:
+            raise GenerationError("repository target commit could not be resolved")
+        head = head_result.stdout.strip()
         repository_state, state_errors = qualification.read_repository_state(head, head)
         if repository_state is None or state_errors:
             raise GenerationError("repository target must exist at a clean live HEAD")
-
-        platformio_version = run_checked(["pio", "--version"])
-        esptool_lines = run_checked([sys.executable, "-m", "esptool", "version"]).splitlines()
-        esptool_version = next(
-            (line.strip() for line in esptool_lines if line.startswith("esptool v")),
-            "",
-        )
-        if not esptool_version:
-            raise GenerationError("could not establish the esptool version")
+        try:
+            target_tree_sha = qualification.git_tree_sha256(head)
+            tools = qualification.current_build_tool_identity()
+            generator_sha = qualification.git_blob_sha256(
+                head,
+                "scripts/generate_bug_squash_build_evidence.py",
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise GenerationError(f"build provenance could not be established: {exc}") from exc
+        pio_raw = shutil.which("pio")
+        if pio_raw is None or qualification.file_sha256(Path(pio_raw).resolve()) != tools[
+            "platformio"
+        ]["sha256"]:
+            raise GenerationError("PlatformIO executable does not match tool provenance")
+        pio_path = Path(pio_raw).resolve()
+        pio_executable = str(pio_path)
+        build_environment = qualification.authoritative_tool_environment(pio_path)
+        contracts_sha = qualification.build_contracts_sha256(profile)
 
         output = require_ignored_output(args.output_directory)
         binaries = output / "binaries"
@@ -180,12 +199,25 @@ def main() -> int:
         for contract in contracts:
             kind = contract["kind"]
             command = list(contract["build_command"])
+            process_command = [pio_executable, *command[1:]]
+            contract_sha = qualification.canonical_commitment(
+                "v1simple.hil.build-contract.v1",
+                contract,
+            )
+            input_commitment = qualification.build_input_commitment(
+                target_git_sha=repository_state.head_sha,
+                target_tree_sha256=target_tree_sha,
+                firmware_version=repository_state.firmware_version,
+                contract=contract,
+                tools=tools,
+            )
             started_at = utc_now()
             process_output = ""
             try:
                 result = subprocess.run(
-                    command,
+                    process_command,
                     cwd=ROOT,
+                    env=build_environment,
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -197,14 +229,19 @@ def main() -> int:
                 process_output = f"build process did not complete: {type(exc).__name__}\n"
                 result = None
             completed_at = utc_now()
-            log_content = (
-                f"target_git_sha={repository_state.head_sha}\n"
-                f"build_kind={kind}\n"
-                f"environment={contract['environment']}\n"
-                f"started_at_utc={started_at}\n"
-                f"completed_at_utc={completed_at}\n"
-                + process_output
+            log_header = qualification.expected_build_log_header(
+                target_git_sha=repository_state.head_sha,
+                target_tree_sha256=target_tree_sha,
+                build_contract_sha256=contract_sha,
+                tool_identity_sha256=tools["identity_sha256"],
+                kind=kind,
+                environment=contract["environment"],
+                started_at_utc=started_at,
+                completed_at_utc=completed_at,
             )
+            exit_code = result.returncode if result is not None else -1
+            log_header[-1] = f"exit_code={exit_code}"
+            log_content = "\n".join(log_header) + "\n" + process_output
             log_path = logs / f"{kind}.log"
             log_path.write_text(log_content, encoding="utf-8")
             if result is None or result.returncode != 0:
@@ -227,6 +264,15 @@ def main() -> int:
             post_build_state, post_build_errors = qualification.read_repository_state(head, head)
             if post_build_state is None or post_build_errors:
                 raise GenerationError(f"pinned {kind} build changed tracked source state")
+            qualification.current_build_tool_identity.cache_clear()
+            try:
+                post_build_tools = qualification.current_build_tool_identity()
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                raise GenerationError(
+                    f"pinned {kind} build tool identity could not be re-established"
+                ) from exc
+            if post_build_tools != tools:
+                raise GenerationError(f"pinned {kind} build changed its tool identity")
 
             binary_artifact_id = f"firmware-{kind}"
             log_artifact_id = f"build-log-{kind}"
@@ -243,31 +289,54 @@ def main() -> int:
                     evidence_entry(log_artifact_id, "build-log", "text", log_path, output),
                 ]
             )
+            log_entry = artifacts[-1]
+            output_commitment = qualification.build_output_commitment(
+                binary_sha256=binary_entry["sha256"],
+                log_sha256=log_entry["sha256"],
+                started_at_utc=started_at,
+                completed_at_utc=completed_at,
+            )
+            build_record = {
+                "kind": kind,
+                "firmware_version": repository_state.firmware_version,
+                "environment": contract["environment"],
+                "commit_sha": repository_state.head_sha,
+                "build_command": command,
+                "build_contract_sha256": contract_sha,
+                "binary_artifact_id": binary_artifact_id,
+                "binary_sha256": binary_entry["sha256"],
+                "log_artifact_id": log_artifact_id,
+                "log_sha256": log_entry["sha256"],
+                "source_worktree_clean": True,
+                "started_at_utc": started_at,
+                "completed_at_utc": completed_at,
+                "input_commitment_sha256": input_commitment,
+                "output_commitment_sha256": output_commitment,
+            }
             builds.append(
-                {
-                    "kind": kind,
-                    "firmware_version": repository_state.firmware_version,
-                    "environment": contract["environment"],
-                    "commit_sha": repository_state.head_sha,
-                    "build_command": command,
-                    "binary_artifact_id": binary_artifact_id,
-                    "binary_sha256": binary_entry["sha256"],
-                    "log_artifact_id": log_artifact_id,
-                    "source_worktree_clean": True,
-                    "started_at_utc": started_at,
-                    "completed_at_utc": completed_at,
-                }
+                qualification.with_provenance_commitment(
+                    "v1simple.hil.build-provenance.v1",
+                    build_record,
+                )
             )
 
-        manifest = {
-            "schema_version": 2,
+        manifest_payload = {
+            "schema_version": 3,
             "target_git_sha": repository_state.head_sha,
+            "target_tree_sha256": target_tree_sha,
+            "build_contracts_sha256": contracts_sha,
             "observed_at_utc": utc_now(),
-            "generator_sha256": qualification.file_sha256(Path(__file__)),
-            "platformio_version": platformio_version,
-            "esptool_version": esptool_version,
+            "generator": {
+                "path": "scripts/generate_bug_squash_build_evidence.py",
+                "sha256": generator_sha,
+            },
+            "tools": tools,
             "builds": builds,
         }
+        manifest = qualification.with_provenance_commitment(
+            "v1simple.hil.build-manifest.v1",
+            manifest_payload,
+        )
         manifest_path = manifests / "build-manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -280,13 +349,35 @@ def main() -> int:
             manifest_path,
             output,
         )
+        execution_provenance_path = manifests / "execution-provenance.json"
+        execution_provenance_path.write_text(
+            json.dumps(
+                qualification.expected_execution_provenance(profile, head),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        execution_provenance_entry = evidence_entry(
+            "execution-provenance",
+            "execution-provenance",
+            "json",
+            execution_provenance_path,
+            output,
+        )
         index_path = manifests / "build-evidence-index.json"
         index_path.write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "build_manifest_artifact_id": "build-manifest",
-                    "evidence_artifacts": [manifest_entry, *artifacts],
+                    "execution_provenance_artifact_id": "execution-provenance",
+                    "evidence_artifacts": [
+                        manifest_entry,
+                        execution_provenance_entry,
+                        *artifacts,
+                    ],
                 },
                 indent=2,
                 sort_keys=True,

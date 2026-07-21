@@ -34,6 +34,22 @@ SYNTHETIC_REPOSITORY_STATE = qualification.RepositoryState(
     worktree_clean=True,
 )
 ORIGINAL_READ_REPOSITORY_STATE = qualification.read_repository_state
+SYNTHETIC_TREE_SHA256 = "1" * 64
+SYNTHETIC_TOOL_IDENTITY = {
+    "schema_version": 1,
+    "platformio": {
+        "sha256": "2" * 64,
+        "package_sha256": "6" * 64,
+        "version": "PlatformIO Core, version 6.1.19",
+    },
+    "python": {"sha256": "3" * 64, "version": "3.13.5"},
+    "git": {"sha256": "4" * 64, "version": "git version 2.50.1"},
+    "esptool": {"sha256": "5" * 64, "version": "esptool v5.2.0"},
+}
+SYNTHETIC_TOOL_IDENTITY["identity_sha256"] = qualification.canonical_commitment(
+    "v1simple.hil.build-tools.v1",
+    SYNTHETIC_TOOL_IDENTITY,
+)
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -120,6 +136,9 @@ def make_observation(
 def make_source_evidence(
     observation: dict[str, Any],
     role: dict[str, Any],
+    case: dict[str, Any],
+    profile: dict[str, Any],
+    execution_provenance_sha256: str,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for event in observation["stimuli"]:
@@ -193,13 +212,26 @@ def make_source_evidence(
             }
         )
     records.sort(key=lambda record: record["at_utc"])
-    return {
+    payload = {
         "schema_version": 1,
         "case_id": observation["case_id"],
         "role_id": observation["role_id"],
         "run_id": observation["run_id"],
+        "case_definition_sha256": qualification.canonical_commitment(
+            "v1simple.hil.case-definition.v1",
+            case,
+        ),
+        "driver_contract_sha256": qualification.canonical_commitment(
+            "v1simple.hil.case-driver-contract.v1",
+            profile["case_driver_contract"],
+        ),
+        "execution_provenance_sha256": execution_provenance_sha256,
         "records": records,
     }
+    return qualification.with_provenance_commitment(
+        "v1simple.hil.case-source.v1",
+        payload,
+    )
 
 
 def make_valid_artifact(
@@ -241,7 +273,6 @@ def make_valid_artifact(
 
     build_binary_ids: dict[str, str] = {}
     build_binary_shas: dict[str, str] = {}
-    build_log_ids: dict[str, str] = {}
     active_builds = [
         build
         for build in profile["build_contracts"]
@@ -260,41 +291,89 @@ def make_valid_artifact(
         )
         build_binary_ids[build["kind"]] = artifact_id
         build_binary_shas[build["kind"]] = artifacts[-1]["sha256"]
+    build_records: list[dict[str, Any]] = []
+    for build in active_builds:
+        contract_sha = qualification.canonical_commitment(
+            "v1simple.hil.build-contract.v1",
+            build,
+        )
+        started_at = "2025-07-21T20:01:00Z"
+        completed_at = "2025-07-21T20:04:00Z"
         log_artifact_id = f"build-log-{build['kind']}"
+        log_header = qualification.expected_build_log_header(
+            target_git_sha=TARGET_SHA,
+            target_tree_sha256=SYNTHETIC_TREE_SHA256,
+            build_contract_sha256=contract_sha,
+            tool_identity_sha256=SYNTHETIC_TOOL_IDENTITY["identity_sha256"],
+            kind=build["kind"],
+            environment=build["environment"],
+            started_at_utc=started_at,
+            completed_at_utc=completed_at,
+        )
         add_artifact(
             log_artifact_id,
             "qualification",
             "build-log",
             "text",
             f"logs/{build['kind']}.log",
-            f"synthetic successful build log for {build['kind']}\n".encode(),
+            ("\n".join(log_header) + "\nsynthetic successful build output\n").encode(),
         )
-        build_log_ids[build["kind"]] = log_artifact_id
+        log_sha = artifacts[-1]["sha256"]
+        record = {
+            "kind": build["kind"],
+            "firmware_version": "1.0.6",
+            "environment": build["environment"],
+            "commit_sha": TARGET_SHA,
+            "build_command": build["build_command"],
+            "build_contract_sha256": contract_sha,
+            "binary_artifact_id": build_binary_ids[build["kind"]],
+            "binary_sha256": build_binary_shas[build["kind"]],
+            "log_artifact_id": log_artifact_id,
+            "log_sha256": log_sha,
+            "source_worktree_clean": True,
+            "started_at_utc": started_at,
+            "completed_at_utc": completed_at,
+            "input_commitment_sha256": qualification.build_input_commitment(
+                target_git_sha=TARGET_SHA,
+                target_tree_sha256=SYNTHETIC_TREE_SHA256,
+                firmware_version="1.0.6",
+                contract=build,
+                tools=SYNTHETIC_TOOL_IDENTITY,
+            ),
+            "output_commitment_sha256": qualification.build_output_commitment(
+                binary_sha256=build_binary_shas[build["kind"]],
+                log_sha256=log_sha,
+                started_at_utc=started_at,
+                completed_at_utc=completed_at,
+            ),
+        }
+        build_records.append(
+            qualification.with_provenance_commitment(
+                "v1simple.hil.build-provenance.v1",
+                record,
+            )
+        )
 
-    build_manifest = {
-        "schema_version": 2,
+    build_manifest_payload = {
+        "schema_version": 3,
         "target_git_sha": TARGET_SHA,
+        "target_tree_sha256": SYNTHETIC_TREE_SHA256,
+        "build_contracts_sha256": qualification.build_contracts_sha256(profile),
         "observed_at_utc": "2025-07-21T20:05:00Z",
-        "generator_sha256": sha256(qualification.BUILD_EVIDENCE_GENERATOR),
-        "platformio_version": "PlatformIO Core, version 6.1.19",
-        "esptool_version": "esptool v5.2.0",
-        "builds": [
-            {
-                "kind": build["kind"],
-                "firmware_version": "1.0.6",
-                "environment": build["environment"],
-                "commit_sha": TARGET_SHA,
-                "build_command": build["build_command"],
-                "binary_artifact_id": build_binary_ids[build["kind"]],
-                "binary_sha256": build_binary_shas[build["kind"]],
-                "log_artifact_id": build_log_ids[build["kind"]],
-                "source_worktree_clean": True,
-                "started_at_utc": "2025-07-21T20:01:00Z",
-                "completed_at_utc": "2025-07-21T20:04:00Z",
-            }
-            for build in active_builds
-        ],
+        "generator": {
+            "path": "scripts/generate_bug_squash_build_evidence.py",
+            "sha256": qualification.git_blob_sha256(
+                TARGET_SHA,
+                "scripts/generate_bug_squash_build_evidence.py",
+            ),
+        },
+        "tools": SYNTHETIC_TOOL_IDENTITY,
+        "builds": build_records,
     }
+    build_manifest = qualification.with_provenance_commitment(
+        "v1simple.hil.build-manifest.v1",
+        build_manifest_payload,
+    )
     add_artifact(
         "build-manifest",
         "qualification",
@@ -324,9 +403,22 @@ def make_valid_artifact(
         "capabilities": dut_capabilities,
         "endpoints": {"serial_port": "synthetic-endpoint"},
     }
-    write_json(pack / "local/dut-resolution.json", dut_resolution)
-    resolver_attestation = resolver.build_resolution_attestation(
-        dut_resolution,
+    dut_binding = {
+        "schema_version": 1,
+        "commitment_salt_hex": "a1" * 32,
+        "inventory_record": {
+            "alias": "dut-primary",
+            "capabilities": dut_capabilities,
+            "connection": {
+                "lan_base_url": None,
+                "usb_serial": "synthetic-local-identity",
+            },
+        },
+        "resolution": dut_resolution,
+    }
+    write_json(pack / "local/dut-resolution.json", dut_binding)
+    resolver_attestation = qualification.build_board_inventory_attestation(
+        dut_binding,
         observed_at_utc="2025-07-21T20:10:00Z",
     )
     add_artifact(
@@ -343,9 +435,19 @@ def make_valid_artifact(
         "capabilities": rig_capabilities,
         "endpoints": {},
     }
-    write_json(pack / "local/rig-resolution.json", rig_resolution)
-    rig_attestation = resolver.build_resolution_attestation(
-        rig_resolution,
+    rig_binding = {
+        "schema_version": 1,
+        "commitment_salt_hex": "b2" * 32,
+        "inventory_record": {
+            "alias": "rig-primary",
+            "capabilities": rig_capabilities,
+            "connection": {"lan_base_url": None, "usb_serial": None},
+        },
+        "resolution": rig_resolution,
+    }
+    write_json(pack / "local/rig-resolution.json", rig_binding)
+    rig_attestation = qualification.build_board_inventory_attestation(
+        rig_binding,
         observed_at_utc="2025-07-21T20:11:00Z",
     )
     add_artifact(
@@ -355,6 +457,18 @@ def make_valid_artifact(
         "json",
         "manifests/rig-resolver-attestation.json",
         rig_attestation,
+    )
+    execution_provenance = qualification.expected_execution_provenance(
+        profile,
+        TARGET_SHA,
+    )
+    add_artifact(
+        "execution-provenance",
+        "qualification",
+        "execution-provenance",
+        "json",
+        "manifests/execution-provenance.json",
+        execution_provenance,
     )
 
     case_results: list[dict[str, Any]] = []
@@ -383,7 +497,13 @@ def make_valid_artifact(
                     f"{role_id}-source",
                     "json",
                     f"cases/{case['id']}/run-{run_index}/{role_id}-source.json",
-                    make_source_evidence(observation, role),
+                    make_source_evidence(
+                        observation,
+                        role,
+                        case,
+                        profile,
+                        execution_provenance["provenance_sha256"],
+                    ),
                 )
                 add_artifact(
                     artifact_id,
@@ -436,6 +556,7 @@ def make_valid_artifact(
             }
         ],
         "build_manifest_artifact_id": "build-manifest",
+        "execution_provenance_artifact_id": "execution-provenance",
         "evidence_artifacts": artifacts,
         "cases": case_results,
     }
@@ -453,6 +574,14 @@ def validate(payload: Any, artifact_path: Path) -> list[str]:
         qualification,
         "read_repository_state",
         side_effect=repository_state,
+    ), mock.patch.object(
+        qualification,
+        "git_tree_sha256",
+        return_value=SYNTHETIC_TREE_SHA256,
+    ), mock.patch.object(
+        qualification,
+        "current_build_tool_identity",
+        return_value=SYNTHETIC_TOOL_IDENTITY,
     ), mock.patch.object(qualification, "validate_firmware_image"):
         return qualification.validate_artifact(
             payload,
@@ -517,6 +646,43 @@ def rewrite_json_artifact(
     return content
 
 
+def recompute_self_declared_build_commitments(
+    manifest: dict[str, Any],
+    profile: dict[str, Any],
+) -> None:
+    """Model an evidence author who recomputes every unkeyed build digest."""
+    contracts = {contract["kind"]: contract for contract in profile["build_contracts"]}
+    for build in manifest["builds"]:
+        contract = contracts[build["kind"]]
+        build["input_commitment_sha256"] = qualification.build_input_commitment(
+            target_git_sha=manifest["target_git_sha"],
+            target_tree_sha256=manifest["target_tree_sha256"],
+            firmware_version=build["firmware_version"],
+            contract=contract,
+            tools=manifest["tools"],
+        )
+        build["output_commitment_sha256"] = qualification.build_output_commitment(
+            binary_sha256=build["binary_sha256"],
+            log_sha256=build["log_sha256"],
+            started_at_utc=build["started_at_utc"],
+            completed_at_utc=build["completed_at_utc"],
+        )
+        build_without_provenance = {
+            key: value for key, value in build.items() if key != "provenance_sha256"
+        }
+        build["provenance_sha256"] = qualification.canonical_commitment(
+            "v1simple.hil.build-provenance.v1",
+            build_without_provenance,
+        )
+    manifest_without_provenance = {
+        key: value for key, value in manifest.items() if key != "provenance_sha256"
+    }
+    manifest["provenance_sha256"] = qualification.canonical_commitment(
+        "v1simple.hil.build-manifest.v1",
+        manifest_without_provenance,
+    )
+
+
 def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     del tmpdir
     profile, errors = qualification.load_pinned_profile()
@@ -524,7 +690,7 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 2, "profile must be version 2")
+    assert_true(profile["profile_version"] == 3, "profile must be version 3")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
@@ -545,12 +711,13 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     )
     assert_true(
         profile["activation_contract"]["minimum_ready_profile_version"] == 3,
-        "version 2 cannot be activated",
+        "version 3 is the minimum provenance-aware profile",
     )
     assert_true(
         profile["activation_contract"]["required_validator_provenance_version"] == 1
+        and qualification.INTEGRITY_PROVENANCE_VERIFIER_VERSION == 1
         and qualification.AUTHENTICATED_PROVENANCE_VERIFIER_VERSION is None,
-        "ready activation requires a validator provenance implementation",
+        "integrity schema exists but no authenticated verifier is claimed",
     )
     assert_true(
         {
@@ -564,7 +731,12 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
             "authenticated-case-driver-source-provenance",
             "authenticated-board-inventory-resolver-provenance",
         },
-        "all adversarial activation prerequisites are explicit",
+        "all four unauthenticated activation roots remain blocked",
+    )
+    assert_true(
+        profile["build_provenance_contract"]["status"] == "integrity-bound"
+        and profile["board_provenance_contract"]["status"] == "integrity-bound",
+        "build and board commitments are not mislabeled authenticated or active",
     )
     for case in profile["required_cases"]:
         assert_true(case["scenario"]["stimulus_ids"], f"{case['id']} stimuli")
@@ -602,10 +774,104 @@ def test_incomplete_profile_rejects_synthetic_pass_pack(tmpdir: Path) -> None:
     )
 
 
-def test_profile_cannot_be_flipped_ready_without_provenance_verifier(tmpdir: Path) -> None:
+def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -> None:
+    profile, profile_errors = qualification.load_pinned_profile()
+    assert_true(profile is not None and profile_errors == [], "profile loads")
+    assert profile is not None
+
+    fake_bin = tmpdir / "fake-bin"
+    fake_bin.mkdir()
+    fake_pio = fake_bin / "pio"
+    fake_pio.write_text(
+        "#!/bin/sh\necho 'PlatformIO Core, version 6.1.19'\n",
+        encoding="utf-8",
+    )
+    fake_pio.chmod(0o755)
+    with mock.patch.dict(
+        os.environ,
+        {"PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"},
+        clear=False,
+    ):
+        qualification.current_build_tool_identity.cache_clear()
+        fake_tools = qualification.current_build_tool_identity()
+    qualification.current_build_tool_identity.cache_clear()
+    assert_true(
+        fake_tools["platformio"]["sha256"] == qualification.file_sha256(fake_pio),
+        "PATH-selected fake PlatformIO can author internally consistent integrity metadata",
+    )
+
+    stale_binary = tmpdir / "stale-firmware.bin"
+    stale_log = tmpdir / "forged-build.log"
+    stale_binary.write_bytes(b"stale-valid-image-placeholder")
+    stale_log.write_text("author supplied log\n", encoding="utf-8")
+    production = next(
+        contract
+        for contract in profile["build_contracts"]
+        if contract["kind"] == "production"
+    )
+    forged_input = qualification.build_input_commitment(
+        target_git_sha=TARGET_SHA,
+        target_tree_sha256=SYNTHETIC_TREE_SHA256,
+        firmware_version="1.0.6",
+        contract=production,
+        tools=fake_tools,
+    )
+    forged_output = qualification.build_output_commitment(
+        binary_sha256=qualification.file_sha256(stale_binary),
+        log_sha256=qualification.file_sha256(stale_log),
+        started_at_utc="2025-07-21T20:01:00Z",
+        completed_at_utc="2025-07-21T20:02:00Z",
+    )
+    assert_true(bool(forged_input and forged_output), "forged integrity digests are computable")
+
+    authored_binding = {
+        "schema_version": 1,
+        "commitment_salt_hex": "d4" * 32,
+        "inventory_record": {
+            "alias": "dut-author-supplied",
+            "capabilities": ["serial"],
+            "connection": {
+                "lan_base_url": None,
+                "usb_serial": "author-controlled-identity",
+            },
+        },
+        "resolution": {
+            "schema_version": 1,
+            "alias": "dut-author-supplied",
+            "capabilities": ["serial"],
+            "endpoints": {"serial_port": "author-controlled-endpoint"},
+        },
+    }
+    authored_attestation = qualification.build_board_inventory_attestation(
+        authored_binding,
+        observed_at_utc="2025-07-21T20:03:00Z",
+    )
+    assert_true(
+        bool(authored_attestation["inventory_commitment_sha256"]),
+        "an evidence author can self-consistently commit an untrusted board binding",
+    )
+
+    activation_errors = qualification.profile_activation_errors(profile)
+    blocker_codes = {blocker["code"] for blocker in profile["blockers"]}
+    assert_true(
+        has_error(activation_errors, "authenticated provenance verifier is not implemented")
+        and has_error(
+            activation_errors,
+            "authenticated-build-generator-provenance",
+        )
+        and has_error(
+            activation_errors,
+            "authenticated-board-inventory-resolver-provenance",
+        )
+        and "build-generator-provenance-not-authenticated" in blocker_codes
+        and "board-resolution-provenance-not-authenticated" in blocker_codes,
+        "self-consistent build and board commitments cannot activate qualification",
+    )
+
+
+def test_profile_ready_mutation_cannot_authenticate_forged_provenance(tmpdir: Path) -> None:
     artifact_path, payload, profile = make_valid_artifact(tmpdir)
     simulated_ready = copy.deepcopy(profile)
-    simulated_ready["profile_version"] = 3
     simulated_ready["qualification_status"] = "ready"
     simulated_ready["blockers"] = []
     simulated_ready["activation_contract"]["status"] = "active"
@@ -624,6 +890,16 @@ def test_profile_cannot_be_flipped_ready_without_provenance_verifier(tmpdir: Pat
             "build_command": ["pio", "run", "-e", "synthetic-hil"],
         }
     )
+    simulated_ready["case_driver_contract"].update(
+        {"status": "active", "driver_source_paths": ["scripts/run_bug_squash_hil.py"]}
+    )
+    simulated_ready["fault_control_contract"].update(
+        {
+            "status": "active",
+            "implementation_source_paths": ["scripts/run_bug_squash_hil.py"],
+            "test_source_paths": ["scripts/test_bug_squash_hil_runner.py"],
+        }
+    )
     with mock.patch.object(
         qualification,
         "load_pinned_profile",
@@ -631,8 +907,10 @@ def test_profile_cannot_be_flipped_ready_without_provenance_verifier(tmpdir: Pat
     ):
         errors = validate(payload, artifact_path)
     assert_true(
-        has_error(errors, "authenticated provenance verifier is not implemented"),
-        "ready status and a version bump cannot replace a provenance verifier",
+        has_error(errors, "execution_provenance must exactly match")
+        and has_error(errors, "builds is missing required kind: hil-fault")
+        and has_error(errors, "driver_contract_sha256 must bind"),
+        "profile mutation cannot authenticate old build, driver, or execution evidence",
     )
 
 
@@ -785,8 +1063,8 @@ def test_build_manifest_binds_command_commit_clean_tree_and_binary(tmpdir: Path)
             "source_worktree_clean must be boolean true",
         ),
         (
-            lambda manifest: manifest.update({"generator_sha256": "f" * 64}),
-            "must match the tracked generator",
+            lambda manifest: manifest["generator"].update({"sha256": "f" * 64}),
+            "must match target-tracked bytes",
         ),
         (
             lambda manifest: manifest["builds"][0].update(
@@ -828,6 +1106,98 @@ def test_build_manifest_binds_command_commit_clean_tree_and_binary(tmpdir: Path)
         ),
     )
     assert_true(has_error(validate(candidate, artifact_path), "distinct firmware"), "distinct")
+
+
+def test_recomputed_self_declared_build_digests_cannot_forge_provenance(
+    tmpdir: Path,
+) -> None:
+    mutations = (
+        (
+            lambda manifest: manifest.update({"target_git_sha": "f" * 40}),
+            "target_git_sha must match the qualification target",
+        ),
+        (
+            lambda manifest: manifest.update({"target_tree_sha256": "f" * 64}),
+            "must match the exact target Git tree",
+        ),
+        (
+            lambda manifest: manifest.update({"build_contracts_sha256": "f" * 64}),
+            "must match the pinned contracts",
+        ),
+        (
+            lambda manifest: manifest["generator"].update({"sha256": "f" * 64}),
+            "must match target-tracked bytes",
+        ),
+        (
+            lambda manifest: manifest["tools"]["platformio"].update(
+                {"sha256": "f" * 64}
+            ),
+            "must match the independently hashed tool identity",
+        ),
+    )
+    for index, (mutation, expected) in enumerate(mutations):
+        case_dir = tmpdir / f"self-declared-{index}"
+        case_dir.mkdir()
+        path, candidate, profile = make_valid_artifact(case_dir)
+
+        def forge(manifest: dict[str, Any]) -> None:
+            mutation(manifest)
+            if index == 4:
+                tools_without_identity = {
+                    key: value
+                    for key, value in manifest["tools"].items()
+                    if key != "identity_sha256"
+                }
+                manifest["tools"]["identity_sha256"] = qualification.canonical_commitment(
+                    "v1simple.hil.build-tools.v1",
+                    tools_without_identity,
+                )
+            recompute_self_declared_build_commitments(manifest, profile)
+
+        rewrite_json_artifact(path, candidate, "build-manifest", forge)
+        assert_true(
+            has_error(validate(candidate, path), expected),
+            f"independent input survives recomputed digest attack: {expected}",
+        )
+
+
+def test_each_build_commitment_layer_fails_closed(tmpdir: Path) -> None:
+    mutations = (
+        (
+            lambda manifest: manifest["builds"][0].update(
+                {"build_contract_sha256": "f" * 64}
+            ),
+            "build_contract_sha256 must match the pinned contract",
+        ),
+        (
+            lambda manifest: manifest["builds"][0].update(
+                {"input_commitment_sha256": "f" * 64}
+            ),
+            "input_commitment_sha256 is not input-bound",
+        ),
+        (
+            lambda manifest: manifest["builds"][0].update(
+                {"output_commitment_sha256": "f" * 64}
+            ),
+            "output_commitment_sha256 is not output-bound",
+        ),
+        (
+            lambda manifest: manifest["builds"][0].update(
+                {"provenance_sha256": "f" * 64}
+            ),
+            "provenance_sha256 does not bind the build record",
+        ),
+        (
+            lambda manifest: manifest.update({"provenance_sha256": "f" * 64}),
+            "provenance_sha256 does not bind the complete manifest",
+        ),
+    )
+    for index, (mutation, expected) in enumerate(mutations):
+        case_dir = tmpdir / f"commitment-layer-{index}"
+        case_dir.mkdir()
+        path, candidate, _ = make_valid_artifact(case_dir)
+        rewrite_json_artifact(path, candidate, "build-manifest", mutation)
+        assert_true(has_error(validate(candidate, path), expected), expected)
 
 
 def test_firmware_image_validation_requires_complete_esp32s3_image(tmpdir: Path) -> None:
@@ -901,7 +1271,7 @@ def test_resolver_attestation_is_sanitized_hashed_and_alias_bound(tmpdir: Path) 
     path, candidate, _ = make_valid_artifact(tmpdir / "raw-tamper")
     raw_path = path.parent / candidate["duts"][0]["local_resolution_path"]
     raw = json.loads(raw_path.read_text(encoding="utf-8"))
-    raw["endpoints"]["serial_port"] = "different-synthetic-endpoint"
+    raw["resolution"]["endpoints"]["serial_port"] = "different-synthetic-endpoint"
     write_json(raw_path, raw)
     assert_true(
         has_error(validate(candidate, path), "recomputed local resolution attestation"),
@@ -916,6 +1286,125 @@ def test_resolver_attestation_is_sanitized_hashed_and_alias_bound(tmpdir: Path) 
         lambda attestation: attestation.update({"alias": "rig-other"}),
     )
     assert_true(has_error(validate(candidate, path), "approved board alias"), "rig alias bound")
+
+
+def test_board_inventory_commitment_is_private_and_exact(tmpdir: Path) -> None:
+    path, candidate, _ = make_valid_artifact(tmpdir / "privacy")
+    attestation_entry = artifact_entry(candidate, "resolver-attestation")
+    attestation_text = (path.parent / attestation_entry["path"]).read_text(encoding="utf-8")
+    for forbidden in (
+        "synthetic-local-identity",
+        "synthetic-endpoint",
+        "commitment_salt_hex",
+        "connection",
+        "endpoints",
+        "usb_serial",
+        "lan_base_url",
+    ):
+        assert_true(forbidden not in attestation_text, f"sanitized attestation hides {forbidden}")
+    attestation = json.loads(attestation_text)
+    assert_true(
+        attestation["inventory_commitment_sha256"]
+        and attestation["commitment_algorithm"]
+        == qualification.BOARD_COMMITMENT_ALGORITHM,
+        "sanitized attestation retains only the inventory commitment",
+    )
+
+    for index, mutation in enumerate(
+        (
+            lambda binding: binding["inventory_record"]["connection"].update(
+                {"usb_serial": "different-private-identity"}
+            ),
+            lambda binding: binding.update({"commitment_salt_hex": "c3" * 32}),
+            lambda binding: binding["inventory_record"]["capabilities"].append(
+                "unselected-private-capability"
+            ),
+        )
+    ):
+        case_dir = tmpdir / f"binding-{index}"
+        case_dir.mkdir()
+        local_path, local_candidate, _ = make_valid_artifact(case_dir)
+        binding_path = (
+            local_path.parent / local_candidate["duts"][0]["local_resolution_path"]
+        )
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        mutation(binding)
+        if index == 2:
+            binding["inventory_record"]["capabilities"].sort()
+        write_json(binding_path, binding)
+        assert_true(
+            has_error(
+                validate(local_candidate, local_path),
+                "recomputed local resolution attestation",
+            ),
+            "inventory bytes and salt are commitment-bound",
+        )
+
+
+def test_execution_and_case_source_bind_target_tracked_contracts(tmpdir: Path) -> None:
+    for index, field in enumerate(
+        (
+            "target_git_sha",
+            "case_definitions_sha256",
+            "case_driver_contract_sha256",
+            "fault_control_contract_sha256",
+        )
+    ):
+        case_dir = tmpdir / f"execution-{index}"
+        case_dir.mkdir()
+        path, candidate, _ = make_valid_artifact(case_dir)
+
+        def forge_execution(provenance: dict[str, Any]) -> None:
+            provenance[field] = "f" * (40 if field == "target_git_sha" else 64)
+            unsigned = {
+                key: value
+                for key, value in provenance.items()
+                if key != "provenance_sha256"
+            }
+            provenance["provenance_sha256"] = qualification.canonical_commitment(
+                "v1simple.hil.execution-provenance.v1",
+                unsigned,
+            )
+
+        rewrite_json_artifact(path, candidate, "execution-provenance", forge_execution)
+        assert_true(
+            has_error(validate(candidate, path), "must exactly match target-tracked"),
+            f"execution field is independently authenticated: {field}",
+        )
+
+    source_mutations = (
+        ("case_definition_sha256", "case_definition_sha256 must bind the pinned case"),
+        ("driver_contract_sha256", "driver_contract_sha256 must bind tracked"),
+        (
+            "execution_provenance_sha256",
+            "must bind authenticated target-tracked execution provenance",
+        ),
+    )
+    for index, (field, expected) in enumerate(source_mutations):
+        case_dir = tmpdir / f"source-contract-{index}"
+        case_dir.mkdir()
+        path, candidate, _ = make_valid_artifact(case_dir)
+        artifact_id = source_artifact_id(
+            path,
+            candidate,
+            "BSC-02",
+            "maintenance-recovery-fault",
+        )
+
+        def forge_source(source: dict[str, Any]) -> None:
+            source[field] = "f" * 64
+            unsigned = {
+                key: value
+                for key, value in source.items()
+                if key != "source_commitment_sha256"
+            }
+            source["source_commitment_sha256"] = qualification.canonical_commitment(
+                "v1simple.hil.case-source.v1",
+                unsigned,
+            )
+
+        rewrite_json_artifact(path, candidate, artifact_id, forge_source)
+        assert_true(has_error(validate(candidate, path), expected), expected)
 
 
 def test_case_runs_roles_and_artifacts_are_exact_and_nonreusable(tmpdir: Path) -> None:
@@ -1182,14 +1671,19 @@ def main() -> int:
     tests = (
         test_pinned_profile_has_exact_case_specific_contracts,
         test_incomplete_profile_rejects_synthetic_pass_pack,
-        test_profile_cannot_be_flipped_ready_without_provenance_verifier,
+        test_self_authored_build_and_board_integrity_cannot_activate,
+        test_profile_ready_mutation_cannot_authenticate_forged_provenance,
         test_profile_scope_digest_and_case_set_cannot_be_overridden,
         test_target_sha_must_be_nonzero_existing_head,
         test_repository_state_comes_from_git_tree_and_live_cleanliness,
         test_future_or_reversed_time_is_rejected_everywhere,
         test_build_manifest_binds_command_commit_clean_tree_and_binary,
+        test_recomputed_self_declared_build_digests_cannot_forge_provenance,
+        test_each_build_commitment_layer_fails_closed,
         test_firmware_image_validation_requires_complete_esp32s3_image,
         test_resolver_attestation_is_sanitized_hashed_and_alias_bound,
+        test_board_inventory_commitment_is_private_and_exact,
+        test_execution_and_case_source_bind_target_tracked_contracts,
         test_case_runs_roles_and_artifacts_are_exact_and_nonreusable,
         test_case_specific_facts_stimuli_faults_and_barriers_are_parsed,
         test_case_source_is_independent_exact_and_causally_ordered,

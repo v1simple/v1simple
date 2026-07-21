@@ -84,6 +84,52 @@ BSC03_QUALIFICATION_BLOCKERS = (
     "hil-fault-control-not-implemented",
     "case-source-provenance-not-authenticated",
 )
+BSC11_CASE_ID = "BSC-11"
+BSC11_PRODUCTION_ENVIRONMENT = "esp32-s3-car-install"
+BSC11_REQUIRED_RUNS = 1
+BSC11_MINIMUM_OBSERVATION_MS = 60_000
+BSC11_MINIMUM_LONG_PRESS_MS = 5_000
+BSC11_SERVICE_MAX_GAP_MS = 5_000
+BSC11_POWER_DOWN_MAX_DELAY_MS = 30_000
+BSC11_ADAPTER_TIMEOUT_SECONDS = 7_200
+BSC11_DUT_CAPABILITIES = (
+    "car-mode",
+    "firmware-execution",
+    "serial",
+    "v1-connectivity",
+)
+BSC11_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "ignition-control",
+    "power-button",
+    "utc-time-source",
+    "vbus-isolation",
+)
+BSC11_EVENT_IDS = (
+    "car-ignition-established",
+    "real-v1-received",
+    "real-v1-disconnected",
+    "auto-power-window-exceeded",
+    "long-pwr-hold-completed",
+    "ignition-removed",
+    "ignition-power-down",
+)
+BSC11_FORBIDDEN_ACTIVITY = (
+    "auto-power-timer-fired",
+    "shutdown-preparation-entered",
+    "goodbye-frame-presented",
+    "clean-shutdown-marker-written",
+    "power-latch-action",
+    "deep-sleep-entered",
+)
+BSC11_CONTINUOUS_SERVICES = ("alp", "ble", "display", "logging", "wifi")
+BSC11_CAPTURE_COMMITMENTS = (
+    "display_video_sha256",
+    "ignition_timeline_sha256",
+    "serial_log_sha256",
+    "service_timeline_sha256",
+    "v1_exchange_sha256",
+)
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 UTC_TIMESTAMP_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
@@ -861,7 +907,7 @@ def require_exact_object(
     label: str,
 ) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != expected_keys:
-        raise RunnerError(code, f"{label} does not match the typed BSC-03 contract")
+        raise RunnerError(code, f"{label} does not match the typed case contract")
     return value
 
 
@@ -1728,6 +1774,569 @@ def run_bsc03_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def canonical_case_commitment(domain: str, payload: object) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(domain.encode("ascii") + b"\0" + canonical).hexdigest()
+
+
+def resolve_bsc11_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-11 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC11_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC11_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-11 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def bsc11_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc11.case-record.v1", committed)
+
+
+def validate_bsc11_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "session_id",
+            "attempt_id",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "firmware",
+            "preconditions",
+            "events",
+            "long_press",
+            "forbidden_activity",
+            "services",
+            "power",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-11 adapter record",
+    )
+    for field in (
+        "case_id",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-11 adapter {field} is not runner-bound")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-11 adapter schema version is invalid")
+    if not isinstance(record.get("session_id"), str) or re.fullmatch(
+        r"bsc11-[0-9a-f]{32}", record["session_id"]
+    ) is None:
+        raise RunnerError(code, "BSC-11 session identity is invalid")
+    if not isinstance(record.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9a-f]{32}", record["attempt_id"]
+    ) is None:
+        raise RunnerError(code, "BSC-11 attempt identity is invalid")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {"environment", "target_sha", "binary_sha256", "car_mode_define"},
+        code=code,
+        label="BSC-11 firmware identity",
+    )
+    if (
+        firmware.get("environment") != BSC11_PRODUCTION_ENVIRONMENT
+        or firmware.get("target_sha") != expected["target_sha"]
+        or firmware.get("car_mode_define") is not True
+    ):
+        raise RunnerError(code, "BSC-11 did not execute the exact car production target")
+    require_sha256(
+        firmware.get("binary_sha256"), code=code, label="car production binary"
+    )
+
+    preconditions = require_exact_object(
+        record.get("preconditions"),
+        {
+            "vbus_isolated",
+            "ignition_present",
+            "real_v1_peer",
+            "auto_power_off_minutes",
+            "ignition_rig_evidence_sha256",
+        },
+        code=code,
+        label="BSC-11 preconditions",
+    )
+    if (
+        preconditions.get("vbus_isolated") is not True
+        or preconditions.get("ignition_present") is not True
+        or preconditions.get("real_v1_peer") is not True
+    ):
+        raise RunnerError(code, "BSC-11 power and V1 preconditions were not verified")
+    auto_power_minutes = preconditions.get("auto_power_off_minutes")
+    if (
+        isinstance(auto_power_minutes, bool)
+        or not isinstance(auto_power_minutes, int)
+        or auto_power_minutes < 1
+        or auto_power_minutes > 60
+    ):
+        raise RunnerError(code, "BSC-11 auto-power timeout is outside the product range")
+    require_sha256(
+        preconditions.get("ignition_rig_evidence_sha256"),
+        code=code,
+        label="ignition rig evidence",
+    )
+
+    started = parse_runner_utc(
+        record.get("started_at_utc"), code=code, label="BSC-11 start"
+    )
+    completed = parse_runner_utc(
+        record.get("completed_at_utc"), code=code, label="BSC-11 completion"
+    )
+    if completed < started:
+        raise RunnerError(code, "BSC-11 completion precedes its start")
+    now = datetime.now(timezone.utc)
+    if completed > now and (completed - now).total_seconds() > 2:
+        raise RunnerError(code, "BSC-11 completion is in the future")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "physical BSC-11 evidence predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(
+        microsecond=999999
+    ):
+        raise RunnerError(code, "physical BSC-11 evidence follows adapter execution")
+
+    events = record.get("events")
+    if not isinstance(events, list) or len(events) != len(BSC11_EVENT_IDS):
+        raise RunnerError(code, "BSC-11 event sequence is incomplete")
+    elapsed_values: list[int] = []
+    for sequence, (event, event_id) in enumerate(
+        zip(events, BSC11_EVENT_IDS, strict=True), start=1
+    ):
+        row = require_exact_object(
+            event,
+            {"id", "sequence", "elapsed_ms"},
+            code=code,
+            label="BSC-11 event",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or isinstance(elapsed, bool)
+            or not isinstance(elapsed, int)
+            or elapsed < 0
+        ):
+            raise RunnerError(code, "BSC-11 event order or timing is invalid")
+        elapsed_values.append(elapsed)
+    if any(later <= earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "BSC-11 event times must increase strictly")
+    duration_ms = int((completed - started).total_seconds() * 1000)
+    if elapsed_values[-1] > duration_ms + 1000:
+        raise RunnerError(code, "BSC-11 events exceed the recorded run duration")
+    wait_elapsed_ms = elapsed_values[3] - elapsed_values[2]
+    required_wait_ms = max(
+        BSC11_MINIMUM_OBSERVATION_MS,
+        auto_power_minutes * 60_000,
+    )
+    if wait_elapsed_ms <= required_wait_ms:
+        raise RunnerError(
+            code,
+            "BSC-11 did not observe beyond the configured auto-power window",
+        )
+
+    long_press = require_exact_object(
+        record.get("long_press"),
+        {
+            "started_elapsed_ms",
+            "completed_elapsed_ms",
+            "duration_ms",
+            "inert",
+            "evidence_sha256",
+        },
+        code=code,
+        label="BSC-11 long-press evidence",
+    )
+    press_start = long_press.get("started_elapsed_ms")
+    press_completed = long_press.get("completed_elapsed_ms")
+    press_duration = long_press.get("duration_ms")
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (press_start, press_completed, press_duration)
+        )
+        or press_start < elapsed_values[3]
+        or press_completed != elapsed_values[4]
+        or press_duration != press_completed - press_start
+        or press_duration < BSC11_MINIMUM_LONG_PRESS_MS
+        or long_press.get("inert") is not True
+    ):
+        raise RunnerError(code, "BSC-11 long PWR hold was not proven inert")
+    require_sha256(
+        long_press.get("evidence_sha256"), code=code, label="long-press evidence"
+    )
+
+    forbidden = require_exact_object(
+        record.get("forbidden_activity"),
+        set(BSC11_FORBIDDEN_ACTIVITY),
+        code=code,
+        label="BSC-11 forbidden shutdown activity",
+    )
+    if any(type(forbidden.get(field)) is not int or forbidden[field] != 0 for field in forbidden):
+        raise RunnerError(code, "BSC-11 observed a forbidden portable-shutdown action")
+
+    services = require_exact_object(
+        record.get("services"),
+        set(BSC11_CONTINUOUS_SERVICES),
+        code=code,
+        label="BSC-11 service continuity",
+    )
+    for service in BSC11_CONTINUOUS_SERVICES:
+        row = require_exact_object(
+            services[service],
+            {
+                "continuous",
+                "sample_count",
+                "first_observed_elapsed_ms",
+                "during_hold_elapsed_ms",
+                "last_observed_elapsed_ms",
+                "maximum_gap_ms",
+                "evidence_sha256",
+            },
+            code=code,
+            label=f"BSC-11 {service} continuity",
+        )
+        sample_count = row.get("sample_count")
+        first_observed = row.get("first_observed_elapsed_ms")
+        during_hold = row.get("during_hold_elapsed_ms")
+        last_observed = row.get("last_observed_elapsed_ms")
+        maximum_gap = row.get("maximum_gap_ms")
+        if (
+            row.get("continuous") is not True
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in (
+                    sample_count,
+                    first_observed,
+                    during_hold,
+                    last_observed,
+                    maximum_gap,
+                )
+            )
+            or first_observed < elapsed_values[0]
+            or first_observed > elapsed_values[2]
+            or during_hold <= press_start
+            or during_hold >= press_completed
+            or last_observed <= elapsed_values[4]
+            or last_observed >= elapsed_values[5]
+            or maximum_gap < 1
+            or maximum_gap > BSC11_SERVICE_MAX_GAP_MS
+            or sample_count < math.ceil(
+                (last_observed - first_observed) / maximum_gap
+            ) + 1
+        ):
+            raise RunnerError(
+                code,
+                f"BSC-11 {service} evidence does not span the shutdown-isolation window",
+            )
+        require_sha256(
+            row.get("evidence_sha256"), code=code, label=f"{service} continuity evidence"
+        )
+
+    power = require_exact_object(
+        record.get("power"),
+        {
+            "ignition_present_through_observation",
+            "expected_power_event_kind",
+            "observed_power_events",
+            "unexpected_resets_before_removal",
+            "power_downs_before_removal",
+            "ignition_removal_elapsed_ms",
+            "power_down_elapsed_ms",
+            "power_down_source",
+            "vbus_present_at_power_down",
+            "evidence_sha256",
+        },
+        code=code,
+        label="BSC-11 power transition",
+    )
+    if (
+        power.get("ignition_present_through_observation") is not True
+        or power.get("expected_power_event_kind") != "ignition-removal"
+        or type(power.get("observed_power_events")) is not int
+        or power.get("observed_power_events") != 1
+        or type(power.get("unexpected_resets_before_removal")) is not int
+        or power.get("unexpected_resets_before_removal") != 0
+        or type(power.get("power_downs_before_removal")) is not int
+        or power.get("power_downs_before_removal") != 0
+        or power.get("ignition_removal_elapsed_ms") != elapsed_values[5]
+        or power.get("power_down_elapsed_ms") != elapsed_values[6]
+        or power.get("power_down_source") != "ignition-removal"
+        or power.get("vbus_present_at_power_down") is not False
+        or elapsed_values[6] - elapsed_values[5] > BSC11_POWER_DOWN_MAX_DELAY_MS
+    ):
+        raise RunnerError(code, "BSC-11 power-down was not isolated to ignition removal")
+    require_sha256(power.get("evidence_sha256"), code=code, label="power transition evidence")
+
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC11_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-11 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field)
+        for field in BSC11_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-11 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"),
+        code=code,
+        label="BSC-11 evidence binding",
+    )
+    if not secrets.compare_digest(binding, bsc11_record_commitment(record)):
+        raise RunnerError(code, "BSC-11 evidence binding does not match the record")
+    return record
+
+
+def run_bsc11_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC11_CASE_ID,
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC11_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-11 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-11 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-11 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-11 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-11 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc11_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc11_case(args: argparse.Namespace) -> int:
+    if args.runs != BSC11_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-11 requires exactly one isolated car-power run")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-11 requires an opaque local rig alias")
+    if args.production_replay:
+        raise RunnerError("unsupported_mode", "BSC-11 has no production-replay role")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-11 is an atomic one-run collection")
+    if not args.ack_vbus_isolated:
+        raise RunnerError(
+            "operator_preconditions_incomplete",
+            "BSC-11 requires explicit VBUS-isolation acknowledgement",
+        )
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError(
+                "untrusted_override",
+                "authoritative BSC-11 forbids an untracked rig adapter",
+            )
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-11 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-11 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-11 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-11 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    pio_executable = Path(args.pio_command)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc11_hardware(
+        args, pio_executable
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-11 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-11 serial endpoint is not present")
+
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc11-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / run_id
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(
+        run_root,
+        boundary=Path(os.path.abspath(args.repo_root)).parent,
+    )
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-11 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc11-{secrets.token_hex(16)}"
+    attempt_id = f"attempt-{secrets.token_hex(16)}"
+    expected: dict[str, object] = {
+        "case_id": BSC11_CASE_ID,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+    }
+    require_unchanged_git_state(repository, git_state)
+    record = run_bsc11_adapter(
+        adapter=adapter,
+        repository=repository,
+        serial_port=serial_port,
+        expected=expected,
+        environment=os.environ.copy(),
+    )
+    require_unchanged_git_state(repository, git_state)
+    attempt_path = run_root / "attempt.json"
+    write_json_atomic(attempt_path, record)
+    firmware = record["firmware"]
+    preconditions = record["preconditions"]
+    assert isinstance(firmware, dict) and isinstance(preconditions, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc11-car-shutdown-isolation",
+        "case_id": BSC11_CASE_ID,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(BSC03_QUALIFICATION_BLOCKERS),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC11_REQUIRED_RUNS,
+        "runs_completed": 1,
+        "production_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+        },
+        "configured_auto_power_off_minutes": preconditions["auto_power_off_minutes"],
+        "minimum_observation_ms": BSC11_MINIMUM_OBSERVATION_MS,
+        "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "artifact_sha256": {
+            "adapter_record": sha256_file(attempt_path),
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc11.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc11.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -1751,7 +2360,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--case-adapter",
         type=Path,
-        help="mocked BSC-03 rig boundary; authoritative overrides are forbidden",
+        help="mocked typed-case rig boundary; authoritative overrides are forbidden",
     )
     parser.add_argument(
         "--out-dir",
@@ -1767,9 +2376,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"error": {"code": "invalid_runs", "message": "runs must be 1..10"}}))
         return 2
     if args.case is not None:
-        if args.case == BSC03_CASE_ID:
+        if args.case in (BSC03_CASE_ID, BSC11_CASE_ID):
             try:
-                return run_bsc03_case(args)
+                return (
+                    run_bsc03_case(args)
+                    if args.case == BSC03_CASE_ID
+                    else run_bsc11_case(args)
+                )
             except RunnerError as exc:
                 print(
                     json.dumps(
@@ -1784,7 +2397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         {
                             "error": {
                                 "code": "internal_error",
-                                "message": "BSC-03 failed closed without qualifying evidence",
+                                "message": "typed case failed closed without qualifying evidence",
                             }
                         },
                         sort_keys=True,

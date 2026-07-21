@@ -86,10 +86,12 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                     {
                         "alias": "release",
                         "capabilities": [
+                            "car-mode",
                             "device-tests",
                             "firmware-execution",
                             "persistence",
                             "serial",
+                            "v1-connectivity",
                         ],
                         "usb_serial": "SECRET-USB-IDENTITY",
                     },
@@ -98,8 +100,10 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                         "capabilities": [
                             "artifact-capture",
                             "bond-peer",
+                            "ignition-control",
                             "obd-peer",
                             "power-control",
+                            "power-button",
                             "sd-media",
                             "utc-time-source",
                             "v1-peer",
@@ -342,6 +346,144 @@ payload = {
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc11_adapter = root / "fake-bsc11-adapter.py"
+    write_executable(
+        bsc11_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc11.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=72)
+event_ms = [0, 500, 1000, 62001, 68001, 69000, 70000]
+if os.environ.get('FAKE_BSC11_SHORT') == '1':
+    event_ms = [0, 500, 1000, 61000, 67000, 68000, 69000]
+attempt_id = argument('--attempt-id')
+services = {}
+for service in ('alp', 'ble', 'display', 'logging', 'wifi'):
+    services[service] = {
+        'continuous': os.environ.get('FAKE_BSC11_SERVICE_LOSS') != service,
+        'sample_count': 20,
+        'first_observed_elapsed_ms': event_ms[2],
+        'during_hold_elapsed_ms': event_ms[3] + 3000,
+        'last_observed_elapsed_ms': event_ms[4] + 500,
+        'maximum_gap_ms': 4000,
+        'evidence_sha256': digest(f'{service}-continuity'),
+    }
+service_mutation = os.environ.get('FAKE_BSC11_SERVICE_MUTATION')
+if service_mutation == 'missing-first':
+    del services['alp']['first_observed_elapsed_ms']
+elif service_mutation == 'late-first':
+    services['alp']['first_observed_elapsed_ms'] = event_ms[3]
+elif service_mutation == 'absent-during':
+    del services['alp']['during_hold_elapsed_ms']
+elif service_mutation == 'out-of-window-during':
+    services['alp']['during_hold_elapsed_ms'] = event_ms[4] + 1
+elif service_mutation == 'early-last':
+    services['alp']['last_observed_elapsed_ms'] = event_ms[4]
+elif service_mutation == 'excessive-gap':
+    services['alp']['maximum_gap_ms'] = 5001
+forbidden = {
+    field: 0
+    for field in (
+        'auto-power-timer-fired',
+        'shutdown-preparation-entered',
+        'goodbye-frame-presented',
+        'clean-shutdown-marker-written',
+        'power-latch-action',
+        'deep-sleep-entered',
+    )
+}
+forbidden_key = os.environ.get('FAKE_BSC11_FORBIDDEN')
+if forbidden_key:
+    forbidden[forbidden_key] = 1
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'session_id': argument('--session-id'),
+    'attempt_id': attempt_id,
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'firmware': {
+        'environment': 'waveshare-349' if os.environ.get('FAKE_BSC11_WRONG_FIRMWARE') == '1' else 'esp32-s3-car-install',
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest('car-production-binary'),
+        'car_mode_define': True,
+    },
+    'preconditions': {
+        'vbus_isolated': True,
+        'ignition_present': True,
+        'real_v1_peer': True,
+        'auto_power_off_minutes': 1,
+        'ignition_rig_evidence_sha256': digest('ignition-rig'),
+    },
+    'events': [
+        {'id': event_id, 'sequence': sequence, 'elapsed_ms': elapsed}
+        for sequence, (event_id, elapsed) in enumerate(zip((
+            'car-ignition-established',
+            'real-v1-received',
+            'real-v1-disconnected',
+            'auto-power-window-exceeded',
+            'long-pwr-hold-completed',
+            'ignition-removed',
+            'ignition-power-down',
+        ), event_ms), start=1)
+    ],
+    'long_press': {
+        'started_elapsed_ms': event_ms[3],
+        'completed_elapsed_ms': event_ms[4],
+        'duration_ms': 6000,
+        'inert': True,
+        'evidence_sha256': digest('long-press'),
+    },
+    'forbidden_activity': forbidden,
+    'services': services,
+    'power': {
+        'ignition_present_through_observation': True,
+        'expected_power_event_kind': 'ignition-removal',
+        'observed_power_events': 1,
+        'unexpected_resets_before_removal': 0,
+        'power_downs_before_removal': 0,
+        'ignition_removal_elapsed_ms': event_ms[5],
+        'power_down_elapsed_ms': event_ms[6],
+        'power_down_source': 'ignition-removal',
+        'vbus_present_at_power_down': os.environ.get('FAKE_BSC11_USB_POWER') == '1',
+        'evidence_sha256': digest('power-transition'),
+    },
+    'capture_commitments': {
+        'display_video_sha256': digest('display-video'),
+        'ignition_timeline_sha256': digest('ignition-timeline'),
+        'serial_log_sha256': digest('serial-log'),
+        'service_timeline_sha256': digest('service-timeline'),
+        'v1_exchange_sha256': digest('v1-exchange'),
+    },
+}
+if os.environ.get('FAKE_BSC11_REUSE') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['display_video_sha256']
+payload['evidence_binding_sha256'] = commitment(payload)
+if os.environ.get('FAKE_BSC11_TAMPER') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = digest('tampered-serial-log')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
     return {
         "repository": repository,
         "target_sha": target_sha,
@@ -352,6 +494,7 @@ sys.stdout.write(json.dumps(payload))
         "device_runner": device_runner,
         "pio": fake_pio,
         "bsc03_adapter": bsc03_adapter,
+        "bsc11_adapter": bsc11_adapter,
     }
 
 
@@ -503,6 +646,76 @@ def run_bsc03_fixture(
         command.append("--resume")
     if recover_incomplete:
         command.append("--ack-incomplete-run-recovered")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc11_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    include_acknowledgement: bool = True,
+    runs: int = 1,
+    short_observation: bool = False,
+    forbidden_activity: str = "",
+    service_loss: str = "",
+    service_mutation: str = "",
+    usb_power_down: bool = False,
+    wrong_firmware: bool = False,
+    reused_evidence: bool = False,
+    tampered_evidence: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    out_dir = root / "bsc11-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC11_SHORT": "1" if short_observation else "0",
+            "FAKE_BSC11_FORBIDDEN": forbidden_activity,
+            "FAKE_BSC11_SERVICE_LOSS": service_loss,
+            "FAKE_BSC11_SERVICE_MUTATION": service_mutation,
+            "FAKE_BSC11_USB_POWER": "1" if usb_power_down else "0",
+            "FAKE_BSC11_WRONG_FIRMWARE": "1" if wrong_firmware else "0",
+            "FAKE_BSC11_REUSE": "1" if reused_evidence else "0",
+            "FAKE_BSC11_TAMPER": "1" if tampered_evidence else "0",
+        }
+    )
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-11",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc11_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if include_acknowledgement:
+        command.append("--ack-vbus-isolated")
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -803,6 +1016,193 @@ def test_bsc03_resume_requires_recovery_and_never_counts_interrupted_attempt() -
         assert_true(interrupted_id not in completed_ids, str(checkpoint))
 
 
+def test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        fixture = prepare_fixture(root)
+        completed, out_dir = run_bsc11_fixture(fixture, root)
+        assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+        result = json.loads(
+            (out_dir / "collection_result.json").read_text(encoding="utf-8")
+        )
+        assert_true(result["result"] == "TEST_PASS", str(result))
+        assert_true(result["execution_mode"] == "simulated", str(result))
+        assert_true(result["authoritative"] is False, str(result))
+        assert_true(result["hardware_observed"] is False, str(result))
+        assert_true(result["physical_collection_completed"] is False, str(result))
+        assert_true(result["non_qualifying"] is True, str(result))
+        assert_true(result["qualification_status"] == "BLOCKED", str(result))
+        assert_true(result["runs_required"] == 1, str(result))
+        assert_true(result["runs_completed"] == 1, str(result))
+        assert_true(
+            result["production_target"]["environment"] == "esp32-s3-car-install",
+            str(result),
+        )
+        assert_true(
+            result["production_target"]["target_sha"] == fixture["target_sha"],
+            str(result),
+        )
+        assert_true(
+            result["configured_auto_power_off_minutes"] == 1
+            and result["minimum_observation_ms"] == 60_000,
+            str(result),
+        )
+        assert_true(
+            all(
+                len(value) == 64
+                for value in (
+                    result["session_sha256"],
+                    result["attempt_sha256"],
+                    result["evidence_binding_sha256"],
+                    *result["artifact_sha256"].values(),
+                )
+            ),
+            str(result),
+        )
+        assert_true(
+            not (out_dir / "qualification_result.json").exists(),
+            "mock collection must never emit qualification evidence",
+        )
+        public_output = completed.stdout + completed.stderr + json.dumps(result)
+        assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+        assert_true(str(fixture["port"]) not in public_output, public_output)
+        assert_true("release" not in public_output and '"rig"' not in public_output, public_output)
+
+
+def test_bsc11_rejects_short_wrong_target_and_missing_operator_boundary() -> None:
+    cases = (
+        ({"short_observation": True}, "case_record_invalid"),
+        ({"wrong_firmware": True}, "case_record_invalid"),
+        ({"include_acknowledgement": False}, "operator_preconditions_incomplete"),
+        ({"runs": 2}, "invalid_runs"),
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc11_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(
+                not (out_dir / "collection_result.json").exists(),
+                f"{options} produced a collection result",
+            )
+            assert_true(
+                not (out_dir / "qualification_result.json").exists(),
+                f"{options} produced qualification evidence",
+            )
+
+
+def test_bsc11_rejects_every_portable_shutdown_action_and_service_loss() -> None:
+    for forbidden in (
+        "auto-power-timer-fired",
+        "shutdown-preparation-entered",
+        "goodbye-frame-presented",
+        "clean-shutdown-marker-written",
+        "power-latch-action",
+        "deep-sleep-entered",
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc11_fixture(
+                fixture, root, forbidden_activity=forbidden
+            )
+            assert_true(completed.returncode != 0, f"{forbidden} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == "case_record_invalid", str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), forbidden)
+
+    for service in ("alp", "ble", "display", "logging", "wifi"):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc11_fixture(
+                fixture, root, service_loss=service
+            )
+            assert_true(completed.returncode != 0, f"{service} loss unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == "case_record_invalid", str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), service)
+
+
+def test_bsc11_rejects_service_evidence_that_does_not_span_the_hold() -> None:
+    for mutation in (
+        "missing-first",
+        "late-first",
+        "absent-during",
+        "out-of-window-during",
+        "early-last",
+        "excessive-gap",
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc11_fixture(
+                fixture,
+                root,
+                service_mutation=mutation,
+            )
+            assert_true(completed.returncode != 0, f"{mutation} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == "case_record_invalid", str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), mutation)
+            assert_true(not (out_dir / "qualification_result.json").exists(), mutation)
+
+
+def test_bsc11_rejects_usb_powerdown_reused_and_tampered_evidence() -> None:
+    for options in (
+        {"usb_power_down": True},
+        {"reused_evidence": True},
+        {"tampered_evidence": True},
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc11_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == "case_record_invalid", str(payload))
+            if options == {"reused_evidence": True}:
+                assert_true(
+                    payload["error"]["message"]
+                    == "BSC-11 evidence roles reused the same capture",
+                    str(payload),
+                )
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc11_physical_mode_remains_blocked_without_tracked_adapter() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-11",
+            "--board",
+            "release",
+            "--rig",
+            "rig",
+            "--ack-vbus-isolated",
+        ],
+        cwd=ROOT,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "V1SIMPLE_HIL_TEST_HOOKS"
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-11 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+
+
 def test_authoritative_mode_rejects_tool_path_overrides() -> None:
     completed = subprocess.run(
         [
@@ -917,6 +1317,12 @@ def main() -> int:
     test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying()
     test_bsc03_rejects_missing_preconditions_timing_and_reused_runs()
     test_bsc03_resume_requires_recovery_and_never_counts_interrupted_attempt()
+    test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying()
+    test_bsc11_rejects_short_wrong_target_and_missing_operator_boundary()
+    test_bsc11_rejects_every_portable_shutdown_action_and_service_loss()
+    test_bsc11_rejects_service_evidence_that_does_not_span_the_hold()
+    test_bsc11_rejects_usb_powerdown_reused_and_tampered_evidence()
+    test_bsc11_physical_mode_remains_blocked_without_tracked_adapter()
     test_authoritative_mode_rejects_tool_path_overrides()
     test_git_and_child_environment_overrides_are_ignored()
     print("bug-squash HIL runner regression tests passed")

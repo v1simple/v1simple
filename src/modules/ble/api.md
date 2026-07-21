@@ -77,11 +77,11 @@ Tracks authoritative BLE session boundaries plus connect/disconnect presentation
 
 #### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule, BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence, SystemEventBus* eventBus = nullptr)`
 Injects dependencies.
-**Source:** `connection_state_module.h:26-28`.
+**Source:** `connection_state_module.h:28-30`.
 
 #### `bool process(unsigned long nowMs)`
 Runs one tick of state-tracking. Returns true if currently connected.
-**Source:** `connection_state_module.h:31`.
+**Source:** `connection_state_module.h:34`.
 
 #### `handleSessionOpened(...)` / `handleSessionClosed(...)`
 Main-loop hooks wired to `V1BLEClient`'s monotonic generation boundary. Open runs before characteristic subscription, and close runs when quiescence invalidates the outgoing session. Boolean/generation polling in `process()` remains a watchdog fallback.
@@ -91,7 +91,7 @@ Main-loop hooks wired to `V1BLEClient`'s monotonic generation boundary. Open run
 - `DATA_STALE_MS = 2000` — data considered stale after 2 s of no traffic.
 - `DATA_REQUEST_INTERVAL_MS = 1000` — re-request alert data every 1 s while stale.
 
-**Source:** `connection_state_module.h:56-57`.
+**Source:** `connection_state_module.h:67-68`.
 
 ## Class: `ConnectionRuntimeModule`
 

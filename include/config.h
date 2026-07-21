@@ -15,7 +15,7 @@
 #include "display_driver.h"
 
 // Firmware Version
-#define FIRMWARE_VERSION "1.0.4"
+#define FIRMWARE_VERSION "1.0.5"
 
 // BLE Configuration
 // V1 protocol summary: docs/V1_PROTOCOL_REFERENCES.md#ble-gatt-proxy-surface

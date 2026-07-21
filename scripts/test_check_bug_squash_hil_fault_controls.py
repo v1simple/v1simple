@@ -380,6 +380,57 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
     for environment in checker.BUILD_ENVIRONMENTS:
         expected_pio.extend(
             [
+                (
+                    str(checker.AUTHORITATIVE_GIT),
+                    "--git-dir",
+                    str(bound_root / ".git"),
+                    "--work-tree",
+                    str(bound_root),
+                    "-c",
+                    "core.fsmonitor=false",
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                ),
+                (
+                    str(checker.AUTHORITATIVE_GIT),
+                    "--git-dir",
+                    str(bound_root / ".git"),
+                    "--work-tree",
+                    str(bound_root),
+                    "-c",
+                    "core.fsmonitor=false",
+                    "rev-parse",
+                    "--verify",
+                    "HEAD^{commit}",
+                ),
+                (*pio, "--version"),
+                (*pio, "pkg", "install", "-e", environment),
+                (
+                    str(checker.AUTHORITATIVE_GIT),
+                    "--git-dir",
+                    str(bound_root / ".git"),
+                    "--work-tree",
+                    str(bound_root),
+                    "-c",
+                    "core.fsmonitor=false",
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                ),
+                (
+                    str(checker.AUTHORITATIVE_GIT),
+                    "--git-dir",
+                    str(bound_root / ".git"),
+                    "--work-tree",
+                    str(bound_root),
+                    "-c",
+                    "core.fsmonitor=false",
+                    "rev-parse",
+                    "--verify",
+                    "HEAD^{commit}",
+                ),
+                (*pio, "--version"),
                 (*pio, "run", "-e", environment, "-t", "clean"),
                 (*pio, "run", "-e", environment),
             ]
@@ -407,6 +458,59 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
         dirty_root = fixture_root(Path(raw))
         dirty_errors, _ = checker.validate_bound_builds(dirty_root, dirty_runner)
         assert_error_contains(dirty_errors, "must be clean")
+
+    bootstrap_commands: list[tuple[str, ...]] = []
+
+    def failed_bootstrap_runner(command, **_kwargs):
+        bootstrap_commands.append(tuple(command))
+        if command[-1] == "--version":
+            return SimpleNamespace(
+                returncode=0, stdout="PlatformIO Core, version 6.1.19\n", stderr=""
+            )
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout=FULL_SHA + "\n", stderr="")
+        if "pkg" in command and "install" in command:
+            return SimpleNamespace(returncode=1, stdout="", stderr="bootstrap failed")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        bootstrap_root = fixture_root(Path(raw))
+        bootstrap_errors, _ = checker.validate_bound_builds(
+            bootstrap_root, failed_bootstrap_runner
+        )
+        assert_error_contains(bootstrap_errors, "bound dependency bootstrap failed")
+        assert_true(
+            not any("run" in command for command in bootstrap_commands),
+            f"clean/build ran after bootstrap failure: {bootstrap_commands}",
+        )
+
+    bootstrap_completed = False
+
+    def changed_binding_runner(command, **_kwargs):
+        nonlocal bootstrap_completed
+        if command[-1] == "--version":
+            version = "6.1.20" if bootstrap_completed else "6.1.19"
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"PlatformIO Core, version {version}\n",
+                stderr="",
+            )
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout=FULL_SHA + "\n", stderr="")
+        if "pkg" in command and "install" in command:
+            bootstrap_completed = True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        changed_root = fixture_root(Path(raw))
+        changed_errors, _ = checker.validate_bound_builds(
+            changed_root, changed_binding_runner
+        )
+        assert_error_contains(changed_errors, "changed after dependency bootstrap")
 
     def stale_clean_runner(command, **_kwargs):
         if command[-1] == "--version":

@@ -787,8 +787,60 @@ def validate_bound_builds(
     if errors:
         return errors, None
 
+    def dependency_binding_error(environment_name: str, phase: str) -> str | None:
+        try:
+            bound_status = runner(
+                [*git_prefix, "status", "--porcelain=v1", "--untracked-files=all"],
+                **common,
+            )
+            bound_revision = runner(
+                [*git_prefix, "rev-parse", "--verify", "HEAD^{commit}"],
+                **common,
+            )
+            bound_pio_version = runner([*pio_command, "--version"], **common)
+            bound_identity = resolve_platformio_identity(root, source_environment)
+        except OSError as exc:
+            return (
+                f"dependency bootstrap binding unavailable {phase}: {environment_name}: "
+                f"{type(exc).__name__}"
+            )
+        if (
+            bound_status.returncode != 0
+            or bound_status.stdout.strip()
+            or bound_revision.returncode != 0
+            or bound_revision.stdout.strip().lower() != full_sha
+            or bound_pio_version.returncode != 0
+            or bound_pio_version.stdout != pio_version.stdout
+            or bound_identity != initial_identity
+        ):
+            return (
+                f"Git or PlatformIO identity changed {phase} dependency bootstrap: "
+                f"{environment_name}"
+            )
+        return None
+
     artifact_sha256: dict[tuple[str, str], str] = {}
     for build_environment in BUILD_ENVIRONMENTS:
+        binding_error = dependency_binding_error(build_environment, "before")
+        if binding_error is not None:
+            return [binding_error], None
+        try:
+            bootstrap = runner(
+                [*pio_command, "pkg", "install", "-e", build_environment],
+                **common,
+            )
+        except OSError as exc:
+            errors.append(
+                f"bound dependency bootstrap tool unavailable: {build_environment}: "
+                f"{type(exc).__name__}"
+            )
+            return errors, None
+        if bootstrap.returncode != 0:
+            errors.append(f"bound dependency bootstrap failed: {build_environment}")
+            return errors, None
+        binding_error = dependency_binding_error(build_environment, "after")
+        if binding_error is not None:
+            return [binding_error], None
         for command_kind, command in (
             ("clean", [*pio_command, "run", "-e", build_environment, "-t", "clean"]),
             ("build", [*pio_command, "run", "-e", build_environment]),

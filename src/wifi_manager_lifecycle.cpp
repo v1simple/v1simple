@@ -919,11 +919,12 @@ void WiFiManager::setBoundaryTransitionAdmission(const bool allow) {
     allowBoundaryTransitionWork_ = allow;
 }
 
-// Rate limiting: returns true if request is allowed, false if rate limited
+// Mutation rate limiting: returns true if the write is allowed, false if rate limited.
+// Read-only status polls call markUiActivity() directly and never enter this window.
 bool WiFiManager::checkRateLimit() {
     const uint32_t now = millis();
 
-    // Mark UI activity on every request
+    // Admitted and rejected mutations both prove that the UI is active.
     markUiActivity();
 
     const SlidingWindowRateLimitDecision decision = rateLimiter_.evaluate(now);

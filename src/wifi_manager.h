@@ -333,11 +333,12 @@ class WiFiManager {
     unsigned long lastAnyClientSeenMs_ = 0;
     bool wasAutoStarted_ = false; // True when WiFi was started by boot auto-start (not manual)
 
-    // Rate limiting
+    // Mutation rate limiting. Read-only status polls track UI activity without
+    // entering this shared write-admission window.
     static constexpr unsigned long RATE_LIMIT_WINDOW_MS = SlidingWindowRateLimiter::WINDOW_MS;
     static constexpr size_t RATE_LIMIT_MAX_REQUESTS = SlidingWindowRateLimiter::MAX_REQUESTS;
     SlidingWindowRateLimiter rateLimiter_;
-    bool checkRateLimit(); // Returns true if request allowed, false if rate limited
+    bool checkRateLimit(); // Returns true if mutation is allowed, false if rate limited
     bool requireMaintenanceApiWriteHeader();
     static const char* maintenanceApiWriteHeader() { return "X-V1Simple-Request"; }
     static const char* maintenanceApiWriteHeaderValue() { return "maintenance-ui"; }

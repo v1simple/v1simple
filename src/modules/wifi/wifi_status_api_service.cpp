@@ -145,9 +145,9 @@ void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& la
 
 void handleApiStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,
                      unsigned long& lastStatusJsonTime, unsigned long cacheTtlMs, unsigned long (*millisFn)(void* ctx),
-                     void* millisCtx, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx)) {
-        return;
+                     void* millisCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (markUiActivity) {
+        markUiActivity(uiActivityCtx);
     }
 
     sendStatus(server, runtime, cachedStatusJson, lastStatusJsonTime, cacheTtlMs, millisFn, millisCtx);

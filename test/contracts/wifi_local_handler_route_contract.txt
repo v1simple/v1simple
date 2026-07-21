@@ -16,7 +16,7 @@ route=HTTP_GET /api/obd/config rate_limit=0 ui_activity=0 handlers= delegates=Ob
 route=HTTP_GET /api/obd/devices rate_limit=0 ui_activity=0 handlers= delegates=ObdApiService::handleApiDevicesList
 route=HTTP_GET /api/obd/status rate_limit=0 ui_activity=0 handlers= delegates=ObdApiService::handleApiStatus
 route=HTTP_GET /api/quiet/settings rate_limit=0 ui_activity=0 handlers= delegates=WifiQuietApiService::handleApiGet
-route=HTTP_GET /api/status rate_limit=1 ui_activity=0 handlers= delegates=WifiStatusApiService::handleApiStatus
+route=HTTP_GET /api/status rate_limit=0 ui_activity=1 handlers= delegates=WifiStatusApiService::handleApiStatus
 route=HTTP_GET /api/v1/current rate_limit=0 ui_activity=0 handlers= delegates=WifiV1ProfileApiService::handleApiCurrentSettings
 route=HTTP_GET /api/v1/devices rate_limit=0 ui_activity=0 handlers= delegates=WifiV1DevicesApiService::handleApiDevicesList
 route=HTTP_GET /api/v1/profile rate_limit=0 ui_activity=0 handlers= delegates=WifiV1ProfileApiService::handleApiProfileGet

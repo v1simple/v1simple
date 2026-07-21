@@ -128,6 +128,10 @@ run_step "Perf CSV import regression tests" python3 scripts/test_perf_csv_import
 run_step "Soak metrics parser regression tests" python3 scripts/test_soak_parse_metrics.py
 run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
+run_step "Bug-squash HIL runner regression tests" python3 scripts/test_bug_squash_hil_runner.py
+run_step "HIL board resolver regression tests" python3 scripts/test_resolve_hil_board.py
+run_step "Bug-squash HIL qualification validator regression tests" python3 scripts/test_bug_squash_hil_qualification.py
+run_step "Bug-squash build evidence generator regression tests" python3 scripts/test_generate_bug_squash_build_evidence.py
 run_step "OBD/proxy qualification validator regression tests" python3 scripts/test_obd_proxy_qualification.py
 run_step "Release evidence manifest regression tests" python3 scripts/test_release_evidence_manifest.py
 run_step "Release evidence generator regression tests" python3 scripts/test_prepare_release_evidence_manifest.py

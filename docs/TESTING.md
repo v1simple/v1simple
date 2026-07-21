@@ -272,7 +272,129 @@ Bench result language is intentionally small:
 - `pio-size.sh` — size report wrapper.
 - `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, the published maintenance deadline, diagnostics listing, live-push maintenance gating, every production page (including Logs), the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
 - `check_obd_proxy_qualification.py` — validates a typed OBD/proxy hardware evidence pack against `tools/obd_proxy_qualification_profile_v1.json`; normal CI exercises only its synthetic regression suite.
+- `check_bug_squash_hil_qualification.py` — validates a local, typed bug-squash HIL evidence pack against `tools/bug_squash_hil_qualification_profile_v1.json`; normal CI exercises its adversarial regression suite without operating hardware.
+- `generate_bug_squash_build_evidence.py` — clean-HEAD-only generator for the retained PlatformIO build manifest, logs, binaries, tool versions, and ESP32-S3 image validation used by that evidence contract.
 
+## Bug-squash HIL evidence contract
+
+The versioned bug-squash profile covers exactly `BSC-02` through `BSC-14` plus
+`BSC-16`. It is an evidence contract, not a scenario runner, and hardware is
+not operated by the validator.
+
+The current profile is explicitly `blocked`. Production and car-production
+builds map to real PlatformIO environments, but the required bounded HIL fault
+control build is marked `hil-fault-control-not-implemented`; it has no claimed
+environment or build command. Profile version 2 is non-activatable and requires
+version 3 or later. Its activation contract also names three provenance gaps:
+the build generator/log is not authenticated, case source records are not yet
+bound to a typed driver/collector, and board capabilities are not yet bound to
+authenticated inventory/resolver execution. Consequently, neither the
+generator nor the qualification validator can report success today. This is
+intentional: adding a made-up environment, hand-authoring a HIL binary, or
+flipping `qualification_status` would turn missing infrastructure into false
+release evidence. A future change must implement and adversarially test every
+activation requirement and the validator's currently absent authenticated
+provenance verifier, advance the pinned profile/schema, and update its digest
+before PASS evidence is possible. A profile edit or version bump alone remains
+fail-closed.
+
+Each local evidence pack must bind its result to the caller-supplied full target
+commit and the repository's current, existing `HEAD`; the live worktree must be
+clean. The validator derives the target commit time and `FIRMWARE_VERSION`
+directly from that Git tree. Qualification, build, resolution, and case evidence
+must be at or after the target commit. The validator pins the tracked profile by
+SHA-256 and does not accept a custom profile.
+
+The build-evidence groundwork retains each active build's exact PlatformIO
+command and environment, start/completion time, source commit and firmware
+version, clean-worktree fact, hashed log, and hashed binary. The validator
+recomputes the tracked generator digest and binary digests and runs `esptool
+image-info` against every retained binary; each must be a complete ESP32-S3
+application image with valid checksum and validation hash, and must embed the
+firmware-version identity derived from the target Git tree. The generator
+rejects output outside ignored `.artifacts/`, missing PlatformIO environments,
+dirty source, failed builds, and invalid images. These are useful structural
+checks, but version 2 does not treat a claimed generator digest or authored log
+as proof that the generator ran.
+
+Every approved DUT and rig has a hashed, sanitized resolver attestation that
+contains only its alias and declared capabilities; the public evidence never
+embeds the resolved endpoint or hardware serial. The validator recomputes each
+attestation from its unique ignored local raw resolution. For dynamic LAN, the
+resolver itself opens the exact selected serial port and performs bounded
+collection; it does not accept a caller-provided serial log. Version 2 still
+cannot authenticate that the raw inventory and resolution were produced by the
+resolver rather than authored consistently, so this remains an activation
+blocker.
+
+Case runs bind an approved DUT and rig to case-specific structured roles. Those
+roles enumerate the exact stimuli, bounded fault lifecycle,
+barrier-ready/release markers, VBUS-isolation fact, expected/unexpected reset
+contract, instrumentation mode, and typed acceptance facts. Every observation
+also references a separate, hashed source artifact whose exact record set,
+values, timestamps, and causal ordering are validated. Roles with a fault or
+barrier cannot claim manual-only instrumentation. HIL-fault cases require
+separate production-replay evidence. Opaque or reused evidence cannot close
+multiple roles, and `ACCEPTED_RISK` cannot close the pack or any case. These
+source records remain circular until a typed driver/collector authenticates
+their provenance; the activation contract records that limitation.
+
+All referenced artifacts must be unique, nonempty regular files below the pack
+directory. Every path component is lstat-checked, symlinks and operationally
+identifying path shapes are rejected, and each file's SHA-256 is verified.
+Qualification and nested observation timestamps must be UTC, ordered, and not
+in the future. Unexpected panic, watchdog, and per-case reset counts must be
+integer zero.
+
+Once all pinned infrastructure is active, generate build evidence below the
+ignored artifact root and validate a completed local pack with:
+
+```bash
+python3 scripts/generate_bug_squash_build_evidence.py \
+  --output-directory .artifacts/bug-squash-hil/<run-id>
+
+python3 scripts/check_bug_squash_hil_qualification.py \
+  --artifact .artifacts/bug-squash-hil/<run-id>/qualification_result.json \
+  --expected-git-sha <40-hex-target-sha>
+```
+
+With the current blocked profile, the generator reports the named missing
+fault-control contract and exits nonzero before building; the validator also
+rejects any claimed PASS pack.
+
+### Final-device wrapper
+
+The separate final-device wrapper runs the existing device-unit suite through
+an exact local inventory alias:
+
+```bash
+python3 scripts/run_bug_squash_hil.py --run-device-suite --board release
+```
+
+This mode requires `HEAD` and the whole worktree, including untracked files, to
+be clean before execution and rechecks that state after hardware commands. The
+resolver exact-matches the requested `release` alias and configured USB serial;
+it always uses live enumeration and never accepts a caller-supplied port list or
+falls back to a sole, first, or different detected port. Authoritative mode pins
+the tracked runner paths, the default isolated PlatformIO environment, and a
+sanitized command path; test overrides are explicitly non-authoritative and can
+only report `TEST_PASS`. The device runner is invoked in fail-closed transport
+mode: a nonzero command exit, transport failure, non-PASS suite row, or positive
+PlatformIO `error_nums` rejects the run even if another layer exits zero. JSON,
+JUnit XML, scoring, manifest, and suite-index identities and counts must agree.
+
+The wrapper hashes the complete retained device artifact tree plus its command
+and resolver evidence, records the full target SHA, and restores the pinned
+`waveshare-349` production image before reporting success. Restoration failure
+rejects the run. All `--case BSC-*` modes intentionally return
+`case_driver_unavailable`; none can run or claim PASS until its typed physical
+driver and provenance contract are implemented.
+
+Keep the pack under ignored `.artifacts/`. Use stable aliases in the result;
+never add lab-specific serial numbers, device paths, IP addresses, credentials,
+or captured operational logs to tracked files. Reserved documentation examples
+are not lab identity. The checked-in profile and synthetic tests contain no
+lab-specific values.
 
 ## Where new gates go
 

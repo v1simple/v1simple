@@ -1,26 +1,5 @@
 {
-  "description": "Hardware lab board inventory. Copy to board_inventory.local.json and fill in your lab values.",
-  "boards": [
-    {
-      "board_id": "release",
-      "role": "Release bench evidence — core/display SD serial bench",
-      "device_path": "REPLACE_WITH_DEVICE_PATH",
-      "metrics_url": "REPLACE_WITH_METRICS_URL",
-      "usb_serial": "REPLACE_WITH_USB_SERIAL"
-    },
-    {
-      "board_id": "radio",
-      "role": "Radio/coexistence regression — BLE+WiFi stress",
-      "device_path": "REPLACE_WITH_DEVICE_PATH",
-      "metrics_url": "REPLACE_WITH_METRICS_URL",
-      "usb_serial": "REPLACE_WITH_USB_SERIAL"
-    },
-    {
-      "board_id": "stress",
-      "role": "Long soak/stress — extended stability testing",
-      "device_path": "REPLACE_WITH_DEVICE_PATH",
-      "metrics_url": "REPLACE_WITH_METRICS_URL",
-      "usb_serial": "REPLACE_WITH_USB_SERIAL"
-    }
-  ]
+  "schema_version": 1,
+  "description": "Tracked hardware inventory template. Copy to board_inventory.local.json and add local alias, capability, and connection data there.",
+  "boards": []
 }

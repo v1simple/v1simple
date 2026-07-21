@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Focused regressions for HIL-only fault-control production exclusion."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import shutil
+import tempfile
+from types import SimpleNamespace
+
+import check_bug_squash_hil_fault_controls as checker
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FULL_SHA = "a" * 40
+
+
+def assert_true(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def fixture_root(temporary: Path) -> Path:
+    root = temporary / "repository"
+    (root / "src" / "modules").mkdir(parents=True)
+    shutil.copy2(ROOT / "platformio.ini", root / "platformio.ini")
+    shutil.copytree(ROOT / "src" / "modules" / "hil", root / "src" / "modules" / "hil")
+    for relative in checker.RELEASE_CONFIGURATION_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    ci_test = root / checker.CI_TEST_FILE
+    ci_test.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / checker.CI_TEST_FILE, ci_test)
+    ci_workflow = root / checker.CI_WORKFLOW_FILE
+    ci_workflow.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / checker.CI_WORKFLOW_FILE, ci_workflow)
+    (root / "src" / "main.cpp").write_text("int production_fixture = 1;\n", encoding="utf-8")
+    return root
+
+
+def assert_error_contains(errors: list[str], fragment: str) -> None:
+    assert_true(any(fragment in error for error in errors), f"missing error {fragment!r}: {errors}")
+
+
+def test_repository_static_contract_passes() -> None:
+    errors = checker.validate_static(ROOT)
+    assert_true(not errors, f"repository static contract failed: {errors}")
+
+
+def test_hil_environment_cannot_become_default_or_leak_to_production_flags() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        platformio = root / "platformio.ini"
+        original = platformio.read_text(encoding="utf-8")
+        platformio.write_text(
+            original.replace("default_envs = waveshare-349", "default_envs = waveshare-349-hil"),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "must not be a default")
+
+        platformio.write_text(
+            original.replace(
+                "build_flags = \n",
+                "build_flags = \n    -D V1SIMPLE_HIL_FAULT_CONTROL=1\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "production environment defines HIL macro")
+
+        platformio.write_text(
+            original + "\n[env]\nbuild_flags = -D V1SIMPLE_HIL_FAULT_CONTROL=1\n",
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "non-HIL PlatformIO section defines HIL macro")
+
+        platformio.write_text(
+            original.replace(
+                "    ${env:waveshare-349.build_flags}\n    -D CAR_MODE_PWR_SHORT=1",
+                "    ${env:waveshare-349-hil.build_flags}\n    -D CAR_MODE_PWR_SHORT=1",
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root),
+            "production environment references or inherits HIL environment",
+        )
+
+        platformio.write_text(
+            original.replace(
+                "[env:esp32-s3-car-install]\n",
+                "[env:esp32-s3-car-install]\nextends =\n"
+                "    env:waveshare-349\n    env:waveshare-349-hil\n",
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root),
+            "production environment references or inherits HIL environment",
+        )
+
+        platformio.write_text(
+            original.replace(
+                "    ${env:waveshare-349.build_flags}\n    -D CAR_MODE_PWR_SHORT=1",
+                "    ${env:hil-leak-base.build_flags}\n    -D CAR_MODE_PWR_SHORT=1",
+            )
+            + "\n[env:hil-leak-base]\nextends = env:waveshare-349-hil\n"
+            "build_flags = ${env:waveshare-349-hil.build_flags}\n",
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root),
+            "production environment references or inherits HIL environment",
+        )
+
+        platformio.write_text(original, encoding="utf-8")
+        release_workflow = root / ".github" / "workflows" / "release.yml"
+        release_workflow.write_text(
+            release_workflow.read_text(encoding="utf-8") + "\n# waveshare-349-hil\n",
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "referenced by release configuration")
+
+        platformio.write_text(original, encoding="utf-8")
+        ci_test = root / checker.CI_TEST_FILE
+        ci_test.write_text(
+            ci_test.read_text(encoding="utf-8").replace(
+                checker.CI_AUTHORITATIVE_GATE, "# authoritative HIL gate removed"
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "must run exactly once immediately")
+
+        ci_test.write_text((ROOT / checker.CI_TEST_FILE).read_text(encoding="utf-8"), encoding="utf-8")
+        ci_workflow = root / checker.CI_WORKFLOW_FILE
+        ci_workflow.write_text(
+            ci_workflow.read_text(encoding="utf-8").replace(
+                '"platformio==6.1.19"', '"platformio>=6.1.19,<7"'
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "install exactly the pinned")
+
+
+def test_unguarded_and_elif_call_sites_are_rejected() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        call_site = root / "src" / "main.cpp"
+        call_site.write_text("HilFaultController* escaped_controller;\n", encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "unguarded HIL call site")
+
+        call_site.write_text(
+            "#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\n"
+            "HilFaultController* guarded_controller;\n"
+            "#elif defined(OTHER_FEATURE)\n"
+            "HilFaultController* escaped_elif_controller;\n"
+            "#endif\n",
+            encoding="utf-8",
+        )
+        errors = checker.validate_static(root)
+        assert_error_contains(errors, "unguarded HIL call site: src/main.cpp:4")
+
+        call_site.write_text(
+            "#if defined(OTHER_FEATURE)\n"
+            "int unrelated;\n"
+            "#elif defined(V1SIMPLE_HIL_FAULT_CONTROL)\n"
+            "HilFaultController* guarded_elif_controller;\n"
+            "#endif\n",
+            encoding="utf-8",
+        )
+        errors = checker.validate_static(root)
+        assert_true(not errors, f"positive HIL #elif was misclassified: {errors}")
+
+        for suffix in (".cc", ".ino"):
+            escaped = root / "src" / f"escaped{suffix}"
+            escaped.write_text("HilFaultController* escaped;\n", encoding="utf-8")
+            assert_error_contains(checker.validate_static(root), f"unguarded HIL call site: src/escaped{suffix}")
+            escaped.unlink()
+
+
+def test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        header = root / "src" / "modules" / "hil" / "hil_ready_barrier.h"
+        original = header.read_text(encoding="utf-8")
+        header.write_text(original.replace("#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\n", ""), encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "not enclosed by the compile guard")
+
+        header.write_text(
+            "HilFaultController* before_guard;\n" + original,
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "not enclosed by the compile guard")
+
+        header.write_text(original.replace("#include", "void* leak = malloc(4);\n#include", 1), encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "forbidden dynamic")
+
+        header.unlink()
+        header.symlink_to(root / "platformio.ini")
+        assert_error_contains(checker.validate_static(root), "must not be a symlink")
+
+
+def complete_artifacts(
+    root: Path,
+    full_sha: str = FULL_SHA,
+    environments: tuple[str, ...] = checker.BUILD_ENVIRONMENTS,
+) -> None:
+    short_sha = full_sha[:7].encode()
+    for environment in environments:
+        directory = root / ".pio" / "build" / environment
+        directory.mkdir(parents=True, exist_ok=True)
+        elf = bytearray(2048)
+        elf[:7] = b"\x7fELF\x01\x01\x01"
+        elf[16:18] = (2).to_bytes(2, "little")
+        elf[18:20] = (94).to_bytes(2, "little")
+        elf[20:24] = (1).to_bytes(4, "little")
+        elf[28:32] = (52).to_bytes(4, "little")
+        elf[40:42] = (52).to_bytes(2, "little")
+        elf[42:44] = (32).to_bytes(2, "little")
+        elf[44:46] = (1).to_bytes(2, "little")
+        elf[52:56] = (1).to_bytes(4, "little")
+        elf[56:60] = (256).to_bytes(4, "little")
+        elf[68:72] = (1024).to_bytes(4, "little")
+        elf[72:76] = (1024).to_bytes(4, "little")
+        elf[256 : 256 + len(short_sha) + 1] = short_sha + b"\x00"
+        elf[320 : 320 + len(environment)] = environment.encode()
+        (directory / "firmware.elf").write_bytes(elf)
+
+        segment = bytearray(2048)
+        segment[: len(short_sha) + 1] = short_sha + b"\x00"
+        segment[64 : 64 + len(environment)] = environment.encode()
+        header = bytearray(24)
+        header[0:2] = b"\xe9\x01"
+        segment_header = (0x3F400000).to_bytes(4, "little") + len(segment).to_bytes(4, "little")
+        (directory / "firmware.bin").write_bytes(header + segment_header + segment + b"\x00")
+
+
+def bound_manifest(root: Path, full_sha: str = FULL_SHA) -> checker.BoundBuildManifest:
+    digests: dict[tuple[str, str], str] = {}
+    for environment in checker.BUILD_ENVIRONMENTS:
+        errors, environment_digests = checker.collect_environment_artifact_digests(
+            root, environment
+        )
+        assert_true(not errors, f"could not bind fixture artifacts: {errors}")
+        digests.update(environment_digests)
+    return checker.BoundBuildManifest(
+        full_sha=full_sha,
+        platformio_version="PlatformIO Core, version 6.1.19",
+        platformio_tree_sha256=next(iter(checker.EXPECTED_PLATFORMIO_TREE_SHA256)),
+        interpreter_sha256="b" * 64,
+        artifact_sha256=digests,
+    )
+
+
+def test_binary_absence_requires_complete_real_artifacts_and_scans_markers() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        empty_root = Path(raw)
+        errors = checker.validate_binary_absence(
+            empty_root,
+            checker.BoundBuildManifest(
+                FULL_SHA,
+                "PlatformIO Core, version 6.1.19",
+                next(iter(checker.EXPECTED_PLATFORMIO_TREE_SHA256)),
+                "b" * 64,
+                {
+                    (environment, kind): "c" * 64
+                    for environment in checker.BUILD_ENVIRONMENTS
+                    for kind in ("elf", "bin")
+                },
+            ),
+        )
+        assert_true(len(errors) == 4, f"expected four explicit artifact blockers: {errors}")
+        assert_true(all("unavailable" in error for error in errors), str(errors))
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        temporary = Path(raw)
+        complete_artifacts(temporary)
+        manifest = bound_manifest(temporary)
+        assert_true(not checker.validate_binary_absence(temporary, manifest), "clean artifacts failed")
+
+        marker_path = checker.canonical_artifact(temporary, "waveshare-349", "bin")
+        marker_path.write_bytes(marker_path.read_bytes() + checker.FORBIDDEN_BINARY_MARKERS[0])
+        tamper_errors = checker.validate_binary_absence(temporary, manifest)
+        assert_error_contains(
+            tamper_errors,
+            "production artifact contains HIL-only marker: waveshare-349 bin",
+        )
+        assert_error_contains(tamper_errors, "does not match the full-revision bound build manifest")
+
+        marker_path.write_bytes(
+            b"\xe9\x01" + bytes(22) + (0x3F400000).to_bytes(4, "little") + bytes(4)
+        )
+        decoy_manifest = bound_manifest(temporary)
+        assert_error_contains(
+            checker.validate_binary_absence(temporary, decoy_manifest),
+            "production artifact format is invalid: waveshare-349 bin",
+        )
+
+        complete_artifacts(temporary, "b" * 40)
+        mismatched_revision_manifest = bound_manifest(temporary, FULL_SHA)
+        assert_error_contains(
+            checker.validate_binary_absence(temporary, mismatched_revision_manifest),
+            "not bound to target Git revision: waveshare-349 bin",
+        )
+
+
+def test_binary_errors_never_echo_canonical_paths() -> None:
+    secret = "private-operational-artifact-name"
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        temporary = Path(raw) / secret
+        complete_artifacts(temporary)
+        manifest = bound_manifest(temporary)
+        target = temporary / "target.elf"
+        target.write_bytes(bytes(52))
+        link = checker.canonical_artifact(temporary, "waveshare-349", "elf")
+        link.unlink()
+        link.symlink_to(target)
+        errors = checker.validate_binary_absence(temporary, manifest)
+        assert_error_contains(errors, "nonempty regular non-symlink")
+        assert_true(all(secret not in error for error in errors), str(errors))
+
+
+def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() -> None:
+    commands: list[tuple[str, ...]] = []
+    observed_environments: list[dict[str, str]] = []
+    active_root: Path | None = None
+
+    def successful_runner(command, **_kwargs):
+        commands.append(tuple(command))
+        observed_environments.append(dict(_kwargs.get("env", {})))
+        if command[-1] == "--version":
+            return SimpleNamespace(
+                returncode=0, stdout="PlatformIO Core, version 6.1.19\n", stderr=""
+            )
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout="a" * 40 + "\n", stderr="")
+        if "run" in command and "-e" in command:
+            assert active_root is not None
+            environment = command[command.index("-e") + 1]
+            if command[-1] == "clean":
+                for kind in ("elf", "bin"):
+                    path = checker.canonical_artifact(active_root, environment, kind)
+                    if path.exists() or path.is_symlink():
+                        path.unlink()
+            else:
+                complete_artifacts(active_root, FULL_SHA, (environment,))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    injected = dict(checker.os.environ)
+    injected.update(
+        {
+            "GIT_DIR": "/tmp/decoy",
+            "PYTHONPATH": "/tmp/injected",
+            "PLATFORMIO_BUILD_FLAGS": "-D V1SIMPLE_HIL_FAULT_CONTROL=1",
+            "SCONSFLAGS": "--site-dir=/tmp/injected",
+        }
+    )
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        bound_root = fixture_root(Path(raw))
+        active_root = bound_root
+        complete_artifacts(bound_root, FULL_SHA, checker.BUILD_ENVIRONMENTS)
+        build_errors, manifest = checker.validate_bound_builds(
+            bound_root, successful_runner, injected
+        )
+        assert_true(
+            not build_errors and manifest is not None and manifest.full_sha == FULL_SHA,
+            f"bound build failed: {build_errors}",
+        )
+        assert_true(
+            len(manifest.artifact_sha256) == len(checker.BUILD_ENVIRONMENTS) * 2,
+            f"artifact manifest incomplete: {manifest.artifact_sha256}",
+        )
+    expected_pio = []
+    identity = checker.resolve_platformio_identity(ROOT, injected)
+    assert_true(identity is not None, "test PlatformIO identity was not trusted")
+    pio = (str(identity.interpreter), "-I", "-m", "platformio")
+    for environment in checker.BUILD_ENVIRONMENTS:
+        expected_pio.extend(
+            [
+                (*pio, "run", "-e", environment, "-t", "clean"),
+                (*pio, "run", "-e", environment),
+            ]
+        )
+    assert_true(commands[3:-3] == expected_pio, f"unexpected build commands: {commands}")
+    for child_environment in observed_environments:
+        assert_true(
+            all(
+                key not in child_environment
+                for key in ("GIT_DIR", "PYTHONPATH", "PLATFORMIO_BUILD_FLAGS", "SCONSFLAGS")
+            ),
+            f"injected environment escaped: {child_environment}",
+        )
+
+    def dirty_runner(command, **_kwargs):
+        if command[-1] == "--version":
+            return SimpleNamespace(
+                returncode=0, stdout="PlatformIO Core, version 6.1.19\n", stderr=""
+            )
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout=" M source.cpp\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="a" * 40 + "\n", stderr="")
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        dirty_root = fixture_root(Path(raw))
+        dirty_errors, _ = checker.validate_bound_builds(dirty_root, dirty_runner)
+        assert_error_contains(dirty_errors, "must be clean")
+
+    def stale_clean_runner(command, **_kwargs):
+        if command[-1] == "--version":
+            return SimpleNamespace(
+                returncode=0, stdout="PlatformIO Core, version 6.1.19\n", stderr=""
+            )
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout=FULL_SHA + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        stale_root = fixture_root(Path(raw))
+        complete_artifacts(stale_root, FULL_SHA, checker.BUILD_ENVIRONMENTS)
+        stale_errors, _ = checker.validate_bound_builds(stale_root, stale_clean_runner)
+        assert_error_contains(stale_errors, "bound clean left canonical artifact present")
+
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        fake_root = fixture_root(Path(raw))
+        repository_tool = fake_root / "tools" / "pio"
+        repository_tool.parent.mkdir()
+        repository_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        repository_tool.chmod(0o700)
+        repository_environment = dict(checker.os.environ)
+        repository_environment["PATH"] = str(repository_tool.parent)
+        repository_environment["PIO_CMD"] = str(repository_tool)
+        repository_errors, _ = checker.validate_bound_builds(
+            fake_root, successful_runner, repository_environment
+        )
+        assert_error_contains(repository_errors, "tool identity is unavailable")
+
+        home_override = dict(checker.os.environ)
+        home_override["PIO_CMD"] = str(
+            checker.repository_owner_home(ROOT) / "bin" / "pio"
+        )
+        home_errors, _ = checker.validate_bound_builds(
+            fake_root, successful_runner, home_override
+        )
+        assert_error_contains(home_errors, "tool identity is unavailable")
+
+        identity = checker.resolve_platformio_identity(ROOT, dict(checker.os.environ))
+        assert_true(identity is not None, "real PlatformIO identity unavailable")
+        assert_true(
+            all(len(value) == 64 for value in checker.EXPECTED_PLATFORMIO_TREE_SHA256),
+            "pinned PlatformIO tree identity is not a full SHA-256",
+        )
+        altered_tree = fake_root / "altered-platformio"
+        shutil.copytree(identity.module_root, altered_tree)
+        init_file = altered_tree / "__init__.py"
+        init_file.write_text(init_file.read_text(encoding="utf-8") + "\n# altered\n", encoding="utf-8")
+        assert_true(
+            checker.platformio_tree_sha256(altered_tree)
+            not in checker.EXPECTED_PLATFORMIO_TREE_SHA256,
+            "altered PlatformIO package matched a pinned tree identity",
+        )
+
+
+def main() -> int:
+    tests = (
+        test_repository_static_contract_passes,
+        test_hil_environment_cannot_become_default_or_leak_to_production_flags,
+        test_unguarded_and_elif_call_sites_are_rejected,
+        test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
+        test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
+        test_binary_errors_never_echo_canonical_paths,
+        test_bound_build_requires_clean_full_sha_and_exact_environment_commands,
+    )
+    for test in tests:
+        test()
+        print(f"PASS {test.__name__}")
+    print(f"PASS {len(tests)} HIL fault-control checker regressions")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

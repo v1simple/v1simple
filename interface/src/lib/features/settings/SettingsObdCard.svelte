@@ -163,6 +163,7 @@
                 await reconcileObdUiStateAfterSaveFailure();
                 return false;
             }
+            await fetchObdConfig();
             return true;
         } catch (_) {
             obdMessage = { type: 'error', text: 'Connection error.' };

@@ -47,6 +47,9 @@ class DisplayPreviewModule {
 
     // State queries
     bool isRunning() const { return previewActive_ || visualPinned_; }
+    // Preview continues to own presentation until DisplayRestoreModule
+    // consumes the ended edge and restores the authoritative runtime owner.
+    bool ownsPresentation() const { return isRunning() || previewEnded_; }
     // Returns true once when a preview has ended (cancel or elapsed), then resets the flag
     bool consumeEnded();
 

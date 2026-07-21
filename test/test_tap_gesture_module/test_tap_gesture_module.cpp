@@ -131,6 +131,8 @@ void test_idle_triple_tap_cycles_slot_and_pushes_when_connected() {
     TEST_ASSERT_EQUAL(1, display.lastProfileIndicatorSlot);
     TEST_ASSERT_EQUAL(1, autoPush.queueSlotPushCalls);
     TEST_ASSERT_EQUAL(1, autoPush.lastQueueSlotPushSlot);
+    TEST_ASSERT_EQUAL(0, ::settingsManager.saveCalls);
+    TEST_ASSERT_EQUAL(1, ::settingsManager.saveDeferredBackupCalls);
 }
 
 void test_idle_profile_cycle_resets_after_tap_window_expires() {

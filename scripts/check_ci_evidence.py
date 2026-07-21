@@ -487,6 +487,7 @@ def _latest_matching_run(
     workflow_id: int,
     workflow_name: str,
     workflow_path: str,
+    expected_run_id: int | None = None,
 ) -> Mapping[str, Any] | None:
     matching = [
         run
@@ -500,6 +501,7 @@ def _latest_matching_run(
             workflow_name=workflow_name,
             workflow_path=workflow_path,
         )
+        and (expected_run_id is None or run.get("id") == expected_run_id)
     ]
     if not matching:
         return None
@@ -594,16 +596,21 @@ def verify_actions_evidence(
     workflow_name: str = DEFAULT_WORKFLOW_NAME,
     job_name: str = DEFAULT_JOB_NAME,
     step_name: str = DEFAULT_STEP_NAME,
+    expected_run_id: int | None = None,
     wait_seconds: float = 0.0,
     poll_seconds: float = 15.0,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> CiEvidence:
-    """Verify the latest exact Actions run, attempt, job, and gate step."""
+    """Verify the specified or latest exact Actions run, attempt, job, and gate step."""
 
     if not REPOSITORY_RE.fullmatch(repository):
         raise CiEvidenceError(f"invalid GitHub repository name: {repository!r}")
     ci_sha = _require_sha(ci_sha, "CI SHA")
+    if expected_run_id is not None and (
+        isinstance(expected_run_id, bool) or expected_run_id <= 0
+    ):
+        raise CiEvidenceError("expected CI run ID must be a positive integer")
     if wait_seconds < 0:
         raise CiEvidenceError("wait_seconds must not be negative")
     if poll_seconds <= 0:
@@ -639,9 +646,16 @@ def verify_actions_evidence(
             workflow_id=workflow_id,
             workflow_name=workflow_name,
             workflow_path=workflow_path,
+            expected_run_id=expected_run_id,
         )
         if latest is None:
-            reason = f"no authoritative CI run exists for {ci_sha} on {branch}"
+            if expected_run_id is None:
+                reason = f"no authoritative CI run exists for {ci_sha} on {branch}"
+            else:
+                reason = (
+                    f"authoritative CI run {expected_run_id} does not match "
+                    f"{ci_sha} on {branch}"
+                )
         elif latest.get("status") != "completed":
             run_id = latest.get("id", "unknown")
             reason = f"latest authoritative CI run {run_id} is {latest.get('status', 'unknown')}"
@@ -788,6 +802,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Environment variable containing an actions: read token",
     )
     parser.add_argument(
+        "--expected-run-id",
+        type=int,
+        help="Require evidence from this exact triggering workflow run ID",
+    )
+    parser.add_argument(
         "--wait-seconds",
         type=float,
         default=0.0,
@@ -836,6 +855,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository=args.repository,
             ci_sha=chain.ci_sha,
             branch=args.branch,
+            expected_run_id=args.expected_run_id,
             wait_seconds=args.wait_seconds,
             poll_seconds=args.poll_seconds,
         )

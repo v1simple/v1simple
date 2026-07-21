@@ -72,10 +72,13 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
 // Signals the deferred-backup writer task to drain its queue and exit, and
 // blocks (up to timeoutMs) for the task to terminate. Subsequent calls to
 // SettingsManager backup APIs become no-ops because the writer task will not
-// be respawned after shutdown is requested. Intended for the car-power-off
-// teardown sequence; tests reset the shutdown flag via
-// resetDeferredSettingsBackupStateForTest().
+// be respawned after shutdown is requested. Intended for graceful portable
+// power-off; tests reset the shutdown flag via resetDeferredSettingsBackupStateForTest().
 void shutdownDeferredSettingsBackupWriter(uint32_t timeoutMs);
+
+// Reopens writer admission when the hardware shutdown tail aborts. Existing
+// queue/task and pending-retry state are preserved for normal lazy recovery.
+void resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
 
 #ifdef UNIT_TEST
 void resetDeferredSettingsBackupStateForTest();

@@ -81,7 +81,8 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
                 if (brightnessAdjustMode_)
                     exitAdjustModeAndSave();
                 if (settings_)
-                    settings_->setStealthEnabled(!settings_->get().stealthEnabled);
+                    settings_->setStealthEnabled(!settings_->get().stealthEnabled,
+                                                 SettingsPersistMode::ImmediateNvsDeferredBackup);
                 if (callbacks_.restoreDisplay)
                     callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
             } else {
@@ -141,7 +142,7 @@ void TouchUiModule::exitAdjustModeAndSave() {
     brightnessAdjustMode_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);
-    settings_->save();
+    settings_->saveDeferredBackup();
     audio_set_volume(volumeAdjustValue_);
     display_->hideBrightnessSlider();
     if (callbacks_.restoreDisplay)

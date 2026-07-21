@@ -65,7 +65,26 @@
 
 namespace {
 bool wifiStatusObservabilityCallbackConfigured = false;
+
+bool restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {
+    auto* pipeline = static_cast<DisplayPipelineModule*>(context);
+    if (!pipeline) {
+        return false;
+    }
+
+    // A connection edge can be admitted during BLE ingest, after the early
+    // display phase sampled the previous state. Refresh the full context here
+    // immediately before the authoritative render so same-loop dispatch and
+    // overload-skipped early phases cannot render or flush stale BLE status.
+    const bool v1Connected = bleClient.isConnected();
+    const bool proxyConnected = bleClient.isProxyClientConnected();
+    display.setBleContext({v1Connected, proxyConnected, bleClient.getConnectionRssi(), bleClient.getProxyClientRssi()});
+    const unsigned long lastRxMs = bleQueueModule.getLastRxMillis();
+    const bool receiving = lastRxMs != 0 && (nowMs - lastRxMs) < ConnectionRuntimeModule::Config{}.receivingHeartbeatMs;
+    display.setBLEProxyStatus(v1Connected, proxyConnected, receiving);
+    return pipeline->restoreCurrentOwner(nowMs);
 }
+} // namespace
 
 static void requestMaintenanceBootRestart() {
     if (!requestMaintenanceBoot()) {
@@ -107,6 +126,7 @@ void configureWifiRuntimeModule() {
                     mainRuntimeState.maintenanceBootActive && mainRuntimeState.maintenanceBootStartedMs != 0
                         ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
                         : 0;
+                obj["maintenanceBootTimeoutMs"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;
                 StatusObservabilityPayload::WifiStatusSnapshot wifiStatus;
                 wifiStatus.apLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
                 wifiStatus.apLastTransitionReason =
@@ -299,7 +319,9 @@ static void configureSystemLoopCoreModules() {
         fatalBootError("BLE queue init failed", true);
     }
     configureConnectionRuntimeModule();
-    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &systemEventBus);
+    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule,
+                                &systemEventBus);
+    connectionStateModule.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, &displayPipelineModule);
     configureConnectionStateDispatchModule();
     configurePeriodicMaintenanceModule();
     configureLoopTailModule();

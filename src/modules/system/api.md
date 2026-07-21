@@ -144,9 +144,9 @@ Late-loop BLE drain + yield + loop-duration finalization. Always runs last.
 Function-pointer seam: `timestampUs`, `runPerfReport`, etc.
 
 #### `struct Context`
-Loop pressure hints (`bleBackpressure`, `loopOverloaded`, `forceTailBleDrainPending`) used to defer the synchronous settings NVS writer.
+Connection and loop-pressure hints (`bleConnected`, `bleBackpressure`, `loopOverloaded`, `forceTailBleDrainPending`) used to schedule persistence without competing with critical BLE work.
 
-Periodic maintenance — perf report scheduling, log rotation, etc. Preserves call order across the various maintenance tasks that are admitted on the current loop.
+Periodic maintenance — perf report scheduling, settings synchronization, and deferred persistence. Hard pressure (BLE backpressure, loop overload, or a pending forced tail drain) blocks all deferred work. A BLE connection defers settings NVS persistence, settings backup, and V1 device-store saves for at most 10 seconds; an unpressured admission then rearms that 10-second window. If pressure blocks an aged window, it remains due until the next safe tick. Disconnect admits those writers immediately and resets the connected window. BLE bond backup service only snapshots and enqueues writer work, so it runs immediately on any unpressured tick. The module preserves settings-persist → settings-backup → device-store order whenever the write bundle is admitted.
 
 ## Class: `ConnectionCycleCoordinatorModule`
 
@@ -157,7 +157,7 @@ Periodic maintenance — perf report scheduling, log rotation, etc. Preserves ca
 
 States: `SCAN_V1`, `V1_SETTLING`, `OBD_SCAN`, `OBD_CONNECT`, `OBD_SETTLED`, `PROXY_OPEN`, etc.
 
-Orchestrates the V1 / OBD / Proxy connection ordering. V1 wins boot-time scan window; OBD runs after V1 settles in OBD / Standalone mode; passive Proxy advertising only opens when explicit Proxy / App mode is selected and the coordinator admits it. Explicit Proxy / App mode keeps advertising available for the drive after V1 settles; BLE runtime starts at a fast discovery cadence, downshifts to slower background advertising when idle, and briefly returns to fast cadence after an app disconnect. If a proxy client is connected, OBD scan/connect work is stopped and OBD runtime is dropped to idle. The cycle restarts on disconnect events.
+Orchestrates the V1 / OBD / Proxy connection ordering. V1 wins the boot-time scan window; OBD runs after V1 settles in OBD / Standalone mode. VerifyPush plus the configured quiet interval can end `V1_SETTLING` early, and `v1SettleFallbackMs` remains the quiet fallback when auto-push does not block progress. A fixed 10-second state-age deadline ends settling regardless of auto-push, verification edges, or continuing V1 traffic. A V1 false-to-true edge from `WIFI_OPEN` or `STEADY` re-enters `V1_SETTLING`, so a detector that connects after the boot scan fallback still receives the normal OBD / Proxy sequencing. Passive Proxy advertising only opens when explicit Proxy / App mode is selected and the coordinator admits it. Explicit Proxy / App mode keeps advertising available for the drive after V1 settles; BLE runtime starts at a fast discovery cadence, downshifts to slower background advertising when idle, and briefly returns to fast cadence after an app disconnect. If a proxy client is connected, OBD scan/connect work is stopped and OBD runtime is dropped to idle. The cycle restarts on disconnect events.
 
 This is the higher-level coordinator that the per-tick `LoopConnectionEarlyModule` defers to for cross-phase decisions.
 

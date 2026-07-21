@@ -1,0 +1,906 @@
+{
+  "scenarios": {
+    "audio_settings_success": {
+      "GET /api/audio/settings": [
+        {
+          "body": {
+            "alertVolumeFadeDelaySec": 4,
+            "alertVolumeFadeEnabled": true,
+            "alertVolumeFadeVolume": 2,
+            "announceBogeyCount": true,
+            "announceSecondaryAlerts": true,
+            "muteVoiceIfVolZero": false,
+            "secondaryK": false,
+            "secondaryKa": true,
+            "secondaryLaser": true,
+            "secondaryX": false,
+            "speedMuteEnabled": true,
+            "speedMuteHysteresisMph": 6,
+            "speedMuteThresholdMph": 31,
+            "speedMuteVoice": false,
+            "speedMuteVolume": 3,
+            "stealthEnabled": true,
+            "voiceAlertMode": 3,
+            "voiceDirectionEnabled": true,
+            "voiceVolume": 72
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/audio/settings": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "autopush_routes": {
+      "GET /api/autopush/slots": [
+        {
+          "body": {
+            "activeSlot": 1,
+            "enabled": true,
+            "slots": [
+              {
+                "alertPersist": 1,
+                "color": 0,
+                "darkMode": false,
+                "mode": 2,
+                "muteToZero": false,
+                "muteVolume": 2,
+                "name": "Default",
+                "priorityArrowOnly": false,
+                "profile": "Road Trip",
+                "volume": 6
+              },
+              {
+                "alertPersist": 2,
+                "color": 0,
+                "darkMode": true,
+                "mode": 3,
+                "muteToZero": false,
+                "muteVolume": 2,
+                "name": "Highway",
+                "priorityArrowOnly": true,
+                "profile": "Quiet Commute",
+                "volume": 8
+              },
+              {
+                "alertPersist": 0,
+                "color": 0,
+                "darkMode": false,
+                "mode": 0,
+                "muteToZero": true,
+                "muteVolume": 1,
+                "name": "Comfort",
+                "priorityArrowOnly": false,
+                "profile": "",
+                "volume": 4
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/autopush/activate": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/autopush/push": [
+        {
+          "body": {
+            "queued": true,
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/autopush/slot": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "backup_routes": {
+      "GET /api/settings/backup": [
+        {
+          "body": {
+            "_type": "v1simple_backup",
+            "profiles": [],
+            "snapshotMs": 4242,
+            "version": 1
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/settings/backup-now": [
+        {
+          "body": {
+            "message": "Backup written to SD",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "diagnostics_routes": {
+      "GET /api/diagnostics/log": [
+        {
+          "body": "header\nrow\n",
+          "contentType": "text/csv",
+          "status": 200
+        }
+      ],
+      "GET /api/diagnostics/logs": [
+        {
+          "body": {
+            "files": [
+              {
+                "category": "performance",
+                "path": "/perf/perf_boot_7.csv",
+                "sizeBytes": 11
+              }
+            ],
+            "maxDownloadBytes": 16777216,
+            "maxListedFiles": 64,
+            "maxScannedEntries": 128,
+            "success": true,
+            "truncated": false
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "display_colors_success": {
+      "GET /api/display/settings": [
+        {
+          "body": {
+            "alpAlert": 63488,
+            "alpConnected": 2016,
+            "alpDli": 64800,
+            "alpLidActive": 31,
+            "arrowFront": 63488,
+            "arrowRear": 63488,
+            "arrowSide": 63488,
+            "bandK": 31,
+            "bandKa": 63488,
+            "bandL": 31,
+            "bandPhoto": 30735,
+            "bandX": 2016,
+            "bar1": 2016,
+            "bar2": 2016,
+            "bar3": 65504,
+            "bar4": 65504,
+            "bar5": 63488,
+            "bar6": 63488,
+            "bleConnected": 2016,
+            "bleDisconnected": 31,
+            "bogey": 63488,
+            "brightness": 123,
+            "freq": 63488,
+            "freqUseBandColor": false,
+            "hideBatteryIcon": false,
+            "hideBleIcon": false,
+            "hideProfileIndicator": false,
+            "hideRssiIndicator": false,
+            "hideVolumeIndicator": false,
+            "hideWifiIcon": false,
+            "muted": 12678,
+            "obd": 31,
+            "persisted": 6339,
+            "rssiProxy": 31,
+            "rssiV1": 2016,
+            "showBatteryPercent": true,
+            "volumeMain": 63488,
+            "volumeMute": 31727,
+            "wifiConnected": 2016,
+            "wifiIcon": 2047
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/display/preview": [
+        {
+          "body": {
+            "active": true,
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/display/preview/clear": [
+        {
+          "body": {
+            "active": false,
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/display/settings": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/display/settings/reset": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "frontend_core_routes": {
+      "GET /api/status": [
+        {
+          "body": {
+            "battery": {
+              "has_battery": false,
+              "on_battery": false,
+              "percentage": 0,
+              "voltage_mv": 0
+            },
+            "device": {
+              "firmware_version": "",
+              "heap_free": 0,
+              "hostname": "v1simple",
+              "uptime": 0
+            },
+            "maintenanceBoot": false,
+            "maintenanceBootTimeoutMs": 600000,
+            "maintenanceBootUptimeMs": 0,
+            "v1_connected": false,
+            "wifi": {
+              "ap_active": false,
+              "ap_ip": "",
+              "rssi": 0,
+              "setup_mode": false,
+              "ssid": "",
+              "sta_connected": false,
+              "sta_enabled": false,
+              "sta_ip": "",
+              "sta_ssid": ""
+            }
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/device/settings": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/system/reboot-normal": [
+        {
+          "body": {
+            "rebooting": true,
+            "success": true,
+            "target": "normal"
+          },
+          "contentType": "application/json",
+          "status": 202
+        }
+      ]
+    },
+    "gps_settings_and_status": {
+      "GET /api/gps/config": [
+        {
+          "body": {
+            "gpsBaud": 9600,
+            "gpsEnablePinActiveHigh": true,
+            "gpsEnabled": true,
+            "gpsLogUtcToAlp": true,
+            "gpsLogUtcToPerf": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/gps/status": [
+        {
+          "body": {
+            "counters": {
+              "bufferOverruns": 0,
+              "bytesRead": 4096,
+              "checksumFailures": 0,
+              "enableTransitions": 1,
+              "parseFailures": 1,
+              "sentencesParsed": 42,
+              "sentencesUnknown": 0
+            },
+            "detectionTimedOut": false,
+            "enabled": true,
+            "firstFixMs": 100,
+            "fixAgeMs": 800,
+            "hasFix": true,
+            "hdop": 1.2,
+            "lastSentenceAgeMs": 300,
+            "locationValid": true,
+            "moduleDetected": true,
+            "parserActive": true,
+            "sampleAgeMs": 500,
+            "satellites": 7,
+            "speedMph": 35.5,
+            "stableFixAgeMs": 800,
+            "stableHasFix": true,
+            "stableSatellites": 7
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/gps/config": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "obd_config_invalid_value": {
+      "GET /api/obd/config": [
+        {
+          "body": {
+            "cycleTeardownAckTimeoutMs": 100,
+            "enabled": true,
+            "minRssi": -80,
+            "obdRetryIntervalMs": 120000,
+            "obdScanWindowMs": 15000,
+            "proxyOpenWindowMs": 60000,
+            "v1SettleFallbackMs": 1500,
+            "v1SettleQuietMs": 500,
+            "wifiOpenTimeoutMs": 30000
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "cycleTeardownAckTimeoutMs": 100,
+            "enabled": true,
+            "minRssi": -40,
+            "obdRetryIntervalMs": 120000,
+            "obdScanWindowMs": 15000,
+            "proxyOpenWindowMs": 60000,
+            "v1SettleFallbackMs": 1500,
+            "v1SettleQuietMs": 500,
+            "wifiOpenTimeoutMs": 30000
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/obd/config": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "obd_maintenance_routes": {
+      "GET /api/obd/devices": [
+        {
+          "body": {
+            "count": 1,
+            "devices": [
+              {
+                "active": true,
+                "address": "A4:C1:38:00:11:22",
+                "connected": false,
+                "name": "Truck Adapter"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/obd/status": [
+        {
+          "body": {
+            "error": "maintenance_mode",
+            "message": "OBD runtime endpoints are not available in maintenance mode"
+          },
+          "contentType": "application/json",
+          "status": 409
+        }
+      ],
+      "POST /api/obd/devices/name": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/obd/forget": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/obd/scan": [
+        {
+          "body": {
+            "error": "maintenance_mode",
+            "message": "OBD runtime endpoints are not available in maintenance mode"
+          },
+          "contentType": "application/json",
+          "status": 409
+        }
+      ]
+    },
+    "quiet_settings_success": {
+      "GET /api/quiet/settings": [
+        {
+          "body": {
+            "alertVolumeFadeDelaySec": 4,
+            "alertVolumeFadeEnabled": true,
+            "alertVolumeFadeVolume": 2,
+            "speedMuteEnabled": true,
+            "speedMuteHysteresisMph": 6,
+            "speedMuteThresholdMph": 31,
+            "speedMuteVolume": 3,
+            "stealthEnabled": false
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/quiet/settings": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "settings_restore_success": {
+      "GET /api/device/settings": [
+        {
+          "body": {
+            "alpAlertPersistSec": 0,
+            "alpDisableV1LaserOnPush": true,
+            "alpEnabled": false,
+            "alpSdLogEnabled": false,
+            "apTimeoutMinutes": 0,
+            "ap_password": "********",
+            "ap_ssid": "BeforeRestoreAP",
+            "autoPowerOffMinutes": 0,
+            "isDefaultPassword": false,
+            "powerOffSdLog": false,
+            "proxy_ble": true,
+            "proxy_name": "V1-Proxy"
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "alpAlertPersistSec": 0,
+            "alpDisableV1LaserOnPush": true,
+            "alpEnabled": false,
+            "alpSdLogEnabled": false,
+            "apTimeoutMinutes": 0,
+            "ap_password": "********",
+            "ap_ssid": "RestoredAP",
+            "autoPowerOffMinutes": 0,
+            "isDefaultPassword": false,
+            "powerOffSdLog": false,
+            "proxy_ble": true,
+            "proxy_name": "V1-Proxy"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/wifi/networks": [
+        {
+          "body": {
+            "slots": [
+              {
+                "configured": true,
+                "hasPassword": true,
+                "index": 0,
+                "label": "Old Network",
+                "lastConnectedAtSec": 0,
+                "priority": 0,
+                "ssid": "OldWifi"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "slots": [
+              {
+                "configured": true,
+                "hasPassword": true,
+                "index": 0,
+                "label": "Restored Network",
+                "lastConnectedAtSec": 321,
+                "priority": 0,
+                "ssid": "RestoredWifi"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/wifi/status": [
+        {
+          "body": {
+            "enabled": false,
+            "savedSSID": "",
+            "scanRunning": false,
+            "state": "disabled"
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "connectedSSID": "RestoredWifi",
+            "connectedSlotIndex": 0,
+            "enabled": true,
+            "ip": "192.168.1.50",
+            "rssi": -48,
+            "savedSSID": "RestoredWifi",
+            "scanRunning": false,
+            "state": "connected"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/settings/restore": [
+        {
+          "body": {
+            "message": "Settings restored successfully (2 profiles)",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "v1_device_routes": {
+      "GET /api/v1/devices": [
+        {
+          "body": {
+            "count": 1,
+            "devices": [
+              {
+                "address": "AA:BB:CC:DD:EE:FF",
+                "connected": true,
+                "defaultProfile": 2,
+                "name": "Daily Driver"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/devices/delete": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/devices/name": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/devices/profile": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "v1_profile_routes": {
+      "GET /api/v1/current": [
+        {
+          "body": {
+            "available": true,
+            "connected": true,
+            "settings": {
+              "xBand": true
+            }
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/v1/profile": [
+        {
+          "body": {
+            "description": "Daily drive",
+            "displayOn": true,
+            "name": "Commute",
+            "settings": {
+              "byte0": 1
+            }
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "GET /api/v1/profiles": [
+        {
+          "body": {
+            "profiles": [
+              {
+                "description": "Daily drive",
+                "displayOn": true,
+                "name": "Daily Drive"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/profile": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/profile/delete": [
+        {
+          "body": {
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/pull": [
+        {
+          "body": {
+            "message": "Request sent. Check current settings.",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/v1/push": [
+        {
+          "body": {
+            "message": "Settings sent to V1",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "wifi_enable_failure": {
+      "GET /api/wifi/status": [
+        {
+          "body": {
+            "enabled": false,
+            "savedSSID": "GarageNet",
+            "scanRunning": false,
+            "state": "disabled"
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "enabled": false,
+            "savedSSID": "GarageNet",
+            "scanRunning": false,
+            "state": "disabled"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/enable": [
+        {
+          "body": {
+            "message": "Failed to start connection",
+            "success": false
+          },
+          "contentType": "application/json",
+          "status": 500
+        }
+      ]
+    },
+    "wifi_enable_success": {
+      "GET /api/wifi/status": [
+        {
+          "body": {
+            "enabled": false,
+            "savedSSID": "",
+            "scanRunning": false,
+            "state": "disabled"
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "enabled": true,
+            "savedSSID": "HomeWifi",
+            "scanRunning": false,
+            "state": "connecting"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/enable": [
+        {
+          "body": {
+            "message": "WiFi client enabled",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "wifi_network_mutations": {
+      "POST /api/wifi/disconnect": [
+        {
+          "body": {
+            "message": "Disconnected",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/networks": [
+        {
+          "body": {
+            "index": 1,
+            "message": "WiFi network saved",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/networks/delete": [
+        {
+          "body": {
+            "index": 1,
+            "message": "WiFi network deleted",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/networks/test": [
+        {
+          "body": {
+            "index": 1,
+            "message": "Connecting...",
+            "success": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "wifi_scan_success": {
+      "GET /api/wifi/scan": [
+        {
+          "body": {
+            "networks": [],
+            "scanning": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        },
+        {
+          "body": {
+            "networks": [
+              {
+                "rssi": -42,
+                "secure": true,
+                "ssid": "BenchAP"
+              }
+            ],
+            "scanning": false
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
+      "POST /api/wifi/scan": [
+        {
+          "body": {
+            "networks": [],
+            "scanning": true
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    },
+    "wifi_status_default": {
+      "GET /api/wifi/status": [
+        {
+          "body": {
+            "enabled": true,
+            "savedSSID": "",
+            "scanRunning": false,
+            "state": "disconnected"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1
+}

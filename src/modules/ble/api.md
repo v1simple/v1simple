@@ -18,14 +18,14 @@ When Proxy / App mode is selected, `V1BLEClient` exposes the raw V1 proxy servic
 
 ## Class: `BleQueueModule`
 
-**Header:** `src/modules/ble/ble_queue_module.h:16`.
+**Header:** `src/modules/ble/ble_queue_module.h:18`.
 
 Owns the FreeRTOS queue that buffers raw BLE notifications between the NimBLE callback (interrupt-context) and the main-loop parser. Holds the running RX byte buffer and the framing logic that splits the byte stream into ESP-protocol packets.
 
 ### Public types
 
 #### `struct Config`
-**Source:** `ble_queue_module.h:19-23`.
+**Source:** `ble_queue_module.h:20-24`.
 
 - `size_t queueDepth` — FreeRTOS queue depth (default 24).
 - `size_t rxBufferCap` — RX byte buffer cap (default 512).
@@ -34,58 +34,64 @@ Owns the FreeRTOS queue that buffers raw BLE notifications between the NimBLE ca
 
 #### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1ProfileManager* profileMgr, DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus = nullptr, Config cfg = Config())`
 Wires dependencies, allocates the FreeRTOS queue, primes the RX buffer.
-**Source:** `ble_queue_module.h:25-27`.
+**Source:** `ble_queue_module.h:26-28`.
 
 ### Entry points
 
-#### `void onNotify(const uint8_t* data, size_t length, uint16_t charUUID)`
-Called from the NimBLE notify callback. Enqueues the packet for main-loop processing. Must be safe from interrupt-ish context.
-**Source:** `ble_queue_module.h:48`.
+#### `void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration)`
+Called from the NimBLE notify callback with the immutable V1 session generation captured by `V1BLEClient`. Enqueues the packet only when that generation is open. Must be safe from interrupt-ish context.
+**Source:** `ble_queue_module.h:49`.
+
+#### `void openSession(uint32_t sessionGeneration)` / `void closeSession()`
+Opens notification admission for an authoritative V1 link generation, or closes the outgoing session and discards its queued bytes, partial frame buffer, and parsed-frame signal. Queue entries carry the captured generation so a callback racing the close cannot republish outgoing data.
 
 #### `void process()`
 Drains the queue, frames packets out of the byte stream, parses, and forwards results to the rest of the pipeline. Call once per main-loop tick.
-**Source:** `ble_queue_module.h:51`.
+**Source:** `ble_queue_module.h:58`.
 
 ### Status
 
 #### `uint32_t getLastParsedTimestamp() const`
 Timestamp (millis) of the most recent successful parse — used by display latency tracking.
-**Source:** `ble_queue_module.h:38`.
+**Source:** `ble_queue_module.h:39`.
 
 #### `bool consumeParsedFlag()`
 Returns true if at least one packet was successfully parsed since the last call, then clears the flag.
-**Source:** `ble_queue_module.h:41`.
+**Source:** `ble_queue_module.h:42`.
 
 #### `unsigned long getLastRxMillis() const`
 Timestamp of last received notification (regardless of parse outcome).
-**Source:** `ble_queue_module.h:53`.
+**Source:** `ble_queue_module.h:60`.
 
 #### `bool isBackpressured() const`
 True when the queue / RX buffer is in the high-water region. Consumers throttle non-essential work.
-**Source:** `ble_queue_module.h:54`.
+**Source:** `ble_queue_module.h:61`.
 
 ## Class: `ConnectionStateModule`
 
-**Header:** `src/modules/ble/connection_state_module.h:23`.
+**Header:** `src/modules/ble/connection_state_module.h:24`.
 
-Tracks BLE connect/disconnect transitions, resets parser state on disconnect, re-requests alert data when traffic stops, notifies the power module, and refreshes display indicators on disconnect.
+Tracks authoritative BLE session boundaries plus connect/disconnect presentation state. It clears queued bytes, partial and published parser alerts, and persisted alerts when a generation closes; re-requests alert data when traffic stops; notifies the power module; and refreshes display indicators on disconnect. This prevents an outgoing alert from being rendered as live or persisted after reconnect.
 
 ### Lifecycle
 
-#### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule, BleQueueModule* bleQueueModule, SystemEventBus* eventBus = nullptr)`
+#### `void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule, BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence, SystemEventBus* eventBus = nullptr)`
 Injects dependencies.
-**Source:** `connection_state_module.h:25-26`.
+**Source:** `connection_state_module.h:28-30`.
 
 #### `bool process(unsigned long nowMs)`
 Runs one tick of state-tracking. Returns true if currently connected.
-**Source:** `connection_state_module.h:29`.
+**Source:** `connection_state_module.h:34`.
+
+#### `handleSessionOpened(...)` / `handleSessionClosed(...)`
+Main-loop hooks wired to `V1BLEClient`'s monotonic generation boundary. Open runs before characteristic subscription, and close runs when quiescence invalidates the outgoing session. Boolean/generation polling in `process()` remains a watchdog fallback.
 
 ### Constants
 
 - `DATA_STALE_MS = 2000` — data considered stale after 2 s of no traffic.
 - `DATA_REQUEST_INTERVAL_MS = 1000` — re-request alert data every 1 s while stale.
 
-**Source:** `connection_state_module.h:42-43`.
+**Source:** `connection_state_module.h:67-68`.
 
 ## Class: `ConnectionRuntimeModule`
 
@@ -193,6 +199,7 @@ Function pointers — `runCadence`, `runConnectionStateProcess`, `recordDecision
 |---|---|
 | `V1BLEClient` (`src/ble_client.h`) | BleQueueModule, ConnectionStateModule. |
 | `PacketParser` | BleQueueModule, ConnectionStateModule. |
+| `AlertPersistenceModule` | ConnectionStateModule (session-boundary clear). |
 | `V1Display` | ConnectionStateModule (display refresh on disconnect). |
 | `PowerModule` | BleQueueModule, ConnectionStateModule. |
 | `V1ProfileManager` | BleQueueModule. |
@@ -202,7 +209,7 @@ Function pointers — `runCadence`, `runConnectionStateProcess`, `recordDecision
 
 ## Notes for maintainers
 
-The `BleQueueModule::onNotify` path runs from the NimBLE notify callback, which on this platform executes on the BLE host task — not the main loop. All shared state touched by `onNotify` must be either thread-safe or protected by the queue boundary. Don't add direct field reads from `onNotify` that aren't behind the FreeRTOS queue.
+The `BleQueueModule::onNotify` path runs from the NimBLE notify callback, which on this platform executes on the BLE host task — not the main loop. All shared state touched by `onNotify` must be atomic or protected by the queue boundary. Don't add unsynchronized direct field reads from `onNotify`.
 
 The cadence and dispatch modules exist in their current shape because the previous implementation had `connection_state_module.process()` running every tick, which was wasteful, and a previous attempt to throttle it caused display freezes when the cadence gate got stuck. The watchdog in `ConnectionStateDispatchModule` is the resolution of that history — don't remove it without re-introducing the failure mode it prevents.
 

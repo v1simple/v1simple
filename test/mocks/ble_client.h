@@ -30,6 +30,7 @@ public:
     int onUserBytesReceivedCalls = 0;
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
     bool connectBurstSettling = false;
+    uint32_t sessionGenerationValue = 1;
     int connectionRssi = -70;
     int proxyRssi = -80;
     bool writeUserBytesResult = true;
@@ -65,6 +66,7 @@ public:
         onUserBytesReceivedCalls = 0;
         bootReadyFlag = true;
         connectBurstSettling = false;
+        sessionGenerationValue = 1;
         connectionRssi = -70;
         proxyRssi = -80;
         writeUserBytesResult = true;
@@ -85,6 +87,8 @@ public:
     void setProxyConnected(bool v) { proxyConnected = v; }
     bool isConnected() const { return connected; }
     void setConnected(bool v) { connected = v; }
+    uint32_t sessionGeneration() const { return sessionGenerationValue; }
+    void setSessionGeneration(uint32_t generation) { sessionGenerationValue = generation; }
     bool isWifiPriority() const { return wifiPriorityMode; }
     void setWifiPriority(bool enabled) {
         wifiPriorityMode = enabled;

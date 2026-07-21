@@ -182,6 +182,30 @@
         "tests": [
           "test_protocol_spec_conformance"
         ]
+      },
+      {
+        "id": "critical-022",
+        "module": "ble_disconnect_display_cleanup",
+        "description": "drop BLE and proxy display-state cleanup on disconnect",
+        "impact": "A disconnected screen can retain stale V1 or proxy-connected indicator state",
+        "file": "src/modules/ble/connection_state_module.cpp",
+        "search": "        display_->setBleContext(DisplayBleContext{});\n        display_->setBLEProxyStatus(false, false, false);\n        display_->resetChangeTracking();",
+        "replace": "        display_->resetChangeTracking();",
+        "tests": [
+          "test_connection_state"
+        ]
+      },
+      {
+        "id": "critical-023",
+        "module": "shutdown_display_clear_order",
+        "description": "reverse shutdown panel clear and GOODBYE draw before power handoff",
+        "impact": "The retained panel frame is visible instead of black when shutdown hands off to battery hardware",
+        "file": "src/modules/power/power_module.cpp",
+        "search": "        display_->showShutdown();\n        delay(1000);\n        // Leave panel GRAM black before the battery manager drops the latch or\n        // enters deep sleep. The LCD controller can otherwise retain the\n        // GOODBYE frame while its backlight is off and briefly reveal it when\n        // a wake press restores power/backlight.\n        display_->clear();",
+        "replace": "        display_->clear();\n        delay(1000);\n        // Leave panel GRAM black before the battery manager drops the latch or\n        // enters deep sleep. The LCD controller can otherwise retain the\n        // GOODBYE frame while its backlight is off and briefly reveal it when\n        // a wake press restores power/backlight.\n        display_->showShutdown();",
+        "tests": [
+          "test_power_module"
+        ]
       }
     ],
     "full": [
@@ -199,7 +223,9 @@
       "critical-018",
       "critical-019",
       "critical-020",
-      "critical-021"
+      "critical-021",
+      "critical-022",
+      "critical-023"
     ]
   }
 }

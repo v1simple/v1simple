@@ -1,19 +1,22 @@
 name: Release
 
-# Every green PR merge publishes the next patch release automatically. Recover
-# an interrupted publication by rerunning the original Actions run.
+# Every successful push-origin CI run on public main publishes the next patch
+# release automatically. Recover interrupted CI or publication by rerunning the
+# original Actions run so the triggering run and release marker stay stable.
 #
 # Steps:
-#   1. Select the merged main commit (or the same run's recorded release on retry)
-#   2. Calculate, validate, and commit the semantic-version bump locally
-#   3. Build the exact production artifacts once
-#   4. Merge binaries and stage the GitHub Pages web installer
-#   5. Atomically push the release commit and its immutable tag
+#   1. Bind the successful CI workflow run to its exact main commit
+#   2. Select that commit (or the same run's recorded release on retry)
+#   3. Calculate, validate, and commit the semantic-version bump locally
+#   4. Build the exact production artifacts once
+#   5. Reconfirm the same CI run, then atomically publish commit and tag
 #   6. Create or update the GitHub Release with generated notes
 #   7. Deploy the web installer to GitHub Pages
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -25,12 +28,20 @@ concurrency:
 
 jobs:
   release:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
       published: ${{ steps.publish.outputs.published }}
       deploy_pages: ${{ steps.publish.outputs.deploy_pages }}
     permissions:
+      actions: read
       contents: write
       pages: write
 
@@ -40,11 +51,24 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Refresh repository refs
+        env:
+          TRIGGERING_CI_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGERING_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGERING_CI_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGERING_CI_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Releases must run from main."
+          if [ "$GITHUB_EVENT_NAME" != "workflow_run" ]; then
+            echo "::error::Releases must follow the authoritative CI workflow."
+            exit 1
+          fi
+          if [ "$TRIGGERING_CI_EVENT" != "push" ] \
+            || [ "$TRIGGERING_CI_BRANCH" != "main" ] \
+            || [ "$TRIGGERING_CI_CONCLUSION" != "success" ] \
+            || [ "$TRIGGERING_CI_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Release input must be a successful same-repository push CI run on main."
             exit 1
           fi
           git fetch --force origin main
@@ -59,7 +83,7 @@ jobs:
       - name: Select release base
         id: base
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
           RESUME_SHA: ${{ steps.resume.outputs.resume_sha }}
           RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
         run: |
@@ -82,6 +106,20 @@ jobs:
             git checkout --detach "$EVENT_SHA"
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful triggering CI evidence
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          EXPECTED_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check_ci_evidence.py \
+            --base-sha "$BASE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --main-ref origin/main \
+            --expected-run-id "$EXPECTED_CI_RUN_ID" \
+            --wait-seconds 0 \
+            --poll-seconds 1
 
       - name: Prepare release version
         id: version
@@ -254,6 +292,20 @@ jobs:
         with:
           path: release/pages
 
+      - name: Reconfirm triggering CI evidence before publication
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          EXPECTED_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check_ci_evidence.py \
+            --base-sha "$BASE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --main-ref origin/main \
+            --expected-run-id "$EXPECTED_CI_RUN_ID" \
+            --wait-seconds 0 \
+            --poll-seconds 1
+
       - name: Publish release commit and tag
         id: publish
         env:
@@ -362,7 +414,7 @@ jobs:
           {
             echo "## Released ${{ steps.version.outputs.tag }}"
             echo ""
-            echo "- Green merged changes published automatically as the next patch"
+            echo "- Exact main commit passed authoritative CI before automatic patch publication"
             echo "- Firmware version and changelog prepared automatically"
             echo "- Tested release commit: ${{ steps.publish.outputs.sha }}"
             echo "- Release commit and tag published atomically or safely reused"

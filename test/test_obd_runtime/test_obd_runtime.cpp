@@ -127,6 +127,18 @@ void test_wait_boot_connects_without_v1_when_allowed() {
     TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
 }
 
+void test_disconnect_fence_blocks_new_connect_until_acknowledged() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+    obdRuntimeModule.setTransportDisconnectPendingForTest(true);
+
+    obdRuntimeModule.update(5000, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::WAIT_BOOT, obdRuntimeModule.getState());
+
+    obdRuntimeModule.setTransportDisconnectPendingForTest(false);
+    obdRuntimeModule.update(5001, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
+}
+
 void test_ble_reason_name_decodes_unacceptable_connection_interval() {
     TEST_ASSERT_EQUAL_STRING("unacceptable_conn_interval",
                              ObdRuntimeModule::bleReasonNameForTest(13));
@@ -501,6 +513,111 @@ void test_cancel_pending_connect_disconnects_and_returns_idle() {
     TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
 }
 
+void test_idle_disconnects_link_that_establishes_after_cancel() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+
+    obdRuntimeModule.update(5000, true, true, true);
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
+
+    obdRuntimeModule.cancelPendingConnect();
+    TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+
+    // A scan is queued, then the transport connect completes after cancellation
+    // returned. Orphan-link cleanup must win before scan admission.
+    obdRuntimeModule.startScan();
+    obdRuntimeModule.setTestBleConnected(true);
+    obdRuntimeModule.update(5001, makeBleContext(true, true, true));
+
+    TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_TRUE(obdRuntimeModule.isConnectIdle());
+    TEST_ASSERT_EQUAL_UINT32(2, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getConnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getStartScanCallCountForTest());
+
+    obdRuntimeModule.update(5002, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::SCANNING, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(2, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getConnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getStartScanCallCountForTest());
+}
+
+void test_settled_disconnected_state_rejects_unowned_link() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+    obdRuntimeModule.forceStateForTest(ObdConnectionState::DISCONNECTED, 1000);
+
+    // First consume an ordinary settled-state pump with retry admission closed.
+    obdRuntimeModule.update(1999,
+                            makeBleContext(true, true, true, false, false, false, false, true, true, false));
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getDisconnectCallCountForTest());
+
+    // The physical link appears only after entry cleanup is no longer relevant.
+    // Reconciliation must win even when both scan and retry admission are open.
+    obdRuntimeModule.startScan();
+    obdRuntimeModule.setTestBleConnected(true);
+
+    obdRuntimeModule.update(2000, makeBleContext(true, true, true));
+
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, obdRuntimeModule.getState());
+    TEST_ASSERT_TRUE(obdRuntimeModule.isConnectIdle());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getConnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getStartScanCallCountForTest());
+
+    obdRuntimeModule.update(2001, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::SCANNING, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, obdRuntimeModule.getConnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getStartScanCallCountForTest());
+}
+
+void test_disconnected_entry_rejects_unowned_link_before_retry() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+
+    obdRuntimeModule.update(5000, true, true, true);
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
+
+    obdRuntimeModule.update(10001, true, true, true);
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+
+    // A link appears before DISCONNECTED consumes its entry action. Cleanup
+    // must return before retry logic can transition back to CONNECTING.
+    obdRuntimeModule.setTestBleConnected(true);
+    obdRuntimeModule.update(10002, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(2, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getConnectCallCountForTest());
+
+    obdRuntimeModule.update(10003, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(2, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getConnectCallCountForTest());
+}
+
+void test_disabled_idle_rejects_link_that_establishes_after_teardown() {
+    obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+
+    obdRuntimeModule.update(5000, true, true, true);
+    obdRuntimeModule.cancelPendingConnect();
+    obdRuntimeModule.setEnabled(false);
+    TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_FALSE(obdRuntimeModule.isEnabled());
+    TEST_ASSERT_EQUAL_UINT32(2, obdRuntimeModule.getDisconnectCallCountForTest());
+
+    // Qualification mode can disable OBD before the late transport link is
+    // observable. Disabled pumps must still tear down that unowned link.
+    obdRuntimeModule.setTestBleConnected(true);
+    obdRuntimeModule.update(5001, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_TRUE(obdRuntimeModule.isConnectIdle());
+    TEST_ASSERT_EQUAL_UINT32(3, obdRuntimeModule.getDisconnectCallCountForTest());
+
+    obdRuntimeModule.update(5002, makeBleContext(true, true, true));
+    TEST_ASSERT_EQUAL_UINT32(3, obdRuntimeModule.getDisconnectCallCountForTest());
+}
+
 void test_three_connect_failures_preserve_saved_address_and_stop_retries_for_session() {
     obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
 
@@ -545,9 +662,13 @@ void test_three_connect_failures_preserve_saved_address_and_stop_retries_for_ses
 
 void test_proxy_client_drops_obd_to_idle() {
     obdRuntimeModule.begin(nullptr, true, "A4:C1:38:00:11:22", 0, -80);
+    obdRuntimeModule.stageTransportStateForTest(ObdTransportOp::WRITE);
 
     obdRuntimeModule.update(5000, makeBleContext(true, true, true, false, false, true));
     TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, obdRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT32(1, obdRuntimeModule.getDisconnectCallCountForTest());
+    TEST_ASSERT_FALSE(obdRuntimeModule.transportRequestActiveForTest());
+    TEST_ASSERT_FALSE(obdRuntimeModule.transportResultReadyForTest());
     TEST_ASSERT_EQUAL(ObdBleArbitrationRequest::NONE,
                       obdRuntimeModule.getBleArbitrationRequest());
 }
@@ -1347,6 +1468,7 @@ int main() {
     RUN_TEST(test_wait_boot_transitions_when_v1_connected);
     RUN_TEST(test_wait_boot_respects_coordinator_connect_gate);
     RUN_TEST(test_wait_boot_connects_without_v1_when_allowed);
+    RUN_TEST(test_disconnect_fence_blocks_new_connect_until_acknowledged);
     RUN_TEST(test_ble_reason_name_decodes_unacceptable_connection_interval);
     RUN_TEST(test_idle_no_scan_at_boot_without_saved_addr);
     RUN_TEST(test_disabled_module_never_transitions);
@@ -1379,6 +1501,10 @@ int main() {
     // Connect timeout & retry
     RUN_TEST(test_connect_timeout_increments_attempts);
     RUN_TEST(test_cancel_pending_connect_disconnects_and_returns_idle);
+    RUN_TEST(test_idle_disconnects_link_that_establishes_after_cancel);
+    RUN_TEST(test_settled_disconnected_state_rejects_unowned_link);
+    RUN_TEST(test_disconnected_entry_rejects_unowned_link_before_retry);
+    RUN_TEST(test_disabled_idle_rejects_link_that_establishes_after_teardown);
     RUN_TEST(test_three_connect_failures_preserve_saved_address_and_stop_retries_for_session);
     RUN_TEST(test_proxy_client_drops_obd_to_idle);
     RUN_TEST(test_auto_obd_states_hold_proxy_until_polling_or_backoff);

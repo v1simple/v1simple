@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as settingsLazyComponents from '$lib/features/settings/settingsLazyComponents.js';
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { apiFixtureMatchers, installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 const defaultSlots = [
@@ -60,31 +60,33 @@ function createDeferred() {
     return { promise, resolve, reject };
 }
 
+function rejectUnexpectedRequest({ method, url }) {
+    const path = new URL(String(url), 'http://v1simple.test').pathname;
+    throw new Error(`Unexpected settings fixture request: ${method} ${path}`);
+}
+
 function installDefaultFetch(
     overrides = [],
     { slots = defaultSlots, wifiStatus = undefined } = {}
 ) {
+    const wifiStatusMatchers =
+        wifiStatus === undefined
+            ? apiFixtureMatchers('wifi_status_default')
+            : [
+                  {
+                      method: 'GET',
+                      match: '/api/wifi/status',
+                      respond: jsonResponse(wifiStatus)
+                  }
+              ];
     return installFetchMock(
         [
             ...overrides,
+            ...wifiStatusMatchers,
             {
                 method: 'GET',
                 match: '/api/device/settings',
                 respond: jsonResponse({ ap_ssid: 'V1' })
-            },
-            {
-                method: 'GET',
-                match: '/api/wifi/status',
-                respond: jsonResponse(
-                    wifiStatus || {
-                        enabled: true,
-                        state: 'disconnected',
-                        savedSSID: '',
-                        connectedSSID: '',
-                        connectedSlotIndex: null,
-                        rssi: 0
-                    }
-                )
             },
             { method: 'GET', match: '/api/wifi/networks', respond: jsonResponse({ slots }) },
             {
@@ -129,7 +131,7 @@ function installDefaultFetch(
                 respond: jsonResponse({ success: true, index: 0 })
             }
         ],
-        jsonResponse({})
+        rejectUnexpectedRequest
     );
 }
 
@@ -179,6 +181,10 @@ describe('settings route page', () => {
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/status')).toBe(true);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/networks')).toBe(true);
         expect(screen.queryByText('Bluetooth Proxy')).not.toBeInTheDocument();
+        expect(screen.getByText('Disable AP Inactivity Timeout')).toBeInTheDocument();
+        expect(
+            screen.getByText(/separate maintenance-session.*shown in the banner/i)
+        ).toBeInTheDocument();
 
         unmount();
     });
@@ -333,15 +339,114 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('starts a saved-network test connect', async () => {
-        const fetchMock = installDefaultFetch();
+    it('polls a saved-network test through terminal connection success', async () => {
+        vi.useFakeTimers();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    if (statusCalls === 1) {
+                        return jsonResponse({ enabled: true, state: 'disconnected' });
+                    }
+                    if (statusCalls === 2) {
+                        return jsonResponse({
+                            enabled: true,
+                            state: 'connecting',
+                            savedSSID: 'HomeWifi'
+                        });
+                    }
+                    return jsonResponse({
+                        enabled: true,
+                        state: 'connected',
+                        connectedSSID: 'HomeWifi',
+                        connectedSlotIndex: 0,
+                        rssi: -48
+                    });
+                }
+            }
+        ]);
         const { unmount } = render(Page);
 
         await screen.findByText('Garage');
         await fireEvent.click(screen.getAllByRole('button', { name: /^Test$/i })[0]);
 
         await screen.findByText('Testing connection to HomeWifi...');
+        expect(screen.getAllByRole('button', { name: /^Test$/i })[1]).toBeDisabled();
+        await vi.advanceTimersByTimeAsync(1000);
+        await screen.findByText('Connected to HomeWifi');
         expect(jsonBodies(fetchMock, '/api/wifi/networks/test').at(-1)).toEqual({ index: 0 });
+
+        unmount();
+    });
+
+    it('reports a saved-network test terminal failure', async () => {
+        let statusCalls = 0;
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return jsonResponse({
+                        enabled: true,
+                        state: statusCalls === 1 ? 'disconnected' : 'failed'
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Garage');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^Test$/i })[0]);
+
+        await screen.findByText('Could not connect to HomeWifi');
+        expect(screen.getAllByRole('button', { name: /^Test$/i })[0]).toBeEnabled();
+
+        unmount();
+    });
+
+    it('caps a stalled saved-network test at a 20-second wall-clock deadline', async () => {
+        vi.useFakeTimers();
+        let statusCalls = 0;
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: ({ init }) => {
+                    statusCalls += 1;
+                    if (statusCalls === 1) {
+                        return jsonResponse({ enabled: true, state: 'disconnected' });
+                    }
+
+                    return new Promise((resolve, reject) => {
+                        const rejectOnAbort = () => reject(new Error('status request aborted'));
+                        if (init.signal?.aborted) {
+                            rejectOnAbort();
+                            return;
+                        }
+                        init.signal?.addEventListener('abort', rejectOnAbort, { once: true });
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Garage');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^Test$/i })[0]);
+        await screen.findByText('Testing connection to HomeWifi...');
+
+        await vi.advanceTimersByTimeAsync(19_999);
+        expect(
+            screen.queryByText('Connection test timed out for HomeWifi')
+        ).not.toBeInTheDocument();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(screen.getByText('Connection test timed out for HomeWifi')).toBeInTheDocument();
+        expect(screen.getAllByRole('button', { name: /^Test$/i })[0]).toBeEnabled();
+        expect(statusCalls).toBeLessThanOrEqual(9);
 
         unmount();
     });
@@ -390,26 +495,69 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('saves a network picked from scan results', async () => {
-        vi.useFakeTimers();
-        const fetchMock = installDefaultFetch([
+    // /api/wifi/status stops emitting connectedSSID / connectedSlotIndex / ip / rssi
+    // once the STA link is down - WifiClientApiService::sendStatus() gates them
+    // behind includeConnectedFields. The old spread-merge kept the previous values,
+    // so a stale connectedSSID outlived the disconnect and badged the network we
+    // just left as "Connecting" alongside the one actually being connected to.
+    it('drops stale connection fields when wifi status omits them after a disconnect', async () => {
+        let disconnected = false;
+        installDefaultFetch([
             {
                 method: 'POST',
-                match: '/api/wifi/scan',
-                respond: jsonResponse({ scanning: true, networks: [] })
+                match: '/api/wifi/disconnect',
+                respond: () => {
+                    disconnected = true;
+                    return jsonResponse({ success: true });
+                }
             },
             {
                 method: 'GET',
-                match: '/api/wifi/scan',
-                respond: jsonResponse({
-                    scanning: false,
-                    networks: [{ ssid: 'BenchAP', secure: true, rssi: -42 }]
-                })
+                match: '/api/wifi/status',
+                respond: () =>
+                    disconnected
+                        ? // Link down, now reconnecting elsewhere: no connection fields at all.
+                          jsonResponse({
+                              enabled: true,
+                              state: 'connecting',
+                              savedSSID: 'PhoneHotspot'
+                          })
+                        : jsonResponse({
+                              enabled: true,
+                              state: 'connected',
+                              savedSSID: 'HomeWifi',
+                              connectedSSID: 'HomeWifi',
+                              connectedSlotIndex: 0,
+                              ip: '192.168.1.50',
+                              rssi: -48
+                          })
             }
         ]);
         const { unmount } = render(Page);
 
+        await screen.findByText('Garage');
+        expect(screen.getAllByText('-48 dBm').length).toBeGreaterThan(0);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /^Disconnect$/i }));
+        await screen.findByText('Disconnected from WiFi');
+
+        // Only the network actually being connected to may carry the badge. With the
+        // stale connectedSSID retained, Garage picked one up too.
+        const connecting = await screen.findAllByText('Connecting');
+        expect(connecting).toHaveLength(1);
+        expect(screen.getByText('Phone').closest('.rounded-box')).toContainElement(connecting[0]);
+        expect(screen.queryByText('-48 dBm')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('saves a network picked from scan results', async () => {
+        vi.useFakeTimers();
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_scan_success'));
+        const { unmount } = render(Page);
+
         await openScanModal();
+        await vi.advanceTimersByTimeAsync(1000);
         await vi.advanceTimersByTimeAsync(1000);
         await fireEvent.click(await screen.findByRole('button', { name: /BenchAP/i }));
         await fireEvent.input(await screen.findByLabelText('Password'), {
@@ -425,6 +573,390 @@ describe('settings route page', () => {
         });
 
         unmount();
+    });
+
+    it('uses captured enable success and status-refetch responses', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_success'));
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        expect(toggle).not.toBeChecked();
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('WiFi client enabled');
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+            )
+        ).toBe(true);
+
+        unmount();
+    });
+
+    it('keeps the captured enable state disabled after a failed connection attempt', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_failure'));
+        const first = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const firstCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const firstToggle = firstCard.querySelector('input[type="checkbox"]');
+        expect(firstToggle).not.toBeChecked();
+
+        await fireEvent.click(firstToggle);
+
+        await screen.findByText('Failed to change WiFi setting');
+        expect(firstToggle).not.toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            2
+        );
+
+        first.unmount();
+    });
+
+    it('reconciles WiFi status after the enable request rejects', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : jsonResponse({ enabled: true, state: 'connecting' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => Promise.reject(new Error('request lost'))
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Connection error');
+        expect(statusCalls).toBe(2);
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('keeps a newer in-flight status when the forced reconciliation fails', async () => {
+        const activeStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? activeStatus.promise
+                        : Promise.reject(new Error('forced status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        activeStatus.resolve(jsonResponse({ enabled: true, state: 'connecting' }));
+
+        await waitFor(() => expect(statusCalls).toBe(2));
+        await screen.findByText('Failed to change WiFi setting');
+        expect(toggle).toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('queues a fresh status read behind an older in-flight request', async () => {
+        const staleStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? staleStatus.promise
+                        : jsonResponse({ enabled: false, state: 'disabled' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        staleStatus.resolve(jsonResponse({ enabled: true, state: 'connecting' }));
+
+        await waitFor(() => expect(statusCalls).toBe(2));
+        await screen.findByText('Failed to change WiFi setting');
+        expect(toggle).not.toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('does not report enable success when status confirmation fails', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : Promise.reject(new Error('status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to confirm WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).not.toBeChecked();
+        expect(screen.queryByText('WiFi client enabled')).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('does not confirm disable or poison state from a non-boolean enabled field', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: true, state: 'connected' })
+                        : jsonResponse({ enabled: null, state: 'disabled' });
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await waitFor(() => expect(toggle).toBeChecked());
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to confirm WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).toBeChecked();
+        expect(screen.queryByText('WiFi client disabled')).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('restores the last authoritative toggle state when reconciliation fails', async () => {
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return statusCalls === 1
+                        ? jsonResponse({ enabled: false, state: 'disabled' })
+                        : Promise.reject(new Error('status unavailable'));
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: false }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+
+        await screen.findByText('Failed to change WiFi setting');
+        expect(statusCalls).toBe(2);
+        expect(toggle).not.toBeChecked();
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('disables the WiFi toggle while one mutation is pending', async () => {
+        const enableResponse = createDeferred();
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: jsonResponse({ enabled: false, state: 'disabled' })
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => enableResponse.promise
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+
+        await fireEvent.click(toggle);
+        const disabledWhilePending = toggle.disabled;
+        const checkedWhilePending = toggle.checked;
+        await fireEvent.click(toggle);
+        const postCallsWhilePending = fetchMock.mock.calls.filter(
+            ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+        ).length;
+
+        enableResponse.resolve(jsonResponse({ success: false }, 500));
+        await screen.findByText('Failed to change WiFi setting');
+
+        expect(disabledWhilePending).toBe(true);
+        expect(checkedWhilePending).toBe(false);
+        expect(postCallsWhilePending).toBe(1);
+        expect(toggle).not.toBeDisabled();
+
+        unmount();
+    });
+
+    it('does not reconcile a deferred toggle after unmount', async () => {
+        const enableResponse = createDeferred();
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: jsonResponse({ enabled: false, state: 'disabled' })
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: () => enableResponse.promise
+            }
+        ]);
+        const view = render(Page);
+
+        await screen.findByText(/WiFi client is disabled/i);
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')
+            ).toHaveLength(1);
+        });
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+
+        const statusCallsBeforeUnmount = fetchMock.mock.calls.filter(
+            ([url]) => url === '/api/wifi/status'
+        ).length;
+        const networkCallsBeforeUnmount = fetchMock.mock.calls.filter(
+            ([url]) => url === '/api/wifi/networks'
+        ).length;
+        view.unmount();
+
+        enableResponse.resolve(jsonResponse({ success: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(
+            statusCallsBeforeUnmount
+        );
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            networkCallsBeforeUnmount
+        );
+    });
+
+    it('does not launch a queued status reconciliation after unmount', async () => {
+        const activeStatus = createDeferred();
+        let statusCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: () => {
+                    statusCalls += 1;
+                    return activeStatus.promise;
+                }
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/enable',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const view = render(Page);
+
+        await waitFor(() => expect(statusCalls).toBe(1));
+        const wifiCard = (await screen.findByText('WiFi Client')).closest('.surface-card');
+        const toggle = wifiCard.querySelector('input[type="checkbox"]');
+        await fireEvent.click(toggle);
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.filter(
+                    ([url, init]) => url === '/api/wifi/enable' && init?.method === 'POST'
+                )
+            ).toHaveLength(1);
+        });
+
+        view.unmount();
+        activeStatus.resolve(jsonResponse({ enabled: false, state: 'disabled' }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(statusCalls).toBe(1);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(1);
     });
 
     it('lazy-loads the WiFi scan modal on first open and reuses it after closing', async () => {
@@ -457,13 +989,144 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('shows WiFi scan polling errors in the page alert', async () => {
+    it('does not poll before the scan POST settles', async () => {
         vi.useFakeTimers();
+        const scanPost = createDeferred();
+        let getCalls = 0;
         installDefaultFetch([
             {
                 method: 'POST',
                 match: '/api/wifi/scan',
-                respond: jsonResponse({ scanning: true, networks: [] })
+                respond: () => scanPost.promise
+            },
+            {
+                method: 'GET',
+                match: '/api/wifi/scan',
+                respond: () => {
+                    getCalls += 1;
+                    return jsonResponse({
+                        scanning: false,
+                        networks: [{ ssid: 'DeferredAP', secure: true, rssi: -44 }]
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await openScanModal();
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(getCalls).toBe(0);
+
+        scanPost.resolve(jsonResponse({ scanning: true, networks: [] }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(getCalls).toBe(1);
+        await screen.findByRole('button', { name: /DeferredAP/i });
+
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(getCalls).toBe(1);
+
+        unmount();
+    });
+
+    it('ignores a stale scan response and polls the reopened scan', async () => {
+        vi.useFakeTimers();
+        let postCalls = 0;
+        const reopenedPost = createDeferred();
+        const staleGet = createDeferred();
+        let getCalls = 0;
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/scan',
+                respond: () => {
+                    postCalls += 1;
+                    return postCalls === 1
+                        ? jsonResponse({ scanning: true, networks: [] })
+                        : reopenedPost.promise;
+                }
+            },
+            {
+                method: 'GET',
+                match: '/api/wifi/scan',
+                respond: () => {
+                    getCalls += 1;
+                    if (getCalls === 1) return staleGet.promise;
+                    return jsonResponse({
+                        scanning: false,
+                        networks: [{ ssid: 'ReopenedAP', secure: true, rssi: -42 }]
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await openScanModal();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(getCalls).toBe(1);
+
+        await fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
+        await waitFor(() => {
+            expect(screen.queryByText('Pick WiFi Network to Save')).not.toBeInTheDocument();
+        });
+
+        await openScanModal();
+        staleGet.resolve(
+            jsonResponse({
+                scanning: false,
+                networks: [{ ssid: 'OldAP', secure: true, rssi: -80 }]
+            })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+
+        reopenedPost.resolve(jsonResponse({ scanning: true, networks: [] }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(getCalls).toBe(2);
+        await screen.findByRole('button', { name: /ReopenedAP/i });
+        expect(screen.queryByRole('button', { name: /OldAP/i })).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('reports a non-success response when starting a WiFi scan', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/scan',
+                respond: jsonResponse({ success: false, message: 'scan unavailable' }, 503)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const buttons = await screen.findAllByRole('button', { name: /pick from scan/i });
+        await fireEvent.click(buttons[0]);
+        await screen.findByText('Failed to start WiFi scan');
+        expect(screen.queryByText('Scanning for networks...')).not.toBeInTheDocument();
+        expect(screen.queryByText('Pick WiFi Network to Save')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('shows WiFi scan polling errors and clears them after a successful retry', async () => {
+        vi.useFakeTimers();
+        let postCalls = 0;
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/scan',
+                respond: () => {
+                    postCalls += 1;
+                    return postCalls === 1
+                        ? jsonResponse({ scanning: true, networks: [] })
+                        : jsonResponse({
+                              scanning: false,
+                              networks: [{ ssid: 'RecoveredAP', secure: true, rssi: -38 }]
+                          });
+                }
             },
             {
                 method: 'GET',
@@ -477,6 +1140,43 @@ describe('settings route page', () => {
         await vi.advanceTimersByTimeAsync(1000);
 
         await screen.findByText('Failed to update WiFi scan');
+        expect(screen.queryByText('Pick WiFi Network to Save')).not.toBeInTheDocument();
+
+        const retryButtons = await screen.findAllByRole('button', { name: /pick from scan/i });
+        await fireEvent.click(retryButtons[0]);
+
+        await screen.findByRole('button', { name: /RecoveredAP/i });
+        expect(screen.queryByText('Failed to update WiFi scan')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('does not claim a disconnect succeeded when the API rejects it', async () => {
+        installDefaultFetch(
+            [
+                {
+                    method: 'POST',
+                    match: '/api/wifi/disconnect',
+                    respond: jsonResponse({ success: false, message: 'disconnect failed' }, 500)
+                }
+            ],
+            {
+                wifiStatus: {
+                    enabled: true,
+                    state: 'connected',
+                    connectedSSID: 'HomeWifi',
+                    connectedSlotIndex: 0,
+                    ip: '192.168.1.50',
+                    rssi: -50
+                }
+            }
+        );
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /^Disconnect$/i }));
+
+        await screen.findByText('Failed to disconnect');
+        expect(screen.queryByText('Disconnected from WiFi')).not.toBeInTheDocument();
 
         unmount();
     });
@@ -502,6 +1202,34 @@ describe('settings route page', () => {
         expect(postCall).toBeTruthy();
         expect(postCall[1].body.has('proxy_ble')).toBe(false);
         expect(postCall[1].body.has('proxy_name')).toBe(false);
+        expect(postCall[1].body.get('powerOffSdLog')).toBe('false');
+        unmount();
+    });
+
+    it('exposes and saves shutdown evidence logging in the released settings page', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: jsonResponse({ ap_ssid: 'V1', powerOffSdLog: false })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const toggle = await screen.findByRole('checkbox', { name: /record shutdown evidence/i });
+        expect(toggle).not.toBeChecked();
+        expect(screen.getByRole('link', { name: 'Logs page' })).toHaveAttribute('href', '/logs');
+
+        await fireEvent.click(toggle);
+        await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+        await screen.findByText(
+            'Settings saved! New AP credentials apply the next time the AP starts.'
+        );
+
+        const postCall = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/device/settings' && init?.method === 'POST'
+        );
+        expect(postCall[1].body.get('powerOffSdLog')).toBe('true');
         unmount();
     });
 
@@ -554,14 +1282,8 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('posts valid backups to restore endpoint', async () => {
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'POST',
-                match: '/api/settings/restore',
-                respond: jsonResponse({ success: true })
-            }
-        ]);
+    it('consumes captured restore success and refetches settings plus WiFi state', async () => {
+        const fetchMock = installDefaultFetch(apiFixtureMatchers('settings_restore_success'));
         vi.stubGlobal(
             'confirm',
             vi.fn(() => true)
@@ -571,12 +1293,21 @@ describe('settings route page', () => {
 
         await startRestore(payload);
 
-        await screen.findByText('Settings restored! Refresh to see changes.');
+        await screen.findByText('Settings restored and reloaded.');
+        await waitFor(() => expect(screen.getByLabelText('AP Name')).toHaveValue('RestoredAP'));
+        await screen.findByText(/SSID: RestoredWifi/);
         expect(
             fetchMock.mock.calls.some(
                 ([url, init]) => url === '/api/settings/restore' && init?.body === payload
             )
         ).toBe(true);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/device/settings')).toHaveLength(
+            2
+        );
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
+        expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/networks')).toHaveLength(
+            2
+        );
 
         unmount();
     });

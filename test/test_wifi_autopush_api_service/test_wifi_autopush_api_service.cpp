@@ -561,6 +561,24 @@ void test_push_now_rate_limited_short_circuits() {
     TEST_ASSERT_EQUAL_INT(0, rt.queuePushNowCalls);
 }
 
+void test_push_now_rejects_maintenance_before_queueing() {
+    WebServer server(80);
+    FakeRuntime rt;
+    server.setArg("slot", "1");
+    WifiAutoPushApiService::Runtime runtime = makeRuntime(rt);
+    runtime.maintenanceBootActive = true;
+
+    WifiAutoPushApiService::handleApiPushNow(
+        server,
+        runtime,
+        [](void* /*ctx*/) { return true; }, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "\"error\":\"live_push_unavailable_in_maintenance\""));
+    TEST_ASSERT_TRUE(responseContains(server, "Live V1 push is unavailable in maintenance mode"));
+    TEST_ASSERT_EQUAL_INT(0, rt.queuePushNowCalls);
+}
+
 void test_push_now_missing_slot_returns_400() {
     WebServer server(80);
     FakeRuntime rt;
@@ -654,6 +672,7 @@ int main() {
     RUN_TEST(test_activate_success_defaults_enable_true);
     RUN_TEST(test_activate_success_enable_false);
     RUN_TEST(test_push_now_rate_limited_short_circuits);
+    RUN_TEST(test_push_now_rejects_maintenance_before_queueing);
     RUN_TEST(test_push_now_missing_slot_returns_400);
     RUN_TEST(test_push_now_invalid_slot_returns_400);
     RUN_TEST(test_push_now_maps_runtime_error_states);

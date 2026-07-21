@@ -6,3 +6,6 @@ node_modules/
 
 # Lockfile is machine-managed
 package-lock.json
+
+# Canonicalized and drift-checked by scripts/generate_wifi_api_fixtures.py
+src/test/fixtures/wifi-api.json

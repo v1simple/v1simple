@@ -1,10 +1,10 @@
 name: CI
 
-# One authoritative gate per proposed revision. GitHub's main-branch ruleset
-# requires this check before merge; publishing happens after the merge.
+# One authoritative gate per public main revision. Development branches remain
+# local-only; a successful push-origin run is the only input to Release.
 
 on:
-  pull_request:
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

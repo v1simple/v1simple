@@ -19,6 +19,7 @@
 #include "modules/wifi/backup_snapshot_cache.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_client_api_service.h"
+#include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_status_api_service.h"
 
 namespace WifiDisplayColorsApiService {
@@ -59,6 +60,10 @@ namespace BackupApiService {
 struct BackupRuntime;
 }
 
+namespace WifiDiagnosticsApiService {
+struct Runtime;
+}
+
 namespace ObdApiService {
 struct Runtime;
 }
@@ -82,14 +87,6 @@ enum WifiClientState {
     WIFI_CLIENT_CONNECTING,
     WIFI_CLIENT_CONNECTED,
     WIFI_CLIENT_FAILED,
-};
-
-// Scanned network info
-struct ScannedNetwork {
-    String ssid;
-    int32_t rssi;
-    uint8_t encryptionType; // WIFI_AUTH_OPEN, WIFI_AUTH_WPA2_PSK, etc.
-    bool isOpen() const { return encryptionType == WIFI_AUTH_OPEN; }
 };
 
 inline bool wifiUiActiveSince(unsigned long lastActivityMs, unsigned long nowMs, unsigned long timeoutMs) {
@@ -158,12 +155,16 @@ class WiFiManager {
 
     // Status
     bool isConnected() const { return !isStopping() && wifiClientState_ == WIFI_CLIENT_CONNECTED; }
+    bool isWifiServiceReachable() const { return isWifiServiceActive() && (isSetupModeActive() || isConnected()); }
     String getIPAddress() const; // STA IP when connected
     String getAPIPAddress() const;
 
     // WiFi client (STA) control - connect to external network
-    bool startWifiScan();                             // Async scan for networks
-    std::vector<ScannedNetwork> getScannedNetworks(); // Get scan results (clears running flag)
+    bool startWifiScan();                             // Start or join an async scan for the UI
+    bool isWifiScanRunning() const;                   // True while the UI owns the active scan generation
+    bool isWifiScanInProgress();                      // Harvests a completed driver buffer before returning
+    bool hasCompletedWifiScanResults();               // True when the UI has a stable result snapshot
+    std::vector<ScannedNetwork> getScannedNetworks(); // Copy the stable UI scan snapshot
     bool connectToNetwork(const String& ssid, const String& password, bool persistCredentialsOnSuccess = true,
                           int persistSlotIndex = -1, bool maintenanceAutoConnect = false);
     void disconnectFromNetwork();
@@ -254,7 +255,7 @@ class WiFiManager {
 
     // WiFi client (STA) state
     WifiClientState wifiClientState_ = WIFI_CLIENT_DISABLED;
-    bool wifiScanRunning_ = false;
+    WifiScanResultOwner wifiScanOwner_;
     unsigned long wifiConnectStartMs_ = 0;
     static constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;  // 15s connection timeout
     static constexpr unsigned long WIFI_MODE_SWITCH_SETTLE_MS = 100; // Preserve existing settle windows, non-blocking
@@ -286,6 +287,7 @@ class WiFiManager {
     size_t maintenanceAutoConnectSlots_[kWifiStaSlotCount] = {};
     size_t maintenanceAutoConnectSlotCount_ = 0;
     size_t maintenanceAutoConnectSlotCursor_ = 0;
+    WifiScanStaDropGate maintenanceAutoConnectStaDropGate_;
     static constexpr unsigned long WIFI_MAINTENANCE_SCAN_TIMEOUT_MS = 15000;
 
     enum class WifiStopPhase : uint8_t {
@@ -368,7 +370,7 @@ class WiFiManager {
     bool maintenanceBootMode_ = false;
 
     // Setup functions
-    void setupAP();
+    bool setupAP();
     bool setupWebServer();
     void checkAutoTimeout();
     void processWifiClientConnectPhase();
@@ -378,11 +380,13 @@ class WiFiManager {
     bool testSavedNetwork(size_t index);
     int selectSlotForNetworkConnect(const String& ssid) const;
     int findConfiguredSlotBySsid(const String& ssid) const;
-    bool beginMaintenanceAutoConnectScan();
+    bool beginMaintenanceAutoConnectScan(bool explicitEnableRequest);
     void processMaintenanceAutoConnect();
     bool queueNextMaintenanceAutoConnectSlot();
     void finishMaintenanceAutoConnect(const char* reason, bool dropStaRadio);
     void cancelMaintenanceAutoConnect(const char* reason);
+    void applyDeferredMaintenanceStaRadioDrop();
+    void resetWifiScanState();
     bool enableWifiClientFromSavedCredentials();
     void disableWifiClient();
     void forgetWifiClient();
@@ -401,6 +405,7 @@ class WiFiManager {
     WifiV1ProfileApiService::Runtime makeV1ProfileRuntime();
     WifiV1DevicesApiService::Runtime makeV1DevicesRuntime();
     BackupApiService::BackupRuntime makeBackupRuntime();
+    WifiDiagnosticsApiService::Runtime makeDiagnosticsRuntime();
 
     // API endpoints
     void handleNotFound();

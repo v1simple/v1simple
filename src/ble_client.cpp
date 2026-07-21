@@ -108,7 +108,8 @@ V1BLEClient::V1BLEClient()
       // proxyClientConnected_ - uses default member initializer (atomic)
       ,
       proxyName_("V1-Proxy"), proxyQueue_(nullptr), phone2v1Queue_(nullptr), proxyQueuesInPsram_(false),
-      dataCallback_(nullptr), connectImmediateCallback_(nullptr), connectStableCallback_(nullptr)
+      dataCallback_(nullptr), connectImmediateCallback_(nullptr), sessionOpenedCallback_(nullptr),
+      sessionClosedCallback_(nullptr), connectStableCallback_(nullptr)
       // connected_, shouldConnect_ - use default member initializers (atomic)
       ,
       hasTargetDevice_(false), targetAddress_(), lastScanStart_(0), freshFlashBoot_(false), pScanCallbacks_(nullptr),
@@ -553,6 +554,16 @@ void V1BLEClient::onDataReceived(DataCallback callback) {
 void V1BLEClient::onV1ConnectImmediate(ConnectionCallback callback) {
     SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));
     connectImmediateCallback_ = callback;
+}
+
+void V1BLEClient::onV1SessionOpened(SessionBoundaryCallback callback) {
+    SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));
+    sessionOpenedCallback_ = callback;
+}
+
+void V1BLEClient::onV1SessionClosed(SessionBoundaryCallback callback) {
+    SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));
+    sessionClosedCallback_ = callback;
 }
 
 void V1BLEClient::onV1Connected(ConnectionCallback callback) {

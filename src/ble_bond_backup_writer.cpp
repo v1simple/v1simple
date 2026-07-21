@@ -49,6 +49,7 @@ struct BondBackupWriterState {
     PsramQueueAllocation queueAllocation = {};
     bool queueInPsram = false;
     std::atomic<bool> writerActive{false};
+    std::atomic<uint32_t> writerAdmissionsInFlight{0};
     std::atomic<bool> shutdownRequested{false};
     std::atomic<uint32_t> enqueuedSnapshots{0};
     std::atomic<uint32_t> coalescedSnapshots{0};
@@ -207,41 +208,88 @@ bool processBondBackupSnapshot(BondBackupSnapshot* snapshot) {
     return false;
 }
 
-void bondBackupWriterTaskEntry(void*) {
-    sampleBondBackupWriterStack();
-    while (true) {
-        if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) &&
-            uxQueueMessagesWaiting(gBondBackupWriterState.queue) == 0) {
-            break;
-        }
+struct BondBackupWriterAdmission {
+    BondBackupWriterAdmission() {
+        gBondBackupWriterState.writerAdmissionsInFlight.fetch_add(1, std::memory_order_acq_rel);
+    }
 
-        BondBackupSnapshot* snapshot = nullptr;
-        if (xQueueReceive(gBondBackupWriterState.queue, &snapshot, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            continue;
-        }
+    ~BondBackupWriterAdmission() {
+        gBondBackupWriterState.writerAdmissionsInFlight.fetch_sub(1, std::memory_order_acq_rel);
+    }
+};
 
-        const bool ok = processBondBackupSnapshot(snapshot);
-        // uxTaskGetStackHighWaterMark retains the task's lifetime minimum, so
-        // sampling after each write captures the deepest filesystem path while
-        // keeping the periodic reporter independent of the live task handle.
-        sampleBondBackupWriterStack();
-        if (!ok) {
-            if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire)) {
-                // Power-off is already bounded by the shutdown caller. Do not
-                // keep a failed retry alive after that deadline.
-                BondBackupSnapshot* discarded = nullptr;
-                if (xQueueReceive(gBondBackupWriterState.queue, &discarded, 0) == pdTRUE) {
-                    releaseBondBackupSnapshot(discarded);
-                }
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(kBondBackupRetryDelayMs));
-        }
+bool bondBackupWriterQuiesced() {
+    return !gBondBackupWriterState.writerActive.load(std::memory_order_acquire) &&
+           gBondBackupWriterState.writerAdmissionsInFlight.load(std::memory_order_acquire) == 0 &&
+           (gBondBackupWriterState.queue == nullptr || uxQueueMessagesWaiting(gBondBackupWriterState.queue) == 0);
+}
+
+bool completeBondBackupWriterExit() {
+    // A producer that observed this task active keeps an admission token until
+    // its snapshot is queued. Wait for that bounded path before deciding whether
+    // this already-allocated task can exit or must reclaim the queue.
+    while (gBondBackupWriterState.writerAdmissionsInFlight.load(std::memory_order_acquire) > 0) {
         taskYIELD();
     }
 
-    sampleBondBackupWriterStack();
+    if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) &&
+        gBondBackupWriterState.queue != nullptr && uxQueueMessagesWaiting(gBondBackupWriterState.queue) > 0) {
+        return true;
+    }
+
     gBondBackupWriterState.writerActive.store(false, std::memory_order_release);
+
+    // Close the small check-to-publish window for a producer that observed the
+    // old task active immediately before writerActive became false.
+    while (gBondBackupWriterState.writerAdmissionsInFlight.load(std::memory_order_acquire) > 0) {
+        taskYIELD();
+    }
+
+    if (gBondBackupWriterState.queue == nullptr || uxQueueMessagesWaiting(gBondBackupWriterState.queue) == 0) {
+        return false;
+    }
+
+    bool expectedInactive = false;
+    return gBondBackupWriterState.writerActive.compare_exchange_strong(expectedInactive, true,
+                                                                       std::memory_order_acq_rel);
+}
+
+void bondBackupWriterTaskEntry(void*) {
+    sampleBondBackupWriterStack();
+    do {
+        while (true) {
+            if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) &&
+                uxQueueMessagesWaiting(gBondBackupWriterState.queue) == 0) {
+                break;
+            }
+
+            BondBackupSnapshot* snapshot = nullptr;
+            if (xQueueReceive(gBondBackupWriterState.queue, &snapshot, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                continue;
+            }
+
+            const bool ok = processBondBackupSnapshot(snapshot);
+            // uxTaskGetStackHighWaterMark retains the task's lifetime minimum, so
+            // sampling after each write captures the deepest filesystem path while
+            // keeping the periodic reporter independent of the live task handle.
+            sampleBondBackupWriterStack();
+            if (!ok) {
+                if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire)) {
+                    // Power-off is already bounded by the shutdown caller. Do not
+                    // keep a failed retry alive after that deadline.
+                    BondBackupSnapshot* discarded = nullptr;
+                    if (xQueueReceive(gBondBackupWriterState.queue, &discarded, 0) == pdTRUE) {
+                        releaseBondBackupSnapshot(discarded);
+                    }
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(kBondBackupRetryDelayMs));
+            }
+            taskYIELD();
+        }
+
+        sampleBondBackupWriterStack();
+    } while (completeBondBackupWriterExit());
     vTaskDeleteWithCaps(nullptr);
 }
 
@@ -328,6 +376,7 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
     }
     const uint32_t snapshotSequence = snapshot->sequence;
 
+    BondBackupWriterAdmission writerAdmission;
     if (!ensureBondBackupWriterReady()) {
         releaseBondBackupSnapshot(snapshot);
         gBondBackupWriterState.droppedSnapshots.fetch_add(1, std::memory_order_relaxed);
@@ -382,18 +431,22 @@ BleBondBackupWriterStats bleBondBackupWriterStats() {
 
 void shutdownBleBondBackupWriter(uint32_t timeoutMs) {
     gBondBackupWriterState.shutdownRequested.store(true, std::memory_order_release);
-    if (!gBondBackupWriterState.writerActive.load(std::memory_order_acquire)) {
+    if (bondBackupWriterQuiesced()) {
         return;
     }
 
     const uint32_t startMs = millis();
-    while (gBondBackupWriterState.writerActive.load(std::memory_order_acquire)) {
+    while (!bondBackupWriterQuiesced()) {
         if (static_cast<uint32_t>(millis() - startMs) > timeoutMs) {
             Serial.println("[BLE] WARN: Timed out draining Core-0 bond backup writer");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+
+void resumeBleBondBackupWriterAfterAbortedShutdown() {
+    gBondBackupWriterState.shutdownRequested.store(false, std::memory_order_release);
 }
 
 #ifdef UNIT_TEST
@@ -408,6 +461,7 @@ void resetBleBondBackupWriterForTest() {
     }
     gBondBackupWriterState.queue = nullptr;
     gBondBackupWriterState.writerActive.store(false, std::memory_order_relaxed);
+    gBondBackupWriterState.writerAdmissionsInFlight.store(0, std::memory_order_relaxed);
     if (gBondBackupWriterState.queueAllocation.queueBuffer) {
         heap_caps_free(gBondBackupWriterState.queueAllocation.queueBuffer);
         gBondBackupWriterState.queueAllocation.queueBuffer = nullptr;

@@ -37,6 +37,21 @@ void PacketParser::resetAlertAssembly() {
     clearAlertCache();
 }
 
+void PacketParser::resetAlertState() {
+    clearAlertCache();
+    clearPublishedAlerts();
+}
+
+void PacketParser::clearPublishedAlerts() {
+    alerts_.fill(AlertData{});
+    alertCount_ = 0;
+    displayState_.priorityArrow = DIR_NONE;
+    displayState_.v1PriorityIndex = 0;
+    displayState_.hasJunkAlert = false;
+    displayState_.hasPhotoAlert = false;
+    displayState_.hasKuAlert = false;
+}
+
 void PacketParser::clearAlertCache() {
     alertChunkPresent_.fill(false);
     alertChunkCountTag_.fill(0);
@@ -183,17 +198,13 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     uint8_t alertIndex = (payload[0] >> 4) & 0x0F;
     uint8_t receivedAlertCount = payload[0] & 0x0F;
     if (receivedAlertCount == 0) {
-        alertCount_ = 0;
-        clearAlertCache();
+        resetAlertState();
         // DON'T clear signalBars here - parseDisplayData reads V1's LED bitmap.
         displayState_.arrows = DIR_NONE;
         // DON'T clear muted here — mute state is authoritative from
         // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
         // Clearing it here races the display packet path and causes
         // mute indicator flash on every count=0 alert packet.
-        displayState_.hasJunkAlert = false;
-        displayState_.hasPhotoAlert = false;
-        displayState_.hasKuAlert = false;
         return true;
     }
 

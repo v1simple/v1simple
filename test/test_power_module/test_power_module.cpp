@@ -25,7 +25,21 @@ struct ShutdownPrepState {
     int powerOffCallsAtPrep = -1;
 };
 
+struct ShutdownAbortState {
+    int calls = 0;
+    int showDisconnectedCallsAtAbort = -1;
+    int powerOffCallsAtAbort = -1;
+};
+
+struct ShutdownHandoffState {
+    int calls = 0;
+    int powerOffCallsAtHandoff = -1;
+    DisplayMockLifecycleState displayState{};
+};
+
 ShutdownPrepState shutdownPrepState;
+ShutdownAbortState shutdownAbortState;
+ShutdownHandoffState shutdownHandoffState;
 
 void recordShutdownPreparation(void* context) {
     auto* state = static_cast<ShutdownPrepState*>(context);
@@ -36,6 +50,28 @@ void recordShutdownPreparation(void* context) {
     state->calls++;
     state->showShutdownCallsAtPrep = display.showShutdownCalls;
     state->powerOffCallsAtPrep = battery.powerOffCalls;
+}
+
+void recordShutdownAbort(void* context) {
+    auto* state = static_cast<ShutdownAbortState*>(context);
+    if (!state) {
+        return;
+    }
+
+    state->calls++;
+    state->showDisconnectedCallsAtAbort = display.showDisconnectedCalls;
+    state->powerOffCallsAtAbort = battery.powerOffCalls;
+}
+
+void recordShutdownHandoff(void* context) {
+    auto* state = static_cast<ShutdownHandoffState*>(context);
+    if (!state) {
+        return;
+    }
+
+    state->calls++;
+    state->powerOffCallsAtHandoff = battery.powerOffCalls;
+    state->displayState = display.lifecycleState();
 }
 
 void setTime(unsigned long nowMs) {
@@ -62,6 +98,8 @@ void setUp() {
     testSettings = SettingsManager{};
     testSettings.settings.autoPowerOffMinutes = 10;
     shutdownPrepState = ShutdownPrepState{};
+    shutdownAbortState = ShutdownAbortState{};
+    shutdownHandoffState = ShutdownHandoffState{};
 
     module = PowerModule{};
     module.begin(&battery, &display, &testSettings);
@@ -83,8 +121,87 @@ void test_perform_shutdown_request_delegates_to_battery_power_off() {
     module.performShutdownRequestForTest();
 
     TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
+#ifndef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(1, display.clearCalls);
+#endif
     TEST_ASSERT_TRUE(battery.powerOffCalled);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+}
+
+void test_shutdown_leaves_panel_frame_black_before_power_handoff() {
+    module.setShutdownHandoffObserverForTest(recordShutdownHandoff, &shutdownHandoffState);
+
+    module.performShutdownRequestForTest();
+
+#ifndef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(1, display.clearCalls);
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(1, shutdownHandoffState.calls);
+    TEST_ASSERT_EQUAL(0, shutdownHandoffState.powerOffCallsAtHandoff);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::CLEARED),
+                            static_cast<uint8_t>(shutdownHandoffState.displayState.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::CLEAR),
+                            static_cast<uint8_t>(shutdownHandoffState.displayState.lastOperation));
+    TEST_ASSERT_TRUE(shutdownHandoffState.displayState.panelFrameBlack);
+    TEST_ASSERT_EQUAL_UINT32(shutdownHandoffState.displayState.sequence,
+                             shutdownHandoffState.displayState.clearSequence);
+#else
+    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(0, display.clearCalls);
+    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(0, shutdownHandoffState.calls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::NONE),
+                            static_cast<uint8_t>(display.lifecycleState().presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::NONE),
+                            static_cast<uint8_t>(display.lifecycleState().lastOperation));
+#endif
+}
+
+void test_failed_shutdown_restores_visible_disconnected_screen() {
+    testSettings.settings.brightness = 173;
+    battery.powerOffResult = false;
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(1, display.showDisconnectedCalls);
+    TEST_ASSERT_EQUAL(1, display.flushCalls);
+    TEST_ASSERT_EQUAL(1, display.setBrightnessCalls);
+    TEST_ASSERT_EQUAL_UINT8(173, display.lastBrightness);
+    TEST_ASSERT_TRUE(display.showDisconnectedSequence > 0);
+    TEST_ASSERT_TRUE(display.showDisconnectedSequence < display.flushSequence);
+    TEST_ASSERT_TRUE(display.flushSequence < display.setBrightnessSequence);
+    const auto& lifecycle = display.lifecycleState();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockPresentation::DISCONNECTED),
+                            static_cast<uint8_t>(lifecycle.presentation));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DisplayMockOperation::SET_BRIGHTNESS),
+                            static_cast<uint8_t>(lifecycle.lastOperation));
+    TEST_ASSERT_FALSE(lifecycle.panelFrameBlack);
+    TEST_ASSERT_EQUAL_UINT8(173, lifecycle.brightness);
+    TEST_ASSERT_TRUE(lifecycle.presentationSequence < lifecycle.flushSequence);
+    TEST_ASSERT_TRUE(lifecycle.flushSequence < lifecycle.brightnessSequence);
+    TEST_ASSERT_EQUAL_UINT32(lifecycle.sequence, lifecycle.brightnessSequence);
+}
+
+void test_failed_shutdown_invokes_abort_callback_after_hardware_return() {
+    battery.powerOffResult = false;
+    module.setShutdownAbortCallback(recordShutdownAbort, &shutdownAbortState);
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(1, shutdownAbortState.calls);
+    TEST_ASSERT_EQUAL(1, shutdownAbortState.powerOffCallsAtAbort);
+    TEST_ASSERT_EQUAL(0, shutdownAbortState.showDisconnectedCallsAtAbort);
+    TEST_ASSERT_EQUAL(1, display.showDisconnectedCalls);
+}
+
+void test_successful_shutdown_does_not_invoke_abort_callback() {
+    module.setShutdownAbortCallback(recordShutdownAbort, &shutdownAbortState);
+
+    module.performShutdownRequestForTest();
+
+    TEST_ASSERT_EQUAL(0, shutdownAbortState.calls);
 }
 
 void test_set_shutdown_preparation_callback_runs_before_shutdown_tail() {
@@ -269,7 +386,11 @@ void test_process_updates_battery_every_call() {
     module.process(3000);
 
     TEST_ASSERT_EQUAL(3, battery.updateCalls);
+#ifdef CAR_MODE_PWR_SHORT
+    TEST_ASSERT_EQUAL(0, battery.processPowerButtonCalls);
+#else
     TEST_ASSERT_EQUAL(3, battery.processPowerButtonCalls);
+#endif
 }
 
 void test_critical_battery_still_wins_while_auto_power_timer_is_running() {
@@ -297,14 +418,15 @@ int main() {
     // These paths are compile-time disabled in car-install builds.
     // Equivalent coverage lives in test_car_mode_pwr_short.
     RUN_TEST(test_critical_battery_shows_warning_before_shutdown);
-#endif
     RUN_TEST(test_perform_shutdown_request_delegates_to_battery_power_off);
+    RUN_TEST(test_shutdown_leaves_panel_frame_black_before_power_handoff);
+    RUN_TEST(test_failed_shutdown_restores_visible_disconnected_screen);
+    RUN_TEST(test_failed_shutdown_invokes_abort_callback_after_hardware_return);
+    RUN_TEST(test_successful_shutdown_does_not_invoke_abort_callback);
     RUN_TEST(test_set_shutdown_preparation_callback_runs_before_shutdown_tail);
     RUN_TEST(test_null_shutdown_preparation_callback_is_tolerated);
-#ifndef CAR_MODE_PWR_SHORT
     RUN_TEST(test_power_button_shutdown_request_routes_through_power_module);
     RUN_TEST(test_critical_battery_shutdown_occurs_after_grace_period);
-#endif
     RUN_TEST(test_critical_battery_recovery_clears_warning_without_shutdown);
     RUN_TEST(test_usb_power_skips_critical_battery_shutdown_path);
     RUN_TEST(test_v1_data_arms_auto_power_off);
@@ -317,9 +439,8 @@ int main() {
     RUN_TEST(test_v1_disconnect_does_not_start_timer_while_alp_is_active);
     RUN_TEST(test_alp_signal_loss_starts_timer_after_v1_disconnect);
     RUN_TEST(test_auto_power_off_shuts_down_after_timeout);
-#ifndef CAR_MODE_PWR_SHORT
-    RUN_TEST(test_process_updates_battery_every_call);
     RUN_TEST(test_critical_battery_still_wins_while_auto_power_timer_is_running);
 #endif
+    RUN_TEST(test_process_updates_battery_every_call);
     return UNITY_END();
 }

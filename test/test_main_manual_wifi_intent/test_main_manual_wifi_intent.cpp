@@ -63,6 +63,8 @@ void test_main_runtime_state_tracks_maintenance_boot_mode() {
                           headerText.find("bool maintenanceBootActive = false;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           headerText.find("unsigned long maintenanceBootStartedMs = 0;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          headerText.find("MaintenanceBootTimeoutMs = 10UL * 60UL * 1000UL;"));
 }
 
 void test_boot_button_routes_to_maintenance_reboot_wrapper() {
@@ -96,6 +98,12 @@ void test_loop_short_circuits_normal_runtime_during_maintenance_boot() {
                           loopBody.find("settingsManager.serviceDeferredPersist"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("settingsManager.serviceDeferredBackup"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("displayPreviewModule.update();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("displayPreviewModule.consumeEnded()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          loopBody.find("display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);"));
     const size_t yieldPos = loopBody.find("vTaskDelay(pdMS_TO_TICKS(1));");
     const size_t returnPos = loopBody.find("return;");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, yieldPos);
@@ -103,6 +111,24 @@ void test_loop_short_circuits_normal_runtime_during_maintenance_boot() {
     TEST_ASSERT_TRUE(yieldPos < returnPos);
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("return;"));
+}
+
+void test_maintenance_loop_services_power_before_wifi_work() {
+    const std::string text = readFile(projectRoot() + "/src/main.cpp");
+    const std::string loopBody = extractFunctionBody(text, "void loop()");
+
+    const size_t maintenanceGate = loopBody.find("if (mainRuntimeState.maintenanceBootActive)");
+    const size_t powerProcess = loopBody.find("powerModule.process(now);", maintenanceGate);
+    const size_t wifiProcess = loopBody.find("wifiManager.process();", powerProcess);
+    const size_t maintenanceReturn = loopBody.find("return;", wifiProcess);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, powerProcess);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, wifiProcess);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceReturn);
+    TEST_ASSERT_TRUE(maintenanceGate < powerProcess);
+    TEST_ASSERT_TRUE(powerProcess < wifiProcess);
+    TEST_ASSERT_TRUE(wifiProcess < maintenanceReturn);
 }
 
 void test_setup_consumes_maintenance_request_before_runtime_init() {
@@ -140,6 +166,59 @@ void test_maintenance_boot_uses_dedicated_device_screen() {
                       preflightBody.find("display.showDisconnected();"));
 }
 
+void test_maintenance_wifi_recovery_uses_reachability_and_retries() {
+    const std::string text = readFile(projectRoot() + "/src/main.cpp");
+    const std::string loopBody = extractFunctionBody(text, "void loop()");
+
+    const size_t reachability = loopBody.find(
+        "wifiRecoveryInput.wifiServiceReachable = wifiManager.isWifiServiceReachable();");
+    const size_t evaluate = loopBody.find("wifiMaintenanceRecoveryModule.evaluate(wifiRecoveryInput)");
+    const size_t attemptGuard = loopBody.find("if (wifiRecovery.attemptRestart)");
+    const size_t restart = loopBody.find("wifiManager.startSetupMode(false)", attemptGuard);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, reachability);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, evaluate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, attemptGuard);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restart);
+    TEST_ASSERT_LESS_THAN(evaluate, reachability);
+    TEST_ASSERT_LESS_THAN(attemptGuard, evaluate);
+    TEST_ASSERT_LESS_THAN(restart, attemptGuard);
+}
+
+void test_maintenance_ap_bringup_failure_is_propagated() {
+    const std::string header = readFile(projectRoot() + "/src/wifi_manager.h");
+    const std::string source = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
+    const std::string setupApBody = extractFunctionBody(source, "bool WiFiManager::setupAP()");
+    const std::string startBody = extractFunctionBody(source, "bool WiFiManager::startSetupMode(");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("bool setupAP();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupApBody.find("if (!WiFi.softAPConfig("));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupApBody.find("if (!WiFi.softAP("));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupApBody.find("return false;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupApBody.find("return true;"));
+    TEST_ASSERT_EQUAL_UINT64(2, countOccurrences(startBody, "if (!setupAP())"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, startBody.find("if (!canStartSetupMode("));
+}
+
+void test_maintenance_lifecycle_suppresses_every_idle_stop() {
+    const std::string source = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
+    const std::string processBody = extractFunctionBody(source, "void WiFiManager::process()");
+    const std::string timeoutBody = extractFunctionBody(source, "void WiFiManager::checkAutoTimeout()");
+
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        processBody.find("if (!maintenanceBootMode_ && apInterfaceActive && staConnectedNow"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        processBody.find("noClientInput.maintenanceBootMode = maintenanceBootMode_;"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        processBody.find("sWifiAutoTimeoutModule.evaluateNoClient(noClientInput)"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        timeoutBody.find("timeoutInput.maintenanceBootMode = maintenanceBootMode_;"));
+}
+
 void test_status_callback_publishes_maintenance_boot_fields() {
     const std::filesystem::path source =
         std::filesystem::path(projectRoot() + "/src/main_runtime_wiring.cpp");
@@ -150,6 +229,8 @@ void test_status_callback_publishes_maintenance_boot_fields() {
                           body.find("obj[\"maintenanceBoot\"] = mainRuntimeState.maintenanceBootActive;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           body.find("obj[\"maintenanceBootUptimeMs\"]"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          body.find("obj[\"maintenanceBootTimeoutMs\"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           body.find("mainRuntimeState.maintenanceBootStartedMs"));
 }
@@ -163,6 +244,8 @@ void test_loop_uses_coordinator_owned_ble_arbitration_and_obd_policy() {
     TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(loopBody, "setObdBleArbitrationRequest("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("connectionCycleCoordinatorModule.arbitrationRequest()"));
+    TEST_ASSERT_TRUE(loopBody.find("connectionCycleCoordinatorModule.update(cycleContext)") <
+                     loopBody.find("connectionCycleCoordinatorModule.arbitrationRequest()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           loopBody.find("obdStatus.manualScanPending"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
@@ -383,13 +466,55 @@ void test_gps_config_save_skips_live_runtime_in_maintenance() {
     TEST_ASSERT_LESS_THAN(setEnabledCall, guardPos);
 }
 
+void test_gps_config_post_route_propagates_maintenance_boot_state() {
+    // The service-level guard is only effective when the route composition
+    // passes the boot mode through. Regression: POST /api/gps/config once
+    // constructed a default Runtime (maintenance=false) and started Serial1
+    // from maintenance mode despite the persist-only service contract.
+    const std::filesystem::path source =
+        std::filesystem::path(projectRoot() + "/src/wifi_routes.cpp");
+    const std::string text = readFile(source);
+
+    const size_t routeStart = text.find("server_.on(\"/api/gps/config\", HTTP_POST");
+    const size_t nextRoute = text.find("server_.on(\"/api/gps/status\", HTTP_GET", routeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, routeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, nextRoute);
+
+    const std::string routeBody = text.substr(routeStart, nextRoute - routeStart);
+    const size_t propagation = routeBody.find(
+        "r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;");
+    const size_t delegate = routeBody.find("GpsApiService::handleApiConfigSave(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, propagation);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, delegate);
+    TEST_ASSERT_LESS_THAN(delegate, propagation);
+}
+
+void test_autopush_runtime_propagates_maintenance_boot_state() {
+    const std::filesystem::path source =
+        std::filesystem::path(projectRoot() + "/src/wifi_runtimes.cpp");
+    const std::string text = readFile(source);
+    const std::string body = extractFunctionBody(
+        text, "WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime()");
+
+    const size_t propagation = body.find(
+        "runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;");
+    const size_t returnRuntime = body.find("return runtime;");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, propagation);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, returnRuntime);
+    TEST_ASSERT_LESS_THAN(returnRuntime, propagation);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_main_runtime_state_tracks_maintenance_boot_mode);
     RUN_TEST(test_boot_button_routes_to_maintenance_reboot_wrapper);
     RUN_TEST(test_loop_short_circuits_normal_runtime_during_maintenance_boot);
+    RUN_TEST(test_maintenance_loop_services_power_before_wifi_work);
     RUN_TEST(test_setup_consumes_maintenance_request_before_runtime_init);
     RUN_TEST(test_maintenance_boot_uses_dedicated_device_screen);
+    RUN_TEST(test_maintenance_wifi_recovery_uses_reachability_and_retries);
+    RUN_TEST(test_maintenance_ap_bringup_failure_is_propagated);
+    RUN_TEST(test_maintenance_lifecycle_suppresses_every_idle_stop);
     RUN_TEST(test_status_callback_publishes_maintenance_boot_fields);
     RUN_TEST(test_loop_uses_coordinator_owned_ble_arbitration_and_obd_policy);
     RUN_TEST(test_loop_feeds_coordinator_proxy_policy_into_ble);
@@ -401,5 +526,7 @@ int main() {
     RUN_TEST(test_web_ui_runtime_saves_persist_nvs_before_deferred_sd_backup);
     RUN_TEST(test_obd_config_save_persists_immediately_in_maintenance);
     RUN_TEST(test_gps_config_save_skips_live_runtime_in_maintenance);
+    RUN_TEST(test_gps_config_post_route_propagates_maintenance_boot_state);
+    RUN_TEST(test_autopush_runtime_propagates_maintenance_boot_state);
     return UNITY_END();
 }

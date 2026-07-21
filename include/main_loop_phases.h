@@ -73,6 +73,6 @@ LoopFinalizePhaseValues processLoopFinalizePhase(unsigned long nowMs, bool bootS
                                                  unsigned long connectionStateProcessMaxGapMs,
                                                  unsigned long loopStartUs);
 
-unsigned long processLoopSettingsEarlyReturnPhase(unsigned long nowMs, unsigned long loopStartUs);
+unsigned long processLoopSettingsEarlyReturnPhase(unsigned long nowMs, unsigned long loopStartUs, bool bleConnected);
 
 bool shouldReturnEarlyFromLoopPowerTouchPhase(unsigned long nowMs, unsigned long loopStartUs);

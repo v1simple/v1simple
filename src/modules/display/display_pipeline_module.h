@@ -46,7 +46,7 @@ class DisplayPipelineModule {
     // parsed frame ran this loop but live blink sources are active. See
     // docs/ARROW_BEHAVIOR_ANALYSIS_20260429.md D2.
     void refreshBlinkTick(uint32_t nowMs);
-    void restoreCurrentOwner(uint32_t nowMs);
+    bool restoreCurrentOwner(uint32_t nowMs);
     bool allowsObdPairGesture(uint32_t nowMs) const;
 
   private:

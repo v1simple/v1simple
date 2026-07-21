@@ -2,7 +2,7 @@ import { createRawSnippet } from 'svelte';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../test/fetch-mock.js';
 
 const pageStore = vi.hoisted(() => {
     let value = { url: new URL('http://localhost/') };
@@ -80,6 +80,7 @@ describe('root layout', () => {
         );
         const colorLinks = screen.getAllByRole('link', { name: 'Colors' });
         expect(colorLinks.some((link) => link.classList.contains('active'))).toBe(true);
+        expect(screen.getAllByRole('link', { name: 'Logs' })).toHaveLength(2);
 
         unmount();
     });
@@ -128,6 +129,86 @@ describe('root layout', () => {
         await fireEvent.click(screen.getByRole('button', { name: /dismiss warning/i }));
         await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
         expect(sessionStorage.getItem('passwordWarningDismissed')).toBe('true');
+
+        unmount();
+    });
+
+    it('shows the maintenance deadline and can request a normal reboot', async () => {
+        const fetchMock = installFixtureFetchMock('frontend_core_routes', [
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({
+                    maintenanceBoot: true,
+                    maintenanceBootUptimeMs: 125000,
+                    maintenanceBootTimeoutMs: 600000
+                })
+            },
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: jsonResponse({})
+            }
+        ]);
+        const { unmount } = renderLayout();
+
+        const status = await screen.findByRole('status');
+        expect(status).toHaveTextContent('Maintenance mode');
+        expect(status).toHaveTextContent('7m 55s remaining before automatic normal reboot');
+
+        await fireEvent.click(screen.getByRole('button', { name: 'Exit maintenance' }));
+
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.some(
+                    ([url, init]) =>
+                        url === '/api/system/reboot-normal' &&
+                        init?.method === 'POST' &&
+                        init?.headers?.['X-V1Simple-Request'] === 'maintenance-ui'
+                )
+            ).toBe(true);
+        });
+        expect(await screen.findByText(/Reboot requested/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Rebooting…' })).toBeDisabled();
+
+        unmount();
+    });
+
+    it('surfaces a maintenance exit failure and allows retry', async () => {
+        installFetchMock(
+            [
+                {
+                    method: 'GET',
+                    match: '/api/status',
+                    respond: jsonResponse({
+                        maintenanceBoot: true,
+                        maintenanceBootUptimeMs: 570000,
+                        maintenanceBootTimeoutMs: 600000
+                    })
+                },
+                {
+                    method: 'GET',
+                    match: '/api/device/settings',
+                    respond: jsonResponse({})
+                },
+                {
+                    method: 'POST',
+                    match: '/api/system/reboot-normal',
+                    respond: jsonResponse({ error: 'restart unavailable' }, 503)
+                }
+            ],
+            jsonResponse({})
+        );
+        const { unmount } = renderLayout();
+
+        const status = await screen.findByRole('status');
+        expect(status).toHaveTextContent('0m 30s remaining');
+        await fireEvent.click(screen.getByRole('button', { name: 'Exit maintenance' }));
+
+        expect(
+            await screen.findByText('Could not exit maintenance: restart unavailable')
+        ).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Exit maintenance' })).toBeEnabled();
 
         unmount();
     });

@@ -22,7 +22,12 @@ class AlpRuntimeModule;
 
 namespace AlpApiService {
 
-void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*markUiActivity)(void* ctx),
+void handleApiStatus(WebServer& server, AlpRuntimeModule* alpRuntime, void (*markUiActivity)(void* ctx),
                      void* uiActivityCtx, bool maintenanceBootActive = false);
+
+inline void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*markUiActivity)(void* ctx),
+                            void* uiActivityCtx, bool maintenanceBootActive = false) {
+    handleApiStatus(server, &alpRuntime, markUiActivity, uiActivityCtx, maintenanceBootActive);
+}
 
 } // namespace AlpApiService

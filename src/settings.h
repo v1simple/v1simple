@@ -507,6 +507,21 @@ struct SettingsBackupApplyResult {
     int profilesRestored = 0;
 };
 
+/// Optional task-watchdog feed for applyBackupDocument().
+///
+/// A full restore rewrites the WiFi credential NVS namespace, re-saves every
+/// profile in the backup (one filesystem write each) and then performs the A/B
+/// settings NVS rewrite.  On a slow SD card that run can exceed the task
+/// watchdog window and panic mid-restore.  esp_task_wdt_reset() is ESP-IDF only,
+/// so the feed is injected as a plain function pointer: settings_backup_doc.cpp
+/// stays host-compilable and native tests can count the feeds and pin where they
+/// happen.  Default-constructed (feed == nullptr) means "never feed", which is
+/// what the boot-time SD restore path uses.
+struct SettingsRestoreWatchdog {
+    void (*feed)(void* ctx) = nullptr;
+    void* ctx = nullptr;
+};
+
 enum class SettingsPersistMode : uint8_t {
     Immediate,
     ImmediateNvsDeferredBackup,
@@ -838,7 +853,7 @@ class SettingsManager {
     void setBrightness(uint8_t brightness);
     void setDisplayOff(bool off);
     void setAutoPushEnabled(bool enabled);
-    void setActiveSlot(int slot);
+    void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setSlot(int slotNum, const String& profileName, V1Mode mode);
     void setSlotName(int slotNum, const String& name);
     void setSlotColor(int slotNum, uint16_t color);
@@ -874,7 +889,7 @@ class SettingsManager {
     void setSecondaryX(bool enabled);
     void setAlertVolumeFade(bool enabled, uint8_t delaySec, uint8_t volume);
     void setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph);
-    void setStealthEnabled(bool enabled);
+    void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setLastV1Address(const String& addr);
 
     // Get active slot configuration
@@ -918,10 +933,12 @@ class SettingsManager {
     // Batch update methods (don't auto-save, call save() after)
     void updateBrightness(uint8_t brightness) { settings_.brightness = brightness; }
     void updateVoiceVolume(uint8_t volume) { settings_.voiceVolume = volume; }
-    // Save all settings to flash
+    // Persist settings atomically to NVS, then synchronously back them up to SD.
+    // Reserve this for explicit durability boundaries outside latency-sensitive
+    // loop paths.
     void save();
-    // Returns false when the atomic NVS persist failed (settings live in RAM
-    // only); restore paths must surface that instead of reporting success.
+    // Persist settings atomically to NVS, then coalesce a deferred SD backup.
+    // Returns false when the NVS persist failed (settings remain RAM-only).
     bool saveDeferredBackup();
     void requestDeferredPersist();
     void serviceDeferredPersist(uint32_t nowMs);
@@ -950,7 +967,8 @@ class SettingsManager {
     bool deferredBackupPending() const;
     bool deferredBackupRetryScheduled() const;
     uint32_t deferredBackupNextAttemptAtMs() const;
-    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite);
+    SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
+                                                  const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{});
     bool restoreFromSD();
     bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
 

@@ -347,6 +347,7 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     if (!pCharacteristic || !bleClient) {
         return;
     }
+    const uint32_t queueEpoch = bleClient->proxyQueueEpoch_.load(std::memory_order_acquire);
 
     if (!bleClient->connected_.load(std::memory_order_relaxed)) {
         return;
@@ -367,15 +368,26 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     memcpy(cmdBuf, rawData, rawLen);
 
     // Enqueue for main-loop processing to avoid BLE callback blocking
-    bleClient->enqueuePhoneCommand(cmdBuf, rawLen, sourceChar);
+    bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch);
 }
 
 bool V1BLEClient::allocateProxyQueues() {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) && !tryFinalizeProxyQueueRelease()) {
+        return false;
+    }
+
     if (proxyQueue_ && phone2v1Queue_) {
         return true;
     }
 
     releaseProxyQueues();
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    // Keep callback and main-loop queue users out until both buffers and all
+    // indices have been published as one complete allocation.
+    proxyQueueReleasePending_.store(true, std::memory_order_release);
 
     bool proxyQueueAllocatedInPsram = false;
     bool phoneQueueAllocatedInPsram = false;
@@ -418,6 +430,8 @@ bool V1BLEClient::allocateProxyQueues() {
     phone2v1QueueTail_ = 0;
     phone2v1QueueCount_ = 0;
     proxyMetrics_.reset();
+    proxyQueueEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    proxyQueueReleasePending_.store(false, std::memory_order_release);
 
     Serial.printf("[BLE] Proxy queues allocated (proxy=%s phone=%s)\n",
                   proxyQueueAllocatedInPsram ? "PSRAM" : "INTERNAL", phoneQueueAllocatedInPsram ? "PSRAM" : "INTERNAL");
@@ -425,14 +439,56 @@ bool V1BLEClient::allocateProxyQueues() {
 }
 
 void V1BLEClient::releaseProxyQueues() {
-    if (proxyQueue_) {
-        heap_caps_free(proxyQueue_);
-        proxyQueue_ = nullptr;
+    // Close admission before attempting either lock. A callback that already
+    // passed its first gate rechecks this state after acquiring its queue lock.
+    proxyQueueReleasePending_.store(true, std::memory_order_release);
+    phoneCmdPendingClear_.store(true, std::memory_order_release);
+    tryFinalizeProxyQueueRelease();
+}
+
+bool V1BLEClient::tryFinalizeProxyQueueRelease() {
+    if (!proxyQueueReleasePending_.load(std::memory_order_acquire)) {
+        return true;
     }
-    if (phone2v1Queue_) {
-        heap_caps_free(phone2v1Queue_);
-        phone2v1Queue_ = nullptr;
+
+    // Repeated teardown after a completed release is intentionally lock-free.
+    if (!proxyQueue_ && !phone2v1Queue_) {
+        proxyQueuesInPsram_ = false;
+        proxyQueueHead_ = 0;
+        proxyQueueTail_ = 0;
+        proxyQueueCount_ = 0;
+        phone2v1QueueHead_ = 0;
+        phone2v1QueueTail_ = 0;
+        phone2v1QueueCount_ = 0;
+        proxyQueueReleasePending_.store(false, std::memory_order_release);
+        return true;
     }
+
+    // Sole nested order for proxy storage ownership: notify queue, then phone
+    // command queue. Hot callback paths never hold both locks. A failed take
+    // leaves both buffers and all indices untouched for the next loop retry.
+    bool notifyLocked = false;
+    bool phoneLocked = false;
+    if (bleNotifyMutex_) {
+        if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
+            return false;
+        }
+        notifyLocked = true;
+    }
+    if (phoneCmdMutex_) {
+        if (xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
+            if (notifyLocked) {
+                xSemaphoreGive(bleNotifyMutex_);
+            }
+            return false;
+        }
+        phoneLocked = true;
+    }
+
+    ProxyPacket* const proxyQueue = proxyQueue_;
+    ProxyPacket* const phoneQueue = phone2v1Queue_;
+    proxyQueue_ = nullptr;
+    phone2v1Queue_ = nullptr;
 
     proxyQueuesInPsram_ = false;
     proxyQueueHead_ = 0;
@@ -441,6 +497,22 @@ void V1BLEClient::releaseProxyQueues() {
     phone2v1QueueHead_ = 0;
     phone2v1QueueTail_ = 0;
     phone2v1QueueCount_ = 0;
+
+    if (proxyQueue) {
+        heap_caps_free(proxyQueue);
+    }
+    if (phoneQueue) {
+        heap_caps_free(phoneQueue);
+    }
+    proxyQueueReleasePending_.store(false, std::memory_order_release);
+
+    if (phoneLocked) {
+        xSemaphoreGive(phoneCmdMutex_);
+    }
+    if (notifyLocked) {
+        xSemaphoreGive(bleNotifyMutex_);
+    }
+    return true;
 }
 
 bool V1BLEClient::initProxyServer(const char* deviceName) {
@@ -591,7 +663,12 @@ void V1BLEClient::startProxyAdvertising(uint8_t reasonCode, bool ignoreWifiPrior
 }
 
 void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
-    if (!proxyEnabled_ || !proxyClientConnected_) {
+    forwardToProxyForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire));
+}
+
+void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
+                                         uint32_t queueEpoch) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEnabled_ || !proxyClientConnected_) {
         return;
     }
 
@@ -607,7 +684,8 @@ void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t so
         return;
     }
 
-    if (!proxyQueue_) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
+        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_) {
         proxyMetrics_.dropCount++;
         if (bleNotifyMutex_)
             xSemaphoreGive(bleNotifyMutex_);
@@ -644,7 +722,8 @@ void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t so
 }
 
 int V1BLEClient::processProxyQueue() {
-    if (!proxyEnabled_ || !proxyClientConnected_ || proxyQueueCount_ == 0) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEnabled_ || !proxyClientConnected_ ||
+        proxyQueueCount_ == 0) {
         return 0;
     }
 
@@ -652,6 +731,9 @@ int V1BLEClient::processProxyQueue() {
     SemaphoreGuard lock(bleNotifyMutex_, 0);
     if (!lock.locked()) {
         return 0; // Skip this cycle, try again next loop (counter incremented in SemaphoreGuard)
+    }
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyQueue_) {
+        return 0;
     }
 
     int sent = 0;
@@ -683,8 +765,17 @@ int V1BLEClient::processProxyQueue() {
 }
 
 bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
+    return enqueuePhoneCommandForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire));
+}
+
+bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
+                                              uint32_t queueEpoch) {
     if (!data || length == 0 || length > 32) {
         PERF_INC(phoneCmdDropsInvalid);
+        return false;
+    }
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
+        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch) {
         return false;
     }
 
@@ -693,6 +784,11 @@ bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16
         return false;
     }
 
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
+        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch) {
+        xSemaphoreGive(phoneCmdMutex_);
+        return false;
+    }
     if (!phone2v1Queue_) {
         PERF_INC(phoneCmdDropsInvalid);
         xSemaphoreGive(phoneCmdMutex_);
@@ -719,7 +815,7 @@ bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16
 }
 
 int V1BLEClient::processPhoneCommandQueue() {
-    if (!connected_.load(std::memory_order_relaxed)) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !connected_.load(std::memory_order_relaxed)) {
         return 0;
     }
 
@@ -763,6 +859,9 @@ int V1BLEClient::processPhoneCommandQueue() {
     }
 
     if (!hasPacket) {
+        return 0;
+    }
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
         return 0;
     }
 

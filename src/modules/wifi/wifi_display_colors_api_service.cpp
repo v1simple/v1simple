@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
+#include "wifi_json_document.h"
 
 namespace WifiDisplayColorsApiService {
 
@@ -333,7 +334,7 @@ void handleApiGet(WebServer& server, const Runtime& runtime) {
 
     const V1Settings& s = runtime.getSettings(runtime.getSettingsCtx);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["bogey"] = s.colorBogey;
     doc["freq"] = s.colorFrequency;
     doc["arrowFront"] = s.colorArrowFront;

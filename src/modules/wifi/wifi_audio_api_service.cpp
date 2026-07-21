@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
+#include "wifi_json_document.h"
 
 namespace WifiAudioApiService {
 
@@ -16,7 +17,7 @@ void handleApiGet(WebServer& server, const Runtime& runtime) {
 
     const V1Settings& settings = runtime.getSettings(runtime.ctx);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["voiceAlertMode"] = static_cast<int>(settings.voiceAlertMode);
     doc["voiceDirectionEnabled"] = settings.voiceDirectionEnabled;
     doc["announceBogeyCount"] = settings.announceBogeyCount;

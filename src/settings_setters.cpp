@@ -92,9 +92,9 @@ void SettingsManager::setAutoPushEnabled(bool enabled) {
     save();
 }
 
-void SettingsManager::setActiveSlot(int slot) {
+void SettingsManager::setActiveSlot(int slot, SettingsPersistMode persistMode) {
     settings_.activeSlot = std::max(0, std::min(2, slot));
-    save();
+    persistSettingsByMode(*this, persistMode);
 }
 
 void SettingsManager::setSlot(int slotNum, const String& profileName, V1Mode mode) {
@@ -302,9 +302,9 @@ void SettingsManager::setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t h
     save();
 }
 
-void SettingsManager::setStealthEnabled(bool enabled) {
+void SettingsManager::setStealthEnabled(bool enabled, SettingsPersistMode persistMode) {
     settings_.stealthEnabled = enabled;
-    save();
+    persistSettingsByMode(*this, persistMode);
 }
 
 const AutoPushSlot& SettingsManager::getActiveSlot() const {

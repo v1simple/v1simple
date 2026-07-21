@@ -2,11 +2,21 @@
 
 #include <ArduinoJson.h>
 
+#if !defined(UNIT_TEST)
+#include <esp_task_wdt.h>
+#endif
+
 #include "../../backup_payload_builder.h"
 #include "json_stream_response.h"
 #include "wifi_json_document.h"
 
 namespace BackupApiService {
+
+void feedTaskWatchdog(void* /*ctx*/) {
+#if !defined(UNIT_TEST)
+    (void)esp_task_wdt_reset();
+#endif
+}
 
 static void sendBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
                        uint32_t (*millisFn)(void* ctx), void* millisCtx) {
@@ -57,16 +67,29 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
         return;
     }
 
-    // Arduino WebServer buffers the request body before dispatching this
-    // handler. This remains a semantic/application cap, not a pre-allocation
-    // transport cap.
-    String body = server.arg("plain");
+    // Arduino WebServer has already read and buffered the whole request body by
+    // the time this handler is dispatched, so the transport-level allocation has
+    // happened before we get a say. This cap is therefore purely a
+    // semantic/application limit on what we are willing to parse and restore —
+    // it does NOT bound the transport allocation and does NOT close the
+    // heap-exhaustion risk of a large upload. That risk is tracked separately;
+    // closing it needs streaming or Content-Length pre-rejection at the
+    // transport layer, neither of which happens here.
+    //
+    // Deserializing straight off server.arg() instead of a named local keeps the
+    // copy transient: it is released at the end of the statement rather than
+    // being held alive across the whole restore below.
+    // One copy, deliberately: WebServer::arg() returns String BY VALUE, so every
+    // call allocates a fresh full copy of the body. Binding it once is the
+    // minimum achievable here — calling arg() again to re-measure or re-parse
+    // would allocate the whole body a second time.
+    const String body = server.arg("plain");
     if (body.length() > kMaxRestoreBodyBytes) {
         server.send(413, "application/json", "{\"success\":false,\"error\":\"Body too large\"}");
         return;
     }
     WifiJson::Document doc;
-    DeserializationError err = deserializeJson(doc, body);
+    DeserializationError err = deserializeJson(doc, body.c_str());
 
     if (err) {
         Serial.printf("[Settings] Restore parse error: %s\n", err.c_str());

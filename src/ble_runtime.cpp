@@ -15,6 +15,12 @@
 #include "ble_internals.h"
 
 void V1BLEClient::process() {
+    // Runtime proxy disable is non-blocking. Finish deferred queue teardown as
+    // soon as both short-lived callback locks are available.
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
+        tryFinalizeProxyQueueRelease();
+    }
+
     // Handle deferred BLE callback updates without blocking in callbacks
     if (pendingConnectStateUpdate_) {
         SemaphoreGuard lock(bleMutex_, 0);
@@ -26,6 +32,9 @@ void V1BLEClient::process() {
                                            acceptClientCallbacks_.load(std::memory_order_acquire) &&
                                            sessionPublicationGate_.accepts(edgeGeneration);
             connected_.store(edgeStillAccepted, std::memory_order_release);
+            if (edgeStillAccepted && sessionOpenedCallback_) {
+                sessionOpenedCallback_(edgeGeneration);
+            }
             // Don't set CONNECTED state here - async state machine handles transitions
             // Just set the connected_ flag; state machine will transition via asyncConnectSuccess_
         }
@@ -34,6 +43,9 @@ void V1BLEClient::process() {
         SemaphoreGuard lock(bleMutex_, 0);
         if (lock.locked()) {
             pendingDisconnectCleanup_ = false;
+            const int disconnectReason = pendingDisconnectReason_.exchange(0, std::memory_order_relaxed);
+            Serial.printf("[BLE] Applying V1 disconnect reason=%d eventMs=%lu\n", disconnectReason,
+                          static_cast<unsigned long>(lastV1ConnectionEventMs_.load(std::memory_order_relaxed)));
             const bool disconnectWasExpected = bleState_ == BLEState::QUIESCING;
             connected_.store(false, std::memory_order_relaxed);
             connectInProgress_ = false;

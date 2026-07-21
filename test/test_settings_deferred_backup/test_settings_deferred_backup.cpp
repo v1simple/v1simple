@@ -251,6 +251,93 @@ void test_service_deferred_backup_keeps_pending_when_writer_setup_fails() {
     TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
 }
 
+void test_aborted_shutdown_reopens_deferred_backup_writer_admission() {
+    fs::FS fs(g_tempRoot);
+    storageManager.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+
+    SettingsManager manager;
+    manager.mutableSettings().apSSID = "AbortRecovery";
+    shutdownDeferredSettingsBackupWriter(0);
+    manager.requestDeferredBackupFromCurrentState();
+
+    manager.serviceDeferredBackup(1000);
+    TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    TEST_ASSERT_TRUE(manager.deferredBackupRetryScheduled());
+    TEST_ASSERT_EQUAL_UINT32(1250u, manager.deferredBackupNextAttemptAtMs());
+    TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+
+    resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
+    manager.serviceDeferredBackup(1250);
+
+    TEST_ASSERT_FALSE(manager.deferredBackupPending());
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+
+    JsonDocument backupDoc;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
+    TEST_ASSERT_EQUAL_STRING("AbortRecovery", backupDoc["apSSID"].as<const char*>());
+}
+
+void test_resume_handoffs_work_queued_while_old_deferred_writer_exits() {
+    fs::FS fs(g_tempRoot);
+    storageManager.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+
+    SettingsManager manager;
+    manager.mutableSettings().apSSID = "BeforeAbort";
+    manager.requestDeferredBackupFromCurrentState();
+    manager.serviceDeferredBackup(1000);
+    TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+
+    // Model the bounded-timeout boundary: the old task has committed to exit,
+    // abort recovery reopens admission, and service queues work before the old
+    // task publishes itself inactive.
+    gDeferredSettingsBackupState.shutdownRequested.store(true, std::memory_order_release);
+    resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
+    manager.mutableSettings().apSSID = "DuringExit";
+    manager.requestDeferredBackupFromCurrentState();
+    manager.serviceDeferredBackup(2000);
+    TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+
+    TEST_ASSERT_TRUE(completeDeferredBackupWriterExit());
+
+    TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_TRUE(gDeferredSettingsBackupState.writerActive.load(std::memory_order_acquire));
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+
+    JsonDocument backupDoc;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
+    TEST_ASSERT_EQUAL_STRING("DuringExit", backupDoc["apSSID"].as<const char*>());
+}
+
+void test_shutdown_exit_discards_late_deferred_payload_and_waits_for_admissions() {
+    fs::FS fs(g_tempRoot);
+    storageManager.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+
+    SettingsManager manager;
+    manager.requestDeferredBackupFromCurrentState();
+    manager.serviceDeferredBackup(1000);
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+
+    gDeferredSettingsBackupState.writerActive.store(false, std::memory_order_release);
+    TEST_ASSERT_FALSE(deferredBackupWriterQuiesced());
+    gDeferredSettingsBackupState.writerActive.store(true, std::memory_order_release);
+
+    gDeferredSettingsBackupState.shutdownRequested.store(true, std::memory_order_release);
+    TEST_ASSERT_FALSE(completeDeferredBackupWriterExit());
+    TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(deferredBackupWriterQuiesced());
+
+    gDeferredSettingsBackupState.writerAdmissionsInFlight.store(1, std::memory_order_release);
+    TEST_ASSERT_FALSE(deferredBackupWriterQuiesced());
+    gDeferredSettingsBackupState.writerAdmissionsInFlight.store(0, std::memory_order_release);
+    TEST_ASSERT_TRUE(deferredBackupWriterQuiesced());
+}
+
 void test_writer_failure_requeues_backup_request_for_rebuild() {
     fs::FS fs(g_tempRoot);
     storageManager.setFilesystem(&fs, true);
@@ -345,6 +432,9 @@ int main() {
     RUN_TEST(test_repeated_requests_coalesce_to_latest_snapshot);
     RUN_TEST(test_repeated_save_deferred_backup_calls_coalesce_to_latest_snapshot);
     RUN_TEST(test_service_deferred_backup_keeps_pending_when_writer_setup_fails);
+    RUN_TEST(test_aborted_shutdown_reopens_deferred_backup_writer_admission);
+    RUN_TEST(test_resume_handoffs_work_queued_while_old_deferred_writer_exits);
+    RUN_TEST(test_shutdown_exit_discards_late_deferred_payload_and_waits_for_admissions);
     RUN_TEST(test_writer_failure_requeues_backup_request_for_rebuild);
     RUN_TEST(test_restore_pending_deferred_backup_preserves_existing_sd_backup);
     RUN_TEST(test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_backup_exists);

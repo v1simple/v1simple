@@ -121,6 +121,31 @@ void test_disconnect_callback_still_defers_bond_heal() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("pendingDeleteBond_ = true"));
 }
 
+void test_disconnect_reason_is_deferred_then_logged_from_main_loop() {
+    const std::filesystem::path headerSource =
+        std::filesystem::path(projectRoot() + "/src/ble_client.h");
+    const std::filesystem::path connectionSource =
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp");
+    const std::filesystem::path runtimeSource =
+        std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp");
+    const std::string headerText = readFile(headerSource);
+    const std::string connectionText = readFile(connectionSource);
+    const std::string runtimeText = readFile(runtimeSource);
+    const std::string disconnectBody =
+        extractFunctionBody(connectionText, "void V1BLEClient::ClientCallbacks::onDisconnect");
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          headerText.find("std::atomic<int> pendingDisconnectReason_{0};"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          disconnectBody.find("pendingDisconnectReason_.store(reason"));
+    TEST_ASSERT_EQUAL(std::string::npos, disconnectBody.find("Serial.printf"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          processBody.find("pendingDisconnectReason_.exchange(0"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          processBody.find("Applying V1 disconnect reason=%d eventMs=%lu"));
+}
+
 void test_disconnect_callback_no_longer_stops_proxy_advertising_inline() {
     const std::filesystem::path source =
         std::filesystem::path(projectRoot() + "/src/ble_connection.cpp");
@@ -491,11 +516,14 @@ void test_ble_queue_append_uses_resize_memcpy_and_resync_logs_are_time_gated() {
     const std::string processBody =
         extractFunctionBody(text, "void BleQueueModule::process()");
 
+    // The append is `length`-based, not `toCopy`-based: a chunk is now admitted
+    // whole or refused whole, so there is no partial-copy count to name. The
+    // resize+memcpy contract (never std::vector::insert) is unchanged.
     TEST_ASSERT_EQUAL(std::string::npos, appendBody.find("rxBuffer.insert("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          appendBody.find("rxBuffer.resize(oldSize + toCopy);"));
+                          appendBody.find("rxBuffer.resize(oldSize + length);"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          appendBody.find("memcpy(rxBuffer.data() + oldSize, data, toCopy);"));
+                          appendBody.find("memcpy(rxBuffer.data() + oldSize, data, length);"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           headerText.find("BleLogRateLimitState tooLargeWarningLog_;"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
@@ -597,6 +625,21 @@ void test_ble_mutex_trylocks_use_semaphore_guard_in_runtime_and_callbacks() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, runtimeText.find("SemaphoreGuard lock(bleMutex_, 0)"));
     TEST_ASSERT_EQUAL(std::string::npos, connectionText.find("SemaphoreGuard lock(instancePtr->bleMutex_, 0)"));
     TEST_ASSERT_EQUAL(std::string::npos, connectionText.find("SemaphoreGuard lock(bleClient->bleMutex_, 0)"));
+}
+
+void test_runtime_process_retries_deferred_proxy_queue_release() {
+    const std::string runtimeText =
+        readFile(std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp"));
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    const size_t pendingGate = processBody.find("proxyQueueReleasePending_.load(std::memory_order_acquire)");
+    const size_t finalizeCall = processBody.find("tryFinalizeProxyQueueRelease()");
+    const size_t callbackDrain = processBody.find("pendingConnectStateUpdate_");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, pendingGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, finalizeCall);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, callbackDrain);
+    TEST_ASSERT_TRUE(pendingGate < finalizeCall);
+    TEST_ASSERT_TRUE(finalizeCall < callbackDrain);
 }
 
 void test_connected_flag_uses_explicit_atomic_load_store() {
@@ -1021,7 +1064,7 @@ void test_command_write_uses_one_main_loop_owned_handle_snapshot() {
     TEST_ASSERT_EQUAL(std::string::npos, body.find("pCommandChar_->"));
 }
 
-void test_notify_queue_full_path_reuses_member_drop_scratch() {
+void test_notify_queue_full_path_drops_incoming_without_evicting_queue_head() {
     const std::string headerText = readFile(
         std::filesystem::path(projectRoot() + "/src/modules/ble/ble_queue_module.h"));
     const std::string queueText = readFile(
@@ -1029,12 +1072,64 @@ void test_notify_queue_full_path_reuses_member_drop_scratch() {
     const std::string body =
         extractFunctionBody(queueText, "void BleQueueModule::onNotify");
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          headerText.find("BLEDataPacket dropScratch_{};"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          body.find("xQueueReceive(queueHandle_, &dropScratch_, 0)"));
+    TEST_ASSERT_EQUAL(std::string::npos, headerText.find("BLEDataPacket dropScratch_{};"));
+    TEST_ASSERT_EQUAL(std::string::npos, body.find("xQueueReceive(queueHandle_"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("PERF_INC(queueDrops)"));
     TEST_ASSERT_EQUAL(std::string::npos, body.find("BLEDataPacket dropped"));
     TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(body, "BLEDataPacket pkt"));
+}
+
+void test_session_open_boundary_precedes_subscription_work() {
+    const std::string runtimeText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_runtime.cpp"));
+    const std::string processBody = extractFunctionBody(runtimeText, "void V1BLEClient::process()");
+
+    const size_t acceptedEdge = processBody.find("connected_.store(edgeStillAccepted");
+    const size_t openBoundary = processBody.find("sessionOpenedCallback_(edgeGeneration)");
+    const size_t stateMachine = processBody.find("switch (bleState_)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, acceptedEdge);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, openBoundary);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stateMachine);
+    TEST_ASSERT_TRUE(acceptedEdge < openBoundary);
+    TEST_ASSERT_TRUE(openBoundary < stateMachine);
+}
+
+void test_session_close_boundary_follows_generation_invalidation_once() {
+    const std::string connectionText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp"));
+    const std::string quiesceBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::beginClientQuiesce");
+    const std::string disconnectBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::ClientCallbacks::onDisconnect");
+
+    const size_t closeGate = quiesceBody.find("sessionPublicationGate_.close();");
+    const size_t generationStore = quiesceBody.find("sessionGeneration_.store(nextGeneration");
+    const size_t closeBoundary = quiesceBody.find("sessionClosedCallback_(nextGeneration)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, closeGate);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationStore);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, closeBoundary);
+    TEST_ASSERT_TRUE(closeGate < generationStore);
+    TEST_ASSERT_TRUE(generationStore < closeBoundary);
+    TEST_ASSERT_EQUAL_UINT64(1, countOccurrences(quiesceBody, "sessionClosedCallback_("));
+    TEST_ASSERT_EQUAL(std::string::npos, disconnectBody.find("sessionClosedCallback_("));
+}
+
+void test_notify_callback_propagates_only_revalidated_session_generation() {
+    const std::string connectionText = readFile(
+        std::filesystem::path(projectRoot() + "/src/ble_connection.cpp"));
+    const std::string notifyBody = extractFunctionBody(
+        connectionText, "void V1BLEClient::notifyCallback");
+
+    const size_t generationCapture = notifyBody.find("const uint32_t callbackGeneration");
+    const size_t generationRecheck = notifyBody.find(
+        "sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration");
+    const size_t dataPublish = notifyBody.find(
+        "dataCallback_(pData, length, charId, callbackGeneration)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationCapture);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, generationRecheck);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, dataPublish);
+    TEST_ASSERT_TRUE(generationCapture < generationRecheck);
+    TEST_ASSERT_TRUE(generationRecheck < dataPublish);
 }
 
 int main() {
@@ -1042,6 +1137,7 @@ int main() {
     RUN_TEST(test_ble_connection_log_rate_limit_allows_first_then_bounds_burst);
     RUN_TEST(test_async_connect_does_not_delete_bond);
     RUN_TEST(test_disconnect_callback_still_defers_bond_heal);
+    RUN_TEST(test_disconnect_reason_is_deferred_then_logged_from_main_loop);
     RUN_TEST(test_disconnect_callback_no_longer_stops_proxy_advertising_inline);
     RUN_TEST(test_v1_connection_event_timestamp_is_written_on_connect_and_disconnect);
     RUN_TEST(test_verify_push_edge_state_is_tracked_in_header_and_commands);
@@ -1065,6 +1161,7 @@ int main() {
     RUN_TEST(test_destructor_clears_instance_ptr_only_for_active_instance);
     RUN_TEST(test_connect_to_server_removes_unused_addr_type_local);
     RUN_TEST(test_ble_mutex_trylocks_use_semaphore_guard_in_runtime_and_callbacks);
+    RUN_TEST(test_runtime_process_retries_deferred_proxy_queue_release);
     RUN_TEST(test_connected_flag_uses_explicit_atomic_load_store);
     RUN_TEST(test_ble_timing_state_and_rssi_caches_use_uint32);
     RUN_TEST(test_v1_scan_starts_reassert_scan_callback_ownership);
@@ -1083,6 +1180,9 @@ int main() {
     RUN_TEST(test_discovery_task_publishes_generation_and_exit_stack_before_releasing_owner);
     RUN_TEST(test_hard_reset_is_nonblocking_and_uses_quiescence_state);
     RUN_TEST(test_command_write_uses_one_main_loop_owned_handle_snapshot);
-    RUN_TEST(test_notify_queue_full_path_reuses_member_drop_scratch);
+    RUN_TEST(test_notify_queue_full_path_drops_incoming_without_evicting_queue_head);
+    RUN_TEST(test_session_open_boundary_precedes_subscription_work);
+    RUN_TEST(test_session_close_boundary_follows_generation_invalidation_once);
+    RUN_TEST(test_notify_callback_propagates_only_revalidated_session_generation);
     return UNITY_END();
 }

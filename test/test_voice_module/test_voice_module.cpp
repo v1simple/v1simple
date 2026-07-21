@@ -471,8 +471,89 @@ void test_process_announces_normal_k_when_phototype_zero() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::K), static_cast<int>(action.band));
 }
 
+// ---------------------------------------------------------------------------
+// Announced-alert set — FIFO window, not a saturating set
+// ---------------------------------------------------------------------------
+
+// Run one process() cycle with `priority` first and `secondary` second. Keeping
+// the same priority alert across calls holds canAnnounceSecondary() satisfied.
+static VoiceAction runWithSecondary(const AlertData& priority, const AlertData& secondary, unsigned long now) {
+    AlertData alerts[2] = {priority, secondary};
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 2;
+    ctx.mainVolume = 5;
+    ctx.now = now;
+    return voiceModule.process(ctx);
+}
+
+void test_announced_set_evicts_oldest_instead_of_saturating() {
+    settingsManager.settings.announceSecondaryAlerts = true;
+
+    // Establish a stable priority alert. This also consumes one announced slot.
+    AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700);
+    VoiceContext ctx;
+    ctx.priority = &priority;
+    ctx.alerts = &priority;
+    ctx.alertCount = 1;
+    ctx.mainVolume = 5;
+    ctx.now = mockMillis;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
+                          static_cast<int>(voiceModule.process(ctx).type));
+
+    // Announce 10 distinct secondaries. The priority already holds a slot, so the
+    // window fills before the loop ends — the tail is exactly what the old
+    // saturating set silently refused to record.
+    const int kSecondaries = 10;  // VoiceModule::MAX_ANNOUNCED_ALERTS
+    uint16_t freqs[kSecondaries];
+    unsigned long now = mockMillis;
+    for (int i = 0; i < kSecondaries; i++) {
+        now += 3000;  // clears PRIORITY_STABILITY_MS and POST_PRIORITY_GAP_MS
+        freqs[i] = static_cast<uint16_t>(24100 + i);
+        AlertData secondary = AlertData::create(BAND_K, DIR_FRONT, 3, 0, freqs[i]);
+        VoiceAction announced = runWithSecondary(priority, secondary, now);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_SECONDARY),
+                              static_cast<int>(announced.type));
+        TEST_ASSERT_EQUAL_UINT16(freqs[i], announced.freq);
+    }
+
+    // The newest secondary must be remembered. Once the old set saturated it
+    // stopped recording, so this bogey announced again on every later cycle.
+    now += 3000;
+    const uint16_t newestFreq = freqs[kSecondaries - 1];
+    AlertData newest = AlertData::create(BAND_K, DIR_FRONT, 3, 0, newestFreq);
+    VoiceAction repeat = runWithSecondary(priority, newest, now);
+    TEST_ASSERT_FALSE(repeat.type == VoiceAction::Type::ANNOUNCE_SECONDARY && repeat.freq == newestFreq);
+
+    // Eviction is oldest-first: one more new secondary pushes freqs[0] out of the
+    // window, so it re-arms while the rest of the window stays suppressed.
+    now += 3000;
+    const uint16_t extraFreq = 24200;
+    AlertData extra = AlertData::create(BAND_K, DIR_FRONT, 3, 0, extraFreq);
+    VoiceAction extraAction = runWithSecondary(priority, extra, now);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_SECONDARY),
+                          static_cast<int>(extraAction.type));
+    TEST_ASSERT_EQUAL_UINT16(extraFreq, extraAction.freq);
+
+    now += 3000;
+    AlertData evicted = AlertData::create(BAND_K, DIR_FRONT, 3, 0, freqs[0]);
+    VoiceAction reArmed = runWithSecondary(priority, evicted, now);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_SECONDARY),
+                          static_cast<int>(reArmed.type));
+    TEST_ASSERT_EQUAL_UINT16(freqs[0], reArmed.freq);
+
+    // Re-announcing freqs[0] above pushed freqs[1] out in turn, so the oldest id
+    // still inside the window is freqs[2]. It must stay suppressed.
+    now += 3000;
+    AlertData stillHeld = AlertData::create(BAND_K, DIR_FRONT, 3, 0, freqs[2]);
+    VoiceAction held = runWithSecondary(priority, stillHeld, now);
+    TEST_ASSERT_FALSE(held.type == VoiceAction::Type::ANNOUNCE_SECONDARY && held.freq == freqs[2]);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_announced_set_evicts_oldest_instead_of_saturating);
 
     // Static utilities
     RUN_TEST(test_make_alert_id_encodes_band_and_freq);

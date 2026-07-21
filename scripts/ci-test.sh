@@ -20,7 +20,7 @@ Usage: scripts/ci-test.sh [--with-coverage] [--help]
                     suites + gcovr + ratchet check). OFF by default: the lane is
                     a whole second native run (measured: 170.7s uninstrumented
                     vs 206.6s instrumented for 149 suites, plus ~24s of gcovr),
-                    so the PR gate does not carry it. It runs out-of-band in
+                    so the authoritative main gate does not carry it. It runs out-of-band in
                     .github/workflows/coverage.yml. When this flag is passed the
                     coverage section runs AFTER the budget check, so it is not
                     charged against the 1200s ci-test budget.
@@ -86,9 +86,12 @@ run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version
 section "Semantic Gates"
 run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
 run_step "Bug pattern scanner regression tests" python3 scripts/test_bug_pattern_scanner.py
+run_step "WiFi API contract regression tests" python3 scripts/test_check_wifi_api_contract.py
+run_step "WiFi API fixture generator regression tests" python3 scripts/test_generate_wifi_api_fixtures.py
 run_step "LittleFS image compatibility regression tests" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Release version preparation regression tests" python3 scripts/test_prepare_release.py
 run_step "Release CI evidence regression tests" python3 scripts/test_check_ci_evidence.py
+run_step "Release workflow trigger contract regression tests" python3 scripts/test_release_workflow_flash_contract.py
 run_step "sdkconfig redefine guard (CONFIG_* -D vs framework header)" python3 scripts/check_sdkconfig_redefines.py
 run_step "BLE deletion semantic guard" python3 scripts/check_ble_deletion_contract.py
 run_step "Frontend HTTP resilience semantic guard" python3 scripts/check_frontend_http_resilience_contract.py
@@ -109,8 +112,8 @@ run_step "Native linked-source manifest contract" python3 scripts/native_test_so
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native_car
-run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch
-run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch
+run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_wifi_client_enable_transaction test_wifi_scan_result_owner
+run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_wifi_client_enable_transaction test_wifi_scan_result_owner
 run_step "Functional scenarios" ./scripts/run_functional_tests.sh
 
 section "Critical Mutation Gate"
@@ -127,9 +130,11 @@ run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
 run_step "OBD/proxy qualification validator regression tests" python3 scripts/test_obd_proxy_qualification.py
 run_step "Release evidence manifest regression tests" python3 scripts/test_release_evidence_manifest.py
+run_step "Release evidence generator regression tests" python3 scripts/test_prepare_release_evidence_manifest.py
 
 section "Compatibility Guards"
 run_step "WiFi API contracts" python3 scripts/check_wifi_api_contract.py
+run_step "WiFi API captured fixture drift" python3 scripts/generate_wifi_api_fixtures.py --check
 run_step "Reorder warning contract" python3 scripts/check_reorder_warning_contract.py
 run_step "Quiet coordinator contract" python3 scripts/check_quiet_coordinator_contract.py
 run_step "Connection cycle invariants contract" python3 scripts/check_connection_cycle_invariants.py
@@ -181,7 +186,7 @@ section "Budget Check"
 run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TIMING_DIR/timing.json"
 
 # Opt-in only, and deliberately sequenced AFTER the budget check: the coverage
-# lane is not part of the authoritative PR gate, so its wall clock must not be
+# lane is not part of the authoritative main gate, so its wall clock must not be
 # charged against the 1200s ci-test budget. Without --with-coverage nothing
 # below runs and the gate is unchanged.
 if [[ "$WITH_COVERAGE" -eq 1 ]]; then

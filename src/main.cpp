@@ -53,6 +53,7 @@
 #include "modules/touch/touch_ui_module.h"
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
+#include "modules/wifi/wifi_maintenance_recovery_module.h"
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_state_module.h"
@@ -210,8 +211,8 @@ QualificationSerialModule qualificationSerialModule;
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
-void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID) {
-    bleQueueModule.onNotify(data, length, charUUID);
+void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);
 }
 
 template <typename StageLogger>
@@ -330,6 +331,8 @@ static void initializeBlePreInitAndScan(const CheckpointLogger& logBootCheckpoin
         // Scan starts in setup; connection state-machine work still waits for
         // the boot-ready gate later in setup().
         bleClient.onDataReceived(onV1Data);
+        bleClient.onV1SessionOpened(onV1SessionOpened);
+        bleClient.onV1SessionClosed(onV1SessionClosed);
         bleClient.onV1ConnectImmediate(onV1ConnectImmediate);
         bleClient.onV1Connected(onV1Connected);
         logBootCheckpoint("ble_callbacks_registered");
@@ -384,6 +387,7 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     settingsManager.begin();
     powerModule.begin(&batteryManager, &display, &settingsManager);
     powerModule.setShutdownPreparationCallback(prepareForShutdown, nullptr);
+    powerModule.setShutdownAbortCallback(resumeAfterAbortedShutdown, nullptr);
     powerModule.logStartupStatus();
     logBootStage("settings");
 
@@ -414,7 +418,6 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     displayPreviewModule.begin(&display);
 }
 
-static constexpr unsigned long MAINTENANCE_BOOT_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 static constexpr unsigned long MAINTENANCE_EXIT_LONG_PRESS_MS = 4000UL;
 
 static void logMaintenanceHeapSnapshot(const char* stage) {
@@ -431,8 +434,10 @@ static void logMaintenanceHeapSnapshot(const char* stage) {
 template <typename StageLogger>
 static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, const uint32_t bootId,
                                           const esp_reset_reason_t resetReason, const StageLogger& logBootStage) {
-    SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu\n", static_cast<unsigned long>(bootId),
-                     resetReasonToString(resetReason), static_cast<unsigned long>(MAINTENANCE_BOOT_TIMEOUT_MS));
+    SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu maxSessionMs=%lu\n",
+                     static_cast<unsigned long>(bootId), resetReasonToString(resetReason),
+                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs),
+                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootMaxSessionMs));
 
     logMaintenanceHeapSnapshot("pre_wifi");
     wifiManager.setMaintenanceBootMode(true);
@@ -452,7 +457,13 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
     logBootStage("maintenance_wifi");
 
     mainRuntimeState.bootReady = true;
-    mainRuntimeState.maintenanceBootStartedMs = millis();
+    // Session start is immutable (it anchors the absolute cap); the deadline
+    // anchor starts equal to it and is republished every loop by the policy.
+    const unsigned long maintenanceSessionStartMs = millis();
+    mainRuntimeState.maintenanceBootSessionStartedMs =
+        (maintenanceSessionStartMs == 0) ? 1UL : maintenanceSessionStartMs;
+    mainRuntimeState.maintenanceLastUiActivityMs = 0;
+    mainRuntimeState.maintenanceBootStartedMs = mainRuntimeState.maintenanceBootSessionStartedMs;
     SerialLog.printf("[MaintBoot] setup total: %lu ms\n", millis() - setupStartMs);
 }
 
@@ -554,7 +565,29 @@ void loop() {
         audio_process_amp_timeout();
         const unsigned long now = millis();
 
+        powerModule.process(now);
         wifiManager.process();
+
+        // The maintenance session exists to serve the web UI, so it must not
+        // sit WiFi-dead for its bounded lifetime: the AP can fail to start at
+        // maintenance entry, and the emergency low-SRAM stop can take the
+        // service down mid-session. Neither has any other recovery until the
+        // maintenance timeout reboots. Ask the recovery policy whether a
+        // restart attempt is due and log every outcome so sessions are
+        // diagnosable from the serial log.
+        static WifiMaintenanceRecoveryModule wifiMaintenanceRecoveryModule;
+        WifiMaintenanceRecoveryInput wifiRecoveryInput;
+        wifiRecoveryInput.maintenanceBootActive = true;
+        wifiRecoveryInput.wifiServiceReachable = wifiManager.isWifiServiceReachable();
+        wifiRecoveryInput.nowMs = now;
+        const WifiMaintenanceRecoveryResult wifiRecovery = wifiMaintenanceRecoveryModule.evaluate(wifiRecoveryInput);
+        if (wifiRecovery.attemptRestart) {
+            SerialLog.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
+                             static_cast<unsigned long>(wifiRecovery.attemptNumber));
+            const bool wifiRestarted = wifiManager.startSetupMode(false);
+            SerialLog.printf("[MaintBoot] wifi_restart ok=%s\n", wifiRestarted ? "true" : "false");
+        }
+
         settingsManager.serviceDeferredPersist(static_cast<uint32_t>(now));
         settingsManager.serviceDeferredBackup(static_cast<uint32_t>(now));
 
@@ -566,17 +599,34 @@ void loop() {
         static bool maintenanceShownStation = false;
         const bool maintenanceStaConnected = wifiManager.isConnected();
         String maintenanceIp = maintenanceStaConnected ? wifiManager.getIPAddress() : wifiManager.getAPIPAddress();
-        if (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation) {
-            maintenanceShownIp = maintenanceIp;
-            maintenanceShownStation = maintenanceStaConnected;
+        const bool maintenancePreviewRunning = displayPreviewModule.isRunning();
+        if (!maintenancePreviewRunning &&
+            (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation)) {
+            display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
+        }
+        maintenanceShownIp = maintenanceIp;
+        maintenanceShownStation = maintenanceStaConnected;
+
+        // Normal runtime advances previews through DisplayOrchestrationModule,
+        // which is intentionally not initialized in maintenance boot. Service
+        // the shared preview module here so Colors/visual API previews actually
+        // render, then return ownership to the maintenance screen on expiry or
+        // cancellation.
+        if (maintenancePreviewRunning) {
+            displayPreviewModule.update();
+        }
+        if (displayPreviewModule.consumeEnded()) {
             display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
         }
 
         static unsigned long bootButtonPressStartMs = 0;
         static bool exitRequestFired = false;
         static bool idleHeapLogged = false;
-        if (!idleHeapLogged && mainRuntimeState.maintenanceBootStartedMs != 0 &&
-            (now - mainRuntimeState.maintenanceBootStartedMs) >= 5000UL) {
+        // Anchored on the immutable session start, not the deadline anchor:
+        // the deadline anchor slides with UI activity, so it would delay or
+        // suppress this one-shot diagnostic on a session that is being used.
+        if (!idleHeapLogged && mainRuntimeState.maintenanceBootSessionStartedMs != 0 &&
+            static_cast<uint32_t>(now - mainRuntimeState.maintenanceBootSessionStartedMs) >= 5000UL) {
             idleHeapLogged = true;
             logMaintenanceHeapSnapshot("idle_5s");
         }
@@ -597,9 +647,41 @@ void loop() {
             ESP.restart();
         }
 
-        if (mainRuntimeState.maintenanceBootStartedMs != 0 &&
-            (now - mainRuntimeState.maintenanceBootStartedMs) >= MAINTENANCE_BOOT_TIMEOUT_MS) {
-            SerialLog.println("[MaintBoot] timeout -> rebooting normal runtime");
+        // ── Maintenance session lifetime ──────────────────────────────
+        // Bug #18: this used to be a bare elapsed-since-start comparison, so a
+        // user working in the maintenance web UI was rebooted mid-task at ten
+        // minutes. The deadline now extends on UI activity, bounded by an
+        // absolute cap. All of the decision logic lives in
+        // MainRuntimePolicy::evaluateMaintenanceSession (pure, host-tested in
+        // test/test_main_runtime_maintenance_policy) because nothing in this
+        // file can be compiled natively; this block only feeds it inputs and
+        // acts on its output.
+        //
+        // WiFiManager publishes UI activity as a predicate, not a timestamp,
+        // so sample it here and latch the observation time.
+        if (wifiManager.isUiActive(MainRuntimePolicy::MaintenanceUiActivityProbeMs)) {
+            mainRuntimeState.maintenanceLastUiActivityMs = (now == 0) ? 1UL : now;
+        }
+
+        MainRuntimePolicy::MaintenanceSessionInput maintenanceSessionInput;
+        maintenanceSessionInput.nowMs = static_cast<uint32_t>(now);
+        maintenanceSessionInput.sessionStartedMs =
+            static_cast<uint32_t>(mainRuntimeState.maintenanceBootSessionStartedMs);
+        maintenanceSessionInput.lastUiActivityMs = static_cast<uint32_t>(mainRuntimeState.maintenanceLastUiActivityMs);
+        maintenanceSessionInput.sessionActive = mainRuntimeState.maintenanceBootSessionStartedMs != 0;
+        const MainRuntimePolicy::MaintenanceSessionDecision maintenanceSession =
+            MainRuntimePolicy::evaluateMaintenanceSession(maintenanceSessionInput);
+
+        // Republish the deadline anchor so /api/status keeps reporting a
+        // countdown that agrees with the device. See the contract note on
+        // MaintenanceSessionDecision::deadlineAnchorMs.
+        mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;
+
+        if (maintenanceSession.shouldReboot) {
+            SerialLog.printf("[MaintBoot] timeout reason=%s sessionMs=%lu idleMs=%lu -> rebooting normal runtime\n",
+                             maintenanceSession.maxSessionReached ? "max_session" : "idle",
+                             static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
+                             static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
             settingsManager.save();
             markCleanShutdown();
             ESP.restart();
@@ -628,7 +710,7 @@ void loop() {
 
     // Process battery/power and touch UI.
     if (shouldReturnEarlyFromLoopPowerTouchPhase(now, loopStartUs)) {
-        mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs);
+        mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs, bleConnectedNow);
         return; // Skip normal loop processing while in settings mode.
     }
 
@@ -646,10 +728,6 @@ void loop() {
         const ObdRuntimeStatus obdStatus = obdRuntimeModule.snapshot(now);
         const V1Settings& currentSettings = settingsManager.get();
         const bool wifiManualStartIntentLatched = mainRuntimeState.wifiManualStartIntentLatched;
-        ObdBleArbitrationRequest bleArbitrationRequest = connectionCycleCoordinatorModule.arbitrationRequest();
-        if (obdStatus.manualScanPending) {
-            bleArbitrationRequest = ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
-        }
         const CycleContext cycleContext{
             now,
             mainRuntimeState.bootReady,
@@ -678,6 +756,10 @@ void loop() {
             currentSettings.cycleTeardownAckTimeoutMs,
         };
         connectionCycleCoordinatorModule.update(cycleContext);
+        ObdBleArbitrationRequest bleArbitrationRequest = connectionCycleCoordinatorModule.arbitrationRequest();
+        if (obdStatus.manualScanPending) {
+            bleArbitrationRequest = ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
+        }
         bleClient.setConnectionCycleState(static_cast<uint8_t>(connectionCycleCoordinatorModule.state()),
                                           connectionCycleCoordinatorModule.timeInStateMs(now));
         const bool proxyModeEnabled = currentSettings.proxyBLE && bleClient.isProxyEnabled();

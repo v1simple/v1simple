@@ -301,8 +301,24 @@ static void handleScanImpl(WebServer& server, const Runtime& runtime, bool start
 
     Serial.printf("[HTTP] %s /api/wifi/scan\n", startIfIdle ? "POST" : "GET");
 
-    if (runtime.isScanRunning(runtime.isScanRunningCtx) && runtime.isScanInProgress(runtime.isScanInProgressCtx)) {
-        sendScanInProgress(server);
+    const bool activeUiScan = runtime.isScanRunning(runtime.isScanRunningCtx);
+    if (activeUiScan) {
+        if (runtime.isScanInProgress(runtime.isScanInProgressCtx)) {
+            sendScanInProgress(server);
+            return;
+        }
+        if (runtime.hasCompletedScanResults(runtime.hasCompletedScanResultsCtx)) {
+            sendScanResults(server, runtime.getScannedNetworks(runtime.getScannedNetworksCtx));
+            return;
+        }
+    }
+
+    if (startIfIdle) {
+        if (runtime.startScan(runtime.startScanCtx)) {
+            sendScanInProgress(server);
+            return;
+        }
+        sendScanStartFailed(server);
         return;
     }
 
@@ -311,17 +327,7 @@ static void handleScanImpl(WebServer& server, const Runtime& runtime, bool start
         return;
     }
 
-    if (!startIfIdle) {
-        sendScanIdle(server);
-        return;
-    }
-
-    if (runtime.startScan(runtime.startScanCtx)) {
-        sendScanInProgress(server);
-        return;
-    }
-
-    sendScanStartFailed(server);
+    sendScanIdle(server);
 }
 
 static void handleDisconnectImpl(WebServer& server, const Runtime& runtime) {

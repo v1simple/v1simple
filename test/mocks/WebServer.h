@@ -3,8 +3,13 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "Arduino.h"
+
+#ifndef CONTENT_LENGTH_NOT_SET
+#define CONTENT_LENGTH_NOT_SET ((size_t)-2)
+#endif
 
 class WebServer {
 public:
@@ -17,6 +22,8 @@ public:
         bool connected() const { return connected_; }
 
         void setConnected(bool connected) { connected_ = connected; }
+
+        void stop() { connected_ = false; }
 
         size_t write(const uint8_t* data, size_t length) {
             if (!server_ || !data || length == 0 || !connected_) {
@@ -110,6 +117,7 @@ public:
 
     void setContentLength(size_t length) {
         lastContentLength = length;
+        contentLengthHistory.push_back(length);
     }
 
     void setClientMaxWriteSize(size_t bytes) {
@@ -164,6 +172,7 @@ public:
     String lastContentType;
     String lastBody;
     size_t lastContentLength = 0;
+    std::vector<size_t> contentLengthHistory;
     int sendCount = 0;
 
 private:

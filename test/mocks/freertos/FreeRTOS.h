@@ -51,6 +51,9 @@ struct MockSemaphoreState {
     uint32_t giveCalls = 0;
     TickType_t lastTakeTimeout = 0;
     std::deque<int> takeResults;
+    std::vector<SemaphoreHandle_t> takeHandles;
+    std::vector<SemaphoreHandle_t> giveHandles;
+    std::vector<SemaphoreHandle_t> heldHandles;
 };
 
 inline MockSemaphoreState g_mock_semaphore_state{};
@@ -63,20 +66,37 @@ inline void mock_queue_semaphore_take_result(int result) {
     g_mock_semaphore_state.takeResults.push_back(result);
 }
 
+inline bool mock_semaphore_is_held(SemaphoreHandle_t semaphore) {
+    return std::find(g_mock_semaphore_state.heldHandles.begin(),
+                     g_mock_semaphore_state.heldHandles.end(),
+                     semaphore) != g_mock_semaphore_state.heldHandles.end();
+}
+
 inline SemaphoreHandle_t xSemaphoreCreateMutex() { return (void*)1; }
 inline SemaphoreHandle_t xSemaphoreCreateBinary() { return (void*)1; }
-inline int xSemaphoreTake(SemaphoreHandle_t, TickType_t timeoutTicks) {
+inline int xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeoutTicks) {
     g_mock_semaphore_state.takeCalls++;
     g_mock_semaphore_state.lastTakeTimeout = timeoutTicks;
+    g_mock_semaphore_state.takeHandles.push_back(semaphore);
+    int result = pdTRUE;
     if (!g_mock_semaphore_state.takeResults.empty()) {
-        const int result = g_mock_semaphore_state.takeResults.front();
+        result = g_mock_semaphore_state.takeResults.front();
         g_mock_semaphore_state.takeResults.pop_front();
-        return result;
     }
-    return 1;
+    if (result == pdTRUE) {
+        g_mock_semaphore_state.heldHandles.push_back(semaphore);
+    }
+    return result;
 }
-inline int xSemaphoreGive(SemaphoreHandle_t) {
+inline int xSemaphoreGive(SemaphoreHandle_t semaphore) {
     g_mock_semaphore_state.giveCalls++;
+    g_mock_semaphore_state.giveHandles.push_back(semaphore);
+    const auto held = std::find(g_mock_semaphore_state.heldHandles.rbegin(),
+                                g_mock_semaphore_state.heldHandles.rend(),
+                                semaphore);
+    if (held != g_mock_semaphore_state.heldHandles.rend()) {
+        g_mock_semaphore_state.heldHandles.erase(std::next(held).base());
+    }
     return 1;
 }
 inline void vSemaphoreDelete(SemaphoreHandle_t) {}
@@ -151,6 +171,13 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue, void* out, TickType_t) {
     std::vector<uint8_t> item = std::move(q->items.front());
     q->items.pop_front();
     std::memcpy(out, item.data(), std::min<size_t>(q->itemSize, item.size()));
+    return pdTRUE;
+}
+
+inline BaseType_t xQueueReset(QueueHandle_t queue) {
+    if (!queue) return pdFALSE;
+    MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    q->items.clear();
     return pdTRUE;
 }
 

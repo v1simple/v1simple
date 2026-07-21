@@ -5,21 +5,26 @@
 
 #include "modules/alp/alp_runtime_module.h"
 #include "modules/wifi/wifi_api_response.h"
+#include "modules/wifi/wifi_json_document.h"
 
 namespace AlpApiService {
 
 namespace {
 
 void sendMaintenanceModeError(WebServer& server) {
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["error"] = "maintenance_mode";
     doc["message"] = "ALP runtime status is not available in maintenance mode";
     WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
+void sendRuntimeUnavailableError(WebServer& server) {
+    server.send(503, "application/json", "{\"error\":\"alp runtime not wired\"}");
+}
+
 } // namespace
 
-void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*markUiActivity)(void* ctx),
+void handleApiStatus(WebServer& server, AlpRuntimeModule* alpRuntime, void (*markUiActivity)(void* ctx),
                      void* uiActivityCtx, bool maintenanceBootActive) {
     if (markUiActivity)
         markUiActivity(uiActivityCtx);
@@ -27,19 +32,23 @@ void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*mar
         sendMaintenanceModeError(server);
         return;
     }
+    if (!alpRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
 
-    const AlpStatus s = alpRuntime.snapshot();
-    const AlertSession& session = alpRuntime.currentSession();
+    const AlpStatus s = alpRuntime->snapshot();
+    const AlertSession& session = alpRuntime->currentSession();
     const uint32_t nowMs = millis();
 
-    JsonDocument doc;
+    WifiJson::Document doc;
 
     // ── Module-level status ──────────────────────────────────────────
-    doc["enabled"] = alpRuntime.isEnabled();
+    doc["enabled"] = alpRuntime->isEnabled();
     doc["state"] = static_cast<int>(s.state);
     doc["stateName"] = alpStateName(s.state);
     doc["uartActive"] = s.uartActive;
-    doc["ownsLaserDisplay"] = alpRuntime.ownsLaserDisplay();
+    doc["ownsLaserDisplay"] = alpRuntime->ownsLaserDisplay();
 
     // ── Last identified gun (persistent across alerts) ───────────────
     JsonObject lastGun = doc["lastGun"].to<JsonObject>();
@@ -51,7 +60,7 @@ void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*mar
 
     // ── V1-shape display projection (what the display consumes) ──────
     JsonObject event = doc["event"].to<JsonObject>();
-    const AlpLaserEvent currentEvent = alpRuntime.currentEvent();
+    const AlpLaserEvent currentEvent = alpRuntime->currentEvent();
     event["hasLaserEvent"] = currentEvent.active;
     event["isLaserDetecting"] = currentEvent.active;
     const AlpGunType eventGun = currentEvent.gun;

@@ -7,10 +7,58 @@
 #include "perf_metrics.h"
 #include "settings.h"
 #include "settings_sanitize.h"
+#include "modules/wifi/wifi_client_enable_transaction.h"
 #include "modules/wifi/wifi_sta_slot_policy.h"
-#include <algorithm>
-#include <map>
 #include <vector>
+
+#include <esp_wifi.h>
+
+namespace {
+
+int16_t startPhysicalWifiScan(void* /*ctx*/) {
+    WiFi.scanDelete();
+    return WiFi.scanNetworks(true, false, false, 300);
+}
+
+int16_t getPhysicalWifiScanStatus(void* /*ctx*/) {
+    return WiFi.scanComplete();
+}
+
+String getPhysicalWifiScanSsid(int16_t index, void* /*ctx*/) {
+    return WiFi.SSID(index);
+}
+
+int32_t getPhysicalWifiScanRssi(int16_t index, void* /*ctx*/) {
+    return WiFi.RSSI(index);
+}
+
+uint8_t getPhysicalWifiScanEncryption(int16_t index, void* /*ctx*/) {
+    return static_cast<uint8_t>(WiFi.encryptionType(index));
+}
+
+void releasePhysicalWifiScan(void* /*ctx*/) {
+    WiFi.scanDelete();
+}
+
+void abortPhysicalWifiScan(void* /*ctx*/) {
+    esp_wifi_scan_stop();
+    WiFi.scanDelete();
+}
+
+WifiScanResultOwner::Driver makeWifiScanDriver() {
+    WifiScanResultOwner::Driver driver;
+    driver.runningStatus = WIFI_SCAN_RUNNING;
+    driver.start = startPhysicalWifiScan;
+    driver.status = getPhysicalWifiScanStatus;
+    driver.ssidAt = getPhysicalWifiScanSsid;
+    driver.rssiAt = getPhysicalWifiScanRssi;
+    driver.encryptionAt = getPhysicalWifiScanEncryption;
+    driver.release = releasePhysicalWifiScan;
+    driver.abort = abortPhysicalWifiScan;
+    return driver;
+}
+
+} // namespace
 
 String WiFiManager::getAPIPAddress() const {
     if (isSetupModeActive()) {
@@ -34,72 +82,55 @@ String WiFiManager::getConnectedSSID() const {
 }
 
 bool WiFiManager::startWifiScan() {
-    if (wifiScanRunning_) {
-        Serial.println("[WiFiClient] Scan already in progress");
+    const WifiScanResultOwner::RequestResult result =
+        wifiScanOwner_.request(WifiScanConsumer::UI, makeWifiScanDriver());
+    if (result == WifiScanResultOwner::RequestResult::FAILED) {
+        Serial.println("[WiFiClient] UI scan failed to start");
         return false;
     }
 
-    Serial.println("[WiFiClient] Starting async network scan...");
-    WiFi.scanDelete(); // Clear previous results
+    Serial.println(result == WifiScanResultOwner::RequestResult::JOINED
+                       ? "[WiFiClient] UI joined the active network scan"
+                       : "[WiFiClient] Starting async network scan for UI");
+    return true;
+}
 
-    // Start async scan (non-blocking)
-    int result =
-        WiFi.scanNetworks(true, false, false, 300); // async=true, show_hidden=false, passive=false, max_ms_per_chan=300
-    if (result == WIFI_SCAN_RUNNING) {
-        wifiScanRunning_ = true;
-        return true;
+bool WiFiManager::isWifiScanRunning() const {
+    return wifiScanOwner_.isRunning() && wifiScanOwner_.isPending(WifiScanConsumer::UI);
+}
+
+bool WiFiManager::isWifiScanInProgress() {
+    const WifiScanResultOwner::HarvestResult result = wifiScanOwner_.harvest(makeWifiScanDriver());
+    if (result == WifiScanResultOwner::HarvestResult::FAILED) {
+        Serial.println("[WiFiClient] Active network scan failed");
     }
+    return result == WifiScanResultOwner::HarvestResult::RUNNING;
+}
 
-    Serial.printf("[WiFiClient] Scan failed to start: %d\n", result);
-    return false;
+bool WiFiManager::hasCompletedWifiScanResults() {
+    const WifiScanResultOwner::HarvestResult result = wifiScanOwner_.harvest(makeWifiScanDriver());
+    if (result == WifiScanResultOwner::HarvestResult::FAILED) {
+        Serial.println("[WiFiClient] Active network scan failed");
+    }
+    return wifiScanOwner_.hasSnapshot(WifiScanConsumer::UI);
 }
 
 std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
-    std::vector<ScannedNetwork> networks;
-
-    int16_t scanResult = WiFi.scanComplete();
-    if (scanResult == WIFI_SCAN_RUNNING) {
-        // Still scanning
-        return networks; // Empty
+    const WifiScanResultOwner::HarvestResult result = wifiScanOwner_.harvest(makeWifiScanDriver());
+    if (result == WifiScanResultOwner::HarvestResult::FAILED) {
+        Serial.println("[WiFiClient] Active network scan failed");
+        return {};
     }
 
-    wifiScanRunning_ = false;
-
-    if (scanResult == WIFI_SCAN_FAILED || scanResult < 0) {
-        Serial.printf("[WiFiClient] Scan failed: %d\n", scanResult);
-        return networks;
+    std::vector<ScannedNetwork> networks = wifiScanOwner_.copySnapshot(WifiScanConsumer::UI);
+    if (wifiScanOwner_.hasSnapshot(WifiScanConsumer::UI)) {
+        Serial.printf("[WiFiClient] UI scan snapshot has %u network(s)\n", static_cast<unsigned>(networks.size()));
     }
-
-    Serial.printf("[WiFiClient] Scan found %d networks\n", scanResult);
-
-    // Deduplicate by SSID (keep strongest signal)
-    std::map<String, ScannedNetwork> uniqueNetworks;
-
-    for (int i = 0; i < scanResult; i++) {
-        String ssid = WiFi.SSID(i);
-        if (ssid.length() == 0)
-            continue; // Skip hidden networks
-
-        int32_t rssi = WiFi.RSSI(i);
-        uint8_t encType = WiFi.encryptionType(i);
-
-        auto it = uniqueNetworks.find(ssid);
-        if (it == uniqueNetworks.end() || rssi > it->second.rssi) {
-            uniqueNetworks[ssid] = {ssid, rssi, encType};
-        }
-    }
-
-    // Convert to vector and sort by signal strength
-    for (const auto& pair : uniqueNetworks) {
-        networks.push_back(pair.second);
-    }
-
-    std::sort(networks.begin(), networks.end(), [](const ScannedNetwork& a, const ScannedNetwork& b) {
-        return a.rssi > b.rssi; // Strongest first
-    });
-
-    WiFi.scanDelete(); // Free memory
     return networks;
+}
+
+void WiFiManager::resetWifiScanState() {
+    wifiScanOwner_.reset(makeWifiScanDriver());
 }
 
 std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSavedNetworkSlots() const {
@@ -247,30 +278,54 @@ bool WiFiManager::connectToNetwork(const String& ssid, const String& password, b
 }
 
 bool WiFiManager::enableWifiClientFromSavedCredentials() {
-    settingsManager.setWifiClientEnabled(true);
+    struct EnableContext {
+        WiFiManager* manager;
+        WifiClientState priorState;
+        int priorConnectedSlotIndex;
+    };
 
-    if (maintenanceBootMode_) {
-        if (beginMaintenanceAutoConnectScan()) {
+    const bool wasEnabled = settingsManager.get().wifiClientEnabled;
+    EnableContext transaction{this, wifiClientState_, currentConnectedSlotIndex_};
+
+    WifiClientEnableTransaction::Runtime runtime;
+    runtime.ctx = &transaction;
+    runtime.persistedEnabled = wasEnabled;
+    runtime.lifecycleAdmitted = wifiClientState_ == WIFI_CLIENT_CONNECTING ||
+                                wifiClientState_ == WIFI_CLIENT_CONNECTED ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
+                                maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+    runtime.attemptStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        WiFiManager* self = transaction->manager;
+        if (self->maintenanceBootMode_) {
+            if (self->beginMaintenanceAutoConnectScan(true)) {
+                return true;
+            }
+            return !settingsManager.get().hasConfiguredWifiStaSlot();
+        }
+
+        const String savedSsid = settingsManager.get().wifiClientSSID;
+        if (savedSsid.length() == 0) {
+            self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            self->currentConnectedSlotIndex_ = -1;
             return true;
         }
-        const V1Settings& settings = settingsManager.get();
-        return !settings.hasConfiguredWifiStaSlot();
-    }
 
-    const String savedSsid = settingsManager.get().wifiClientSSID;
-    if (savedSsid.length() == 0) {
-        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-        currentConnectedSlotIndex_ = -1;
-        return true;
-    }
+        if (self->connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
+            return true;
+        }
 
-    if (connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
-        return true;
-    }
-
-    wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-    currentConnectedSlotIndex_ = -1;
-    return false;
+        self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        self->currentConnectedSlotIndex_ = -1;
+        return false;
+    };
+    runtime.rollbackFailedStart = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        transaction->manager->wifiClientState_ = transaction->priorState;
+        transaction->manager->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
+    };
+    runtime.commitEnabled = [](void* /*ctx*/) { settingsManager.setWifiClientEnabled(true); };
+    return WifiClientEnableTransaction::execute(runtime);
 }
 
 void WiFiManager::disconnectFromNetwork() {
@@ -377,7 +432,7 @@ void WiFiManager::processWifiClientConnectPhase() {
     }
 }
 
-bool WiFiManager::beginMaintenanceAutoConnectScan() {
+bool WiFiManager::beginMaintenanceAutoConnectScan(bool explicitEnableRequest) {
     cancelMaintenanceAutoConnect("restart_scan");
 
     if (!maintenanceBootMode_) {
@@ -385,59 +440,70 @@ bool WiFiManager::beginMaintenanceAutoConnectScan() {
     }
 
     const V1Settings& settings = settingsManager.get();
-    if (!settings.wifiClientEnabled || !settings.hasConfiguredWifiStaSlot()) {
+    if (!settings.hasConfiguredWifiStaSlot()) {
         Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: no saved slots");
         wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
         return false;
     }
-
-    if (wifiScanRunning_ || WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
-        Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: scan already running");
+    if (!settings.wifiClientEnabled && !explicitEnableRequest) {
+        Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: client disabled");
+        wifiClientState_ = WIFI_CLIENT_DISABLED;
         return false;
     }
 
-    WiFi.scanDelete();
-    const int result = WiFi.scanNetworks(true, false, false, 300);
-    if (result != WIFI_SCAN_RUNNING) {
-        Serial.printf("[WiFiClient] Maintenance STA auto-connect scan failed to start: %d\n", result);
+    const WifiScanResultOwner::RequestResult requestResult =
+        wifiScanOwner_.request(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
+    if (requestResult == WifiScanResultOwner::RequestResult::FAILED) {
+        Serial.println("[WiFiClient] Maintenance STA auto-connect scan failed to start");
         finishMaintenanceAutoConnect("scan_start_failed", true);
         return false;
     }
 
-    wifiScanRunning_ = true;
+    maintenanceAutoConnectStaDropGate_.clear();
     wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
     maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::SCANNING;
     maintenanceAutoConnectScanStartMs_ = millis();
     maintenanceAutoConnectSlotCount_ = 0;
     maintenanceAutoConnectSlotCursor_ = 0;
-    Serial.println("[WiFiClient] Maintenance STA auto-connect scan started");
+    Serial.println(requestResult == WifiScanResultOwner::RequestResult::JOINED
+                       ? "[WiFiClient] Maintenance STA auto-connect joined the active scan"
+                       : "[WiFiClient] Maintenance STA auto-connect scan started");
     return true;
 }
 
 void WiFiManager::processMaintenanceAutoConnect() {
+    const WifiScanResultOwner::HarvestResult harvestResult = wifiScanOwner_.harvest(makeWifiScanDriver());
+    applyDeferredMaintenanceStaRadioDrop();
+
     if (maintenanceAutoConnectPhase_ != MaintenanceAutoConnectPhase::SCANNING) {
         return;
     }
 
-    const int16_t scanResult = WiFi.scanComplete();
-    if (scanResult == WIFI_SCAN_RUNNING) {
+    if (harvestResult == WifiScanResultOwner::HarvestResult::RUNNING) {
         const unsigned long now = millis();
         if (maintenanceAutoConnectScanStartMs_ != 0 &&
             (now - maintenanceAutoConnectScanStartMs_) >= WIFI_MAINTENANCE_SCAN_TIMEOUT_MS) {
             Serial.println("[WiFiClient] Maintenance STA auto-connect scan timed out");
-            WiFi.scanDelete();
-            wifiScanRunning_ = false;
+            wifiScanOwner_.cancel(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
             finishMaintenanceAutoConnect("scan_timeout", true);
         }
         return;
     }
 
-    wifiScanRunning_ = false;
-    if (scanResult == WIFI_SCAN_FAILED || scanResult < 0) {
-        Serial.printf("[WiFiClient] Maintenance STA auto-connect scan failed: %d\n", scanResult);
+    if (harvestResult == WifiScanResultOwner::HarvestResult::FAILED) {
+        Serial.println("[WiFiClient] Maintenance STA auto-connect scan failed");
         finishMaintenanceAutoConnect("scan_failed", true);
         return;
     }
+
+    if (!wifiScanOwner_.hasSnapshot(WifiScanConsumer::MAINTENANCE)) {
+        Serial.println("[WiFiClient] Maintenance STA auto-connect scan results unavailable");
+        finishMaintenanceAutoConnect("scan_results_unavailable", true);
+        return;
+    }
+
+    const std::vector<ScannedNetwork> scannedNetworks = wifiScanOwner_.copySnapshot(WifiScanConsumer::MAINTENANCE);
+    wifiScanOwner_.clearSnapshot(WifiScanConsumer::MAINTENANCE);
 
     const V1Settings& settings = settingsManager.get();
     size_t ordered[kWifiStaSlotCount] = {};
@@ -448,19 +514,17 @@ void WiFiManager::processMaintenanceAutoConnect() {
     for (size_t orderedPos = 0; orderedPos < orderedCount; ++orderedPos) {
         const size_t slotIndex = ordered[orderedPos];
         const WifiStaSlot& slot = settings.wifiStaSlots[slotIndex];
-        for (int16_t scanIndex = 0; scanIndex < scanResult; ++scanIndex) {
-            if (WiFi.SSID(scanIndex) == slot.ssid) {
+        for (const ScannedNetwork& scannedNetwork : scannedNetworks) {
+            if (scannedNetwork.ssid == slot.ssid) {
                 maintenanceAutoConnectSlots_[maintenanceAutoConnectSlotCount_++] = slotIndex;
                 break;
             }
         }
     }
 
-    WiFi.scanDelete();
-
     if (maintenanceAutoConnectSlotCount_ == 0) {
-        Serial.printf("[WiFiClient] Maintenance STA auto-connect found no saved SSIDs in %d scan results\n",
-                      scanResult);
+        Serial.printf("[WiFiClient] Maintenance STA auto-connect found no saved SSIDs in %u scan results\n",
+                      static_cast<unsigned>(scannedNetworks.size()));
         finishMaintenanceAutoConnect("no_saved_ssid_in_range", true);
         return;
     }
@@ -515,7 +579,20 @@ void WiFiManager::finishMaintenanceAutoConnect(const char* reason, bool dropStaR
     maintenanceAutoConnectSlotCount_ = 0;
     maintenanceAutoConnectSlotCursor_ = 0;
 
-    if (dropStaRadio && isSetupModeActive() && wifiClientState_ != WIFI_CLIENT_CONNECTED &&
+    if (dropStaRadio) {
+        maintenanceAutoConnectStaDropGate_.request();
+    } else {
+        maintenanceAutoConnectStaDropGate_.clear();
+    }
+    applyDeferredMaintenanceStaRadioDrop();
+}
+
+void WiFiManager::applyDeferredMaintenanceStaRadioDrop() {
+    if (!maintenanceAutoConnectStaDropGate_.takeIfReady(wifiScanOwner_.isRunning())) {
+        return;
+    }
+
+    if (isSetupModeActive() && wifiClientState_ != WIFI_CLIENT_CONNECTED &&
         wifiClientState_ != WIFI_CLIENT_CONNECTING) {
         const wifi_mode_t mode = WiFi.getMode();
         if (mode == WIFI_AP_STA || mode == WIFI_STA) {
@@ -535,8 +612,7 @@ void WiFiManager::cancelMaintenanceAutoConnect(const char* reason) {
     Serial.printf("[WiFiClient] Maintenance STA auto-connect canceled: %s\n",
                   (reason && reason[0] != '\0') ? reason : "unknown");
     if (maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING) {
-        WiFi.scanDelete();
-        wifiScanRunning_ = false;
+        wifiScanOwner_.cancel(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
     }
     maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
     maintenanceAutoConnectScanStartMs_ = 0;

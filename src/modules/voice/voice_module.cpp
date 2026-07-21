@@ -377,9 +377,24 @@ bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq) {
 
 void VoiceModule::markAlertAnnounced(Band band, uint16_t freq) {
     uint32_t id = makeAlertId(band, freq);
-    if (announcedAlertCount_ < MAX_ANNOUNCED_ALERTS && !isAlertAnnounced(band, freq)) {
-        announcedAlertIds_[announcedAlertCount_++] = id;
+    if (isAlertAnnounced(band, freq)) {
+        return;
     }
+
+    // The set is a FIFO window over the most recent MAX_ANNOUNCED_ALERTS ids, not
+    // a fixed-capacity set that stops accepting. Silently refusing to record once
+    // full saturates the set during a long multi-alert stretch: every later alert
+    // then reads as un-announced in the secondary-alert loop, so the same bogeys
+    // get announced over and over. Evict the oldest id instead, which keeps the
+    // window useful under sustained load and re-arms only the alert that has been
+    // quiet the longest. MAX_ANNOUNCED_ALERTS is 10 and this runs at most once per
+    // announcement, so the shift is cheaper than carrying a wrap index.
+    if (announcedAlertCount_ >= MAX_ANNOUNCED_ALERTS) {
+        memmove(&announcedAlertIds_[0], &announcedAlertIds_[1],
+                sizeof(announcedAlertIds_[0]) * (MAX_ANNOUNCED_ALERTS - 1));
+        announcedAlertCount_ = MAX_ANNOUNCED_ALERTS - 1;
+    }
+    announcedAlertIds_[announcedAlertCount_++] = id;
 }
 
 void VoiceModule::clearAnnouncedAlerts() {

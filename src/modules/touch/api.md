@@ -6,7 +6,7 @@ Touchscreen and BOOT-button gesture handling. Two cooperating modules: `TapGestu
 
 **Header:** `src/modules/touch/tap_gesture_module.h:14`.
 
-Display-area taps. Triple-tap for profile change (`PROFILE_CHANGE_TAP_COUNT = 3`); 4-second long-press requests maintenance boot unless WiFi is already active, in which case it stops WiFi. The long-press is driven by the driver's level state (`TouchHandler::isTouchActive()` — `getTouchPoint()` is edge-triggered and reports each tap once) and fires only while no alert is active, so an accidental hold mid-alert can never reboot the display.
+Display-area taps. Triple-tap for profile change (`PROFILE_CHANGE_TAP_COUNT = 3`); the selected slot is committed atomically to NVS while its SD backup is deferred to the background persistence path. A 4-second long-press requests maintenance boot unless WiFi is already active, in which case it stops WiFi. The long-press is driven by the driver's level state (`TouchHandler::isTouchActive()` — `getTouchPoint()` is edge-triggered and reports each tap once) and fires only while no alert is active, so an accidental hold mid-alert can never reboot the display.
 
 ### Public types
 
@@ -41,6 +41,8 @@ Per-loop tick. Reads touch events, updates tap-counting state, fires gestures.
 **Header:** `src/modules/touch/touch_ui_module.h:11`.
 
 BOOT button UI — brightness slider, volume slider, maintenance boot entry (long press), OBD pair gesture (extra-long press).
+
+Slider exit and stealth double-press commit settings atomically to NVS but only enqueue/coalesce the SD backup. These interactive persistence paths never take the blocking SD backup lock on the main loop; maintenance-reboot finalization remains an intentional synchronous durability boundary.
 
 ### Public types
 

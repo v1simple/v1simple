@@ -5,6 +5,31 @@
 
 ---
 
+## Portable Shutdown and Wake
+
+The portable build has two distinct shutdown outcomes because firmware can cut
+the battery latch but cannot remove an attached USB/external supply:
+
+- On battery, firmware drops the TCA9554 power latch. If the rail remains alive,
+  it waits up to 1.5 seconds for PWR/GPIO16 to return HIGH before using it as an
+  active-low deep-sleep wake source. If PWR is still LOW, wake falls back to
+  active-low BOOT/GPIO0.
+- On USB/external power, firmware isolates the battery latch and enters deep
+  sleep using active-low BOOT/GPIO0. PWR/GPIO16 is deliberately excluded because
+  this board reads it LOW while external power is attached, which would make an
+  active-low wake condition already asserted.
+
+The selected wake pin receives an RTC pull-up and is checked both before EXT1 is
+armed and immediately before sleep entry. If it is LOW at either check, shutdown
+is aborted, the backlight sleep hold is released, and the disconnected screen is
+restored. The runtime also rewrites its clean-shutdown marker to unclean and
+reopens the BLE-bond and deferred-settings backup writers, preserving their
+existing queues and retry state. `/poweroff.log` records `wake=BOOT_GPIO0` or
+`wake=PWR_GPIO16` with the terminal shutdown outcome when power-off SD logging is
+enabled.
+
+---
+
 ## Car Install (Permanent Vehicle Mount)
 
 ### Overview
@@ -13,14 +38,14 @@ The standard Waveshare ESP32-S3-Touch-LCD-3.49 uses an onboard 18650 cell as the
 retention supply for the TCA9554 power latch circuit. In a permanent car install,
 the 18650 is unnecessary — the car's ignition-switched 12V rail does the same job.
 
-The `CAR_MODE_PWR_SHORT` compile-time flag (`./build.sh --car`) removes all
-firmware behavior that assumes a battery is present:
+The `CAR_MODE_PWR_SHORT` compile-time flag (`./build.sh --car`) disables every
+software-driven shutdown path because ignition power controls the device lifetime:
 
-- `powerOff()` returns immediately (noop) — no latch drop attempt
+- Shutdown requests return before preparation, display, or battery handoff work
+- `powerOff()` remains a low-level no-op as a defense-in-depth latch safeguard
 - `processPowerButton()` is never called in `process()` — no shutdown from long-press
 - The critical-battery grace-period and low-battery warning are disabled
-- Auto-power-off on V1 disconnect still works (the display calls `powerOff()`, which
-  is a noop — no hardware damage)
+- V1/ALP auto-power arming, timer creation, and timeout shutdown are disabled
 
 ### PWR_BUTTON Solder Mod (GPIO 16)
 
@@ -64,10 +89,10 @@ The ALP uses UART2 RX on GPIO 2 (RJ-45 pin 2 from the ALP CPU TX line). No solde
 modification is needed for car install — the ALP connection is unchanged.
 
 GPIO 2 is not currently used as a production wake source. The deep-sleep helper
-can configure EXT1 wake masks, but the active `CAR_MODE_PWR_SHORT` path treats
-`powerOff()` as a no-op and does not enter deep sleep. Do not rely on ALP wake
-from sleep unless a future change explicitly wires `enterDeepSleep()` with the
-GPIO 2 mask and validates the polarity on hardware.
+can configure EXT1 wake masks, but `CAR_MODE_PWR_SHORT` rejects shutdown requests
+and retains a low-level `powerOff()` no-op, so it does not enter deep sleep. Do
+not rely on ALP wake from sleep unless a future change explicitly wires
+`enterDeepSleep()` with the GPIO 2 mask and validates the polarity on hardware.
 
 ### Build and Flash
 
@@ -75,8 +100,8 @@ GPIO 2 mask and validates the polarity on hardware.
 # Build and upload the car-install firmware
 ./build.sh --car --clean -f -u
 
-# Run the native test suite against the car-install env
-pio test -e native_car
+# Run the focused native car-install suite serially
+python3 scripts/run_native_tests_serial.py --env native_car
 ```
 
 ### Bench Test Sequence
@@ -89,12 +114,13 @@ pio test -e native_car
 4. Hold the PWR button (or momentarily short GPIO 16 to GND if solder-modded):
    - Normal build: long-press triggers shutdown sequence.
    - Car-install build: **no shutdown** — display remains on.
-5. Confirm Serial log shows `[Battery] powerOff: compile-time disabled (CAR_MODE_PWR_SHORT)` if a shutdown path is requested.
+5. Confirm the car-install build shows no `GOODBYE` screen, performs no shutdown
+   preparation, and keeps BLE, WiFi, and logging operational.
 6. Connect V1 BLE. Confirm alerts render normally.
 7. Disconnect V1. Wait for `autoPowerOffMinutes` timeout.
-   - Car-install: display shows shutdown screen, Serial logs `powerOff` noop, unit
-     remains powered (car's ignition rail is still up).
-8. Verify ALP UART still receives packets after auto-power-off noop.
+   - Car-install: no auto-power timer or shutdown runs; the display and runtime
+     services remain active while the ignition rail is up.
+8. Verify ALP UART still receives packets and can render alerts after the wait.
 
 ### Pin Map Summary
 

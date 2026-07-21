@@ -57,7 +57,7 @@ void TapGestureModule::process(unsigned long nowMs) {
     auto performProfileCycle = [&]() {
         const V1Settings& s = settings_->get();
         int newSlot = (s.activeSlot + 1) % 3;
-        settings_->setActiveSlot(newSlot);
+        settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup);
         *displayMode_ = DisplayMode::IDLE;
 
         alertPersistence_->clearPersistence();

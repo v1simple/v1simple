@@ -222,8 +222,8 @@ The class exposes typed log methods rather than a generic write — each capture
 
 Thin wrapper over `AlpRuntimeModule` for the HTTP layer.
 
-#### `void handleApiStatus(WebServer& server, AlpRuntimeModule& alpRuntime, void (*markUiActivity)(void* ctx), void* uiActivityCtx)`
-Handler for `GET /api/alp/status`. Builds a JSON snapshot from `alpRuntime` accessors and writes it to `server`. Calls `markUiActivity` to keep the WiFi keep-alive signal current.
+#### `void handleApiStatus(WebServer& server, AlpRuntimeModule* alpRuntime, void (*markUiActivity)(void* ctx), void* uiActivityCtx, bool maintenanceBootActive)`
+Handler for `GET /api/alp/status`. Calls `markUiActivity` to keep the WiFi keep-alive signal current, rejects maintenance mode with 409 before consulting the live runtime, returns 503 when the runtime is absent in normal mode, and otherwise writes the runtime snapshot.
 **Source:** `alp_api_service.h`.
 
 ### Threading note (from header)

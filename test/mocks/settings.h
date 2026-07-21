@@ -278,7 +278,16 @@ public:
     bool deferredBackupRetryScheduled() const { return false; }
     uint32_t deferredBackupNextAttemptAtMs() const { return 0; }
     void setLastV1Address(const char*) {}
-    void setActiveSlot(int slot) { settings.activeSlot = static_cast<uint8_t>(slot); }
+    void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        settings.activeSlot = static_cast<uint8_t>(slot);
+        if (persistMode == SettingsPersistMode::Deferred) {
+            ++requestDeferredPersistCalls;
+        } else if (persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup) {
+            ++saveDeferredBackupCalls;
+        } else {
+            ++saveCalls;
+        }
+    }
     void setAutoPushEnabled(bool enabled) { settings.autoPushEnabled = enabled; }
     void setSlot(int slotNum, const String& profile, V1Mode mode) {
         if (slotNum < 0 || slotNum > 2) return;
@@ -495,7 +504,16 @@ public:
     bool isDisplayOn() const { return settings.displayOn; }
     void setDisplayOn(bool on) { settings.displayOn = on; }
 
-    void setStealthEnabled(bool enabled) { settings.stealthEnabled = enabled; save(); }
+    void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        settings.stealthEnabled = enabled;
+        if (persistMode == SettingsPersistMode::Deferred) {
+            ++requestDeferredPersistCalls;
+        } else if (persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup) {
+            ++saveDeferredBackupCalls;
+        } else {
+            ++saveCalls;
+        }
+    }
 };
 
 // Global settings instance

@@ -63,6 +63,8 @@ struct ObdTransportResult {
     uint32_t issuedMs = 0;
     bool success = false;
     bool timedOut = false;
+    bool bondDeleteAttempted = false;
+    bool bondDeleted = false;
     int bleError = 0;
     int securityError = 0;
     int8_t rssi = 0;
@@ -150,6 +152,7 @@ class ObdRuntimeModule {
     void stopActiveScan();
     bool requestManualPairScan(uint32_t nowMs);
     void cancelPendingConnect();
+    bool disconnectForShutdown(uint32_t timeoutMs);
     void forgetDevice();
     bool isScanStopped() const;
     bool isConnectIdle() const;
@@ -193,6 +196,17 @@ class ObdRuntimeModule {
     void setTestSecurityAuthenticated(bool authenticated) { testSecurityAuthenticated_ = authenticated; }
     void setTestLastBleError(int error) { testLastBleError_ = error; }
     void setTestLastSecurityError(int error) { testLastSecurityError_ = error; }
+    void stageTransportStateForTest(ObdTransportOp op) {
+        transportRequestActive_ = true;
+        pendingTransportOp_ = op;
+        pendingTransportRequestId_ = 41;
+        readyTransportResult_.ready = true;
+        readyTransportResult_.op = op;
+        readyTransportResult_.requestId = 41;
+    }
+    bool transportRequestActiveForTest() const { return transportRequestActive_; }
+    bool transportResultReadyForTest() const { return readyTransportResult_.ready; }
+    void setTransportDisconnectPendingForTest(bool pending) { transportDisconnectPending_ = pending; }
     static const char* bleReasonNameForTest(int reason) { return bleReasonName(reason); }
     void transitionToPollingForTest(uint32_t nowMs);
     ObdBleArbitrationRequest getBleArbitrationRequest() const;
@@ -258,9 +272,9 @@ class ObdRuntimeModule {
     bool discoverBleServices();
     bool subscribeBleNotifications();
     bool writeBleCommand(const char* cmd, bool withResponse);
-    bool deleteBleBond();
     void refreshBleBondBackup();
-    void disconnectBle();
+    bool disconnectBle(bool deleteBond = false);
+    bool queuePendingTransportDisconnect();
     void stopBleScan();
     int8_t readBleRssi(uint32_t nowMs);
 
@@ -392,6 +406,14 @@ class ObdRuntimeModule {
     uint32_t pendingTransportTimeoutMs_ = 0;
     bool pendingTransportTimedOut_ = false;
     ObdTransportResult readyTransportResult_ = {};
+    bool transportDisconnectPending_ = false;
+    bool transportDisconnectQueued_ = false;
+    bool pendingDisconnectDeleteBond_ = false;
+    bool pendingDisconnectFollowupDeleteBond_ = false;
+    bool lastDisconnectSucceeded_ = false;
+    uint32_t pendingDisconnectRequestId_ = 0;
+    char pendingDisconnectAddress_[ADDR_BUF_LEN] = {};
+    uint8_t pendingDisconnectAddrType_ = 0;
 
     char bleBuf_[BLE_BUF_LEN] = {};
     size_t bleBufLen_ = 0;

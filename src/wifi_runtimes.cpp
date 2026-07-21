@@ -25,6 +25,7 @@
 #include "modules/wifi/wifi_v1_profile_api_service.h"
 #include "modules/wifi/wifi_v1_devices_api_service.h"
 #include "modules/wifi/backup_api_service.h"
+#include "modules/wifi/wifi_diagnostics_api_service.h"
 #include "modules/obd/obd_api_service.h"
 #include "backup_payload_builder.h"
 #include "storage_manager.h"
@@ -34,7 +35,7 @@
 #include "config.h"
 
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
-    return WifiAutoPushApiService::Runtime{
+    WifiAutoPushApiService::Runtime runtime{
         [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* /*ctx*/) {
             const V1Settings& s = settingsManager.get();
             snapshot.enabled = s.autoPushEnabled;
@@ -198,6 +199,8 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         },
         this,
     };
+    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    return runtime;
 }
 
 WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
@@ -344,7 +347,7 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         nullptr,
         [](void* ctx) { return wifiClientStateApiName(static_cast<WiFiManager*>(ctx)->wifiClientState_); },
         this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiScanRunning_; },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanRunning(); },
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiClientState_ == WIFI_CLIENT_CONNECTED; },
         this,
@@ -358,10 +361,10 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
             return payload;
         },
         this,
-        [](void* /*ctx*/) { return WiFi.scanComplete() == WIFI_SCAN_RUNNING; },
-        nullptr,
-        [](void* /*ctx*/) { return WiFi.scanComplete() > 0; },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanInProgress(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->hasCompletedWifiScanResults(); },
+        this,
         [](void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
             std::vector<ScannedNetwork> networks = self->getScannedNetworks();
@@ -564,7 +567,11 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         [](void* /*ctx*/) -> bool { return settingsManager.backupToSD(); },
         // applyBackup
         [](const JsonDocument& doc, bool fullRestore, int& profilesRestored, void* /*ctx*/) -> bool {
-            const SettingsBackupApplyResult result = settingsManager.applyBackupDocument(doc, fullRestore);
+            // A restore rewrites NVS and re-saves every profile in the backup;
+            // on a slow SD that outruns the task watchdog. Feed it between
+            // restore phases so a large backup cannot panic mid-restore.
+            const SettingsBackupApplyResult result = settingsManager.applyBackupDocument(
+                doc, fullRestore, SettingsRestoreWatchdog{&BackupApiService::feedTaskWatchdog, nullptr});
             profilesRestored = result.profilesRestored;
             return result.success;
         },
@@ -581,6 +588,18 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // ctx
         this,
     };
+    return runtime;
+}
+
+WifiDiagnosticsApiService::Runtime WiFiManager::makeDiagnosticsRuntime() {
+    WifiDiagnosticsApiService::Runtime runtime;
+    runtime.filesystem = getFilesystem_ ? getFilesystem_(getFilesystemCtx_) : nullptr;
+    runtime.panicFilesystem = storageManager.getLittleFS();
+    runtime.storageReady = storageManager.isReady();
+    runtime.sdCard = storageManager.isSDCard();
+    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    runtime.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
+    runtime.ctx = this;
     return runtime;
 }
 

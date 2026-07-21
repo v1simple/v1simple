@@ -68,7 +68,13 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         return;
     }
 
-    String body = server.arg("plain");
+    // Arduino WebServer buffers the entire body before dispatching this handler,
+    // so this cap is a semantic/application limit on what we will parse — it
+    // does NOT bound the transport allocation and does not close the
+    // heap-exhaustion risk of a large upload (tracked separately).
+    // WebServer::arg() returns String BY VALUE, so binding it once is the
+    // minimum: calling arg() again would allocate the whole body a second time.
+    const String body = server.arg("plain");
     if (body.length() > 4096) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
         return;
@@ -124,8 +130,12 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         server.send(200, "application/json", "{\"success\":true}");
     } else {
         Serial.printf("[V1Profiles] Failed to save profile '%s': %s\n", name.c_str(), saveError.c_str());
-        String errorJson = String("{\"error\":\"") + saveError + "\"}";
-        server.send(500, "application/json", errorJson);
+        // saveError is filesystem/profile-store text and can contain quotes or
+        // backslashes; build the response through ArduinoJson so it is escaped
+        // and the UI's res.json() cannot throw on a malformed body.
+        WifiJson::Document errorDoc;
+        WifiApiResponse::setErrorAndMessage(errorDoc, saveError.c_str());
+        WifiApiResponse::sendJsonDocument(server, 500, errorDoc);
     }
 }
 
@@ -139,7 +149,10 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
         return;
     }
 
-    String body = server.arg("plain");
+    // Same story as the save handler: WebServer already buffered the body, so
+    // this is a semantic/application cap on what we will parse, NOT a bound on
+    // the transport allocation.
+    const String body = server.arg("plain");
     if (body.length() > 2048) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
         return;
@@ -244,7 +257,10 @@ void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*che
         return;
     }
 
-    String body = server.arg("plain");
+    // Same story as the save handler: WebServer already buffered the body, so
+    // this is a semantic/application cap on what we will parse, NOT a bound on
+    // the transport allocation.
+    const String body = server.arg("plain");
     Serial.printf("[V1Settings] Push request: %s\n", body.c_str());
     if (body.length() > 4096) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");

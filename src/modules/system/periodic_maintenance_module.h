@@ -5,6 +5,11 @@
 // Coordinates loop-tail periodic maintenance actions while preserving call order.
 class PeriodicMaintenanceModule {
   public:
+    // Connected drive-time persistence is admitted at this cadence so dirty
+    // state cannot starve for an entire ignition cycle. Hard loop pressure
+    // still blocks the admission until a safe tick.
+    static constexpr uint32_t kConnectedPersistenceDeferralMs = 10000;
+
     struct Context {
         bool bleConnected = false;
         bool bleBackpressure = false;
@@ -43,4 +48,6 @@ class PeriodicMaintenanceModule {
 
   private:
     Providers providers{};
+    bool connectedPersistenceWindowAnchored_ = false;
+    uint32_t connectedPersistenceWindowStartedMs_ = 0;
 };

@@ -13,6 +13,7 @@ describe('runtime status store', () => {
     it('defaults to non-maintenance runtime status', () => {
         expect(get(runtimeStatus).maintenanceBoot).toBe(false);
         expect(get(runtimeStatus).maintenanceBootUptimeMs).toBe(0);
+        expect(get(runtimeStatus).maintenanceBootTimeoutMs).toBe(600000);
         expect(get(isMaintenance)).toBe(false);
     });
 

@@ -6,6 +6,7 @@
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_runtime_status.h"
 #include "modules/wifi/wifi_api_response.h"
+#include "modules/wifi/wifi_json_document.h"
 #include "settings.h"
 #include "settings_sanitize.h"
 
@@ -14,10 +15,18 @@ namespace GpsApiService {
 namespace {
 
 void sendMaintenanceModeError(WebServer& server) {
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["error"] = "maintenance_mode";
     doc["message"] = "GPS runtime status is not available in maintenance mode";
     WifiApiResponse::sendJsonDocument(server, 409, doc);
+}
+
+void sendRuntimeUnavailableError(WebServer& server) {
+    server.send(503, "application/json", "{\"error\":\"gps runtime not wired\"}");
+}
+
+bool requiresLiveRuntime(const Runtime& runtime) {
+    return !runtime.maintenanceBootActive;
 }
 
 } // namespace
@@ -26,7 +35,7 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     const V1Settings& s = settings.get();
-    JsonDocument doc;
+    WifiJson::Document doc;
     doc["gpsEnabled"] = s.gpsEnabled;
     doc["gpsBaud"] = s.gpsBaud;
     doc["gpsEnablePinActiveHigh"] = s.gpsEnablePinActiveHigh;
@@ -35,17 +44,24 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule& gpsRuntime,
+void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule* gpsRuntimePtr,
                          const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
 
-    JsonDocument body;
+    // Maintenance saves are intentionally persistence-only and must not
+    // require the live UART runtime that maintenance boot skips.
+    if (requiresLiveRuntime(runtime) && !gpsRuntimePtr) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
+
+    WifiJson::Document body;
     if (server.hasArg("plain")) {
         const String requestBody = server.arg("plain");
         const DeserializationError err = deserializeJson(body, requestBody.c_str());
         if (err) {
-            JsonDocument errDoc;
+            WifiJson::Document errDoc;
             WifiApiResponse::setErrorAndMessage(errDoc, "Invalid JSON");
             WifiApiResponse::sendJsonDocument(server, 400, errDoc);
             return;
@@ -81,7 +97,7 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     // persists the new values to NVS (above) but we must not bring the UART
     // up here. The applied settings take effect on the next normal boot.
     if (runtime.maintenanceBootActive) {
-        JsonDocument ok;
+        WifiJson::Document ok;
         ok["success"] = true;
         ok["message"] = "GPS settings saved; live runtime resumes on next normal boot.";
         WifiApiResponse::sendJsonDocument(server, 200, ok);
@@ -89,6 +105,7 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     }
 
     // Apply changes to the live runtime — no reboot required.
+    GpsRuntimeModule& gpsRuntime = *gpsRuntimePtr;
     const V1Settings& s = settings.get();
     if (update.hasGpsBaud) {
         gpsRuntime.setBaud(s.gpsBaud);
@@ -107,23 +124,27 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
         }
     }
 
-    JsonDocument ok;
+    WifiJson::Document ok;
     ok["success"] = true;
     WifiApiResponse::sendJsonDocument(server, 200, ok);
 }
 
-void handleApiStatus(WebServer& server, GpsRuntimeModule& gpsRuntime, const Runtime& runtime) {
+void handleApiStatus(WebServer& server, GpsRuntimeModule* gpsRuntime, const Runtime& runtime) {
     if (runtime.markUiActivity)
         runtime.markUiActivity(runtime.ctx);
     if (runtime.maintenanceBootActive) {
         sendMaintenanceModeError(server);
         return;
     }
+    if (!gpsRuntime) {
+        sendRuntimeUnavailableError(server);
+        return;
+    }
 
     const uint32_t nowMs = millis();
-    const GpsRuntimeStatus s = gpsRuntime.snapshot(nowMs);
+    const GpsRuntimeStatus s = gpsRuntime->snapshot(nowMs);
 
-    JsonDocument doc;
+    WifiJson::Document doc;
 
     doc["enabled"] = s.enabled;
     doc["moduleDetected"] = s.moduleDetected;

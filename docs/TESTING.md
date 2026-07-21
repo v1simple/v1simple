@@ -7,13 +7,13 @@ The repo's test infrastructure has three maintained shell entry points. They del
 | Script | When | Scope |
 |---|---|---|
 | `./bench.sh` | Bench hardware evidence | Runs core and display SD/serial metric windows only. No OBD/proxy coverage or release-qualification language; optional promoted baselines are local comparison aids. |
-| `scripts/ci-test.sh` | Every PR / local pre-push | Authoritative repo gate. 40+ run-step gates across semantic checks, contracts, perf, frontend, and firmware build. Fail = block merge. |
+| `scripts/ci-test.sh` | Every public `main` candidate / local pre-push | Authoritative repo gate. 40+ run-step gates across semantic checks, contracts, perf, frontend, and firmware build. A failed push-origin run blocks release. |
 | `scripts/build_production_artifacts.sh` | Final stage of full CI and focused Release | Builds/deploys the frontend, then clean-builds and validates the production firmware and LittleFS artifacts exactly once. It assumes frontend dependencies are already installed. |
 
 `scripts/ci-test.sh` remains the only authoritative approval gate and emits
 `.artifacts/test_reports/ci-test/timing.json` for budget enforcement. The
 production-artifact helper is a shared build stage, not a substitute for the
-full PR gate.
+full authoritative main gate.
 
 ## `scripts/ci-test.sh` walkthrough
 
@@ -113,7 +113,8 @@ path must move together.
 Not itemized section-by-section to keep this walkthrough readable; all fail CI:
 `check_modified_font_names.py`, `test_check_littlefs_image_compatibility.py`,
 `test_run_device_tests_script.py`, `test_obd_proxy_qualification.py`,
-`test_release_evidence_manifest.py`,
+`test_release_evidence_manifest.py`, `test_prepare_release_evidence_manifest.py`,
+`test_release_workflow_flash_contract.py`,
 `check_littlefs_mount_contract.py`, `check_build_dist_contract.py`,
 `check_release_workflow_flash_contract.py`, `check_web_installer_page.py`,
 `check_api_doc_sources.py`, `check_alp_protocol_docs_contract.py`,
@@ -150,7 +151,7 @@ device-focused suites plus a small set of self-contained shared suites.
 
 ## Firmware C++ coverage lane (out-of-band)
 
-Coverage of the firmware C++ is measured **outside the PR gate**, by
+Coverage of the firmware C++ is measured **outside the authoritative main gate**, by
 `.github/workflows/coverage.yml` on a weekly schedule and on
 `workflow_dispatch`.
 
@@ -187,7 +188,7 @@ Excluded from the denominator: tests and mocks (`test/`), library deps
 `Segment7Font.h`, `FreeSans*.h`) — megabytes of constant arrays that would
 dilute the ratchet into noise.
 
-### Why it is not in the PR gate
+### Why it is not in the authoritative main gate
 
 Measured on one host, over all 149 native suites:
 
@@ -204,7 +205,7 @@ second run. That is roughly +231s on a lane that already runs ~531s against a
 1200s budget (`tools/ci_time_budgets.json`), and the budget is calibrated for
 cold GitHub runners, which are slower than the host these numbers came from.
 Spending ~40% of the remaining headroom on a scheduled regression signal is not
-a good trade, so the PR gate does not carry coverage.
+a good trade, so the authoritative main gate does not carry coverage.
 
 ### Running it locally
 
@@ -269,7 +270,7 @@ Bench result language is intentionally small:
 - `mutation_test.py` / `mutation_test.sh` — mutation testing harness; `--critical` runs the tracked catalog.
 - `analyze_alp_fingerprints.py` — ALP frame fingerprint analysis.
 - `pio-size.sh` — size report wrapper.
-- `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, maintenance 409 gating, the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
+- `tools/synthetic_maintenance_check.sh <device-ip>` (in `tools/`, not `scripts/`) — synthetic contract check against a live maintenance-mode unit: asserts the HTTP status codes and JSON keys the web UI consumes, the published maintenance deadline, diagnostics listing, live-push maintenance gating, every production page (including Logs), the `X-V1Simple-Request` write header, the static-path guard, and that the unit serves the repo's current UI build. Read-only except one benign display preview. Run it inside the 10-minute maintenance window (takes ~30 s).
 - `check_obd_proxy_qualification.py` — validates a typed OBD/proxy hardware evidence pack against `tools/obd_proxy_qualification_profile_v1.json`; normal CI exercises only its synthetic regression suite.
 
 
@@ -288,4 +289,6 @@ When you add a new contract or invariant:
 
 Section ordering in `ci-test.sh` is intentional: cheap semantic gates first (fast failure for grep-style violations), then expensive things (compile, frontend build, size report). If you reorder, you waste developer time waiting for slow lanes to fail on a checkable problem.
 
-The mutation gate (`--critical` lane) runs the maintained curated catalog. Don't add mutations to that catalog without verifying they're stable — a flaky critical mutation blocks every PR.
+The mutation gate (`--critical` lane) runs the maintained curated catalog. Don't
+add mutations to that catalog without verifying they're stable — a flaky
+critical mutation blocks every authoritative CI run.

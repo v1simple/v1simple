@@ -1,46 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
-    return installFetchMock(
-        [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/audio/settings',
-                respond: jsonResponse({
-                    voiceAlertMode: 3,
-                    voiceDirectionEnabled: true,
-                    announceBogeyCount: true,
-                    muteVoiceIfVolZero: false,
-                    voiceVolume: 72,
-                    announceSecondaryAlerts: true,
-                    secondaryLaser: true,
-                    secondaryKa: true,
-                    secondaryK: false,
-                    secondaryX: false,
-                    alertVolumeFadeEnabled: true,
-                    alertVolumeFadeDelaySec: 4,
-                    alertVolumeFadeVolume: 2,
-                    speedMuteEnabled: true,
-                    speedMuteThresholdMph: 31,
-                    speedMuteHysteresisMph: 6,
-                    speedMuteVolume: 3,
-                    speedMuteVoice: false,
-                    stealthEnabled: true
-                })
-            },
-            {
-                method: 'POST',
-                match: '/api/audio/settings',
-                respond: jsonResponse({ success: true })
-            }
-        ],
-        jsonResponse({})
-    );
+    return installFixtureFetchMock('audio_settings_success', overrides);
 }
 
 describe('audio route page', () => {

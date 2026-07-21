@@ -3,9 +3,11 @@
  */
 
 #include "battery_manager.h"
+#include "battery_source_policy.h"
 #include "storage_manager.h"
 #include "audio_i2c_utils.h"
 #include "display_driver.h"
+#include "poweroff_policy.h"
 #include <Wire.h>
 #include <esp_adc/adc_oneshot.h>
 #include <esp_adc/adc_cali.h>
@@ -34,6 +36,18 @@ static adc_cali_handle_t adc_cali_handle = nullptr;
 namespace {
 
 constexpr uint16_t kShutdownReadbackTimeoutMs = 50;
+constexpr uint32_t kPowerButtonReleaseWaitMs = 1500;
+constexpr uint32_t kBootButtonReleaseWaitMs = 250;
+constexpr uint32_t kWakePinPollMs = 10;
+
+// Power-source classification tuning. The decisions themselves live in
+// include/battery_source_policy.h; only the numbers are board-specific.
+constexpr battery_source_policy::Config kSourcePolicy{};
+
+// Boot seeds the classifier with a full two-round agreement cycle. begin() is
+// allowed to block, so the rounds are separated with a real delay here; the
+// periodic refresh spaces them across loop iterations instead.
+constexpr uint8_t kBootClassificationRounds = 2;
 
 class ScopedWireTimeout {
   public:
@@ -57,6 +71,53 @@ AudioI2cResult readTca9554RegisterWithTimeout(uint8_t reg, uint8_t& value, TickT
 
     ScopedWireTimeout timeoutGuard(tca9554Wire, timeoutMs);
     return audioI2cReadRegister(tca9554Wire, TCA9554_I2C_ADDR, reg, value);
+}
+
+bool waitForPinHigh(uint8_t pin, uint32_t timeoutMs) {
+    const uint32_t startedAtMs = static_cast<uint32_t>(millis());
+    do {
+        if (digitalRead(pin) == HIGH) {
+            return true;
+        }
+        delay(kWakePinPollMs);
+    } while (static_cast<uint32_t>(millis() - startedAtMs) < timeoutMs);
+    return digitalRead(pin) == HIGH;
+}
+
+uint8_t wakePinForPlan(const poweroff_policy::WakePlan& plan) {
+    return plan.input == poweroff_policy::WakeInput::PWR_GPIO16 ? PWR_BUTTON_GPIO : BOOT_BUTTON_GPIO;
+}
+
+uint64_t wakeMaskForPlan(const poweroff_policy::WakePlan& plan) {
+    return 1ULL << wakePinForPlan(plan);
+}
+
+bool wakeMaskIsInactive(uint64_t wakeMask) {
+    constexpr uint64_t kRtcGpioMask = (1ULL << 22) - 1;
+    if (wakeMask == 0 || (wakeMask & ~kRtcGpioMask) != 0) {
+        return false;
+    }
+    for (int pin = 0; pin <= 21; ++pin) {
+        if (!(wakeMask & (1ULL << pin))) {
+            continue;
+        }
+        const gpio_num_t gpio = static_cast<gpio_num_t>(pin);
+        if (!rtc_gpio_is_valid_gpio(gpio)) {
+            return false;
+        }
+        const bool pinHigh = gpio_get_level(gpio) != 0;
+        if (!pinHigh) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void releaseBacklightSleepHoldAfterAbort() {
+    gpio_deep_sleep_hold_dis();
+    gpio_hold_dis(static_cast<gpio_num_t>(LCD_BL));
+    pinMode(LCD_BL, OUTPUT);
+    digitalWrite(LCD_BL, HIGH);
 }
 
 } // namespace
@@ -99,25 +160,27 @@ bool BatteryManager::begin() {
     // INPUT without pullup — a pullup would bias the reading if the pin is driven externally.
     pinMode(PWR_BUTTON_GPIO, INPUT);
 
-    // Sample GPIO16 multiple times to debounce.
-    constexpr int samples = 10;
-    constexpr int sampleDelayMs = 5;
-    int highCount = 0;
-    Serial.printf("[Battery] Power debounce samples=%d delayMs=%d\n", samples, sampleDelayMs);
+    // Seed the classifier through the same policy the periodic refresh uses, so
+    // boot and steady state can never disagree. Rounds are separated in time —
+    // a burst inside one instant is not a majority vote. Until the policy
+    // positively confirms USB the device reports BATTERY, so a PWR-button wake
+    // (button still held, GPIO16 LOW) can no longer report USB.
+    sourceState_ = battery_source_policy::State{};
+    Serial.printf("[Battery] Power classification rounds=%u samples=%u spacingMs=%lu\n",
+                  static_cast<unsigned>(kBootClassificationRounds),
+                  static_cast<unsigned>(kSourcePolicy.samplesPerRound),
+                  static_cast<unsigned long>(kSourcePolicy.roundSpacingMs));
 
     BATTERY_LOGLN("[Battery] Sampling power source detection...");
-    for (int i = 0; i < samples; i++) {
-        if (digitalRead(PWR_BUTTON_GPIO) == HIGH) {
-            highCount++;
+    for (uint8_t round = 0; round < kBootClassificationRounds; round++) {
+        if (round > 0) {
+            delay(kSourcePolicy.roundSpacingMs);
         }
-        delay(sampleDelayMs);
+        observeSourceRound(static_cast<uint32_t>(millis()));
     }
 
-    // Majority vote
-    onBattery_ = (highCount > samples / 2);
-
-    BATTERY_LOGF("[Battery] Power detection: GPIO16 samples=%d/%d (HIGH), decision=%s\n", highCount, samples,
-                 onBattery_ ? "BATTERY" : "USB");
+    Serial.printf("[Battery] Power detection: classification=%s reported=%s\n",
+                  battery_source_policy::sourceName(sourceState_.classification), onBattery_ ? "BATTERY" : "USB");
 
     // Initialize ADC for battery voltage reading
     if (!initADC()) {
@@ -354,6 +417,32 @@ uint16_t BatteryManager::readADCMillivolts() {
     return lastVoltage_;
 }
 
+battery_source_policy::Result BatteryManager::observeSourceRound(uint32_t nowMs) {
+    battery_source_policy::Observation observation;
+    observation.totalSamples = kSourcePolicy.samplesPerRound;
+
+    // A PWR hold pulls GPIO16 LOW regardless of the supply, so a round taken
+    // while the button state machine has a press in flight says nothing about
+    // the power source. buttonWasPressed_ only ever arms after the pin has been
+    // seen HIGH since boot, so it stays false on a genuinely USB-powered unit
+    // and therefore never blocks a legitimate USB classification.
+    observation.buttonInteraction = buttonWasPressed_;
+
+    for (uint8_t i = 0; i < observation.totalSamples; i++) {
+        if (digitalRead(PWR_BUTTON_GPIO) == HIGH) {
+            observation.highSamples++;
+        }
+    }
+
+    const battery_source_policy::Result result =
+        battery_source_policy::observe(sourceState_, nowMs, observation, kSourcePolicy);
+    onBattery_ = result.onBattery;
+    if (result.changed) {
+        Serial.printf("[Battery] Power source changed: %s\n", battery_source_policy::sourceName(result.classification));
+    }
+    return result;
+}
+
 bool BatteryManager::isOnBattery() const {
     return onBattery_;
 }
@@ -396,23 +485,12 @@ void BatteryManager::update() {
 
     const uint32_t now = static_cast<uint32_t>(millis());
 
-    // Refresh power source detection periodically to handle USB/battery swaps
-    // Skip while the power button is held (GPIO16 LOW) to avoid misclassifying as USB
-    static uint32_t lastPowerCheckMs = 0;
-    if (now - lastPowerCheckMs >= 1000 && !isPowerButtonPressed()) {
-        const int samples = 5;
-        int highCount = 0;
-        for (int i = 0; i < samples; i++) {
-            if (digitalRead(PWR_BUTTON_GPIO) == HIGH) {
-                highCount++;
-            }
-        }
-        bool detectedBattery = (highCount > samples / 2);
-        if (detectedBattery != onBattery_) {
-            onBattery_ = detectedBattery;
-            Serial.printf("[Battery] Power source changed: %s\n", onBattery_ ? "BATTERY" : "USB");
-        }
-        lastPowerCheckMs = now;
+    // Refresh power-source classification on the policy's schedule so USB and
+    // battery swaps are picked up. Every decision — two-round agreement, button
+    // suppression, fail-toward-battery, rollover-safe timing — belongs to
+    // battery_source_policy; this only asks whether a round is due.
+    if (battery_source_policy::roundDue(sourceState_, now, kSourcePolicy)) {
+        observeSourceRound(now);
     }
 
     // Update cached voltage/percentage every 10 seconds
@@ -498,7 +576,7 @@ static void blankPanelBacklightForSleepOrPowerOff() {
     delay(50);
 }
 
-bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64_t pullupMask) {
+bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64_t pullupMask, const char* outcome) {
     sdLogEnabled_ = sdLogEnabled;
 
     Serial.println("[Battery] Executing deep sleep entry...");
@@ -510,8 +588,8 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
 
     blankPanelBacklightForSleepOrPowerOff();
 
-    snprintf(buf, sizeof(buf), "ext1Mask=0x%016llX pu=0x%016llX", static_cast<unsigned long long>(wakeMask),
-             static_cast<unsigned long long>(pullupMask));
+    snprintf(buf, sizeof(buf), "ext1Mask=0x%016llX pu=0x%016llX trigger=ANY_LOW",
+             static_cast<unsigned long long>(wakeMask), static_cast<unsigned long long>(pullupMask));
     Serial.printf("[Battery] Deep sleep config: %s\n", buf);
     sdLog(buf);
 
@@ -532,11 +610,41 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
     gpio_hold_en(static_cast<gpio_num_t>(LCD_BL));
     gpio_deep_sleep_hold_en();
 
+    if (!wakeMaskIsInactive(wakeMask)) {
+        Serial.println("[Battery] ERROR: selected deep-sleep wake input is already asserted");
+        sdLog("OUTCOME sleep_aborted reason=wake_input_asserted_before_arm");
+        releaseBacklightSleepHoldAfterAbort();
+        return false;
+    }
+
     if (wakeMask != 0) {
-        esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+        const esp_err_t wakeResult = esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+        if (wakeResult != ESP_OK) {
+            snprintf(buf, sizeof(buf), "OUTCOME sleep_aborted reason=ext1_config_failed err=%d",
+                     static_cast<int>(wakeResult));
+            Serial.printf("[Battery] %s\n", buf);
+            sdLog(buf);
+            releaseBacklightSleepHoldAfterAbort();
+            return false;
+        }
+    }
+
+    // Keep the terminal outcome adjacent to the next BOOT record in
+    // /poweroff.log so a bounded diagnostics tail still shows the decision.
+    if (outcome && outcome[0] != '\0') {
+        Serial.printf("[Battery] Deep sleep outcome: %s\n", outcome);
+        sdLog(outcome);
     }
 
     delay(100); // Let serial flush
+    Serial.flush();
+    if (!wakeMaskIsInactive(wakeMask)) {
+        Serial.println("[Battery] ERROR: deep-sleep wake input asserted before sleep entry");
+        sdLog("OUTCOME sleep_aborted reason=wake_input_asserted_before_sleep");
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+        releaseBacklightSleepHoldAfterAbort();
+        return false;
+    }
     esp_deep_sleep_start();
     return true;
 }
@@ -560,7 +668,52 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
     snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
     sdLog(buf);
 
+    const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(onBattery_);
+    snprintf(buf, sizeof(buf), "strategy=%s", poweroff_policy::strategyName(strategy));
+    Serial.printf("[Battery] Power-off strategy: %s\n", poweroff_policy::strategyName(strategy));
+    sdLog(buf);
+
     blankPanelBacklightForSleepOrPowerOff();
+
+    auto enterWithWakePlan = [&](const poweroff_policy::WakePlan& wakePlan, const char* outcome) {
+        const uint64_t wakeMask = wakeMaskForPlan(wakePlan);
+        return enterDeepSleep(wakeMask, sdLogEnabled, wakeMask, outcome);
+    };
+
+    if (strategy == poweroff_policy::Strategy::DEEP_SLEEP_EXTERNAL_POWER) {
+        // A TCA9554 latch write cannot remove an attached USB/external rail.
+        // Still isolate the battery path so unplugging USB later cannot leave
+        // the unit drawing from the cell while asleep.
+        const bool batteryLatchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN, false, pdMS_TO_TICKS(250), 5);
+        const char* batteryLatchOutcome = batteryLatchDropped ? "WRITE_OK" : "WRITE_FAILED";
+        if (batteryLatchDropped) {
+            uint8_t readback = 0;
+            const AudioI2cResult readbackResult = readTca9554RegisterWithTimeout(
+                TCA9554_OUTPUT_PORT, readback, pdMS_TO_TICKS(kShutdownReadbackTimeoutMs), kShutdownReadbackTimeoutMs);
+            if (readbackResult == AudioI2cResult::Ok) {
+                batteryLatchOutcome = (readback & (1 << TCA9554_PWR_LATCH_PIN)) == 0 ? "LOW" : "HIGH_STUCK";
+            } else {
+                batteryLatchOutcome = "READBACK_FAILED";
+            }
+        }
+        waitForPinHigh(BOOT_BUTTON_GPIO, kBootButtonReleaseWaitMs);
+        poweroff_policy::WakePlan wakePlan = poweroff_policy::planExternalPowerWake();
+        Serial.printf("[Battery] External power remains; battery latch=%s, wake=%s trigger=active_low\n",
+                      batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
+        snprintf(buf, sizeof(buf), "OUTCOME mode=deep_sleep_external_power batteryLatch=%s wake=%s trigger=active_low",
+                 batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
+        if (!enterWithWakePlan(wakePlan, buf)) {
+            wakePlan = poweroff_policy::planExternalPowerWake();
+            snprintf(buf, sizeof(buf),
+                     "OUTCOME mode=deep_sleep_external_power retry=1 batteryLatch=%s wake=%s trigger=active_low",
+                     batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
+            if (!enterWithWakePlan(wakePlan, buf)) {
+                Serial.println("[Battery] ERROR: external-power sleep aborted; no stable inactive wake input");
+                sdLog("OUTCOME shutdown_failed mode=external reason=no_stable_inactive_wake device=awake");
+            }
+        }
+        return false; // Successful deep-sleep entry never returns on hardware.
+    }
 
     // Drop the power latch to cut power entirely.  No deep sleep — the 18650
     // is not kept alive for RTC, so battery drain while "off" is zero.
@@ -577,6 +730,7 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
     Serial.printf("[Battery] Latch drop result: %s\n", latchDropped ? "OK" : "FAILED");
     sdLog(buf);
 
+    const char* fallbackReason = latchDropped ? "rail_alive_after_latch" : "latch_write_failed";
     if (latchDropped) {
         // Keep shutdown readback explicitly bounded so a wedged I2C bus cannot
         // block the deep-sleep fallback forever.
@@ -588,10 +742,14 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
             snprintf(buf, sizeof(buf), "readback=0x%02X pin6=%s", readback, pin6Low ? "LOW" : "HIGH_STUCK");
             Serial.printf("[Battery] TCA9554 %s\n", buf);
             sdLog(buf);
+            if (!pin6Low) {
+                fallbackReason = "latch_readback_high";
+            }
         } else {
             snprintf(buf, sizeof(buf), "readback=%s", audioI2cResultToString(readbackResult));
             Serial.printf("[Battery] TCA9554 readback failed (%s)\n", audioI2cResultToString(readbackResult));
             sdLog(buf);
+            fallbackReason = "latch_readback_failed";
         }
 
         delay(500); // Wait for power rail to collapse
@@ -603,11 +761,25 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
         sdLog("ERROR: latch drop failed");
     }
 
-    // Fallback: enter deep sleep with button wakeup so the device isn't bricked.
-    sdLog("entering deep sleep fallback");
-    Serial.println("[Battery] Entering deep sleep fallback...");
-    enterDeepSleep(1ULL << PWR_BUTTON_GPIO, sdLogEnabled);
-    return latchDropped;
+    // Fallback: wait for the manual PWR hold to release. GPIO16 is safe as an
+    // active-low wake source only while it is HIGH; otherwise BOOT owns wake.
+    bool pwrPinHigh = waitForPinHigh(PWR_BUTTON_GPIO, kPowerButtonReleaseWaitMs);
+    poweroff_policy::WakePlan wakePlan = poweroff_policy::planBatteryFallbackWake(pwrPinHigh);
+    snprintf(buf, sizeof(buf), "OUTCOME mode=deep_sleep_fallback reason=%s wake=%s trigger=active_low", fallbackReason,
+             poweroff_policy::wakeInputName(wakePlan.input));
+    Serial.printf("[Battery] Entering deep sleep fallback: reason=%s wake=%s trigger=active_low\n", fallbackReason,
+                  poweroff_policy::wakeInputName(wakePlan.input));
+    if (!enterWithWakePlan(wakePlan, buf)) {
+        pwrPinHigh = digitalRead(PWR_BUTTON_GPIO) == HIGH;
+        wakePlan = poweroff_policy::planBatteryFallbackWake(pwrPinHigh);
+        snprintf(buf, sizeof(buf), "OUTCOME mode=deep_sleep_fallback retry=1 reason=%s wake=%s trigger=active_low",
+                 fallbackReason, poweroff_policy::wakeInputName(wakePlan.input));
+        if (!enterWithWakePlan(wakePlan, buf)) {
+            Serial.println("[Battery] ERROR: battery fallback sleep aborted; no stable inactive wake input");
+            sdLog("OUTCOME shutdown_failed mode=battery_fallback reason=no_stable_inactive_wake device=awake");
+        }
+    }
+    return false; // Successful hard cut or deep-sleep entry never returns.
 #endif // CAR_MODE_PWR_SHORT
 }
 
@@ -620,8 +792,18 @@ bool BatteryManager::isPowerButtonPressed() {
 // (a hardware-free TU kept separate for testability).
 
 bool BatteryManager::processPowerButton() {
-    // Allow shutdown when a battery is present.
-    if (!hasBattery())
+    // Bug #17 defect C: this used to be gated on hasBattery(), which returns
+    // false whenever ADC init failed — a unit with a dead ADC could not be
+    // powered off at all. The gate below is handed ADC health explicitly and
+    // deliberately ignores it: a failed ADC degrades voltage reporting only,
+    // never input handling.
+    battery_source_policy::ButtonGateInputs gate;
+    gate.managerInitialized = initialized_;
+    gate.classification = sourceState_.classification;
+    // adc1_handle is the ADC-health flag — null whenever initADC() failed.
+    gate.adcHealthy = static_cast<bool>(adc1_handle);
+    gate.batteryVoltageValid = cachedVoltage_ >= BATTERY_EMPTY_MV;
+    if (!battery_source_policy::powerButtonHandlingEnabled(gate))
         return false;
 
     bool pinLow = isPowerButtonPressed();

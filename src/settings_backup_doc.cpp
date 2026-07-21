@@ -299,8 +299,21 @@ bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& setti
     return true;
 }
 
-SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite) {
+// Profile entries processed between watchdog feeds inside the profile restore
+// loop.  Every entry costs a filesystem write, so feeding per batch bounds the
+// gap between feeds without putting a feed on the per-field path.
+static constexpr int kProfileRestoreWatchdogFeedInterval = 4;
+
+SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
+                                                               const SettingsRestoreWatchdog& watchdog) {
     SettingsBackupApplyResult result;
+
+    // Fed at restore phase boundaries only — see SettingsRestoreWatchdog.
+    auto feedWatchdog = [&watchdog]() {
+        if (watchdog.feed) {
+            watchdog.feed(watchdog.ctx);
+        }
+    };
 
     auto restoreBool = [&](const char* key, bool& target) {
         bool parsed = false;
@@ -350,6 +363,11 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     settings_.refreshWifiClientAliasFromSlots();
     restoreWifiClientPasswordObfFromBackupDoc(doc, settings_.wifiClientSSID);
     restoreLegacyStationPasswordFromBackupDoc(doc, settings_.wifiClientSSID);
+
+    // Phase 1 done: the WiFi credential block above is the only field-restore
+    // work that touches NVS and the SD secret file.
+    feedWatchdog();
+
     restoreBool("proxyBLE", settings_.proxyBLE);
     if (doc["proxyName"].is<const char*>()) {
         settings_.proxyName = sanitizeProxyNameValue(doc["proxyName"].as<String>());
@@ -611,10 +629,20 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         settings_.proxyBLE = false;
     }
 
+    // Phase 2 done: every scalar/field restore has been applied in RAM.
+    feedWatchdog();
+
     int profilesRestored = 0;
     if (v1ProfileManager.isReady() && doc["profiles"].is<JsonArrayConst>()) {
         JsonArrayConst profilesArr = doc["profiles"].as<JsonArrayConst>();
+        int profilesProcessed = 0;
         for (JsonObjectConst p : profilesArr) {
+            // Phase 3: one feed per batch of entries, not per entry and not per
+            // field.  Placed before the batch so the feed covers the writes that
+            // follow it.
+            if (++profilesProcessed % kProfileRestoreWatchdogFeedInterval == 0) {
+                feedWatchdog();
+            }
             if (!p["name"].is<const char*>() || !p["bytes"].is<JsonArrayConst>()) {
                 continue;
             }
@@ -658,6 +686,12 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     const bool wasRestorePending = restorePending_;
     clearRestorePending();
 
+    // Phase 4 done: profile writes are finished and the A/B NVS rewrite below is
+    // about to start with a full watchdog window in front of it.  The rewrite
+    // itself lives in persistSettingsAtomically()/saveDeferredBackup() and is
+    // not instrumented here.
+    feedWatchdog();
+
     if (deferBackupRewrite) {
         if (!saveDeferredBackup()) {
             restorePending_ = wasRestorePending;
@@ -672,6 +706,10 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         }
         bumpBackupRevision();
     }
+
+    // Phase 5 done: persist finished; hand the caller a fresh window to build
+    // and send its response on.
+    feedWatchdog();
 
     result.success = true;
     result.profilesRestored = profilesRestored;

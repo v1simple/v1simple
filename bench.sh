@@ -108,10 +108,13 @@ if [[ -n "$FROM_CSV" && "$RUN_CORE" -eq 1 && "$RUN_DISPLAY" -eq 1 ]]; then
   exit 3
 fi
 
-GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+GIT_SHA_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 GIT_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+GIT_WORKTREE_CLEAN=1
+[[ -n "$(git status --porcelain 2>/dev/null)" ]] && GIT_WORKTREE_CLEAN=0
 TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
-RUN_DIR="$ARTIFACT_ROOT/$BOARD_ID/runs/${TIMESTAMP}_${GIT_SHA}"
+RUN_DIR="$ARTIFACT_ROOT/$BOARD_ID/runs/${TIMESTAMP}_${GIT_SHA_SHORT}"
 if [[ -e "$RUN_DIR" ]]; then
   suffix=2
   while [[ -e "${RUN_DIR}_${suffix}" ]]; do
@@ -139,6 +142,7 @@ else
 fi
 [[ "$PROMOTE_BASELINE" -eq 1 ]] && echo "  promote:    on PASS" | tee -a "$RUN_LOG"
 echo "  obd/proxy:  not part of bench gate" | tee -a "$RUN_LOG"
+echo "  git clean:  $GIT_WORKTREE_CLEAN" | tee -a "$RUN_LOG"
 echo "  artifacts:  $RUN_DIR" | tee -a "$RUN_LOG"
 echo "==========================================" | tee -a "$RUN_LOG"
 echo | tee -a "$RUN_LOG"
@@ -155,6 +159,7 @@ for suite in "${suites[@]}"; do
     --board-id "$BOARD_ID"
     --git-sha "$GIT_SHA"
     --git-ref "$GIT_REF"
+    --git-worktree-clean "$GIT_WORKTREE_CLEAN"
     --segment "$SEGMENT"
   )
   [[ -n "$PORT" ]] && args+=(--port "$PORT")

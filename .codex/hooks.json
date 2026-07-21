@@ -1,0 +1,40 @@
+{
+  "description": "Inject optional V1Simple engineering context without coupling the public repository to private infrastructure.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
+            "timeout": 5,
+            "statusMessage": "Loading V1Simple engineering context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

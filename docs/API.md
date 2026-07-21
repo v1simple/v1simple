@@ -82,7 +82,7 @@ These paths handle the probes that iOS, Android, ChromeOS, and Windows fire when
 ### GET `/api/status`
 **Description:** Cached device status snapshot — WiFi state, battery, device info, maintenance-session state, V1 connection state, optional alert/custom fields.
 **Params:** None. Rate-limit checked.
-**Response:** `{ "wifi": { "setup_mode": bool, "ap_active": bool, "sta_connected": bool, "sta_ip": string, "ap_ip": string, "ssid": string, "rssi": int32, "sta_enabled": bool, "sta_ssid": string }, "device": { "uptime": ulong, "heap_free": uint32, "hostname": string, "firmware_version": string }, "battery": { "voltage_mv": uint16, "percentage": uint8, "on_battery": bool, "has_battery": bool }, "maintenanceBoot": bool, "maintenanceBootUptimeMs": uint32, "v1_connected": bool, "alert": {...}, ...merged fields... }` (200). In maintenance boot, `v1_connected` is expected to remain false because BLE/V1 runtime init is intentionally skipped. Cache TTL: `STATUS_CACHE_TTL_MS`.
+**Response:** `{ "wifi": { "setup_mode": bool, "ap_active": bool, "sta_connected": bool, "sta_ip": string, "ap_ip": string, "ssid": string, "rssi": int32, "sta_enabled": bool, "sta_ssid": string }, "device": { "uptime": ulong, "heap_free": uint32, "hostname": string, "firmware_version": string }, "battery": { "voltage_mv": uint16, "percentage": uint8, "on_battery": bool, "has_battery": bool }, "maintenanceBoot": bool, "maintenanceBootUptimeMs": uint32, "maintenanceBootTimeoutMs": uint32, "v1_connected": bool, "alert": {...}, ...merged fields... }` (200). In maintenance boot, `v1_connected` is expected to remain false because BLE/V1 runtime init is intentionally skipped. `maintenanceBootTimeoutMs` publishes the firmware's idle window so clients do not duplicate that policy. `maintenanceBootUptimeMs` is measured from a **deadline anchor**, not from session start: it is defined so that `maintenanceBootTimeoutMs - maintenanceBootUptimeMs` always equals the true remaining time, including while UI activity has extended the deadline and while the absolute session cap is clamping it. For a session that has seen no UI activity the anchor is the session start, so the value is literally uptime. Clients should treat it as "time consumed against the deadline" and must not use it to display total session age. Cache TTL: `STATUS_CACHE_TTL_MS`.
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_status_api_service.cpp`.
 
 ### GET `/api/device/settings`
@@ -188,7 +188,7 @@ These paths handle the probes that iOS, Android, ChromeOS, and Windows fire when
 ### POST `/api/autopush/push`
 **Description:** Triggers immediate profile push from a slot, with optional profile/mode override.
 **Params:** `slot` (int 0-2, required), `profile` (string, optional override), `mode` (int, optional override).
-**Response:** `{ "success": true, "queued": true }` (200) or `{ "error": "V1 not connected" }` (503) or `{ "error": "Push already in progress" }` (409) or `{ "error": "No profile configured for this slot" }` (400) or `{ "error": "Failed to load profile" }` (500).
+**Response:** `{ "success": true, "queued": true }` (200), `{ "success": false, "error": "live_push_unavailable_in_maintenance", "message": "Live V1 push is unavailable in maintenance mode" }` (409), `{ "success": false, "error": "push_runtime_unavailable", "message": "Live V1 push runtime is unavailable" }` (503), `{ "error": "V1 not connected" }` (503), `{ "error": "Push already in progress" }` (409), `{ "error": "No profile configured for this slot" }` (400), or `{ "error": "Failed to load profile" }` (500).
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_autopush_api_service.cpp`.
 
 ## Display
@@ -300,11 +300,27 @@ These paths handle the probes that iOS, Android, ChromeOS, and Windows fire when
 **Response:** `{ "success": true, "message": "Settings restored successfully (N profiles)" }` (200) or `{ "success": false, "error": "..." }` (400, 413, 500).
 **Source:** route registration in `src/wifi_routes.cpp`, delegate `backup_api_service.cpp`.
 
-## Debug / observability
+## Diagnostics / observability
 
-HTTP debug, scenario-playback, and perf-file management endpoints are not
-registered in the production maintenance server. Runtime observability is kept
-through SD perf CSV logging and serial logs instead of live HTTP polling.
+Arbitrary HTTP debug, scenario-playback, and perf-file mutation endpoints are
+not registered in the production maintenance server. The following read-only,
+maintenance-only routes expose a narrow SD-card diagnostic allowlist.
+
+### GET `/api/diagnostics/logs`
+**Description:** Lists at most 64 regular diagnostic files while examining at most 128 directory entries: `/poweroff.log`, `/perf/`, and `/alp/` from SD plus the crash-recovery `/panic.txt` breadcrumb exclusively from internal LittleFS. Nested directories, hidden files, unsafe names, and every other path are excluded. Also returns a bounded tail of up to eight recent non-empty `/poweroff.log` lines so the complete shutdown decision and following boot record remain visible together.
+**Response:** `{ "success": true, "maxListedFiles": 64, "maxScannedEntries": 128, "maxDownloadBytes": 16777216, "files": [ { "path": string, "category": "power" | "panic" | "performance" | "alp", "sizeBytes": uint }, ... ], "truncated": bool, "lastPoweroffEvidence": string? }` (200), `{ "success": false, "error": "maintenance_mode_required" }` (409), `{ "success": false, "error": "sd_card_unavailable" | "storage_busy" }` (503).
+**Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_diagnostics_api_service.cpp`.
+
+### GET `/api/diagnostics/log`
+**Description:** Streams one allowlisted diagnostic file without buffering it into device heap. Downloads are capped at 16 MiB and sent with an exact `Content-Length`, `Cache-Control: no-store`, and a safe attachment filename. Socket writes are non-blocking, watchdog-fed, and aborted after bounded backpressure stalls; an aborted transfer closes the connection so clients detect the incomplete body.
+**Params:** `path` (required canonical path returned by `/api/diagnostics/logs`; only SD `/poweroff.log`, LittleFS `/panic.txt`, or one safe direct child of SD `/perf/` or `/alp/`).
+**Response:** File stream (200), `path_required` or `invalid_path` (400), `maintenance_mode_required` (409), `log_not_found` (404), `log_too_large` (413), or `sd_card_unavailable` / `storage_busy` / `storage_unavailable` (503).
+**Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_diagnostics_api_service.cpp`.
+
+### POST `/api/system/reboot-normal`
+**Description:** Exits maintenance mode through the same clean-restart sequence as the physical control: persist settings, mark clean shutdown, acknowledge the request, wait 100 ms for the response to drain, then restart into normal runtime.
+**Response:** `{ "success": true, "rebooting": true, "target": "normal" }` (202), `{ "success": false, "error": "maintenance_mode_required" }` (409), or `{ "success": false, "error": "reboot_runtime_unavailable" }` (503). The route also requires the standard maintenance write header; policy failures return 403.
+**Source:** route registration in `src/wifi_routes.cpp`, delegate `wifi_system_api_service.cpp`.
 
 ## WiFi management
 

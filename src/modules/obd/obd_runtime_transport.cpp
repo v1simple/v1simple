@@ -17,6 +17,7 @@
 #include "obd_runtime_module.h"
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
+#include "obd_transport_control_dispatch.h"
 
 #include <algorithm>
 #include <cstring>
@@ -47,7 +48,8 @@ using ObdStringUtils::copyString;
 constexpr UBaseType_t OBD_TRANSPORT_QUEUE_DEPTH = 1;
 constexpr uint32_t OBD_TRANSPORT_STACK_SIZE = 8192;
 constexpr UBaseType_t OBD_TRANSPORT_PRIORITY = 1;
-constexpr TickType_t OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(1000);
+constexpr TickType_t OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(20);
+constexpr TickType_t OBD_TRANSPORT_CONTROL_RETRY_TICKS = pdMS_TO_TICKS(20);
 constexpr size_t OBD_TRANSPORT_ADDR_BUF_LEN = 18;
 constexpr size_t OBD_TRANSPORT_CMD_BUF_LEN = 16;
 
@@ -60,11 +62,13 @@ struct ObdTransportRequest {
     uint32_t requestId = 0;
     uint32_t timeoutMs = 0;
     uint32_t nowMs = 0;
+    uint32_t dispatchEpoch = 0;
     char address[OBD_TRANSPORT_ADDR_BUF_LEN] = {};
     uint8_t addrType = 0;
     bool preferCachedAttributes = false;
     char cmd[OBD_TRANSPORT_CMD_BUF_LEN] = {};
     bool withResponse = false;
+    bool deleteBond = false;
 };
 
 struct ObdTransportContext {
@@ -74,17 +78,51 @@ struct ObdTransportContext {
 
 struct ObdTransportRuntime {
     QueueHandle_t requestQueue = nullptr;
+    QueueHandle_t controlQueue = nullptr;
     QueueHandle_t resultQueue = nullptr;
     TaskHandle_t task = nullptr;
     PsramQueueAllocation requestQueueAllocation = {};
+    PsramQueueAllocation controlQueueAllocation = {};
     PsramQueueAllocation resultQueueAllocation = {};
     bool requestQueueInPsram = false;
+    bool controlQueueInPsram = false;
     bool resultQueueInPsram = false;
     bool taskStackInPsram = false;
+    ObdTransportRequestEpoch requestEpoch;
+    ObdTransportControlDispatch<ObdTransportRequest> controlDispatch;
     ObdTransportContext context = {};
 };
 
 ObdTransportRuntime sObdTransport;
+
+void publishObdTransportResult(const ObdTransportResult& result) {
+    if (sObdTransport.resultQueue) {
+        xQueueOverwrite(sObdTransport.resultQueue, &result);
+    }
+}
+
+bool serviceObdTransportControl(ObdTransportContext* context) {
+    if (!context || !context->bleClient) {
+        return false;
+    }
+
+    return sObdTransport.controlDispatch.service(sObdTransport.controlQueue, sObdTransport.requestQueue,
+                                                 *context->bleClient,
+                                                 [context](const ObdTransportRequest& control, bool bondDeleteAttempted,
+                                                           bool bondDeleted, bool success, bool timedOut) {
+                                                     ObdTransportResult result{};
+                                                     result.ready = true;
+                                                     result.op = ObdTransportOp::DISCONNECT;
+                                                     result.requestId = control.requestId;
+                                                     result.issuedMs = control.nowMs;
+                                                     result.success = success;
+                                                     result.timedOut = timedOut;
+                                                     result.bondDeleteAttempted = bondDeleteAttempted;
+                                                     result.bondDeleted = bondDeleted;
+                                                     result.bleError = context->bleClient->getLastBleError();
+                                                     publishObdTransportResult(result);
+                                                 });
+}
 
 void obdTransportTaskEntry(void* param) {
     auto* context = static_cast<ObdTransportContext*>(param);
@@ -94,9 +132,24 @@ void obdTransportTaskEntry(void* param) {
     }
 
     while (true) {
+        context->bleClient->serviceDeferredLinkState();
+        if (serviceObdTransportControl(context)) {
+            vTaskDelay(OBD_TRANSPORT_CONTROL_RETRY_TICKS);
+            continue;
+        }
+
         ObdTransportRequest request{};
         if (!sObdTransport.requestQueue ||
             xQueueReceive(sObdTransport.requestQueue, &request, OBD_TRANSPORT_RECEIVE_TIMEOUT_TICKS) != pdTRUE) {
+            context->bleClient->serviceDeferredLinkState();
+            continue;
+        }
+
+        // A control request arriving while a data request was queued wins.
+        // The local request is intentionally dropped with the old session.
+        context->bleClient->serviceDeferredLinkState();
+        if (serviceObdTransportControl(context)) {
+            vTaskDelay(OBD_TRANSPORT_CONTROL_RETRY_TICKS);
             continue;
         }
 
@@ -106,6 +159,13 @@ void obdTransportTaskEntry(void* param) {
         result.requestId = request.requestId;
         result.issuedMs = request.nowMs;
 
+        // This CAS is the operation's linearization point. A disconnect that
+        // advanced the epoch first drops this stale request; a disconnect
+        // that advances it afterward waits for this one in-flight call.
+        if (!sObdTransport.requestEpoch.tryClaim(request.dispatchEpoch)) {
+            continue;
+        }
+
         switch (request.op) {
         case ObdTransportOp::CONNECT:
             result.success = context->bleClient->connect(request.address, request.addrType, request.timeoutMs,
@@ -113,8 +173,9 @@ void obdTransportTaskEntry(void* param) {
             result.bleError = context->bleClient->getLastBleError();
             break;
         case ObdTransportOp::DISCONNECT:
-            context->bleClient->disconnect();
-            result.success = true;
+            // Production disconnects use the priority control path so their
+            // result is callback-confirmed rather than command-accepted.
+            result.success = false;
             result.bleError = context->bleClient->getLastBleError();
             break;
         case ObdTransportOp::SECURITY_START:
@@ -149,9 +210,9 @@ void obdTransportTaskEntry(void* param) {
             break;
         }
 
-        if (sObdTransport.resultQueue) {
-            xQueueOverwrite(sObdTransport.resultQueue, &result);
-        }
+        sObdTransport.requestEpoch.releaseClaim();
+        context->bleClient->serviceDeferredLinkState();
+        publishObdTransportResult(result);
         taskYIELD();
     }
 }
@@ -168,6 +229,15 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
                                    sObdTransport.requestQueueAllocation, &sObdTransport.requestQueueInPsram);
         if (!sObdTransport.requestQueue) {
             Serial.println("[OBD] ERROR: failed to create transport request queue");
+            return false;
+        }
+    }
+    if (!sObdTransport.controlQueue) {
+        sObdTransport.controlQueue =
+            createQueuePreferPsram(OBD_TRANSPORT_QUEUE_DEPTH, sizeof(ObdTransportRequest),
+                                   sObdTransport.controlQueueAllocation, &sObdTransport.controlQueueInPsram);
+        if (!sObdTransport.controlQueue) {
+            Serial.println("[OBD] ERROR: failed to create transport control queue");
             return false;
         }
     }
@@ -337,7 +407,7 @@ bool ObdRuntimeModule::connectBle(uint32_t timeoutMs, bool preferCachedAttribute
 
 bool ObdRuntimeModule::isBleConnected() const {
 #ifndef UNIT_TEST
-    return bleClient_->isConnected();
+    return bleClient_ && bleClient_->isConnected();
 #else
     return testBleConnected_;
 #endif
@@ -442,19 +512,6 @@ bool ObdRuntimeModule::writeBleCommand(const char* cmd, bool withResponse) {
 #endif
 }
 
-bool ObdRuntimeModule::deleteBleBond() {
-    const char* const address = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
-    const uint8_t addrType = connectAddress_[0] != '\0' ? connectAddrType_ : savedAddrType_;
-#ifndef UNIT_TEST
-    return bleClient_->deleteBond(address, addrType);
-#else
-    (void)address;
-    (void)addrType;
-    testDeleteBondCalls_++;
-    return true;
-#endif
-}
-
 void ObdRuntimeModule::refreshBleBondBackup() {
 #ifndef UNIT_TEST
     ::refreshBleBondBackup();
@@ -463,15 +520,92 @@ void ObdRuntimeModule::refreshBleBondBackup() {
 #endif
 }
 
-void ObdRuntimeModule::disconnectBle() {
+bool ObdRuntimeModule::queuePendingTransportDisconnect() {
 #ifndef UNIT_TEST
-    bleClient_->disconnect();
+    if (!transportDisconnectPending_ || transportDisconnectQueued_) {
+        return true;
+    }
+    if (!ensureObdTransportRuntime(bleClient_, this) || !sObdTransport.controlQueue) {
+        Serial.println("[OBD] ERROR: failed to queue transport-owned disconnect");
+        return false;
+    }
+
+    ObdTransportRequest request{};
+    request.op = ObdTransportOp::DISCONNECT;
+    request.requestId = pendingDisconnectRequestId_;
+    request.nowMs = static_cast<uint32_t>(millis());
+    request.deleteBond = pendingDisconnectDeleteBond_;
+    request.addrType = pendingDisconnectAddrType_;
+    copyString(request.address, sizeof(request.address), pendingDisconnectAddress_);
+    if (xQueueOverwrite(sObdTransport.controlQueue, &request) != pdTRUE) {
+        Serial.println("[OBD] ERROR: transport disconnect control queue rejected request");
+        return false;
+    }
+    transportDisconnectQueued_ = true;
+    return true;
+#else
+    return true;
+#endif
+}
+
+bool ObdRuntimeModule::disconnectBle(bool deleteBond) {
+    clearTransportRequest();
+    readyTransportResult_ = {};
+#ifndef UNIT_TEST
+    const char* const address = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
+    const uint8_t addrType = connectAddress_[0] != '\0' ? connectAddrType_ : savedAddrType_;
+
+    if (transportDisconnectPending_) {
+        if (deleteBond && !pendingDisconnectDeleteBond_) {
+            copyString(pendingDisconnectAddress_, sizeof(pendingDisconnectAddress_), address);
+            pendingDisconnectAddrType_ = addrType;
+            if (transportDisconnectQueued_) {
+                pendingDisconnectFollowupDeleteBond_ = true;
+            } else {
+                pendingDisconnectDeleteBond_ = true;
+            }
+        }
+        return queuePendingTransportDisconnect();
+    }
+
+    sObdTransport.requestEpoch.cancelQueuedWork();
+    transportDisconnectPending_ = true;
+    transportDisconnectQueued_ = false;
+    pendingDisconnectDeleteBond_ = deleteBond;
+    pendingDisconnectFollowupDeleteBond_ = false;
+    lastDisconnectSucceeded_ = false;
+    pendingDisconnectRequestId_ = ++nextTransportRequestId_;
+    copyString(pendingDisconnectAddress_, sizeof(pendingDisconnectAddress_), address);
+    pendingDisconnectAddrType_ = addrType;
+    return queuePendingTransportDisconnect();
 #else
     testDisconnectCalls_++;
+    if (deleteBond) {
+        testDeleteBondCalls_++;
+    }
     testBleConnected_ = false;
-    pendingTransportRequestId_ = 0;
-    pendingTransportIssuedMs_ = 0;
-    pendingTransportTimeoutMs_ = 0;
+    return true;
+#endif
+}
+
+bool ObdRuntimeModule::disconnectForShutdown(uint32_t timeoutMs) {
+    const bool queued = disconnectBle();
+#ifndef UNIT_TEST
+    if (!queued) {
+        return false;
+    }
+    const uint32_t startedMs = static_cast<uint32_t>(millis());
+    while (transportDisconnectPending_ &&
+           static_cast<int32_t>(static_cast<uint32_t>(millis()) - startedMs) < static_cast<int32_t>(timeoutMs)) {
+        pumpTransportResults();
+        delay(1);
+    }
+    pumpTransportResults();
+    return queued && !transportDisconnectPending_ && lastDisconnectSucceeded_;
+#else
+    (void)queued;
+    (void)timeoutMs;
+    return true;
 #endif
 }
 
@@ -508,7 +642,10 @@ void ObdRuntimeModule::clearTransportRequest() {
 
 bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, uint32_t timeoutMs, const char* cmd,
                                              bool withResponse, bool preferCachedAttributes) {
-    if (transportRequestActive_) {
+#ifndef UNIT_TEST
+    pumpTransportResults();
+#endif
+    if (transportRequestActive_ || transportDisconnectPending_) {
         return false;
     }
     readyTransportResult_ = {};
@@ -523,6 +660,7 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
     request.requestId = ++nextTransportRequestId_;
     request.timeoutMs = timeoutMs;
     request.nowMs = nowMs;
+    request.dispatchEpoch = sObdTransport.requestEpoch.snapshot();
     const char* const address = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
     const uint8_t addrType = connectAddress_[0] != '\0' ? connectAddrType_ : savedAddrType_;
     request.addrType = addrType;
@@ -592,12 +730,53 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
 
 void ObdRuntimeModule::pumpTransportResults() {
 #ifndef UNIT_TEST
+    if (transportDisconnectPending_ && !transportDisconnectQueued_) {
+        (void)queuePendingTransportDisconnect();
+    }
     if (!sObdTransport.resultQueue) {
         return;
     }
 
     ObdTransportResult result{};
     while (xQueueReceive(sObdTransport.resultQueue, &result, 0) == pdTRUE) {
+        if (result.op == ObdTransportOp::DISCONNECT) {
+            if (transportDisconnectPending_ && result.requestId == pendingDisconnectRequestId_) {
+                transportDisconnectQueued_ = false;
+                if (result.bondDeleteAttempted && !result.bondDeleted) {
+                    Serial.printf("[OBD] WARN: transport-owned bond delete failed addr=%s\n",
+                                  pendingDisconnectAddress_);
+                } else if (result.bondDeleteAttempted) {
+                    // Refresh only after transport-owned deletion completes;
+                    // doing this when the control was merely queued would
+                    // persist the bond that is about to be removed.
+                    refreshBleBondBackup();
+                }
+
+                lastDisconnectSucceeded_ = result.success && !result.timedOut;
+                if (!lastDisconnectSucceeded_) {
+                    // Keep the runtime fence closed. The next main-loop pump
+                    // requeues at a bounded cadence after the dispatcher has
+                    // reported its capped command/confirmation failure.
+                    continue;
+                }
+
+                if (pendingDisconnectFollowupDeleteBond_) {
+                    pendingDisconnectFollowupDeleteBond_ = false;
+                    pendingDisconnectDeleteBond_ = true;
+                    pendingDisconnectRequestId_ = ++nextTransportRequestId_;
+                    lastDisconnectSucceeded_ = false;
+                    (void)queuePendingTransportDisconnect();
+                    continue;
+                }
+
+                transportDisconnectPending_ = false;
+                pendingDisconnectDeleteBond_ = false;
+                pendingDisconnectRequestId_ = 0;
+                pendingDisconnectAddress_[0] = '\0';
+                pendingDisconnectAddrType_ = 0;
+            }
+            continue;
+        }
         if (!transportRequestActive_ || result.requestId != pendingTransportRequestId_) {
             continue;
         }

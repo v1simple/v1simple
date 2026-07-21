@@ -7,6 +7,7 @@ Contracts:
 
 Allowed exceptions:
 - interface/src/lib/utils/poll.js: defines fetchWithTimeout/createPoll internals.
+- interface/src/test/fetch-mock.test.js: exercises the installed global fetch mock.
 - interface/src/routes/settings/+page.svelte: one local UI clock tick interval.
 """
 
@@ -19,7 +20,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_SRC = ROOT / "interface" / "src"
 
-ALLOWED_FETCH_FILE = "interface/src/lib/utils/poll.js"
+ALLOWED_FETCH_FILES = {
+    "interface/src/lib/utils/poll.js",
+    "interface/src/test/fetch-mock.test.js",
+}
 ALLOWED_SETINTERVAL_FILE = "interface/src/lib/utils/poll.js"
 ALLOWED_SETTINGS_TICK_FILE = "interface/src/routes/settings/+page.svelte"
 ALLOWED_SETTINGS_TICK_SNIPPET = "timeTickInterval = setInterval("
@@ -47,7 +51,7 @@ def main() -> int:
 
         for line_no, line in enumerate(lines, start=1):
             if FETCH_RE.search(line):
-                if rel != ALLOWED_FETCH_FILE:
+                if rel not in ALLOWED_FETCH_FILES:
                     fetch_violations.append(f"{rel}:{line_no}: {line.strip()}")
 
             if SET_INTERVAL_RE.search(line):

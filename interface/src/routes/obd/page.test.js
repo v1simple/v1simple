@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
 function countCalls(fetchMock, url) {
@@ -63,6 +63,33 @@ describe('obd route page', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.restoreAllMocks();
+    });
+
+    it('re-fetches the captured canonical config after an out-of-range save', async () => {
+        const fetchMock = installFixtureFetchMock('obd_config_invalid_value', [
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({ maintenanceBoot: true, maintenanceBootUptimeMs: 15000 })
+            },
+            {
+                method: 'GET',
+                match: '/api/obd/devices',
+                respond: jsonResponse({ devices: [] })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const input = await screen.findByLabelText(/Min RSSI \(dBm\)/i);
+        expect(input).toHaveValue(-80);
+
+        await fireEvent.input(input, { target: { value: '-10' } });
+        await fireEvent.change(input);
+
+        await waitFor(() => expect(input).toHaveValue(-40));
+        expect(countCalls(fetchMock, '/api/obd/config')).toBe(3);
+
+        unmount();
     });
 
     it('shows an OBD settings error when the OBD settings fetch fails on mount', async () => {
@@ -202,49 +229,15 @@ describe('obd route page', () => {
     });
 
     it('hides live OBD status and scan actions in maintenance mode', async () => {
-        installFetchMock(
+        installFixtureFetchMock(
+            ['obd_config_invalid_value', 'obd_maintenance_routes'],
             [
                 {
                     method: 'GET',
                     match: '/api/status',
                     respond: jsonResponse({ maintenanceBoot: true, maintenanceBootUptimeMs: 15000 })
-                },
-                {
-                    method: 'GET',
-                    match: '/api/obd/config',
-                    respond: jsonResponse({ enabled: true, minRssi: -80 })
-                },
-                {
-                    method: 'GET',
-                    match: '/api/obd/devices',
-                    respond: jsonResponse({
-                        devices: [
-                            {
-                                address: 'A4:C1:38:00:11:22',
-                                name: 'Truck Adapter',
-                                connected: true,
-                                active: true
-                            }
-                        ]
-                    })
-                },
-                {
-                    method: 'GET',
-                    match: '/api/obd/status',
-                    respond: jsonResponse({
-                        enabled: true,
-                        connected: true,
-                        speedValid: true,
-                        speedMph: 45,
-                        rssi: -65,
-                        state: 8,
-                        savedAddressValid: true,
-                        pollCount: 166,
-                        pollErrors: 0
-                    })
                 }
-            ],
-            jsonResponse({})
+            ]
         );
         const { unmount } = render(Page);
 

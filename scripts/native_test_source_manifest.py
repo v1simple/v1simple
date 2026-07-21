@@ -15,12 +15,50 @@ LINKED_NATIVE_TEST_PILOT_ENV = "V1_LINKED_NATIVE_TEST_PILOT"
 class LinkedNativeTestSpec:
     sources: tuple[str, ...]
     define: str
+    library_include_dirs: tuple[str, ...] = ()
 
 
 LINKED_NATIVE_TEST_SPECS = {
+    "test_api_maintenance_runtime_matrix": LinkedNativeTestSpec(
+        sources=(
+            "src/modules/alp/alp_sd_logger.cpp",
+            "src/modules/alp/alp_runtime_module.cpp",
+            "src/modules/alp/alp_api_service.cpp",
+            "src/modules/gps/gps_publishers.cpp",
+            "src/modules/gps/gps_runtime_module.cpp",
+            "src/modules/gps/gps_api_service.cpp",
+            "src/modules/obd/obd_elm327_parser.cpp",
+            "src/modules/obd/obd_runtime_module.cpp",
+            "src/modules/obd/obd_runtime_transport.cpp",
+            "src/modules/obd/obd_runtime_commands.cpp",
+            "src/modules/obd/obd_runtime_state_machine.cpp",
+            "src/modules/obd/obd_api_service.cpp",
+            "src/modules/wifi/wifi_autopush_api_service.cpp",
+            "src/modules/wifi/wifi_v1_profile_api_service.cpp",
+        ),
+        define="V1_LINKED_TEST_API_MAINTENANCE_RUNTIME_MATRIX",
+        library_include_dirs=("ArduinoJson/src",),
+    ),
+    "test_ble_proxy_alloc": LinkedNativeTestSpec(
+        sources=("src/ble_proxy.cpp",),
+        define="V1_LINKED_TEST_BLE_PROXY_ALLOC",
+        library_include_dirs=("ArduinoJson/src",),
+    ),
     "test_alp_event_latch": LinkedNativeTestSpec(
         sources=("src/modules/alp/alp_event_latch.cpp",),
         define="V1_LINKED_TEST_ALP_EVENT_LATCH",
+    ),
+    "test_obd_ble_client_race": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_ble_client.cpp",),
+        define="V1_LINKED_TEST_OBD_BLE_CLIENT",
+    ),
+    "test_wifi_scan_result_owner": LinkedNativeTestSpec(
+        sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),
+        define="V1_LINKED_TEST_WIFI_SCAN_RESULT_OWNER",
+    ),
+    "test_wifi_client_enable_transaction": LinkedNativeTestSpec(
+        sources=("src/modules/wifi/wifi_client_enable_transaction.cpp",),
+        define="V1_LINKED_TEST_WIFI_CLIENT_ENABLE_TRANSACTION",
     ),
 }
 
@@ -71,6 +109,11 @@ def validate_manifest(project_root: Path) -> None:
             seen_sources.add(source)
             if not (project_root / source).is_file():
                 raise ValueError(f"allow-listed production source does not exist: {source}")
+
+        for include_dir in spec.library_include_dirs:
+            include_path = PurePosixPath(include_dir)
+            if include_path.is_absolute() or ".." in include_path.parts or not include_path.parts:
+                raise ValueError(f"invalid linked library include path: {include_dir!r}")
 
     try:
         linked_test_spec("__manifest_fail_closed_probe__")

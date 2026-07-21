@@ -2,7 +2,7 @@ name: Firmware Coverage
 
 # Out-of-band firmware C++ coverage lane.
 #
-# This does NOT run in the PR gate or after every merge. Putting it there would
+# This does NOT run in the authoritative main gate. Putting it there would
 # add a whole second
 # native run to ci-test.sh: measured on one host, the 149 native suites take
 # 170.7s uninstrumented vs 206.6s instrumented (1.21x), plus ~24s of gcovr

@@ -144,8 +144,10 @@ LoopFinalizePhaseValues processLoopFinalizePhase(const unsigned long nowMs, cons
     return values;
 }
 
-unsigned long processLoopSettingsEarlyReturnPhase(const unsigned long nowMs, const unsigned long loopStartUs) {
+unsigned long processLoopSettingsEarlyReturnPhase(const unsigned long nowMs, const unsigned long loopStartUs,
+                                                  const bool bleConnected) {
     PeriodicMaintenanceModule::Context maintenanceCtx;
+    maintenanceCtx.bleConnected = bleConnected;
     maintenanceCtx.forceTailBleDrainPending = true;
     periodicMaintenanceModule.process(nowMs, maintenanceCtx);
     return loopTailModule.process(false, loopStartUs, true);

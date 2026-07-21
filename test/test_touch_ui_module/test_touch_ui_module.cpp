@@ -75,6 +75,14 @@ int fixtureSaveCalls() {
     return settingsManager.saveCalls;
 }
 
+int fixtureDeferredBackupCalls() {
+    return settingsManager.saveDeferredBackupCalls;
+}
+
+bool fixtureStealthEnabled() {
+    return settingsManager.settings.stealthEnabled;
+}
+
 }  // namespace
 
 void audio_set_volume(uint8_t volumePercent) {
@@ -137,10 +145,23 @@ void test_volume_slider_updates_audio_and_saves_voice_volume() {
     TEST_ASSERT_FALSE(touchUiModule.process(2050, false));
 
     TEST_ASSERT_EQUAL_UINT8(25, fixtureVoiceVolume());
-    TEST_ASSERT_EQUAL_INT(1, fixtureSaveCalls());
+    TEST_ASSERT_EQUAL_INT(0, fixtureSaveCalls());
+    TEST_ASSERT_EQUAL_INT(1, fixtureDeferredBackupCalls());
     TEST_ASSERT_EQUAL_INT(2, audioSetVolumeCalls);
     TEST_ASSERT_EQUAL_UINT8(25, lastAudioSetVolume);
     TEST_ASSERT_EQUAL_INT(1, display.hideBrightnessSliderCalls);
+}
+
+void test_double_press_defers_both_adjustment_and_stealth_sd_backups() {
+    TEST_ASSERT_FALSE(touchUiModule.process(0, true));
+    TEST_ASSERT_TRUE(touchUiModule.process(350, false));
+
+    TEST_ASSERT_TRUE(touchUiModule.process(400, true));
+    TEST_ASSERT_FALSE(touchUiModule.process(750, false));
+
+    TEST_ASSERT_TRUE(fixtureStealthEnabled());
+    TEST_ASSERT_EQUAL_INT(0, fixtureSaveCalls());
+    TEST_ASSERT_EQUAL_INT(2, fixtureDeferredBackupCalls());
 }
 
 void test_four_second_press_requests_maintenance_boot_on_release() {
@@ -235,6 +256,7 @@ int main() {
 
     RUN_TEST(test_short_press_keeps_existing_settings_mode_behavior);
     RUN_TEST(test_volume_slider_updates_audio_and_saves_voice_volume);
+    RUN_TEST(test_double_press_defers_both_adjustment_and_stealth_sd_backups);
     RUN_TEST(test_four_second_press_requests_maintenance_boot_on_release);
     RUN_TEST(test_four_second_press_stops_existing_wifi_instead_of_rebooting);
     RUN_TEST(test_ten_second_press_arms_obd_pair_without_maintenance_reboot);

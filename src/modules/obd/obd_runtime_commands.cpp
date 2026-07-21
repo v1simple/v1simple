@@ -423,7 +423,7 @@ bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context
         return false;
     }
 
-    if (!deleteBleBond()) {
+    if (!disconnectBle(true)) {
         return false;
     }
 
@@ -433,7 +433,6 @@ bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context
                   getBleSecurityFailure(), bleReasonName(getBleSecurityFailure()));
 #endif
 
-    disconnectBle();
     clearBleResponseState();
     resetCommandState();
     bleDisconnected_ = false;
@@ -442,7 +441,10 @@ bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context
     const char* const healAddr = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
     copyString(repairedBondAddress_, sizeof(repairedBondAddress_), healAddr);
     securityRepairs_++;
+#ifdef UNIT_TEST
+    // Production refreshes after the transport-owned delete is acknowledged.
     refreshBleBondBackup();
+#endif
     transitionTo(ObdConnectionState::DISCONNECTED, nowMs);
     return true;
 }

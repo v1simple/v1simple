@@ -68,6 +68,32 @@ void assertPhoneCmdDropMetrics(const V1BLEClient& client,
     TEST_ASSERT_EQUAL_UINT32(lockBusy, doc["phoneCmdDropsLockBusy"].as<uint32_t>());
 }
 
+SemaphoreHandle_t g_releaseNotifyMutex = nullptr;
+SemaphoreHandle_t g_releasePhoneMutex = nullptr;
+bool g_observeProxyQueueFree = false;
+bool g_releaseLocksHeldDuringEveryFree = true;
+uint32_t g_observedProxyQueueFreeCalls = 0;
+
+void observeHeapCapsFree(void* ptr) {
+    (void)ptr;
+    if (g_observeProxyQueueFree) {
+        ++g_observedProxyQueueFreeCalls;
+        g_releaseLocksHeldDuringEveryFree =
+            g_releaseLocksHeldDuringEveryFree &&
+            mock_semaphore_is_held(g_releaseNotifyMutex) &&
+            mock_semaphore_is_held(g_releasePhoneMutex);
+    }
+}
+
+void observeProxyQueueRelease(V1BLEClient& client) {
+    g_releaseNotifyMutex = reinterpret_cast<SemaphoreHandle_t>(0xB1E0u);
+    g_releasePhoneMutex = reinterpret_cast<SemaphoreHandle_t>(0xB1E1u);
+    client.bleNotifyMutex_ = g_releaseNotifyMutex;
+    client.phoneCmdMutex_ = g_releasePhoneMutex;
+    g_observeProxyQueueFree = true;
+    g_mock_heap_caps_free_observer = observeHeapCapsFree;
+}
+
 }  // namespace
 
 V1BLEClient::V1BLEClient()
@@ -143,17 +169,26 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     return g_sendCommandResult;
 }
 
+#if !defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
 #include "../../src/ble_proxy.cpp"
+#endif
 #include "../../src/ble_connection.cpp"
 
 void setUp() {
     mock_reset_heap_caps();
+    mock_reset_semaphore_state();
     mock_reset_nimble_state();
     mockMillis = 0;
     mockMicros = 0;
     perfCounters.reset();
     perfExtended.reset();
     resetPhoneCommandSendState();
+    g_releaseNotifyMutex = nullptr;
+    g_releasePhoneMutex = nullptr;
+    g_mock_heap_caps_free_observer = nullptr;
+    g_observeProxyQueueFree = false;
+    g_releaseLocksHeldDuringEveryFree = true;
+    g_observedProxyQueueFreeCalls = 0;
 }
 
 void tearDown() {}
@@ -204,6 +239,181 @@ void test_allocateProxyQueues_falls_back_to_internal_when_psram_misses() {
     TEST_ASSERT_FALSE(client.proxyQueuesInPsram_);
     TEST_ASSERT_EQUAL_UINT32(3, g_mock_heap_caps_malloc_calls);
     TEST_ASSERT_EQUAL_UINT32(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL, g_mock_heap_caps_last_malloc_caps);
+}
+
+void test_releaseProxyQueues_defers_when_notify_mutex_is_busy() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    auto* const proxyQueue = client.proxyQueue_;
+    auto* const phoneQueue = client.phone2v1Queue_;
+    mock_queue_semaphore_take_result(pdFALSE);
+
+    client.releaseProxyQueues();
+
+    TEST_ASSERT_EQUAL_PTR(proxyQueue, client.proxyQueue_);
+    TEST_ASSERT_EQUAL_PTR(phoneQueue, client.phone2v1Queue_);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_free_calls);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_heap_caps_outstanding_allocations);
+    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_semaphore_state.takeCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_semaphore_state.giveCalls);
+    TEST_ASSERT_EQUAL_PTR(g_releaseNotifyMutex, g_mock_semaphore_state.takeHandles[0]);
+}
+
+void test_releaseProxyQueues_defers_when_phone_mutex_is_busy() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    auto* const proxyQueue = client.proxyQueue_;
+    auto* const phoneQueue = client.phone2v1Queue_;
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdFALSE);
+
+    client.releaseProxyQueues();
+
+    TEST_ASSERT_EQUAL_PTR(proxyQueue, client.proxyQueue_);
+    TEST_ASSERT_EQUAL_PTR(phoneQueue, client.phone2v1Queue_);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_free_calls);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_heap_caps_outstanding_allocations);
+    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_semaphore_state.takeCalls);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_semaphore_state.giveCalls);
+    TEST_ASSERT_EQUAL_PTR(g_releaseNotifyMutex, g_mock_semaphore_state.takeHandles[0]);
+    TEST_ASSERT_EQUAL_PTR(g_releasePhoneMutex, g_mock_semaphore_state.takeHandles[1]);
+    TEST_ASSERT_EQUAL_PTR(g_releaseNotifyMutex, g_mock_semaphore_state.giveHandles[0]);
+    TEST_ASSERT_FALSE(mock_semaphore_is_held(g_releaseNotifyMutex));
+}
+
+void test_releaseProxyQueues_retry_frees_after_busy_mutex_clears() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdFALSE);
+    client.releaseProxyQueues();
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_free_calls);
+    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    TEST_ASSERT_TRUE(client.tryFinalizeProxyQueueRelease());
+
+    TEST_ASSERT_NULL(client.proxyQueue_);
+    TEST_ASSERT_NULL(client.phone2v1Queue_);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_heap_caps_free_calls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_outstanding_allocations);
+    TEST_ASSERT_FALSE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+    TEST_ASSERT_EQUAL_UINT32(2, g_observedProxyQueueFreeCalls);
+    TEST_ASSERT_TRUE(g_releaseLocksHeldDuringEveryFree);
+    TEST_ASSERT_FALSE(mock_semaphore_is_held(g_releaseNotifyMutex));
+    TEST_ASSERT_FALSE(mock_semaphore_is_held(g_releasePhoneMutex));
+}
+
+void test_releaseProxyQueues_holds_both_mutexes_and_repeated_release_is_harmless() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+
+    client.releaseProxyQueues();
+
+    TEST_ASSERT_NULL(client.proxyQueue_);
+    TEST_ASSERT_NULL(client.phone2v1Queue_);
+    TEST_ASSERT_EQUAL_UINT32(2, g_observedProxyQueueFreeCalls);
+    TEST_ASSERT_TRUE(g_releaseLocksHeldDuringEveryFree);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_semaphore_state.takeCalls);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_semaphore_state.giveCalls);
+    TEST_ASSERT_EQUAL_PTR(g_releaseNotifyMutex, g_mock_semaphore_state.takeHandles[0]);
+    TEST_ASSERT_EQUAL_PTR(g_releasePhoneMutex, g_mock_semaphore_state.takeHandles[1]);
+
+    client.releaseProxyQueues();
+
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_heap_caps_free_calls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_outstanding_allocations);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_semaphore_state.takeCalls);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_semaphore_state.giveCalls);
+    TEST_ASSERT_EQUAL_UINT32(2, g_observedProxyQueueFreeCalls);
+}
+
+void test_pending_release_gates_queue_producers_and_consumers() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    client.proxyEnabled_ = true;
+    client.proxyClientConnected_.store(true, std::memory_order_relaxed);
+    client.connected_.store(true, std::memory_order_relaxed);
+    const uint8_t notify[] = {0xAA, 0x55, 0x10};
+    const uint8_t command[] = {0x11};
+    TEST_ASSERT_TRUE(client.enqueuePhoneCommand(command, sizeof(command), 0xB2CE));
+    client.forwardToProxy(notify, sizeof(notify), 0xB2CE);
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, client.proxyQueueCount_);
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    client.releaseProxyQueues();
+    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommand(command, sizeof(command), 0xB2CE));
+    client.forwardToProxy(notify, sizeof(notify), 0xB2CE);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_INT(0, client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, client.proxyQueueCount_);
+
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    TEST_ASSERT_TRUE(client.tryFinalizeProxyQueueRelease());
+}
+
+void test_allocateProxyQueues_does_not_overwrite_a_pending_release() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    auto* const proxyQueue = client.proxyQueue_;
+    auto* const phoneQueue = client.phone2v1Queue_;
+    const uint32_t mallocCalls = g_mock_heap_caps_malloc_calls;
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    client.releaseProxyQueues();
+    mock_queue_semaphore_take_result(pdFALSE);
+
+    TEST_ASSERT_FALSE(client.allocateProxyQueues());
+    TEST_ASSERT_EQUAL_PTR(proxyQueue, client.proxyQueue_);
+    TEST_ASSERT_EQUAL_PTR(phoneQueue, client.phone2v1Queue_);
+    TEST_ASSERT_EQUAL_UINT32(mallocCalls, g_mock_heap_caps_malloc_calls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_free_calls);
+
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    TEST_ASSERT_TRUE(client.tryFinalizeProxyQueueRelease());
+}
+
+void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    observeProxyQueueRelease(client);
+    client.proxyEnabled_ = true;
+    client.proxyClientConnected_.store(true, std::memory_order_relaxed);
+    const uint32_t staleEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
+    const uint8_t packet[] = {0xAA, 0x55, 0x10};
+
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    client.releaseProxyQueues();
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    TEST_ASSERT_NOT_EQUAL(staleEpoch, client.proxyQueueEpoch_.load(std::memory_order_acquire));
+
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch));
+    client.forwardToProxyForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch);
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
+
+    TEST_ASSERT_TRUE(client.enqueuePhoneCommand(packet, sizeof(packet), 0xB2CE));
+    client.forwardToProxy(packet, sizeof(packet), 0xB2CE);
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, client.proxyQueueCount_);
 }
 
 void test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation() {
@@ -461,6 +671,8 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
     client.proxyClientConnected_.store(true, std::memory_order_relaxed);
     client.bleNotifyMutex_ = xSemaphoreCreateMutex();
     client.acceptClientCallbacks_.store(true, std::memory_order_release);
+    client.sessionGeneration_.store(1, std::memory_order_release);
+    client.sessionPublicationGate_.open(1);
 
     NimBLERemoteCharacteristic shortRemote(V1_DISPLAY_DATA_UUID);
     NimBLERemoteCharacteristic longRemote(V1_DISPLAY_DATA_LONG_UUID);
@@ -501,6 +713,13 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ble_timing_members_and_constants_use_uint32);
     RUN_TEST(test_allocateProxyQueues_prefers_psram_for_both_buffers);
     RUN_TEST(test_allocateProxyQueues_falls_back_to_internal_when_psram_misses);
+    RUN_TEST(test_releaseProxyQueues_defers_when_notify_mutex_is_busy);
+    RUN_TEST(test_releaseProxyQueues_defers_when_phone_mutex_is_busy);
+    RUN_TEST(test_releaseProxyQueues_retry_frees_after_busy_mutex_clears);
+    RUN_TEST(test_releaseProxyQueues_holds_both_mutexes_and_repeated_release_is_harmless);
+    RUN_TEST(test_pending_release_gates_queue_producers_and_consumers);
+    RUN_TEST(test_allocateProxyQueues_does_not_overwrite_a_pending_release);
+    RUN_TEST(test_reallocated_queues_reject_callbacks_from_the_previous_epoch);
     RUN_TEST(test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation);
     RUN_TEST(test_initProxyServer_partial_failure_frees_partial_allocation_and_resets_state);
     RUN_TEST(test_phone_command_invalid_drop_updates_getters_and_metrics_payload);

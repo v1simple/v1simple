@@ -38,6 +38,8 @@ void test_allows_shipped_ui_pages_and_assets() {
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/index.html"));
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/settings"));
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/settings.html"));
+    TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/logs"));
+    TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/logs.html"));
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/_app/env.js"));
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/_app/version.json"));
     TEST_ASSERT_TRUE(WifiStaticPathGuard::isAllowedServedPath("/_app/immutable/entry/start-abc123.js"));

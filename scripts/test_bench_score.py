@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCORER = ROOT / "tools" / "bench_score.py"
+FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -54,12 +55,22 @@ def write_window(root: Path, suite: str, *, hard: int = 0, advisory: int = 0, re
             "schema_version": 1,
             "result": "COLLECTED",
             "suite": suite,
+            "git_worktree_clean": True,
             "scoring_path": str(step / "scoring.json"),
             "csv_scorecard_path": str(step / "csv_scorecard.json"),
             "manifest_path": str(step / "manifest.json"),
         },
     )
-    write_json(step / "manifest.json", {"schema_version": 1, "rows": 61, "duration_s": 300.0})
+    write_json(
+        step / "manifest.json",
+        {
+            "schema_version": 1,
+            "git_sha": FULL_SHA,
+            "git_ref": "dev/test",
+            "rows": 61,
+            "duration_s": 300.0,
+        },
+    )
     write_json(
         step / "scoring.json",
         {
@@ -106,6 +117,9 @@ def test_no_baseline_language_does_not_make_bench_fail() -> None:
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         assert_true(result["result"] == "PASS", f"unexpected result: {result}")
+        assert_true(result["schema_version"] == 2, f"unexpected schema: {result}")
+        assert_true(result["git_sha"] == FULL_SHA, f"missing full Git binding: {result}")
+        assert_true(result["git_worktree_clean"] is True, f"dirty binding: {result}")
         assert_true("NO_BASELINE" not in proc.stdout, f"bench output leaked old baseline language: {proc.stdout}")
         assert_true("top budget pressure:" in proc.stdout, f"bench output should surface budget pressure: {proc.stdout}")
         assert_true("ble_process_max_peak_us" in proc.stdout, f"bench output should name top pressure metric: {proc.stdout}")

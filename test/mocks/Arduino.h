@@ -254,7 +254,7 @@ inline void analogWrite(int, int) {}
 // ESP-IDF timer stub — only defined here if a test hasn't already provided it
 #ifndef ESP_TIMER_GET_TIME_DEFINED
 #define ESP_TIMER_GET_TIME_DEFINED
-extern "C" int64_t esp_timer_get_time() { return 0; }
+extern "C" inline int64_t esp_timer_get_time() { return 0; }
 #endif
 
 // ESP object stub

@@ -64,6 +64,10 @@ Important files:
 | `core/` | core CSV, import, scoring, diagnostics |
 | `display/` | display CSV, import, scoring, diagnostics |
 
+`bench_result.json` uses the full 40-character Git SHA and records the Git ref
+and clean-worktree state for the aggregate and each window. The run-directory
+suffix remains the short SHA for readability.
+
 ## Result language
 
 A useful bench failure should look like this:

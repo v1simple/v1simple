@@ -1,13 +1,14 @@
 #pragma once
 
 class DisplayPreviewModule {
-public:
+  public:
     bool running = false;
     bool ended = false;
     int updateCalls = 0;
     int cancelCalls = 0;
 
     bool isRunning() const { return running; }
+    bool ownsPresentation() const { return running || ended; }
     void setRunning(bool value) { running = value; }
     void setEnded(bool value) { ended = value; }
 

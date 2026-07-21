@@ -25,10 +25,12 @@ class V1BLEClient;
 // data: pointer to packet data
 // length: number of bytes
 // charUUID: last 16-bit of source characteristic UUID (0xB2CE, 0xB4E0, etc)
-typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID);
+// sessionGeneration: immutable V1 link generation captured by the notify callback
+typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
 
 // Callback for V1 connection events
 typedef void (*ConnectionCallback)();
+typedef void (*SessionBoundaryCallback)(uint32_t sessionGeneration);
 
 // BLE Connection State Machine
 // Centralized state to prevent overlapping operations and race conditions
@@ -190,6 +192,12 @@ class V1BLEClient {
     // Register callback for immediate V1 connect work (critical path only).
     void onV1ConnectImmediate(ConnectionCallback callback);
 
+    // Register authoritative main-loop session boundaries. Open fires after a
+    // connect callback is accepted and before characteristic subscription;
+    // close fires when quiescence invalidates the outgoing generation.
+    void onV1SessionOpened(SessionBoundaryCallback callback);
+    void onV1SessionClosed(SessionBoundaryCallback callback);
+
     // Register callback for stable V1 connection work after the connect burst settles.
     void onV1Connected(ConnectionCallback callback);
 
@@ -198,6 +206,7 @@ class V1BLEClient {
     void noteDisplayPipelineDuration(uint32_t us);
     bool isConnectBurstSettling() const;
     uint32_t lastV1ConnectionEventMs() const { return lastV1ConnectionEventMs_.load(std::memory_order_relaxed); }
+    uint32_t sessionGeneration() const { return sessionGeneration_.load(std::memory_order_acquire); }
     bool consumeVerifyPushMatchEdge() { return verifyPushMatchEdgePending_.exchange(false, std::memory_order_acq_rel); }
 
     // Send command to V1 (e.g., request alert data)
@@ -412,6 +421,11 @@ class V1BLEClient {
     static constexpr size_t MAX_PHONE_CMDS_PER_LOOP = 4;
     ProxyPacket* phone2v1Queue_ = nullptr;
     bool proxyQueuesInPsram_ = false;
+    // Closes queue admission before runtime teardown. The main loop retries
+    // release until both callback-owned queue mutexes can be acquired.
+    std::atomic<bool> proxyQueueReleasePending_{false};
+    // Fences callbacks that began before a disable/re-enable allocation cycle.
+    std::atomic<uint32_t> proxyQueueEpoch_{0};
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};
@@ -422,12 +436,15 @@ class V1BLEClient {
 
     DataCallback dataCallback_;
     ConnectionCallback connectImmediateCallback_;
+    SessionBoundaryCallback sessionOpenedCallback_;
+    SessionBoundaryCallback sessionClosedCallback_;
     ConnectionCallback connectStableCallback_;
     std::atomic<bool> connected_{false}; // Standalone connection flag; use atomic load/store for all direct accesses
     std::atomic<bool> shouldConnect_{false};             // Atomic for thread safety (set from BLE callbacks)
     std::atomic<bool> pendingConnectStateUpdate_{false}; // Deferred update from BLE callbacks
     std::atomic<uint32_t> pendingConnectStateGeneration_{0};
     std::atomic<bool> pendingDisconnectCleanup_{false};  // Deferred cleanup from BLE callbacks
+    std::atomic<int> pendingDisconnectReason_{0};        // NimBLE reason, logged from the main loop
     std::atomic<bool> pendingDeleteBond_{false};         // Deferred bond deletion from BLE callback
     NimBLEAddress pendingDeleteBondAddr_;                // Address to delete bond for
     std::atomic<bool> pendingLastV1AddressValid_{false}; // Deferred settings save from BLE scan callback
@@ -593,6 +610,7 @@ class V1BLEClient {
 
     // Queue phone->V1 commands from BLE callback context
     bool enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID);
+    bool enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
     int processPhoneCommandQueue();
     // Diagnostic helper to log negotiated connection parameters
     void logConnParams(const char* tag);
@@ -659,6 +677,8 @@ class V1BLEClient {
     void adoptV1AdvertisedNameForProxy(const char* advertisedName);
     bool allocateProxyQueues();
     void releaseProxyQueues();
+    bool tryFinalizeProxyQueueRelease();
+    void forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
     bool enqueueProxyCallbackEvent(const ProxyCallbackEvent& event);
     bool popProxyCallbackEvent(ProxyCallbackEvent& event);
     void drainProxyCallbackEvents();

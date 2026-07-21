@@ -18,4 +18,5 @@ kind=DISPLAY_FLUSH file=src/display_update.cpp line=1048 function=update
 kind=DISPLAY_FLUSH file=src/display_update.cpp line=729 function=update
 kind=DISPLAY_FLUSH file=src/display_update.cpp line=837 function=updatePersisted
 kind=POINTER_FLUSH file=include/display_flush.h line=12 function=<global>
+kind=POINTER_FLUSH file=src/modules/power/power_module.cpp line=55 function=performShutdown
 kind=POINTER_FLUSH file=src/modules/touch/touch_ui_module.cpp line=70 function=process

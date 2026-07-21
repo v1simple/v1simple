@@ -57,7 +57,7 @@ Called after `parser.parse()` succeeds. Composes a frame, runs the voice pipelin
 Re-renders the current frame without alert-persistence or voice side effects. The loop display phase calls this only when the orchestrator requests a blink refresh on a no-parsed-frame loop, so blink state can advance without waiting for the next V1 packet.
 **Source:** `display_pipeline_module.h`.
 
-#### `void restoreCurrentOwner(uint32_t nowMs)`
+#### `bool restoreCurrentOwner(uint32_t nowMs)`
 Re-asserts current display ownership (V1 vs ALP) — used by the restore module after a preview ends.
 **Source:** `display_pipeline_module.h:49`.
 

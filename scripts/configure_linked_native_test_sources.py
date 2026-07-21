@@ -41,8 +41,28 @@ if linked_pilot is not None:
         env.Exit(2)  # type: ignore[name-defined]  # noqa: F821
 
     env.AppendUnique(CPPDEFINES=[spec.define])  # type: ignore[name-defined]  # noqa: F821
+
+    # Extra scripts run before PlatformIO's project-library builder creates the
+    # environment used for ordinary test sources.  Build linked sources from a
+    # clone with the same project and installed-library include roots so they do
+    # not depend on an amalgamating test translation unit to inherit them.
+    linked_env = env.Clone()  # type: ignore[name-defined]  # noqa: F821
+    linked_env.ProcessFlags(linked_env.get("BUILD_FLAGS"))
+    linked_env.PrependUnique(
+        CPPPATH=[
+            linked_env.subst("$PROJECT_INCLUDE_DIR"),
+            linked_env.subst("$PROJECT_SRC_DIR"),
+            *[
+                linked_env.subst(
+                    os.path.join("$PROJECT_LIBDEPS_DIR", "$PIOENV", include_dir)
+                )
+                for include_dir in spec.library_include_dirs
+            ],
+        ]
+    )
+
     source_filter = [f"+<{source}>" for source in spec.sources]
-    env.BuildSources(  # type: ignore[name-defined]  # noqa: F821
+    linked_env.BuildSources(
         os.path.join("$BUILD_DIR", "linked-production", str(test_name)),
         "$PROJECT_DIR",
         source_filter,

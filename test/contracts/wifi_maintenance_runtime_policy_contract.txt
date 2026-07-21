@@ -1,0 +1,69 @@
+# WiFi API four-cell maintenance/runtime policy contract.
+# Cells describe service-boundary behavior with a valid request fixture.
+# POST route authorization is checked separately by the API write-guard contract.
+# serve: mode/runtime availability alone does not reject the request.
+# runtime_unavailable: the absent named runtime is rejected before domain work.
+# maintenance_conflict: a live operation is rejected in maintenance mode.
+# maintenance_required: a maintenance-only operation is rejected in normal mode.
+
+route=HTTP_GET /api/alp/status runtime=alp normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=AlpApiService::handleApiStatus
+route=HTTP_GET /api/audio/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAudioApiService::handleApiGet
+route=HTTP_GET /api/autopush/slots runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAutoPushApiService::handleApiSlots
+route=HTTP_GET /api/autopush/status runtime=v1 normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAutoPushApiService::handleApiStatus
+route=HTTP_GET /api/device/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiSettingsApiService::handleApiDeviceSettingsGet
+route=HTTP_GET /api/diagnostics/log runtime=storage normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDiagnosticsApiService::handleApiDownload
+route=HTTP_GET /api/diagnostics/logs runtime=storage normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDiagnosticsApiService::handleApiList
+route=HTTP_GET /api/display/settings runtime=display normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiDisplayColorsApiService::handleApiGet
+route=HTTP_GET /api/display/visual/flushshadow runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handleFlushShadow
+route=HTTP_GET /api/display/visual/framebuffer runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handleFramebuffer
+route=HTTP_GET /api/display/visual/layout runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handleLayout
+route=HTTP_GET /api/display/visual/steps runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handleSteps
+route=HTTP_GET /api/gps/config runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=GpsApiService::handleApiConfigGet
+route=HTTP_GET /api/gps/status runtime=gps normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=GpsApiService::handleApiStatus
+route=HTTP_GET /api/obd/config runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=ObdApiService::handleApiConfigGet
+route=HTTP_GET /api/obd/devices runtime=obd normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=ObdApiService::handleApiDevicesList
+route=HTTP_GET /api/obd/status runtime=obd normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=ObdApiService::handleApiStatus
+route=HTTP_GET /api/quiet/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiQuietApiService::handleApiGet
+route=HTTP_GET /api/settings/backup runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=BackupApiService::handleApiBackup
+route=HTTP_GET /api/status runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiStatusApiService::handleApiStatus
+route=HTTP_GET /api/v1/current runtime=v1 normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1ProfileApiService::handleApiCurrentSettings
+route=HTTP_GET /api/v1/devices runtime=v1 normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1DevicesApiService::handleApiDevicesList
+route=HTTP_GET /api/v1/profile runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1ProfileApiService::handleApiProfileGet
+route=HTTP_GET /api/v1/profiles runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1ProfileApiService::handleApiProfilesList
+route=HTTP_GET /api/wifi/networks runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiNetworks
+route=HTTP_GET /api/wifi/scan runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiScanStatus
+route=HTTP_GET /api/wifi/status runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiStatus
+route=HTTP_POST /api/audio/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAudioApiService::handleApiSave
+route=HTTP_POST /api/autopush/activate runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAutoPushApiService::handleApiActivate
+route=HTTP_POST /api/autopush/push runtime=v1 normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=WifiAutoPushApiService::handleApiPushNow
+route=HTTP_POST /api/autopush/slot runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiAutoPushApiService::handleApiSlotSave
+route=HTTP_POST /api/device/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiSettingsApiService::handleApiDeviceSettingsSave
+route=HTTP_POST /api/display/preview runtime=display normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiDisplayColorsApiService::handleApiPreview
+route=HTTP_POST /api/display/preview/clear runtime=display normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiDisplayColorsApiService::handleApiClear
+route=HTTP_POST /api/display/settings runtime=display normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiDisplayColorsApiService::handleApiSave
+route=HTTP_POST /api/display/settings/reset runtime=display normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiDisplayColorsApiService::handleApiReset
+route=HTTP_POST /api/display/visual/clear runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handleClear
+route=HTTP_POST /api/display/visual/pin runtime=display normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiDisplayVisualApiService::handlePin
+route=HTTP_POST /api/gps/config runtime=gps normal_absent=runtime_unavailable normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=GpsApiService::handleApiConfigSave
+route=HTTP_POST /api/obd/config runtime=obd normal_absent=runtime_unavailable normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=ObdApiService::handleApiConfig
+route=HTTP_POST /api/obd/devices/name runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=ObdApiService::handleApiDeviceNameSave
+route=HTTP_POST /api/obd/forget runtime=obd normal_absent=runtime_unavailable normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=ObdApiService::handleApiForget
+route=HTTP_POST /api/obd/scan runtime=obd normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=ObdApiService::handleApiScan
+route=HTTP_POST /api/quiet/settings runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiQuietApiService::handleApiSave
+route=HTTP_POST /api/settings/backup-now runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=BackupApiService::handleApiBackupNow
+route=HTTP_POST /api/settings/restore runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=BackupApiService::handleApiRestore
+route=HTTP_POST /api/system/reboot-normal runtime=system normal_absent=maintenance_required normal_present=maintenance_required maintenance_absent=runtime_unavailable maintenance_present=serve delegates=WifiSystemApiService::handleApiRebootNormal
+route=HTTP_POST /api/v1/devices/delete runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1DevicesApiService::handleApiDeviceDelete
+route=HTTP_POST /api/v1/devices/name runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1DevicesApiService::handleApiDeviceNameSave
+route=HTTP_POST /api/v1/devices/profile runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1DevicesApiService::handleApiDeviceProfileSave
+route=HTTP_POST /api/v1/profile runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1ProfileApiService::handleApiProfileSave
+route=HTTP_POST /api/v1/profile/delete runtime=none normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiV1ProfileApiService::handleApiProfileDelete
+route=HTTP_POST /api/v1/pull runtime=v1 normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=WifiV1ProfileApiService::handleApiSettingsPull
+route=HTTP_POST /api/v1/push runtime=v1 normal_absent=runtime_unavailable normal_present=serve maintenance_absent=maintenance_conflict maintenance_present=maintenance_conflict delegates=WifiV1ProfileApiService::handleApiSettingsPush
+route=HTTP_POST /api/wifi/disconnect runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiDisconnect
+route=HTTP_POST /api/wifi/enable runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiEnable
+route=HTTP_POST /api/wifi/forget runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiForget
+route=HTTP_POST /api/wifi/networks runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiNetworksSave
+route=HTTP_POST /api/wifi/networks/delete runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiNetworksDelete
+route=HTTP_POST /api/wifi/networks/test runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiNetworksTest
+route=HTTP_POST /api/wifi/scan runtime=wifi normal_absent=serve normal_present=serve maintenance_absent=serve maintenance_present=serve delegates=WifiClientApiService::handleApiScan

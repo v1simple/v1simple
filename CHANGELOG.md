@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+
+## [1.0.6] - 2026-07-21
+
+Changes are summarized in the generated GitHub release notes.
+
 ## [1.0.5] - 2026-07-21
 
 Changes are summarized in the generated GitHub release notes.
@@ -254,7 +259,8 @@ ESP32-S3-Touch-LCD-3.49.
   core/display bench gates — but not by a representative real-hardware
   OBD/proxy pass.
 
-[Unreleased]: https://github.com/v1simple/v1simple/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/v1simple/v1simple/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/v1simple/v1simple/releases/tag/v1.0.6
 [1.0.5]: https://github.com/v1simple/v1simple/releases/tag/v1.0.5
 [1.0.4]: https://github.com/v1simple/v1simple/releases/tag/v1.0.4
 [1.0.3]: https://github.com/v1simple/v1simple/releases/tag/v1.0.3

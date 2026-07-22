@@ -8,6 +8,9 @@
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "modules/wifi/wifi_client_enable_transaction.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/wifi/wifi_bsc10_hil_fault_module.h"
+#endif
 #include "modules/wifi/wifi_sta_slot_policy.h"
 #include <vector>
 
@@ -294,6 +297,16 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
                                 wifiClientState_ == WIFI_CLIENT_CONNECTED ||
                                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
                                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    runtime.admitStart = [](void* ctx) {
+        const auto* transaction = static_cast<EnableContext*>(ctx);
+        WifiBsc10Admission admission{};
+        admission.persistedEnabled = settingsManager.get().wifiClientEnabled;
+        admission.lifecycleState = static_cast<uint8_t>(transaction->manager->wifiClientState_);
+        admission.selectedSlot = transaction->manager->currentConnectedSlotIndex_;
+        return wifiBsc10HilFaultModule().admitLifecycleStart(admission, millis());
+    };
+#endif
     runtime.attemptStart = [](void* ctx) {
         auto* transaction = static_cast<EnableContext*>(ctx);
         WiFiManager* self = transaction->manager;

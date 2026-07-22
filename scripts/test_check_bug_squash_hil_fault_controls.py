@@ -33,8 +33,14 @@ def fixture_root(temporary: Path) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
+    for relative in checker.EXPECTED_BSC10_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     shutil.copy2(ROOT / checker.BSC16_BATTERY_MANAGER, root / checker.BSC16_BATTERY_MANAGER)
     shutil.copy2(ROOT / checker.BSC04_MAIN, root / checker.BSC04_MAIN)
+    shutil.copy2(ROOT / checker.BSC10_WIFI_CLIENT, root / checker.BSC10_WIFI_CLIENT)
+    shutil.copy2(ROOT / checker.BSC10_TRANSACTION, root / checker.BSC10_TRANSACTION)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +285,34 @@ def test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
             encoding="utf-8",
         )
         assert_error_contains(checker.validate_static(root), "routing wiring must contain exactly one")
+
+
+def test_bsc10_hook_rejects_missing_or_late_admission() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        transaction = root / checker.BSC10_TRANSACTION
+        original = transaction.read_text(encoding="utf-8")
+        transaction.write_text(
+            original.replace(
+                "if (runtime.admitStart && !runtime.admitStart(runtime.ctx))",
+                "if (false && runtime.admitStart && !runtime.admitStart(runtime.ctx))",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "admission hook must occur exactly once")
+
+        transaction.write_text(original, encoding="utf-8")
+        wifi_client = root / checker.BSC10_WIFI_CLIENT
+        wifi_client.write_text(
+            wifi_client.read_text(encoding="utf-8").replace(
+                "wifiBsc10HilFaultModule().admitLifecycleStart(admission, millis())",
+                "wifiBsc10HilFaultModule().bypassLifecycleStart(admission, millis())",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "WiFi admission wiring must contain exactly one")
 
 
 def complete_artifacts(
@@ -658,6 +692,7 @@ def main() -> int:
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
         test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift,
+        test_bsc10_hook_rejects_missing_or_late_admission,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,
         test_bound_build_requires_clean_full_sha_and_exact_environment_commands,

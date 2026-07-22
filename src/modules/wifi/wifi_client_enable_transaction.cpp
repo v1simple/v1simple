@@ -11,6 +11,10 @@ bool execute(const Runtime& runtime) {
         return true;
     }
 
+    if (runtime.admitStart && !runtime.admitStart(runtime.ctx)) {
+        return false;
+    }
+
     if (!runtime.attemptStart(runtime.ctx)) {
         runtime.rollbackFailedStart(runtime.ctx);
         return false;

@@ -56,6 +56,7 @@
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
 #include "modules/wifi/wifi_bsc02_hil_fault_module.h"
+#include "modules/wifi/wifi_bsc10_hil_fault_module.h"
 #include "modules/power/battery_bsc16_hil_fault_module.h"
 #include "modules/hil/hil_fault_serial_module.h"
 #include "modules/system/connection_bsc04_hil_fault_module.h"
@@ -603,6 +604,7 @@ void setup() {
                                        WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY);
     configureBatteryBsc16HilDeviceRuntime();
     configureConnectionBsc04HilDeviceRuntime();
+    configureWifiBsc10HilDeviceRuntime();
     if (!configureHilNextBootFaultRouter()) {
         SerialLog.println("[HIL] ERROR: next-boot fault router configuration failed");
     }

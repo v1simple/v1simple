@@ -62,7 +62,13 @@ EXPECTED_BSC04_PRODUCT_HIL_FILES = {
     "src/modules/system/connection_bsc04_hil_fault_module.cpp",
     "src/modules/system/connection_bsc04_hil_fault_module.h",
 }
+EXPECTED_BSC10_PRODUCT_HIL_FILES = {
+    "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
+    "src/modules/wifi/wifi_bsc10_hil_fault_module.h",
+}
 BSC04_MAIN = "src/main.cpp"
+BSC10_WIFI_CLIENT = "src/wifi_client.cpp"
+BSC10_TRANSACTION = "src/modules/wifi/wifi_client_enable_transaction.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
 HIL_REFERENCE_RE = re.compile(
     r"(?:modules/hil/|hil_fault_|hil_ready_barrier|HilFault|HilReady|V1SIMPLE_HIL_FAULT_CONTROL)"
@@ -470,6 +476,40 @@ def validate_static(root: Path) -> list[str]:
             or not latch_index < hook_index < completion_index < adc_index
         ):
             errors.append("BSC-16 ADC fault hook must remain after latch initialization and before ADC admission")
+
+    for relative in sorted(EXPECTED_BSC10_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-10 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-10 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-10 product HIL source is not enclosed by the compile guard: {relative}")
+
+    try:
+        transaction_source = (root / BSC10_TRANSACTION).read_text(encoding="utf-8")
+        wifi_client_source = (root / BSC10_WIFI_CLIENT).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-10 WiFi admission wiring is unavailable: {exc}")
+    else:
+        admission_token = "if (runtime.admitStart && !runtime.admitStart(runtime.ctx))"
+        attempt_token = "if (!runtime.attemptStart(runtime.ctx))"
+        if transaction_source.count(admission_token) != 1:
+            errors.append("BSC-10 transaction admission hook must occur exactly once")
+        if transaction_source.find(admission_token) >= transaction_source.find(attempt_token):
+            errors.append("BSC-10 transaction admission hook must precede lifecycle mutation")
+        route_token = "wifiBsc10HilFaultModule().admitLifecycleStart(admission, millis())"
+        callback_token = "runtime.admitStart = [](void* ctx)"
+        attempt_callback_token = "runtime.attemptStart = [](void* ctx)"
+        for token in (route_token, callback_token):
+            if wifi_client_source.count(token) != 1:
+                errors.append(f"BSC-10 WiFi admission wiring must contain exactly one {token}")
+        if wifi_client_source.find(callback_token) >= wifi_client_source.find(attempt_callback_token):
+            errors.append("BSC-10 WiFi admission callback must be installed before lifecycle mutation")
 
     if source_root.is_dir():
         for path in sorted(source_root.rglob("*")):

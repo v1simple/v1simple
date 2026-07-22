@@ -1070,7 +1070,7 @@ void test_notify_queue_full_path_drops_incoming_without_evicting_queue_head() {
     const std::string queueText = readFile(
         std::filesystem::path(projectRoot() + "/src/modules/ble/ble_queue_module.cpp"));
     const std::string body =
-        extractFunctionBody(queueText, "void BleQueueModule::onNotify");
+        extractFunctionBody(queueText, "bool BleQueueModule::tryOnNotify");
 
     TEST_ASSERT_EQUAL(std::string::npos, headerText.find("BLEDataPacket dropScratch_{};"));
     TEST_ASSERT_EQUAL(std::string::npos, body.find("xQueueReceive(queueHandle_"));

@@ -483,6 +483,7 @@ void test_ble_queue_rejects_old_generation_item_committed_after_close_purge() {
 
     bleQueue.closeSession();
     bleQueue.openSession(2);
+    TEST_ASSERT_FALSE(bleQueue.tryOnNotify(alert.data(), alert.size(), 0xB2CE, 1));
     TEST_ASSERT_TRUE(bleQueue.enqueueStampedForTest(alert.data(), alert.size(), 0xB2CE, 1));
     bleQueue.process();
 
@@ -493,7 +494,7 @@ void test_ble_queue_rejects_old_generation_item_committed_after_close_purge() {
     SystemEvent event{};
     TEST_ASSERT_FALSE(eventBus.consumeByType(SystemEventType::BLE_FRAME_PARSED, event));
 
-    bleQueue.onNotify(alert.data(), alert.size(), 0xB2CE, 2);
+    TEST_ASSERT_TRUE(bleQueue.tryOnNotify(alert.data(), alert.size(), 0xB2CE, 2));
     bleQueue.process();
     TEST_ASSERT_TRUE(parser.hasAlerts());
     TEST_ASSERT_TRUE(bleQueue.consumeParsedFlag());

@@ -44,6 +44,10 @@ LINKED_NATIVE_TEST_SPECS = {
         define="V1_LINKED_TEST_BLE_PROXY_ALLOC",
         library_include_dirs=("ArduinoJson/src",),
     ),
+    "test_ble_notification_delay_gate": LinkedNativeTestSpec(
+        sources=("src/modules/ble/ble_notification_delay_gate.cpp",),
+        define="V1_LINKED_TEST_BLE_NOTIFICATION_DELAY_GATE",
+    ),
     "test_alp_event_latch": LinkedNativeTestSpec(
         sources=("src/modules/alp/alp_event_latch.cpp",),
         define="V1_LINKED_TEST_ALP_EVENT_LATCH",

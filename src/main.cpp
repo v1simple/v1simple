@@ -55,6 +55,7 @@
 #include "modules/wifi/wifi_orchestrator_module.h"
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/ble/ble_bsc05_hil_fault_module.h"
 #include "modules/wifi/wifi_bsc02_hil_fault_module.h"
 #include "modules/wifi/wifi_bsc10_hil_fault_module.h"
 #include "modules/power/battery_bsc16_hil_fault_module.h"
@@ -260,6 +261,11 @@ QualificationSerialModule qualificationSerialModule;
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
 void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    if (!bleBsc05HilFaultModule().routeNotification(data, length, charUUID, sessionGeneration, millis())) {
+        return;
+    }
+#endif
     bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);
 }
 
@@ -605,6 +611,11 @@ void setup() {
     configureBatteryBsc16HilDeviceRuntime();
     configureConnectionBsc04HilDeviceRuntime();
     configureWifiBsc10HilDeviceRuntime();
+    configureBleBsc05HilDeviceRuntime(
+        [](const uint8_t* data, const size_t length, const uint16_t characteristicUuid,
+           const uint32_t sessionGeneration,
+           void*) noexcept { return bleQueueModule.tryOnNotify(data, length, characteristicUuid, sessionGeneration); },
+        nullptr);
     if (!configureHilNextBootFaultRouter()) {
         SerialLog.println("[HIL] ERROR: next-boot fault router configuration failed");
     }
@@ -637,6 +648,7 @@ void loop() {
     }
     wifiBsc02HilFaultModule().service(hilNowMs);
     connectionBsc04HilFaultModule().service(hilNowMs);
+    bleBsc05HilFaultModule().service(hilNowMs);
 #endif
     if (mainRuntimeState.maintenanceBootActive) {
         audio_process_amp_timeout();

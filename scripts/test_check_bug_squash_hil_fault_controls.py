@@ -29,6 +29,10 @@ def fixture_root(temporary: Path) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
+    for relative in checker.EXPECTED_BSC05_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     for relative in checker.EXPECTED_BSC16_PRODUCT_HIL_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +43,9 @@ def fixture_root(temporary: Path) -> Path:
         shutil.copy2(ROOT / relative, destination)
     shutil.copy2(ROOT / checker.BSC16_BATTERY_MANAGER, root / checker.BSC16_BATTERY_MANAGER)
     shutil.copy2(ROOT / checker.BSC04_MAIN, root / checker.BSC04_MAIN)
+    connection_state = root / checker.BSC05_CONNECTION_STATE
+    connection_state.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / checker.BSC05_CONNECTION_STATE, connection_state)
     shutil.copy2(ROOT / checker.BSC10_WIFI_CLIENT, root / checker.BSC10_WIFI_CLIENT)
     shutil.copy2(ROOT / checker.BSC10_TRANSACTION, root / checker.BSC10_TRANSACTION)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
@@ -285,6 +292,53 @@ def test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
             encoding="utf-8",
         )
         assert_error_contains(checker.validate_static(root), "routing wiring must contain exactly one")
+
+
+def test_bsc05_hook_rejects_missing_or_misordered_generation_wiring() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        main = root / checker.BSC05_MAIN
+        original = main.read_text(encoding="utf-8")
+        main.write_text(
+            original.replace(
+                "bleBsc05HilFaultModule().routeNotification(",
+                "bleBsc05HilFaultModule().bypassNotification(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "notification wiring must contain exactly one")
+
+        main.write_text(original, encoding="utf-8")
+        connection = root / checker.BSC05_CONNECTION_STATE
+        original_connection = connection.read_text(encoding="utf-8")
+        connection.write_text(
+            original_connection.replace(
+                "bleBsc05HilFaultModule().recordSessionOpened(sessionGeneration, millis());",
+                "bleBsc05HilFaultModule().recordSessionOpenedBeforeQueue(sessionGeneration, millis());",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "lifecycle wiring must contain exactly one")
+
+        queue_open_block = """    if (bleQueue_) {
+        bleQueue_->openSession(sessionGeneration);
+    }
+"""
+        record_open_block = """#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    bleBsc05HilFaultModule().recordSessionOpened(sessionGeneration, millis());
+#endif
+"""
+        connection.write_text(
+            original_connection.replace(
+                queue_open_block + record_open_block,
+                record_open_block + queue_open_block,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "new-session signal must follow queue generation admission")
 
 
 def test_bsc10_hook_rejects_missing_or_late_admission() -> None:
@@ -692,6 +746,7 @@ def main() -> int:
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
         test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift,
+        test_bsc05_hook_rejects_missing_or_misordered_generation_wiring,
         test_bsc10_hook_rejects_missing_or_late_admission,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,

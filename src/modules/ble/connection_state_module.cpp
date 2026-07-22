@@ -1,5 +1,9 @@
 #include "connection_state_module.h"
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/ble/ble_bsc05_hil_fault_module.h"
+#endif
+
 // Native test builds pre-include mock headers (test/mocks) before pulling this
 // translation unit in directly — same pattern as display_orchestration_module.
 #ifndef UNIT_TEST
@@ -47,6 +51,9 @@ void ConnectionStateModule::handleSessionOpened(uint32_t sessionGeneration) {
     if (bleQueue_) {
         bleQueue_->openSession(sessionGeneration);
     }
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    bleBsc05HilFaultModule().recordSessionOpened(sessionGeneration, millis());
+#endif
     openedSessionGeneration_ = sessionGeneration;
     observedSessionGeneration_ = sessionGeneration;
 }
@@ -60,6 +67,9 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
     if (bleQueue_) {
         bleQueue_->closeSession();
     }
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    bleBsc05HilFaultModule().recordSessionClosed(sessionGeneration, static_cast<uint32_t>(nowMs));
+#endif
     parser_->resetAlertState();
     if (alertPersistence_) {
         alertPersistence_->clearPersistence();

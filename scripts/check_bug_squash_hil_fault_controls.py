@@ -62,11 +62,17 @@ EXPECTED_BSC04_PRODUCT_HIL_FILES = {
     "src/modules/system/connection_bsc04_hil_fault_module.cpp",
     "src/modules/system/connection_bsc04_hil_fault_module.h",
 }
+EXPECTED_BSC05_PRODUCT_HIL_FILES = {
+    "src/modules/ble/ble_bsc05_hil_fault_module.cpp",
+    "src/modules/ble/ble_bsc05_hil_fault_module.h",
+}
 EXPECTED_BSC10_PRODUCT_HIL_FILES = {
     "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
     "src/modules/wifi/wifi_bsc10_hil_fault_module.h",
 }
 BSC04_MAIN = "src/main.cpp"
+BSC05_MAIN = "src/main.cpp"
+BSC05_CONNECTION_STATE = "src/modules/ble/connection_state_module.cpp"
 BSC10_WIFI_CLIENT = "src/wifi_client.cpp"
 BSC10_TRANSACTION = "src/modules/wifi/wifi_client_enable_transaction.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
@@ -432,6 +438,57 @@ def validate_static(root: Path) -> list[str]:
             errors.append(
                 "BSC-04 suppression hook must route the consumed VerifyPush edge before coordinator admission"
             )
+
+    for relative in sorted(EXPECTED_BSC05_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-05 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-05 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-05 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-05 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    try:
+        bsc05_main_source = (root / BSC05_MAIN).read_text(encoding="utf-8")
+        connection_state_source = (root / BSC05_CONNECTION_STATE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-05 notification generation wiring is unavailable: {exc}")
+    else:
+        route_token = "bleBsc05HilFaultModule().routeNotification("
+        ordinary_forward_token = "bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);"
+        delayed_forward_token = "return bleQueueModule.tryOnNotify(data, length, characteristicUuid, sessionGeneration);"
+        service_token = "bleBsc05HilFaultModule().service(hilNowMs);"
+        configure_token = "configureBleBsc05HilDeviceRuntime("
+        for token in (route_token, ordinary_forward_token, delayed_forward_token, service_token, configure_token):
+            if bsc05_main_source.count(token) != 1:
+                errors.append(f"BSC-05 notification wiring must contain exactly one {token}")
+        route_index = bsc05_main_source.find(route_token)
+        forward_index = bsc05_main_source.find(ordinary_forward_token)
+        if route_index < 0 or forward_index < 0 or route_index >= forward_index:
+            errors.append("BSC-05 delay hook must run before ordinary notification queue admission")
+
+        queue_open = "bleQueue_->openSession(sessionGeneration);"
+        record_open = "bleBsc05HilFaultModule().recordSessionOpened(sessionGeneration, millis());"
+        queue_close = "bleQueue_->closeSession();"
+        record_close = (
+            "bleBsc05HilFaultModule().recordSessionClosed(sessionGeneration, static_cast<uint32_t>(nowMs));"
+        )
+        for token in (queue_open, record_open, queue_close, record_close):
+            if connection_state_source.count(token) != 1:
+                errors.append(f"BSC-05 lifecycle wiring must contain exactly one {token}")
+        if connection_state_source.find(queue_open) >= connection_state_source.find(record_open):
+            errors.append("BSC-05 new-session signal must follow queue generation admission")
+        if connection_state_source.find(queue_close) >= connection_state_source.find(record_close):
+            errors.append("BSC-05 old-session signal must follow queue closure")
 
     for relative in sorted(EXPECTED_BSC16_PRODUCT_HIL_FILES):
         path = root / relative

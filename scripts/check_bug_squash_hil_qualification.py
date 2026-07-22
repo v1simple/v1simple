@@ -10,7 +10,6 @@ import hashlib
 import ipaddress
 import json
 import os
-import platform
 import re
 import shutil
 import stat
@@ -284,21 +283,62 @@ def current_build_tool_identity() -> dict[str, Any]:
     if pio_raw is None:
         raise ValueError("PlatformIO executable is unavailable")
     pio = Path(pio_raw).resolve()
-    python_command = Path(sys.executable)
-    python = python_command.resolve()
     git = AUTHORITATIVE_GIT.resolve()
-    if not pio.is_file() or not python.is_file() or not git.is_file():
+    if not pio.is_file() or not git.is_file():
         raise ValueError("required build tool executable is unavailable")
+    python_candidates = (
+        pio.parent / "python",
+        Path(sys.executable),
+        Path.home() / ".platformio" / "penv" / "bin" / "python",
+    )
+    python_command: Path | None = None
+    python_package_sha256 = ""
+    esptool_package_sha256 = ""
+    python_version = ""
+    esptool_version = ""
+    observed: set[Path] = set()
     environment = authoritative_tool_environment(pio)
+    for candidate in python_candidates:
+        if candidate in observed or not candidate.is_file():
+            continue
+        observed.add(candidate)
+        try:
+            candidate_platformio_sha256 = hash_python_package(
+                "platformio",
+                candidate,
+                environment,
+            )
+            candidate_esptool_sha256 = hash_python_package(
+                "esptool",
+                candidate,
+                environment,
+            )
+            candidate_python_version = _tool_version(
+                [str(candidate), "--version"],
+                r"Python \d+\.\d+\.\d+",
+                environment,
+            ).removeprefix("Python ")
+            candidate_esptool_version = _tool_version(
+                [str(candidate), "-m", "esptool", "version"],
+                r"esptool v\d+\.\d+\.\d+",
+                environment,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        python_command = candidate
+        python_package_sha256 = candidate_platformio_sha256
+        esptool_package_sha256 = candidate_esptool_sha256
+        python_version = candidate_python_version
+        esptool_version = candidate_esptool_version
+        break
+    if python_command is None:
+        raise ValueError("PlatformIO Python environment is unavailable")
+    python = python_command.resolve()
     tools = {
         "schema_version": 1,
         "platformio": {
             "sha256": file_sha256(pio),
-            "package_sha256": hash_python_package(
-                "platformio",
-                python_command,
-                environment,
-            ),
+            "package_sha256": python_package_sha256,
             "version": _tool_version(
                 [str(pio), "--version"],
                 r"PlatformIO Core, version \d+\.\d+\.\d+",
@@ -307,7 +347,7 @@ def current_build_tool_identity() -> dict[str, Any]:
         },
         "python": {
             "sha256": file_sha256(python),
-            "version": platform.python_version(),
+            "version": python_version,
         },
         "git": {
             "sha256": file_sha256(git),
@@ -318,16 +358,8 @@ def current_build_tool_identity() -> dict[str, Any]:
             ),
         },
         "esptool": {
-            "sha256": hash_python_package(
-                "esptool",
-                python_command,
-                environment,
-            ),
-            "version": _tool_version(
-                [str(python_command), "-m", "esptool", "version"],
-                r"esptool v\d+\.\d+\.\d+",
-                environment,
-            ),
+            "sha256": esptool_package_sha256,
+            "version": esptool_version,
         },
     }
     tools["identity_sha256"] = canonical_commitment(

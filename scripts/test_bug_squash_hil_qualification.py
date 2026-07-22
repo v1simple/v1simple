@@ -868,6 +868,26 @@ def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -
     )
 
 
+def test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages(
+    tmpdir: Path,
+) -> None:
+    unavailable_python = tmpdir / "python-without-platformio"
+    unavailable_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    unavailable_python.chmod(0o755)
+    qualification.current_build_tool_identity.cache_clear()
+    with mock.patch.object(qualification.sys, "executable", str(unavailable_python)):
+        tools = qualification.current_build_tool_identity()
+    qualification.current_build_tool_identity.cache_clear()
+    assert_true(
+        len(tools["platformio"]["package_sha256"]) == 64,
+        "PlatformIO package identity uses its associated Python environment",
+    )
+    assert_true(
+        len(tools["esptool"]["sha256"]) == 64,
+        "esptool package identity uses its associated Python environment",
+    )
+
+
 def test_profile_ready_mutation_cannot_authenticate_forged_provenance(tmpdir: Path) -> None:
     artifact_path, payload, profile = make_valid_artifact(tmpdir)
     simulated_ready = copy.deepcopy(profile)
@@ -1671,6 +1691,7 @@ def main() -> int:
         test_pinned_profile_has_exact_case_specific_contracts,
         test_incomplete_profile_rejects_synthetic_pass_pack,
         test_self_authored_build_and_board_integrity_cannot_activate,
+        test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages,
         test_profile_ready_mutation_cannot_authenticate_forged_provenance,
         test_profile_scope_digest_and_case_set_cannot_be_overridden,
         test_target_sha_must_be_nonzero_existing_head,

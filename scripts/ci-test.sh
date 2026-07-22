@@ -107,6 +107,7 @@ run_step "clang-format check regression tests" python3 scripts/test_check_clang_
 run_step "Modified font reserved-name contract" python3 scripts/check_modified_font_names.py
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py
+run_step "Trigger-term scanner regression tests" python3 scripts/test_scan_trigger_terms.py
 run_step "Stabilization manifest contract" python3 scripts/check_stabilization_manifest.py
 run_step "Native linked-source manifest contract" python3 scripts/native_test_source_manifest.py --check
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py

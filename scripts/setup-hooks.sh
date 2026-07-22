@@ -16,6 +16,7 @@ git config core.hooksPath .githooks
 
 echo "hooks installed (core.hooksPath = .githooks)"
 echo "  commit-msg → enforces <type>(<scope>): summary"
+echo "  pre-commit → advisory trigger-term heads-up (never blocks)"
 echo "  pre-push   → blocks force-push, ref deletion, and local-only history"
 echo ""
 python3 scripts/check_commit_msg.py --selftest

@@ -48,6 +48,26 @@ def test_repository_static_contract_passes() -> None:
     assert_true(not errors, f"repository static contract failed: {errors}")
 
 
+def test_structural_guard_accepts_formatter_comment_spacing() -> None:
+    for separator in (" ", "  "):
+        source = (
+            "#pragma once\n"
+            "#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\n"
+            "int guarded = 1;\n"
+            f"#endif{separator}// V1SIMPLE_HIL_FAULT_CONTROL\n"
+        )
+        assert_true(
+            checker.has_structural_outer_guard(source),
+            f"outer guard rejected {len(separator)}-space formatter variant",
+        )
+    assert_true(
+        not checker.has_structural_outer_guard(
+            "#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\nint guarded = 1;\n#endif\n"
+        ),
+        "outer guard accepted an unauthenticated closing directive",
+    )
+
+
 def test_hil_environment_cannot_become_default_or_leak_to_production_flags() -> None:
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
         root = fixture_root(Path(raw))
@@ -572,6 +592,7 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
 def main() -> int:
     tests = (
         test_repository_static_contract_passes,
+        test_structural_guard_accepts_formatter_comment_spacing,
         test_hil_environment_cannot_become_default_or_leak_to_production_flags,
         test_unguarded_and_elif_call_sites_are_rejected,
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,

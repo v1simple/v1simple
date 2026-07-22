@@ -44,6 +44,49 @@ EXPECTED_DEVICE_SUITES = (
     "test_device_coexistence",
 )
 CASE_IDS = tuple(f"BSC-{index:02d}" for index in range(2, 15)) + ("BSC-16",)
+BSC02_CASE_ID = "BSC-02"
+BSC02_HIL_ENVIRONMENT = "waveshare-349-hil"
+BSC02_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC02_REQUIRED_RUNS = 1
+BSC02_ADAPTER_TIMEOUT_SECONDS = 600
+BSC02_FIRST_RETRY_MIN_MS = 2_500
+BSC02_FIRST_RETRY_MAX_MS = 5_000
+BSC02_LATER_RETRY_MIN_MS = 25_000
+BSC02_LATER_RETRY_MAX_MS = 35_000
+BSC02_PRESSURE_CAP_BYTES = 64 * 1024
+BSC02_PRESSURE_TASK_OVERHEAD_CAP_BYTES = 8 * 1024
+BSC02_AUTO_RELEASE_MAX_MS = 5_000
+BSC02_LOW_HEAP_PERSIST_MIN_MS = 1_500
+BSC02_FREE_FLOOR_BYTES = 16 * 1024
+BSC02_LARGEST_BLOCK_FLOOR_BYTES = 8 * 1024
+BSC02_SAFETY_FREE_BYTES = (14 * 1024) + 512
+BSC02_SAFETY_LARGEST_BLOCK_BYTES = (6 * 1024) + 512
+BSC02_ABSOLUTE_MINIMUM_FREE_BYTES = 14 * 1024
+BSC02_ABSOLUTE_MINIMUM_LARGEST_BLOCK_BYTES = 6 * 1024
+BSC02_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "maintenance-mode",
+    "serial",
+)
+BSC02_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "lan-client",
+    "sram-pressure-control",
+    "utc-time-source",
+)
+BSC02_CAPTURE_COMMITMENTS = (
+    "build_evidence_sha256",
+    "heap_timeline_sha256",
+    "http_timeline_sha256",
+    "lifecycle_timeline_sha256",
+    "serial_log_sha256",
+)
+BSC02_QUALIFICATION_BLOCKERS = (
+    "build-generator-provenance-not-authenticated",
+    "board-resolution-provenance-not-authenticated",
+    "case-source-provenance-not-authenticated",
+    "tracked-rig-adapter-not-implemented",
+)
 BSC03_CASE_ID = "BSC-03"
 BSC03_REQUIRED_RUNS = 3
 BSC03_ADMISSION_DEADLINE_MS = 10_000
@@ -1784,6 +1827,738 @@ def canonical_case_commitment(domain: str, payload: object) -> str:
     return hashlib.sha256(domain.encode("ascii") + b"\0" + canonical).hexdigest()
 
 
+def resolve_bsc02_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-02 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC02_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC02_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-02 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def bsc02_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc02.case-record.v1", committed)
+
+
+def validate_bsc02_events(
+    value: object,
+    expected_ids: Sequence[str],
+    *,
+    label: str,
+    expected_phase: int,
+) -> list[int]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, f"{label} event sequence is incomplete")
+    elapsed_values: list[int] = []
+    lifecycle_identity: tuple[int, int, int, int] | None = None
+    for sequence, (event, event_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            event,
+            {
+                "id",
+                "sequence",
+                "elapsed_ms",
+                "reason",
+                "arm_sequence",
+                "ready_sequence",
+                "generation",
+                "phase",
+            },
+            code=code,
+            label=f"{label} event",
+        )
+        elapsed = row.get("elapsed_ms")
+        identity_values = tuple(
+            row.get(field)
+            for field in ("arm_sequence", "ready_sequence", "generation", "phase")
+        )
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or isinstance(elapsed, bool)
+            or not isinstance(elapsed, int)
+            or elapsed < 0
+            or not isinstance(row.get("reason"), str)
+            or not row["reason"]
+            or any(type(identity) is not int or identity <= 0 for identity in identity_values[:3])
+            or type(identity_values[3]) is not int
+            or identity_values[3] != expected_phase
+        ):
+            raise RunnerError(code, f"{label} event order or timing is invalid")
+        typed_identity = (
+            identity_values[0],
+            identity_values[1],
+            identity_values[2],
+            identity_values[3],
+        )
+        if lifecycle_identity is None:
+            lifecycle_identity = typed_identity
+        elif typed_identity != lifecycle_identity:
+            raise RunnerError(code, f"{label} event identity changed during its lifecycle")
+        elapsed_values.append(elapsed)
+    if any(later <= earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, f"{label} event times must increase strictly")
+    return elapsed_values
+
+
+def require_bsc02_timing(
+    later: object,
+    earlier: object,
+    *,
+    minimum_ms: int,
+    maximum_ms: int,
+    label: str,
+) -> tuple[int, int]:
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (later, earlier)):
+        raise RunnerError("case_record_invalid", f"{label} timing is invalid")
+    delta = later - earlier
+    if delta < minimum_ms or delta > maximum_ms:
+        raise RunnerError("case_record_invalid", f"{label} timing is outside its bound")
+    return later, earlier
+
+
+def validate_bsc02_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role",
+            "session_id",
+            "attempt_id",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "firmware",
+            "preconditions",
+            "fault_collection",
+            "production_replay",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-02 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-02 adapter {field} is not runner-bound")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-02 adapter schema version is invalid")
+    if not isinstance(record.get("session_id"), str) or re.fullmatch(
+        r"bsc02-[0-9a-f]{32}", record["session_id"]
+    ) is None:
+        raise RunnerError(code, "BSC-02 session identity is invalid")
+    if not isinstance(record.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9a-f]{32}", record["attempt_id"]
+    ) is None:
+        raise RunnerError(code, "BSC-02 attempt identity is invalid")
+
+    role = record["role"]
+    if role not in ("fault-collection", "production-replay"):
+        raise RunnerError(code, "BSC-02 adapter role is invalid")
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {
+            "environment",
+            "target_sha",
+            "binary_sha256",
+            "build_manifest_sha256",
+            "hil_fault_control_active",
+        },
+        code=code,
+        label="BSC-02 firmware identity",
+    )
+    expected_environment = (
+        BSC02_HIL_ENVIRONMENT
+        if role == "fault-collection"
+        else BSC02_PRODUCTION_ENVIRONMENT
+    )
+    expected_hil = role == "fault-collection"
+    if (
+        firmware.get("environment") != expected_environment
+        or firmware.get("target_sha") != expected["target_sha"]
+        or firmware.get("hil_fault_control_active") is not expected_hil
+    ):
+        raise RunnerError(code, "BSC-02 firmware identity or HIL marker is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-02 binary")
+    require_sha256(
+        firmware.get("build_manifest_sha256"),
+        code=code,
+        label="BSC-02 build manifest",
+    )
+
+    preconditions = require_exact_object(
+        record.get("preconditions"),
+        {"maintenance_mode", "http_probe_ready", "unexpected_resets_before_start"},
+        code=code,
+        label="BSC-02 preconditions",
+    )
+    if (
+        preconditions.get("maintenance_mode") is not True
+        or preconditions.get("http_probe_ready") is not True
+        or type(preconditions.get("unexpected_resets_before_start")) is not int
+        or preconditions.get("unexpected_resets_before_start") != 0
+    ):
+        raise RunnerError(code, "BSC-02 maintenance preconditions were not verified")
+
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-02 start")
+    completed = parse_runner_utc(
+        record.get("completed_at_utc"), code=code, label="BSC-02 completion"
+    )
+    if completed < started:
+        raise RunnerError(code, "BSC-02 completion precedes its start")
+    now = datetime.now(timezone.utc)
+    if completed > now and (completed - now).total_seconds() > 2:
+        raise RunnerError(code, "BSC-02 completion is in the future")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "physical BSC-02 evidence predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(
+        microsecond=999999
+    ):
+        raise RunnerError(code, "physical BSC-02 evidence follows adapter execution")
+
+    if role == "fault-collection":
+        if record.get("production_replay") is not None:
+            raise RunnerError(code, "BSC-02 fault collection mixed production replay evidence")
+        collection = require_exact_object(
+            record.get("fault_collection"),
+            {"ap_start", "pressure", "recovery", "heap"},
+            code=code,
+            label="BSC-02 fault collection",
+        )
+        ap_start = require_exact_object(
+            collection.get("ap_start"),
+            {
+                "fault_id",
+                "setup_ap_configured",
+                "softap_called",
+                "false_ap_active",
+                "false_ap_reachable",
+                "events",
+            },
+            code=code,
+            label="BSC-02 AP start fault",
+        )
+        if (
+            ap_start.get("fault_id") != "wifi-ap-start-fail-once"
+            or ap_start.get("setup_ap_configured") is not True
+            or ap_start.get("softap_called") is not False
+            or ap_start.get("false_ap_active") is not False
+            or ap_start.get("false_ap_reachable") is not False
+        ):
+            raise RunnerError(code, "BSC-02 failed AP admission published a false active state")
+        ap_events = validate_bsc02_events(
+            ap_start.get("events"),
+            ("ready", "fired", "terminal"),
+            label="BSC-02 AP start fault",
+            expected_phase=1,
+        )
+        if [event["reason"] for event in ap_start["events"]] != [
+            "fresh_ap_admission",
+            "softap_admission_suppressed",
+            "released_after_suppression",
+        ]:
+            raise RunnerError(code, "BSC-02 AP fault lifecycle reason is invalid")
+
+        pressure = require_exact_object(
+            collection.get("pressure"),
+            {
+                "fault_id",
+                "allocation_cap_bytes",
+                "allocated_bytes",
+                "task_overhead_bytes",
+                "auto_release_ms",
+                "heap_guard_stop_observed",
+                "events",
+            },
+            code=code,
+            label="BSC-02 SRAM pressure fault",
+        )
+        allocation_cap = pressure.get("allocation_cap_bytes")
+        allocated = pressure.get("allocated_bytes")
+        task_overhead = pressure.get("task_overhead_bytes")
+        auto_release = pressure.get("auto_release_ms")
+        if (
+            pressure.get("fault_id") != "wifi-internal-sram-hold"
+            or type(allocation_cap) is not int
+            or allocation_cap != BSC02_PRESSURE_CAP_BYTES
+            or type(allocated) is not int
+            or allocated <= 0
+            or allocated > allocation_cap
+            or type(task_overhead) is not int
+            or task_overhead <= 0
+            or task_overhead > BSC02_PRESSURE_TASK_OVERHEAD_CAP_BYTES
+            or type(auto_release) is not int
+            or auto_release <= 0
+            or auto_release > BSC02_AUTO_RELEASE_MAX_MS
+            or pressure.get("heap_guard_stop_observed") is not True
+        ):
+            raise RunnerError(code, "BSC-02 SRAM pressure was not bounded or product-observed")
+        pressure_events = validate_bsc02_events(
+            pressure.get("events"),
+            ("ready", "fired", "competing_observed", "terminal"),
+            label="BSC-02 SRAM pressure fault",
+            expected_phase=2,
+        )
+        if [event["reason"] for event in pressure["events"]] != [
+            "pressure_task_admission",
+            "pressure_task_start",
+            "wifi_heap_guard_stop",
+            "released",
+        ]:
+            raise RunnerError(code, "BSC-02 SRAM fault lifecycle reason is invalid")
+
+        recovery = require_exact_object(
+            collection.get("recovery"),
+            {
+                "initial_failure_elapsed_ms",
+                "first_retry_elapsed_ms",
+                "first_http_success_elapsed_ms",
+                "pressure_low_heap_started_elapsed_ms",
+                "pressure_stop_elapsed_ms",
+                "pressure_first_retry_elapsed_ms",
+                "pressure_first_retry_outcome",
+                "pressure_later_retry_elapsed_ms",
+                "pressure_http_success_elapsed_ms",
+                "maintenance_mode_continuous",
+                "unexpected_resets",
+            },
+            code=code,
+            label="BSC-02 recovery timeline",
+        )
+        require_bsc02_timing(
+            recovery.get("first_retry_elapsed_ms"),
+            recovery.get("initial_failure_elapsed_ms"),
+            minimum_ms=BSC02_FIRST_RETRY_MIN_MS,
+            maximum_ms=BSC02_FIRST_RETRY_MAX_MS,
+            label="BSC-02 initial recovery retry",
+        )
+        require_bsc02_timing(
+            recovery.get("first_http_success_elapsed_ms"),
+            recovery.get("first_retry_elapsed_ms"),
+            minimum_ms=0,
+            maximum_ms=5_000,
+            label="BSC-02 initial HTTP recovery",
+        )
+        require_bsc02_timing(
+            recovery.get("pressure_stop_elapsed_ms"),
+            recovery.get("pressure_low_heap_started_elapsed_ms"),
+            minimum_ms=BSC02_LOW_HEAP_PERSIST_MIN_MS,
+            maximum_ms=BSC02_AUTO_RELEASE_MAX_MS,
+            label="BSC-02 pressure heap-guard persistence",
+        )
+        require_bsc02_timing(
+            recovery.get("pressure_first_retry_elapsed_ms"),
+            recovery.get("pressure_stop_elapsed_ms"),
+            minimum_ms=BSC02_FIRST_RETRY_MIN_MS,
+            maximum_ms=BSC02_FIRST_RETRY_MAX_MS,
+            label="BSC-02 pressure first retry",
+        )
+        require_bsc02_timing(
+            recovery.get("pressure_later_retry_elapsed_ms"),
+            recovery.get("pressure_first_retry_elapsed_ms"),
+            minimum_ms=BSC02_LATER_RETRY_MIN_MS,
+            maximum_ms=BSC02_LATER_RETRY_MAX_MS,
+            label="BSC-02 pressure cadence retry",
+        )
+        require_bsc02_timing(
+            recovery.get("pressure_http_success_elapsed_ms"),
+            recovery.get("pressure_later_retry_elapsed_ms"),
+            minimum_ms=0,
+            maximum_ms=5_000,
+            label="BSC-02 pressure HTTP recovery",
+        )
+        if (
+            recovery.get("pressure_first_retry_outcome") != "cooldown-rejected"
+            or recovery.get("maintenance_mode_continuous") is not True
+            or type(recovery.get("unexpected_resets")) is not int
+            or recovery.get("unexpected_resets") != 0
+            or recovery["initial_failure_elapsed_ms"] != ap_events[1]
+            or recovery["first_retry_elapsed_ms"] <= ap_events[2]
+            or recovery["first_http_success_elapsed_ms"] >= pressure_events[0]
+            or recovery["pressure_low_heap_started_elapsed_ms"]
+            < pressure_events[1]
+            or recovery["pressure_stop_elapsed_ms"] != pressure_events[2]
+            or recovery["pressure_first_retry_elapsed_ms"] <= pressure_events[3]
+        ):
+            raise RunnerError(code, "BSC-02 recovery sequence or continuity is invalid")
+        duration_ms = int((completed - started).total_seconds() * 1000)
+        if max(
+            *ap_events,
+            *pressure_events,
+            recovery["first_http_success_elapsed_ms"],
+            recovery["pressure_http_success_elapsed_ms"],
+        ) > duration_ms + 1_000:
+            raise RunnerError(code, "BSC-02 evidence exceeds the recorded run duration")
+
+        heap = require_exact_object(
+            collection.get("heap"),
+            {
+                "configured_free_floor_bytes",
+                "configured_largest_block_floor_bytes",
+                "safety_free_floor_bytes",
+                "safety_largest_block_floor_bytes",
+                "absolute_minimum_free_bytes",
+                "absolute_minimum_largest_block_bytes",
+                "minimum_free_bytes",
+                "minimum_largest_block_bytes",
+                "samples",
+            },
+            code=code,
+            label="BSC-02 heap evidence",
+        )
+        if (
+            heap.get("configured_free_floor_bytes") != BSC02_FREE_FLOOR_BYTES
+            or heap.get("configured_largest_block_floor_bytes")
+            != BSC02_LARGEST_BLOCK_FLOOR_BYTES
+            or heap.get("safety_free_floor_bytes") != BSC02_SAFETY_FREE_BYTES
+            or heap.get("safety_largest_block_floor_bytes")
+            != BSC02_SAFETY_LARGEST_BLOCK_BYTES
+            or heap.get("absolute_minimum_free_bytes")
+            != BSC02_ABSOLUTE_MINIMUM_FREE_BYTES
+            or heap.get("absolute_minimum_largest_block_bytes")
+            != BSC02_ABSOLUTE_MINIMUM_LARGEST_BLOCK_BYTES
+        ):
+            raise RunnerError(code, "BSC-02 heap floors do not match the product guard")
+        samples = heap.get("samples")
+        if not isinstance(samples, list) or len(samples) != 3:
+            raise RunnerError(code, "BSC-02 heap evidence is incomplete")
+        free_values: list[int] = []
+        largest_values: list[int] = []
+        for sample, phase in zip(samples, ("before", "pressured", "released"), strict=True):
+            row = require_exact_object(
+                sample,
+                {"phase", "free_bytes", "largest_block_bytes"},
+                code=code,
+                label="BSC-02 heap sample",
+            )
+            free_bytes = row.get("free_bytes")
+            largest_bytes = row.get("largest_block_bytes")
+            if (
+                row.get("phase") != phase
+                or type(free_bytes) is not int
+                or type(largest_bytes) is not int
+                or free_bytes < BSC02_SAFETY_FREE_BYTES
+                or largest_bytes < BSC02_SAFETY_LARGEST_BLOCK_BYTES
+            ):
+                raise RunnerError(code, "BSC-02 heap floor or phase evidence is invalid")
+            free_values.append(free_bytes)
+            largest_values.append(largest_bytes)
+        if (
+            heap.get("minimum_free_bytes") != min(free_values)
+            or heap.get("minimum_largest_block_bytes") != min(largest_values)
+            or free_values[1] >= free_values[0]
+            or largest_values[1] > largest_values[0]
+            or not (
+                free_values[1] < BSC02_FREE_FLOOR_BYTES
+                or largest_values[1] < BSC02_LARGEST_BLOCK_FLOOR_BYTES
+            )
+            or free_values[2] < free_values[1]
+            or largest_values[2] < largest_values[1]
+        ):
+            raise RunnerError(code, "BSC-02 observed heap evidence is inconsistent")
+    else:
+        if record.get("fault_collection") is not None:
+            raise RunnerError(code, "BSC-02 production replay mixed fault evidence")
+        replay = require_exact_object(
+            record.get("production_replay"),
+            {
+                "maintenance_mode_continuous",
+                "http_status_recovered",
+                "fault_events_seen",
+                "unexpected_resets",
+            },
+            code=code,
+            label="BSC-02 production replay",
+        )
+        if (
+            replay.get("maintenance_mode_continuous") is not True
+            or replay.get("http_status_recovered") is not True
+            or type(replay.get("fault_events_seen")) is not int
+            or replay.get("fault_events_seen") != 0
+            or type(replay.get("unexpected_resets")) is not int
+            or replay.get("unexpected_resets") != 0
+        ):
+            raise RunnerError(code, "BSC-02 production replay was not fault-free and reachable")
+
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC02_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-02 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field)
+        for field in BSC02_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-02 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"),
+        code=code,
+        label="BSC-02 evidence binding",
+    )
+    if not secrets.compare_digest(binding, bsc02_record_commitment(record)):
+        raise RunnerError(code, "BSC-02 evidence binding does not match the record")
+    return record
+
+
+def run_bsc02_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC02_CASE_ID,
+        "--role",
+        str(expected["role"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC02_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-02 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-02 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-02 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-02 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-02 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc02_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc02_case(args: argparse.Namespace) -> int:
+    if args.runs != BSC02_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-02 requires exactly one run per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-02 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-02 collection roles are atomic")
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError(
+                "untrusted_override",
+                "authoritative BSC-02 forbids an untracked rig adapter",
+            )
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-02 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-02 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-02 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-02 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc02_hardware(
+        args, Path(args.pio_command)
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-02 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-02 serial endpoint is not present")
+
+    role = "production-replay" if args.production_replay else "fault-collection"
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc02-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(
+        run_root,
+        boundary=Path(os.path.abspath(args.repo_root)).parent,
+    )
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-02 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc02-{secrets.token_hex(16)}"
+    attempt_id = f"attempt-{secrets.token_hex(16)}"
+    expected: dict[str, object] = {
+        "case_id": BSC02_CASE_ID,
+        "role": role,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+    }
+    require_unchanged_git_state(repository, git_state)
+    record = run_bsc02_adapter(
+        adapter=adapter,
+        repository=repository,
+        serial_port=serial_port,
+        expected=expected,
+        environment=os.environ.copy(),
+    )
+    require_unchanged_git_state(repository, git_state)
+    attempt_path = run_root / "attempt.json"
+    write_json_atomic(attempt_path, record)
+    firmware = record["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc02-maintenance-recovery",
+        "case_id": BSC02_CASE_ID,
+        "collection_role": role,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(BSC02_QUALIFICATION_BLOCKERS),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC02_REQUIRED_RUNS,
+        "runs_completed": 1,
+        "production_replay_required": role == "fault-collection",
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "configured_heap_floors": {
+            "trigger": {
+                "free_bytes": BSC02_FREE_FLOOR_BYTES,
+                "largest_block_bytes": BSC02_LARGEST_BLOCK_FLOOR_BYTES,
+            },
+            "safety": {
+                "free_bytes": BSC02_SAFETY_FREE_BYTES,
+                "largest_block_bytes": BSC02_SAFETY_LARGEST_BLOCK_BYTES,
+            },
+            "absolute_minimum": {
+                "free_bytes": BSC02_ABSOLUTE_MINIMUM_FREE_BYTES,
+                "largest_block_bytes": BSC02_ABSOLUTE_MINIMUM_LARGEST_BLOCK_BYTES,
+            },
+        },
+        "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "artifact_sha256": {
+            "adapter_record": sha256_file(attempt_path),
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc02.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc02.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def resolve_bsc11_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
@@ -2376,13 +3151,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"error": {"code": "invalid_runs", "message": "runs must be 1..10"}}))
         return 2
     if args.case is not None:
-        if args.case in (BSC03_CASE_ID, BSC11_CASE_ID):
+        if args.case in (BSC02_CASE_ID, BSC03_CASE_ID, BSC11_CASE_ID):
             try:
-                return (
-                    run_bsc03_case(args)
-                    if args.case == BSC03_CASE_ID
-                    else run_bsc11_case(args)
-                )
+                if args.case == BSC02_CASE_ID:
+                    return run_bsc02_case(args)
+                if args.case == BSC03_CASE_ID:
+                    return run_bsc03_case(args)
+                return run_bsc11_case(args)
             except RunnerError as exc:
                 print(
                     json.dumps(

@@ -10,6 +10,9 @@
 #include "modules/wifi/wifi_auto_timeout_module.h"
 #include "modules/wifi/wifi_heap_guard_module.h"
 #include "modules/wifi/wifi_stop_reason_module.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/wifi/wifi_bsc02_hil_fault_module.h"
+#endif
 #include "esp_wifi.h"
 
 // Optional AP auto-timeout (milliseconds). Set to 0 to keep always-on behavior.
@@ -250,8 +253,15 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     if (!setupAP()) {
         Serial.println("[SetupMode] ABORT: AP bring-up failed");
         WiFi.mode(WIFI_OFF);
+        apInterfaceEnabled_ = false;
         wifiClientState_ = WIFI_CLIENT_DISABLED;
         currentConnectedSlotIndex_ = -1;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        const wifi_mode_t cleanedMode = WiFi.getMode();
+        const bool interfaceActive = cleanedMode == WIFI_AP || cleanedMode == WIFI_AP_STA;
+        (void)wifiBsc02HilFaultModule().finalizeSuppressedApStart(interfaceActive, isWifiServiceActive(),
+                                                                  isWifiServiceReachable(), millis());
+#endif
         recordApBringup(PERF_TIMESTAMP_US() - apBringupStartUs);
         return false;
     }
@@ -561,6 +571,14 @@ bool WiFiManager::setupAP() {
         return false;
     }
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    const bool freshMaintenanceAdmission = maintenanceBootMode_ && setupModeState_ == SETUP_MODE_OFF;
+    if (wifiBsc02HilFaultModule().shouldSuppressFreshApStart(maintenanceBootMode_, freshMaintenanceAdmission,
+                                                             isWifiServiceReachable(), millis())) {
+        Serial.println("[SetupMode] HIL: bounded AP start failure fired");
+        return false;
+    }
+#endif
     if (!WiFi.softAP(apSSID.c_str(), apPass.c_str())) {
         Serial.println("[SetupMode] ERROR: softAP start failed");
         return false;
@@ -607,6 +625,12 @@ void WiFiManager::checkAutoTimeout() {
 }
 
 void WiFiManager::process() {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    const wifi_mode_t hilCleanupMode = WiFi.getMode();
+    const bool hilCleanupInterfaceActive = hilCleanupMode == WIFI_AP || hilCleanupMode == WIFI_AP_STA;
+    (void)wifiBsc02HilFaultModule().finalizeSuppressedApStart(hilCleanupInterfaceActive, isWifiServiceActive(),
+                                                              isWifiServiceReachable(), millis());
+#endif
     if (setupModeState_ != SETUP_MODE_AP_ON && setupModeState_ != SETUP_MODE_STOPPING) {
         lowDmaSinceMs_ = 0;
         return; // No WiFi processing when Setup Mode is off
@@ -673,6 +697,9 @@ void WiFiManager::process() {
 
             // In AP+STA mode, drop AP first to preserve STA utility under pressure.
             if (dualRadioMode) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+                (void)wifiBsc02HilFaultModule().observeHeapGuardStop(now, lowDmaSinceMs_, WIFI_LOW_DMA_PERSIST_MS);
+#endif
                 sWifiStopReasonModule.recordApDropLowDma();
                 Serial.println("[WiFi] ACTION: dropping AP due to sustained low SRAM (keeping STA online)");
                 if (!WiFi.enableAP(false)) {
@@ -705,6 +732,9 @@ void WiFiManager::process() {
                 return;
             }
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+            (void)wifiBsc02HilFaultModule().observeHeapGuardStop(now, lowDmaSinceMs_, WIFI_LOW_DMA_PERSIST_MS);
+#endif
             stopSetupMode(false, "low_dma"); // Graceful shutdown to free memory
             finalizeProcessTiming();
             return;

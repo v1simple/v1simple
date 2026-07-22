@@ -27,21 +27,17 @@ struct HilReadyIdentity {
 
 class HilReadyBarrier {
   public:
-    static HilReadyResult publish(HilFaultController& controller,
-                                  const HilReadyPublication& publication) noexcept {
-        return controller.publishReady(
-            publication.caseId, publication.faultId, publication.sessionHash,
-            publication.armSequence, publication.activeGeneration, publication.exactPhase,
-            publication.nowMs, publication.automaticReleaseAfterMs);
+    static HilReadyResult publish(HilFaultController& controller, const HilReadyPublication& publication) noexcept {
+        return controller.publishReady(publication.caseId, publication.faultId, publication.sessionHash,
+                                       publication.armSequence, publication.activeGeneration, publication.exactPhase,
+                                       publication.nowMs, publication.automaticReleaseAfterMs);
     }
 
-    static bool shouldPause(const HilFaultController& controller,
-                            const HilReadyIdentity& identity,
+    static bool shouldPause(const HilFaultController& controller, const HilReadyIdentity& identity,
                             uint32_t nowMs) noexcept {
-        return controller.shouldPause(
-            identity.caseId, identity.faultId, identity.sessionHash, identity.armSequence,
-            identity.readySequence, identity.activeGeneration, identity.exactPhase, nowMs);
+        return controller.shouldPause(identity.caseId, identity.faultId, identity.sessionHash, identity.armSequence,
+                                      identity.readySequence, identity.activeGeneration, identity.exactPhase, nowMs);
     }
 };
 
-#endif  // V1SIMPLE_HIL_FAULT_CONTROL
+#endif // V1SIMPLE_HIL_FAULT_CONTROL

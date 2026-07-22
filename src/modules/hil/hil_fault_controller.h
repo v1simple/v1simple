@@ -18,9 +18,7 @@
 class HilAtomicUint32 {
   public:
     HilAtomicUint32() noexcept = default;
-    explicit HilAtomicUint32(uint32_t value) noexcept {
-        store(value);
-    }
+    explicit HilAtomicUint32(uint32_t value) noexcept { store(value); }
 
     uint32_t load() const noexcept {
 #if defined(ARDUINO_ARCH_ESP32)
@@ -66,9 +64,7 @@ class HilAtomicUint32 {
 
   private:
 #if defined(ARDUINO_ARCH_ESP32)
-    static void memoryBarrier() noexcept {
-        __asm__ __volatile__("memw" ::: "memory");
-    }
+    static void memoryBarrier() noexcept { __asm__ __volatile__("memw" ::: "memory"); }
 
     alignas(uint32_t) volatile uint32_t value_ = 0;
 #else
@@ -92,9 +88,7 @@ class HilAtomicLease {
     HilAtomicLease(const HilAtomicLease&) = delete;
     HilAtomicLease& operator=(const HilAtomicLease&) = delete;
 
-    bool acquired() const noexcept {
-        return acquired_;
-    }
+    bool acquired() const noexcept { return acquired_; }
 
   private:
     HilAtomicUint32& gate_;
@@ -191,64 +185,33 @@ class HilFaultController {
     static constexpr uint32_t kMaximumAutomaticReleaseMs = 5000;
     static constexpr size_t kMaximumSessionHashesPerBoot = 32;
 
-    explicit HilFaultController(MonotonicClock clock = nullptr,
-                                void* clockContext = nullptr) noexcept;
+    explicit HilFaultController(MonotonicClock clock = nullptr, void* clockContext = nullptr) noexcept;
 
-    HilFaultResult beginSession(HilCaseId caseId,
-                                const HilSessionTokenHash& sessionHash,
-                                uint32_t deadlineMs,
+    HilFaultResult beginSession(HilCaseId caseId, const HilSessionTokenHash& sessionHash, uint32_t deadlineMs,
                                 uint32_t nowMs) noexcept;
-    HilFaultResult endSession(HilCaseId caseId,
-                              const HilSessionTokenHash& sessionHash) noexcept;
-    HilFaultResult arm(HilCaseId caseId,
-                       HilFaultId faultId,
-                       const HilSessionTokenHash& sessionHash,
-                       uint32_t armSequence,
-                       uint32_t nowMs) noexcept;
-    HilReadyResult publishReady(HilCaseId caseId,
-                                HilFaultId faultId,
-                                const HilSessionTokenHash& sessionHash,
-                                uint32_t armSequence,
-                                uint32_t activeGeneration,
-                                uint16_t exactPhase,
-                                uint32_t nowMs,
+    HilFaultResult endSession(HilCaseId caseId, const HilSessionTokenHash& sessionHash) noexcept;
+    HilFaultResult arm(HilCaseId caseId, HilFaultId faultId, const HilSessionTokenHash& sessionHash,
+                       uint32_t armSequence, uint32_t nowMs) noexcept;
+    HilReadyResult publishReady(HilCaseId caseId, HilFaultId faultId, const HilSessionTokenHash& sessionHash,
+                                uint32_t armSequence, uint32_t activeGeneration, uint16_t exactPhase, uint32_t nowMs,
                                 uint32_t automaticReleaseAfterMs) noexcept;
-    HilFaultResult fire(HilCaseId caseId,
-                        HilFaultId faultId,
-                        const HilSessionTokenHash& sessionHash,
-                        uint32_t armSequence,
-                        uint32_t readySequence,
-                        uint32_t activeGeneration,
-                        uint16_t exactPhase,
+    HilFaultResult fire(HilCaseId caseId, HilFaultId faultId, const HilSessionTokenHash& sessionHash,
+                        uint32_t armSequence, uint32_t readySequence, uint32_t activeGeneration, uint16_t exactPhase,
                         uint32_t nowMs) noexcept;
-    HilFaultResult observeCompetingOperation(HilCaseId caseId,
-                                             HilFaultId faultId,
-                                             const HilSessionTokenHash& sessionHash,
-                                             uint32_t armSequence,
-                                             uint32_t readySequence,
-                                             uint32_t activeGeneration,
-                                             uint16_t exactPhase,
+    HilFaultResult observeCompetingOperation(HilCaseId caseId, HilFaultId faultId,
+                                             const HilSessionTokenHash& sessionHash, uint32_t armSequence,
+                                             uint32_t readySequence, uint32_t activeGeneration, uint16_t exactPhase,
                                              uint32_t nowMs) noexcept;
-    HilFaultResult release(HilCaseId caseId,
-                           HilFaultId faultId,
-                           const HilSessionTokenHash& sessionHash,
-                           uint32_t armSequence,
-                           uint32_t readySequence,
-                           uint32_t activeGeneration,
-                           uint16_t exactPhase,
+    HilFaultResult release(HilCaseId caseId, HilFaultId faultId, const HilSessionTokenHash& sessionHash,
+                           uint32_t armSequence, uint32_t readySequence, uint32_t activeGeneration, uint16_t exactPhase,
                            uint32_t nowMs) noexcept;
 
     void service(uint32_t nowMs) noexcept;
     bool sessionActive() const noexcept;
     HilCaseId activeCase() const noexcept;
     HilFaultSnapshot snapshot(HilFaultId faultId) const noexcept;
-    bool shouldPause(HilCaseId caseId,
-                     HilFaultId faultId,
-                     const HilSessionTokenHash& sessionHash,
-                     uint32_t armSequence,
-                     uint32_t readySequence,
-                     uint32_t activeGeneration,
-                     uint16_t exactPhase,
+    bool shouldPause(HilCaseId caseId, HilFaultId faultId, const HilSessionTokenHash& sessionHash, uint32_t armSequence,
+                     uint32_t readySequence, uint32_t activeGeneration, uint16_t exactPhase,
                      uint32_t nowMs) const noexcept;
 
     static bool isAllowed(HilCaseId caseId, HilFaultId faultId) noexcept;
@@ -311,9 +274,7 @@ class HilFaultController {
     static uint32_t unpackEpoch(uint32_t packed) noexcept;
     static HilFaultState unpackState(uint32_t packed) noexcept;
     static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) noexcept;
-    static bool durationIsBounded(uint32_t nowMs,
-                                  uint32_t deadlineMs,
-                                  uint32_t maximumDurationMs) noexcept;
+    static bool durationIsBounded(uint32_t nowMs, uint32_t deadlineMs, uint32_t maximumDurationMs) noexcept;
     static size_t faultIndex(HilFaultId faultId) noexcept;
 
     void storeSessionHash(const HilSessionTokenHash& hash) noexcept;
@@ -321,16 +282,10 @@ class HilFaultController {
     bool sessionHashWasUsed(const HilSessionTokenHash& hash) const noexcept;
     uint32_t completionTime(uint32_t fallbackNowMs) const noexcept;
     bool sessionHashMatches(const HilSessionTokenHash& hash) const noexcept;
-    bool sessionMatches(HilCaseId caseId,
-                        const HilSessionTokenHash& hash,
-                        uint32_t& epoch) const noexcept;
+    bool sessionMatches(HilCaseId caseId, const HilSessionTokenHash& hash, uint32_t& epoch) const noexcept;
     void resetSlot(Slot& slot, uint32_t epoch) noexcept;
-    HilFaultResult validateReadyIdentity(const Slot& slot,
-                                         uint32_t epoch,
-                                         uint32_t armSequence,
-                                         uint32_t readySequence,
-                                         uint32_t activeGeneration,
-                                         uint16_t exactPhase) const noexcept;
+    HilFaultResult validateReadyIdentity(const Slot& slot, uint32_t epoch, uint32_t armSequence, uint32_t readySequence,
+                                         uint32_t activeGeneration, uint16_t exactPhase) const noexcept;
 };
 
-#endif  // V1SIMPLE_HIL_FAULT_CONTROL
+#endif // V1SIMPLE_HIL_FAULT_CONTROL

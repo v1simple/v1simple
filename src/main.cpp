@@ -54,6 +54,10 @@
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/wifi/wifi_bsc02_hil_fault_module.h"
+#include "modules/hil/hil_fault_serial_module.h"
+#endif
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_state_module.h"
@@ -551,6 +555,13 @@ void setup() {
         SerialLog.println("[MaintBoot] request consumed; entering maintenance boot");
     }
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    configureWifiBsc02HilDeviceRuntime(WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY,
+                                       WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY);
+    const HilFaultResult restoredBsc02Fault = wifiBsc02HilFaultModule().restoreNextBoot(maintenanceBoot, millis());
+    SerialLog.printf("[HIL] BSC-02 next-boot restore result=%u\n", static_cast<unsigned>(restoredBsc02Fault));
+#endif
+
     esp_reset_reason_t resetReason = initializeResetReasonAndCadenceState(logBootCheckpoint);
 
     initializePreflightDisplayAndBootUi(resetReason, maintenanceBoot, logBootCheckpoint, logBootStage);
@@ -561,12 +572,30 @@ void setup() {
 
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    static constexpr uint16_t kMaximumHilSerialBytesPerLoop = 256;
+    const uint32_t hilNowMs = millis();
+    uint16_t hilSerialBytes = 0;
+    while (Serial.available() > 0 && hilSerialBytes < kMaximumHilSerialBytesPerLoop) {
+        const int value = Serial.read();
+        if (value >= 0) {
+            hilFaultRuntimeOwner().acceptSerialByte(static_cast<char>(value), hilNowMs);
+            ++hilSerialBytes;
+        }
+    }
+    wifiBsc02HilFaultModule().service(hilNowMs);
+#endif
     if (mainRuntimeState.maintenanceBootActive) {
         audio_process_amp_timeout();
         const unsigned long now = millis();
 
         powerModule.process(now);
         wifiManager.process();
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        wifiBsc02HilFaultModule().serviceSramPressure(true, wifiManager.isWifiServiceReachable(),
+                                                      static_cast<uint32_t>(now));
+#endif
 
         // The maintenance session exists to serve the web UI, so it must not
         // sit WiFi-dead for its bounded lifetime: the AP can fail to start at

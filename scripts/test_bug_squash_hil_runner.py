@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 from unittest import mock
@@ -30,6 +32,24 @@ EXPECTED_SUITES = (
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def read_cpp_integer_constant(path: Path, name: str) -> int:
+    source = path.read_text(encoding="utf-8")
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*([^;]+);", source)
+    if match is None:
+        raise AssertionError(f"missing C++ constant {name} in {path.name}")
+
+    def evaluate(node: ast.AST) -> int:
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return evaluate(node.left) + evaluate(node.right)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            return evaluate(node.left) * evaluate(node.right)
+        raise AssertionError(f"unsupported C++ constant expression for {name}")
+
+    return evaluate(ast.parse(match.group(1).strip(), mode="eval").body)
 
 
 def write_executable(path: Path, content: str) -> None:
@@ -89,6 +109,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "car-mode",
                             "device-tests",
                             "firmware-execution",
+                            "maintenance-mode",
                             "persistence",
                             "serial",
                             "v1-connectivity",
@@ -101,10 +122,12 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "artifact-capture",
                             "bond-peer",
                             "ignition-control",
+                            "lan-client",
                             "obd-peer",
                             "power-control",
                             "power-button",
                             "sd-media",
+                            "sram-pressure-control",
                             "utc-time-source",
                             "v1-peer",
                             "vbus-isolation",
@@ -235,6 +258,166 @@ if marker:
     Path(marker).write_text('restored\\n', encoding='utf-8')
 raise SystemExit(int(os.environ.get('FAKE_RESTORE_EXIT', '0')))
         """,
+    )
+    bsc02_adapter = root / "fake-bsc02-adapter.py"
+    write_executable(
+        bsc02_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc02.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+role = argument('--role')
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=50)
+is_fault = role == 'fault-collection'
+environment = 'waveshare-349-hil' if is_fault else 'waveshare-349'
+hil_active = is_fault
+if os.environ.get('FAKE_BSC02_WRONG_FIRMWARE') == '1':
+    environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
+if os.environ.get('FAKE_BSC02_WRONG_HIL_MARKER') == '1':
+    hil_active = not hil_active
+
+fault_collection = None
+production_replay = None
+if is_fault:
+    pressure_low_heap_started = 10020
+    pressure_stop = (
+        11000
+        if os.environ.get('FAKE_BSC02_SHORT_GUARD') == '1'
+        else pressure_low_heap_started + 1500
+    )
+    pressure_first_retry = pressure_stop + 3000
+    pressure_later_retry = pressure_first_retry + 30000
+    ap_events = [
+        {'id': 'ready', 'sequence': 1, 'elapsed_ms': 0, 'reason': 'fresh_ap_admission', 'arm_sequence': 1, 'ready_sequence': 1, 'generation': 1, 'phase': 1},
+        {'id': 'fired', 'sequence': 2, 'elapsed_ms': 10, 'reason': 'softap_admission_suppressed', 'arm_sequence': 1, 'ready_sequence': 1, 'generation': 1, 'phase': 1},
+        {'id': 'terminal', 'sequence': 3, 'elapsed_ms': 20, 'reason': 'released_after_suppression', 'arm_sequence': 1, 'ready_sequence': 1, 'generation': 1, 'phase': 1},
+    ]
+    pressure_events = [
+        {'id': 'ready', 'sequence': 1, 'elapsed_ms': 10000, 'reason': 'pressure_task_admission', 'arm_sequence': 2, 'ready_sequence': 2, 'generation': 2, 'phase': 2},
+        {'id': 'fired', 'sequence': 2, 'elapsed_ms': 10010, 'reason': 'pressure_task_start', 'arm_sequence': 2, 'ready_sequence': 2, 'generation': 2, 'phase': 2},
+        {'id': 'competing_observed', 'sequence': 3, 'elapsed_ms': pressure_stop, 'reason': 'wifi_heap_guard_stop', 'arm_sequence': 2, 'ready_sequence': 2, 'generation': 2, 'phase': 2},
+        {'id': 'terminal', 'sequence': 4, 'elapsed_ms': pressure_stop + 10, 'reason': 'released', 'arm_sequence': 2, 'ready_sequence': 2, 'generation': 2, 'phase': 2},
+    ]
+    if os.environ.get('FAKE_BSC02_IDENTITY_DRIFT') == '1':
+        pressure_events[2]['ready_sequence'] = 99
+    if os.environ.get('FAKE_BSC02_NO_RELEASE') == '1':
+        pressure_events[-1]['reason'] = 'pressure_task_start_failed'
+    first_retry = 1010 if os.environ.get('FAKE_BSC02_RAPID_RETRY') == '1' else 3010
+    later_retry = 23020 if os.environ.get('FAKE_BSC02_RAPID_LATER_RETRY') == '1' else pressure_later_retry
+    first_http = 10000 if os.environ.get('FAKE_BSC02_NO_HTTP') == '1' else 3500
+    free_floor = 14500 if os.environ.get('FAKE_BSC02_LOW_FREE') == '1' else 15360
+    largest_floor = 6500 if os.environ.get('FAKE_BSC02_LOW_BLOCK') == '1' else 7168
+    fault_collection = {
+        'ap_start': {
+            'fault_id': 'wifi-ap-start-fail-once',
+            'setup_ap_configured': True,
+            'softap_called': False,
+            'false_ap_active': os.environ.get('FAKE_BSC02_FALSE_AP') == '1',
+            'false_ap_reachable': os.environ.get('FAKE_BSC02_FALSE_AP') == '1',
+            'events': ap_events,
+        },
+        'pressure': {
+            'fault_id': 'wifi-internal-sram-hold',
+            'allocation_cap_bytes': 65536,
+            'allocated_bytes': 49152,
+            'task_overhead_bytes': 9000 if os.environ.get('FAKE_BSC02_OVERHEAD') == '1' else 4096,
+            'auto_release_ms': 5000,
+            'heap_guard_stop_observed': os.environ.get('FAKE_BSC02_NO_HEAP_STOP') != '1',
+            'events': pressure_events,
+        },
+        'recovery': {
+            'initial_failure_elapsed_ms': 10,
+            'first_retry_elapsed_ms': first_retry,
+            'first_http_success_elapsed_ms': first_http,
+            'pressure_low_heap_started_elapsed_ms': pressure_low_heap_started,
+            'pressure_stop_elapsed_ms': pressure_stop,
+            'pressure_first_retry_elapsed_ms': pressure_first_retry,
+            'pressure_first_retry_outcome': 'cooldown-rejected',
+            'pressure_later_retry_elapsed_ms': later_retry,
+            'pressure_http_success_elapsed_ms': later_retry + 480,
+            'maintenance_mode_continuous': os.environ.get('FAKE_BSC02_NO_MAINTENANCE') != '1',
+            'unexpected_resets': 0,
+        },
+        'heap': {
+            'configured_free_floor_bytes': 16384,
+            'configured_largest_block_floor_bytes': 8192,
+            'safety_free_floor_bytes': 14848,
+            'safety_largest_block_floor_bytes': 6656,
+            'absolute_minimum_free_bytes': 14336,
+            'absolute_minimum_largest_block_bytes': 6144,
+            'minimum_free_bytes': free_floor,
+            'minimum_largest_block_bytes': largest_floor,
+            'samples': [
+                {'phase': 'before', 'free_bytes': 100000, 'largest_block_bytes': 65536},
+                {'phase': 'pressured', 'free_bytes': free_floor, 'largest_block_bytes': largest_floor},
+                {'phase': 'released', 'free_bytes': 90000, 'largest_block_bytes': 60000},
+            ],
+        },
+    }
+else:
+    production_replay = {
+        'maintenance_mode_continuous': os.environ.get('FAKE_BSC02_NO_MAINTENANCE') != '1',
+        'http_status_recovered': os.environ.get('FAKE_BSC02_NO_HTTP') != '1',
+        'fault_events_seen': 1 if os.environ.get('FAKE_BSC02_REPLAY_FAULT') == '1' else 0,
+        'unexpected_resets': 0,
+    }
+
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role': role,
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'firmware': {
+        'environment': environment,
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest(f'{role}-binary'),
+        'build_manifest_sha256': digest(f'{role}-build-manifest'),
+        'hil_fault_control_active': hil_active,
+    },
+    'preconditions': {
+        'maintenance_mode': True,
+        'http_probe_ready': True,
+        'unexpected_resets_before_start': 0,
+    },
+    'fault_collection': fault_collection,
+    'production_replay': production_replay,
+    'capture_commitments': {
+        'build_evidence_sha256': digest(f'{role}-build-evidence'),
+        'heap_timeline_sha256': digest(f'{role}-heap-timeline'),
+        'http_timeline_sha256': digest(f'{role}-http-timeline'),
+        'lifecycle_timeline_sha256': digest(f'{role}-lifecycle-timeline'),
+        'serial_log_sha256': digest(f'{role}-serial-log'),
+    },
+}
+if os.environ.get('FAKE_BSC02_REUSE') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['http_timeline_sha256']
+payload['evidence_binding_sha256'] = commitment(payload)
+if os.environ.get('FAKE_BSC02_TAMPER') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = digest('tampered-serial')
+sys.stdout.write(json.dumps(payload))
+""",
     )
     bsc03_adapter = root / "fake-bsc03-adapter.py"
     write_executable(
@@ -493,6 +676,7 @@ sys.stdout.write(json.dumps(payload))
         "ports": ports,
         "device_runner": device_runner,
         "pio": fake_pio,
+        "bsc02_adapter": bsc02_adapter,
         "bsc03_adapter": bsc03_adapter,
         "bsc11_adapter": bsc11_adapter,
     }
@@ -646,6 +830,95 @@ def run_bsc03_fixture(
         command.append("--resume")
     if recover_incomplete:
         command.append("--ack-incomplete-run-recovered")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc02_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    production_replay: bool = False,
+    runs: int = 1,
+    false_ap: bool = False,
+    rapid_retry: bool = False,
+    rapid_later_retry: bool = False,
+    short_guard: bool = False,
+    low_free: bool = False,
+    low_block: bool = False,
+    no_release: bool = False,
+    no_heap_stop: bool = False,
+    identity_drift: bool = False,
+    oversized_overhead: bool = False,
+    no_maintenance: bool = False,
+    no_http: bool = False,
+    wrong_firmware: bool = False,
+    wrong_hil_marker: bool = False,
+    replay_fault: bool = False,
+    reused_evidence: bool = False,
+    tampered_evidence: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    role = "production" if production_replay else "fault"
+    out_dir = root / f"bsc02-{role}-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC02_FALSE_AP": "1" if false_ap else "0",
+            "FAKE_BSC02_RAPID_RETRY": "1" if rapid_retry else "0",
+            "FAKE_BSC02_RAPID_LATER_RETRY": "1" if rapid_later_retry else "0",
+            "FAKE_BSC02_SHORT_GUARD": "1" if short_guard else "0",
+            "FAKE_BSC02_LOW_FREE": "1" if low_free else "0",
+            "FAKE_BSC02_LOW_BLOCK": "1" if low_block else "0",
+            "FAKE_BSC02_NO_RELEASE": "1" if no_release else "0",
+            "FAKE_BSC02_NO_HEAP_STOP": "1" if no_heap_stop else "0",
+            "FAKE_BSC02_IDENTITY_DRIFT": "1" if identity_drift else "0",
+            "FAKE_BSC02_OVERHEAD": "1" if oversized_overhead else "0",
+            "FAKE_BSC02_NO_MAINTENANCE": "1" if no_maintenance else "0",
+            "FAKE_BSC02_NO_HTTP": "1" if no_http else "0",
+            "FAKE_BSC02_WRONG_FIRMWARE": "1" if wrong_firmware else "0",
+            "FAKE_BSC02_WRONG_HIL_MARKER": "1" if wrong_hil_marker else "0",
+            "FAKE_BSC02_REPLAY_FAULT": "1" if replay_fault else "0",
+            "FAKE_BSC02_REUSE": "1" if reused_evidence else "0",
+            "FAKE_BSC02_TAMPER": "1" if tampered_evidence else "0",
+        }
+    )
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-02",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc02_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -898,7 +1171,7 @@ def test_git_mutation_fails_and_command_errors_still_emit_results() -> None:
 
 def test_unimplemented_case_cannot_false_pass() -> None:
     completed = subprocess.run(
-        ["python3", "-B", str(RUNNER), "--case", "BSC-02", "--board", "release"],
+        ["python3", "-B", str(RUNNER), "--case", "BSC-04", "--board", "release"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -929,6 +1202,10 @@ def test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying() -> N
         assert_true(result["early_cut_durability_claimed"] is False, str(result))
         assert_true(
             "case-source-provenance-not-authenticated" in result["qualification_blockers"],
+            str(result),
+        )
+        assert_true(
+            "hil-fault-control-not-implemented" in result["qualification_blockers"],
             str(result),
         )
         records = [
@@ -1014,6 +1291,217 @@ def test_bsc03_resume_requires_recovery_and_never_counts_interrupted_attempt() -
         assert_true(result["runs_completed"] == 3, str(result))
         assert_true(interrupted_id in checkpoint["abandoned_attempt_ids"], str(checkpoint))
         assert_true(interrupted_id not in completed_ids, str(checkpoint))
+
+
+def test_bsc02_runner_limits_match_product_constants() -> None:
+    wifi_header = ROOT / "src" / "wifi_manager.h"
+    fault_header = (
+        ROOT / "src" / "modules" / "wifi" / "wifi_bsc02_hil_fault_module.h"
+    )
+    product = {
+        "trigger_free": read_cpp_integer_constant(
+            wifi_header, "WIFI_RUNTIME_MIN_FREE_AP_ONLY"
+        ),
+        "trigger_largest": read_cpp_integer_constant(
+            wifi_header, "WIFI_RUNTIME_MIN_BLOCK_AP_ONLY"
+        ),
+        "safety_free": read_cpp_integer_constant(
+            fault_header, "kPressureSafetyFreeBytes"
+        ),
+        "safety_largest": read_cpp_integer_constant(
+            fault_header, "kPressureSafetyLargestBlockBytes"
+        ),
+        "absolute_free": read_cpp_integer_constant(
+            fault_header, "kAbsoluteMinimumFreeBytes"
+        ),
+        "absolute_largest": read_cpp_integer_constant(
+            fault_header, "kAbsoluteMinimumLargestBlockBytes"
+        ),
+        "allocation_cap": read_cpp_integer_constant(
+            fault_header, "kMaximumPressureBytes"
+        ),
+        "task_overhead_cap": read_cpp_integer_constant(
+            fault_header, "kMaximumPressureTaskOverheadBytes"
+        ),
+        "auto_release": read_cpp_integer_constant(
+            fault_header, "kPressureAutomaticReleaseMs"
+        ),
+        "low_heap_persist": read_cpp_integer_constant(
+            wifi_header, "WIFI_LOW_DMA_PERSIST_MS"
+        ),
+    }
+    runner = {
+        "trigger_free": hil_runner.BSC02_FREE_FLOOR_BYTES,
+        "trigger_largest": hil_runner.BSC02_LARGEST_BLOCK_FLOOR_BYTES,
+        "safety_free": hil_runner.BSC02_SAFETY_FREE_BYTES,
+        "safety_largest": hil_runner.BSC02_SAFETY_LARGEST_BLOCK_BYTES,
+        "absolute_free": hil_runner.BSC02_ABSOLUTE_MINIMUM_FREE_BYTES,
+        "absolute_largest": hil_runner.BSC02_ABSOLUTE_MINIMUM_LARGEST_BLOCK_BYTES,
+        "allocation_cap": hil_runner.BSC02_PRESSURE_CAP_BYTES,
+        "task_overhead_cap": hil_runner.BSC02_PRESSURE_TASK_OVERHEAD_CAP_BYTES,
+        "auto_release": hil_runner.BSC02_AUTO_RELEASE_MAX_MS,
+        "low_heap_persist": hil_runner.BSC02_LOW_HEAP_PERSIST_MIN_MS,
+    }
+    assert_true(runner == product, f"BSC-02 runner/product limit drift: {runner} != {product}")
+
+
+def test_bsc02_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
+    for production_replay, expected_role, expected_environment, expected_hil in (
+        (False, "fault-collection", "waveshare-349-hil", True),
+        (True, "production-replay", "waveshare-349", False),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc02_fixture(
+                fixture, root, production_replay=production_replay
+            )
+            assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+            result = json.loads(
+                (out_dir / "collection_result.json").read_text(encoding="utf-8")
+            )
+            assert_true(result["result"] == "TEST_PASS", str(result))
+            assert_true(result["collection_role"] == expected_role, str(result))
+            assert_true(result["execution_mode"] == "simulated", str(result))
+            assert_true(result["authoritative"] is False, str(result))
+            assert_true(result["hardware_observed"] is False, str(result))
+            assert_true(result["physical_collection_completed"] is False, str(result))
+            assert_true(result["non_qualifying"] is True, str(result))
+            assert_true(result["qualification_status"] == "BLOCKED", str(result))
+            assert_true(
+                result["qualification_blockers"]
+                == [
+                    "build-generator-provenance-not-authenticated",
+                    "board-resolution-provenance-not-authenticated",
+                    "case-source-provenance-not-authenticated",
+                    "tracked-rig-adapter-not-implemented",
+                ],
+                str(result),
+            )
+            assert_true(result["runs_required"] == result["runs_completed"] == 1, str(result))
+            assert_true(
+                result["production_replay_required"] is (not production_replay),
+                str(result),
+            )
+            assert_true(
+                result["firmware_target"]["environment"] == expected_environment
+                and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+                and result["firmware_target"]["hil_fault_control_active"] is expected_hil,
+                str(result),
+            )
+            assert_true(
+                result["configured_heap_floors"]
+                == {
+                    "trigger": {"free_bytes": 16384, "largest_block_bytes": 8192},
+                    "safety": {"free_bytes": 14848, "largest_block_bytes": 6656},
+                    "absolute_minimum": {
+                        "free_bytes": 14336,
+                        "largest_block_bytes": 6144,
+                    },
+                },
+                str(result),
+            )
+            assert_true(
+                all(
+                    len(value) == 64
+                    for value in (
+                        result["session_sha256"],
+                        result["attempt_sha256"],
+                        result["evidence_binding_sha256"],
+                        *result["artifact_sha256"].values(),
+                    )
+                ),
+                str(result),
+            )
+            assert_true(
+                not (out_dir / "qualification_result.json").exists(),
+                "mock collection must never emit qualification evidence",
+            )
+            public_output = completed.stdout + completed.stderr + json.dumps(result)
+            assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+            assert_true(str(fixture["port"]) not in public_output, public_output)
+            assert_true("release" not in public_output and '"rig"' not in public_output, public_output)
+
+
+def test_bsc02_rejects_false_state_timing_floor_and_terminal_claims() -> None:
+    cases = (
+        {"false_ap": True},
+        {"rapid_retry": True},
+        {"rapid_later_retry": True},
+        {"short_guard": True},
+        {"low_free": True},
+        {"low_block": True},
+        {"no_release": True},
+        {"no_heap_stop": True},
+        {"identity_drift": True},
+        {"oversized_overhead": True},
+        {"no_maintenance": True},
+        {"no_http": True},
+        {"runs": 2},
+    )
+    for options in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc02_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            expected = "invalid_runs" if options == {"runs": 2} else "case_record_invalid"
+            assert_true(payload["error"]["code"] == expected, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc02_rejects_identity_replay_fault_and_evidence_tampering() -> None:
+    cases = (
+        {"wrong_firmware": True},
+        {"wrong_hil_marker": True},
+        {"reused_evidence": True},
+        {"tampered_evidence": True},
+        {"production_replay": True, "wrong_firmware": True},
+        {"production_replay": True, "wrong_hil_marker": True},
+        {"production_replay": True, "replay_fault": True},
+        {"production_replay": True, "no_maintenance": True},
+        {"production_replay": True, "no_http": True},
+    )
+    for options in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc02_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == "case_record_invalid", str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc02_physical_mode_remains_blocked_without_tracked_adapter() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-02",
+            "--board",
+            "release",
+            "--rig",
+            "rig",
+        ],
+        cwd=ROOT,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "V1SIMPLE_HIL_TEST_HOOKS"
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-02 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
 def test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying() -> None:
@@ -1317,6 +1805,11 @@ def main() -> int:
     test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying()
     test_bsc03_rejects_missing_preconditions_timing_and_reused_runs()
     test_bsc03_resume_requires_recovery_and_never_counts_interrupted_attempt()
+    test_bsc02_runner_limits_match_product_constants()
+    test_bsc02_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
+    test_bsc02_rejects_false_state_timing_floor_and_terminal_claims()
+    test_bsc02_rejects_identity_replay_fault_and_evidence_tampering()
+    test_bsc02_physical_mode_remains_blocked_without_tracked_adapter()
     test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying()
     test_bsc11_rejects_short_wrong_target_and_missing_operator_boundary()
     test_bsc11_rejects_every_portable_shutdown_action_and_service_loss()

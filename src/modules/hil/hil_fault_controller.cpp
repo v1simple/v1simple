@@ -21,7 +21,7 @@ constexpr AllowlistEntry kAllowlist[] = {
     {HilCaseId::Bsc14, HilFaultId::SdMutexHold},
     {HilCaseId::Bsc16, HilFaultId::BatteryAdcInitFailOnce},
 };
-}  // namespace
+} // namespace
 
 HilFaultController::HilFaultController(MonotonicClock clock, void* clockContext) noexcept
     : clock_(clock), clockContext_(clockContext) {
@@ -50,8 +50,7 @@ bool HilFaultController::deadlineReached(const uint32_t nowMs, const uint32_t de
     return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
 }
 
-bool HilFaultController::durationIsBounded(const uint32_t nowMs,
-                                           const uint32_t deadlineMs,
+bool HilFaultController::durationIsBounded(const uint32_t nowMs, const uint32_t deadlineMs,
                                            const uint32_t maximumDurationMs) noexcept {
     const int32_t duration = static_cast<int32_t>(deadlineMs - nowMs);
     return duration > 0 && static_cast<uint32_t>(duration) <= maximumDurationMs;
@@ -104,12 +103,10 @@ bool HilFaultController::sessionHashMatches(const HilSessionTokenHash& hash) con
     return difference == 0;
 }
 
-bool HilFaultController::sessionMatches(const HilCaseId caseId,
-                                        const HilSessionTokenHash& hash,
+bool HilFaultController::sessionMatches(const HilCaseId caseId, const HilSessionTokenHash& hash,
                                         uint32_t& epoch) const noexcept {
     const uint32_t before = activeEpoch_.load();
-    if (before == 0 || activeCase_.load() != static_cast<uint8_t>(caseId) ||
-        !sessionHashMatches(hash)) {
+    if (before == 0 || activeCase_.load() != static_cast<uint8_t>(caseId) || !sessionHashMatches(hash)) {
         return false;
     }
     const uint32_t after = activeEpoch_.load();
@@ -130,10 +127,8 @@ void HilFaultController::resetSlot(Slot& slot, const uint32_t epoch) noexcept {
     slot.epochAndState.store(pack(epoch, HilFaultState::Disarmed));
 }
 
-HilFaultResult HilFaultController::beginSession(const HilCaseId caseId,
-                                                const HilSessionTokenHash& sessionHash,
-                                                const uint32_t deadlineMs,
-                                                const uint32_t nowMs) noexcept {
+HilFaultResult HilFaultController::beginSession(const HilCaseId caseId, const HilSessionTokenHash& sessionHash,
+                                                const uint32_t deadlineMs, const uint32_t nowMs) noexcept {
     if (static_cast<uint8_t>(caseId) >= static_cast<uint8_t>(HilCaseId::Invalid)) {
         return HilFaultResult::WrongCase;
     }
@@ -171,8 +166,7 @@ HilFaultResult HilFaultController::beginSession(const HilCaseId caseId,
     return HilFaultResult::Ok;
 }
 
-HilFaultResult HilFaultController::endSession(const HilCaseId caseId,
-                                              const HilSessionTokenHash& sessionHash) noexcept {
+HilFaultResult HilFaultController::endSession(const HilCaseId caseId, const HilSessionTokenHash& sessionHash) noexcept {
     HilAtomicLease mutation(mutationGate_);
     if (!mutation.acquired()) {
         return HilFaultResult::Busy;
@@ -192,10 +186,8 @@ HilFaultResult HilFaultController::endSession(const HilCaseId caseId,
     return HilFaultResult::Ok;
 }
 
-HilFaultResult HilFaultController::arm(const HilCaseId caseId,
-                                       const HilFaultId faultId,
-                                       const HilSessionTokenHash& sessionHash,
-                                       const uint32_t armSequence,
+HilFaultResult HilFaultController::arm(const HilCaseId caseId, const HilFaultId faultId,
+                                       const HilSessionTokenHash& sessionHash, const uint32_t armSequence,
                                        const uint32_t nowMs) noexcept {
     service(nowMs);
     if (!isAllowed(caseId, faultId)) {
@@ -220,21 +212,15 @@ HilFaultResult HilFaultController::arm(const HilCaseId caseId,
     slot.armSequence.store(armSequence);
     expected = packRaw(epoch, kUpdatingStateRaw);
     if (!slot.epochAndState.compareExchange(expected, pack(epoch, HilFaultState::Armed))) {
-        return activeEpoch_.load() == epoch
-                   ? HilFaultResult::WrongState
-                   : HilFaultResult::WrongSession;
+        return activeEpoch_.load() == epoch ? HilFaultResult::WrongState : HilFaultResult::WrongSession;
     }
     return HilFaultResult::Ok;
 }
 
-HilReadyResult HilFaultController::publishReady(const HilCaseId caseId,
-                                                const HilFaultId faultId,
-                                                const HilSessionTokenHash& sessionHash,
-                                                const uint32_t armSequence,
-                                                const uint32_t activeGeneration,
-                                                const uint16_t exactPhase,
-                                                const uint32_t nowMs,
-                                                const uint32_t automaticReleaseAfterMs) noexcept {
+HilReadyResult HilFaultController::publishReady(const HilCaseId caseId, const HilFaultId faultId,
+                                                const HilSessionTokenHash& sessionHash, const uint32_t armSequence,
+                                                const uint32_t activeGeneration, const uint16_t exactPhase,
+                                                const uint32_t nowMs, const uint32_t automaticReleaseAfterMs) noexcept {
     if (!isAllowed(caseId, faultId)) {
         return {HilFaultResult::WrongCase, 0};
     }
@@ -248,11 +234,9 @@ HilReadyResult HilFaultController::publishReady(const HilCaseId caseId,
     }
     if (activeGeneration == 0 || exactPhase == 0 || automaticReleaseAfterMs == 0 ||
         automaticReleaseAfterMs > kMaximumAutomaticReleaseMs ||
-        !durationIsBounded(nowMs, nowMs + automaticReleaseAfterMs,
-                           kMaximumAutomaticReleaseMs) ||
+        !durationIsBounded(nowMs, nowMs + automaticReleaseAfterMs, kMaximumAutomaticReleaseMs) ||
         deadlineReached(nowMs, sessionDeadlineMs_.load()) ||
-        deadlineReached(nowMs + automaticReleaseAfterMs,
-                        sessionDeadlineMs_.load())) {
+        deadlineReached(nowMs + automaticReleaseAfterMs, sessionDeadlineMs_.load())) {
         return {HilFaultResult::InvalidDeadline, 0};
     }
     Slot& slot = slots_[faultIndex(faultId)];
@@ -272,8 +256,7 @@ HilReadyResult HilFaultController::publishReady(const HilCaseId caseId,
     const uint32_t automaticReleaseDeadlineMs = completionNowMs + automaticReleaseAfterMs;
     if (static_cast<int32_t>(completionNowMs - nowMs) < 0 ||
         deadlineReached(completionNowMs, sessionDeadlineMs_.load()) ||
-        !durationIsBounded(completionNowMs, automaticReleaseDeadlineMs,
-                           kMaximumAutomaticReleaseMs) ||
+        !durationIsBounded(completionNowMs, automaticReleaseDeadlineMs, kMaximumAutomaticReleaseMs) ||
         deadlineReached(automaticReleaseDeadlineMs, sessionDeadlineMs_.load())) {
         expected = packRaw(epoch, kUpdatingStateRaw);
         slot.epochAndState.compareExchange(expected, pack(epoch, HilFaultState::Expired));
@@ -290,18 +273,13 @@ HilReadyResult HilFaultController::publishReady(const HilCaseId caseId,
     slot.automaticReleaseDeadlineMs.store(automaticReleaseDeadlineMs);
     expected = packRaw(epoch, kUpdatingStateRaw);
     if (!slot.epochAndState.compareExchange(expected, pack(epoch, HilFaultState::Ready))) {
-        return {activeEpoch_.load() == epoch
-                    ? HilFaultResult::WrongState
-                    : HilFaultResult::WrongSession,
-                0};
+        return {activeEpoch_.load() == epoch ? HilFaultResult::WrongState : HilFaultResult::WrongSession, 0};
     }
     return {HilFaultResult::Ok, readySequence};
 }
 
-HilFaultResult HilFaultController::validateReadyIdentity(const Slot& slot,
-                                                         const uint32_t epoch,
-                                                         const uint32_t armSequence,
-                                                         const uint32_t readySequence,
+HilFaultResult HilFaultController::validateReadyIdentity(const Slot& slot, const uint32_t epoch,
+                                                         const uint32_t armSequence, const uint32_t readySequence,
                                                          const uint32_t activeGeneration,
                                                          const uint16_t exactPhase) const noexcept {
     if (unpackEpoch(slot.epochAndState.load()) != epoch) {
@@ -322,14 +300,10 @@ HilFaultResult HilFaultController::validateReadyIdentity(const Slot& slot,
     return HilFaultResult::Ok;
 }
 
-HilFaultResult HilFaultController::fire(const HilCaseId caseId,
-                                        const HilFaultId faultId,
-                                        const HilSessionTokenHash& sessionHash,
-                                        const uint32_t armSequence,
-                                        const uint32_t readySequence,
-                                        const uint32_t activeGeneration,
-                                        const uint16_t exactPhase,
-                                        const uint32_t nowMs) noexcept {
+HilFaultResult HilFaultController::fire(const HilCaseId caseId, const HilFaultId faultId,
+                                        const HilSessionTokenHash& sessionHash, const uint32_t armSequence,
+                                        const uint32_t readySequence, const uint32_t activeGeneration,
+                                        const uint16_t exactPhase, const uint32_t nowMs) noexcept {
     service(nowMs);
     uint32_t epoch = 0;
     if (!isAllowed(caseId, faultId)) {
@@ -352,15 +326,11 @@ HilFaultResult HilFaultController::fire(const HilCaseId caseId,
     return HilFaultResult::Ok;
 }
 
-HilFaultResult HilFaultController::observeCompetingOperation(
-    const HilCaseId caseId,
-    const HilFaultId faultId,
-    const HilSessionTokenHash& sessionHash,
-    const uint32_t armSequence,
-    const uint32_t readySequence,
-    const uint32_t activeGeneration,
-    const uint16_t exactPhase,
-    const uint32_t nowMs) noexcept {
+HilFaultResult HilFaultController::observeCompetingOperation(const HilCaseId caseId, const HilFaultId faultId,
+                                                             const HilSessionTokenHash& sessionHash,
+                                                             const uint32_t armSequence, const uint32_t readySequence,
+                                                             const uint32_t activeGeneration, const uint16_t exactPhase,
+                                                             const uint32_t nowMs) noexcept {
     service(nowMs);
     uint32_t epoch = 0;
     if (!isAllowed(caseId, faultId)) {
@@ -370,27 +340,22 @@ HilFaultResult HilFaultController::observeCompetingOperation(
         return sessionActive() ? HilFaultResult::WrongSession : HilFaultResult::NoSession;
     }
     Slot& slot = slots_[faultIndex(faultId)];
-    const HilFaultResult identity = validateReadyIdentity(
-        slot, epoch, armSequence, readySequence, activeGeneration, exactPhase);
+    const HilFaultResult identity =
+        validateReadyIdentity(slot, epoch, armSequence, readySequence, activeGeneration, exactPhase);
     if (identity != HilFaultResult::Ok) {
         return identity;
     }
     uint32_t expected = pack(epoch, HilFaultState::Fired);
-    if (!slot.epochAndState.compareExchange(
-            expected, packRaw(epoch, kCompetingOperationObservedStateRaw))) {
+    if (!slot.epochAndState.compareExchange(expected, packRaw(epoch, kCompetingOperationObservedStateRaw))) {
         return HilFaultResult::WrongState;
     }
     return HilFaultResult::Ok;
 }
 
-HilFaultResult HilFaultController::release(const HilCaseId caseId,
-                                           const HilFaultId faultId,
-                                           const HilSessionTokenHash& sessionHash,
-                                           const uint32_t armSequence,
-                                           const uint32_t readySequence,
-                                           const uint32_t activeGeneration,
-                                           const uint16_t exactPhase,
-                                           const uint32_t nowMs) noexcept {
+HilFaultResult HilFaultController::release(const HilCaseId caseId, const HilFaultId faultId,
+                                           const HilSessionTokenHash& sessionHash, const uint32_t armSequence,
+                                           const uint32_t readySequence, const uint32_t activeGeneration,
+                                           const uint16_t exactPhase, const uint32_t nowMs) noexcept {
     service(nowMs);
     uint32_t epoch = 0;
     if (!isAllowed(caseId, faultId)) {
@@ -400,16 +365,15 @@ HilFaultResult HilFaultController::release(const HilCaseId caseId,
         return sessionActive() ? HilFaultResult::WrongSession : HilFaultResult::NoSession;
     }
     Slot& slot = slots_[faultIndex(faultId)];
-    const HilFaultResult identity = validateReadyIdentity(
-        slot, epoch, armSequence, readySequence, activeGeneration, exactPhase);
+    const HilFaultResult identity =
+        validateReadyIdentity(slot, epoch, armSequence, readySequence, activeGeneration, exactPhase);
     if (identity != HilFaultResult::Ok) {
         return identity;
     }
     uint32_t expected = packRaw(epoch, kCompetingOperationObservedStateRaw);
     if (!slot.epochAndState.compareExchange(expected, pack(epoch, HilFaultState::Released))) {
-        return expected == pack(epoch, HilFaultState::Fired)
-                   ? HilFaultResult::CompetingOperationMissing
-                   : HilFaultResult::WrongState;
+        return expected == pack(epoch, HilFaultState::Fired) ? HilFaultResult::CompetingOperationMissing
+                                                             : HilFaultResult::WrongState;
     }
     return HilFaultResult::Ok;
 }
@@ -429,22 +393,17 @@ void HilFaultController::service(const uint32_t nowMs) noexcept {
         if (rawState == kUpdatingStateRaw) {
             continue;
         }
-        const HilFaultState state = rawState == kCompetingOperationObservedStateRaw
-                                        ? HilFaultState::Fired
-                                        : unpackState(current);
+        const HilFaultState state =
+            rawState == kCompetingOperationObservedStateRaw ? HilFaultState::Fired : unpackState(current);
         HilFaultState target = state;
         if (sessionExpired && rawState == kCompetingOperationObservedStateRaw) {
             target = HilFaultState::Released;
         } else if (sessionExpired &&
-            (state == HilFaultState::Armed || state == HilFaultState::Ready ||
-             state == HilFaultState::Fired)) {
+                   (state == HilFaultState::Armed || state == HilFaultState::Ready || state == HilFaultState::Fired)) {
             target = HilFaultState::Expired;
         } else if ((state == HilFaultState::Ready || state == HilFaultState::Fired) &&
-                   deadlineReached(nowMs,
-                                   slot.automaticReleaseDeadlineMs.load())) {
-            target = rawState == kCompetingOperationObservedStateRaw
-                         ? HilFaultState::Released
-                         : HilFaultState::Expired;
+                   deadlineReached(nowMs, slot.automaticReleaseDeadlineMs.load())) {
+            target = rawState == kCompetingOperationObservedStateRaw ? HilFaultState::Released : HilFaultState::Expired;
         }
         if (target != state) {
             slot.epochAndState.compareExchange(current, pack(epoch, target));
@@ -457,8 +416,7 @@ bool HilFaultController::sessionActive() const noexcept {
 }
 
 HilCaseId HilFaultController::activeCase() const noexcept {
-    return sessionActive() ? static_cast<HilCaseId>(activeCase_.load())
-                           : HilCaseId::Invalid;
+    return sessionActive() ? static_cast<HilCaseId>(activeCase_.load()) : HilCaseId::Invalid;
 }
 
 HilFaultSnapshot HilFaultController::snapshot(const HilFaultId faultId) const noexcept {
@@ -482,34 +440,25 @@ HilFaultSnapshot HilFaultController::snapshot(const HilFaultId faultId) const no
     if (rawState == kUpdatingStateRaw) {
         result.state = HilFaultState::Armed;
         result.armSequence = slot.armSequence.load();
-        return slot.epochAndState.load() == current && activeEpoch_.load() == activeEpoch
-                   ? result
-                   : HilFaultSnapshot{};
+        return slot.epochAndState.load() == current && activeEpoch_.load() == activeEpoch ? result : HilFaultSnapshot{};
     }
-    result.state = rawState == kCompetingOperationObservedStateRaw
-                       ? HilFaultState::Fired
-                       : unpackState(current);
+    result.state = rawState == kCompetingOperationObservedStateRaw ? HilFaultState::Fired : unpackState(current);
     result.armSequence = slot.armSequence.load();
     result.readySequence = slot.readySequence.load();
     result.activeGeneration = slot.activeGeneration.load();
     result.exactPhase = static_cast<uint16_t>(slot.exactPhase.load());
     result.readyTimestampMs = slot.readyTimestampMs.load();
-    result.automaticReleaseDeadlineMs =
-        slot.automaticReleaseDeadlineMs.load();
+    result.automaticReleaseDeadlineMs = slot.automaticReleaseDeadlineMs.load();
     if (slot.epochAndState.load() != current || activeEpoch_.load() != activeEpoch) {
         return HilFaultSnapshot{};
     }
     return result;
 }
 
-bool HilFaultController::shouldPause(const HilCaseId caseId,
-                                     const HilFaultId faultId,
-                                     const HilSessionTokenHash& sessionHash,
-                                     const uint32_t armSequence,
-                                     const uint32_t readySequence,
-                                     const uint32_t activeGeneration,
-                                     const uint16_t exactPhase,
-                                     const uint32_t nowMs) const noexcept {
+bool HilFaultController::shouldPause(const HilCaseId caseId, const HilFaultId faultId,
+                                     const HilSessionTokenHash& sessionHash, const uint32_t armSequence,
+                                     const uint32_t readySequence, const uint32_t activeGeneration,
+                                     const uint16_t exactPhase, const uint32_t nowMs) const noexcept {
     if (!isAllowed(caseId, faultId)) {
         return false;
     }
@@ -522,18 +471,15 @@ bool HilFaultController::shouldPause(const HilCaseId caseId,
     const uint32_t rawState = before & kStateMask;
     if (unpackEpoch(before) != epoch ||
         (rawState != static_cast<uint32_t>(HilFaultState::Ready) &&
-         rawState != static_cast<uint32_t>(HilFaultState::Fired) &&
-         rawState != kCompetingOperationObservedStateRaw)) {
+         rawState != static_cast<uint32_t>(HilFaultState::Fired) && rawState != kCompetingOperationObservedStateRaw)) {
         return false;
     }
     if (deadlineReached(nowMs, slot.automaticReleaseDeadlineMs.load()) ||
         deadlineReached(nowMs, sessionDeadlineMs_.load())) {
         return false;
     }
-    if (slot.armSequence.load() != armSequence ||
-        slot.readySequence.load() != readySequence ||
-        slot.activeGeneration.load() != activeGeneration ||
-        slot.exactPhase.load() != exactPhase) {
+    if (slot.armSequence.load() != armSequence || slot.readySequence.load() != readySequence ||
+        slot.activeGeneration.load() != activeGeneration || slot.exactPhase.load() != exactPhase) {
         return false;
     }
     const uint32_t after = slot.epochAndState.load();
@@ -551,45 +497,70 @@ bool HilFaultController::isAllowed(const HilCaseId caseId, const HilFaultId faul
 
 const char* HilFaultController::caseName(const HilCaseId caseId) noexcept {
     switch (caseId) {
-    case HilCaseId::Bsc02: return "BSC-02";
-    case HilCaseId::Bsc04: return "BSC-04";
-    case HilCaseId::Bsc05: return "BSC-05";
-    case HilCaseId::Bsc06: return "BSC-06";
-    case HilCaseId::Bsc10: return "BSC-10";
-    case HilCaseId::Bsc13: return "BSC-13";
-    case HilCaseId::Bsc14: return "BSC-14";
-    case HilCaseId::Bsc16: return "BSC-16";
-    case HilCaseId::Invalid: return "invalid";
+    case HilCaseId::Bsc02:
+        return "BSC-02";
+    case HilCaseId::Bsc04:
+        return "BSC-04";
+    case HilCaseId::Bsc05:
+        return "BSC-05";
+    case HilCaseId::Bsc06:
+        return "BSC-06";
+    case HilCaseId::Bsc10:
+        return "BSC-10";
+    case HilCaseId::Bsc13:
+        return "BSC-13";
+    case HilCaseId::Bsc14:
+        return "BSC-14";
+    case HilCaseId::Bsc16:
+        return "BSC-16";
+    case HilCaseId::Invalid:
+        return "invalid";
     }
     return "invalid";
 }
 
 const char* HilFaultController::faultName(const HilFaultId faultId) noexcept {
     switch (faultId) {
-    case HilFaultId::WifiApStartFailOnce: return "wifi-ap-start-fail-once";
-    case HilFaultId::WifiInternalSramHold: return "wifi-internal-sram-hold";
-    case HilFaultId::V1VerifyPushSuppressOnce: return "v1-verify-push-suppress-once";
-    case HilFaultId::V1NotificationDelayOnce: return "v1-notification-delay-once";
-    case HilFaultId::ObdTransportOperationBarrierOnce: return "obd-transport-operation-barrier-once";
-    case HilFaultId::WifiEnableAdmissionFailOnce: return "wifi-enable-admission-fail-once";
-    case HilFaultId::ObdPhysicalLinkPreownershipBarrierOnce: return "obd-physical-link-preownership-barrier-once";
-    case HilFaultId::SdMutexHold: return "sd-mutex-hold";
-    case HilFaultId::BatteryAdcInitFailOnce: return "battery-adc-init-fail-once";
-    case HilFaultId::Invalid: return "invalid";
+    case HilFaultId::WifiApStartFailOnce:
+        return "wifi-ap-start-fail-once";
+    case HilFaultId::WifiInternalSramHold:
+        return "wifi-internal-sram-hold";
+    case HilFaultId::V1VerifyPushSuppressOnce:
+        return "v1-verify-push-suppress-once";
+    case HilFaultId::V1NotificationDelayOnce:
+        return "v1-notification-delay-once";
+    case HilFaultId::ObdTransportOperationBarrierOnce:
+        return "obd-transport-operation-barrier-once";
+    case HilFaultId::WifiEnableAdmissionFailOnce:
+        return "wifi-enable-admission-fail-once";
+    case HilFaultId::ObdPhysicalLinkPreownershipBarrierOnce:
+        return "obd-physical-link-preownership-barrier-once";
+    case HilFaultId::SdMutexHold:
+        return "sd-mutex-hold";
+    case HilFaultId::BatteryAdcInitFailOnce:
+        return "battery-adc-init-fail-once";
+    case HilFaultId::Invalid:
+        return "invalid";
     }
     return "invalid";
 }
 
 const char* HilFaultController::stateName(const HilFaultState state) noexcept {
     switch (state) {
-    case HilFaultState::Disarmed: return "disarmed";
-    case HilFaultState::Armed: return "armed";
-    case HilFaultState::Ready: return "ready";
-    case HilFaultState::Fired: return "fired";
-    case HilFaultState::Released: return "released";
-    case HilFaultState::Expired: return "expired";
+    case HilFaultState::Disarmed:
+        return "disarmed";
+    case HilFaultState::Armed:
+        return "armed";
+    case HilFaultState::Ready:
+        return "ready";
+    case HilFaultState::Fired:
+        return "fired";
+    case HilFaultState::Released:
+        return "released";
+    case HilFaultState::Expired:
+        return "expired";
     }
     return "invalid";
 }
 
-#endif  // V1SIMPLE_HIL_FAULT_CONTROL
+#endif // V1SIMPLE_HIL_FAULT_CONTROL

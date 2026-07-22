@@ -61,6 +61,9 @@ OUTER_GUARD_RE = re.compile(
     r"^\s*#\s*if\s+defined\s*\(\s*V1SIMPLE_HIL_FAULT_CONTROL\s*\)\s*$",
     re.MULTILINE,
 )
+OUTER_GUARD_END_RE = re.compile(
+    r"^\s*#\s*endif\s*//\s*V1SIMPLE_HIL_FAULT_CONTROL\s*$"
+)
 FORBIDDEN_RUNTIME_RE = re.compile(
     r"(?:\bnew\s+|\bdelete\s+|\bmalloc\s*\(|\bcalloc\s*\(|\brealloc\s*\(|"
     r"\bfree\s*\(|\bstd::(?:vector|string|map|unordered_map)\b|\bString\b|"
@@ -231,8 +234,9 @@ def has_structural_outer_guard(text: str) -> bool:
         return False
     guard_index = substantive[0]
     closing_index = substantive[-1]
-    if OUTER_GUARD_RE.fullmatch(lines[guard_index]) is None or lines[closing_index].strip() != (
-        "#endif  // V1SIMPLE_HIL_FAULT_CONTROL"
+    if (
+        OUTER_GUARD_RE.fullmatch(lines[guard_index]) is None
+        or OUTER_GUARD_END_RE.fullmatch(lines[closing_index]) is None
     ):
         return False
 

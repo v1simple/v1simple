@@ -1201,10 +1201,6 @@ def test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying() -> N
         assert_true(result["runs_completed"] == 3, str(result))
         assert_true(result["early_cut_durability_claimed"] is False, str(result))
         assert_true(
-            "case-source-provenance-not-authenticated" in result["qualification_blockers"],
-            str(result),
-        )
-        assert_true(
             "hil-fault-control-not-implemented" in result["qualification_blockers"],
             str(result),
         )
@@ -1373,7 +1369,6 @@ def test_bsc02_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
                 == [
                     "build-generator-provenance-not-authenticated",
                     "board-resolution-provenance-not-authenticated",
-                    "case-source-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -1520,6 +1515,15 @@ def test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying() -> None:
         assert_true(result["physical_collection_completed"] is False, str(result))
         assert_true(result["non_qualifying"] is True, str(result))
         assert_true(result["qualification_status"] == "BLOCKED", str(result))
+        assert_true(
+            result["qualification_blockers"]
+            == [
+                "build-generator-provenance-not-authenticated",
+                "board-resolution-provenance-not-authenticated",
+                "tracked-rig-adapter-not-implemented",
+            ],
+            str(result),
+        )
         assert_true(result["runs_required"] == 1, str(result))
         assert_true(result["runs_completed"] == 1, str(result))
         assert_true(

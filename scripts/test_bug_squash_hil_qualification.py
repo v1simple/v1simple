@@ -690,7 +690,7 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 3, "profile must be version 3")
+    assert_true(profile["profile_version"] == 4, "profile must be version 4")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
@@ -728,10 +728,9 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
         == {
             "bounded-hil-fault-control",
             "authenticated-build-generator-provenance",
-            "authenticated-case-driver-source-provenance",
             "authenticated-board-inventory-resolver-provenance",
         },
-        "all four unauthenticated activation roots remain blocked",
+        "the three remaining unauthenticated activation roots stay blocked",
     )
     assert_true(
         profile["build_provenance_contract"]["status"] == "integrity-bound"

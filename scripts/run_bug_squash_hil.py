@@ -3,8 +3,8 @@
 
 The final device-suite mode wraps the legacy device runner with exact resolver
 selection, a full target SHA, fail-closed transport handling, production-image
-restoration, and a sanitized result. Scenario case drivers intentionally fail
-until their typed physical orchestrators are implemented.
+restoration, and a sanitized result. Registered but blocked scenario drivers
+fail before hardware mutation until their typed physical orchestrators exist.
 """
 
 from __future__ import annotations
@@ -23,9 +23,10 @@ import secrets
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 import xml.etree.ElementTree as ET
 
+import bug_squash_hil_case_drivers as case_drivers
 import resolve_hil_board
 import check_bug_squash_hil_qualification as qualification
 
@@ -43,7 +44,7 @@ EXPECTED_DEVICE_SUITES = (
     "test_device_battery",
     "test_device_coexistence",
 )
-CASE_IDS = tuple(f"BSC-{index:02d}" for index in range(2, 15)) + ("BSC-16",)
+CASE_IDS = case_drivers.CASE_IDS
 BSC02_CASE_ID = "BSC-02"
 BSC02_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC02_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -81,12 +82,6 @@ BSC02_CAPTURE_COMMITMENTS = (
     "lifecycle_timeline_sha256",
     "serial_log_sha256",
 )
-BSC02_QUALIFICATION_BLOCKERS = (
-    "build-generator-provenance-not-authenticated",
-    "board-resolution-provenance-not-authenticated",
-    "case-source-provenance-not-authenticated",
-    "tracked-rig-adapter-not-implemented",
-)
 BSC03_CASE_ID = "BSC-03"
 BSC03_REQUIRED_RUNS = 3
 BSC03_ADMISSION_DEADLINE_MS = 10_000
@@ -120,12 +115,6 @@ BSC03_FACTS = (
     "peers-reconnected-without-pairing",
     "loop-slo-preserved",
     "early-cut-durability-not-claimed",
-)
-BSC03_QUALIFICATION_BLOCKERS = (
-    "build-generator-provenance-not-authenticated",
-    "board-resolution-provenance-not-authenticated",
-    "hil-fault-control-not-implemented",
-    "case-source-provenance-not-authenticated",
 )
 BSC11_CASE_ID = "BSC-11"
 BSC11_PRODUCTION_ENVIRONMENT = "esp32-s3-car-install"
@@ -186,6 +175,10 @@ class RunnerError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class CaseDriverUnavailable(RunnerError):
+    """The case is registered but its typed physical driver is not implemented."""
 
 
 def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1535,7 +1528,9 @@ def bsc03_result(
         "physical_collection_completed": state["execution_mode"] == "physical",
         "non_qualifying": True,
         "qualification_status": "BLOCKED",
-        "qualification_blockers": list(BSC03_QUALIFICATION_BLOCKERS),
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC03_CASE_ID).qualification_blockers
+        ),
         "artifact_role": "non-qualifying-case-collection",
         "result": "COLLECTION_COMPLETE"
         if state["execution_mode"] == "physical"
@@ -2514,7 +2509,9 @@ def run_bsc02_case(args: argparse.Namespace) -> int:
         "physical_collection_completed": False,
         "non_qualifying": True,
         "qualification_status": "BLOCKED",
-        "qualification_blockers": list(BSC02_QUALIFICATION_BLOCKERS),
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC02_CASE_ID).qualification_blockers
+        ),
         "artifact_role": "non-qualifying-case-collection",
         "result": "TEST_PASS",
         "runs_required": BSC02_REQUIRED_RUNS,
@@ -3081,7 +3078,9 @@ def run_bsc11_case(args: argparse.Namespace) -> int:
         "physical_collection_completed": False,
         "non_qualifying": True,
         "qualification_status": "BLOCKED",
-        "qualification_blockers": list(BSC03_QUALIFICATION_BLOCKERS),
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC11_CASE_ID).qualification_blockers
+        ),
         "artifact_role": "non-qualifying-case-collection",
         "result": "TEST_PASS",
         "runs_required": BSC11_REQUIRED_RUNS,
@@ -3145,48 +3144,80 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def case_handler_map() -> Mapping[str, Callable[[argparse.Namespace], int]]:
+    """Return the exact implemented entrypoint map for registry validation."""
+
+    return {
+        "run_bsc02_case": run_bsc02_case,
+        "run_bsc03_case": run_bsc03_case,
+        "run_bsc11_case": run_bsc11_case,
+    }
+
+
+def resolve_case_handler(
+    driver: case_drivers.CaseDriver,
+) -> Callable[[argparse.Namespace], int]:
+    """Resolve a registry entry before any case-owned hardware mutation."""
+
+    if not driver.implemented:
+        raise CaseDriverUnavailable(
+            "case_driver_unavailable",
+            "typed physical orchestration for this case is not implemented",
+        )
+    handlers = case_handler_map()
+    if tuple(handlers) != case_drivers.implemented_entrypoints():
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "tracked case-driver registry does not match runner entrypoints",
+        )
+    handler = handlers.get(driver.entrypoint)
+    if handler is None:
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "tracked case-driver entrypoint is unavailable",
+        )
+    return handler
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.runs < 1 or args.runs > 10:
         print(json.dumps({"error": {"code": "invalid_runs", "message": "runs must be 1..10"}}))
         return 2
     if args.case is not None:
-        if args.case in (BSC02_CASE_ID, BSC03_CASE_ID, BSC11_CASE_ID):
-            try:
-                if args.case == BSC02_CASE_ID:
-                    return run_bsc02_case(args)
-                if args.case == BSC03_CASE_ID:
-                    return run_bsc03_case(args)
-                return run_bsc11_case(args)
-            except RunnerError as exc:
-                print(
-                    json.dumps(
-                        {"error": {"code": exc.code, "message": exc.message}},
-                        sort_keys=True,
-                    )
+        try:
+            driver = case_drivers.get_case_driver(args.case)
+            return resolve_case_handler(driver)(args)
+        except CaseDriverUnavailable as exc:
+            print(
+                json.dumps(
+                    {"error": {"code": exc.code, "message": exc.message}},
+                    sort_keys=True,
                 )
-                return 1
-            except Exception:
-                print(
-                    json.dumps(
-                        {
-                            "error": {
-                                "code": "internal_error",
-                                "message": "typed case failed closed without qualifying evidence",
-                            }
-                        },
-                        sort_keys=True,
-                    )
+            )
+            return 3
+        except (case_drivers.CaseDriverContractError, RunnerError) as exc:
+            code = exc.code if isinstance(exc, RunnerError) else "case_driver_contract_invalid"
+            message = (
+                exc.message
+                if isinstance(exc, RunnerError)
+                else "tracked case-driver registry is invalid"
+            )
+            print(json.dumps({"error": {"code": code, "message": message}}, sort_keys=True))
+            return 1
+        except Exception:
+            print(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "internal_error",
+                            "message": "typed case failed closed without qualifying evidence",
+                        }
+                    },
+                    sort_keys=True,
                 )
-                return 1
-        error = {
-            "error": {
-                "code": "case_driver_unavailable",
-                "message": "typed physical orchestration for this case is not implemented",
-            }
-        }
-        print(json.dumps(error, sort_keys=True))
-        return 3
+            )
+            return 1
     try:
         return run_device_suite(args)
     except RunnerError as exc:

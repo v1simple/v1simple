@@ -129,6 +129,7 @@ run_step "Perf CSV import regression tests" python3 scripts/test_perf_csv_import
 run_step "Soak metrics parser regression tests" python3 scripts/test_soak_parse_metrics.py
 run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
+run_step "Bug-squash HIL case-driver registry tests" python3 scripts/test_bug_squash_hil_case_drivers.py
 run_step "Bug-squash HIL runner regression tests" python3 scripts/test_bug_squash_hil_runner.py
 run_step "HIL fault-control exclusion regression tests" python3 scripts/test_check_bug_squash_hil_fault_controls.py
 run_step "HIL fault-control authoritative build gate" python3 scripts/check_bug_squash_hil_fault_controls.py

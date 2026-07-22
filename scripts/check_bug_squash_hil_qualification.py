@@ -25,8 +25,9 @@ import resolve_hil_board as hil_resolver
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "tools" / "bug_squash_hil_qualification_profile_v1.json"
 BUILD_EVIDENCE_GENERATOR = ROOT / "scripts" / "generate_bug_squash_build_evidence.py"
-PINNED_PROFILE_SHA256 = "b8b742b531580cdcfcb716f2b438525c4fbff1dca1e3278d43bed0faac1ed082"
+PINNED_PROFILE_SHA256 = "d76acb097093b0124e9fecd26016d13dcef68edd7ea676016a0af0fdbe7251c4"
 MINIMUM_READY_PROFILE_VERSION = 3
+PINNED_PROFILE_VERSION = 4
 INTEGRITY_PROVENANCE_VERIFIER_VERSION = 1
 AUTHENTICATED_PROVENANCE_VERIFIER_VERSION: int | None = None
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
@@ -693,8 +694,8 @@ def validate_profile_bytes(content: bytes) -> tuple[dict[str, Any] | None, list[
         errors.append("pinned profile schema_version must be 1")
     if profile.get("profile_id") != "bug-squash-hil-v1":
         errors.append("pinned profile_id mismatch")
-    if profile.get("profile_version") != 3:
-        errors.append("pinned profile_version must be 3")
+    if profile.get("profile_version") != PINNED_PROFILE_VERSION:
+        errors.append(f"pinned profile_version must be {PINNED_PROFILE_VERSION}")
     if profile.get("qualification_status") not in {"ready", "blocked"}:
         errors.append("pinned profile qualification_status must be ready or blocked")
     blockers = profile.get("blockers")

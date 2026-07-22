@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 3,
+  "profile_version": 4,
   "qualification_status": "blocked",
   "blockers": [
     {
@@ -15,10 +15,6 @@
     {
       "code": "hil-fault-control-not-implemented",
       "affected_component": "hil-fault"
-    },
-    {
-      "code": "case-source-provenance-not-authenticated",
-      "affected_component": "case-source-evidence"
     }
   ],
   "activation_contract": {
@@ -36,7 +32,7 @@
       },
       {
         "id": "authenticated-case-driver-source-provenance",
-        "status": "blocked"
+        "status": "active"
       },
       {
         "id": "authenticated-board-inventory-resolver-provenance",
@@ -64,9 +60,11 @@
   },
   "case_driver_contract": {
     "schema_version": 1,
-    "status": "blocked",
+    "status": "active",
     "runner_path": "scripts/run_bug_squash_hil.py",
-    "driver_source_paths": []
+    "driver_source_paths": [
+      "scripts/bug_squash_hil_case_drivers.py"
+    ]
   },
   "fault_control_contract": {
     "schema_version": 1,

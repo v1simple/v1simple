@@ -118,6 +118,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "serial",
                             "touchscreen",
                             "v1-connectivity",
+                            "wifi-client",
                         ],
                         "usb_serial": "SECRET-USB-IDENTITY",
                     },
@@ -127,6 +128,8 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "artifact-capture",
                             "battery-source",
                             "bond-peer",
+                            "browser-client",
+                            "http-response-control",
                             "ignition-control",
                             "lan-client",
                             "logic-analyzer",
@@ -1035,6 +1038,274 @@ if os.environ.get('FAKE_BSC13_TAMPER') == '1':
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc10_adapter = root / "fake-bsc10-adapter.py"
+    write_executable(
+        bsc10_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc10.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+role_id = argument('--role-id')
+is_fault = role_id == 'wifi-enable-transaction-fault'
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=50)
+case_descriptor = {
+    'fault_build_required': True,
+    'id': 'BSC-10',
+    'minimum_runs': 1,
+    'production_replay': {
+        'barrier_ids': [],
+        'build_kind': 'production',
+        'facts': [
+            {'expected': True, 'id': 'ordinary-enable-succeeded', 'type': 'boolean'},
+            {'expected': True, 'id': 'authoritative-status-reconciled', 'type': 'boolean'},
+            {'expected': False, 'id': 'hil-fault-control-active', 'type': 'boolean'},
+        ],
+        'fault_ids': [],
+        'reset_contract': {'expected_count': 0, 'expected_kind': 'none', 'unexpected_count': 0},
+        'role_id': 'wifi-enable-production-replay',
+        'schema': 'case-observation-v1',
+        'stimulus_ids': ['request-enable', 'refresh-authoritative-status'],
+        'vbus_isolation_required': False,
+    },
+    'production_replay_required': True,
+    'required_dut_capabilities': [
+        'firmware-execution',
+        'maintenance-mode',
+        'serial',
+        'wifi-client',
+    ],
+    'required_rig_capabilities': [
+        'artifact-capture',
+        'browser-client',
+        'http-response-control',
+        'utc-time-source',
+    ],
+    'scenario': {
+        'barrier_ids': ['admission-rejection-observed'],
+        'build_kind': 'hil-fault',
+        'facts': [
+            {'expected': True, 'id': 'nvs-remained-disabled-after-rejection', 'type': 'boolean'},
+            {'expected': True, 'id': 'runtime-remained-disabled-after-rejection', 'type': 'boolean'},
+            {'expected': True, 'id': 'selected-slot-unchanged-after-rejection', 'type': 'boolean'},
+            {'expected': True, 'id': 'ui-remained-disabled-after-rejection', 'type': 'boolean'},
+            {'id': 'retry-mutation-count', 'maximum': 1, 'minimum': 1, 'type': 'integer'},
+            {'id': 'persist-count', 'maximum': 1, 'minimum': 1, 'type': 'integer'},
+            {'id': 'unknown-outcome-followup-mutations', 'maximum': 0, 'minimum': 0, 'type': 'integer'},
+            {'expected': True, 'id': 'authoritative-status-reconciled', 'type': 'boolean'},
+        ],
+        'fault_ids': ['wifi-enable-admission-fail-once', 'drop-post-response-once'],
+        'reset_contract': {'expected_count': 0, 'expected_kind': 'none', 'unexpected_count': 0},
+        'role_id': 'wifi-enable-transaction-fault',
+        'schema': 'case-observation-v1',
+        'stimulus_ids': [
+            'request-enable',
+            'clear-admission-fault',
+            'retry-enable-once',
+            'drop-success-response',
+            'refresh-authoritative-status',
+        ],
+        'vbus_isolation_required': False,
+    },
+}
+mutation = os.environ.get('FAKE_BSC10_MUTATION', '')
+if mutation == 'descriptor':
+    case_descriptor['required_dut_capabilities'].append('invented-capability')
+role = case_descriptor['scenario' if is_fault else 'production_replay']
+stimuli = [
+    {'id': stimulus_id, 'sequence': sequence, 'elapsed_ms': sequence * 5000, 'result': 'pass'}
+    for sequence, stimulus_id in enumerate(role['stimulus_ids'], start=1)
+]
+if is_fault:
+    faults = [
+        {
+            'id': 'wifi-enable-admission-fail-once',
+            'sequence': 1,
+            'armed_elapsed_ms': 1000,
+            'triggered_elapsed_ms': 4500,
+            'cleared_elapsed_ms': 5500,
+        },
+        {
+            'id': 'drop-post-response-once',
+            'sequence': 2,
+            'armed_elapsed_ms': 18000,
+            'triggered_elapsed_ms': 20000,
+            'cleared_elapsed_ms': 21000,
+        },
+    ]
+    barriers = [{
+        'id': 'admission-rejection-observed',
+        'sequence': 1,
+        'ready_elapsed_ms': 4500,
+        'released_elapsed_ms': 5500,
+        'timed_out': False,
+    }]
+    facts = {
+        'nvs-remained-disabled-after-rejection': True,
+        'runtime-remained-disabled-after-rejection': True,
+        'selected-slot-unchanged-after-rejection': True,
+        'ui-remained-disabled-after-rejection': True,
+        'retry-mutation-count': 1,
+        'persist-count': 1,
+        'unknown-outcome-followup-mutations': 0,
+        'authoritative-status-reconciled': True,
+    }
+    environment = 'waveshare-349-hil'
+    build_kind = 'hil-fault'
+    hil_active = True
+else:
+    faults = []
+    barriers = []
+    facts = {
+        'ordinary-enable-succeeded': True,
+        'authoritative-status-reconciled': True,
+        'hil-fault-control-active': False,
+    }
+    environment = 'waveshare-349'
+    build_kind = 'production'
+    hil_active = False
+resets = {'expected_kind': 'none', 'planned': 0, 'observed': 0, 'unexpected': 0}
+
+if mutation == 'stimulus-order':
+    stimuli[0]['id'], stimuli[1]['id'] = stimuli[1]['id'], stimuli[0]['id']
+if mutation == 'stimulus-timing':
+    stimuli[1]['elapsed_ms'] = stimuli[0]['elapsed_ms']
+if mutation == 'stimulus-missing':
+    stimuli.pop()
+if mutation == 'fault-order' and is_fault:
+    faults[0]['id'], faults[1]['id'] = faults[1]['id'], faults[0]['id']
+if mutation == 'fault-timing' and is_fault:
+    faults[0]['triggered_elapsed_ms'] = 6000
+if mutation == 'fault-missing' and is_fault:
+    faults.pop()
+if mutation == 'response-window' and is_fault:
+    faults[1]['cleared_elapsed_ms'] = 26000
+if mutation == 'barrier-order' and is_fault:
+    barriers[0]['sequence'] = 2
+if mutation == 'barrier-timing' and is_fault:
+    barriers[0]['released_elapsed_ms'] = 11000
+if mutation == 'barrier-timeout' and is_fault:
+    barriers[0]['timed_out'] = True
+if mutation == 'barrier-missing' and is_fault:
+    barriers.clear()
+if mutation == 'retry-count' and is_fault:
+    facts['retry-mutation-count'] = 2
+if mutation == 'persist-count' and is_fault:
+    facts['persist-count'] = 2
+if mutation == 'followup-count' and is_fault:
+    facts['unknown-outcome-followup-mutations'] = 1
+if mutation == 'fault-reconciliation' and is_fault:
+    facts['authoritative-status-reconciled'] = False
+if mutation == 'production-success' and not is_fault:
+    facts['ordinary-enable-succeeded'] = False
+if mutation == 'production-reconciliation' and not is_fault:
+    facts['authoritative-status-reconciled'] = False
+if mutation == 'production-hil' and not is_fault:
+    facts['hil-fault-control-active'] = True
+if mutation == 'fact-extra':
+    facts['invented-fact'] = True
+if mutation == 'production-fault' and not is_fault:
+    faults = [{
+        'id': 'drop-post-response-once',
+        'sequence': 1,
+        'armed_elapsed_ms': 1000,
+        'triggered_elapsed_ms': 2000,
+        'cleared_elapsed_ms': 3000,
+    }]
+if mutation == 'production-barrier' and not is_fault:
+    barriers = [{
+        'id': 'admission-rejection-observed',
+        'sequence': 1,
+        'ready_elapsed_ms': 1000,
+        'released_elapsed_ms': 2000,
+        'timed_out': False,
+    }]
+if mutation == 'reset':
+    resets['observed'] = 1
+if mutation == 'wrong-firmware':
+    environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
+if mutation == 'wrong-hil':
+    hil_active = not hil_active
+if mutation == 'build-kind':
+    build_kind = 'production' if is_fault else 'hil-fault'
+
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role_id': role_id,
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor': case_descriptor,
+    'case_descriptor_sha256': argument('--case-descriptor-sha256'),
+    'firmware': {
+        'environment': environment,
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest(f'{role_id}-binary'),
+        'hil_fault_control_active': hil_active,
+        'build_kind': build_kind,
+    },
+    'stimuli': stimuli,
+    'faults': faults,
+    'barriers': barriers,
+    'vbus_isolated': False,
+    'resets': resets,
+    'facts': facts,
+    'capture_commitments': {
+        'browser_trace_sha256': digest(f'{role_id}-browser-trace'),
+        'build_evidence_sha256': digest(f'{role_id}-build-evidence'),
+        'http_sequence_sha256': digest(f'{role_id}-http-sequence'),
+        'nvs_runtime_state_sha256': digest(f'{role_id}-nvs-runtime-state'),
+        'serial_log_sha256': digest(f'{role_id}-serial-log'),
+    },
+}
+if mutation == 'record-extra':
+    payload['invented-field'] = True
+if mutation == 'firmware-extra':
+    payload['firmware']['invented-field'] = True
+if mutation == 'role-id':
+    payload['role_id'] = (
+        'wifi-enable-production-replay' if is_fault else 'wifi-enable-transaction-fault'
+    )
+if mutation == 'target':
+    payload['target_sha'] = 'f' * 40
+if mutation == 'vbus':
+    payload['vbus_isolated'] = True
+if mutation == 'descriptor-digest':
+    payload['case_descriptor_sha256'] = digest('wrong-descriptor')
+if mutation == 'capture-reuse':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['http_sequence_sha256']
+if mutation == 'capture-missing':
+    payload['capture_commitments'].pop('serial_log_sha256')
+if mutation == 'bool-schema':
+    payload['schema_version'] = True
+if mutation == 'integer-hardware':
+    payload['hardware_observed'] = 0
+payload['evidence_binding_sha256'] = commitment(payload)
+if mutation == 'capture-substitution':
+    payload['capture_commitments']['serial_log_sha256'] = digest('substituted-serial')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
     bsc14_adapter = root / "fake-bsc14-adapter.py"
     write_executable(
         bsc14_adapter,
@@ -1472,6 +1743,7 @@ sys.stdout.write(json.dumps(payload))
         "bsc04_adapter": bsc04_adapter,
         "bsc13_adapter": bsc13_adapter,
         "bsc11_adapter": bsc11_adapter,
+        "bsc10_adapter": bsc10_adapter,
         "bsc14_adapter": bsc14_adapter,
         "bsc16_adapter": bsc16_adapter,
     }
@@ -1947,6 +2219,73 @@ def run_bsc13_fixture(
         str(fixture["pio"]),
         "--case-adapter",
         str(fixture["bsc13_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc10_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    production_replay: bool = False,
+    runs: int = 1,
+    mutation: str = "",
+    drop_dut_wifi_client: bool = False,
+    drop_rig_http_control: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    role = "production" if production_replay else "fault"
+    out_dir = root / f"bsc10-{role}-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC10_MUTATION": mutation,
+        }
+    )
+    if drop_dut_wifi_client or drop_rig_http_control:
+        inventory_path = Path(fixture["inventory"])
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        alias = "release" if drop_dut_wifi_client else "rig"
+        capability = "wifi-client" if drop_dut_wifi_client else "http-response-control"
+        board = next(item for item in inventory["boards"] if item["alias"] == alias)
+        board["capabilities"].remove(capability)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-10",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc10_adapter"]),
         "--out-dir",
         str(out_dir),
     ]
@@ -3082,6 +3421,212 @@ def test_bsc13_physical_mode_remains_blocked_before_rig_mutation() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
+    descriptor = hil_runner.load_bsc10_case_descriptor()
+    descriptor_sha = hil_runner.bsc10_descriptor_commitment(descriptor)
+    for production_replay, descriptor_key, expected_environment, expected_hil in (
+        (False, "scenario", "waveshare-349-hil", True),
+        (True, "production_replay", "waveshare-349", False),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc10_fixture(
+                fixture, root, production_replay=production_replay
+            )
+            assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+            result = json.loads(
+                (out_dir / "collection_result.json").read_text(encoding="utf-8")
+            )
+            attempt = json.loads((out_dir / "attempt.json").read_text(encoding="utf-8"))
+            role = descriptor[descriptor_key]
+            assert_true(result["result"] == "TEST_PASS", str(result))
+            assert_true(result["collection_role"] == role["role_id"], str(result))
+            assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
+            assert_true(result["execution_mode"] == "simulated", str(result))
+            assert_true(result["hardware_observed"] is False, str(result))
+            assert_true(result["authoritative"] is False, str(result))
+            assert_true(result["physical_collection_completed"] is False, str(result))
+            assert_true(result["non_qualifying"] is True, str(result))
+            assert_true(result["qualification_status"] == "BLOCKED", str(result))
+            assert_true(
+                result["qualification_blockers"]
+                == [
+                    "build-generator-provenance-not-authenticated",
+                    "board-resolution-provenance-not-authenticated",
+                    "tracked-rig-adapter-not-implemented",
+                ],
+                str(result),
+            )
+            assert_true(result["runs_required"] == result["runs_completed"] == 1, str(result))
+            assert_true(
+                result["production_replay_required"] is (not production_replay), str(result)
+            )
+            assert_true(
+                result["firmware_target"]["environment"] == expected_environment
+                and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+                and result["firmware_target"]["hil_fault_control_active"] is expected_hil
+                and result["firmware_target"]["build_kind"] == role["build_kind"],
+                str(result),
+            )
+            assert_true(attempt["case_descriptor"] == descriptor, str(attempt))
+            assert_true(attempt["case_descriptor_sha256"] == descriptor_sha, str(attempt))
+            assert_true(attempt["role_id"] == role["role_id"], str(attempt))
+            assert_true(
+                [row["id"] for row in attempt["stimuli"]] == role["stimulus_ids"],
+                str(attempt),
+            )
+            assert_true([row["id"] for row in attempt["faults"]] == role["fault_ids"], str(attempt))
+            assert_true(
+                [row["id"] for row in attempt["barriers"]] == role["barrier_ids"],
+                str(attempt),
+            )
+            expected_facts = {
+                fact["id"]: fact["expected"] if fact["type"] == "boolean" else fact["minimum"]
+                for fact in role["facts"]
+            }
+            assert_true(attempt["facts"] == expected_facts, str(attempt))
+            assert_true(attempt["vbus_isolated"] is False, str(attempt))
+            assert_true(
+                attempt["resets"]
+                == {
+                    "expected_kind": role["reset_contract"]["expected_kind"],
+                    "planned": role["reset_contract"]["expected_count"],
+                    "observed": role["reset_contract"]["expected_count"],
+                    "unexpected": role["reset_contract"]["unexpected_count"],
+                },
+                str(attempt),
+            )
+            if production_replay:
+                assert_true(attempt["faults"] == attempt["barriers"] == [], str(attempt))
+            else:
+                assert_true(
+                    attempt["facts"]["retry-mutation-count"] == 1
+                    and attempt["facts"]["persist-count"] == 1
+                    and attempt["facts"]["unknown-outcome-followup-mutations"] == 0
+                    and attempt["facts"]["authoritative-status-reconciled"] is True,
+                    str(attempt),
+                )
+            assert_true(
+                all(
+                    len(value) == 64
+                    for value in (
+                        result["session_sha256"],
+                        result["attempt_sha256"],
+                        result["case_descriptor_sha256"],
+                        result["evidence_binding_sha256"],
+                        *result["artifact_sha256"].values(),
+                    )
+                ),
+                str(result),
+            )
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+            public_output = completed.stdout + completed.stderr + json.dumps(result)
+            assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+            assert_true(str(fixture["port"]) not in public_output, public_output)
+            assert_true(
+                "release" not in public_output and '"rig"' not in public_output,
+                public_output,
+            )
+
+
+def test_bsc10_rejects_full_record_contract_mutations() -> None:
+    cases = (
+        ({"mutation": "role-id"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "role-id"}, "case_record_invalid"),
+        ({"mutation": "build-kind"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "build-kind"}, "case_record_invalid"),
+        ({"mutation": "wrong-firmware"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "wrong-firmware"}, "case_record_invalid"),
+        ({"mutation": "wrong-hil"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "wrong-hil"}, "case_record_invalid"),
+        ({"mutation": "vbus"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "vbus"}, "case_record_invalid"),
+        ({"mutation": "stimulus-missing"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "stimulus-missing"}, "case_record_invalid"),
+        ({"mutation": "stimulus-order"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "stimulus-order"}, "case_record_invalid"),
+        ({"mutation": "stimulus-timing"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "stimulus-timing"}, "case_record_invalid"),
+        ({"mutation": "fault-missing"}, "case_record_invalid"),
+        ({"mutation": "fault-order"}, "case_record_invalid"),
+        ({"mutation": "fault-timing"}, "case_record_invalid"),
+        ({"mutation": "response-window"}, "case_record_invalid"),
+        ({"mutation": "barrier-missing"}, "case_record_invalid"),
+        ({"mutation": "barrier-order"}, "case_record_invalid"),
+        ({"mutation": "barrier-timing"}, "case_record_invalid"),
+        ({"mutation": "barrier-timeout"}, "case_record_invalid"),
+        ({"mutation": "retry-count"}, "case_record_invalid"),
+        ({"mutation": "persist-count"}, "case_record_invalid"),
+        ({"mutation": "followup-count"}, "case_record_invalid"),
+        ({"mutation": "fault-reconciliation"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-success"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "production-reconciliation"},
+            "case_record_invalid",
+        ),
+        ({"production_replay": True, "mutation": "production-hil"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-fault"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-barrier"}, "case_record_invalid"),
+        ({"mutation": "reset"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "reset"}, "case_record_invalid"),
+        ({"mutation": "target"}, "case_record_invalid"),
+        ({"mutation": "descriptor"}, "case_record_invalid"),
+        ({"mutation": "descriptor-digest"}, "case_record_invalid"),
+        ({"mutation": "record-extra"}, "case_record_invalid"),
+        ({"mutation": "firmware-extra"}, "case_record_invalid"),
+        ({"mutation": "fact-extra"}, "case_record_invalid"),
+        ({"mutation": "capture-missing"}, "case_record_invalid"),
+        ({"mutation": "capture-reuse"}, "case_record_invalid"),
+        ({"mutation": "capture-substitution"}, "case_record_invalid"),
+        ({"mutation": "bool-schema"}, "case_record_invalid"),
+        ({"mutation": "integer-hardware"}, "case_record_invalid"),
+        ({"drop_dut_wifi_client": True}, "case_board_resolution_failed"),
+        ({"drop_rig_http_control": True}, "case_board_resolution_failed"),
+        ({"runs": 2}, "invalid_runs"),
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc10_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc10_physical_mode_remains_blocked_before_rig_discovery() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-10",
+            "--board",
+            "opaque-dut",
+            "--rig",
+            "opaque-rig",
+            "--inventory",
+            "/definitely/not/a/local/inventory.json",
+        ],
+        cwd=ROOT,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "V1SIMPLE_HIL_TEST_HOOKS"
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-10 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+
+
 def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc14_case_descriptor()
     descriptor_sha = hil_runner.bsc14_descriptor_commitment(descriptor)
@@ -3549,6 +4094,9 @@ def main() -> int:
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()
+    test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
+    test_bsc10_rejects_full_record_contract_mutations()
+    test_bsc10_physical_mode_remains_blocked_before_rig_discovery()
     test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift()
     test_bsc14_physical_mode_remains_blocked_without_tracked_adapter()

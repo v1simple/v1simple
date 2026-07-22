@@ -143,6 +143,13 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertIn("tracked-rig-adapter-not-implemented", bsc14.qualification_blockers)
         self.assertIs(runner.resolve_case_handler(bsc14), runner.run_bsc14_case)
 
+    def test_bsc10_owns_the_implemented_fault_hook_contract(self) -> None:
+        bsc10 = case_drivers.get_case_driver("BSC-10")
+        self.assertTrue(bsc10.implemented)
+        self.assertNotIn("hil-fault-control-not-implemented", bsc10.qualification_blockers)
+        self.assertIn("tracked-rig-adapter-not-implemented", bsc10.qualification_blockers)
+        self.assertIs(runner.resolve_case_handler(bsc10), runner.run_bsc10_case)
+
     def test_bsc04_owns_the_implemented_fault_hook_contract(self) -> None:
         bsc04 = case_drivers.get_case_driver("BSC-04")
         self.assertTrue(bsc04.implemented)

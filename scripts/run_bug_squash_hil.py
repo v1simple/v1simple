@@ -221,6 +221,17 @@ BSC11_CAPTURE_COMMITMENTS = (
     "service_timeline_sha256",
     "v1_exchange_sha256",
 )
+BSC10_CASE_ID = "BSC-10"
+BSC10_HIL_ENVIRONMENT = "waveshare-349-hil"
+BSC10_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC10_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC10_CAPTURE_COMMITMENTS = (
+    "browser_trace_sha256",
+    "build_evidence_sha256",
+    "http_sequence_sha256",
+    "nvs_runtime_state_sha256",
+    "serial_log_sha256",
+)
 BSC13_CASE_ID = "BSC-13"
 BSC13_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC13_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -5404,6 +5415,648 @@ def run_bsc11_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_bsc10_case_descriptor() -> dict[str, object]:
+    profile, errors = qualification.load_pinned_profile()
+    if profile is None or errors:
+        raise RunnerError(
+            "qualification_profile_invalid",
+            "pinned BSC-10 qualification descriptor is invalid",
+        )
+    descriptor = next(
+        (entry for entry in profile["required_cases"] if entry["id"] == BSC10_CASE_ID),
+        None,
+    )
+    if not isinstance(descriptor, dict):
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "BSC-10 is absent from the pinned qualification profile",
+        )
+    return descriptor
+
+
+def bsc10_role_descriptor(
+    case_descriptor: Mapping[str, object], *, production_replay: bool
+) -> dict[str, object]:
+    key = "production_replay" if production_replay else "scenario"
+    role = case_descriptor.get(key)
+    if not isinstance(role, dict):
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "pinned BSC-10 role descriptor is unavailable",
+        )
+    return role
+
+
+def bsc10_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment(
+        "v1simple.bsc10.case-descriptor.v1", case_descriptor
+    )
+
+
+def resolve_bsc10_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+    case_descriptor: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-10 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=case_descriptor["required_dut_capabilities"],
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=case_descriptor["required_rig_capabilities"],
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-10 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def bsc10_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc10.case-record.v1", committed)
+
+
+def validate_bsc10_stimuli(
+    value: object, expected_ids: Sequence[str]
+) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-10 stimulus sequence is incomplete")
+    rows: list[dict[str, object]] = []
+    elapsed_values: list[int] = []
+    for sequence, (stimulus, expected_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            stimulus,
+            {"id", "sequence", "elapsed_ms", "result"},
+            code=code,
+            label="BSC-10 stimulus",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != expected_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed < 0
+            or row.get("result") != "pass"
+        ):
+            raise RunnerError(code, "BSC-10 stimulus order, timing, or result is invalid")
+        rows.append(row)
+        elapsed_values.append(elapsed)
+    if any(later <= earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "BSC-10 stimulus times must increase strictly")
+    return rows
+
+
+def validate_bsc10_faults(
+    value: object, expected_ids: Sequence[str]
+) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-10 fault sequence does not match the pinned descriptor")
+    rows: list[dict[str, object]] = []
+    for sequence, (fault, expected_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            fault,
+            {
+                "id",
+                "sequence",
+                "armed_elapsed_ms",
+                "triggered_elapsed_ms",
+                "cleared_elapsed_ms",
+            },
+            code=code,
+            label="BSC-10 fault",
+        )
+        times = tuple(
+            row.get(field)
+            for field in (
+                "armed_elapsed_ms",
+                "triggered_elapsed_ms",
+                "cleared_elapsed_ms",
+            )
+        )
+        if (
+            row.get("id") != expected_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or any(type(item) is not int or item < 0 for item in times)
+            or not (times[0] <= times[1] <= times[2])
+        ):
+            raise RunnerError(code, "BSC-10 fault identity, order, or timing is invalid")
+        rows.append(row)
+    return rows
+
+
+def validate_bsc10_barriers(
+    value: object, expected_ids: Sequence[str]
+) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-10 barriers do not match the pinned descriptor")
+    rows: list[dict[str, object]] = []
+    for sequence, (barrier, expected_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            barrier,
+            {"id", "sequence", "ready_elapsed_ms", "released_elapsed_ms", "timed_out"},
+            code=code,
+            label="BSC-10 barrier",
+        )
+        ready = row.get("ready_elapsed_ms")
+        released = row.get("released_elapsed_ms")
+        if (
+            row.get("id") != expected_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(ready) is not int
+            or ready < 0
+            or type(released) is not int
+            or released < ready
+            or row.get("timed_out") is not False
+        ):
+            raise RunnerError(code, "BSC-10 barrier identity, order, or timing is invalid")
+        rows.append(row)
+    return rows
+
+
+def validate_bsc10_resets(value: object, reset_contract: Mapping[str, object]) -> None:
+    code = "case_record_invalid"
+    resets = require_exact_object(
+        value,
+        {"expected_kind", "planned", "observed", "unexpected"},
+        code=code,
+        label="BSC-10 resets",
+    )
+    expected_count = reset_contract.get("expected_count")
+    if (
+        resets.get("expected_kind") != reset_contract.get("expected_kind")
+        or type(resets.get("planned")) is not int
+        or resets.get("planned") != expected_count
+        or type(resets.get("observed")) is not int
+        or resets.get("observed") != expected_count
+        or type(resets.get("unexpected")) is not int
+        or resets.get("unexpected") != reset_contract.get("unexpected_count")
+    ):
+        raise RunnerError(code, "BSC-10 reset evidence does not match the pinned descriptor")
+
+
+def validate_bsc10_facts(value: object, contracts: object) -> None:
+    code = "case_record_invalid"
+    if not isinstance(contracts, list):
+        raise RunnerError(code, "BSC-10 fact descriptor is invalid")
+    contract_by_id = {
+        contract.get("id"): contract for contract in contracts if isinstance(contract, dict)
+    }
+    if len(contract_by_id) != len(contracts) or not all(
+        isinstance(fact_id, str) for fact_id in contract_by_id
+    ):
+        raise RunnerError(code, "BSC-10 fact descriptor is invalid")
+    facts = require_exact_object(value, set(contract_by_id), code=code, label="BSC-10 facts")
+    for fact_id, contract in contract_by_id.items():
+        observed = facts.get(fact_id)
+        if contract.get("type") == "boolean":
+            if type(observed) is not bool or observed is not contract.get("expected"):
+                raise RunnerError(code, f"BSC-10 fact {fact_id} is invalid")
+        elif contract.get("type") == "integer":
+            minimum = contract.get("minimum")
+            maximum = contract.get("maximum")
+            if (
+                type(observed) is not int
+                or type(minimum) is not int
+                or type(maximum) is not int
+                or observed < minimum
+                or observed > maximum
+            ):
+                raise RunnerError(code, f"BSC-10 fact {fact_id} is invalid")
+        else:
+            raise RunnerError(code, "BSC-10 fact descriptor type is invalid")
+
+
+def validate_bsc10_timeline(
+    *,
+    stimuli: Sequence[Mapping[str, object]],
+    faults: Sequence[Mapping[str, object]],
+    barriers: Sequence[Mapping[str, object]],
+    production_replay: bool,
+    duration_ms: int,
+) -> None:
+    code = "case_record_invalid"
+    observed_times = [int(row["elapsed_ms"]) for row in stimuli]
+    for row in faults:
+        observed_times.extend(
+            int(row[field])
+            for field in (
+                "armed_elapsed_ms",
+                "triggered_elapsed_ms",
+                "cleared_elapsed_ms",
+            )
+        )
+    for row in barriers:
+        observed_times.extend(
+            int(row[field]) for field in ("ready_elapsed_ms", "released_elapsed_ms")
+        )
+    if observed_times and max(observed_times) > duration_ms + 1_000:
+        raise RunnerError(code, "BSC-10 observations exceed the recorded run duration")
+    if production_replay:
+        if len(stimuli) != 2 or faults or barriers:
+            raise RunnerError(code, "BSC-10 production replay contains fault instrumentation")
+        return
+    if len(stimuli) != 5 or len(faults) != 2 or len(barriers) != 1:
+        raise RunnerError(code, "BSC-10 fault timeline is incomplete")
+    stimulus_times = [int(row["elapsed_ms"]) for row in stimuli]
+    first_fault = faults[0]
+    response_fault = faults[1]
+    barrier = barriers[0]
+    if not (
+        int(first_fault["armed_elapsed_ms"])
+        <= int(first_fault["triggered_elapsed_ms"])
+        <= stimulus_times[0]
+        <= int(first_fault["cleared_elapsed_ms"])
+        <= stimulus_times[1]
+        and int(barrier["ready_elapsed_ms"])
+        <= stimulus_times[0]
+        <= int(barrier["released_elapsed_ms"])
+        <= stimulus_times[1]
+        and int(first_fault["triggered_elapsed_ms"])
+        <= int(barrier["ready_elapsed_ms"])
+        <= int(barrier["released_elapsed_ms"])
+        <= int(first_fault["cleared_elapsed_ms"])
+        and stimulus_times[1] < stimulus_times[2] < stimulus_times[3]
+        and int(response_fault["armed_elapsed_ms"])
+        <= stimulus_times[3]
+        <= int(response_fault["triggered_elapsed_ms"])
+        <= int(response_fault["cleared_elapsed_ms"])
+        <= stimulus_times[4]
+    ):
+        raise RunnerError(code, "BSC-10 fault, barrier, and stimulus windows are inconsistent")
+
+
+def validate_bsc10_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "session_id",
+            "attempt_id",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "case_descriptor",
+            "case_descriptor_sha256",
+            "firmware",
+            "stimuli",
+            "faults",
+            "barriers",
+            "vbus_isolated",
+            "resets",
+            "facts",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-10 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role_id",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-10 {field} does not match the runner invocation")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-10 adapter schema is unsupported")
+    if type(record.get("hardware_observed")) is not bool:
+        raise RunnerError(code, "BSC-10 hardware observation flag is invalid")
+
+    case_descriptor = expected.get("case_descriptor")
+    role_descriptor = expected.get("role_descriptor")
+    if not isinstance(case_descriptor, dict) or not isinstance(role_descriptor, dict):
+        raise RunnerError(code, "BSC-10 pinned descriptor binding is invalid")
+    if record.get("case_descriptor") != case_descriptor:
+        raise RunnerError(code, "BSC-10 case descriptor does not match the pinned profile")
+    expected_descriptor_sha = bsc10_descriptor_commitment(case_descriptor)
+    if (
+        expected.get("case_descriptor_sha256") != expected_descriptor_sha
+        or record.get("case_descriptor_sha256") != expected_descriptor_sha
+    ):
+        raise RunnerError(code, "BSC-10 case descriptor digest is invalid")
+
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-10 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-10 completion")
+    if completed < started:
+        raise RunnerError(code, "BSC-10 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-10 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=999999):
+        raise RunnerError(code, "BSC-10 physical record postdates adapter execution")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {
+            "environment",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+            "build_kind",
+        },
+        code=code,
+        label="BSC-10 firmware",
+    )
+    build_kind = role_descriptor.get("build_kind")
+    expected_environment = (
+        BSC10_HIL_ENVIRONMENT if build_kind == "hil-fault" else BSC10_PRODUCTION_ENVIRONMENT
+    )
+    expected_hil = build_kind == "hil-fault"
+    if (
+        firmware.get("environment") != expected_environment
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or firmware.get("hil_fault_control_active") is not expected_hil
+        or firmware.get("build_kind") != build_kind
+    ):
+        raise RunnerError(code, "BSC-10 firmware role or target is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-10 firmware binary")
+
+    stimuli = validate_bsc10_stimuli(record.get("stimuli"), role_descriptor["stimulus_ids"])
+    faults = validate_bsc10_faults(record.get("faults"), role_descriptor["fault_ids"])
+    barriers = validate_bsc10_barriers(record.get("barriers"), role_descriptor["barrier_ids"])
+    if (
+        type(record.get("vbus_isolated")) is not bool
+        or record.get("vbus_isolated") is not role_descriptor["vbus_isolation_required"]
+    ):
+        raise RunnerError(code, "BSC-10 VBUS observation does not match the pinned descriptor")
+    validate_bsc10_resets(record.get("resets"), role_descriptor["reset_contract"])
+    validate_bsc10_facts(record.get("facts"), role_descriptor["facts"])
+    validate_bsc10_timeline(
+        stimuli=stimuli,
+        faults=faults,
+        barriers=barriers,
+        production_replay=bool(expected.get("production_replay")),
+        duration_ms=int((completed - started).total_seconds() * 1_000),
+    )
+
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC10_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-10 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field)
+        for field in BSC10_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-10 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-10 evidence binding"
+    )
+    if not secrets.compare_digest(binding, bsc10_record_commitment(record)):
+        raise RunnerError(code, "BSC-10 evidence binding does not match the record")
+    return record
+
+
+def run_bsc10_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC10_CASE_ID,
+        "--role-id",
+        str(expected["role_id"]),
+        "--case-descriptor-sha256",
+        str(expected["case_descriptor_sha256"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC10_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-10 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-10 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-10 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-10 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-10 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc10_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc10_case(args: argparse.Namespace) -> int:
+    case_descriptor = load_bsc10_case_descriptor()
+    if args.runs != case_descriptor["minimum_runs"]:
+        raise RunnerError("invalid_runs", "BSC-10 requires exactly one run per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-10 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-10 collection roles are atomic")
+    role_descriptor = bsc10_role_descriptor(
+        case_descriptor, production_replay=args.production_replay
+    )
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError("untrusted_override", "authoritative BSC-10 forbids an untracked rig adapter")
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-10 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-10 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-10 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-10 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc10_hardware(
+        args, Path(args.pio_command), case_descriptor
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-10 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-10 serial endpoint is not present")
+
+    role_id = role_descriptor["role_id"]
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc10-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role_id}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-10 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc10-{secrets.token_hex(16)}"
+    attempt_id = f"attempt-{secrets.token_hex(16)}"
+    descriptor_sha = bsc10_descriptor_commitment(case_descriptor)
+    expected: dict[str, object] = {
+        "case_id": BSC10_CASE_ID,
+        "role_id": role_id,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "case_descriptor": case_descriptor,
+        "case_descriptor_sha256": descriptor_sha,
+        "role_descriptor": role_descriptor,
+        "production_replay": args.production_replay,
+    }
+    require_unchanged_git_state(repository, git_state)
+    record = run_bsc10_adapter(
+        adapter=adapter,
+        repository=repository,
+        serial_port=serial_port,
+        expected=expected,
+        environment=os.environ.copy(),
+    )
+    require_unchanged_git_state(repository, git_state)
+    attempt_path = run_root / "attempt.json"
+    write_json_atomic(attempt_path, record)
+    firmware = record["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc10-wifi-enable-transaction",
+        "case_id": BSC10_CASE_ID,
+        "collection_role": role_id,
+        "case_descriptor_sha256": descriptor_sha,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC10_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": case_descriptor["minimum_runs"],
+        "runs_completed": 1,
+        "production_replay_required": bool(
+            case_descriptor["production_replay_required"] and not args.production_replay
+        ),
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+            "build_kind": firmware["build_kind"],
+        },
+        "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "artifact_sha256": {
+            "adapter_record": sha256_file(attempt_path),
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc10.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc10.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> int:
     """Fail closed at the tracked rig boundary for a registered case.
 
@@ -5467,10 +6120,6 @@ def run_bsc08_case(args: argparse.Namespace) -> int:
 
 def run_bsc09_case(args: argparse.Namespace) -> int:
     return run_registered_case_foundation(args, "BSC-09")
-
-
-def run_bsc10_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-10")
 
 
 def run_bsc12_case(args: argparse.Namespace) -> int:

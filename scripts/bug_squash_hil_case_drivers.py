@@ -98,7 +98,7 @@ _DRIVERS = (
     _driver(
         "BSC-10",
         status="implemented",
-        blockers=(_BUILD_BLOCKER, _BOARD_BLOCKER, _FAULT_BLOCKER, _RIG_BLOCKER),
+        blockers=(_BUILD_BLOCKER, _BOARD_BLOCKER, _RIG_BLOCKER),
     ),
     _driver(
         "BSC-11",

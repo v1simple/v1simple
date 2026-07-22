@@ -25,6 +25,11 @@ def fixture_root(temporary: Path) -> Path:
     (root / "src" / "modules").mkdir(parents=True)
     shutil.copy2(ROOT / "platformio.ini", root / "platformio.ini")
     shutil.copytree(ROOT / "src" / "modules" / "hil", root / "src" / "modules" / "hil")
+    for relative in checker.EXPECTED_BSC16_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    shutil.copy2(ROOT / checker.BSC16_BATTERY_MANAGER, root / checker.BSC16_BATTERY_MANAGER)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -219,6 +224,33 @@ def test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected() -> Non
         header.unlink()
         header.symlink_to(root / "platformio.ini")
         assert_error_contains(checker.validate_static(root), "must not be a symlink")
+
+
+def test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        hook = root / "src" / "modules" / "power" / "battery_bsc16_hil_fault_module.cpp"
+        original = hook.read_text(encoding="utf-8")
+        hook.write_text(
+            original.replace("#include <cstdio>\n", "#include <cstdio>\nvoid escaped() { digitalWrite(1, 1); }\n"),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "mutates hardware directly")
+
+        hook.write_text(original, encoding="utf-8")
+        manager = root / checker.BSC16_BATTERY_MANAGER
+        manager.write_text(
+            manager.read_text(encoding="utf-8").replace(
+                "adcInitialized = initADC();",
+                "adcInitialized = initADC(); // removed admission ordering token",
+                1,
+            ).replace(
+                "batteryBsc16HilFaultModule().beginAdcAdmission(",
+                "batteryBsc16HilFaultModule().missingAdmission(",
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "admission wiring must contain exactly one")
 
 
 def complete_artifacts(
@@ -596,6 +628,7 @@ def main() -> int:
         test_hil_environment_cannot_become_default_or_leak_to_production_flags,
         test_unguarded_and_elif_call_sites_are_rejected,
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
+        test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,
         test_bound_build_requires_clean_full_sha_and_exact_environment_commands,

@@ -20,10 +20,14 @@ WifiBsc02HilFaultModule::WifiBsc02HilFaultModule(HilFaultRuntimeOwner& owner,
                                                  WifiBsc02HilNextBootRecord& nextBootRecord,
                                                  const uint32_t currentBootSequence,
                                                  const WifiBsc02HilRuntime& runtime) noexcept
-    : owner_(owner), nextBootRecord_(nextBootRecord), currentBootSequence_(currentBootSequence), runtime_(runtime) {}
+    : owner_(owner),
+      nextBootStore_(owner, nextBootRecord, currentBootSequence, HilCaseId::Bsc02, HilFaultId::WifiApStartFailOnce,
+                     kNextBootMagic, runtime.persistentClockMs, runtime.context),
+      runtime_(runtime) {}
 
 void WifiBsc02HilFaultModule::configure(const WifiBsc02HilRuntime& runtime) noexcept {
     runtime_ = runtime;
+    nextBootStore_.configureClock(runtime.persistentClockMs, runtime.context);
 }
 
 void WifiBsc02HilFaultModule::configurePressurePlanner(
@@ -31,118 +35,17 @@ void WifiBsc02HilFaultModule::configurePressurePlanner(
     pressurePlanner_ = parameters;
 }
 
-void WifiBsc02HilFaultModule::crc32Byte(uint32_t& crc, const uint8_t value) noexcept {
-    crc ^= value;
-    for (uint8_t bit = 0; bit < 8; ++bit) {
-        const uint32_t mask = 0u - (crc & 1u);
-        crc = (crc >> 1u) ^ (0xEDB88320u & mask);
-    }
-}
-
-uint32_t WifiBsc02HilFaultModule::recordCrc32(const WifiBsc02HilNextBootRecord& record) noexcept {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (uint8_t shift = 0; shift < 32; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.magic >> shift));
-    }
-    for (uint8_t shift = 0; shift < 64; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.persistentStagedAtMs >> shift));
-        crc32Byte(crc, static_cast<uint8_t>(record.persistentDeadlineMs >> shift));
-    }
-    for (uint8_t shift = 0; shift < 16; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.schemaVersion >> shift));
-    }
-    crc32Byte(crc, record.caseId);
-    crc32Byte(crc, record.faultId);
-    for (uint8_t shift = 0; shift < 32; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.armSequence >> shift));
-    }
-    for (uint8_t shift = 0; shift < 32; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.targetBootSequence >> shift));
-    }
-    for (uint8_t shift = 0; shift < 32; shift += 8) {
-        crc32Byte(crc, static_cast<uint8_t>(record.stagedAtMs >> shift));
-        crc32Byte(crc, static_cast<uint8_t>(record.sessionDeadlineMs >> shift));
-        crc32Byte(crc, static_cast<uint8_t>(record.remainingSessionMs >> shift));
-    }
-    for (const uint8_t value : record.sessionHash) {
-        crc32Byte(crc, value);
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
 bool WifiBsc02HilFaultModule::stageNextBoot(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
                                             const uint32_t stagedAtMs) noexcept {
-    HilArmedFaultIdentity armed{};
-    const HilFaultSnapshot controllerState = owner_.controller().snapshot(HilFaultId::WifiApStartFailOnce);
-    const int32_t remaining = static_cast<int32_t>(sessionDeadlineMs - stagedAtMs);
-    if (identity.caseId != HilCaseId::Bsc02 || identity.faultId != HilFaultId::WifiApStartFailOnce ||
-        identity.armSequence == 0 || remaining <= 0 || runtime_.persistentClockMs == nullptr ||
-        controllerState.state != HilFaultState::Armed || controllerState.armSequence != identity.armSequence ||
-        static_cast<uint32_t>(remaining) > HilFaultController::kMaximumSessionDurationMs ||
-        !owner_.armedIdentity(identity.faultId, armed) || armed.caseId != identity.caseId ||
-        armed.faultId != identity.faultId || armed.armSequence != identity.armSequence ||
-        !(armed.sessionHash == identity.sessionHash)) {
-        return false;
-    }
-
-    WifiBsc02HilNextBootRecord staged{};
-    staged.magic = kNextBootMagic;
-    staged.schemaVersion = kNextBootSchemaVersion;
-    staged.caseId = static_cast<uint8_t>(identity.caseId);
-    staged.faultId = static_cast<uint8_t>(identity.faultId);
-    staged.armSequence = identity.armSequence;
-    staged.targetBootSequence = currentBootSequence_ + 1u;
-    if (staged.targetBootSequence == 0) {
-        staged.targetBootSequence = 1;
-    }
-    staged.sessionHash = identity.sessionHash.bytes;
-    staged.stagedAtMs = stagedAtMs;
-    staged.sessionDeadlineMs = sessionDeadlineMs;
-    staged.remainingSessionMs = static_cast<uint32_t>(remaining);
-    staged.persistentStagedAtMs = runtime_.persistentClockMs(runtime_.context);
-    staged.persistentDeadlineMs = staged.persistentStagedAtMs + staged.remainingSessionMs;
-    if (staged.persistentDeadlineMs < staged.persistentStagedAtMs) {
-        return false;
-    }
-    staged.crc32 = recordCrc32(staged);
-    nextBootRecord_ = staged;
-    return true;
+    return nextBootStore_.stage(identity, sessionDeadlineMs, stagedAtMs);
 }
 
 void WifiBsc02HilFaultModule::clearNextBoot() noexcept {
-    nextBootRecord_ = WifiBsc02HilNextBootRecord{};
+    nextBootStore_.clear();
 }
 
 HilFaultResult WifiBsc02HilFaultModule::restoreNextBoot(const bool maintenanceActive, const uint32_t nowMs) noexcept {
-    const WifiBsc02HilNextBootRecord candidate = nextBootRecord_;
-    nextBootRecord_ = WifiBsc02HilNextBootRecord{};
-    const uint64_t persistentNow =
-        runtime_.persistentClockMs == nullptr ? UINT64_MAX : runtime_.persistentClockMs(runtime_.context);
-    if (!maintenanceActive || candidate.magic != kNextBootMagic || candidate.schemaVersion != kNextBootSchemaVersion ||
-        candidate.caseId != static_cast<uint8_t>(HilCaseId::Bsc02) ||
-        candidate.faultId != static_cast<uint8_t>(HilFaultId::WifiApStartFailOnce) || candidate.armSequence == 0 ||
-        candidate.targetBootSequence == 0 || candidate.targetBootSequence != currentBootSequence_ ||
-        candidate.remainingSessionMs == 0 ||
-        candidate.remainingSessionMs > HilFaultController::kMaximumSessionDurationMs ||
-        static_cast<uint32_t>(candidate.sessionDeadlineMs - candidate.stagedAtMs) != candidate.remainingSessionMs ||
-        candidate.persistentDeadlineMs < candidate.persistentStagedAtMs ||
-        candidate.persistentDeadlineMs - candidate.persistentStagedAtMs != candidate.remainingSessionMs ||
-        persistentNow < candidate.persistentStagedAtMs || persistentNow >= candidate.persistentDeadlineMs ||
-        candidate.crc32 != recordCrc32(candidate)) {
-        return HilFaultResult::WrongState;
-    }
-
-    HilArmedFaultIdentity identity{};
-    identity.caseId = HilCaseId::Bsc02;
-    identity.faultId = HilFaultId::WifiApStartFailOnce;
-    identity.sessionHash.bytes = candidate.sessionHash;
-    identity.armSequence = candidate.armSequence;
-    const uint64_t remainingPersistentMs = candidate.persistentDeadlineMs - persistentNow;
-    if (remainingPersistentMs == 0 || remainingPersistentMs > candidate.remainingSessionMs ||
-        remainingPersistentMs > UINT32_MAX) {
-        return HilFaultResult::InvalidDeadline;
-    }
-    return owner_.restoreOneShot(identity, nowMs, static_cast<uint32_t>(remainingPersistentMs));
+    return nextBootStore_.restore(maintenanceActive, nowMs);
 }
 
 uint32_t WifiBsc02HilFaultModule::nextGeneration() noexcept {
@@ -681,14 +584,6 @@ bool deviceStartPressureTask(void*) noexcept {
     return xTaskCreatePinnedToCore(devicePressureTask, "bsc02_sram", 3072, nullptr, 1, nullptr, 0) == pdPASS;
 }
 
-bool deviceStageNextBoot(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
-                         const uint32_t stagedAtMs, void*) noexcept {
-    return wifiBsc02HilFaultModule().stageNextBoot(identity, sessionDeadlineMs, stagedAtMs);
-}
-
-void deviceClearNextBoot(void*) noexcept {
-    wifiBsc02HilFaultModule().clearNextBoot();
-}
 } // namespace
 #endif
 
@@ -724,7 +619,6 @@ void configureWifiBsc02HilDeviceRuntime(const uint32_t triggerFreeBytes,
     planner.allocationReserveBytes = WifiBsc02HilFaultModule::kPressureAllocationReserveBytes;
     wifiBsc02HilFaultModule().configurePressurePlanner(planner);
     hilFaultRuntimeOwner().configureSerial(deviceWriteEvidence, nullptr);
-    hilFaultRuntimeOwner().configureNextBoot(deviceStageNextBoot, deviceClearNextBoot, nullptr);
 #else
     (void)triggerFreeBytes;
     (void)triggerLargestBlockBytes;

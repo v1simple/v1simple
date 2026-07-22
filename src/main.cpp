@@ -56,6 +56,7 @@
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
 #include "modules/wifi/wifi_bsc02_hil_fault_module.h"
+#include "modules/power/battery_bsc16_hil_fault_module.h"
 #include "modules/hil/hil_fault_serial_module.h"
 #endif
 #include "modules/power/power_module.h"
@@ -118,6 +119,47 @@
 V1BLEClient bleClient;
 PacketParser parser;
 V1Display display;
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+namespace {
+bool stageWifiNextBootFault(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
+                            const uint32_t stagedAtMs, void*) noexcept {
+    return wifiBsc02HilFaultModule().stageNextBoot(identity, sessionDeadlineMs, stagedAtMs);
+}
+
+void clearWifiNextBootFault(void*) noexcept {
+    wifiBsc02HilFaultModule().clearNextBoot();
+}
+
+bool stageBatteryNextBootFault(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
+                               const uint32_t stagedAtMs, void*) noexcept {
+    return batteryBsc16HilFaultModule().stageNextBoot(identity, sessionDeadlineMs, stagedAtMs);
+}
+
+void clearBatteryNextBootFault(void*) noexcept {
+    batteryBsc16HilFaultModule().clearNextBoot();
+}
+
+HilNextBootFaultRouter& hilNextBootFaultRouter() noexcept {
+    static HilNextBootFaultRouter router;
+    return router;
+}
+
+bool configureHilNextBootFaultRouter() noexcept {
+    HilNextBootFaultRouter& router = hilNextBootFaultRouter();
+    const bool wifiConfigured = router.configure(0, {HilCaseId::Bsc02, HilFaultId::WifiApStartFailOnce,
+                                                     stageWifiNextBootFault, clearWifiNextBootFault, nullptr});
+    const bool batteryConfigured = router.configure(1, {HilCaseId::Bsc16, HilFaultId::BatteryAdcInitFailOnce,
+                                                        stageBatteryNextBootFault, clearBatteryNextBootFault, nullptr});
+    if (!wifiConfigured || !batteryConfigured) {
+        return false;
+    }
+    hilFaultRuntimeOwner().configureNextBoot(HilNextBootFaultRouter::stageCallback,
+                                             HilNextBootFaultRouter::clearCallback, &router);
+    return true;
+}
+} // namespace
+#endif
 TouchHandler touchHandler;
 SpeedSourceSelector speedSourceSelector;
 
@@ -558,8 +600,14 @@ void setup() {
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
     configureWifiBsc02HilDeviceRuntime(WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY,
                                        WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY);
+    configureBatteryBsc16HilDeviceRuntime();
+    if (!configureHilNextBootFaultRouter()) {
+        SerialLog.println("[HIL] ERROR: next-boot fault router configuration failed");
+    }
     const HilFaultResult restoredBsc02Fault = wifiBsc02HilFaultModule().restoreNextBoot(maintenanceBoot, millis());
     SerialLog.printf("[HIL] BSC-02 next-boot restore result=%u\n", static_cast<unsigned>(restoredBsc02Fault));
+    const HilFaultResult restoredBsc16Fault = batteryBsc16HilFaultModule().restoreNextBoot(millis());
+    SerialLog.printf("[HIL] BSC-16 next-boot restore result=%u\n", static_cast<unsigned>(restoredBsc16Fault));
 #endif
 
     esp_reset_reason_t resetReason = initializeResetReasonAndCadenceState(logBootCheckpoint);

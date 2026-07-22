@@ -80,7 +80,11 @@ _DRIVERS = (
     _driver("BSC-12"),
     _driver("BSC-13"),
     _driver("BSC-14"),
-    _driver("BSC-16"),
+    _driver(
+        "BSC-16",
+        status="implemented",
+        blockers=(_BUILD_BLOCKER, _BOARD_BLOCKER, _RIG_BLOCKER),
+    ),
 )
 
 

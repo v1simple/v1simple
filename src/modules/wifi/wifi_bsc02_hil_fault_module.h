@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "modules/hil/hil_fault_serial_module.h"
+#include "modules/hil/hil_next_boot_fault.h"
 
 struct WifiBsc02HilRuntime {
     using HeapMetric = uint32_t (*)(void*) noexcept;
@@ -51,21 +51,7 @@ enum class WifiBsc02HilPressureDecision : uint8_t {
     InvalidParameters,
 };
 
-struct WifiBsc02HilNextBootRecord {
-    uint32_t magic = 0;
-    uint16_t schemaVersion = 0;
-    uint8_t caseId = 0;
-    uint8_t faultId = 0;
-    uint32_t armSequence = 0;
-    uint32_t targetBootSequence = 0;
-    uint32_t stagedAtMs = 0;
-    uint32_t sessionDeadlineMs = 0;
-    uint32_t remainingSessionMs = 0;
-    uint64_t persistentStagedAtMs = 0;
-    uint64_t persistentDeadlineMs = 0;
-    std::array<uint8_t, 32> sessionHash{};
-    uint32_t crc32 = 0;
-};
+using WifiBsc02HilNextBootRecord = HilNextBootFaultRecord;
 
 struct WifiBsc02HilPressureSnapshot {
     uint32_t freeInternalBefore = 0;
@@ -91,7 +77,7 @@ struct WifiBsc02HilPressureSnapshot {
 class WifiBsc02HilFaultModule {
   public:
     static constexpr uint32_t kNextBootMagic = 0x42303248u;
-    static constexpr uint16_t kNextBootSchemaVersion = 1;
+    static constexpr uint16_t kNextBootSchemaVersion = HilNextBootFaultStore::kSchemaVersion;
     static constexpr uint32_t kApAutomaticReleaseMs = 1000;
     static constexpr uint32_t kPressureAutomaticReleaseMs = 5000;
     static constexpr size_t kPressureChunkBytes = 1024;
@@ -147,8 +133,6 @@ class WifiBsc02HilFaultModule {
         uint16_t phase = 0;
     };
 
-    static uint32_t recordCrc32(const WifiBsc02HilNextBootRecord& record) noexcept;
-    static void crc32Byte(uint32_t& crc, uint8_t value) noexcept;
     uint32_t nextGeneration() noexcept;
     void attemptApLifecycle(uint32_t nowMs) noexcept;
     void attemptPendingHeapStopObservation(uint32_t nowMs) noexcept;
@@ -161,8 +145,7 @@ class WifiBsc02HilFaultModule {
     void releasePressureAllocations() noexcept;
 
     HilFaultRuntimeOwner& owner_;
-    WifiBsc02HilNextBootRecord& nextBootRecord_;
-    uint32_t currentBootSequence_ = 0;
+    HilNextBootFaultStore nextBootStore_;
     WifiBsc02HilRuntime runtime_{};
     WifiBsc02HilPressurePlannerParameters pressurePlanner_{};
     ActiveIdentity apIdentity_{};

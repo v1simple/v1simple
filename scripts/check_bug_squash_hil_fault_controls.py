@@ -51,8 +51,14 @@ EXPECTED_HIL_FILES = {
     "src/modules/hil/hil_fault_controller.h",
     "src/modules/hil/hil_fault_serial_module.cpp",
     "src/modules/hil/hil_fault_serial_module.h",
+    "src/modules/hil/hil_next_boot_fault.h",
     "src/modules/hil/hil_ready_barrier.h",
 }
+EXPECTED_BSC16_PRODUCT_HIL_FILES = {
+    "src/modules/power/battery_bsc16_hil_fault_module.cpp",
+    "src/modules/power/battery_bsc16_hil_fault_module.h",
+}
+BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
 HIL_REFERENCE_RE = re.compile(
     r"(?:modules/hil/|hil_fault_|hil_ready_barrier|HilFault|HilReady|V1SIMPLE_HIL_FAULT_CONTROL)"
 )
@@ -69,6 +75,9 @@ FORBIDDEN_RUNTIME_RE = re.compile(
     r"\bfree\s*\(|\bstd::(?:vector|string|map|unordered_map)\b|\bString\b|"
     r"\bdelay\s*\(|\bvTaskDelay\s*\(|\bPreferences\b|\bnvs_[A-Za-z0-9_]*\b|"
     r"\bWebServer\b|\bHTTPClient\b|\bWiFiClient\b)"
+)
+BSC16_FORBIDDEN_HARDWARE_RE = re.compile(
+    r"\b(?:digitalRead|digitalWrite|gpio_[A-Za-z0-9_]*|latchPowerOn|pinMode|setTCA9554Pin|TwoWire)\b"
 )
 FORBIDDEN_BINARY_MARKERS = (
     b"V1HIL",
@@ -371,6 +380,50 @@ def validate_static(root: Path) -> list[str]:
             )
 
     source_root = root / "src"
+    for relative in sorted(EXPECTED_BSC16_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-16 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-16 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-16 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-16 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    battery_manager = root / BSC16_BATTERY_MANAGER
+    try:
+        battery_source = battery_manager.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-16 battery admission wiring is unavailable: {exc}")
+    else:
+        required_once = (
+            "batteryBsc16HilFaultModule().beginAdcAdmission(",
+            "batteryBsc16HilFaultModule().completeAdcAdmissionSuppression(",
+        )
+        for token in required_once:
+            if battery_source.count(token) != 1:
+                errors.append(f"BSC-16 battery admission wiring must contain exactly one {token}")
+        latch_index = battery_source.find("latchPowerOn()")
+        hook_index = battery_source.find(required_once[0])
+        completion_index = battery_source.find(required_once[1])
+        adc_index = battery_source.find("adcInitialized = initADC();", hook_index)
+        if (
+            latch_index < 0
+            or hook_index < 0
+            or completion_index < 0
+            or adc_index < 0
+            or not latch_index < hook_index < completion_index < adc_index
+        ):
+            errors.append("BSC-16 ADC fault hook must remain after latch initialization and before ADC admission")
+
     if source_root.is_dir():
         for path in sorted(source_root.rglob("*")):
             if path.is_symlink() or not path.is_file() or path.suffix not in COMPILED_SOURCE_SUFFIXES:
@@ -384,6 +437,8 @@ def validate_static(root: Path) -> list[str]:
                 errors.append(f"source could not be read while checking HIL call sites: {relative}: {exc}")
                 continue
             for index, line in enumerate(lines):
+                if OUTER_GUARD_END_RE.fullmatch(line) is not None:
+                    continue
                 if HIL_REFERENCE_RE.search(line) is not None and not line_is_guarded(lines, index):
                     errors.append(f"unguarded HIL call site: {relative}:{index + 1}")
     return errors

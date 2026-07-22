@@ -3,6 +3,9 @@
  */
 
 #include "battery_manager.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/power/battery_bsc16_hil_fault_module.h"
+#endif
 #include "battery_source_policy.h"
 #include "storage_manager.h"
 #include "audio_i2c_utils.h"
@@ -134,6 +137,10 @@ BatteryManager::BatteryManager()
 bool BatteryManager::begin() {
     BATTERY_LOGLN("[Battery] Initializing battery manager...");
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    bool hilLatchInitialized = false;
+#endif
+
     if (!tca9554WireMutex) {
         tca9554WireMutex = xSemaphoreCreateMutex();
         if (!tca9554WireMutex) {
@@ -150,6 +157,9 @@ bool BatteryManager::begin() {
         Serial.println("[Battery] WARN: TCA9554 init failed - power latch unavailable");
     } else {
         if (latchPowerOn()) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+            hilLatchInitialized = true;
+#endif
             BATTERY_LOGLN("[Battery] Power latch engaged - device will stay on after button release");
         } else {
             Serial.println("[Battery] WARN: Power latch verification failed!");
@@ -182,8 +192,25 @@ bool BatteryManager::begin() {
     Serial.printf("[Battery] Power detection: classification=%s reported=%s\n",
                   battery_source_policy::sourceName(sourceState_.classification), onBattery_ ? "BATTERY" : "USB");
 
-    // Initialize ADC for battery voltage reading
-    if (!initADC()) {
+    // Initialize ADC for battery voltage reading. The HIL-only admission seam
+    // runs after the power latch and source policy but before any ADC handle is
+    // allocated. Production builds compile this branch out completely.
+    bool adcInitialized = false;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    BatteryBsc16HilAdcAdmission hilAdcAdmission{};
+    hilAdcAdmission.latchInitialized = hilLatchInitialized;
+    hilAdcAdmission.sourceClassification = sourceState_.classification;
+    hilAdcAdmission.powerButtonWillBeEnabled = onBattery_;
+    const uint32_t hilAdcNowMs = static_cast<uint32_t>(millis());
+    if (batteryBsc16HilFaultModule().beginAdcAdmission(hilAdcAdmission, hilAdcNowMs)) {
+        batteryBsc16HilFaultModule().completeAdcAdmissionSuppression(static_cast<uint32_t>(millis()));
+    } else {
+        adcInitialized = initADC();
+    }
+#else
+    adcInitialized = initADC();
+#endif
+    if (!adcInitialized) {
         Serial.println("[Battery] WARN: ADC init failed, voltage monitoring disabled");
     }
 

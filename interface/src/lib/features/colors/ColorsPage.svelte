@@ -478,7 +478,7 @@
 
         <ColorFieldsCard
             title="ALP"
-            subtitle="Laser jammer badge colors — matches control pad LED states."
+            subtitle="ALP laser-alert badge colors — matches control pad LED states."
             fields={ALP_BADGE_FIELDS}
             gridClass="grid grid-cols-2 md:grid-cols-4 gap-4"
             defaultSwatchSize="md"

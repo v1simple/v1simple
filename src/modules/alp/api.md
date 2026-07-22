@@ -1,6 +1,6 @@
 # alp Module API
 
-ALP (AL Priority) integration — listens to the laser jammer's serial protocol, decodes laser alert events (DLI / LID / Targeted / Warm-Up), exposes them to the display pipeline, and publishes a status surface for the HTTP API. Coordinates with V1 alert handling but is structurally independent from the V1 BLE pipeline.
+ALP (AL Priority) integration — listens to the AL Priority unit's serial protocol, decodes laser alert events (DLI / LID / Targeted / Warm-Up), exposes them to the display pipeline, and publishes a status surface for the HTTP API. Coordinates with V1 alert handling but is structurally independent from the V1 BLE pipeline.
 
 The module is the authoritative source for laser-direction and laser-gun classification — V1 produces a generic "laser band" alert; ALP refines it with direction (Front/Side/Rear) and gun identification (Echo, Stealth, Photo, etc.).
 

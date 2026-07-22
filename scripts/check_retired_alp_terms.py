@@ -67,6 +67,9 @@ RETIRED_PATTERNS = [
     (re.compile(r"\bscan mode\b", re.IGNORECASE), "'scan mode'"),
     (re.compile(r"\barmed mode\b", re.IGNORECASE), "'armed mode'"),
     (re.compile(r"\bjam mode\b", re.IGNORECASE), "'jam mode'"),
+    # V1Simple only DISPLAYS AL Priority laser alerts; it does not jam. "jammer"
+    # is retired in favor of "ALP" / "laser alert" (2026-07 terminology fix).
+    (re.compile(r"\bjammer\b", re.IGNORECASE), "'jammer' (V1Simple shows ALP laser alerts; it does not jam — use 'ALP'/'laser alert')"),
     (re.compile(r"\bobserve mode\b", re.IGNORECASE), "'observe mode'"),
     (re.compile(r"\bself[- ]test\b", re.IGNORECASE), "'self-test' (use 'Warm-Up')"),
     # Narrowly-targeted patterns for known leak forms that escaped word-boundary

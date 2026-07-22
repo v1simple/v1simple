@@ -8,4 +8,4 @@ For design, bug fixes, functionality, refactors, quality work, tests, reviews, o
 - Test in the layer that owns the behavior. Every bug fix needs a regression test at the lowest practical layer that reproduces the failure; add boundary or integration coverage when the defect crosses layers.
 - Treat existing contracts, semantic guards, hardware constraints, and release evidence as design inputs. Do not weaken a guard merely to make a change pass.
 - Keep changes scoped and inspect the final diff for accidental private context or unrelated edits.
-- The public remote is main-only (`main` is the only remote branch). Never push a public development branch; development branches remain local and are preserved by the private workflow.
+- Public publication is main-only: `main` is the only branch people or project tooling may push. GitHub-managed Dependabot updates may create transient branches under `dependabot/github_actions/`; no other non-`main` remote branches are allowed. Never push a public development branch; development branches remain local and are preserved by the private workflow.

@@ -13,6 +13,6 @@ description: Apply V1Simple's repository contracts and optional private engineer
 4. Implement without weakening safety or quality checks. Keep the public repository fully buildable and testable without the private companion.
 5. Test in the owning layer. For a bug fix, add a regression test at the lowest practical layer that fails for the defect; add boundary or integration coverage when behavior crosses layers. Run the relevant existing guard plus proportionate broader checks.
 6. Review the final diff for behavioral regressions, unrelated changes, and private leakage. Never copy private documents, excerpts, internal-only paths, or operational data into public artifacts.
-7. For releases, require the repository's release evidence and readiness gates. Never push a public development branch; the public remote remains `main`-only.
+7. For releases, require the repository's release evidence and readiness gates. Never push a public development branch; public publication remains `main`-only. Only GitHub-managed Dependabot update branches under `dependabot/github_actions/` may coexist transiently on the public remote.
 
 Report the context status, design constraints applied, tests run, and any remaining risk in the handoff.

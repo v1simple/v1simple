@@ -537,7 +537,7 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
 
     if (needsSave) {
         if (persistSettingsAtomically()) {
-            bumpBackupRevision();
+            noteNvsCommitWithoutBackupIntent();
             Serial.println("[Settings] Cleared invalid profile references and saved");
         } else {
             Serial.println("[Settings] ERROR: Failed to persist cleared profile references");

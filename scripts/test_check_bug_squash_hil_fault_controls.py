@@ -49,6 +49,10 @@ def fixture_root(temporary: Path) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
+    for relative in checker.EXPECTED_BSC14_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     shutil.copy2(ROOT / checker.BSC16_BATTERY_MANAGER, root / checker.BSC16_BATTERY_MANAGER)
     shutil.copy2(ROOT / checker.BSC04_MAIN, root / checker.BSC04_MAIN)
     connection_state = root / checker.BSC05_CONNECTION_STATE
@@ -58,6 +62,10 @@ def fixture_root(temporary: Path) -> Path:
     shutil.copy2(ROOT / checker.BSC13_RUNTIME, root / checker.BSC13_RUNTIME)
     shutil.copy2(ROOT / checker.BSC10_WIFI_CLIENT, root / checker.BSC10_WIFI_CLIENT)
     shutil.copy2(ROOT / checker.BSC10_TRANSACTION, root / checker.BSC10_TRANSACTION)
+    for relative in (checker.BSC14_TOUCH_UI, checker.BSC14_TAP_GESTURE):
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -278,6 +286,44 @@ def test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
             encoding="utf-8",
         )
         assert_error_contains(checker.validate_static(root), "admission wiring must contain exactly one")
+
+
+def test_bsc14_hook_rejects_blocking_mutex_and_missing_gesture_wiring() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        hook = root / "src" / "modules" / "storage" / "storage_bsc14_hil_fault_module.cpp"
+        original = hook.read_text(encoding="utf-8")
+        hook.write_text(original.replace(", 0) == pdTRUE", ", portMAX_DELAY) == pdTRUE", 1), encoding="utf-8")
+        errors = checker.validate_static(root)
+        assert_error_contains(errors, "real mutex holder must contain exactly one")
+        assert_error_contains(errors, "acquisition must remain nonblocking")
+
+        hook.write_text(original.replace("xSemaphoreGive(", "missingSemaphoreGive(", 1), encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "real mutex holder must contain exactly one")
+
+        hook.write_text(original, encoding="utf-8")
+        touch = root / checker.BSC14_TOUCH_UI
+        touch.write_text(
+            touch.read_text(encoding="utf-8").replace(
+                "storageBsc14HilFaultModule().recordGesturePersisted(StorageBsc14Gesture::SliderExit,",
+                "storageBsc14HilFaultModule().missingSliderObservation(StorageBsc14Gesture::SliderExit,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "gesture routing must contain exactly one")
+
+        touch.write_text((ROOT / checker.BSC14_TOUCH_UI).read_text(encoding="utf-8"), encoding="utf-8")
+        main = root / checker.BSC14_MAIN
+        main.write_text(
+            main.read_text(encoding="utf-8").replace(
+                "configureStorageBsc14HilDeviceRuntime(storageManager.getSDMutex())",
+                "missingStorageBsc14HilDeviceRuntime(storageManager.getSDMutex())",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "SD mutex wiring must contain exactly one")
 
 
 def test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
@@ -802,6 +848,7 @@ def main() -> int:
         test_unguarded_and_elif_call_sites_are_rejected,
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
         test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
+        test_bsc14_hook_rejects_blocking_mutex_and_missing_gesture_wiring,
         test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_bsc05_hook_rejects_missing_or_misordered_generation_wiring,
         test_bsc06_hook_rejects_missing_or_preclaim_transport_routing,

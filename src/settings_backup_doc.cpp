@@ -700,7 +700,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             Serial.println("[Settings] ERROR: Failed to persist restored settings_");
             return result;
         }
-        bumpBackupRevision();
+        noteNvsCommitWithoutBackupIntent();
     }
 
     // Phase 5 done: persist finished; hand the caller a fresh window to build

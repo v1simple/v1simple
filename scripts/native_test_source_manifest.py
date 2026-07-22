@@ -64,6 +64,10 @@ LINKED_NATIVE_TEST_SPECS = {
         sources=("src/modules/obd/obd_physical_link_preownership_barrier.cpp",),
         define="V1_LINKED_TEST_OBD_PHYSICAL_LINK_PREOWNERSHIP_BARRIER",
     ),
+    "test_sd_mutex_hold_lifecycle": LinkedNativeTestSpec(
+        sources=("src/modules/storage/sd_mutex_hold_lifecycle.cpp",),
+        define="V1_LINKED_TEST_SD_MUTEX_HOLD_LIFECYCLE",
+    ),
     "test_wifi_scan_result_owner": LinkedNativeTestSpec(
         sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),
         define="V1_LINKED_TEST_WIFI_SCAN_RESULT_OWNER",

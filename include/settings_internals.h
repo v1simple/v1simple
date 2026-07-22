@@ -55,12 +55,17 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
 bool parseBoolVariant(const JsonVariantConst& value, bool& out);
 
 struct SerializedSettingsBackupPayload {
+    using MarkCompleted = bool (*)(uint32_t, void*);
+
     char* data = nullptr;
     size_t capacity = 0;
     size_t length = 0;
     bool inPsram = false;
     bool protectExistingBackupFromProvisionalNvs = false;
     uint32_t snapshotMs = 0;
+    uint32_t backupRevision = 0;
+    MarkCompleted markCompleted = nullptr;
+    void* completionContext = nullptr;
     int profilesBackedUp = 0;
 };
 

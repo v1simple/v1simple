@@ -63,6 +63,7 @@
 #include "modules/power/battery_bsc16_hil_fault_module.h"
 #include "modules/hil/hil_fault_serial_module.h"
 #include "modules/system/connection_bsc04_hil_fault_module.h"
+#include "modules/storage/storage_bsc14_hil_fault_module.h"
 #endif
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
@@ -613,6 +614,9 @@ void setup() {
     configureBatteryBsc16HilDeviceRuntime();
     configureConnectionBsc04HilDeviceRuntime();
     configureWifiBsc10HilDeviceRuntime();
+    if (!configureStorageBsc14HilDeviceRuntime(storageManager.getSDMutex())) {
+        SerialLog.println("[HIL] ERROR: BSC-14 SD mutex holder task configuration failed");
+    }
     configureBleBsc05HilDeviceRuntime(
         [](const uint8_t* data, const size_t length, const uint16_t characteristicUuid,
            const uint32_t sessionGeneration,
@@ -653,6 +657,7 @@ void loop() {
     bleBsc05HilFaultModule().service(hilNowMs);
     obdBsc06HilFaultModule().service(hilNowMs);
     obdBsc13HilFaultModule().service(hilNowMs);
+    storageBsc14HilFaultModule().service(hilNowMs);
 #endif
     if (mainRuntimeState.maintenanceBootActive) {
         audio_process_amp_timeout();

@@ -2,6 +2,9 @@
 
 #include "../perf/debug_macros.h"
 #include "audio_beep.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/storage/storage_bsc14_hil_fault_module.h"
+#endif
 
 namespace {
 constexpr int kObdBadgeFlushX = 360;
@@ -80,9 +83,17 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
                 lastShortPressReleaseMs_ = 0; // Reset: next press can't triple-trigger
                 if (brightnessAdjustMode_)
                     exitAdjustModeAndSave();
-                if (settings_)
+                if (settings_) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+                    const uint32_t previousRevision = settings_->backupRevision();
+#endif
                     settings_->setStealthEnabled(!settings_->get().stealthEnabled,
                                                  SettingsPersistMode::ImmediateNvsDeferredBackup);
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+                    storageBsc14HilFaultModule().recordGesturePersisted(
+                        StorageBsc14Gesture::StealthDoublePress, previousRevision, settings_->backupRevision(), nowMs);
+#endif
+                }
                 if (callbacks_.restoreDisplay)
                     callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
             } else {
@@ -142,7 +153,18 @@ void TouchUiModule::exitAdjustModeAndSave() {
     brightnessAdjustMode_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);
-    settings_->saveDeferredBackup();
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    const uint32_t previousRevision = settings_->backupRevision();
+#endif
+    const bool persisted = settings_->saveDeferredBackup();
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    if (persisted) {
+        storageBsc14HilFaultModule().recordGesturePersisted(StorageBsc14Gesture::SliderExit, previousRevision,
+                                                            settings_->backupRevision(), millis());
+    }
+#else
+    (void)persisted;
+#endif
     audio_set_volume(volumeAdjustValue_);
     display_->hideBrightnessSlider();
     if (callbacks_.restoreDisplay)

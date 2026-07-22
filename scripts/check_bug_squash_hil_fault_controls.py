@@ -78,6 +78,10 @@ EXPECTED_BSC10_PRODUCT_HIL_FILES = {
     "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
     "src/modules/wifi/wifi_bsc10_hil_fault_module.h",
 }
+EXPECTED_BSC14_PRODUCT_HIL_FILES = {
+    "src/modules/storage/storage_bsc14_hil_fault_module.cpp",
+    "src/modules/storage/storage_bsc14_hil_fault_module.h",
+}
 BSC04_MAIN = "src/main.cpp"
 BSC05_MAIN = "src/main.cpp"
 BSC05_CONNECTION_STATE = "src/modules/ble/connection_state_module.cpp"
@@ -85,6 +89,9 @@ BSC06_TRANSPORT = "src/modules/obd/obd_runtime_transport.cpp"
 BSC13_RUNTIME = "src/modules/obd/obd_runtime_module.cpp"
 BSC10_WIFI_CLIENT = "src/wifi_client.cpp"
 BSC10_TRANSACTION = "src/modules/wifi/wifi_client_enable_transaction.cpp"
+BSC14_MAIN = "src/main.cpp"
+BSC14_TOUCH_UI = "src/modules/touch/touch_ui_module.cpp"
+BSC14_TAP_GESTURE = "src/modules/touch/tap_gesture_module.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
 HIL_REFERENCE_RE = re.compile(
     r"(?:modules/hil/|hil_fault_|hil_ready_barrier|HilFault|HilReady|V1SIMPLE_HIL_FAULT_CONTROL)"
@@ -118,6 +125,8 @@ FORBIDDEN_BINARY_MARKERS = (
     b"wifi-enable-admission-fail-once",
     b"obd-physical-link-preownership-barrier-once",
     b"sd-mutex-hold",
+    b"StorageBsc14HilFaultModule",
+    b"bsc14_sd_hold",
     b"battery-adc-init-fail-once",
 )
 
@@ -675,6 +684,87 @@ def validate_static(root: Path) -> list[str]:
                 errors.append(f"BSC-10 WiFi admission wiring must contain exactly one {token}")
         if wifi_client_source.find(callback_token) >= wifi_client_source.find(attempt_callback_token):
             errors.append("BSC-10 WiFi admission callback must be installed before lifecycle mutation")
+
+    bsc14_sources: dict[str, str] = {}
+    for relative in sorted(EXPECTED_BSC14_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-14 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-14 product HIL source could not be read: {relative}: {exc}")
+            continue
+        bsc14_sources[relative] = text
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-14 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-14 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    try:
+        bsc14_main_source = (root / BSC14_MAIN).read_text(encoding="utf-8")
+        bsc14_touch_source = (root / BSC14_TOUCH_UI).read_text(encoding="utf-8")
+        bsc14_tap_source = (root / BSC14_TAP_GESTURE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-14 SD mutex and gesture wiring is unavailable: {exc}")
+    else:
+        configure_token = "configureStorageBsc14HilDeviceRuntime(storageManager.getSDMutex())"
+        service_token = "storageBsc14HilFaultModule().service(hilNowMs);"
+        for token in (configure_token, service_token):
+            if bsc14_main_source.count(token) != 1:
+                errors.append(f"BSC-14 SD mutex wiring must contain exactly one {token}")
+
+        slider_persist = "const bool persisted = settings_->saveDeferredBackup();"
+        slider_route = (
+            "storageBsc14HilFaultModule().recordGesturePersisted(StorageBsc14Gesture::SliderExit,"
+        )
+        stealth_persist = "settings_->setStealthEnabled("
+        stealth_route = (
+            "StorageBsc14Gesture::StealthDoublePress, previousRevision, settings_->backupRevision(), nowMs);"
+        )
+        profile_persist = "settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup);"
+        profile_route = (
+            "storageBsc14HilFaultModule().recordGesturePersisted(StorageBsc14Gesture::ProfileTripleTap,"
+        )
+        for token, source in (
+            (slider_persist, bsc14_touch_source),
+            (slider_route, bsc14_touch_source),
+            (stealth_route, bsc14_touch_source),
+            (profile_persist, bsc14_tap_source),
+            (profile_route, bsc14_tap_source),
+        ):
+            if source.count(token) != 1:
+                errors.append(f"BSC-14 gesture routing must contain exactly one {token}")
+        if bsc14_touch_source.count(stealth_persist) < 1:
+            errors.append(f"BSC-14 gesture routing must contain {stealth_persist}")
+        if bsc14_touch_source.find(slider_persist) >= bsc14_touch_source.find(slider_route):
+            errors.append("BSC-14 slider observation must follow successful NVS persistence")
+        stealth_route_index = bsc14_touch_source.find(stealth_route)
+        stealth_persist_index = bsc14_touch_source.rfind(stealth_persist, 0, stealth_route_index)
+        if stealth_route_index < 0 or stealth_persist_index < 0:
+            errors.append("BSC-14 stealth observation must follow immediate NVS persistence")
+        if bsc14_tap_source.find(profile_persist) >= bsc14_tap_source.find(profile_route):
+            errors.append("BSC-14 profile observation must follow immediate NVS persistence")
+
+    bsc14_device_source = bsc14_sources.get(
+        "src/modules/storage/storage_bsc14_hil_fault_module.cpp", ""
+    )
+    device_tokens = (
+        "xSemaphoreTake(static_cast<SemaphoreHandle_t>(context), 0)",
+        "xSemaphoreGive(static_cast<SemaphoreHandle_t>(context));",
+        "runtime.mutex = {deviceTryAcquire, deviceRelease, sdMutex};",
+        "while (storageBsc14HilFaultModule().holderTaskTick(millis()))",
+        "xTaskCreatePinnedToCore(deviceHolderTask, \"bsc14_sd_hold\"",
+    )
+    for token in device_tokens:
+        if bsc14_device_source.count(token) != 1:
+            errors.append(f"BSC-14 real mutex holder must contain exactly one {token}")
+    if "portMAX_DELAY" in bsc14_device_source:
+        errors.append("BSC-14 real mutex holder acquisition must remain nonblocking")
 
     if source_root.is_dir():
         for path in sorted(source_root.rglob("*")):

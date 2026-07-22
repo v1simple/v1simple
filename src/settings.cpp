@@ -14,6 +14,7 @@
  */
 
 #include "settings_internals.h"
+#include "settings_backup_revision.h"
 
 // SD backup file path
 const char* SETTINGS_BACKUP_PATH = "/v1simple_backup.json";
@@ -114,12 +115,21 @@ SettingsManager settingsManager;
 
 SettingsManager::SettingsManager() {}
 
-void SettingsManager::bumpBackupRevision() {
-    if (backupRevisionCounter_ == UINT32_MAX) {
-        backupRevisionCounter_ = 1;
-        return;
+void SettingsManager::noteNvsCommitWithoutBackupIntent() {
+    backupRevisionCounter_ = settings_backup_revision::next(backupRevisionCounter_);
+}
+
+bool SettingsManager::persistSettingsWithBackupIntent() {
+    const uint32_t previousCounter = backupRevisionCounter_;
+    const uint32_t previousDue = backupDueRevision_;
+    backupRevisionCounter_ = settings_backup_revision::next(backupRevisionCounter_);
+    backupDueRevision_ = backupRevisionCounter_;
+    if (persistSettingsAtomically()) {
+        return true;
     }
-    backupRevisionCounter_++;
+    backupRevisionCounter_ = previousCounter;
+    backupDueRevision_ = previousDue;
+    return false;
 }
 
 void SettingsManager::clearDeferredPersistState() {
@@ -429,24 +439,37 @@ void SettingsManager::load() {
     settings_.gpsLogUtcToPerf = preferences_.getBool(kNvsGpsLogUtcToPerf, true);
     settings_.gpsLogUtcToAlp = preferences_.getBool(kNvsGpsLogUtcToAlp, true);
 
+    backupDueRevision_ = preferences_.getUInt(kNvsBackupDueRevision, 0);
     preferences_.end();
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);
+
+    uint32_t completedRevision = 0;
+    Preferences meta;
+    if (meta.begin(SETTINGS_NS_META, true)) {
+        completedRevision = meta.getUInt(kNvsBackupCompletedRevision, 0);
+        meta.end();
+    }
+    backupRevisionCounter_ = settings_backup_revision::resumeCounter(backupDueRevision_, completedRevision);
+    if (settings_backup_revision::pending(backupDueRevision_, completedRevision)) {
+        requestDeferredBackupFromCurrentState();
+    }
 
     Serial.printf("[Settings] OK wifi=%s proxy=%s bright=%d autoPush=%s\n", settings_.enableWifi ? "on" : "off",
                   settings_.proxyBLE ? "on" : "off", settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
 }
 
 void SettingsManager::save() {
-    if (!persistSettingsAtomically()) {
+    if (!persistSettingsWithBackupIntent()) {
         return;
     }
 
     clearDeferredPersistState();
-    bumpBackupRevision();
     Serial.println("Settings saved atomically");
 
     // Backup display settings to SD card (survives reflash)
-    backupToSD();
+    if (!backupToSD()) {
+        requestDeferredBackupFromCurrentState();
+    }
 }
 
 void SettingsManager::requestDeferredPersist() {
@@ -476,7 +499,7 @@ void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
         return;
     }
 
-    if (!persistSettingsAtomically()) {
+    if (!persistSettingsWithBackupIntent()) {
         deferredPersistPending_ = true;
         deferredPersistRetryScheduled_ = true;
         deferredPersistNextAttemptAtMs_ = nowMs + SETTINGS_DEFERRED_PERSIST_RETRY_BACKOFF_MS;
@@ -484,7 +507,6 @@ void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
     }
 
     clearDeferredPersistState();
-    bumpBackupRevision();
     Serial.println("Settings saved atomically");
     requestDeferredBackupFromCurrentState();
 }

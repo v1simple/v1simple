@@ -616,6 +616,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     if (restorePending_) {
         written += prefs.putBool(kNvsRestorePending, true);
     }
+    written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
     written += prefs.putBool(kNvsEnableWifi, settings_.enableWifi);
     // wifiMode is not persisted: it is always derived from wifiClientEnabled
     // in load() (and applyBackupDocument).  Writing it was a no-op read-back.

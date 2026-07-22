@@ -116,19 +116,25 @@ SettingsManager settingsManager;
 SettingsManager::SettingsManager() {}
 
 void SettingsManager::noteNvsCommitWithoutBackupIntent() {
-    backupRevisionCounter_ = settings_backup_revision::next(backupRevisionCounter_);
+    backupCompletedRevision_ = readBackupRevisionCompleted();
+    backupRevisionCounter_ =
+        settings_backup_revision::nextFresh(backupRevisionCounter_, backupDueRevision_, backupCompletedRevision_);
 }
 
 bool SettingsManager::persistSettingsWithBackupIntent() {
     const uint32_t previousCounter = backupRevisionCounter_;
     const uint32_t previousDue = backupDueRevision_;
-    backupRevisionCounter_ = settings_backup_revision::next(backupRevisionCounter_);
+    const uint32_t previousCompleted = backupCompletedRevision_;
+    backupCompletedRevision_ = readBackupRevisionCompleted();
+    backupRevisionCounter_ =
+        settings_backup_revision::nextFresh(backupRevisionCounter_, backupDueRevision_, backupCompletedRevision_);
     backupDueRevision_ = backupRevisionCounter_;
     if (persistSettingsAtomically()) {
         return true;
     }
     backupRevisionCounter_ = previousCounter;
     backupDueRevision_ = previousDue;
+    backupCompletedRevision_ = previousCompleted;
     return false;
 }
 
@@ -443,14 +449,9 @@ void SettingsManager::load() {
     preferences_.end();
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);
 
-    uint32_t completedRevision = 0;
-    Preferences meta;
-    if (meta.begin(SETTINGS_NS_META, true)) {
-        completedRevision = meta.getUInt(kNvsBackupCompletedRevision, 0);
-        meta.end();
-    }
-    backupRevisionCounter_ = settings_backup_revision::resumeCounter(backupDueRevision_, completedRevision);
-    if (settings_backup_revision::pending(backupDueRevision_, completedRevision)) {
+    backupCompletedRevision_ = readBackupRevisionCompleted();
+    backupRevisionCounter_ = settings_backup_revision::resumeCounter(backupDueRevision_, backupCompletedRevision_);
+    if (settings_backup_revision::pending(backupDueRevision_, backupCompletedRevision_)) {
         requestDeferredBackupFromCurrentState();
     }
 

@@ -993,12 +993,14 @@ class SettingsManager {
     Preferences preferences_;
     uint32_t backupRevisionCounter_ = 1;
     uint32_t backupDueRevision_ = 0;
+    uint32_t backupCompletedRevision_ = 0;
     bool deferredPersistPending_ = false;
     bool deferredPersistRetryScheduled_ = false;
     uint32_t deferredPersistNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
     void noteNvsCommitWithoutBackupIntent();
     bool persistSettingsWithBackupIntent();
+    static uint32_t readBackupRevisionCompleted();
     static bool markBackupRevisionCompleted(uint32_t revision);
     static bool markDeferredBackupRevisionCompleted(uint32_t revision, void* context);
     void clearDeferredPersistState();

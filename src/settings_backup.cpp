@@ -465,11 +465,22 @@ bool SettingsManager::backupToSD() {
     if (!markBackupRevisionCompleted(snapshotRevision)) {
         return false;
     }
+    backupCompletedRevision_ = snapshotRevision;
 
     Serial.printf("[Settings] Full backup saved to SD card (%d profiles)\n", profilesBackedUp);
     Serial.printf("[Settings] Backed up: slot0Mode=%d, slot1Mode=%d, slot2Mode=%d\n", settings_.slot0_default.mode,
                   settings_.slot1_highway.mode, settings_.slot2_comfort.mode);
     return true;
+}
+
+uint32_t SettingsManager::readBackupRevisionCompleted() {
+    Preferences meta;
+    if (!meta.begin(SETTINGS_NS_META, true)) {
+        return 0;
+    }
+    const uint32_t revision = meta.getUInt(kNvsBackupCompletedRevision, 0);
+    meta.end();
+    return revision;
 }
 
 bool SettingsManager::markBackupRevisionCompleted(const uint32_t revision) {

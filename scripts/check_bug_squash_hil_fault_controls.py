@@ -66,6 +66,10 @@ EXPECTED_BSC05_PRODUCT_HIL_FILES = {
     "src/modules/ble/ble_bsc05_hil_fault_module.cpp",
     "src/modules/ble/ble_bsc05_hil_fault_module.h",
 }
+EXPECTED_BSC06_PRODUCT_HIL_FILES = {
+    "src/modules/obd/obd_bsc06_hil_fault_module.cpp",
+    "src/modules/obd/obd_bsc06_hil_fault_module.h",
+}
 EXPECTED_BSC10_PRODUCT_HIL_FILES = {
     "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
     "src/modules/wifi/wifi_bsc10_hil_fault_module.h",
@@ -73,6 +77,7 @@ EXPECTED_BSC10_PRODUCT_HIL_FILES = {
 BSC04_MAIN = "src/main.cpp"
 BSC05_MAIN = "src/main.cpp"
 BSC05_CONNECTION_STATE = "src/modules/ble/connection_state_module.cpp"
+BSC06_TRANSPORT = "src/modules/obd/obd_runtime_transport.cpp"
 BSC10_WIFI_CLIENT = "src/wifi_client.cpp"
 BSC10_TRANSACTION = "src/modules/wifi/wifi_client_enable_transaction.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
@@ -489,6 +494,52 @@ def validate_static(root: Path) -> list[str]:
             errors.append("BSC-05 new-session signal must follow queue generation admission")
         if connection_state_source.find(queue_close) >= connection_state_source.find(record_close):
             errors.append("BSC-05 old-session signal must follow queue closure")
+
+    for relative in sorted(EXPECTED_BSC06_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-06 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-06 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-06 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-06 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    try:
+        bsc06_main_source = (root / BSC04_MAIN).read_text(encoding="utf-8")
+        bsc06_transport_source = (root / BSC06_TRANSPORT).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-06 transport operation barrier wiring is unavailable: {exc}")
+    else:
+        service_token = "obdBsc06HilFaultModule().service(hilNowMs);"
+        configure_token = "configureObdBsc06HilDeviceRuntime("
+        state_token = "request.runtimeStateCode = static_cast<uint8_t>(state_);"
+        claim_token = "if (!sObdTransport.requestEpoch.tryClaim(request.dispatchEpoch))"
+        route_token = "obdBsc06HilFaultModule().routeOperation("
+        for token, source in (
+            (service_token, bsc06_main_source),
+            (configure_token, bsc06_transport_source),
+            (state_token, bsc06_transport_source),
+            (claim_token, bsc06_transport_source),
+            (route_token, bsc06_transport_source),
+        ):
+            if source.count(token) != 1:
+                errors.append(f"BSC-06 operation barrier wiring must contain exactly one {token}")
+        claim_index = bsc06_transport_source.find(claim_token)
+        route_index = bsc06_transport_source.find(route_token)
+        operation_index = bsc06_transport_source.find("switch (request.op)", route_index)
+        if min(claim_index, route_index, operation_index) < 0 or not claim_index < route_index < operation_index:
+            errors.append(
+                "BSC-06 operation barrier hook must remain after request-epoch claim and before GATT dispatch"
+            )
 
     for relative in sorted(EXPECTED_BSC16_PRODUCT_HIL_FILES):
         path = root / relative

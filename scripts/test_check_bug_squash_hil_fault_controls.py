@@ -33,6 +33,10 @@ def fixture_root(temporary: Path) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
+    for relative in checker.EXPECTED_BSC06_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     for relative in checker.EXPECTED_BSC16_PRODUCT_HIL_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +50,7 @@ def fixture_root(temporary: Path) -> Path:
     connection_state = root / checker.BSC05_CONNECTION_STATE
     connection_state.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / checker.BSC05_CONNECTION_STATE, connection_state)
+    shutil.copy2(ROOT / checker.BSC06_TRANSPORT, root / checker.BSC06_TRANSPORT)
     shutil.copy2(ROOT / checker.BSC10_WIFI_CLIENT, root / checker.BSC10_WIFI_CLIENT)
     shutil.copy2(ROOT / checker.BSC10_TRANSACTION, root / checker.BSC10_TRANSACTION)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
@@ -339,6 +344,27 @@ def test_bsc05_hook_rejects_missing_or_misordered_generation_wiring() -> None:
             encoding="utf-8",
         )
         assert_error_contains(checker.validate_static(root), "new-session signal must follow queue generation admission")
+
+
+def test_bsc06_hook_rejects_missing_or_preclaim_transport_routing() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        transport = root / checker.BSC06_TRANSPORT
+        original = transport.read_text(encoding="utf-8")
+        route_token = "obdBsc06HilFaultModule().routeOperation("
+        transport.write_text(original.replace(route_token, "obdBsc06HilFaultModule().bypassOperation(", 1),
+                             encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "operation barrier wiring must contain exactly one")
+
+        claim_start = original.index("        if (!sObdTransport.requestEpoch.tryClaim(request.dispatchEpoch))")
+        claim_end = original.index("\n\n", claim_start) + 2
+        claim_block = original[claim_start:claim_end]
+        route_start = original.index("#if defined(V1SIMPLE_HIL_FAULT_CONTROL)", claim_end)
+        route_end = original.index("#endif", route_start) + len("#endif\n")
+        route_block = original[route_start:route_end]
+        reordered = original[:claim_start] + route_block + claim_block + original[route_end:]
+        transport.write_text(reordered, encoding="utf-8")
+        assert_error_contains(checker.validate_static(root), "after request-epoch claim and before GATT dispatch")
 
 
 def test_bsc10_hook_rejects_missing_or_late_admission() -> None:
@@ -747,6 +773,7 @@ def main() -> int:
         test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_bsc05_hook_rejects_missing_or_misordered_generation_wiring,
+        test_bsc06_hook_rejects_missing_or_preclaim_transport_routing,
         test_bsc10_hook_rejects_missing_or_late_admission,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,

@@ -56,6 +56,10 @@ LINKED_NATIVE_TEST_SPECS = {
         sources=("src/modules/obd/obd_ble_client.cpp",),
         define="V1_LINKED_TEST_OBD_BLE_CLIENT",
     ),
+    "test_obd_transport_operation_barrier": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_transport_operation_barrier.cpp",),
+        define="V1_LINKED_TEST_OBD_TRANSPORT_OPERATION_BARRIER",
+    ),
     "test_wifi_scan_result_owner": LinkedNativeTestSpec(
         sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),
         define="V1_LINKED_TEST_WIFI_SCAN_RESULT_OWNER",

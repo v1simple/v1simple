@@ -5,7 +5,7 @@
     "description": "Native (host) test suites only. test_build_src = false, so this measures the firmware code the native suites actually compile, NOT the whole firmware image. Device-only driver code is outside this denominator and is covered by the mutation gate and the device suites.",
     "environment": "native-coverage",
     "full_suite": true,
-    "suite_count": 179,
+    "suite_count": 181,
     "suites": [
       "test_alert_persistence",
       "test_alp_api_service",
@@ -99,6 +99,8 @@
       "test_obd_api_service",
       "test_obd_ble_client_race",
       "test_obd_bsc06_hil_fault_module",
+      "test_obd_bsc13_hil_fault_module",
+      "test_obd_physical_link_preownership_barrier",
       "test_obd_runtime",
       "test_obd_settings_sync",
       "test_obd_speed_source",
@@ -187,7 +189,7 @@
       "test_wifi_v1_profile_api_service",
       "test_wifi_visual_sync_module"
     ],
-    "measured_file_count": 227,
+    "measured_file_count": 229,
     "filters": [
       "^src/",
       "^include/"
@@ -204,8 +206,8 @@
   "tolerance_pp": 0.5,
   "overall": {
     "line_percent": 75.6,
-    "line_total": 27801,
-    "line_covered": 21007
+    "line_total": 27978,
+    "line_covered": 21158
   },
   "files": {
     "include/audio_i2c_utils.h": {
@@ -733,6 +735,11 @@
       "line_total": 170,
       "line_covered": 154
     },
+    "src/modules/obd/obd_bsc13_hil_fault_module.cpp": {
+      "line_percent": 83.9,
+      "line_total": 161,
+      "line_covered": 135
+    },
     "src/modules/obd/obd_elm327_parser.cpp": {
       "line_percent": 85.6,
       "line_total": 362,
@@ -742,6 +749,11 @@
       "line_percent": 100.0,
       "line_total": 2,
       "line_covered": 2
+    },
+    "src/modules/obd/obd_physical_link_preownership_barrier.cpp": {
+      "line_percent": 100.0,
+      "line_total": 15,
+      "line_covered": 15
     },
     "src/modules/obd/obd_runtime_commands.cpp": {
       "line_percent": 58.2,
@@ -1239,9 +1251,9 @@
       "line_covered": 23
     },
     "src/settings.cpp": {
-      "line_percent": 93.3,
-      "line_total": 345,
-      "line_covered": 322
+      "line_percent": 93.4,
+      "line_total": 346,
+      "line_covered": 323
     },
     "src/settings.h": {
       "line_percent": 92.6,

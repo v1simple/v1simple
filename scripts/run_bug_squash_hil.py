@@ -273,56 +273,7 @@ BSC13_CAPTURE_COMMITMENTS = (
 BSC14_CASE_ID = "BSC-14"
 BSC14_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC14_PRODUCTION_ENVIRONMENT = "waveshare-349"
-BSC14_REQUIRED_RUNS = 1
 BSC14_ADAPTER_TIMEOUT_SECONDS = 1_800
-BSC14_DUT_CAPABILITIES = (
-    "firmware-execution",
-    "persistence",
-    "serial",
-)
-BSC14_RIG_CAPABILITIES = (
-    "artifact-capture",
-    "power-control",
-    "sd-media",
-    "utc-time-source",
-    "vbus-isolation",
-)
-BSC14_FAULT_STIMULUS_IDS = (
-    "arm-sd-mutex-hold",
-    "slider-exit",
-    "stealth-double-press",
-    "profile-triple-tap",
-    "release-sd-mutex",
-    "immediate-reset",
-    "verify-latest-backup",
-)
-BSC14_PRODUCTION_STIMULUS_IDS = (
-    "slider-exit",
-    "stealth-double-press",
-    "profile-triple-tap",
-    "immediate-reset",
-    "verify-latest-backup",
-)
-BSC14_GESTURE_KINDS = (
-    "slider_exit",
-    "stealth_double_press",
-    "profile_triple_tap",
-)
-BSC14_FAULT_FACTS = {
-    "sd-mutex-owned-before-ready",
-    "gestures-completed-while-held",
-    "main-loop-responsive",
-    "backup-write-count-during-hold",
-    "post-release-backup-latest",
-    "post-reset-backup-write-count",
-    "post-reset-backup-latest",
-}
-BSC14_PRODUCTION_FACTS = {
-    "hil-fault-control-active",
-    "gestures-completed",
-    "post-reset-backup-write-count",
-    "post-reset-backup-latest",
-}
 BSC14_CAPTURE_COMMITMENTS = (
     "build_evidence_sha256",
     "reset_timeline_sha256",
@@ -3872,9 +3823,50 @@ def run_bsc13_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_bsc14_case_descriptor() -> dict[str, object]:
+    profile, errors = qualification.load_pinned_profile()
+    if profile is None or errors:
+        raise RunnerError(
+            "qualification_profile_invalid",
+            "pinned BSC-14 qualification descriptor is invalid",
+        )
+    descriptor = next(
+        (entry for entry in profile["required_cases"] if entry["id"] == BSC14_CASE_ID),
+        None,
+    )
+    if not isinstance(descriptor, dict):
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "BSC-14 is absent from the pinned qualification profile",
+        )
+    return descriptor
+
+
+def bsc14_role_descriptor(
+    case_descriptor: Mapping[str, object], *, production_replay: bool
+) -> dict[str, object]:
+    key = "production_replay" if production_replay else "scenario"
+    role = case_descriptor.get(key)
+    if not isinstance(role, dict):
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "pinned BSC-14 role descriptor is unavailable",
+        )
+    return role
+
+
+def bsc14_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment(
+        "v1simple.bsc14.case-descriptor.v1", case_descriptor
+    )
+
+
+
+
 def resolve_bsc14_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
+    case_descriptor: Mapping[str, object],
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     inventory_path = args.inventory.resolve()
     if not inventory_path.is_file() or inventory_path.is_symlink():
@@ -3897,13 +3889,13 @@ def resolve_bsc14_hardware(
     dut_resolution, dut_attestation = bsc03_board_attestation(
         inventory=inventory,
         alias=args.board,
-        required_capabilities=BSC14_DUT_CAPABILITIES,
+        required_capabilities=case_descriptor["required_dut_capabilities"],
         port_records=port_records,
     )
     _, rig_attestation = bsc03_board_attestation(
         inventory=inventory,
         alias=args.rig,
-        required_capabilities=BSC14_RIG_CAPABILITIES,
+        required_capabilities=case_descriptor["required_rig_capabilities"],
         port_records=port_records,
     )
     if args.board == args.rig:
@@ -3946,111 +3938,120 @@ def validate_bsc14_stimuli(value: object, expected_ids: Sequence[str]) -> None:
         raise RunnerError(code, "BSC-14 stimulus times must increase strictly")
 
 
-def validate_bsc14_fault_lifecycle(value: object, *, role: str) -> None:
+def validate_bsc14_faults(value: object, expected_ids: Sequence[str]) -> None:
     code = "case_record_invalid"
-    if role == "production-replay":
-        if value != []:
-            raise RunnerError(code, "BSC-14 production replay contains HIL fault events")
-        return
-    expected_events = (
-        ("ready", "none", 0),
-        ("fired", "none", 0),
-        ("gesture_persisted", BSC14_GESTURE_KINDS[0], 1),
-        ("gesture_persisted", BSC14_GESTURE_KINDS[1], 3),
-        ("gesture_persisted", BSC14_GESTURE_KINDS[2], 7),
-        ("released", "none", 7),
-    )
-    if not isinstance(value, list) or len(value) != len(expected_events):
-        raise RunnerError(code, "BSC-14 SD mutex lifecycle is incomplete")
-    identity: tuple[int, int, int, int] | None = None
-    elapsed_values: list[int] = []
-    for sequence, (event, expected_event) in enumerate(
-        zip(value, expected_events, strict=True), start=1
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-14 fault sequence does not match the pinned descriptor")
+    for sequence, (event, event_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
     ):
-        event_id, gesture_kind, gesture_mask = expected_event
         row = require_exact_object(
             event,
             {
                 "id",
                 "sequence",
-                "elapsed_ms",
-                "arm_sequence",
-                "ready_sequence",
-                "generation",
-                "phase",
-                "gesture_kind",
-                "previous_revision",
-                "nvs_revision",
-                "gesture_mask",
+                "armed_elapsed_ms",
+                "triggered_elapsed_ms",
+                "cleared_elapsed_ms",
             },
             code=code,
-            label="BSC-14 SD mutex event",
+            label="BSC-14 fault",
         )
-        elapsed = row.get("elapsed_ms")
-        current_identity = tuple(
+        times = tuple(
             row.get(field)
-            for field in ("arm_sequence", "ready_sequence", "generation", "phase")
+            for field in (
+                "armed_elapsed_ms",
+                "triggered_elapsed_ms",
+                "cleared_elapsed_ms",
+            )
         )
-        previous_revision = row.get("previous_revision")
-        nvs_revision = row.get("nvs_revision")
-        gesture_event = event_id == "gesture_persisted"
         if (
             row.get("id") != event_id
             or type(row.get("sequence")) is not int
             or row.get("sequence") != sequence
-            or type(elapsed) is not int
-            or elapsed < 0
-            or any(type(item) is not int or item <= 0 for item in current_identity[:3])
-            or type(current_identity[3]) is not int
-            or current_identity[3] != 1
-            or row.get("gesture_kind") != gesture_kind
-            or type(previous_revision) is not int
-            or type(nvs_revision) is not int
-            or row.get("gesture_mask") != gesture_mask
-            or (gesture_event and (nvs_revision <= 0 or nvs_revision == previous_revision))
-            or (not gesture_event and (previous_revision != 0 or nvs_revision != 0))
+            or any(type(item) is not int or item < 0 for item in times)
+            or not (times[0] <= times[1] <= times[2])
         ):
-            raise RunnerError(code, "BSC-14 SD mutex lifecycle evidence is invalid")
-        typed_identity = (
-            current_identity[0],
-            current_identity[1],
-            current_identity[2],
-            current_identity[3],
-        )
-        if identity is None:
-            identity = typed_identity
-        elif typed_identity != identity:
-            raise RunnerError(code, "BSC-14 SD mutex identity changed during execution")
-        elapsed_values.append(elapsed)
-    if any(later < earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
-        raise RunnerError(code, "BSC-14 SD mutex event times moved backwards")
+            raise RunnerError(code, "BSC-14 fault evidence is invalid")
 
 
-def validate_bsc14_facts(value: object, *, role: str) -> None:
+def validate_bsc14_barriers(value: object, expected_ids: Sequence[str]) -> None:
     code = "case_record_invalid"
-    expected_keys = BSC14_FAULT_FACTS if role == "fault-collection" else BSC14_PRODUCTION_FACTS
-    facts = require_exact_object(value, expected_keys, code=code, label="BSC-14 facts")
-    if role == "fault-collection":
-        if (
-            facts.get("sd-mutex-owned-before-ready") is not True
-            or facts.get("gestures-completed-while-held") is not True
-            or facts.get("main-loop-responsive") is not True
-            or type(facts.get("backup-write-count-during-hold")) is not int
-            or facts.get("backup-write-count-during-hold") != 0
-            or facts.get("post-release-backup-latest") is not True
-            or type(facts.get("post-reset-backup-write-count")) is not int
-            or facts.get("post-reset-backup-write-count") != 1
-            or facts.get("post-reset-backup-latest") is not True
-        ):
-            raise RunnerError(code, "BSC-14 fault-build facts do not satisfy reset durability")
-    elif (
-        facts.get("hil-fault-control-active") is not False
-        or facts.get("gestures-completed") is not True
-        or type(facts.get("post-reset-backup-write-count")) is not int
-        or facts.get("post-reset-backup-write-count") != 1
-        or facts.get("post-reset-backup-latest") is not True
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-14 barriers do not match the pinned descriptor")
+    for sequence, (event, event_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
     ):
-        raise RunnerError(code, "BSC-14 production replay facts are invalid")
+        row = require_exact_object(
+            event,
+            {"id", "sequence", "ready_elapsed_ms", "released_elapsed_ms", "timed_out"},
+            code=code,
+            label="BSC-14 barrier",
+        )
+        ready = row.get("ready_elapsed_ms")
+        released = row.get("released_elapsed_ms")
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(ready) is not int
+            or ready < 0
+            or type(released) is not int
+            or released < ready
+            or row.get("timed_out") is not False
+        ):
+            raise RunnerError(code, "BSC-14 barrier evidence is invalid")
+
+
+def validate_bsc14_resets(value: object, reset_contract: Mapping[str, object]) -> None:
+    code = "case_record_invalid"
+    resets = require_exact_object(
+        value,
+        {"expected_kind", "planned", "observed", "unexpected"},
+        code=code,
+        label="BSC-14 resets",
+    )
+    expected_count = reset_contract.get("expected_count")
+    if (
+        resets.get("expected_kind") != reset_contract.get("expected_kind")
+        or type(resets.get("planned")) is not int
+        or resets.get("planned") != expected_count
+        or type(resets.get("observed")) is not int
+        or resets.get("observed") != expected_count
+        or type(resets.get("unexpected")) is not int
+        or resets.get("unexpected") != reset_contract.get("unexpected_count")
+    ):
+        raise RunnerError(code, "BSC-14 reset evidence does not match the pinned descriptor")
+
+
+def validate_bsc14_facts(value: object, contracts: object) -> None:
+    code = "case_record_invalid"
+    if not isinstance(contracts, list):
+        raise RunnerError(code, "BSC-14 fact descriptor is invalid")
+    contract_by_id = {
+        contract.get("id"): contract for contract in contracts if isinstance(contract, dict)
+    }
+    if len(contract_by_id) != len(contracts) or not all(
+        isinstance(fact_id, str) for fact_id in contract_by_id
+    ):
+        raise RunnerError(code, "BSC-14 fact descriptor is invalid")
+    facts = require_exact_object(
+        value, set(contract_by_id), code=code, label="BSC-14 facts"
+    )
+    for fact_id, contract in contract_by_id.items():
+        observed = facts.get(fact_id)
+        if contract.get("type") == "boolean":
+            if type(observed) is not bool or observed is not contract.get("expected"):
+                raise RunnerError(code, f"BSC-14 fact {fact_id} is invalid")
+        elif contract.get("type") == "integer":
+            if (
+                type(observed) is not int
+                or observed < contract.get("minimum")
+                or observed > contract.get("maximum")
+            ):
+                raise RunnerError(code, f"BSC-14 fact {fact_id} is invalid")
+        else:
+            raise RunnerError(code, "BSC-14 fact descriptor type is invalid")
 
 
 def validate_bsc14_adapter_record(
@@ -4066,7 +4067,7 @@ def validate_bsc14_adapter_record(
         {
             "schema_version",
             "case_id",
-            "role",
+            "role_id",
             "session_id",
             "attempt_id",
             "target_sha",
@@ -4076,10 +4077,15 @@ def validate_bsc14_adapter_record(
             "hardware_observed",
             "started_at_utc",
             "completed_at_utc",
+            "case_descriptor",
+            "case_descriptor_sha256",
             "firmware",
             "stimuli",
+            "faults",
+            "barriers",
+            "vbus_isolated",
+            "resets",
             "facts",
-            "fault_lifecycle",
             "capture_commitments",
             "evidence_binding_sha256",
         },
@@ -4088,7 +4094,7 @@ def validate_bsc14_adapter_record(
     )
     for field in (
         "case_id",
-        "role",
+        "role_id",
         "session_id",
         "attempt_id",
         "target_sha",
@@ -4103,9 +4109,18 @@ def validate_bsc14_adapter_record(
         raise RunnerError(code, "BSC-14 adapter schema is unsupported")
     if type(record.get("hardware_observed")) is not bool:
         raise RunnerError(code, "BSC-14 hardware observation flag is invalid")
-    role = record.get("role")
-    if role not in {"fault-collection", "production-replay"}:
-        raise RunnerError(code, "BSC-14 collection role is invalid")
+    case_descriptor = expected.get("case_descriptor")
+    role_descriptor = expected.get("role_descriptor")
+    if not isinstance(case_descriptor, dict) or not isinstance(role_descriptor, dict):
+        raise RunnerError(code, "BSC-14 pinned descriptor binding is invalid")
+    if record.get("case_descriptor") != case_descriptor:
+        raise RunnerError(code, "BSC-14 case descriptor does not match the pinned profile")
+    expected_descriptor_sha = bsc14_descriptor_commitment(case_descriptor)
+    if (
+        expected.get("case_descriptor_sha256") != expected_descriptor_sha
+        or record.get("case_descriptor_sha256") != expected_descriptor_sha
+    ):
+        raise RunnerError(code, "BSC-14 case descriptor digest is invalid")
     started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-14 start")
     completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-14 completion")
     if completed < started:
@@ -4117,26 +4132,40 @@ def validate_bsc14_adapter_record(
 
     firmware = require_exact_object(
         record.get("firmware"),
-        {"environment", "target_sha", "binary_sha256", "hil_fault_control_active"},
+        {
+            "environment",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+            "build_kind",
+        },
         code=code,
         label="BSC-14 firmware",
     )
-    expected_environment = BSC14_HIL_ENVIRONMENT if role == "fault-collection" else BSC14_PRODUCTION_ENVIRONMENT
-    expected_hil = role == "fault-collection"
+    build_kind = role_descriptor.get("build_kind")
+    expected_environment = (
+        BSC14_HIL_ENVIRONMENT if build_kind == "hil-fault" else BSC14_PRODUCTION_ENVIRONMENT
+    )
+    expected_hil = build_kind == "hil-fault"
     if (
         firmware.get("environment") != expected_environment
         or firmware.get("target_sha") != expected.get("target_sha")
         or firmware.get("hil_fault_control_active") is not expected_hil
+        or firmware.get("build_kind") != build_kind
     ):
         raise RunnerError(code, "BSC-14 firmware role or target is invalid")
     require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-14 firmware binary")
 
-    validate_bsc14_stimuli(
-        record.get("stimuli"),
-        BSC14_FAULT_STIMULUS_IDS if role == "fault-collection" else BSC14_PRODUCTION_STIMULUS_IDS,
-    )
-    validate_bsc14_facts(record.get("facts"), role=role)
-    validate_bsc14_fault_lifecycle(record.get("fault_lifecycle"), role=role)
+    validate_bsc14_stimuli(record.get("stimuli"), role_descriptor["stimulus_ids"])
+    validate_bsc14_faults(record.get("faults"), role_descriptor["fault_ids"])
+    validate_bsc14_barriers(record.get("barriers"), role_descriptor["barrier_ids"])
+    if (
+        type(record.get("vbus_isolated")) is not bool
+        or record.get("vbus_isolated") is not role_descriptor["vbus_isolation_required"]
+    ):
+        raise RunnerError(code, "BSC-14 VBUS observation does not match the pinned descriptor")
+    validate_bsc14_resets(record.get("resets"), role_descriptor["reset_contract"])
+    validate_bsc14_facts(record.get("facts"), role_descriptor["facts"])
 
     commitments = require_exact_object(
         record.get("capture_commitments"),
@@ -4170,8 +4199,10 @@ def run_bsc14_adapter(
         str(adapter),
         "--case",
         BSC14_CASE_ID,
-        "--role",
-        str(expected["role"]),
+        "--role-id",
+        str(expected["role_id"]),
+        "--case-descriptor-sha256",
+        str(expected["case_descriptor_sha256"]),
         "--session-id",
         str(expected["session_id"]),
         "--attempt-id",
@@ -4220,17 +4251,13 @@ def run_bsc14_adapter(
 
 
 def run_bsc14_case(args: argparse.Namespace) -> int:
-    if args.runs != BSC14_REQUIRED_RUNS:
+    case_descriptor = load_bsc14_case_descriptor()
+    if args.runs != case_descriptor["minimum_runs"]:
         raise RunnerError("invalid_runs", "BSC-14 requires exactly one run per collection role")
     if args.rig is None:
         raise RunnerError("rig_alias_required", "BSC-14 requires an opaque local rig alias")
     if args.resume:
         raise RunnerError("unsupported_mode", "BSC-14 collection roles are atomic")
-    if not args.ack_vbus_isolated or not args.ack_destructive_hard_cuts:
-        raise RunnerError(
-            "safety_ack_required",
-            "BSC-14 requires explicit VBUS-isolation and destructive-reset acknowledgements",
-        )
     if not test_hooks_enabled():
         if args.case_adapter is not None:
             raise RunnerError("untrusted_override", "authoritative BSC-14 forbids an untracked rig adapter")
@@ -4240,6 +4267,15 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
         )
     if args.case_adapter is None:
         raise RunnerError("case_adapter_required", "BSC-14 test execution requires a mocked adapter")
+    role_descriptor = bsc14_role_descriptor(
+        case_descriptor, production_replay=args.production_replay
+    )
+    reset_contract = role_descriptor["reset_contract"]
+    if reset_contract["expected_count"] > 0 and not args.ack_destructive_hard_cuts:
+        raise RunnerError(
+            "safety_ack_required",
+            "BSC-14 fault collection requires destructive-reset acknowledgement",
+        )
 
     repository = args.repo_root.resolve()
     git_state = read_git_state(repository)
@@ -4249,7 +4285,9 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
     if not adapter.is_file() or adapter.is_symlink():
         raise RunnerError("case_adapter_unavailable", "BSC-14 adapter must be a regular file")
     adapter_sha = sha256_file(adapter)
-    dut_resolution, dut_attestation, rig_attestation = resolve_bsc14_hardware(args, Path(args.pio_command))
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc14_hardware(
+        args, Path(args.pio_command), case_descriptor
+    )
     endpoints = dut_resolution.get("endpoints")
     if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
         raise RunnerError("case_board_resolution_failed", "BSC-14 DUT has no serial endpoint")
@@ -4257,10 +4295,10 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
     if not Path(serial_port).exists():
         raise RunnerError("case_board_resolution_failed", "BSC-14 serial endpoint is not present")
 
-    role = "production-replay" if args.production_replay else "fault-collection"
+    role_id = role_descriptor["role_id"]
     if args.out_dir is None:
         run_id = datetime.now(timezone.utc).strftime("bsc14-%Y%m%dT%H%M%SZ")
-        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role}"
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role_id}"
     else:
         run_root = Path(os.path.abspath(args.out_dir))
     require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
@@ -4270,9 +4308,10 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
 
     session_id = f"bsc14-{secrets.token_hex(16)}"
     attempt_id = f"attempt-{secrets.token_hex(16)}"
+    descriptor_sha = bsc14_descriptor_commitment(case_descriptor)
     expected: dict[str, object] = {
         "case_id": BSC14_CASE_ID,
-        "role": role,
+        "role_id": role_id,
         "session_id": session_id,
         "attempt_id": attempt_id,
         "target_sha": git_state.head_sha,
@@ -4280,6 +4319,9 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
         "rig_alias": args.rig,
         "execution_mode": "simulated",
         "hardware_observed": False,
+        "case_descriptor": case_descriptor,
+        "case_descriptor_sha256": descriptor_sha,
+        "role_descriptor": role_descriptor,
     }
     require_unchanged_git_state(repository, git_state)
     record = run_bsc14_adapter(
@@ -4298,7 +4340,8 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
         "schema_version": 1,
         "run_kind": "bug-squash-bsc14-storage-reset-durability",
         "case_id": BSC14_CASE_ID,
-        "collection_role": role,
+        "collection_role": role_id,
+        "case_descriptor_sha256": descriptor_sha,
         "target_sha": git_state.head_sha,
         "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
         "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
@@ -4313,14 +4356,17 @@ def run_bsc14_case(args: argparse.Namespace) -> int:
         ),
         "artifact_role": "non-qualifying-case-collection",
         "result": "TEST_PASS",
-        "runs_required": BSC14_REQUIRED_RUNS,
+        "runs_required": case_descriptor["minimum_runs"],
         "runs_completed": 1,
-        "production_replay_required": role == "fault-collection",
+        "production_replay_required": bool(
+            case_descriptor["production_replay_required"] and not args.production_replay
+        ),
         "firmware_target": {
             "environment": firmware["environment"],
             "target_sha": firmware["target_sha"],
             "binary_sha256": firmware["binary_sha256"],
             "hil_fault_control_active": firmware["hil_fault_control_active"],
+            "build_kind": firmware["build_kind"],
         },
         "evidence_binding_sha256": record["evidence_binding_sha256"],
         "artifact_sha256": {

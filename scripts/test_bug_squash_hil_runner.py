@@ -116,6 +116,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "power-button",
                             "proxy-connectivity",
                             "serial",
+                            "touchscreen",
                             "v1-connectivity",
                         ],
                         "usb_serial": "SECRET-USB-IDENTITY",
@@ -133,6 +134,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "power-control",
                             "power-button",
                             "proxy-client",
+                            "reset-control",
                             "sd-media",
                             "sram-pressure-control",
                             "utc-time-source",
@@ -1053,95 +1055,197 @@ def commitment(payload):
     canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
     return hashlib.sha256(b'v1simple.bsc14.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
 
-role = argument('--role')
-is_fault = role == 'fault-collection'
+role_id = argument('--role-id')
+is_fault = role_id == 'touch-persistence-sd-fault'
 now = datetime.now(timezone.utc)
 started = now - timedelta(seconds=50)
+case_descriptor = {
+    'fault_build_required': True,
+    'id': 'BSC-14',
+    'minimum_runs': 1,
+    'production_replay': {
+        'barrier_ids': [],
+        'build_kind': 'production',
+        'facts': [
+            {'expected': False, 'id': 'gesture-loop-stall-observed', 'type': 'boolean'},
+            {'expected': True, 'id': 'latest-state-backup-valid', 'type': 'boolean'},
+            {'expected': False, 'id': 'hil-fault-control-active', 'type': 'boolean'},
+        ],
+        'fault_ids': [],
+        'reset_contract': {'expected_count': 0, 'expected_kind': 'none', 'unexpected_count': 0},
+        'role_id': 'touch-persistence-production-replay',
+        'schema': 'case-observation-v1',
+        'stimulus_ids': [
+            'slider-exit',
+            'stealth-double-press',
+            'profile-triple-tap',
+            'use-slow-sd-media',
+        ],
+        'vbus_isolation_required': False,
+    },
+    'production_replay_required': True,
+    'required_dut_capabilities': ['firmware-execution', 'persistence', 'serial', 'touchscreen'],
+    'required_rig_capabilities': ['artifact-capture', 'reset-control', 'sd-media', 'utc-time-source'],
+    'scenario': {
+        'barrier_ids': ['gesture-persisted-to-nvs', 'reset-before-deferred-backup'],
+        'build_kind': 'hil-fault',
+        'facts': [
+            {'expected': False, 'id': 'slider-loop-stall-observed', 'type': 'boolean'},
+            {'expected': False, 'id': 'stealth-loop-stall-observed', 'type': 'boolean'},
+            {'expected': False, 'id': 'profile-loop-stall-observed', 'type': 'boolean'},
+            {'expected': True, 'id': 'slider-state-survived-reset', 'type': 'boolean'},
+            {'expected': True, 'id': 'stealth-state-survived-reset', 'type': 'boolean'},
+            {'expected': True, 'id': 'profile-state-survived-reset', 'type': 'boolean'},
+            {'id': 'coalesced-backup-count', 'maximum': 1, 'minimum': 1, 'type': 'integer'},
+            {'expected': True, 'id': 'backup-contains-latest-state', 'type': 'boolean'},
+            {'expected': True, 'id': 'real-touch-input-observed', 'type': 'boolean'},
+        ],
+        'fault_ids': ['sd-mutex-holder'],
+        'reset_contract': {'expected_count': 1, 'expected_kind': 'hard-reset', 'unexpected_count': 0},
+        'role_id': 'touch-persistence-sd-fault',
+        'schema': 'case-observation-v1',
+        'stimulus_ids': [
+            'hold-sd-mutex',
+            'slider-exit',
+            'stealth-double-press',
+            'profile-triple-tap',
+            'hard-reset-before-backup',
+            'release-sd-mutex',
+        ],
+        'vbus_isolation_required': False,
+    },
+}
+mutation = os.environ.get('FAKE_BSC14_MUTATION', '')
+if mutation == 'descriptor':
+    case_descriptor['required_dut_capabilities'].append('invented-capability')
 stimulus_ids = [
-    'arm-sd-mutex-hold',
+    'hold-sd-mutex',
     'slider-exit',
     'stealth-double-press',
     'profile-triple-tap',
+    'hard-reset-before-backup',
     'release-sd-mutex',
-    'immediate-reset',
-    'verify-latest-backup',
 ] if is_fault else [
     'slider-exit',
     'stealth-double-press',
     'profile-triple-tap',
-    'immediate-reset',
-    'verify-latest-backup',
+    'use-slow-sd-media',
 ]
 stimuli = [
     {'id': stimulus_id, 'sequence': sequence, 'elapsed_ms': sequence * 5000, 'result': 'pass'}
     for sequence, stimulus_id in enumerate(stimulus_ids, start=1)
 ]
-if os.environ.get('FAKE_BSC14_MISSING_STIMULUS') == '1':
+if mutation == 'stimulus-order':
+    stimuli[0]['id'], stimuli[1]['id'] = stimuli[1]['id'], stimuli[0]['id']
+if mutation == 'missing-slow-sd' and not is_fault:
     stimuli.pop()
 
 if is_fault:
     facts = {
-        'sd-mutex-owned-before-ready': True,
-        'gestures-completed-while-held': True,
-        'main-loop-responsive': True,
-        'backup-write-count-during-hold': 0,
-        'post-release-backup-latest': True,
-        'post-reset-backup-write-count': 1,
-        'post-reset-backup-latest': True,
+        'slider-loop-stall-observed': False,
+        'stealth-loop-stall-observed': False,
+        'profile-loop-stall-observed': False,
+        'slider-state-survived-reset': True,
+        'stealth-state-survived-reset': True,
+        'profile-state-survived-reset': True,
+        'coalesced-backup-count': 1,
+        'backup-contains-latest-state': True,
+        'real-touch-input-observed': True,
     }
-    lifecycle = []
-    event_rows = (
-        ('ready', 'none', 0, 0, 0),
-        ('fired', 'none', 0, 0, 0),
-        ('gesture_persisted', 'slider_exit', 1, 1, 2),
-        ('gesture_persisted', 'stealth_double_press', 3, 2, 3),
-        ('gesture_persisted', 'profile_triple_tap', 7, 3, 4),
-        ('released', 'none', 7, 0, 0),
-    )
-    for sequence, (event_id, gesture_kind, gesture_mask, previous, revision) in enumerate(
-        event_rows, start=1
-    ):
-        lifecycle.append({
-            'id': event_id,
-            'sequence': sequence,
-            'elapsed_ms': 10000 + sequence,
-            'arm_sequence': 7,
-            'ready_sequence': 3,
-            'generation': 1,
-            'phase': 1,
-            'gesture_kind': gesture_kind,
-            'previous_revision': previous,
-            'nvs_revision': revision,
-            'gesture_mask': gesture_mask,
-        })
-    if os.environ.get('FAKE_BSC14_BAD_LIFECYCLE') == '1':
-        lifecycle[3]['generation'] = 2
+    faults = [{
+        'id': 'sd-mutex-holder',
+        'sequence': 1,
+        'armed_elapsed_ms': 1000,
+        'triggered_elapsed_ms': 2000,
+        'cleared_elapsed_ms': 30000,
+    }]
+    barriers = [
+        {
+            'id': 'gesture-persisted-to-nvs',
+            'sequence': 1,
+            'ready_elapsed_ms': 5000,
+            'released_elapsed_ms': 20000,
+            'timed_out': False,
+        },
+        {
+            'id': 'reset-before-deferred-backup',
+            'sequence': 2,
+            'ready_elapsed_ms': 21000,
+            'released_elapsed_ms': 30000,
+            'timed_out': False,
+        },
+    ]
+    resets = {'expected_kind': 'hard-reset', 'planned': 1, 'observed': 1, 'unexpected': 0}
     environment = 'waveshare-349-hil'
     hil_active = True
+    build_kind = 'hil-fault'
 else:
     facts = {
+        'gesture-loop-stall-observed': False,
+        'latest-state-backup-valid': True,
         'hil-fault-control-active': False,
-        'gestures-completed': True,
-        'post-reset-backup-write-count': 1,
-        'post-reset-backup-latest': True,
     }
-    lifecycle = []
-    if os.environ.get('FAKE_BSC14_REPLAY_FAULT') == '1':
-        lifecycle = [{'id': 'fired'}]
+    faults = []
+    barriers = []
+    resets = {'expected_kind': 'none', 'planned': 0, 'observed': 0, 'unexpected': 0}
     environment = 'waveshare-349'
     hil_active = False
+    build_kind = 'production'
 
-if os.environ.get('FAKE_BSC14_WRONG_FACT') == '1':
-    facts['post-reset-backup-latest'] = False
-if os.environ.get('FAKE_BSC14_WRONG_FIRMWARE') == '1':
+fact_mutations = {
+    'slider-stall': ('slider-loop-stall-observed', True),
+    'stealth-stall': ('stealth-loop-stall-observed', True),
+    'profile-stall': ('profile-loop-stall-observed', True),
+    'slider-survival': ('slider-state-survived-reset', False),
+    'stealth-survival': ('stealth-state-survived-reset', False),
+    'profile-survival': ('profile-state-survived-reset', False),
+    'backup-count': ('coalesced-backup-count', 2),
+    'backup-latest': ('backup-contains-latest-state', False),
+    'real-touch': ('real-touch-input-observed', False),
+    'production-stall': ('gesture-loop-stall-observed', True),
+    'production-backup': ('latest-state-backup-valid', False),
+    'production-hil': ('hil-fault-control-active', True),
+}
+if mutation in fact_mutations:
+    fact_id, value = fact_mutations[mutation]
+    facts[fact_id] = value
+if mutation == 'fault-id' and is_fault:
+    faults[0]['id'] = 'invented-fault'
+if mutation == 'barrier-order' and is_fault:
+    barriers[0]['id'], barriers[1]['id'] = barriers[1]['id'], barriers[0]['id']
+if mutation == 'reset-kind':
+    resets['expected_kind'] = 'soft-reset'
+if mutation == 'reset-count':
+    resets['observed'] = 0
+if mutation == 'unexpected-reset':
+    resets['unexpected'] = 1
+if mutation == 'production-reset' and not is_fault:
+    resets = {'expected_kind': 'hard-reset', 'planned': 1, 'observed': 1, 'unexpected': 0}
+if mutation == 'production-fault' and not is_fault:
+    faults = [{
+        'id': 'sd-mutex-holder',
+        'sequence': 1,
+        'armed_elapsed_ms': 1000,
+        'triggered_elapsed_ms': 2000,
+        'cleared_elapsed_ms': 3000,
+    }]
+if mutation == 'production-barrier' and not is_fault:
+    barriers = [{
+        'id': 'gesture-persisted-to-nvs',
+        'sequence': 1,
+        'ready_elapsed_ms': 1000,
+        'released_elapsed_ms': 2000,
+        'timed_out': False,
+    }]
+if mutation == 'wrong-firmware':
     environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
-if os.environ.get('FAKE_BSC14_WRONG_HIL') == '1':
+if mutation == 'wrong-hil':
     hil_active = not hil_active
 
 payload = {
     'schema_version': 1,
     'case_id': argument('--case'),
-    'role': role,
+    'role_id': role_id,
     'session_id': argument('--session-id'),
     'attempt_id': argument('--attempt-id'),
     'target_sha': argument('--target-sha'),
@@ -1151,31 +1255,39 @@ payload = {
     'hardware_observed': False,
     'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
     'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor': case_descriptor,
+    'case_descriptor_sha256': argument('--case-descriptor-sha256'),
     'firmware': {
         'environment': environment,
         'target_sha': argument('--target-sha'),
-        'binary_sha256': digest(f'{role}-binary'),
+        'binary_sha256': digest(f'{role_id}-binary'),
         'hil_fault_control_active': hil_active,
+        'build_kind': build_kind,
     },
     'stimuli': stimuli,
+    'faults': faults,
+    'barriers': barriers,
+    'vbus_isolated': False,
+    'resets': resets,
     'facts': facts,
-    'fault_lifecycle': lifecycle,
     'capture_commitments': {
-        'build_evidence_sha256': digest(f'{role}-build-evidence'),
-        'reset_timeline_sha256': digest(f'{role}-reset-timeline'),
-        'sd_backup_sha256': digest(f'{role}-sd-backup'),
-        'serial_log_sha256': digest(f'{role}-serial-log'),
-        'touch_timeline_sha256': digest(f'{role}-touch-timeline'),
+        'build_evidence_sha256': digest(f'{role_id}-build-evidence'),
+        'reset_timeline_sha256': digest(f'{role_id}-reset-timeline'),
+        'sd_backup_sha256': digest(f'{role_id}-sd-backup'),
+        'serial_log_sha256': digest(f'{role_id}-serial-log'),
+        'touch_timeline_sha256': digest(f'{role_id}-touch-timeline'),
     },
 }
-if os.environ.get('FAKE_BSC14_REUSE') == '1':
+if mutation == 'descriptor-digest':
+    payload['case_descriptor_sha256'] = digest('wrong-descriptor')
+if mutation == 'reuse':
     payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['sd_backup_sha256']
-if os.environ.get('FAKE_BSC14_BOOL_SCHEMA') == '1':
+if mutation == 'bool-schema':
     payload['schema_version'] = True
-if os.environ.get('FAKE_BSC14_INTEGER_HARDWARE') == '1':
+if mutation == 'integer-hardware':
     payload['hardware_observed'] = 0
 payload['evidence_binding_sha256'] = commitment(payload)
-if os.environ.get('FAKE_BSC14_TAMPER') == '1':
+if mutation == 'tamper':
     payload['capture_commitments']['serial_log_sha256'] = digest('tampered-serial')
 sys.stdout.write(json.dumps(payload))
 """,
@@ -1832,17 +1944,10 @@ def run_bsc14_fixture(
     *,
     production_replay: bool = False,
     runs: int = 1,
-    include_acknowledgements: bool = True,
-    missing_stimulus: bool = False,
-    wrong_fact: bool = False,
-    bad_lifecycle: bool = False,
-    replay_fault: bool = False,
-    wrong_firmware: bool = False,
-    wrong_hil: bool = False,
-    reused_evidence: bool = False,
-    tampered_evidence: bool = False,
-    bool_schema: bool = False,
-    integer_hardware: bool = False,
+    include_reset_acknowledgement: bool = True,
+    mutation: str = "",
+    drop_dut_touchscreen: bool = False,
+    drop_rig_reset_control: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc14-{role}-out"
@@ -1850,18 +1955,17 @@ def run_bsc14_fixture(
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
-            "FAKE_BSC14_MISSING_STIMULUS": "1" if missing_stimulus else "0",
-            "FAKE_BSC14_WRONG_FACT": "1" if wrong_fact else "0",
-            "FAKE_BSC14_BAD_LIFECYCLE": "1" if bad_lifecycle else "0",
-            "FAKE_BSC14_REPLAY_FAULT": "1" if replay_fault else "0",
-            "FAKE_BSC14_WRONG_FIRMWARE": "1" if wrong_firmware else "0",
-            "FAKE_BSC14_WRONG_HIL": "1" if wrong_hil else "0",
-            "FAKE_BSC14_REUSE": "1" if reused_evidence else "0",
-            "FAKE_BSC14_TAMPER": "1" if tampered_evidence else "0",
-            "FAKE_BSC14_BOOL_SCHEMA": "1" if bool_schema else "0",
-            "FAKE_BSC14_INTEGER_HARDWARE": "1" if integer_hardware else "0",
+            "FAKE_BSC14_MUTATION": mutation,
         }
     )
+    if drop_dut_touchscreen or drop_rig_reset_control:
+        inventory_path = Path(fixture["inventory"])
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        alias = "release" if drop_dut_touchscreen else "rig"
+        capability = "touchscreen" if drop_dut_touchscreen else "reset-control"
+        board = next(item for item in inventory["boards"] if item["alias"] == alias)
+        board["capabilities"].remove(capability)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
     command = [
         "python3",
         "-B",
@@ -1891,8 +1995,8 @@ def run_bsc14_fixture(
     ]
     if production_replay:
         command.append("--production-replay")
-    if include_acknowledgements:
-        command.extend(("--ack-vbus-isolated", "--ack-destructive-hard-cuts"))
+    if include_reset_acknowledgement and not production_replay:
+        command.append("--ack-destructive-hard-cuts")
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -2954,9 +3058,11 @@ def test_bsc13_physical_mode_remains_blocked_before_rig_mutation() -> None:
 
 
 def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
-    for production_replay, expected_role, expected_environment, expected_hil in (
-        (False, "fault-collection", "waveshare-349-hil", True),
-        (True, "production-replay", "waveshare-349", False),
+    descriptor = hil_runner.load_bsc14_case_descriptor()
+    descriptor_sha = hil_runner.bsc14_descriptor_commitment(descriptor)
+    for production_replay, descriptor_key, expected_environment, expected_hil in (
+        (False, "scenario", "waveshare-349-hil", True),
+        (True, "production_replay", "waveshare-349", False),
     ):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -2968,8 +3074,11 @@ def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             result = json.loads(
                 (out_dir / "collection_result.json").read_text(encoding="utf-8")
             )
+            attempt = json.loads((out_dir / "attempt.json").read_text(encoding="utf-8"))
+            role = descriptor[descriptor_key]
             assert_true(result["result"] == "TEST_PASS", str(result))
-            assert_true(result["collection_role"] == expected_role, str(result))
+            assert_true(result["collection_role"] == role["role_id"], str(result))
+            assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
             assert_true(result["execution_mode"] == "simulated", str(result))
             assert_true(result["hardware_observed"] is False, str(result))
             assert_true(result["authoritative"] is False, str(result))
@@ -2995,12 +3104,46 @@ def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
                 and result["firmware_target"]["hil_fault_control_active"] is expected_hil,
                 str(result),
             )
+            assert_true(result["firmware_target"]["build_kind"] == role["build_kind"], str(result))
+            assert_true(attempt["case_descriptor"] == descriptor, str(attempt))
+            assert_true(attempt["case_descriptor_sha256"] == descriptor_sha, str(attempt))
+            assert_true(attempt["role_id"] == role["role_id"], str(attempt))
+            assert_true(
+                [row["id"] for row in attempt["stimuli"]] == role["stimulus_ids"],
+                str(attempt),
+            )
+            assert_true([row["id"] for row in attempt["faults"]] == role["fault_ids"], str(attempt))
+            assert_true(
+                [row["id"] for row in attempt["barriers"]] == role["barrier_ids"],
+                str(attempt),
+            )
+            assert_true(attempt["vbus_isolated"] is False, str(attempt))
+            assert_true(
+                attempt["resets"]
+                == {
+                    "expected_kind": role["reset_contract"]["expected_kind"],
+                    "planned": role["reset_contract"]["expected_count"],
+                    "observed": role["reset_contract"]["expected_count"],
+                    "unexpected": role["reset_contract"]["unexpected_count"],
+                },
+                str(attempt),
+            )
+            expected_facts = {
+                fact["id"]: fact["expected"] if fact["type"] == "boolean" else fact["minimum"]
+                for fact in role["facts"]
+            }
+            assert_true(attempt["facts"] == expected_facts, str(attempt))
+            if production_replay:
+                assert_true(attempt["stimuli"][-1]["id"] == "use-slow-sd-media", str(attempt))
+                assert_true(attempt["faults"] == attempt["barriers"] == [], str(attempt))
+                assert_true(attempt["resets"]["observed"] == 0, str(attempt))
             assert_true(
                 all(
                     len(value) == 64
                     for value in (
                         result["session_sha256"],
                         result["attempt_sha256"],
+                        result["case_descriptor_sha256"],
                         result["evidence_binding_sha256"],
                         *result["artifact_sha256"].values(),
                     )
@@ -3017,20 +3160,42 @@ def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             )
 
 
-def test_bsc14_rejects_missing_wrong_role_and_tampered_evidence() -> None:
+def test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift() -> None:
     cases = (
-        ({"missing_stimulus": True}, "case_record_invalid"),
-        ({"wrong_fact": True}, "case_record_invalid"),
-        ({"bad_lifecycle": True}, "case_record_invalid"),
-        ({"wrong_firmware": True}, "case_record_invalid"),
-        ({"wrong_hil": True}, "case_record_invalid"),
-        ({"reused_evidence": True}, "case_record_invalid"),
-        ({"tampered_evidence": True}, "case_record_invalid"),
-        ({"bool_schema": True}, "case_record_invalid"),
-        ({"integer_hardware": True}, "case_record_invalid"),
-        ({"production_replay": True, "replay_fault": True}, "case_record_invalid"),
+        ({"mutation": "stimulus-order"}, "case_record_invalid"),
+        ({"mutation": "slider-stall"}, "case_record_invalid"),
+        ({"mutation": "stealth-stall"}, "case_record_invalid"),
+        ({"mutation": "profile-stall"}, "case_record_invalid"),
+        ({"mutation": "slider-survival"}, "case_record_invalid"),
+        ({"mutation": "stealth-survival"}, "case_record_invalid"),
+        ({"mutation": "profile-survival"}, "case_record_invalid"),
+        ({"mutation": "backup-count"}, "case_record_invalid"),
+        ({"mutation": "backup-latest"}, "case_record_invalid"),
+        ({"mutation": "real-touch"}, "case_record_invalid"),
+        ({"mutation": "fault-id"}, "case_record_invalid"),
+        ({"mutation": "barrier-order"}, "case_record_invalid"),
+        ({"mutation": "reset-kind"}, "case_record_invalid"),
+        ({"mutation": "reset-count"}, "case_record_invalid"),
+        ({"mutation": "unexpected-reset"}, "case_record_invalid"),
+        ({"mutation": "wrong-firmware"}, "case_record_invalid"),
+        ({"mutation": "wrong-hil"}, "case_record_invalid"),
+        ({"mutation": "reuse"}, "case_record_invalid"),
+        ({"mutation": "tamper"}, "case_record_invalid"),
+        ({"mutation": "bool-schema"}, "case_record_invalid"),
+        ({"mutation": "integer-hardware"}, "case_record_invalid"),
+        ({"mutation": "descriptor"}, "case_record_invalid"),
+        ({"mutation": "descriptor-digest"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "missing-slow-sd"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-stall"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-backup"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-hil"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-reset"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-fault"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-barrier"}, "case_record_invalid"),
+        ({"drop_dut_touchscreen": True}, "case_board_resolution_failed"),
+        ({"drop_rig_reset_control": True}, "case_board_resolution_failed"),
         ({"runs": 2}, "invalid_runs"),
-        ({"include_acknowledgements": False}, "safety_ack_required"),
+        ({"include_reset_acknowledgement": False}, "safety_ack_required"),
     )
     for options, expected_code in cases:
         with tempfile.TemporaryDirectory() as raw:
@@ -3056,8 +3221,6 @@ def test_bsc14_physical_mode_remains_blocked_without_tracked_adapter() -> None:
             "release",
             "--rig",
             "rig",
-            "--ack-vbus-isolated",
-            "--ack-destructive-hard-cuts",
         ],
         cwd=ROOT,
         env={
@@ -3326,7 +3489,7 @@ def main() -> int:
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()
     test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
-    test_bsc14_rejects_missing_wrong_role_and_tampered_evidence()
+    test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift()
     test_bsc14_physical_mode_remains_blocked_without_tracked_adapter()
     test_bsc16_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc16_rejects_missing_unsafe_wrong_role_and_tampered_evidence()

@@ -143,6 +143,13 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertIn("tracked-rig-adapter-not-implemented", bsc04.qualification_blockers)
         self.assertIs(runner.resolve_case_handler(bsc04), runner.run_bsc04_case)
 
+    def test_bsc13_owns_the_implemented_fault_hook_contract(self) -> None:
+        bsc13 = case_drivers.get_case_driver("BSC-13")
+        self.assertTrue(bsc13.implemented)
+        self.assertNotIn("hil-fault-control-not-implemented", bsc13.qualification_blockers)
+        self.assertIn("tracked-rig-adapter-not-implemented", bsc13.qualification_blockers)
+        self.assertIs(runner.resolve_case_handler(bsc13), runner.run_bsc13_case)
+
     def test_authoritative_ci_runs_the_declared_registry_gate(self) -> None:
         ci_source = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
         self.assertIn("python3 scripts/test_bug_squash_hil_case_drivers.py", ci_source)

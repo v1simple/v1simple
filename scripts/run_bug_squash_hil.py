@@ -221,6 +221,55 @@ BSC11_CAPTURE_COMMITMENTS = (
     "service_timeline_sha256",
     "v1_exchange_sha256",
 )
+BSC13_CASE_ID = "BSC-13"
+BSC13_HIL_ENVIRONMENT = "waveshare-349-hil"
+BSC13_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC13_REQUIRED_RUNS = 3
+BSC13_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC13_IDLE_DEADLINE_MS = 1_000
+BSC13_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "obd-connectivity",
+    "proxy-connectivity",
+    "serial",
+)
+BSC13_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "obd-peer",
+    "proxy-client",
+    "utc-time-source",
+)
+BSC13_STIMULUS_IDS = (
+    "begin-obd-connect",
+    "preempt-with-proxy",
+    "preempt-with-disable",
+    "remove-preemption",
+)
+BSC13_FAULT_IDS = ("obd-connect-edge-barrier",)
+BSC13_BARRIER_IDS = ("physical-link-before-session", "preemption-release")
+BSC13_CRITICAL_WINDOW_ROLES = ("proxy-takeover", "qualification-disable")
+BSC13_FAULT_FACTS = {
+    "unowned-link-disconnected",
+    "callback-confirmed-link-down",
+    "coordinator-reached-idle",
+    "phantom-connected-status-observed",
+    "resume-scan-count",
+    "successful-reconnect-count",
+    "barrier-generation-matched",
+}
+BSC13_PRODUCTION_FACTS = {
+    "orphan-link-observed",
+    "phantom-connected-status-observed",
+    "single-reconnect-succeeded",
+    "hil-fault-control-active",
+}
+BSC13_CAPTURE_COMMITMENTS = (
+    "build_evidence_sha256",
+    "coordinator_timeline_sha256",
+    "obd_exchange_sha256",
+    "proxy_exchange_sha256",
+    "serial_log_sha256",
+)
 BSC16_CASE_ID = "BSC-16"
 BSC16_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC16_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -3140,6 +3189,629 @@ def run_bsc04_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def bsc13_profile_descriptor(role: str) -> dict[str, object]:
+    code = "case_driver_contract_invalid"
+    profile, errors = qualification.load_pinned_profile()
+    if profile is None or errors:
+        raise RunnerError(code, "BSC-13 pinned qualification profile is invalid")
+    contract = next(
+        (candidate for candidate in profile["required_cases"] if candidate["id"] == BSC13_CASE_ID),
+        None,
+    )
+    row = require_exact_object(
+        contract,
+        {
+            "id",
+            "minimum_runs",
+            "fault_build_required",
+            "production_replay_required",
+            "required_dut_capabilities",
+            "required_rig_capabilities",
+            "scenario",
+            "production_replay",
+        },
+        code=code,
+        label="BSC-13 case descriptor",
+    )
+    if (
+        row.get("id") != BSC13_CASE_ID
+        or type(row.get("minimum_runs")) is not int
+        or row.get("minimum_runs") != BSC13_REQUIRED_RUNS
+        or row.get("fault_build_required") is not True
+        or row.get("production_replay_required") is not True
+        or row.get("required_dut_capabilities") != list(BSC13_DUT_CAPABILITIES)
+        or row.get("required_rig_capabilities") != list(BSC13_RIG_CAPABILITIES)
+    ):
+        raise RunnerError(code, "BSC-13 pinned case descriptor does not match the typed driver")
+
+    expected_facts: list[dict[str, object]]
+    if role == "fault-collection":
+        descriptor = row.get("scenario")
+        expected_role_id = "obd-connect-edge-preemption-fault"
+        expected_build = "hil-fault"
+        expected_faults = list(BSC13_FAULT_IDS)
+        expected_barriers = list(BSC13_BARRIER_IDS)
+        expected_facts = [
+            {"id": "unowned-link-disconnected", "type": "boolean", "expected": True},
+            {"id": "callback-confirmed-link-down", "type": "boolean", "expected": True},
+            {"id": "coordinator-reached-idle", "type": "boolean", "expected": True},
+            {"id": "phantom-connected-status-observed", "type": "boolean", "expected": False},
+            {"id": "resume-scan-count", "type": "integer", "minimum": 1, "maximum": 1},
+            {"id": "successful-reconnect-count", "type": "integer", "minimum": 1, "maximum": 1},
+            {"id": "barrier-generation-matched", "type": "boolean", "expected": True},
+        ]
+    elif role == "production-replay":
+        descriptor = row.get("production_replay")
+        expected_role_id = "obd-connect-edge-production-replay"
+        expected_build = "production"
+        expected_faults = []
+        expected_barriers = []
+        expected_facts = [
+            {"id": "orphan-link-observed", "type": "boolean", "expected": False},
+            {"id": "phantom-connected-status-observed", "type": "boolean", "expected": False},
+            {"id": "single-reconnect-succeeded", "type": "boolean", "expected": True},
+            {"id": "hil-fault-control-active", "type": "boolean", "expected": False},
+        ]
+    else:
+        raise RunnerError(code, "BSC-13 collection role is invalid")
+
+    typed = require_exact_object(
+        descriptor,
+        {
+            "role_id",
+            "schema",
+            "build_kind",
+            "stimulus_ids",
+            "fault_ids",
+            "barrier_ids",
+            "vbus_isolation_required",
+            "reset_contract",
+            "facts",
+        },
+        code=code,
+        label="BSC-13 role descriptor",
+    )
+    expected_descriptor: dict[str, object] = {
+        "role_id": expected_role_id,
+        "schema": "case-observation-v1",
+        "build_kind": expected_build,
+        "stimulus_ids": list(BSC13_STIMULUS_IDS),
+        "fault_ids": expected_faults,
+        "barrier_ids": expected_barriers,
+        "vbus_isolation_required": False,
+        "reset_contract": {
+            "expected_kind": "none",
+            "expected_count": 0,
+            "unexpected_count": 0,
+        },
+        "facts": expected_facts,
+    }
+    if typed != expected_descriptor:
+        raise RunnerError(code, "BSC-13 pinned role descriptor does not match the typed driver")
+    return expected_descriptor
+
+
+def bsc13_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc13.case-record.v1", committed)
+
+
+def validate_bsc13_hil_events(value: object, *, captured_generation: int, start_ms: int, end_ms: int) -> None:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != 3:
+        raise RunnerError(code, "BSC-13 fault critical window lifecycle is incomplete")
+    identity: tuple[int, int, int, int] | None = None
+    elapsed_values: list[int] = []
+    for sequence, (event, event_id) in enumerate(zip(value, ("ready", "fired", "released"), strict=True), start=1):
+        row = require_exact_object(
+            event,
+            {"id", "sequence", "elapsed_ms", "arm_sequence", "ready_sequence", "generation", "phase"},
+            code=code,
+            label="BSC-13 HIL event",
+        )
+        elapsed = row.get("elapsed_ms")
+        current_identity = tuple(row.get(field) for field in ("arm_sequence", "ready_sequence", "generation", "phase"))
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed < start_ms
+            or elapsed > end_ms
+            or any(type(item) is not int or item <= 0 for item in current_identity[:3])
+            or current_identity[2] != captured_generation
+            or type(current_identity[3]) is not int
+            or current_identity[3] != 1
+        ):
+            raise RunnerError(code, "BSC-13 HIL event evidence is invalid")
+        typed_identity = (current_identity[0], current_identity[1], current_identity[2], current_identity[3])
+        if identity is None:
+            identity = typed_identity
+        elif typed_identity != identity:
+            raise RunnerError(code, "BSC-13 HIL event identity changed during a critical window")
+        elapsed_values.append(elapsed)
+    if any(later < earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "BSC-13 HIL event times moved backwards")
+
+
+def validate_bsc13_critical_windows(value: object, *, role: str) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(BSC13_CRITICAL_WINDOW_ROLES):
+        raise RunnerError(code, "BSC-13 critical-window coverage is incomplete")
+    windows: list[dict[str, object]] = []
+    for sequence, (window, expected_role) in enumerate(
+        zip(value, BSC13_CRITICAL_WINDOW_ROLES, strict=True), start=1
+    ):
+        row = require_exact_object(
+            window,
+            {
+                "role",
+                "sequence",
+                "start_elapsed_ms",
+                "completion_elapsed_ms",
+                "captured_generation",
+                "cancellation_epoch_before",
+                "cancellation_epoch_after",
+                "callback_link_down_generation",
+                "callback_confirmed_link_down",
+                "session_ownership_adopted",
+                "barrier_ready",
+                "barrier_released",
+                "coordinator_reached_idle",
+                "coordinator_idle_elapsed_ms",
+                "phantom_connected_status_observed",
+                "resume_scan_count",
+                "successful_reconnect_count",
+                "hil_events",
+            },
+            code=code,
+            label="BSC-13 critical window",
+        )
+        start_ms = row.get("start_elapsed_ms")
+        completion_ms = row.get("completion_elapsed_ms")
+        generation = row.get("captured_generation")
+        epoch_before = row.get("cancellation_epoch_before")
+        epoch_after = row.get("cancellation_epoch_after")
+        idle_ms = row.get("coordinator_idle_elapsed_ms")
+        if (
+            row.get("role") != expected_role
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(start_ms) is not int
+            or start_ms < 0
+            or type(completion_ms) is not int
+            or completion_ms < start_ms
+            or type(generation) is not int
+            or generation <= 0
+            or type(epoch_before) is not int
+            or epoch_before < 0
+            or type(epoch_after) is not int
+            or epoch_after <= epoch_before
+            or type(row.get("callback_link_down_generation")) is not int
+            or row.get("callback_link_down_generation") != generation
+            or row.get("callback_confirmed_link_down") is not True
+            or row.get("session_ownership_adopted") is not False
+            or row.get("coordinator_reached_idle") is not True
+            or type(idle_ms) is not int
+            or idle_ms < 0
+            or idle_ms > BSC13_IDLE_DEADLINE_MS
+            or row.get("phantom_connected_status_observed") is not False
+            or type(row.get("resume_scan_count")) is not int
+            or row.get("resume_scan_count") != 1
+            or type(row.get("successful_reconnect_count")) is not int
+            or row.get("successful_reconnect_count") != 1
+        ):
+            raise RunnerError(code, "BSC-13 critical-window evidence is invalid")
+        if role == "fault-collection":
+            if row.get("barrier_ready") is not True or row.get("barrier_released") is not True:
+                raise RunnerError(code, "BSC-13 fault critical window lacks its barrier lifecycle")
+            validate_bsc13_hil_events(
+                row.get("hil_events"),
+                captured_generation=generation,
+                start_ms=start_ms,
+                end_ms=completion_ms,
+            )
+        elif (
+            row.get("barrier_ready") is not False
+            or row.get("barrier_released") is not False
+            or row.get("hil_events") != []
+        ):
+            raise RunnerError(code, "BSC-13 production replay contains HIL barrier evidence")
+        windows.append(row)
+    return windows
+
+
+def validate_bsc13_facts(value: object, *, role: str) -> None:
+    code = "case_record_invalid"
+    facts = require_exact_object(
+        value,
+        BSC13_FAULT_FACTS if role == "fault-collection" else BSC13_PRODUCTION_FACTS,
+        code=code,
+        label="BSC-13 facts",
+    )
+    if role == "fault-collection":
+        if (
+            facts.get("unowned-link-disconnected") is not True
+            or facts.get("callback-confirmed-link-down") is not True
+            or facts.get("coordinator-reached-idle") is not True
+            or facts.get("phantom-connected-status-observed") is not False
+            or type(facts.get("resume-scan-count")) is not int
+            or facts.get("resume-scan-count") != 1
+            or type(facts.get("successful-reconnect-count")) is not int
+            or facts.get("successful-reconnect-count") != 1
+            or facts.get("barrier-generation-matched") is not True
+        ):
+            raise RunnerError(code, "BSC-13 fault-build facts are invalid")
+    elif (
+        facts.get("orphan-link-observed") is not False
+        or facts.get("phantom-connected-status-observed") is not False
+        or facts.get("single-reconnect-succeeded") is not True
+        or facts.get("hil-fault-control-active") is not False
+    ):
+        raise RunnerError(code, "BSC-13 production replay facts are invalid")
+
+
+def validate_bsc13_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role",
+            "session_id",
+            "attempt_id",
+            "run_index",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "descriptor",
+            "firmware",
+            "critical_windows",
+            "facts",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-13 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role",
+        "session_id",
+        "attempt_id",
+        "run_index",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-13 {field} does not match the runner invocation")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-13 adapter schema is unsupported")
+    if type(record.get("run_index")) is not int or not 1 <= record["run_index"] <= BSC13_REQUIRED_RUNS:
+        raise RunnerError(code, "BSC-13 run index is invalid")
+    if type(record.get("hardware_observed")) is not bool:
+        raise RunnerError(code, "BSC-13 hardware observation flag is invalid")
+    role = record.get("role")
+    if role not in {"fault-collection", "production-replay"}:
+        raise RunnerError(code, "BSC-13 collection role is invalid")
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-13 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-13 completion")
+    if completed < started:
+        raise RunnerError(code, "BSC-13 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-13 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=0):
+        raise RunnerError(code, "BSC-13 physical record postdates adapter execution")
+
+    descriptor = require_exact_object(
+        record.get("descriptor"),
+        set(bsc13_profile_descriptor(role)),
+        code=code,
+        label="BSC-13 bound descriptor",
+    )
+    if descriptor != bsc13_profile_descriptor(role):
+        raise RunnerError(code, "BSC-13 adapter descriptor does not match the pinned role")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {"environment", "target_sha", "binary_sha256", "hil_fault_control_active"},
+        code=code,
+        label="BSC-13 firmware",
+    )
+    expected_environment = BSC13_HIL_ENVIRONMENT if role == "fault-collection" else BSC13_PRODUCTION_ENVIRONMENT
+    expected_hil = role == "fault-collection"
+    if (
+        firmware.get("environment") != expected_environment
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or firmware.get("hil_fault_control_active") is not expected_hil
+    ):
+        raise RunnerError(code, "BSC-13 firmware role or target is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-13 firmware binary")
+
+    validate_bsc13_critical_windows(record.get("critical_windows"), role=role)
+    validate_bsc13_facts(record.get("facts"), role=role)
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC13_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-13 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field) for field in BSC13_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-13 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-13 evidence binding"
+    )
+    if not secrets.compare_digest(binding, bsc13_record_commitment(record)):
+        raise RunnerError(code, "BSC-13 evidence binding does not match the record")
+    return record
+
+
+def validate_bsc13_distinct_runs(records: Sequence[Mapping[str, object]]) -> None:
+    if len(records) != BSC13_REQUIRED_RUNS:
+        raise RunnerError("case_runs_incomplete", "BSC-13 requires exactly three completed runs")
+    for field in ("attempt_id", "evidence_binding_sha256"):
+        if len({record.get(field) for record in records}) != BSC13_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-13 run identities must be distinct")
+    first_firmware = records[0].get("firmware")
+    if any(record.get("firmware") != first_firmware for record in records[1:]):
+        raise RunnerError("case_runs_mixed", "BSC-13 runs must use one bound firmware artifact")
+    for field in BSC13_CAPTURE_COMMITMENTS:
+        values = []
+        for record in records:
+            commitments = record.get("capture_commitments")
+            assert isinstance(commitments, dict)
+            values.append(commitments[field])
+        if len(set(values)) != BSC13_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-13 run captures must be distinct")
+    generations: list[object] = []
+    for record in records:
+        windows = record.get("critical_windows")
+        assert isinstance(windows, list)
+        generations.extend(window["captured_generation"] for window in windows if isinstance(window, dict))
+    if len(generations) != BSC13_REQUIRED_RUNS * len(BSC13_CRITICAL_WINDOW_ROLES) or len(set(generations)) != len(
+        generations
+    ):
+        raise RunnerError("case_runs_reused", "BSC-13 critical-window generations must be distinct")
+
+
+def resolve_bsc13_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError("local_inventory_missing", "BSC-13 requires the ignored local hardware inventory")
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(resolve_hil_board._read_json(args.ports_json, "serial port inventory"))
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC13_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC13_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-13 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def run_bsc13_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC13_CASE_ID,
+        "--role",
+        str(expected["role"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC13_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-13 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-13 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-13 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-13 adapter output size is invalid")
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-13 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc13_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc13_case(args: argparse.Namespace) -> int:
+    role = "production-replay" if args.production_replay else "fault-collection"
+    bsc13_profile_descriptor(role)
+    if args.runs != BSC13_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-13 requires exactly three runs per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-13 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-13 collection roles are atomic")
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError("untrusted_override", "authoritative BSC-13 forbids an untracked rig adapter")
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-13 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-13 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-13 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-13 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc13_hardware(args, Path(args.pio_command))
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-13 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-13 serial endpoint is not present")
+
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc13-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-13 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc13-{secrets.token_hex(16)}"
+    records: list[dict[str, object]] = []
+    run_artifacts: list[dict[str, object]] = []
+    for run_index in range(1, BSC13_REQUIRED_RUNS + 1):
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        expected: dict[str, object] = {
+            "case_id": BSC13_CASE_ID,
+            "role": role,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "run_index": run_index,
+            "target_sha": git_state.head_sha,
+            "dut_alias": args.board,
+            "rig_alias": args.rig,
+            "execution_mode": "simulated",
+            "hardware_observed": False,
+        }
+        require_unchanged_git_state(repository, git_state)
+        record = run_bsc13_adapter(
+            adapter=adapter,
+            repository=repository,
+            serial_port=serial_port,
+            expected=expected,
+            environment=os.environ.copy(),
+        )
+        require_unchanged_git_state(repository, git_state)
+        attempt_path = run_root / f"attempt-{run_index}.json"
+        write_json_atomic(attempt_path, record)
+        records.append(record)
+        run_artifacts.append(
+            {
+                "run_index": run_index,
+                "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+                "artifact": attempt_path.name,
+                "sha256": sha256_file(attempt_path),
+                "evidence_binding_sha256": record["evidence_binding_sha256"],
+            }
+        )
+    validate_bsc13_distinct_runs(records)
+    firmware = records[0]["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc13-obd-connect-edge-preemption",
+        "case_id": BSC13_CASE_ID,
+        "collection_role": role,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(case_drivers.get_case_driver(BSC13_CASE_ID).qualification_blockers),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC13_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "production_replay_required": role == "fault-collection",
+        "critical_window_roles": list(BSC13_CRITICAL_WINDOW_ROLES),
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "run_artifacts": run_artifacts,
+        "artifact_sha256": {
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment("v1simple.bsc13.dut-attestation.v1", dut_attestation),
+            "rig_attestation": canonical_case_commitment("v1simple.bsc13.rig-attestation.v1", rig_attestation),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def resolve_bsc16_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
@@ -4228,10 +4900,6 @@ def run_bsc10_case(args: argparse.Namespace) -> int:
 
 def run_bsc12_case(args: argparse.Namespace) -> int:
     return run_registered_case_foundation(args, "BSC-12")
-
-
-def run_bsc13_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-13")
 
 
 def run_bsc14_case(args: argparse.Namespace) -> int:

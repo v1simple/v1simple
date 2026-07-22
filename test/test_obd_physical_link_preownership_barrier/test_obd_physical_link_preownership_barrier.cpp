@@ -17,7 +17,7 @@ namespace {
 struct Fixture {
     std::atomic<uint32_t> nowMs{100};
     std::atomic<uint32_t> cancellationEpoch{12};
-    std::atomic<bool> linkDown{false};
+    std::atomic<uint32_t> linkDownGeneration{0};
 };
 
 uint32_t clockMs(void* context) noexcept {
@@ -28,8 +28,8 @@ uint32_t cancellationEpoch(void* context) noexcept {
     return static_cast<Fixture*>(context)->cancellationEpoch.load();
 }
 
-bool linkDownConfirmed(uint32_t, void* context) noexcept {
-    return static_cast<Fixture*>(context)->linkDown.load();
+bool linkDownConfirmed(const uint32_t generation, void* context) noexcept {
+    return static_cast<Fixture*>(context)->linkDownGeneration.load() == generation;
 }
 
 ObdPhysicalLinkPreownershipRuntime runtimeFor(Fixture& fixture) {
@@ -57,7 +57,7 @@ void test_cancellation_requires_matching_link_down_before_confirmation() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdPhysicalLinkPreownershipOutcome::CancellationObserved),
                             static_cast<uint8_t>(observation.outcome));
 
-    fixture.linkDown.store(true);
+    fixture.linkDownGeneration.store(request.activeGeneration);
     observation = ObdPhysicalLinkPreownershipBarrier::observe(request, runtimeFor(fixture));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdPhysicalLinkPreownershipOutcome::PreemptionConfirmed),
                             static_cast<uint8_t>(observation.outcome));
@@ -66,7 +66,7 @@ void test_cancellation_requires_matching_link_down_before_confirmation() {
 void test_link_down_without_cancellation_cannot_qualify_preemption() {
     Fixture fixture;
     const auto request = requestFor(fixture);
-    fixture.linkDown.store(true);
+    fixture.linkDownGeneration.store(request.activeGeneration);
     const auto observation = ObdPhysicalLinkPreownershipBarrier::observe(request, runtimeFor(fixture));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdPhysicalLinkPreownershipOutcome::LinkDownWithoutCancellation),
                             static_cast<uint8_t>(observation.outcome));
@@ -106,7 +106,7 @@ void test_real_concurrent_preemption_requires_both_atomic_publications() {
         }
         fixture.cancellationEpoch.store(request.dispatchEpoch + 2);
         std::this_thread::yield();
-        fixture.linkDown.store(true);
+        fixture.linkDownGeneration.store(request.activeGeneration);
     });
 
     ObdPhysicalLinkPreownershipOutcome outcome = ObdPhysicalLinkPreownershipOutcome::HoldOwnership;
@@ -121,6 +121,46 @@ void test_real_concurrent_preemption_requires_both_atomic_publications() {
                             static_cast<uint8_t>(outcome));
 }
 
+void test_concurrent_adjacent_generation_down_cannot_qualify_preemption() {
+    Fixture fixture;
+    const auto request = requestFor(fixture, 5000);
+    std::atomic<bool> observerStarted{false};
+    std::atomic<bool> wrongGenerationPublished{false};
+    std::atomic<bool> publishMatchingGeneration{false};
+    std::thread callbackPublisher([&]() {
+        while (!observerStarted.load()) {
+            std::this_thread::yield();
+        }
+        fixture.cancellationEpoch.store(request.dispatchEpoch + 2);
+        fixture.linkDownGeneration.store(request.activeGeneration + 1);
+        wrongGenerationPublished.store(true);
+        while (!publishMatchingGeneration.load()) {
+            std::this_thread::yield();
+        }
+        fixture.linkDownGeneration.store(request.activeGeneration);
+    });
+
+    observerStarted.store(true);
+    while (!wrongGenerationPublished.load()) {
+        std::this_thread::yield();
+    }
+    const auto wrongGenerationObservation = ObdPhysicalLinkPreownershipBarrier::observe(request, runtimeFor(fixture));
+    publishMatchingGeneration.store(true);
+
+    ObdPhysicalLinkPreownershipOutcome finalOutcome = wrongGenerationObservation.outcome;
+    for (uint32_t attempt = 0;
+         attempt < 100000 && finalOutcome != ObdPhysicalLinkPreownershipOutcome::PreemptionConfirmed; ++attempt) {
+        finalOutcome = ObdPhysicalLinkPreownershipBarrier::observe(request, runtimeFor(fixture)).outcome;
+        std::this_thread::yield();
+    }
+    callbackPublisher.join();
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdPhysicalLinkPreownershipOutcome::CancellationObserved),
+                            static_cast<uint8_t>(wrongGenerationObservation.outcome));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdPhysicalLinkPreownershipOutcome::PreemptionConfirmed),
+                            static_cast<uint8_t>(finalOutcome));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_holds_only_while_generation_is_live_and_uncancelled);
@@ -129,5 +169,6 @@ int main(int, char**) {
     RUN_TEST(test_deadline_is_bounded_across_clock_rollover);
     RUN_TEST(test_invalid_runtime_or_identity_never_holds_ownership);
     RUN_TEST(test_real_concurrent_preemption_requires_both_atomic_publications);
+    RUN_TEST(test_concurrent_adjacent_generation_down_cannot_qualify_preemption);
     return UNITY_END();
 }

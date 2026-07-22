@@ -15,7 +15,7 @@ constexpr char kSessionHashText[] = "9192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a
 struct Fixture {
     uint32_t nowMs = 100;
     uint32_t cancellationEpoch = 20;
-    bool linkDown = false;
+    uint32_t linkDownGeneration = 0;
     char output[8192]{};
     size_t outputLength = 0;
 };
@@ -38,8 +38,8 @@ uint32_t cancellationEpoch(void* context) noexcept {
     return static_cast<Fixture*>(context)->cancellationEpoch;
 }
 
-bool linkDownConfirmed(uint32_t, void* context) noexcept {
-    return static_cast<Fixture*>(context)->linkDown;
+bool linkDownConfirmed(const uint32_t generation, void* context) noexcept {
+    return static_cast<Fixture*>(context)->linkDownGeneration == generation;
 }
 
 ObdBsc13HilRuntime runtimeFor(Fixture& fixture) {
@@ -132,7 +132,7 @@ void test_cancellation_alone_does_not_release_until_matching_callback_down() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HilFaultState::Fired),
                             static_cast<uint8_t>(module.controllerSnapshot().state));
 
-    fixture.linkDown = true;
+    fixture.linkDownGeneration = 31;
     ++fixture.nowMs;
     module.service(fixture.nowMs);
     const auto snapshot = module.snapshot();
@@ -152,7 +152,7 @@ void test_link_down_without_cancellation_never_qualifies_release() {
     initializeArmed(fixture, owner, module);
     TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(), fixture.nowMs));
 
-    fixture.linkDown = true;
+    fixture.linkDownGeneration = 31;
     ++fixture.nowMs;
     module.service(fixture.nowMs);
     TEST_ASSERT_TRUE(module.snapshot().completionRecorded);
@@ -171,13 +171,13 @@ void test_confirmed_preemption_rejects_captured_link_but_admits_one_later_genera
     TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(31), fixture.nowMs));
 
     fixture.cancellationEpoch += 2;
-    fixture.linkDown = true;
+    fixture.linkDownGeneration = 31;
     ++fixture.nowMs;
     module.service(fixture.nowMs);
     TEST_ASSERT_TRUE(module.snapshot().controllerReleaseRecorded);
     TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(31), fixture.nowMs));
 
-    fixture.linkDown = false;
+    fixture.linkDownGeneration = 0;
     ++fixture.nowMs;
     TEST_ASSERT_TRUE(module.admitSessionOwnership(physicalConnect(32), fixture.nowMs));
     TEST_ASSERT_EQUAL_UINT32(31, module.snapshot().activeGeneration);
@@ -190,16 +190,44 @@ void test_unexpected_down_rejects_captured_link_but_does_not_strand_new_generati
     initializeArmed(fixture, owner, module);
     TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(41), fixture.nowMs));
 
-    fixture.linkDown = true;
+    fixture.linkDownGeneration = 41;
     ++fixture.nowMs;
     module.service(fixture.nowMs);
     TEST_ASSERT_FALSE(module.snapshot().controllerReleaseRecorded);
     TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(41), fixture.nowMs));
 
-    fixture.linkDown = false;
+    fixture.linkDownGeneration = 0;
     ++fixture.nowMs;
     TEST_ASSERT_TRUE(module.admitSessionOwnership(physicalConnect(42), fixture.nowMs));
     TEST_ASSERT_EQUAL_UINT32(41, module.snapshot().activeGeneration);
+}
+
+void test_adjacent_generation_down_remains_held_until_captured_generation_is_confirmed() {
+    Fixture fixture;
+    HilFaultRuntimeOwner owner;
+    ObdBsc13HilFaultModule module(owner, runtimeFor(fixture));
+    initializeArmed(fixture, owner, module);
+    TEST_ASSERT_FALSE(module.admitSessionOwnership(physicalConnect(51), fixture.nowMs));
+
+    fixture.cancellationEpoch += 2;
+    fixture.linkDownGeneration = 50;
+    ++fixture.nowMs;
+    module.service(fixture.nowMs);
+    TEST_ASSERT_TRUE(module.snapshot().barrierActive);
+    TEST_ASSERT_TRUE(module.snapshot().cancellationObserved);
+    TEST_ASSERT_FALSE(module.snapshot().linkDownConfirmed);
+    TEST_ASSERT_FALSE(module.snapshot().controllerReleaseRecorded);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HilFaultState::Fired),
+                            static_cast<uint8_t>(module.controllerSnapshot().state));
+
+    fixture.linkDownGeneration = 51;
+    ++fixture.nowMs;
+    module.service(fixture.nowMs);
+    TEST_ASSERT_TRUE(module.snapshot().completionRecorded);
+    TEST_ASSERT_TRUE(module.snapshot().linkDownConfirmed);
+    TEST_ASSERT_TRUE(module.snapshot().controllerReleaseRecorded);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HilFaultState::Released),
+                            static_cast<uint8_t>(module.controllerSnapshot().state));
 }
 
 void test_automatic_timeout_resumes_ordinary_adoption_without_qualifying() {
@@ -251,6 +279,7 @@ int main(int, char**) {
     RUN_TEST(test_link_down_without_cancellation_never_qualifies_release);
     RUN_TEST(test_confirmed_preemption_rejects_captured_link_but_admits_one_later_generation);
     RUN_TEST(test_unexpected_down_rejects_captured_link_but_does_not_strand_new_generation);
+    RUN_TEST(test_adjacent_generation_down_remains_held_until_captured_generation_is_confirmed);
     RUN_TEST(test_automatic_timeout_resumes_ordinary_adoption_without_qualifying);
     RUN_TEST(test_session_end_resumes_ordinary_adoption_without_qualifying);
     RUN_TEST(test_missing_runtime_does_not_capture_or_hold_connection);

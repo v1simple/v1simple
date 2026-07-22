@@ -224,7 +224,7 @@ ESP32-S3-Touch-LCD-3.49.
 
 **Optional peripherals**
 
-- AL Priority laser jammer integration (laser direction overlay).
+- AL Priority laser-alert integration (laser direction overlay).
 - OBD-II (ELM327 BLE) vehicle data overlay.
 - Serial GPS (MTK3339) for UTC and GPS speed, with speed-source selection and
   speed-based volume control.

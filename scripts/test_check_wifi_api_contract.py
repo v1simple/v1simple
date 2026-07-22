@@ -390,6 +390,18 @@ class WifiEnableTransactionContractTest(unittest.TestCase):
             [],
         )
 
+    def test_hil_admission_hook_cannot_be_removed(self) -> None:
+        source = ENABLE_TRANSACTION_SOURCE.replace(
+            "#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\n"
+            "    runtime.admitStart = [](void* ctx) {",
+            "#if defined(V1SIMPLE_HIL_FAULT_CONTROL)\n"
+            "    if (false) runtime.admitStart = [](void* ctx) {",
+        )
+        errors = CONTRACT.find_wifi_enable_transaction_errors(source)
+        self.assertIn(
+            "wifi enable transaction differs from reviewed manager wiring", errors
+        )
+
     def test_prestart_persistence_fails(self) -> None:
         source = ENABLE_TRANSACTION_SOURCE.replace(
             "WifiClientEnableTransaction::Runtime runtime;",

@@ -3,7 +3,7 @@
  *
  * SECURITY NOTE: WiFi passwords are stored with XOR obfuscation, NOT encryption.
  * This is intentional - it prevents casual viewing in hex dumps but is NOT secure
- * against a determined attacker with physical access to the device.
+ * against someone with physical access to the device who is determined to recover them.
  *
  * For this use case (a car accessory on a private network), the trade-off is:
  * - Pro: Simple, no crypto library overhead, recoverable if key changes

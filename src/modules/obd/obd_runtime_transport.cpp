@@ -20,6 +20,7 @@
 #include "obd_transport_control_dispatch.h"
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
 #include "obd_bsc06_hil_fault_module.h"
+#include "obd_bsc13_hil_fault_module.h"
 #endif
 
 #include <algorithm>
@@ -290,6 +291,8 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
         sObdTransport.context.runtime = runtime;
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
         configureObdBsc06HilDeviceRuntime(readObdTransportCancellationEpoch, obdTransportLinkDownConfirmed,
+                                          &sObdTransport.context);
+        configureObdBsc13HilDeviceRuntime(readObdTransportCancellationEpoch, obdTransportLinkDownConfirmed,
                                           &sObdTransport.context);
 #endif
 

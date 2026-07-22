@@ -60,6 +60,10 @@ LINKED_NATIVE_TEST_SPECS = {
         sources=("src/modules/obd/obd_transport_operation_barrier.cpp",),
         define="V1_LINKED_TEST_OBD_TRANSPORT_OPERATION_BARRIER",
     ),
+    "test_obd_physical_link_preownership_barrier": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_physical_link_preownership_barrier.cpp",),
+        define="V1_LINKED_TEST_OBD_PHYSICAL_LINK_PREOWNERSHIP_BARRIER",
+    ),
     "test_wifi_scan_result_owner": LinkedNativeTestSpec(
         sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),
         define="V1_LINKED_TEST_WIFI_SCAN_RESULT_OWNER",

@@ -70,6 +70,10 @@ EXPECTED_BSC06_PRODUCT_HIL_FILES = {
     "src/modules/obd/obd_bsc06_hil_fault_module.cpp",
     "src/modules/obd/obd_bsc06_hil_fault_module.h",
 }
+EXPECTED_BSC13_PRODUCT_HIL_FILES = {
+    "src/modules/obd/obd_bsc13_hil_fault_module.cpp",
+    "src/modules/obd/obd_bsc13_hil_fault_module.h",
+}
 EXPECTED_BSC10_PRODUCT_HIL_FILES = {
     "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
     "src/modules/wifi/wifi_bsc10_hil_fault_module.h",
@@ -78,6 +82,7 @@ BSC04_MAIN = "src/main.cpp"
 BSC05_MAIN = "src/main.cpp"
 BSC05_CONNECTION_STATE = "src/modules/ble/connection_state_module.cpp"
 BSC06_TRANSPORT = "src/modules/obd/obd_runtime_transport.cpp"
+BSC13_RUNTIME = "src/modules/obd/obd_runtime_module.cpp"
 BSC10_WIFI_CLIENT = "src/wifi_client.cpp"
 BSC10_TRANSACTION = "src/modules/wifi/wifi_client_enable_transaction.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
@@ -539,6 +544,58 @@ def validate_static(root: Path) -> list[str]:
         if min(claim_index, route_index, operation_index) < 0 or not claim_index < route_index < operation_index:
             errors.append(
                 "BSC-06 operation barrier hook must remain after request-epoch claim and before GATT dispatch"
+            )
+
+    for relative in sorted(EXPECTED_BSC13_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-13 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-13 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-13 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-13 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    try:
+        bsc13_main_source = (root / BSC04_MAIN).read_text(encoding="utf-8")
+        bsc13_runtime_source = (root / BSC13_RUNTIME).read_text(encoding="utf-8")
+        bsc13_transport_source = (root / BSC06_TRANSPORT).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-13 physical-link preownership wiring is unavailable: {exc}")
+    else:
+        service_token = "obdBsc13HilFaultModule().service(hilNowMs);"
+        configure_token = "configureObdBsc13HilDeviceRuntime("
+        route_token = "obdBsc13HilFaultModule().admitSessionOwnership("
+        generation_token = "bleClient_->activeLinkGeneration()"
+        for token, source in (
+            (service_token, bsc13_main_source),
+            (configure_token, bsc13_transport_source),
+            (route_token, bsc13_runtime_source),
+            (generation_token, bsc13_runtime_source),
+        ):
+            if source.count(token) != 1:
+                errors.append(f"BSC-13 preownership barrier wiring must contain exactly one {token}")
+
+        connecting_index = bsc13_runtime_source.find("case ObdConnectionState::CONNECTING:")
+        physical_index = bsc13_runtime_source.find("if (isBleConnected()) {", connecting_index)
+        route_index = bsc13_runtime_source.find(route_token, physical_index)
+        counter_index = bsc13_runtime_source.find("connectAttempts_ = 0;", physical_index)
+        adoption_index = bsc13_runtime_source.find(
+            "transitionTo(ObdConnectionState::DISCOVERING, nowMs);", physical_index
+        )
+        if min(connecting_index, physical_index, route_index, counter_index, adoption_index) < 0 or not (
+            connecting_index < physical_index < route_index < counter_index < adoption_index
+        ):
+            errors.append(
+                "BSC-13 preownership barrier hook must remain after physical connect observation and before session adoption"
             )
 
     for relative in sorted(EXPECTED_BSC16_PRODUCT_HIL_FILES):

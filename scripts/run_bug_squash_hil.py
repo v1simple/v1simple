@@ -4157,6 +4157,87 @@ def run_bsc11_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> int:
+    """Fail closed at the tracked rig boundary for a registered case.
+
+    These entrypoints are deliberately real, typed dispatch boundaries rather
+    than aliases to another case.  They validate the profile-owned invocation
+    shape before refusing physical mutation until that case's tracked rig
+    adapter is present.  This keeps unavailable hardware from being mistaken
+    for an unavailable or substituted driver.
+    """
+
+    profile, profile_errors = qualification.load_pinned_profile()
+    if profile is None or profile_errors:
+        raise RunnerError("qualification_profile_invalid", "pinned qualification profile is invalid")
+    case_contract = next(
+        (candidate for candidate in profile["required_cases"] if candidate["id"] == case_id),
+        None,
+    )
+    if case_contract is None:
+        raise RunnerError("case_driver_contract_invalid", "registered case is absent from the pinned profile")
+    if args.runs != case_contract["minimum_runs"]:
+        raise RunnerError(
+            "invalid_runs",
+            f"{case_id} requires exactly {case_contract['minimum_runs']} run(s)",
+        )
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", f"{case_id} requires an opaque local rig alias")
+    if args.production_replay and not case_contract["production_replay_required"]:
+        raise RunnerError("unsupported_mode", f"{case_id} has no production-replay role")
+    if not args.production_replay and case_contract["scenario"]["vbus_isolation_required"]:
+        if not args.ack_vbus_isolated:
+            raise RunnerError(
+                "operator_preconditions_incomplete",
+                f"{case_id} requires explicit VBUS-isolation acknowledgement",
+            )
+    if args.case_adapter is not None:
+        raise RunnerError(
+            "untrusted_override",
+            f"authoritative {case_id} forbids an untracked rig adapter",
+        )
+    raise RunnerError(
+        "case_rig_adapter_unavailable",
+        f"{case_id} physical execution remains blocked until its tracked rig adapter exists",
+    )
+
+
+def run_bsc05_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-05")
+
+
+def run_bsc06_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-06")
+
+
+def run_bsc07_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-07")
+
+
+def run_bsc08_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-08")
+
+
+def run_bsc09_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-09")
+
+
+def run_bsc10_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-10")
+
+
+def run_bsc12_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-12")
+
+
+def run_bsc13_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-13")
+
+
+def run_bsc14_case(args: argparse.Namespace) -> int:
+    return run_registered_case_foundation(args, "BSC-14")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -4197,7 +4278,16 @@ def case_handler_map() -> Mapping[str, Callable[[argparse.Namespace], int]]:
         "run_bsc02_case": run_bsc02_case,
         "run_bsc03_case": run_bsc03_case,
         "run_bsc04_case": run_bsc04_case,
+        "run_bsc05_case": run_bsc05_case,
+        "run_bsc06_case": run_bsc06_case,
+        "run_bsc07_case": run_bsc07_case,
+        "run_bsc08_case": run_bsc08_case,
+        "run_bsc09_case": run_bsc09_case,
+        "run_bsc10_case": run_bsc10_case,
         "run_bsc11_case": run_bsc11_case,
+        "run_bsc12_case": run_bsc12_case,
+        "run_bsc13_case": run_bsc13_case,
+        "run_bsc14_case": run_bsc14_case,
         "run_bsc16_case": run_bsc16_case,
     }
 
@@ -4207,6 +4297,11 @@ def resolve_case_handler(
 ) -> Callable[[argparse.Namespace], int]:
     """Resolve a registry entry before any case-owned hardware mutation."""
 
+    if driver != case_drivers.get_case_driver(driver.case_id):
+        raise RunnerError(
+            "case_driver_contract_invalid",
+            "tracked case-driver descriptor was substituted",
+        )
     if not driver.implemented:
         raise CaseDriverUnavailable(
             "case_driver_unavailable",

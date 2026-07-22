@@ -56,19 +56,12 @@ class CaseDriverRegistryTests(unittest.TestCase):
             if driver.implemented:
                 self.assertIs(runner.resolve_case_handler(driver), handlers[driver.entrypoint])
 
-    def test_blocked_drivers_fail_before_handler_resolution(self) -> None:
+    def test_every_case_has_a_distinct_tracked_entrypoint(self) -> None:
         blocked = [driver for driver in case_drivers.DRIVERS if not driver.implemented]
-        self.assertEqual(len(blocked), 9)
-        with mock.patch.object(
-            runner,
-            "case_handler_map",
-            side_effect=AssertionError("handler lookup crossed the unavailable boundary"),
-        ):
-            for driver in blocked:
-                with self.subTest(case_id=driver.case_id), self.assertRaises(
-                    runner.CaseDriverUnavailable
-                ):
-                    runner.resolve_case_handler(driver)
+        self.assertEqual(blocked, [])
+        handlers = runner.case_handler_map()
+        self.assertEqual(len(handlers), len(case_drivers.CASE_IDS))
+        self.assertEqual(len(set(handlers.values())), len(case_drivers.CASE_IDS))
 
     def test_substituted_entrypoint_fails_before_handler_execution(self) -> None:
         original = case_drivers.get_case_driver("BSC-02")
@@ -93,11 +86,14 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "case_driver_contract_invalid")
         self.assertFalse(called)
 
-    def test_unavailable_cli_cases_return_the_pinned_error(self) -> None:
-        for driver in case_drivers.DRIVERS:
-            if driver.implemented:
-                continue
+    def test_new_driver_foundations_fail_at_rig_boundary_without_mutation(self) -> None:
+        for case_id in ("BSC-05", "BSC-06", "BSC-07", "BSC-08", "BSC-09", "BSC-10", "BSC-12", "BSC-13", "BSC-14"):
+            driver = case_drivers.get_case_driver(case_id)
             with self.subTest(case_id=driver.case_id):
+                profile, errors = qualification.load_pinned_profile()
+                self.assertEqual(errors, [])
+                assert profile is not None
+                contract = next(case for case in profile["required_cases"] if case["id"] == case_id)
                 completed = subprocess.run(
                     [
                         "python3",
@@ -107,15 +103,24 @@ class CaseDriverRegistryTests(unittest.TestCase):
                         driver.case_id,
                         "--board",
                         "opaque-dut",
+                        "--rig",
+                        "opaque-rig",
+                        "--runs",
+                        str(contract["minimum_runs"]),
+                        *(
+                            ["--ack-vbus-isolated"]
+                            if contract["scenario"]["vbus_isolation_required"]
+                            else []
+                        ),
                     ],
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
                     check=False,
                 )
-                self.assertEqual(completed.returncode, 3, completed.stderr)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
                 payload = json.loads(completed.stdout)
-                self.assertEqual(payload["error"]["code"], "case_driver_unavailable")
+                self.assertEqual(payload["error"]["code"], "case_rig_adapter_unavailable")
 
     def test_bsc11_owns_its_blocker_contract(self) -> None:
         bsc03 = case_drivers.get_case_driver("BSC-03")

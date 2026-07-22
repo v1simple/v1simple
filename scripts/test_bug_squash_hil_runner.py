@@ -1639,17 +1639,29 @@ def test_git_mutation_fails_and_command_errors_still_emit_results() -> None:
             assert_true(marker.exists(), "production restoration must follow report rejection")
 
 
-def test_unimplemented_case_cannot_false_pass() -> None:
+def test_registered_case_without_rig_adapter_cannot_false_pass() -> None:
     completed = subprocess.run(
-        ["python3", "-B", str(RUNNER), "--case", "BSC-05", "--board", "release"],
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-05",
+            "--board",
+            "release",
+            "--rig",
+            "alert-rig",
+            "--runs",
+            "3",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert_true(completed.returncode == 3, completed.stdout + completed.stderr)
+    assert_true(completed.returncode == 1, completed.stdout + completed.stderr)
     payload = json.loads(completed.stdout)
-    assert_true(payload["error"]["code"] == "case_driver_unavailable", str(payload))
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
 def test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying() -> None:
@@ -2514,7 +2526,7 @@ def main() -> int:
     test_nonpass_transport_status_fails_closed_and_restores()
     test_nonzero_device_or_restore_exit_fails()
     test_git_mutation_fails_and_command_errors_still_emit_results()
-    test_unimplemented_case_cannot_false_pass()
+    test_registered_case_without_rig_adapter_cannot_false_pass()
     test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying()
     test_bsc03_rejects_missing_preconditions_timing_and_reused_runs()
     test_bsc03_resume_requires_recovery_and_never_counts_interrupted_attempt()

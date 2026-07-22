@@ -58,6 +58,11 @@ EXPECTED_BSC16_PRODUCT_HIL_FILES = {
     "src/modules/power/battery_bsc16_hil_fault_module.cpp",
     "src/modules/power/battery_bsc16_hil_fault_module.h",
 }
+EXPECTED_BSC04_PRODUCT_HIL_FILES = {
+    "src/modules/system/connection_bsc04_hil_fault_module.cpp",
+    "src/modules/system/connection_bsc04_hil_fault_module.h",
+}
+BSC04_MAIN = "src/main.cpp"
 BSC16_BATTERY_MANAGER = "src/battery_manager.cpp"
 HIL_REFERENCE_RE = re.compile(
     r"(?:modules/hil/|hil_fault_|hil_ready_barrier|HilFault|HilReady|V1SIMPLE_HIL_FAULT_CONTROL)"
@@ -380,6 +385,48 @@ def validate_static(root: Path) -> list[str]:
             )
 
     source_root = root / "src"
+    for relative in sorted(EXPECTED_BSC04_PRODUCT_HIL_FILES):
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"BSC-04 product HIL source is unavailable or a symlink: {relative}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"BSC-04 product HIL source could not be read: {relative}: {exc}")
+            continue
+        if not has_structural_outer_guard(text):
+            errors.append(f"BSC-04 product HIL source is not enclosed by the compile guard: {relative}")
+        forbidden = BSC16_FORBIDDEN_HARDWARE_RE.search(text)
+        if forbidden is not None:
+            errors.append(
+                f"BSC-04 product HIL source mutates hardware directly: {relative}: {forbidden.group(0)}"
+            )
+
+    main_path = root / BSC04_MAIN
+    try:
+        main_source = main_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"BSC-04 VerifyPush routing wiring is unavailable: {exc}")
+    else:
+        raw_edge = "bool v1VerifyPushMatchEdge = bleClient.consumeVerifyPushMatchEdge();"
+        route_edge = "connectionBsc04HilFaultModule().routeVerifyPushMatchEdge("
+        cycle_context = "const CycleContext cycleContext{"
+        coordinator_update = "connectionCycleCoordinatorModule.update(cycleContext);"
+        for token in (raw_edge, route_edge, cycle_context, coordinator_update):
+            if main_source.count(token) != 1:
+                errors.append(f"BSC-04 VerifyPush routing wiring must contain exactly one {token}")
+        raw_index = main_source.find(raw_edge)
+        route_index = main_source.find(route_edge)
+        context_index = main_source.find(cycle_context)
+        update_index = main_source.find(coordinator_update)
+        if min(raw_index, route_index, context_index, update_index) < 0 or not (
+            raw_index < route_index < context_index < update_index
+        ):
+            errors.append(
+                "BSC-04 suppression hook must route the consumed VerifyPush edge before coordinator admission"
+            )
+
     for relative in sorted(EXPECTED_BSC16_PRODUCT_HIL_FILES):
         path = root / relative
         if path.is_symlink() or not path.is_file():

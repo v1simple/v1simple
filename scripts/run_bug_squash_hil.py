@@ -82,6 +82,65 @@ BSC02_CAPTURE_COMMITMENTS = (
     "lifecycle_timeline_sha256",
     "serial_log_sha256",
 )
+BSC04_CASE_ID = "BSC-04"
+BSC04_HIL_ENVIRONMENT = "waveshare-349-hil"
+BSC04_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC04_REQUIRED_RUNS = 1
+BSC04_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC04_LATE_CONNECTION_MIN_MS = 30_000
+BSC04_SETTLE_DEADLINE_MIN_MS = 10_000
+BSC04_SETTLE_DEADLINE_MAX_MS = 10_500
+BSC04_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "serial",
+    "v1-connectivity",
+)
+BSC04_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "obd-peer",
+    "power-control",
+    "utc-time-source",
+    "v1-peer",
+)
+BSC04_FAULT_EVENT_IDS = (
+    "late-v1-power-enabled",
+    "late-v1-connected",
+    "v1-settling-entered",
+    "verify-push-suppressed",
+    "hard-deadline-exit",
+    "obd-sequencing-started",
+    "proxy-sequencing-started",
+)
+BSC04_PRODUCTION_EVENT_IDS = (
+    "late-v1-power-enabled",
+    "late-v1-connected",
+    "v1-settling-entered",
+    "verify-push-accepted",
+    "obd-sequencing-started",
+    "proxy-sequencing-started",
+)
+BSC04_FACTS = {
+    "late_connection_delay_ms",
+    "entry_state",
+    "same_loop_reentry",
+    "settle_exit_elapsed_ms",
+    "verify_push_match_observed",
+    "verify_push_suppressed",
+    "hard_deadline_used",
+    "v1_connected_through_exit",
+    "obd_started_without_v1_power_cycle",
+    "proxy_started_without_v1_power_cycle",
+    "unexpected_v1_disconnects",
+    "unexpected_resets",
+    "hil_fault_control_active",
+}
+BSC04_CAPTURE_COMMITMENTS = (
+    "build_evidence_sha256",
+    "coordinator_timeline_sha256",
+    "perf_csv_sha256",
+    "serial_log_sha256",
+    "v1_exchange_sha256",
+)
 BSC03_CASE_ID = "BSC-03"
 BSC03_REQUIRED_RUNS = 3
 BSC03_ADMISSION_DEADLINE_MS = 10_000
@@ -2615,6 +2674,472 @@ def run_bsc02_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_bsc04_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-04 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC04_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC04_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-04 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def bsc04_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc04.case-record.v1", committed)
+
+
+def validate_bsc04_events(value: object, expected_ids: Sequence[str]) -> None:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-04 event sequence is incomplete")
+    elapsed_values: list[int] = []
+    loop_values: list[int] = []
+    for sequence, (event, expected_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            event,
+            {"id", "sequence", "elapsed_ms", "loop_sequence", "result"},
+            code=code,
+            label="BSC-04 event",
+        )
+        elapsed = row.get("elapsed_ms")
+        loop_sequence = row.get("loop_sequence")
+        if (
+            row.get("id") != expected_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed < 0
+            or type(loop_sequence) is not int
+            or loop_sequence <= 0
+            or row.get("result") != "pass"
+        ):
+            raise RunnerError(code, "BSC-04 event order or result is invalid")
+        elapsed_values.append(elapsed)
+        loop_values.append(loop_sequence)
+    if any(later < earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "BSC-04 event times moved backwards")
+    if any(later < earlier for earlier, later in zip(loop_values, loop_values[1:])):
+        raise RunnerError(code, "BSC-04 event loop sequence moved backwards")
+    if loop_values[1] != loop_values[2] or elapsed_values[1] != elapsed_values[2]:
+        raise RunnerError(code, "BSC-04 late V1 connection did not enter settling in the same loop")
+
+
+def validate_bsc04_fault_lifecycle(value: object, *, role: str) -> None:
+    code = "case_record_invalid"
+    if role == "production-replay":
+        if value != []:
+            raise RunnerError(code, "BSC-04 production replay contains HIL fault events")
+        return
+    if not isinstance(value, list) or len(value) != 3:
+        raise RunnerError(code, "BSC-04 VerifyPush fault lifecycle is incomplete")
+    identity: tuple[int, int, int, int] | None = None
+    elapsed_values: list[int] = []
+    for sequence, (event, event_id, forwarded) in enumerate(
+        zip(value, ("ready", "fired", "released"), (True, False, False), strict=True),
+        start=1,
+    ):
+        row = require_exact_object(
+            event,
+            {
+                "id",
+                "sequence",
+                "elapsed_ms",
+                "arm_sequence",
+                "ready_sequence",
+                "generation",
+                "phase",
+                "coordinator_state",
+                "v1_connected",
+                "raw_verify_push_edge",
+                "forwarded_verify_push_edge",
+            },
+            code=code,
+            label="BSC-04 VerifyPush fault event",
+        )
+        elapsed = row.get("elapsed_ms")
+        current_identity = tuple(
+            row.get(field)
+            for field in ("arm_sequence", "ready_sequence", "generation", "phase")
+        )
+        if (
+            row.get("id") != event_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed < 0
+            or any(type(item) is not int or item <= 0 for item in current_identity[:3])
+            or type(current_identity[3]) is not int
+            or current_identity[3] != 1
+            or row.get("coordinator_state") != "V1_SETTLING"
+            or row.get("v1_connected") is not True
+            or row.get("raw_verify_push_edge") is not True
+            or row.get("forwarded_verify_push_edge") is not forwarded
+        ):
+            raise RunnerError(code, "BSC-04 VerifyPush fault lifecycle evidence is invalid")
+        typed_identity = (
+            current_identity[0],
+            current_identity[1],
+            current_identity[2],
+            current_identity[3],
+        )
+        if identity is None:
+            identity = typed_identity
+        elif typed_identity != identity:
+            raise RunnerError(code, "BSC-04 VerifyPush fault identity changed during execution")
+        elapsed_values.append(elapsed)
+    if any(later < earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])):
+        raise RunnerError(code, "BSC-04 VerifyPush fault times moved backwards")
+
+
+def validate_bsc04_facts(value: object, *, role: str) -> None:
+    code = "case_record_invalid"
+    facts = require_exact_object(value, BSC04_FACTS, code=code, label="BSC-04 facts")
+    delay = facts.get("late_connection_delay_ms")
+    settle_exit = facts.get("settle_exit_elapsed_ms")
+    expected_fault = role == "fault-collection"
+    if (
+        type(delay) is not int
+        or delay < BSC04_LATE_CONNECTION_MIN_MS
+        or facts.get("entry_state") not in {"STEADY", "WIFI_OPEN"}
+        or facts.get("same_loop_reentry") is not True
+        or type(settle_exit) is not int
+        or settle_exit <= 0
+        or facts.get("verify_push_match_observed") is not True
+        or facts.get("verify_push_suppressed") is not expected_fault
+        or facts.get("hard_deadline_used") is not expected_fault
+        or facts.get("v1_connected_through_exit") is not True
+        or facts.get("obd_started_without_v1_power_cycle") is not True
+        or facts.get("proxy_started_without_v1_power_cycle") is not True
+        or type(facts.get("unexpected_v1_disconnects")) is not int
+        or facts.get("unexpected_v1_disconnects") != 0
+        or type(facts.get("unexpected_resets")) is not int
+        or facts.get("unexpected_resets") != 0
+        or facts.get("hil_fault_control_active") is not expected_fault
+    ):
+        raise RunnerError(code, "BSC-04 facts do not satisfy the connection-cycle policy")
+    if expected_fault:
+        if settle_exit < BSC04_SETTLE_DEADLINE_MIN_MS or settle_exit > BSC04_SETTLE_DEADLINE_MAX_MS:
+            raise RunnerError(code, "BSC-04 hard-deadline exit is outside the bounded tolerance")
+    elif settle_exit >= BSC04_SETTLE_DEADLINE_MIN_MS:
+        raise RunnerError(code, "BSC-04 production replay did not progress through VerifyPush before the deadline")
+
+
+def validate_bsc04_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role",
+            "session_id",
+            "attempt_id",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "firmware",
+            "events",
+            "facts",
+            "fault_lifecycle",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-04 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-04 {field} does not match the runner invocation")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-04 adapter schema is unsupported")
+    if type(record.get("hardware_observed")) is not bool:
+        raise RunnerError(code, "BSC-04 hardware observation flag is invalid")
+    role = record.get("role")
+    if role not in {"fault-collection", "production-replay"}:
+        raise RunnerError(code, "BSC-04 collection role is invalid")
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-04 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-04 completion")
+    if completed < started:
+        raise RunnerError(code, "BSC-04 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-04 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=0):
+        raise RunnerError(code, "BSC-04 physical record postdates adapter execution")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {"environment", "target_sha", "binary_sha256", "hil_fault_control_active"},
+        code=code,
+        label="BSC-04 firmware",
+    )
+    expected_environment = BSC04_HIL_ENVIRONMENT if role == "fault-collection" else BSC04_PRODUCTION_ENVIRONMENT
+    expected_hil = role == "fault-collection"
+    if (
+        firmware.get("environment") != expected_environment
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or firmware.get("hil_fault_control_active") is not expected_hil
+    ):
+        raise RunnerError(code, "BSC-04 firmware role or target is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-04 firmware binary")
+
+    validate_bsc04_events(
+        record.get("events"),
+        BSC04_FAULT_EVENT_IDS if role == "fault-collection" else BSC04_PRODUCTION_EVENT_IDS,
+    )
+    validate_bsc04_facts(record.get("facts"), role=role)
+    validate_bsc04_fault_lifecycle(record.get("fault_lifecycle"), role=role)
+
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC04_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-04 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field)
+        for field in BSC04_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-04 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-04 evidence binding"
+    )
+    if not secrets.compare_digest(binding, bsc04_record_commitment(record)):
+        raise RunnerError(code, "BSC-04 evidence binding does not match the record")
+    return record
+
+
+def run_bsc04_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC04_CASE_ID,
+        "--role",
+        str(expected["role"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC04_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-04 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-04 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-04 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-04 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-04 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc04_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc04_case(args: argparse.Namespace) -> int:
+    if args.runs != BSC04_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-04 requires exactly one run per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-04 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-04 collection roles are atomic")
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError("untrusted_override", "authoritative BSC-04 forbids an untracked rig adapter")
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-04 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-04 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-04 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-04 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc04_hardware(args, Path(args.pio_command))
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-04 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-04 serial endpoint is not present")
+
+    role = "production-replay" if args.production_replay else "fault-collection"
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc04-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-04 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc04-{secrets.token_hex(16)}"
+    attempt_id = f"attempt-{secrets.token_hex(16)}"
+    expected: dict[str, object] = {
+        "case_id": BSC04_CASE_ID,
+        "role": role,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+    }
+    require_unchanged_git_state(repository, git_state)
+    record = run_bsc04_adapter(
+        adapter=adapter,
+        repository=repository,
+        serial_port=serial_port,
+        expected=expected,
+        environment=os.environ.copy(),
+    )
+    require_unchanged_git_state(repository, git_state)
+    attempt_path = run_root / "attempt.json"
+    write_json_atomic(attempt_path, record)
+    firmware = record["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc04-connection-cycle-progress",
+        "case_id": BSC04_CASE_ID,
+        "collection_role": role,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC04_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC04_REQUIRED_RUNS,
+        "runs_completed": 1,
+        "production_replay_required": role == "fault-collection",
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "artifact_sha256": {
+            "adapter_record": sha256_file(attempt_path),
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc04.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc04.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def resolve_bsc16_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
@@ -3671,6 +4196,7 @@ def case_handler_map() -> Mapping[str, Callable[[argparse.Namespace], int]]:
     return {
         "run_bsc02_case": run_bsc02_case,
         "run_bsc03_case": run_bsc03_case,
+        "run_bsc04_case": run_bsc04_case,
         "run_bsc11_case": run_bsc11_case,
         "run_bsc16_case": run_bsc16_case,
     }

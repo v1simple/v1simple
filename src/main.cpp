@@ -58,6 +58,7 @@
 #include "modules/wifi/wifi_bsc02_hil_fault_module.h"
 #include "modules/power/battery_bsc16_hil_fault_module.h"
 #include "modules/hil/hil_fault_serial_module.h"
+#include "modules/system/connection_bsc04_hil_fault_module.h"
 #endif
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
@@ -601,6 +602,7 @@ void setup() {
     configureWifiBsc02HilDeviceRuntime(WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY,
                                        WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY);
     configureBatteryBsc16HilDeviceRuntime();
+    configureConnectionBsc04HilDeviceRuntime();
     if (!configureHilNextBootFaultRouter()) {
         SerialLog.println("[HIL] ERROR: next-boot fault router configuration failed");
     }
@@ -632,6 +634,7 @@ void loop() {
         }
     }
     wifiBsc02HilFaultModule().service(hilNowMs);
+    connectionBsc04HilFaultModule().service(hilNowMs);
 #endif
     if (mainRuntimeState.maintenanceBootActive) {
         audio_process_amp_timeout();
@@ -805,12 +808,18 @@ void loop() {
         const ObdRuntimeStatus obdStatus = obdRuntimeModule.snapshot(now);
         const V1Settings& currentSettings = settingsManager.get();
         const bool wifiManualStartIntentLatched = mainRuntimeState.wifiManualStartIntentLatched;
+        bool v1VerifyPushMatchEdge = bleClient.consumeVerifyPushMatchEdge();
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        v1VerifyPushMatchEdge = connectionBsc04HilFaultModule().routeVerifyPushMatchEdge(
+            {v1VerifyPushMatchEdge, bleConnectedNow, static_cast<uint8_t>(connectionCycleCoordinatorModule.state())},
+            static_cast<uint32_t>(now));
+#endif
         const CycleContext cycleContext{
             now,
             mainRuntimeState.bootReady,
             bleConnectedNow,
             currentSettings.autoPushEnabled,
-            bleClient.consumeVerifyPushMatchEdge(),
+            v1VerifyPushMatchEdge,
             bleClient.lastV1ConnectionEventMs(),
             obdStatus.enabled,
             obdStatus.savedAddressValid,

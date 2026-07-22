@@ -672,6 +672,163 @@ if os.environ.get('FAKE_BSC11_TAMPER') == '1':
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc04_adapter = root / "fake-bsc04-adapter.py"
+    write_executable(
+        bsc04_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc04.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+role = argument('--role')
+is_fault = role == 'fault-collection'
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=50)
+event_ids = [
+    'late-v1-power-enabled',
+    'late-v1-connected',
+    'v1-settling-entered',
+    'verify-push-suppressed',
+    'hard-deadline-exit',
+    'obd-sequencing-started',
+    'proxy-sequencing-started',
+] if is_fault else [
+    'late-v1-power-enabled',
+    'late-v1-connected',
+    'v1-settling-entered',
+    'verify-push-accepted',
+    'obd-sequencing-started',
+    'proxy-sequencing-started',
+]
+event_ms = [31000, 31020, 31020, 34000, 41050, 42000, 43000] if is_fault else [
+    31000, 31020, 31020, 34000, 35000, 36000
+]
+loop_sequences = [100, 101, 101, 200, 300, 400, 500] if is_fault else [100, 101, 101, 200, 300, 400]
+events = [
+    {
+        'id': event_id,
+        'sequence': sequence,
+        'elapsed_ms': elapsed,
+        'loop_sequence': loop_sequence,
+        'result': 'pass',
+    }
+    for sequence, (event_id, elapsed, loop_sequence) in enumerate(
+        zip(event_ids, event_ms, loop_sequences), start=1
+    )
+]
+if os.environ.get('FAKE_BSC04_MISSING_EVENT') == '1':
+    events.pop()
+if os.environ.get('FAKE_BSC04_NOT_SAME_LOOP') == '1':
+    events[2]['loop_sequence'] += 1
+
+facts = {
+    'late_connection_delay_ms': 31020,
+    'entry_state': 'STEADY',
+    'same_loop_reentry': True,
+    'settle_exit_elapsed_ms': 10030 if is_fault else 2980,
+    'verify_push_match_observed': True,
+    'verify_push_suppressed': is_fault,
+    'hard_deadline_used': is_fault,
+    'v1_connected_through_exit': True,
+    'obd_started_without_v1_power_cycle': True,
+    'proxy_started_without_v1_power_cycle': True,
+    'unexpected_v1_disconnects': 0,
+    'unexpected_resets': 0,
+    'hil_fault_control_active': is_fault,
+}
+if os.environ.get('FAKE_BSC04_EARLY_CONNECTION') == '1':
+    facts['late_connection_delay_ms'] = 29999
+if os.environ.get('FAKE_BSC04_BAD_DEADLINE') == '1':
+    facts['settle_exit_elapsed_ms'] = 9999
+if os.environ.get('FAKE_BSC04_DISCONNECT') == '1':
+    facts['unexpected_v1_disconnects'] = 1
+if os.environ.get('FAKE_BSC04_BAD_DOWNSTREAM') == '1':
+    facts['proxy_started_without_v1_power_cycle'] = False
+
+if is_fault:
+    lifecycle = [{
+        'id': event_id,
+        'sequence': sequence,
+        'elapsed_ms': 34000 + sequence,
+        'arm_sequence': 7,
+        'ready_sequence': 3,
+        'generation': 1,
+        'phase': 1,
+        'coordinator_state': 'V1_SETTLING',
+        'v1_connected': True,
+        'raw_verify_push_edge': True,
+        'forwarded_verify_push_edge': event_id == 'ready',
+    } for sequence, event_id in enumerate(('ready', 'fired', 'released'), start=1)]
+    if os.environ.get('FAKE_BSC04_BAD_LIFECYCLE') == '1':
+        lifecycle[1]['coordinator_state'] = 'STEADY'
+    environment = 'waveshare-349-hil'
+    hil_active = True
+else:
+    lifecycle = []
+    if os.environ.get('FAKE_BSC04_REPLAY_FAULT') == '1':
+        lifecycle = [{'id': 'fired'}]
+    environment = 'waveshare-349'
+    hil_active = False
+
+if os.environ.get('FAKE_BSC04_WRONG_FIRMWARE') == '1':
+    environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
+if os.environ.get('FAKE_BSC04_WRONG_HIL') == '1':
+    hil_active = not hil_active
+
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role': role,
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'firmware': {
+        'environment': environment,
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest(f'{role}-binary'),
+        'hil_fault_control_active': hil_active,
+    },
+    'events': events,
+    'facts': facts,
+    'fault_lifecycle': lifecycle,
+    'capture_commitments': {
+        'build_evidence_sha256': digest(f'{role}-build-evidence'),
+        'coordinator_timeline_sha256': digest(f'{role}-coordinator-timeline'),
+        'perf_csv_sha256': digest(f'{role}-perf-csv'),
+        'serial_log_sha256': digest(f'{role}-serial-log'),
+        'v1_exchange_sha256': digest(f'{role}-v1-exchange'),
+    },
+}
+if os.environ.get('FAKE_BSC04_REUSE') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['perf_csv_sha256']
+if os.environ.get('FAKE_BSC04_BOOL_SCHEMA') == '1':
+    payload['schema_version'] = True
+if os.environ.get('FAKE_BSC04_INTEGER_HARDWARE') == '1':
+    payload['hardware_observed'] = 0
+payload['evidence_binding_sha256'] = commitment(payload)
+if os.environ.get('FAKE_BSC04_TAMPER') == '1':
+    payload['capture_commitments']['serial_log_sha256'] = digest('tampered-serial')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
     bsc16_adapter = root / "fake-bsc16-adapter.py"
     write_executable(
         bsc16_adapter,
@@ -824,6 +981,7 @@ sys.stdout.write(json.dumps(payload))
         "pio": fake_pio,
         "bsc02_adapter": bsc02_adapter,
         "bsc03_adapter": bsc03_adapter,
+        "bsc04_adapter": bsc04_adapter,
         "bsc11_adapter": bsc11_adapter,
         "bsc16_adapter": bsc16_adapter,
     }
@@ -1147,6 +1305,89 @@ def run_bsc11_fixture(
     return completed, out_dir
 
 
+def run_bsc04_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    production_replay: bool = False,
+    runs: int = 1,
+    missing_event: bool = False,
+    not_same_loop: bool = False,
+    early_connection: bool = False,
+    bad_deadline: bool = False,
+    disconnect: bool = False,
+    bad_downstream: bool = False,
+    bad_lifecycle: bool = False,
+    replay_fault: bool = False,
+    wrong_firmware: bool = False,
+    wrong_hil: bool = False,
+    reused_evidence: bool = False,
+    tampered_evidence: bool = False,
+    bool_schema: bool = False,
+    integer_hardware: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    role = "production" if production_replay else "fault"
+    out_dir = root / f"bsc04-{role}-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC04_MISSING_EVENT": "1" if missing_event else "0",
+            "FAKE_BSC04_NOT_SAME_LOOP": "1" if not_same_loop else "0",
+            "FAKE_BSC04_EARLY_CONNECTION": "1" if early_connection else "0",
+            "FAKE_BSC04_BAD_DEADLINE": "1" if bad_deadline else "0",
+            "FAKE_BSC04_DISCONNECT": "1" if disconnect else "0",
+            "FAKE_BSC04_BAD_DOWNSTREAM": "1" if bad_downstream else "0",
+            "FAKE_BSC04_BAD_LIFECYCLE": "1" if bad_lifecycle else "0",
+            "FAKE_BSC04_REPLAY_FAULT": "1" if replay_fault else "0",
+            "FAKE_BSC04_WRONG_FIRMWARE": "1" if wrong_firmware else "0",
+            "FAKE_BSC04_WRONG_HIL": "1" if wrong_hil else "0",
+            "FAKE_BSC04_REUSE": "1" if reused_evidence else "0",
+            "FAKE_BSC04_TAMPER": "1" if tampered_evidence else "0",
+            "FAKE_BSC04_BOOL_SCHEMA": "1" if bool_schema else "0",
+            "FAKE_BSC04_INTEGER_HARDWARE": "1" if integer_hardware else "0",
+        }
+    )
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-04",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc04_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
 def run_bsc16_fixture(
     fixture: dict[str, Path | str],
     root: Path,
@@ -1400,7 +1641,7 @@ def test_git_mutation_fails_and_command_errors_still_emit_results() -> None:
 
 def test_unimplemented_case_cannot_false_pass() -> None:
     completed = subprocess.run(
-        ["python3", "-B", str(RUNNER), "--case", "BSC-04", "--board", "release"],
+        ["python3", "-B", str(RUNNER), "--case", "BSC-05", "--board", "release"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -1924,6 +2165,125 @@ def test_bsc11_physical_mode_remains_blocked_without_tracked_adapter() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def test_bsc04_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
+    for production_replay, expected_role, expected_environment, expected_hil in (
+        (False, "fault-collection", "waveshare-349-hil", True),
+        (True, "production-replay", "waveshare-349", False),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc04_fixture(
+                fixture, root, production_replay=production_replay
+            )
+            assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+            result = json.loads(
+                (out_dir / "collection_result.json").read_text(encoding="utf-8")
+            )
+            assert_true(result["result"] == "TEST_PASS", str(result))
+            assert_true(result["collection_role"] == expected_role, str(result))
+            assert_true(result["execution_mode"] == "simulated", str(result))
+            assert_true(result["hardware_observed"] is False, str(result))
+            assert_true(result["authoritative"] is False, str(result))
+            assert_true(result["physical_collection_completed"] is False, str(result))
+            assert_true(result["non_qualifying"] is True, str(result))
+            assert_true(result["qualification_status"] == "BLOCKED", str(result))
+            assert_true(
+                result["qualification_blockers"]
+                == [
+                    "build-generator-provenance-not-authenticated",
+                    "board-resolution-provenance-not-authenticated",
+                    "tracked-rig-adapter-not-implemented",
+                ],
+                str(result),
+            )
+            assert_true(result["runs_required"] == result["runs_completed"] == 1, str(result))
+            assert_true(
+                result["production_replay_required"] is (not production_replay), str(result)
+            )
+            assert_true(
+                result["firmware_target"]["environment"] == expected_environment
+                and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+                and result["firmware_target"]["hil_fault_control_active"] is expected_hil,
+                str(result),
+            )
+            assert_true(
+                all(
+                    len(value) == 64
+                    for value in (
+                        result["session_sha256"],
+                        result["attempt_sha256"],
+                        result["evidence_binding_sha256"],
+                        *result["artifact_sha256"].values(),
+                    )
+                ),
+                str(result),
+            )
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+            public_output = completed.stdout + completed.stderr + json.dumps(result)
+            assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+            assert_true(str(fixture["port"]) not in public_output, public_output)
+            assert_true("release" not in public_output and '"rig"' not in public_output, public_output)
+
+
+def test_bsc04_rejects_missing_timing_disconnect_role_and_tampered_evidence() -> None:
+    cases = (
+        ({"missing_event": True}, "case_record_invalid"),
+        ({"not_same_loop": True}, "case_record_invalid"),
+        ({"early_connection": True}, "case_record_invalid"),
+        ({"bad_deadline": True}, "case_record_invalid"),
+        ({"disconnect": True}, "case_record_invalid"),
+        ({"bad_downstream": True}, "case_record_invalid"),
+        ({"bad_lifecycle": True}, "case_record_invalid"),
+        ({"wrong_firmware": True}, "case_record_invalid"),
+        ({"wrong_hil": True}, "case_record_invalid"),
+        ({"reused_evidence": True}, "case_record_invalid"),
+        ({"tampered_evidence": True}, "case_record_invalid"),
+        ({"bool_schema": True}, "case_record_invalid"),
+        ({"integer_hardware": True}, "case_record_invalid"),
+        ({"production_replay": True, "replay_fault": True}, "case_record_invalid"),
+        ({"runs": 2}, "invalid_runs"),
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc04_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc04_physical_mode_remains_blocked_without_tracked_adapter() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-04",
+            "--board",
+            "release",
+            "--rig",
+            "rig",
+        ],
+        cwd=ROOT,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "V1SIMPLE_HIL_TEST_HOOKS"
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-04 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+
+
 def test_bsc16_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
     for production_replay, expected_role, expected_environment, expected_hil in (
         (False, "fault-collection", "waveshare-349-hil", True),
@@ -2169,6 +2529,9 @@ def main() -> int:
     test_bsc11_rejects_service_evidence_that_does_not_span_the_hold()
     test_bsc11_rejects_usb_powerdown_reused_and_tampered_evidence()
     test_bsc11_physical_mode_remains_blocked_without_tracked_adapter()
+    test_bsc04_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
+    test_bsc04_rejects_missing_timing_disconnect_role_and_tampered_evidence()
+    test_bsc04_physical_mode_remains_blocked_without_tracked_adapter()
     test_bsc16_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc16_rejects_missing_unsafe_wrong_role_and_tampered_evidence()
     test_bsc16_physical_mode_remains_blocked_without_tracked_adapter()

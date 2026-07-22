@@ -25,11 +25,16 @@ def fixture_root(temporary: Path) -> Path:
     (root / "src" / "modules").mkdir(parents=True)
     shutil.copy2(ROOT / "platformio.ini", root / "platformio.ini")
     shutil.copytree(ROOT / "src" / "modules" / "hil", root / "src" / "modules" / "hil")
+    for relative in checker.EXPECTED_BSC04_PRODUCT_HIL_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     for relative in checker.EXPECTED_BSC16_PRODUCT_HIL_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
     shutil.copy2(ROOT / checker.BSC16_BATTERY_MANAGER, root / checker.BSC16_BATTERY_MANAGER)
+    shutil.copy2(ROOT / checker.BSC04_MAIN, root / checker.BSC04_MAIN)
     for relative in checker.RELEASE_CONFIGURATION_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +45,6 @@ def fixture_root(temporary: Path) -> Path:
     ci_workflow = root / checker.CI_WORKFLOW_FILE
     ci_workflow.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / checker.CI_WORKFLOW_FILE, ci_workflow)
-    (root / "src" / "main.cpp").write_text("int production_fixture = 1;\n", encoding="utf-8")
     return root
 
 
@@ -171,7 +175,7 @@ def test_hil_environment_cannot_become_default_or_leak_to_production_flags() -> 
 def test_unguarded_and_elif_call_sites_are_rejected() -> None:
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
         root = fixture_root(Path(raw))
-        call_site = root / "src" / "main.cpp"
+        call_site = root / "src" / "escaped.cpp"
         call_site.write_text("HilFaultController* escaped_controller;\n", encoding="utf-8")
         assert_error_contains(checker.validate_static(root), "unguarded HIL call site")
 
@@ -184,7 +188,7 @@ def test_unguarded_and_elif_call_sites_are_rejected() -> None:
             encoding="utf-8",
         )
         errors = checker.validate_static(root)
-        assert_error_contains(errors, "unguarded HIL call site: src/main.cpp:4")
+        assert_error_contains(errors, "unguarded HIL call site: src/escaped.cpp:4")
 
         call_site.write_text(
             "#if defined(OTHER_FEATURE)\n"
@@ -251,6 +255,30 @@ def test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
             encoding="utf-8",
         )
         assert_error_contains(checker.validate_static(root), "admission wiring must contain exactly one")
+
+
+def test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        hook = root / "src" / "modules" / "system" / "connection_bsc04_hil_fault_module.cpp"
+        original = hook.read_text(encoding="utf-8")
+        hook.write_text(
+            original.replace("#include <cstdio>\n", "#include <cstdio>\nvoid escaped() { digitalWrite(1, 1); }\n"),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "mutates hardware directly")
+
+        hook.write_text(original, encoding="utf-8")
+        main = root / checker.BSC04_MAIN
+        main.write_text(
+            main.read_text(encoding="utf-8").replace(
+                "connectionBsc04HilFaultModule().routeVerifyPushMatchEdge(",
+                "connectionBsc04HilFaultModule().bypassVerifyPushMatchEdge(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "routing wiring must contain exactly one")
 
 
 def complete_artifacts(
@@ -629,6 +657,7 @@ def main() -> int:
         test_unguarded_and_elif_call_sites_are_rejected,
         test_hil_inventory_guard_symlink_and_forbidden_runtime_are_rejected,
         test_bsc16_hook_rejects_direct_hardware_access_and_wiring_drift,
+        test_bsc04_hook_rejects_direct_hardware_access_and_wiring_drift,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,
         test_bound_build_requires_clean_full_sha_and_exact_environment_commands,

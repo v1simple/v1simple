@@ -58,7 +58,7 @@ class CaseDriverRegistryTests(unittest.TestCase):
 
     def test_blocked_drivers_fail_before_handler_resolution(self) -> None:
         blocked = [driver for driver in case_drivers.DRIVERS if not driver.implemented]
-        self.assertEqual(len(blocked), 10)
+        self.assertEqual(len(blocked), 9)
         with mock.patch.object(
             runner,
             "case_handler_map",
@@ -72,7 +72,7 @@ class CaseDriverRegistryTests(unittest.TestCase):
 
     def test_substituted_entrypoint_fails_before_handler_execution(self) -> None:
         original = case_drivers.get_case_driver("BSC-02")
-        substituted = replace(original, entrypoint="run_bsc04_case")
+        substituted = replace(original, entrypoint="run_bsc05_case")
         called = False
 
         def unexpected_handler(_args: object) -> int:
@@ -130,6 +130,13 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertNotIn("hil-fault-control-not-implemented", bsc16.qualification_blockers)
         self.assertIn("tracked-rig-adapter-not-implemented", bsc16.qualification_blockers)
         self.assertIs(runner.resolve_case_handler(bsc16), runner.run_bsc16_case)
+
+    def test_bsc04_owns_the_implemented_fault_hook_contract(self) -> None:
+        bsc04 = case_drivers.get_case_driver("BSC-04")
+        self.assertTrue(bsc04.implemented)
+        self.assertNotIn("hil-fault-control-not-implemented", bsc04.qualification_blockers)
+        self.assertIn("tracked-rig-adapter-not-implemented", bsc04.qualification_blockers)
+        self.assertIs(runner.resolve_case_handler(bsc04), runner.run_bsc04_case)
 
     def test_authoritative_ci_runs_the_declared_registry_gate(self) -> None:
         ci_source = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")

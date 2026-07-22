@@ -141,6 +141,56 @@ BSC04_CAPTURE_COMMITMENTS = (
     "serial_log_sha256",
     "v1_exchange_sha256",
 )
+BSC05_CASE_ID = "BSC-05"
+BSC05_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC05_REQUIRED_RUNS = 3
+BSC05_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC05_DUT_CAPABILITIES = (
+    "display",
+    "firmware-execution",
+    "serial",
+    "v1-connectivity",
+)
+BSC05_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "display-capture",
+    "programmable-v1-peer",
+    "utc-time-source",
+)
+BSC05_FAULT_STIMULUS_IDS = (
+    "fragment-alert",
+    "disconnect-mid-packet",
+    "release-old-callback",
+    "send-display-only-packet",
+    "send-fresh-alert",
+)
+BSC05_PRODUCTION_STIMULUS_IDS = (
+    "fragment-alert",
+    "disconnect-mid-packet",
+    "send-fresh-alert",
+)
+BSC05_FAULT_FACTS = {
+    "old-queue-state-cleared",
+    "old-partial-state-cleared",
+    "old-persisted-state-cleared",
+    "logical-display-idle-after-reconnect",
+    "physical-display-idle-after-reconnect",
+    "old-callback-rejected",
+    "fresh-alert-rendered",
+    "fresh-alert-persisted",
+    "fresh-alert-faded",
+}
+BSC05_PRODUCTION_FACTS = {
+    "old-generation-state-absent",
+    "fresh-alert-normal",
+}
+BSC05_CAPTURE_COMMITMENTS = (
+    "build_evidence_sha256",
+    "display_video_sha256",
+    "framebuffer_sha256",
+    "packet_generation_sha256",
+    "serial_log_sha256",
+)
 BSC03_CASE_ID = "BSC-03"
 BSC03_REQUIRED_RUNS = 3
 BSC03_ADMISSION_DEADLINE_MS = 10_000
@@ -3211,6 +3261,722 @@ def run_bsc04_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_bsc05_case_descriptor() -> dict[str, object]:
+    code = "case_driver_contract_invalid"
+    profile, errors = qualification.load_pinned_profile()
+    if profile is None or errors:
+        raise RunnerError(code, "BSC-05 pinned qualification profile is invalid")
+    descriptor = next(
+        (candidate for candidate in profile["required_cases"] if candidate["id"] == BSC05_CASE_ID),
+        None,
+    )
+    row = require_exact_object(
+        descriptor,
+        {
+            "id",
+            "minimum_runs",
+            "fault_build_required",
+            "production_replay_required",
+            "required_dut_capabilities",
+            "required_rig_capabilities",
+            "scenario",
+            "production_replay",
+        },
+        code=code,
+        label="BSC-05 case descriptor",
+    )
+    if (
+        row.get("id") != BSC05_CASE_ID
+        or type(row.get("minimum_runs")) is not int
+        or row.get("minimum_runs") != BSC05_REQUIRED_RUNS
+        or row.get("fault_build_required") is not False
+        or row.get("production_replay_required") is not True
+        or row.get("required_dut_capabilities") != list(BSC05_DUT_CAPABILITIES)
+        or row.get("required_rig_capabilities") != list(BSC05_RIG_CAPABILITIES)
+    ):
+        raise RunnerError(code, "BSC-05 pinned case descriptor does not match the typed driver")
+    return row
+
+
+def bsc05_role_descriptor(
+    case_descriptor: Mapping[str, object], *, production_replay: bool
+) -> dict[str, object]:
+    code = "case_driver_contract_invalid"
+    role = case_descriptor.get("production_replay" if production_replay else "scenario")
+    descriptor = require_exact_object(
+        role,
+        {
+            "role_id",
+            "schema",
+            "build_kind",
+            "stimulus_ids",
+            "fault_ids",
+            "barrier_ids",
+            "vbus_isolation_required",
+            "reset_contract",
+            "facts",
+        },
+        code=code,
+        label="BSC-05 role descriptor",
+    )
+    expected_role_id = (
+        "alert-generation-production-replay"
+        if production_replay
+        else "alert-generation-fence"
+    )
+    expected_stimuli = (
+        BSC05_PRODUCTION_STIMULUS_IDS
+        if production_replay
+        else BSC05_FAULT_STIMULUS_IDS
+    )
+    expected_barriers = [] if production_replay else ["old-callback-held"]
+    expected_facts = BSC05_PRODUCTION_FACTS if production_replay else BSC05_FAULT_FACTS
+    reset = require_exact_object(
+        descriptor.get("reset_contract"),
+        {"expected_kind", "expected_count", "unexpected_count"},
+        code=code,
+        label="BSC-05 reset descriptor",
+    )
+    facts = descriptor.get("facts")
+    if not isinstance(facts, list):
+        raise RunnerError(code, "BSC-05 fact descriptor is invalid")
+    fact_ids = [fact.get("id") for fact in facts if isinstance(fact, dict)]
+    if (
+        descriptor.get("role_id") != expected_role_id
+        or descriptor.get("schema") != "case-observation-v1"
+        or descriptor.get("build_kind") != "production"
+        or descriptor.get("stimulus_ids") != list(expected_stimuli)
+        or descriptor.get("fault_ids") != []
+        or descriptor.get("barrier_ids") != expected_barriers
+        or descriptor.get("vbus_isolation_required") is not False
+        or reset != {"expected_kind": "none", "expected_count": 0, "unexpected_count": 0}
+        or len(fact_ids) != len(facts)
+        or set(fact_ids) != expected_facts
+        or any(
+            set(fact) != {"id", "type", "expected"}
+            or fact.get("type") != "boolean"
+            or fact.get("expected") is not True
+            for fact in facts
+            if isinstance(fact, dict)
+        )
+    ):
+        raise RunnerError(code, "BSC-05 pinned role descriptor does not match the typed driver")
+    return descriptor
+
+
+def bsc05_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment(
+        "v1simple.bsc05.case-descriptor.v1", case_descriptor
+    )
+
+
+def bsc05_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc05.case-record.v1", committed)
+
+
+def validate_bsc05_stimuli(
+    value: object, expected_ids: Sequence[str]
+) -> dict[str, int]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError(code, "BSC-05 stimulus sequence is incomplete")
+    elapsed_by_id: dict[str, int] = {}
+    prior_elapsed = -1
+    for sequence, (stimulus, expected_id) in enumerate(
+        zip(value, expected_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            stimulus,
+            {"id", "sequence", "elapsed_ms"},
+            code=code,
+            label="BSC-05 stimulus",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != expected_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed < prior_elapsed
+        ):
+            raise RunnerError(code, "BSC-05 stimulus order or timing is invalid")
+        elapsed_by_id[expected_id] = elapsed
+        prior_elapsed = elapsed
+    return elapsed_by_id
+
+
+def validate_bsc05_generation_timeline(
+    value: object,
+    *,
+    production_replay: bool,
+    stimuli: Mapping[str, int],
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    common_keys = {
+        "old_generation",
+        "new_generation",
+        "fragment_started_elapsed_ms",
+        "disconnect_elapsed_ms",
+        "old_session_closed_elapsed_ms",
+        "new_session_opened_elapsed_ms",
+        "fresh_alert_elapsed_ms",
+        "fresh_alert_rendered_elapsed_ms",
+        "fresh_alert_persisted_elapsed_ms",
+        "fresh_alert_faded_elapsed_ms",
+        "unexpected_generation_admissions",
+    }
+    fault_keys = {
+        "old_callback_release_elapsed_ms",
+        "old_callback_rejected_elapsed_ms",
+        "display_only_packet_elapsed_ms",
+        "logical_display_idle_elapsed_ms",
+        "physical_display_idle_elapsed_ms",
+    }
+    timeline = require_exact_object(
+        value,
+        common_keys if production_replay else common_keys | fault_keys,
+        code=code,
+        label="BSC-05 generation timeline",
+    )
+    old_generation = timeline.get("old_generation")
+    new_generation = timeline.get("new_generation")
+    if (
+        type(old_generation) is not int
+        or old_generation <= 0
+        or type(new_generation) is not int
+        or new_generation <= 0
+        or new_generation == old_generation
+        or type(timeline.get("unexpected_generation_admissions")) is not int
+        or timeline.get("unexpected_generation_admissions") != 0
+    ):
+        raise RunnerError(code, "BSC-05 generation identity is invalid")
+
+    integer_fields = common_keys - {
+        "old_generation",
+        "new_generation",
+        "unexpected_generation_admissions",
+    }
+    if not production_replay:
+        integer_fields |= fault_keys
+    if any(type(timeline.get(field)) is not int or timeline[field] < 0 for field in integer_fields):
+        raise RunnerError(code, "BSC-05 generation timeline contains an invalid timestamp")
+
+    fragment = timeline["fragment_started_elapsed_ms"]
+    disconnect = timeline["disconnect_elapsed_ms"]
+    old_closed = timeline["old_session_closed_elapsed_ms"]
+    new_opened = timeline["new_session_opened_elapsed_ms"]
+    fresh = timeline["fresh_alert_elapsed_ms"]
+    rendered = timeline["fresh_alert_rendered_elapsed_ms"]
+    persisted = timeline["fresh_alert_persisted_elapsed_ms"]
+    faded = timeline["fresh_alert_faded_elapsed_ms"]
+    if (
+        fragment != stimuli["fragment-alert"]
+        or disconnect != stimuli["disconnect-mid-packet"]
+        or fresh != stimuli["send-fresh-alert"]
+        or not fragment <= disconnect <= old_closed <= new_opened <= fresh
+        or rendered < fresh
+        or persisted < fresh
+        or faded < max(rendered, persisted)
+    ):
+        raise RunnerError(code, "BSC-05 generation timeline ordering is invalid")
+    if not production_replay:
+        released = timeline["old_callback_release_elapsed_ms"]
+        rejected = timeline["old_callback_rejected_elapsed_ms"]
+        display_only = timeline["display_only_packet_elapsed_ms"]
+        logical_idle = timeline["logical_display_idle_elapsed_ms"]
+        physical_idle = timeline["physical_display_idle_elapsed_ms"]
+        if (
+            released != stimuli["release-old-callback"]
+            or display_only != stimuli["send-display-only-packet"]
+            or not new_opened <= released <= rejected <= display_only
+            or logical_idle < display_only
+            or physical_idle < display_only
+            or max(logical_idle, physical_idle) > fresh
+        ):
+            raise RunnerError(code, "BSC-05 fault timeline ordering is invalid")
+    return timeline
+
+
+def validate_bsc05_barriers(
+    value: object,
+    *,
+    production_replay: bool,
+    timeline: Mapping[str, object],
+) -> None:
+    code = "case_record_invalid"
+    if production_replay:
+        if value != []:
+            raise RunnerError(code, "BSC-05 production replay contains barrier evidence")
+        return
+    if not isinstance(value, list) or len(value) != 1:
+        raise RunnerError(code, "BSC-05 callback barrier evidence is incomplete")
+    barrier = require_exact_object(
+        value[0],
+        {
+            "id",
+            "sequence",
+            "ready_elapsed_ms",
+            "released_elapsed_ms",
+            "old_generation",
+            "new_generation",
+            "timed_out",
+        },
+        code=code,
+        label="BSC-05 callback barrier",
+    )
+    ready = barrier.get("ready_elapsed_ms")
+    released = barrier.get("released_elapsed_ms")
+    if (
+        barrier.get("id") != "old-callback-held"
+        or type(barrier.get("sequence")) is not int
+        or barrier.get("sequence") != 1
+        or type(ready) is not int
+        or type(released) is not int
+        or ready < timeline["fragment_started_elapsed_ms"]
+        or ready > timeline["disconnect_elapsed_ms"]
+        or released < timeline["old_callback_release_elapsed_ms"]
+        or released > timeline["old_callback_rejected_elapsed_ms"]
+        or barrier.get("old_generation") != timeline["old_generation"]
+        or barrier.get("new_generation") != timeline["new_generation"]
+        or barrier.get("timed_out") is not False
+    ):
+        raise RunnerError(code, "BSC-05 callback barrier identity or timing is invalid")
+
+
+def validate_bsc05_facts(
+    value: object, contracts: object, *, production_replay: bool
+) -> None:
+    code = "case_record_invalid"
+    if not isinstance(contracts, list):
+        raise RunnerError(code, "BSC-05 fact descriptor is invalid")
+    expected_ids = BSC05_PRODUCTION_FACTS if production_replay else BSC05_FAULT_FACTS
+    contract_by_id = {
+        contract.get("id"): contract for contract in contracts if isinstance(contract, dict)
+    }
+    if set(contract_by_id) != expected_ids or len(contract_by_id) != len(contracts):
+        raise RunnerError(code, "BSC-05 fact descriptor is invalid")
+    facts = require_exact_object(
+        value, expected_ids, code=code, label="BSC-05 facts"
+    )
+    for fact_id, contract in contract_by_id.items():
+        if (
+            contract.get("type") != "boolean"
+            or contract.get("expected") is not True
+            or facts.get(fact_id) is not True
+        ):
+            raise RunnerError(code, f"BSC-05 fact {fact_id} is invalid")
+
+
+def validate_bsc05_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "session_id",
+            "attempt_id",
+            "run_index",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "case_descriptor",
+            "case_descriptor_sha256",
+            "firmware",
+            "stimuli",
+            "generation_timeline",
+            "barriers",
+            "facts",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-05 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role_id",
+        "session_id",
+        "attempt_id",
+        "run_index",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-05 {field} does not match the runner invocation")
+    if type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+        raise RunnerError(code, "BSC-05 adapter schema is unsupported")
+    if type(record.get("run_index")) is not int or not 1 <= record["run_index"] <= BSC05_REQUIRED_RUNS:
+        raise RunnerError(code, "BSC-05 run index is invalid")
+    if type(record.get("hardware_observed")) is not bool:
+        raise RunnerError(code, "BSC-05 hardware observation flag is invalid")
+
+    case_descriptor = expected.get("case_descriptor")
+    role_descriptor = expected.get("role_descriptor")
+    if not isinstance(case_descriptor, dict) or not isinstance(role_descriptor, dict):
+        raise RunnerError(code, "BSC-05 pinned descriptor binding is invalid")
+    if record.get("case_descriptor") != case_descriptor:
+        raise RunnerError(code, "BSC-05 case descriptor does not match the pinned profile")
+    descriptor_sha = bsc05_descriptor_commitment(case_descriptor)
+    if (
+        expected.get("case_descriptor_sha256") != descriptor_sha
+        or record.get("case_descriptor_sha256") != descriptor_sha
+    ):
+        raise RunnerError(code, "BSC-05 case descriptor digest is invalid")
+
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-05 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-05 completion")
+    if completed < started:
+        raise RunnerError(code, "BSC-05 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-05 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=0):
+        raise RunnerError(code, "BSC-05 physical record postdates adapter execution")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {
+            "environment",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+            "build_kind",
+        },
+        code=code,
+        label="BSC-05 firmware",
+    )
+    if (
+        firmware.get("environment") != BSC05_PRODUCTION_ENVIRONMENT
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or firmware.get("hil_fault_control_active") is not False
+        or firmware.get("build_kind") != role_descriptor.get("build_kind")
+    ):
+        raise RunnerError(code, "BSC-05 firmware role or target is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-05 firmware binary")
+
+    production_replay = role_descriptor.get("role_id") == "alert-generation-production-replay"
+    stimuli = validate_bsc05_stimuli(record.get("stimuli"), role_descriptor["stimulus_ids"])
+    timeline = validate_bsc05_generation_timeline(
+        record.get("generation_timeline"),
+        production_replay=production_replay,
+        stimuli=stimuli,
+    )
+    validate_bsc05_barriers(
+        record.get("barriers"),
+        production_replay=production_replay,
+        timeline=timeline,
+    )
+    validate_bsc05_facts(
+        record.get("facts"), role_descriptor["facts"], production_replay=production_replay
+    )
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC05_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-05 capture commitments",
+    )
+    commitment_values = [
+        require_sha256(commitments[field], code=code, label=field)
+        for field in BSC05_CAPTURE_COMMITMENTS
+    ]
+    if len(set(commitment_values)) != len(commitment_values):
+        raise RunnerError(code, "BSC-05 evidence roles reused the same capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-05 evidence binding"
+    )
+    if not secrets.compare_digest(binding, bsc05_record_commitment(record)):
+        raise RunnerError(code, "BSC-05 evidence binding does not match the record")
+    return record
+
+
+def validate_bsc05_distinct_runs(records: Sequence[Mapping[str, object]]) -> None:
+    if len(records) != BSC05_REQUIRED_RUNS:
+        raise RunnerError("case_runs_incomplete", "BSC-05 requires exactly three completed runs")
+    for field in ("attempt_id", "evidence_binding_sha256"):
+        if len({record.get(field) for record in records}) != BSC05_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-05 run identities must be distinct")
+    first_firmware = records[0].get("firmware")
+    if any(record.get("firmware") != first_firmware for record in records[1:]):
+        raise RunnerError("case_runs_mixed", "BSC-05 runs must use one bound firmware artifact")
+    for field in BSC05_CAPTURE_COMMITMENTS:
+        values: list[object] = []
+        for record in records:
+            commitments = record.get("capture_commitments")
+            assert isinstance(commitments, dict)
+            values.append(commitments[field])
+        if len(set(values)) != BSC05_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-05 run captures must be distinct")
+
+
+def resolve_bsc05_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError("local_inventory_missing", "BSC-05 requires the ignored local hardware inventory")
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC05_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC05_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-05 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def run_bsc05_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC05_CASE_ID,
+        "--role-id",
+        str(expected["role_id"]),
+        "--case-descriptor-sha256",
+        str(expected["case_descriptor_sha256"]),
+        "--case-descriptor-json",
+        json.dumps(
+            expected["case_descriptor"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC05_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-05 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-05 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-05 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 64 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-05 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-05 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc05_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc05_case(args: argparse.Namespace) -> int:
+    case_descriptor = load_bsc05_case_descriptor()
+    role_descriptor = bsc05_role_descriptor(
+        case_descriptor, production_replay=args.production_replay
+    )
+    if args.runs != BSC05_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-05 requires exactly three runs per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-05 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-05 collection roles are atomic")
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError("untrusted_override", "authoritative BSC-05 forbids an untracked rig adapter")
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-05 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-05 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-05 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-05 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc05_hardware(
+        args, Path(args.pio_command)
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-05 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-05 serial endpoint is not present")
+
+    collection_role = "production-replay" if args.production_replay else "fault-collection"
+    role_id = role_descriptor["role_id"]
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc05-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{collection_role}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(
+        run_root, boundary=Path(os.path.abspath(args.repo_root)).parent
+    )
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-05 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc05-{secrets.token_hex(16)}"
+    descriptor_sha = bsc05_descriptor_commitment(case_descriptor)
+    records: list[dict[str, object]] = []
+    run_artifacts: list[dict[str, object]] = []
+    for run_index in range(1, BSC05_REQUIRED_RUNS + 1):
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        expected: dict[str, object] = {
+            "case_id": BSC05_CASE_ID,
+            "role_id": role_id,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "run_index": run_index,
+            "target_sha": git_state.head_sha,
+            "dut_alias": args.board,
+            "rig_alias": args.rig,
+            "execution_mode": "simulated",
+            "hardware_observed": False,
+            "case_descriptor": case_descriptor,
+            "case_descriptor_sha256": descriptor_sha,
+            "role_descriptor": role_descriptor,
+        }
+        require_unchanged_git_state(repository, git_state)
+        record = run_bsc05_adapter(
+            adapter=adapter,
+            repository=repository,
+            serial_port=serial_port,
+            expected=expected,
+            environment=os.environ.copy(),
+        )
+        require_unchanged_git_state(repository, git_state)
+        attempt_path = run_root / f"attempt-{run_index}.json"
+        write_json_atomic(attempt_path, record)
+        records.append(record)
+        run_artifacts.append(
+            {
+                "run_index": run_index,
+                "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+                "artifact": attempt_path.name,
+                "sha256": sha256_file(attempt_path),
+                "evidence_binding_sha256": record["evidence_binding_sha256"],
+            }
+        )
+    validate_bsc05_distinct_runs(records)
+    firmware = records[0]["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc05-alert-generation-fence",
+        "case_id": BSC05_CASE_ID,
+        "collection_role": collection_role,
+        "profile_role_id": role_id,
+        "case_descriptor_sha256": descriptor_sha,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC05_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC05_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "production_replay_required": collection_role == "fault-collection",
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+            "build_kind": firmware["build_kind"],
+        },
+        "run_artifacts": run_artifacts,
+        "artifact_sha256": {
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc05.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc05.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def bsc13_profile_descriptor(role: str) -> dict[str, object]:
     code = "case_driver_contract_invalid"
     profile, errors = qualification.load_pinned_profile()
@@ -6100,10 +6866,6 @@ def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> in
         "case_rig_adapter_unavailable",
         f"{case_id} physical execution remains blocked until its tracked rig adapter exists",
     )
-
-
-def run_bsc05_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-05")
 
 
 def run_bsc06_case(args: argparse.Namespace) -> int:

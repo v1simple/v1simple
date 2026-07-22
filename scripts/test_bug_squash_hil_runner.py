@@ -109,6 +109,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "battery-monitor",
                             "car-mode",
                             "device-tests",
+                            "display",
                             "firmware-execution",
                             "maintenance-mode",
                             "obd-connectivity",
@@ -129,6 +130,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "battery-source",
                             "bond-peer",
                             "browser-client",
+                            "display-capture",
                             "http-response-control",
                             "ignition-control",
                             "lan-client",
@@ -137,6 +139,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "power-control",
                             "power-button",
                             "proxy-client",
+                            "programmable-v1-peer",
                             "reset-control",
                             "sd-media",
                             "sram-pressure-control",
@@ -834,6 +837,143 @@ if os.environ.get('FAKE_BSC04_INTEGER_HARDWARE') == '1':
 payload['evidence_binding_sha256'] = commitment(payload)
 if os.environ.get('FAKE_BSC04_TAMPER') == '1':
     payload['capture_commitments']['serial_log_sha256'] = digest('tampered-serial')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
+    bsc05_adapter = root / "fake-bsc05-adapter.py"
+    write_executable(
+        bsc05_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc05.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+role_id = argument('--role-id')
+production_replay = role_id == 'alert-generation-production-replay'
+run_index = int(argument('--run-index'))
+mutation = os.environ.get('FAKE_BSC05_MUTATION', '')
+case_descriptor = json.loads(argument('--case-descriptor-json'))
+role_descriptor = case_descriptor['production_replay' if production_replay else 'scenario']
+if mutation == 'descriptor':
+    case_descriptor['required_dut_capabilities'].append('invented-capability')
+
+elapsed = [100, 200, 500] if production_replay else [100, 200, 400, 500, 700]
+stimuli = [
+    {'id': stimulus_id, 'sequence': sequence, 'elapsed_ms': elapsed[sequence - 1]}
+    for sequence, stimulus_id in enumerate(role_descriptor['stimulus_ids'], start=1)
+]
+if mutation == 'stimulus-order':
+    stimuli[0]['id'], stimuli[1]['id'] = stimuli[1]['id'], stimuli[0]['id']
+
+old_generation = run_index * 10 + 1
+new_generation = run_index * 10 + 2
+timeline = {
+    'old_generation': old_generation,
+    'new_generation': new_generation,
+    'fragment_started_elapsed_ms': 100,
+    'disconnect_elapsed_ms': 200,
+    'old_session_closed_elapsed_ms': 250,
+    'new_session_opened_elapsed_ms': 350,
+    'fresh_alert_elapsed_ms': 500 if production_replay else 700,
+    'fresh_alert_rendered_elapsed_ms': 550 if production_replay else 750,
+    'fresh_alert_persisted_elapsed_ms': 560 if production_replay else 760,
+    'fresh_alert_faded_elapsed_ms': 700 if production_replay else 900,
+    'unexpected_generation_admissions': 0,
+}
+if not production_replay:
+    timeline.update({
+        'old_callback_release_elapsed_ms': 400,
+        'old_callback_rejected_elapsed_ms': 450,
+        'display_only_packet_elapsed_ms': 500,
+        'logical_display_idle_elapsed_ms': 550,
+        'physical_display_idle_elapsed_ms': 560,
+    })
+if mutation == 'timeline-order':
+    timeline['old_session_closed_elapsed_ms'] = 800
+if mutation == 'generation':
+    timeline['new_generation'] = old_generation
+
+barriers = []
+if not production_replay:
+    barriers = [{
+        'id': 'old-callback-held',
+        'sequence': 1,
+        'ready_elapsed_ms': 150,
+        'released_elapsed_ms': 425,
+        'old_generation': old_generation,
+        'new_generation': timeline['new_generation'],
+        'timed_out': mutation == 'barrier-timeout',
+    }]
+elif mutation == 'replay-barrier':
+    barriers = [{'id': 'old-callback-held'}]
+
+facts = {descriptor['id']: True for descriptor in role_descriptor['facts']}
+if mutation == 'fact':
+    facts[next(iter(facts))] = False
+
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=30)
+capture_run = '' if mutation == 'reuse-captures' else f'-run-{run_index}'
+capture_fields = (
+    'build_evidence_sha256',
+    'display_video_sha256',
+    'framebuffer_sha256',
+    'packet_generation_sha256',
+    'serial_log_sha256',
+)
+binary_label = f'{role_id}-binary'
+if mutation == 'mixed-firmware' and run_index == 2:
+    binary_label += '-different'
+payload = {
+    'schema_version': True if mutation == 'bool-schema' else 1,
+    'case_id': argument('--case'),
+    'role_id': 'substituted-role' if mutation == 'role' else role_id,
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'run_index': run_index,
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': 0 if mutation == 'integer-hardware' else False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor': case_descriptor,
+    'case_descriptor_sha256': (
+        '0' * 64 if mutation == 'descriptor-digest' else argument('--case-descriptor-sha256')
+    ),
+    'firmware': {
+        'environment': 'waveshare-349-hil' if mutation == 'firmware' else 'waveshare-349',
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest(binary_label),
+        'hil_fault_control_active': mutation == 'hil-active',
+        'build_kind': role_descriptor['build_kind'],
+    },
+    'stimuli': stimuli,
+    'generation_timeline': timeline,
+    'barriers': barriers,
+    'facts': facts,
+    'capture_commitments': {
+        field: digest(f'{role_id}-{field}{capture_run}') for field in capture_fields
+    },
+}
+if mutation == 'capture-role-reuse':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['framebuffer_sha256']
+payload['evidence_binding_sha256'] = commitment(payload)
+if mutation == 'tamper':
+    payload['generation_timeline']['fresh_alert_faded_elapsed_ms'] += 1
 sys.stdout.write(json.dumps(payload))
 """,
     )
@@ -1742,6 +1882,7 @@ sys.stdout.write(json.dumps(payload))
         "bsc02_adapter": bsc02_adapter,
         "bsc03_adapter": bsc03_adapter,
         "bsc04_adapter": bsc04_adapter,
+        "bsc05_adapter": bsc05_adapter,
         "bsc13_adapter": bsc13_adapter,
         "bsc11_adapter": bsc11_adapter,
         "bsc10_adapter": bsc10_adapter,
@@ -2135,6 +2276,63 @@ def run_bsc04_fixture(
         str(fixture["pio"]),
         "--case-adapter",
         str(fixture["bsc04_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc05_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    production_replay: bool = False,
+    runs: int = 3,
+    mutation: str = "",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    role = "production" if production_replay else "fault"
+    out_dir = root / f"bsc05-{role}-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC05_MUTATION": mutation,
+        }
+    )
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-05",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc05_adapter"]),
         "--out-dir",
         str(out_dir),
     ]
@@ -3286,6 +3484,148 @@ def test_bsc04_physical_mode_remains_blocked_without_tracked_adapter() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
+    descriptor = hil_runner.load_bsc05_case_descriptor()
+    descriptor_sha = hil_runner.bsc05_descriptor_commitment(descriptor)
+    for production_replay, collection_role, profile_role in (
+        (False, "fault-collection", "alert-generation-fence"),
+        (True, "production-replay", "alert-generation-production-replay"),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc05_fixture(
+                fixture, root, production_replay=production_replay
+            )
+            assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+            result = json.loads((out_dir / "collection_result.json").read_text(encoding="utf-8"))
+            assert_true(result["result"] == "TEST_PASS", str(result))
+            assert_true(result["collection_role"] == collection_role, str(result))
+            assert_true(result["profile_role_id"] == profile_role, str(result))
+            assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
+            assert_true(result["execution_mode"] == "simulated", str(result))
+            assert_true(result["hardware_observed"] is False, str(result))
+            assert_true(result["authoritative"] is False, str(result))
+            assert_true(result["physical_collection_completed"] is False, str(result))
+            assert_true(result["non_qualifying"] is True, str(result))
+            assert_true(result["qualification_status"] == "BLOCKED", str(result))
+            assert_true(
+                result["qualification_blockers"]
+                == [
+                    "build-generator-provenance-not-authenticated",
+                    "board-resolution-provenance-not-authenticated",
+                    "tracked-rig-adapter-not-implemented",
+                ],
+                str(result),
+            )
+            assert_true(result["runs_required"] == result["runs_completed"] == 3, str(result))
+            assert_true(
+                result["production_replay_required"] is (not production_replay), str(result)
+            )
+            assert_true(
+                result["firmware_target"]["environment"] == "waveshare-349"
+                and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+                and result["firmware_target"]["hil_fault_control_active"] is False
+                and result["firmware_target"]["build_kind"] == "production",
+                str(result),
+            )
+            assert_true(len(result["run_artifacts"]) == 3, str(result))
+            records = [
+                json.loads((out_dir / row["artifact"]).read_text(encoding="utf-8"))
+                for row in result["run_artifacts"]
+            ]
+            assert_true([record["run_index"] for record in records] == [1, 2, 3], str(records))
+            assert_true(
+                all(record["case_descriptor"] == descriptor for record in records), str(records)
+            )
+            assert_true(
+                all(
+                    record["generation_timeline"]["old_generation"]
+                    != record["generation_timeline"]["new_generation"]
+                    and record["generation_timeline"]["unexpected_generation_admissions"] == 0
+                    and (
+                        record["barriers"] == []
+                        if production_replay
+                        else record["barriers"][0]["timed_out"] is False
+                    )
+                    for record in records
+                ),
+                str(records),
+            )
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+            public_output = completed.stdout + completed.stderr + json.dumps(result)
+            assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+            assert_true(str(fixture["port"]) not in public_output, public_output)
+
+
+def test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift() -> None:
+    cases = (
+        ({"mutation": "descriptor"}, "case_record_invalid"),
+        ({"mutation": "descriptor-digest"}, "case_record_invalid"),
+        ({"mutation": "role"}, "case_record_invalid"),
+        ({"mutation": "stimulus-order"}, "case_record_invalid"),
+        ({"mutation": "timeline-order"}, "case_record_invalid"),
+        ({"mutation": "generation"}, "case_record_invalid"),
+        ({"mutation": "barrier-timeout"}, "case_record_invalid"),
+        ({"mutation": "fact"}, "case_record_invalid"),
+        ({"mutation": "firmware"}, "case_record_invalid"),
+        ({"mutation": "hil-active"}, "case_record_invalid"),
+        ({"mutation": "capture-role-reuse"}, "case_record_invalid"),
+        ({"mutation": "reuse-captures"}, "case_runs_reused"),
+        ({"mutation": "mixed-firmware"}, "case_runs_mixed"),
+        ({"mutation": "tamper"}, "case_record_invalid"),
+        ({"mutation": "bool-schema"}, "case_record_invalid"),
+        ({"mutation": "integer-hardware"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "replay-barrier"}, "case_record_invalid"),
+        ({"runs": 2}, "invalid_runs"),
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc05_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        missing_inventory = Path(raw) / "missing-inventory.json"
+        completed = subprocess.run(
+            [
+                "python3",
+                "-B",
+                str(RUNNER),
+                "--case",
+                "BSC-05",
+                "--board",
+                "release",
+                "--rig",
+                "rig",
+                "--runs",
+                "3",
+                "--inventory",
+                str(missing_inventory),
+            ],
+            cwd=ROOT,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if key != "V1SIMPLE_HIL_TEST_HOOKS"
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert_true(completed.returncode != 0, "physical BSC-05 must remain blocked")
+        payload = json.loads(completed.stdout)
+        assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+        assert_true(not missing_inventory.exists(), "physical BSC-05 mutated discovery state")
+
+
 def test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
     for production_replay, expected_role, expected_environment, expected_hil in (
         (False, "fault-collection", "waveshare-349-hil", True),
@@ -4104,6 +4444,9 @@ def main() -> int:
     test_bsc04_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc04_rejects_missing_timing_disconnect_role_and_tampered_evidence()
     test_bsc04_physical_mode_remains_blocked_without_tracked_adapter()
+    test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
+    test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift()
+    test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation()
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()

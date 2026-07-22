@@ -742,17 +742,14 @@ def resolve_platformio_identity(
 ) -> PlatformioIdentity | None:
     if source_environment.get("PIO_CMD", "pio") != "pio":
         return None
-    interpreter = Path(sys.executable).absolute()
     allowed_interpreter_roots = (
         repository_owner_home(root) / ".platformio" / "penv",
         Path("/opt/hostedtoolcache/Python"),
     )
-    if not any(
-        path_is_within(interpreter, allowed.absolute())
-        for allowed in allowed_interpreter_roots
-    ) or not trusted_external_path(root, interpreter, True):
-        return None
-    environment = positive_child_environment(root, interpreter, source_environment)
+    candidates = (
+        Path(sys.executable).absolute(),
+        repository_owner_home(root) / ".platformio" / "penv" / "bin" / "python",
+    )
     probe = (
         "import pathlib, platformio, sys; "
         "print(pathlib.Path(sys.executable).resolve()); "
@@ -760,42 +757,54 @@ def resolve_platformio_identity(
         "print(pathlib.Path(platformio.__file__).resolve()); "
         "print(platformio.__version__)"
     )
-    try:
-        result = subprocess.run(
-            [str(interpreter), "-I", "-c", probe],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        lines = result.stdout.splitlines()
-        if result.returncode != 0 or len(lines) != 4:
-            return None
-        reported_interpreter = Path(lines[0]).resolve()
-        prefix = Path(lines[1]).resolve()
-        module_file = Path(lines[2]).resolve()
-        version = lines[3].strip()
-        module_root = module_file.parent
-        if (
-            reported_interpreter != interpreter.resolve()
-            or not path_is_within(module_root, prefix)
-            or not trusted_external_path(root, module_file, False)
-            or version != EXPECTED_PLATFORMIO_VERSION
-        ):
-            return None
-        tree_sha256 = platformio_tree_sha256(module_root)
-        if tree_sha256 not in EXPECTED_PLATFORMIO_TREE_SHA256:
-            return None
-        return PlatformioIdentity(
-            interpreter=interpreter,
-            interpreter_sha256=sha256_file(interpreter.resolve()),
-            module_root=module_root,
-            tree_sha256=tree_sha256,
-            version=version,
-        )
-    except (OSError, UnicodeError):
-        return None
+    observed: set[Path] = set()
+    for interpreter in candidates:
+        if interpreter in observed:
+            continue
+        observed.add(interpreter)
+        if not any(
+            path_is_within(interpreter, allowed.absolute())
+            for allowed in allowed_interpreter_roots
+        ) or not trusted_external_path(root, interpreter, True):
+            continue
+        environment = positive_child_environment(root, interpreter, source_environment)
+        try:
+            result = subprocess.run(
+                [str(interpreter), "-I", "-c", probe],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            lines = result.stdout.splitlines()
+            if result.returncode != 0 or len(lines) != 4:
+                continue
+            reported_interpreter = Path(lines[0]).resolve()
+            prefix = Path(lines[1]).resolve()
+            module_file = Path(lines[2]).resolve()
+            version = lines[3].strip()
+            module_root = module_file.parent
+            if (
+                reported_interpreter != interpreter.resolve()
+                or not path_is_within(module_root, prefix)
+                or not trusted_external_path(root, module_file, False)
+                or version != EXPECTED_PLATFORMIO_VERSION
+            ):
+                continue
+            tree_sha256 = platformio_tree_sha256(module_root)
+            if tree_sha256 not in EXPECTED_PLATFORMIO_TREE_SHA256:
+                continue
+            return PlatformioIdentity(
+                interpreter=interpreter,
+                interpreter_sha256=sha256_file(interpreter.resolve()),
+                module_root=module_root,
+                tree_sha256=tree_sha256,
+                version=version,
+            )
+        except (OSError, UnicodeError):
+            continue
+    return None
 
 
 def positive_child_environment(

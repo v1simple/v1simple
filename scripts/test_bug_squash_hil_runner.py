@@ -1137,6 +1137,12 @@ stimuli = [
 ]
 if mutation == 'stimulus-order':
     stimuli[0]['id'], stimuli[1]['id'] = stimuli[1]['id'], stimuli[0]['id']
+if mutation == 'stimulus-missing':
+    stimuli.pop()
+if mutation == 'stimulus-time':
+    stimuli[1]['elapsed_ms'] = stimuli[0]['elapsed_ms']
+if mutation == 'stimulus-result':
+    stimuli[0]['result'] = 'fail'
 if mutation == 'missing-slow-sd' and not is_fault:
     stimuli.pop()
 
@@ -1209,10 +1215,20 @@ fact_mutations = {
 if mutation in fact_mutations:
     fact_id, value = fact_mutations[mutation]
     facts[fact_id] = value
-if mutation == 'fault-id' and is_fault:
+if mutation == 'fault-identity' and is_fault:
     faults[0]['id'] = 'invented-fault'
+if mutation == 'fault-order' and is_fault:
+    faults[0]['sequence'] = 2
+if mutation == 'fault-timing' and is_fault:
+    faults[0]['triggered_elapsed_ms'] = 500
 if mutation == 'barrier-order' and is_fault:
-    barriers[0]['id'], barriers[1]['id'] = barriers[1]['id'], barriers[0]['id']
+    barriers[1]['sequence'] = 1
+if mutation == 'barrier-identity' and is_fault:
+    barriers[0]['id'] = 'invented-barrier'
+if mutation == 'barrier-timing' and is_fault:
+    barriers[0]['released_elapsed_ms'] = 4000
+if mutation == 'barrier-timeout' and is_fault:
+    barriers[0]['timed_out'] = True
 if mutation == 'reset-kind':
     resets['expected_kind'] = 'soft-reset'
 if mutation == 'reset-count':
@@ -1241,6 +1257,8 @@ if mutation == 'wrong-firmware':
     environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
 if mutation == 'wrong-hil':
     hil_active = not hil_active
+if mutation == 'firmware-build-kind':
+    build_kind = 'production' if is_fault else 'hil-fault'
 
 payload = {
     'schema_version': 1,
@@ -1278,6 +1296,13 @@ payload = {
         'touch_timeline_sha256': digest(f'{role_id}-touch-timeline'),
     },
 }
+if mutation == 'role-id':
+    payload['role_id'] = (
+        'touch-persistence-production-replay'
+        if is_fault else 'touch-persistence-sd-fault'
+    )
+if mutation == 'vbus-isolated':
+    payload['vbus_isolated'] = True
 if mutation == 'descriptor-digest':
     payload['case_descriptor_sha256'] = digest('wrong-descriptor')
 if mutation == 'reuse':
@@ -3162,7 +3187,38 @@ def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
 
 def test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift() -> None:
     cases = (
+        ({"mutation": "role-id"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "role-id"}, "case_record_invalid"),
+        ({"mutation": "firmware-build-kind"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "firmware-build-kind"},
+            "case_record_invalid",
+        ),
+        ({"mutation": "vbus-isolated"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "vbus-isolated"},
+            "case_record_invalid",
+        ),
+        ({"mutation": "stimulus-missing"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "stimulus-missing"},
+            "case_record_invalid",
+        ),
         ({"mutation": "stimulus-order"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "stimulus-order"},
+            "case_record_invalid",
+        ),
+        ({"mutation": "stimulus-time"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "stimulus-time"},
+            "case_record_invalid",
+        ),
+        ({"mutation": "stimulus-result"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "stimulus-result"},
+            "case_record_invalid",
+        ),
         ({"mutation": "slider-stall"}, "case_record_invalid"),
         ({"mutation": "stealth-stall"}, "case_record_invalid"),
         ({"mutation": "profile-stall"}, "case_record_invalid"),
@@ -3172,8 +3228,13 @@ def test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift() ->
         ({"mutation": "backup-count"}, "case_record_invalid"),
         ({"mutation": "backup-latest"}, "case_record_invalid"),
         ({"mutation": "real-touch"}, "case_record_invalid"),
-        ({"mutation": "fault-id"}, "case_record_invalid"),
+        ({"mutation": "fault-identity"}, "case_record_invalid"),
+        ({"mutation": "fault-order"}, "case_record_invalid"),
+        ({"mutation": "fault-timing"}, "case_record_invalid"),
         ({"mutation": "barrier-order"}, "case_record_invalid"),
+        ({"mutation": "barrier-identity"}, "case_record_invalid"),
+        ({"mutation": "barrier-timing"}, "case_record_invalid"),
+        ({"mutation": "barrier-timeout"}, "case_record_invalid"),
         ({"mutation": "reset-kind"}, "case_record_invalid"),
         ({"mutation": "reset-count"}, "case_record_invalid"),
         ({"mutation": "unexpected-reset"}, "case_record_invalid"),

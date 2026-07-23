@@ -1300,8 +1300,9 @@ if mutation == 'bool-schema':
     payload['schema_version'] = True
 if mutation == 'integer-hardware':
     payload['hardware_observed'] = 0
+# Mutate after binding so this proves stale record-binding rejection only.
 payload['evidence_binding_sha256'] = commitment(payload)
-if mutation == 'capture-substitution':
+if mutation == 'capture-stale-binding-tamper':
     payload['capture_commitments']['serial_log_sha256'] = digest('substituted-serial')
 sys.stdout.write(json.dumps(payload))
 """,
@@ -2242,8 +2243,8 @@ def run_bsc10_fixture(
     production_replay: bool = False,
     runs: int = 1,
     mutation: str = "",
-    drop_dut_wifi_client: bool = False,
-    drop_rig_http_control: bool = False,
+    drop_dut_capability: str | None = None,
+    drop_rig_capability: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc10-{role}-out"
@@ -2254,11 +2255,16 @@ def run_bsc10_fixture(
             "FAKE_BSC10_MUTATION": mutation,
         }
     )
-    if drop_dut_wifi_client or drop_rig_http_control:
+    if drop_dut_capability is not None or drop_rig_capability is not None:
+        assert_true(
+            not (drop_dut_capability is not None and drop_rig_capability is not None),
+            "BSC-10 fixture removes one capability at a time",
+        )
         inventory_path = Path(fixture["inventory"])
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-        alias = "release" if drop_dut_wifi_client else "rig"
-        capability = "wifi-client" if drop_dut_wifi_client else "http-response-control"
+        alias = "release" if drop_dut_capability is not None else "rig"
+        capability = drop_dut_capability or drop_rig_capability
+        assert capability is not None
         board = next(item for item in inventory["boards"] if item["alias"] == alias)
         board["capabilities"].remove(capability)
         inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
@@ -3531,7 +3537,8 @@ def test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
 
 
 def test_bsc10_rejects_full_record_contract_mutations() -> None:
-    cases = (
+    descriptor = hil_runner.load_bsc10_case_descriptor()
+    mutation_cases = (
         ({"mutation": "role-id"}, "case_record_invalid"),
         ({"production_replay": True, "mutation": "role-id"}, "case_record_invalid"),
         ({"mutation": "build-kind"}, "case_record_invalid"),
@@ -3578,13 +3585,19 @@ def test_bsc10_rejects_full_record_contract_mutations() -> None:
         ({"mutation": "fact-extra"}, "case_record_invalid"),
         ({"mutation": "capture-missing"}, "case_record_invalid"),
         ({"mutation": "capture-reuse"}, "case_record_invalid"),
-        ({"mutation": "capture-substitution"}, "case_record_invalid"),
+        ({"mutation": "capture-stale-binding-tamper"}, "case_record_invalid"),
         ({"mutation": "bool-schema"}, "case_record_invalid"),
         ({"mutation": "integer-hardware"}, "case_record_invalid"),
-        ({"drop_dut_wifi_client": True}, "case_board_resolution_failed"),
-        ({"drop_rig_http_control": True}, "case_board_resolution_failed"),
         ({"runs": 2}, "invalid_runs"),
     )
+    capability_cases = tuple(
+        ({"drop_dut_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_dut_capabilities"]
+    ) + tuple(
+        ({"drop_rig_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_rig_capabilities"]
+    )
+    cases = mutation_cases + capability_cases
     for options, expected_code in cases:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

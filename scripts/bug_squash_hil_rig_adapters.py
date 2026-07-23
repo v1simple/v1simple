@@ -159,7 +159,7 @@ _ADAPTERS = (
         dut=("display", "firmware-execution", "serial", "v1-connectivity"),
         rig=("artifact-capture", "display-capture", "programmable-v1-peer", "utc-time-source"),
         roles=(
-            ("alert-generation-fence", "production"),
+            ("alert-generation-fence", "hil-fault"),
             ("alert-generation-production-replay", "production"),
         ),
     ),

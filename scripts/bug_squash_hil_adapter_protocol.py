@@ -389,6 +389,75 @@ def _hash_raw_file(
     return digest.hexdigest(), total
 
 
+def _read_raw_file(
+    directory_fd: int,
+    filename: str,
+    contract: rig_adapters.RawArtifactContract,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> bytes:
+    """Read one bounded artifact from a stable directory entry and reverify its manifest."""
+
+    try:
+        before_path = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise AdapterProtocolError("raw_artifact_changed", "raw artifact is unavailable for parsing") from exc
+    if (
+        not stat.S_ISREG(before_path.st_mode)
+        or before_path.st_nlink != 1
+        or before_path.st_size != expected_size
+        or not 1 <= expected_size <= contract.maximum_bytes
+    ):
+        raise AdapterProtocolError("raw_artifact_changed", "raw artifact identity changed before parsing")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise AdapterProtocolError("raw_artifact_invalid", "no-follow file opening is unavailable")
+    flags = os.O_RDONLY | nofollow
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = -1
+    try:
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+        before_fd = os.fstat(descriptor)
+        if _identity(before_fd) != _identity(before_path):
+            raise AdapterProtocolError("raw_artifact_changed", "raw artifact changed before parsing")
+        content = bytearray()
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            content.extend(chunk)
+            if len(content) > contract.maximum_bytes:
+                raise AdapterProtocolError("raw_artifact_invalid", "raw artifact exceeded its size limit")
+            digest.update(chunk)
+        after_fd = os.fstat(descriptor)
+        if (
+            _identity(after_fd) != _identity(before_fd)
+            or len(content) != expected_size
+            or not secrets.compare_digest(digest.hexdigest(), expected_sha256)
+        ):
+            raise AdapterProtocolError("raw_artifact_changed", "raw artifact differs from its manifest")
+    except AdapterProtocolError:
+        raise
+    except OSError as exc:
+        raise AdapterProtocolError("raw_artifact_invalid", "raw artifact could not be parsed") from exc
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    try:
+        after_path = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise AdapterProtocolError("raw_artifact_changed", "raw artifact changed after parsing") from exc
+    if _identity(after_path) != _identity(before_path):
+        raise AdapterProtocolError("raw_artifact_changed", "raw artifact path changed while parsing")
+    return bytes(content)
+
+
 def _write_manifest(path: Path, payload: Mapping[str, object]) -> None:
     absolute = Path(os.path.abspath(path))
     parent = absolute.parent
@@ -542,3 +611,115 @@ def collect_raw_artifacts(
     manifest["manifest_commitment_sha256"] = canonical_commitment(MANIFEST_DOMAIN, manifest)
     _write_manifest(manifest_absolute, manifest)
     return manifest
+
+
+def read_collected_raw_artifacts(
+    *,
+    raw_directory: Path,
+    role: rig_adapters.AdapterRoleContract,
+    manifest: object,
+) -> dict[str, bytes]:
+    """Return the exact bytes bound by a runner-owned manifest.
+
+    Files are reopened relative to a no-follow directory descriptor and their
+    identity, size, and digest are rechecked while reading. Callers can parse
+    the returned bytes without reopening an attacker-replaceable path.
+    """
+
+    payload = _exact_object(
+        manifest,
+        {
+            "schema_version",
+            "protocol_version",
+            "request_commitment_sha256",
+            "artifacts",
+            "manifest_commitment_sha256",
+        },
+        "raw artifact manifest",
+    )
+    rows = payload.get("artifacts")
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != SCHEMA_VERSION
+        or type(payload.get("protocol_version")) is not int
+        or payload.get("protocol_version") != rig_adapters.ADAPTER_PROTOCOL_VERSION
+        or not isinstance(rows, list)
+        or len(rows) != len(role.raw_artifacts)
+    ):
+        raise AdapterProtocolError("manifest_invalid", "raw artifact manifest identity is invalid")
+    _sha256(payload.get("request_commitment_sha256"), "manifest request commitment")
+    commitment = _sha256(payload.get("manifest_commitment_sha256"), "manifest commitment")
+    uncommitted = dict(payload)
+    uncommitted.pop("manifest_commitment_sha256")
+    if not secrets.compare_digest(commitment, canonical_commitment(MANIFEST_DOMAIN, uncommitted)):
+        raise AdapterProtocolError("manifest_invalid", "raw artifact manifest commitment is stale")
+
+    validated_rows: list[tuple[rig_adapters.RawArtifactContract, str, int]] = []
+    for raw, contract in zip(rows, role.raw_artifacts, strict=True):
+        row = _exact_object(raw, {"filename", "role", "sha256", "size_bytes"}, "raw artifact row")
+        digest = _sha256(row.get("sha256"), "raw artifact digest")
+        size = row.get("size_bytes")
+        if (
+            row.get("filename") != contract.filename
+            or row.get("role") != contract.role
+            or type(size) is not int
+            or not 1 <= size <= contract.maximum_bytes
+        ):
+            raise AdapterProtocolError("manifest_invalid", "raw artifact manifest contract drifted")
+        validated_rows.append((contract, digest, size))
+
+    raw_absolute = Path(os.path.abspath(raw_directory))
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise AdapterProtocolError("raw_artifact_invalid", "safe directory opening is unavailable")
+    flags = os.O_RDONLY | nofollow | directory_flag
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    directory_fd = -1
+    try:
+        directory_fd = os.open(raw_absolute, flags)
+        before_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(before_directory.st_mode):
+            raise AdapterProtocolError("raw_artifact_invalid", "raw artifact path is not a real directory")
+        names = os.listdir(directory_fd)
+        expected_names = {contract.filename for contract in role.raw_artifacts}
+        if len(names) != len(set(names)) or set(names) != expected_names:
+            raise AdapterProtocolError("raw_artifact_set_invalid", "raw artifact set changed before parsing")
+        content_by_role = {
+            contract.role: _read_raw_file(
+                directory_fd,
+                contract.filename,
+                contract,
+                expected_sha256=digest,
+                expected_size=size,
+            )
+            for contract, digest, size in validated_rows
+        }
+        after_directory = os.fstat(directory_fd)
+        try:
+            after_path = os.stat(raw_absolute, follow_symlinks=False)
+        except OSError as exc:
+            raise AdapterProtocolError(
+                "raw_artifact_changed", "raw artifact directory path changed while parsing"
+            ) from exc
+        if (
+            _identity(after_directory) != _identity(before_directory)
+            or _identity(after_path) != _identity(before_directory)
+        ):
+            raise AdapterProtocolError(
+                "raw_artifact_changed", "raw artifact directory changed while parsing"
+            )
+    except AdapterProtocolError:
+        raise
+    except OSError as exc:
+        raise AdapterProtocolError(
+            "raw_artifact_invalid", "raw artifact directory could not be parsed"
+        ) from exc
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+    return content_by_role

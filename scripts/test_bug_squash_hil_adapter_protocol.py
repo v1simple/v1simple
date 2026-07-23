@@ -206,6 +206,54 @@ class AdapterProtocolTests(unittest.TestCase):
                 commitment,
                 protocol.canonical_commitment(protocol.MANIFEST_DOMAIN, committed),
             )
+            parsed = protocol.read_collected_raw_artifacts(
+                raw_directory=raw_directory,
+                role=role,
+                manifest=manifest,
+            )
+            self.assertEqual(
+                parsed,
+                {
+                    artifact.role: (raw_directory / artifact.filename).read_bytes()
+                    for artifact in role.raw_artifacts
+                },
+            )
+
+    def test_verified_read_rejects_bytes_changed_after_manifest_collection(self) -> None:
+        adapter = implemented_adapter()
+        role = adapter.roles[0]
+        request = valid_request(adapter)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            raw_directory = root / "raw"
+            write_raw_set(raw_directory, role)
+            manifest = protocol.collect_raw_artifacts(
+                raw_directory=raw_directory,
+                role=role,
+                request_commitment_sha256=str(request["request_commitment_sha256"]),
+                manifest_path=root / "manifest.json",
+            )
+            first = role.raw_artifacts[0]
+            original = raw_directory / first.filename
+            original.write_bytes(b"different bytes with a different digest\n")
+            with self.assertRaises(protocol.AdapterProtocolError) as raised:
+                protocol.read_collected_raw_artifacts(
+                    raw_directory=raw_directory,
+                    role=role,
+                    manifest=manifest,
+                )
+            self.assertEqual(raised.exception.code, "raw_artifact_changed")
+
+            original.write_bytes(b"raw-1-adapter-transcript\n")
+            tampered = copy.deepcopy(manifest)
+            tampered["artifacts"][0]["sha256"] = "f" * 64
+            with self.assertRaises(protocol.AdapterProtocolError) as raised:
+                protocol.read_collected_raw_artifacts(
+                    raw_directory=raw_directory,
+                    role=role,
+                    manifest=tampered,
+                )
+            self.assertEqual(raised.exception.code, "manifest_invalid")
 
     def test_raw_set_rejects_missing_extra_symlink_hardlink_nonregular_and_size_drift(self) -> None:
         adapter = implemented_adapter()

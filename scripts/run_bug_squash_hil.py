@@ -772,6 +772,18 @@ def read_json(path: Path, label: str) -> object:
         raise RunnerError("artifact_invalid", f"{label} could not be read as JSON") from exc
 
 
+def read_json_bytes(content: bytes, label: str) -> object:
+    """Parse already-verified artifact bytes without reopening their path."""
+
+    try:
+        return json.loads(
+            content.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("artifact_invalid", f"{label} could not be read as JSON") from exc
+
+
 def write_json(path: Path, payload: Mapping[str, object]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -8319,6 +8331,76 @@ def bsc07_manifest_capture_commitments(
     }
 
 
+def validate_bsc07_raw_content(
+    content_by_role: Mapping[str, bytes],
+    *,
+    record: Mapping[str, object],
+) -> None:
+    """Require the typed record to be a projection of runner-verified raw bytes."""
+
+    expected_roles = {artifact.role for artifact in rig_adapters.BSC07_RAW_ARTIFACTS}
+    if set(content_by_role) != expected_roles:
+        raise RunnerError("raw_artifact_set_invalid", "BSC-07 raw artifact content is incomplete")
+
+    observations = record.get("observations")
+    firmware = record.get("firmware")
+    reset = record.get("reset_observation")
+    if not isinstance(observations, dict) or not isinstance(firmware, dict) or not isinstance(reset, dict):
+        raise RunnerError("case_record_invalid", "BSC-07 record cannot be projected to raw evidence")
+
+    def without_fields(value: object, fields: set[str], label: str) -> dict[str, object]:
+        if not isinstance(value, dict) or not fields.issubset(value):
+            raise RunnerError("case_record_invalid", f"BSC-07 {label} source binding is incomplete")
+        projected = dict(value)
+        for field in fields:
+            projected.pop(field)
+        return projected
+
+    voltage = without_fields(
+        observations.get("voltage_refresh"), {"source_role", "source_sha256"}, "voltage"
+    )
+    traffic = without_fields(
+        observations.get("ap_traffic"), {"source_role", "source_sha256"}, "AP traffic"
+    )
+    button = without_fields(
+        observations.get("power_button"), {"source_role", "source_sha256"}, "power button"
+    )
+    shutdown = without_fields(
+        observations.get("critical_shutdown"), {"source_role", "source_sha256"}, "shutdown"
+    )
+    health = without_fields(observations.get("health"), {"source_commitments"}, "health")
+    power = without_fields(
+        observations.get("power"), {"source_role", "source_sha256"}, "power"
+    )
+    reset_projection = without_fields(reset, {"source_role", "source_sha256"}, "reset")
+    firmware_projection = {
+        field: firmware.get(field)
+        for field in ("environment", "build_kind", "target_sha", "hil_fault_control_active")
+    }
+    expected_by_role: dict[str, object] = {
+        "ap-traffic": traffic,
+        "firmware-build": firmware_projection,
+        "power-timeline": {
+            "voltage_refresh": voltage,
+            "power_button": button,
+            "critical_shutdown": shutdown,
+            "power": power,
+        },
+        "reset-summary": reset_projection,
+        "serial-log": {"health": health, "reset": reset_projection},
+        "ui-health": health,
+    }
+    for role, expected_payload in expected_by_role.items():
+        observed_payload = read_json_bytes(content_by_role[role], f"BSC-07 {role}")
+        if adapter_protocol.canonical_json_bytes(observed_payload) != adapter_protocol.canonical_json_bytes(
+            expected_payload
+        ):
+            raise RunnerError(
+                "case_record_invalid",
+                f"BSC-07 {role} does not match the runner-verified raw evidence",
+            )
+
+
 def resolve_bsc07_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
@@ -8885,19 +8967,23 @@ def run_bsc07_adapter(
             request_commitment_sha256=str(expected["raw_artifact_request_sha256"]),
             manifest_path=raw_manifest_path,
         )
+        raw_content = adapter_protocol.read_collected_raw_artifacts(
+            raw_directory=raw_directory,
+            role=role_contract,
+            manifest=raw_manifest,
+        )
     except adapter_protocol.AdapterProtocolError as exc:
         raise RunnerError(exc.code, exc.message) from exc
     physical = expected.get("execution_mode") == "physical"
-    return (
-        validate_bsc07_adapter_record(
-            payload,
-            expected=expected,
-            raw_manifest=raw_manifest,
-            command_started=command_started if physical else None,
-            command_completed=command_completed if physical else None,
-        ),
-        raw_manifest,
+    record = validate_bsc07_adapter_record(
+        payload,
+        expected=expected,
+        raw_manifest=raw_manifest,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
     )
+    validate_bsc07_raw_content(raw_content, record=record)
+    return record, raw_manifest
 
 
 def admit_case_rig_adapter(

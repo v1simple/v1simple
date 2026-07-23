@@ -1926,6 +1926,9 @@ if mutation == 'reset-source-unbound':
     reset_observation['source_sha256'] = digest('unrelated-reset')
 if mutation == 'reset-timing-unbound':
     reset_observation['observed_elapsed_ms'] = 12499
+if mutation == 'raw-observation-mismatch':
+    observations['voltage_refresh']['refreshed_elapsed_ms'] = 3501
+    facts['voltage-refresh-delay-ms'] = 501
 
 capture_fields = (
     'ap_traffic_sha256', 'build_evidence_sha256', 'power_timeline_sha256',
@@ -5173,6 +5176,7 @@ def test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations() -> No
         "source-health-unbound",
         "reset-source-unbound",
         "reset-timing-unbound",
+        "raw-observation-mismatch",
         "raw-request-substitution",
     )
     cases: tuple[tuple[dict[str, object], str], ...] = tuple(

@@ -87,7 +87,7 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertFalse(called)
 
     def test_new_driver_foundations_fail_at_rig_boundary_without_mutation(self) -> None:
-        for case_id in ("BSC-05", "BSC-06", "BSC-07", "BSC-08", "BSC-09", "BSC-10", "BSC-12", "BSC-13"):
+        for case_id in ("BSC-05", "BSC-06", "BSC-08", "BSC-09", "BSC-10", "BSC-12", "BSC-13"):
             driver = case_drivers.get_case_driver(case_id)
             with self.subTest(case_id=driver.case_id):
                 profile, errors = qualification.load_pinned_profile()
@@ -167,6 +167,21 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertIn("tracked-rig-adapter-not-implemented", bsc05.qualification_blockers)
         self.assertIs(runner.resolve_case_handler(bsc05), runner.run_bsc05_case)
         self.assertIsNot(runner.run_bsc05_case, runner.run_registered_case_foundation)
+
+    def test_bsc07_owns_the_typed_profile_v5_production_collector(self) -> None:
+        bsc07 = case_drivers.get_case_driver("BSC-07")
+        self.assertTrue(bsc07.implemented)
+        self.assertNotIn("hil-fault-control-not-implemented", bsc07.qualification_blockers)
+        self.assertEqual(
+            bsc07.qualification_blockers,
+            (
+                "build-generator-provenance-not-authenticated",
+                "board-resolution-provenance-not-authenticated",
+                "tracked-rig-adapter-not-implemented",
+            ),
+        )
+        self.assertIs(runner.resolve_case_handler(bsc07), runner.run_bsc07_case)
+        self.assertIsNot(runner.run_bsc07_case, runner.run_registered_case_foundation)
 
     def test_bsc13_owns_the_implemented_fault_hook_contract(self) -> None:
         bsc13 = case_drivers.get_case_driver("BSC-13")

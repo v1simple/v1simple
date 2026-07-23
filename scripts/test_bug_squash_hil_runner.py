@@ -127,6 +127,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                         "alias": "rig",
                         "capabilities": [
                             "artifact-capture",
+                            "ap-traffic",
                             "battery-source",
                             "bond-peer",
                             "browser-client",
@@ -1646,6 +1647,263 @@ if os.environ.get('FAKE_BSC13_TAMPER') == '1':
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc07_adapter = root / "fake-bsc07-adapter.py"
+    write_executable(
+        bsc07_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc07.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+mutation = os.environ.get('FAKE_BSC07_MUTATION', '')
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=20)
+case_descriptor = {
+    'id': 'BSC-07',
+    'minimum_runs': 1,
+    'fault_build_required': False,
+    'production_replay_required': False,
+    'required_dut_capabilities': [
+        'battery-monitor', 'firmware-execution', 'maintenance-mode', 'power-button', 'serial',
+    ],
+    'required_rig_capabilities': [
+        'ap-traffic', 'artifact-capture', 'power-control', 'utc-time-source', 'vbus-isolation',
+    ],
+    'scenario': {
+        'role_id': 'maintenance-power-safety',
+        'schema': 'case-observation-v1',
+        'build_kind': 'production',
+        'stimulus_ids': [
+            'maintenance-boot', 'apply-ap-load', 'change-battery-voltage',
+            'hold-power-button', 'apply-critical-voltage',
+        ],
+        'fault_ids': [],
+        'barrier_ids': ['critical-voltage-grace'],
+        'vbus_isolation_required': True,
+        'reset_contract': {
+            'expected_kind': 'intentional-shutdown', 'expected_count': 1, 'unexpected_count': 0,
+        },
+        'facts': [
+            {'id': 'voltage-refresh-delay-ms', 'type': 'integer', 'minimum': 0, 'maximum': 10000},
+            {'id': 'power-button-handled-under-ap-load', 'type': 'boolean', 'expected': True},
+            {'id': 'critical-shutdown-grace-ms', 'type': 'integer', 'minimum': 4500, 'maximum': 6500},
+            {'id': 'critical-warning-observed', 'type': 'boolean', 'expected': True},
+            {'id': 'ui-responsive-until-shutdown', 'type': 'boolean', 'expected': True},
+            {'id': 'loop-stall-observed', 'type': 'boolean', 'expected': False},
+        ],
+    },
+    'production_replay': None,
+}
+stimuli = [
+    {'id': stimulus_id, 'sequence': sequence, 'elapsed_ms': elapsed_ms, 'result': 'pass'}
+    for sequence, (stimulus_id, elapsed_ms) in enumerate(zip(
+        case_descriptor['scenario']['stimulus_ids'], (1000, 2000, 3000, 4000, 7000)
+    ), start=1)
+]
+observations = {
+    'voltage_refresh': {'changed_elapsed_ms': 3000, 'refreshed_elapsed_ms': 3500},
+    'ap_traffic': {
+        'started_elapsed_ms': 2000,
+        'last_success_before_hold_elapsed_ms': 3900,
+        'first_success_after_hold_elapsed_ms': 6100,
+        'continuous': True,
+    },
+    'power_button': {
+        'hold_started_elapsed_ms': 4000,
+        'hold_released_elapsed_ms': 6000,
+        'handled_elapsed_ms': 6000,
+    },
+    'critical_shutdown': {
+        'applied_elapsed_ms': 7000,
+        'warning_elapsed_ms': 7500,
+        'shutdown_elapsed_ms': 12500,
+    },
+    'health': {
+        'ui_last_healthy_elapsed_ms': 12000,
+        'battery_last_healthy_elapsed_ms': 12000,
+        'loop_last_healthy_elapsed_ms': 12000,
+        'watchdog_last_healthy_elapsed_ms': 12000,
+    },
+    'power': {
+        'vbus_isolated': True,
+        'external_power_removed': True,
+        'power_removed_elapsed_ms': 12500,
+    },
+}
+barriers = [{
+    'id': 'critical-voltage-grace',
+    'sequence': 1,
+    'ready_elapsed_ms': 7500,
+    'released_elapsed_ms': 12500,
+    'timed_out': False,
+}]
+reset_observation = {
+    'expected_kind': 'intentional-shutdown',
+    'planned_count': 1,
+    'observed_count': 1,
+    'unexpected_count': 0,
+    'panic_observed': False,
+    'watchdog_reset_observed': False,
+}
+facts = {
+    'voltage-refresh-delay-ms': 500,
+    'power-button-handled-under-ap-load': True,
+    'critical-shutdown-grace-ms': 5000,
+    'critical-warning-observed': True,
+    'ui-responsive-until-shutdown': True,
+    'loop-stall-observed': False,
+}
+environment = 'waveshare-349'
+build_kind = 'production'
+hil_active = False
+
+if mutation == 'descriptor':
+    case_descriptor['required_dut_capabilities'].append('invented-capability')
+if mutation == 'stimulus-order':
+    stimuli[1], stimuli[2] = stimuli[2], stimuli[1]
+if mutation == 'stimulus-timing':
+    stimuli[2]['elapsed_ms'] = stimuli[1]['elapsed_ms']
+if mutation == 'stimulus-missing':
+    stimuli.pop()
+if mutation == 'voltage-slow':
+    observations['voltage_refresh']['refreshed_elapsed_ms'] = 14000
+if mutation == 'hold-short':
+    observations['power_button']['hold_released_elapsed_ms'] = 5999
+if mutation == 'traffic-not-continuous':
+    observations['ap_traffic']['continuous'] = False
+if mutation == 'traffic-int':
+    observations['ap_traffic']['continuous'] = 1
+if mutation == 'traffic-before-hold-missing':
+    observations['ap_traffic']['last_success_before_hold_elapsed_ms'] = 1000
+if mutation == 'traffic-after-hold-missing':
+    observations['ap_traffic']['first_success_after_hold_elapsed_ms'] = 13000
+if mutation == 'button-not-handled':
+    facts['power-button-handled-under-ap-load'] = False
+if mutation == 'grace-short':
+    observations['critical_shutdown']['shutdown_elapsed_ms'] = 11999
+    observations['power']['power_removed_elapsed_ms'] = 11999
+    barriers[0]['released_elapsed_ms'] = 11999
+    facts['critical-shutdown-grace-ms'] = 4499
+if mutation == 'grace-long':
+    observations['critical_shutdown']['shutdown_elapsed_ms'] = 14001
+    observations['power']['power_removed_elapsed_ms'] = 14001
+    barriers[0]['released_elapsed_ms'] = 14001
+    facts['critical-shutdown-grace-ms'] = 6501
+if mutation == 'warning-missing':
+    facts['critical-warning-observed'] = False
+if mutation == 'warning-int':
+    facts['critical-warning-observed'] = 1
+if mutation == 'health-stale':
+    observations['health']['battery_last_healthy_elapsed_ms'] = 11000
+if mutation == 'health-after-shutdown':
+    observations['health']['ui_last_healthy_elapsed_ms'] = 13000
+if mutation == 'vbus-not-isolated':
+    observations['power']['vbus_isolated'] = False
+if mutation == 'vbus-int':
+    observations['power']['vbus_isolated'] = 1
+if mutation == 'power-not-removed':
+    observations['power']['external_power_removed'] = False
+if mutation == 'power-removal-time':
+    observations['power']['power_removed_elapsed_ms'] = 13000
+if mutation == 'barrier-missing':
+    barriers.clear()
+if mutation == 'barrier-timing':
+    barriers[0]['ready_elapsed_ms'] = 7499
+if mutation == 'barrier-timeout':
+    barriers[0]['timed_out'] = True
+if mutation == 'reset-kind':
+    reset_observation['expected_kind'] = 'none'
+if mutation == 'reset-count':
+    reset_observation['observed_count'] = 0
+if mutation == 'unexpected-reset':
+    reset_observation['unexpected_count'] = 1
+if mutation == 'panic':
+    reset_observation['panic_observed'] = True
+if mutation == 'watchdog':
+    reset_observation['watchdog_reset_observed'] = True
+if mutation == 'reset-bool-count':
+    reset_observation['observed_count'] = True
+if mutation == 'panic-int':
+    reset_observation['panic_observed'] = 0
+if mutation == 'watchdog-int':
+    reset_observation['watchdog_reset_observed'] = 0
+if mutation == 'wrong-firmware':
+    environment = 'waveshare-349-hil'
+if mutation == 'wrong-build':
+    build_kind = 'hil-fault'
+if mutation == 'wrong-hil':
+    hil_active = True
+
+capture_fields = (
+    'ap_traffic_sha256', 'build_evidence_sha256', 'power_timeline_sha256',
+    'reset_summary_sha256', 'serial_log_sha256', 'ui_health_sha256',
+)
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role_id': argument('--role-id'),
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': (started if mutation == 'utc-duration' else now).isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor': case_descriptor,
+    'case_descriptor_sha256': argument('--case-descriptor-sha256'),
+    'firmware': {
+        'environment': environment,
+        'build_kind': build_kind,
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest('bsc07-production-binary'),
+        'hil_fault_control_active': hil_active,
+    },
+    'stimuli': stimuli,
+    'observations': observations,
+    'barriers': barriers,
+    'reset_observation': reset_observation,
+    'facts': facts,
+    'capture_commitments': {
+        field: digest(f'bsc07-{field}') for field in capture_fields
+    },
+}
+if mutation == 'role-id':
+    payload['role_id'] = 'substituted-role'
+if mutation == 'target':
+    payload['target_sha'] = 'f' * 40
+if mutation == 'descriptor-digest':
+    payload['case_descriptor_sha256'] = digest('wrong-descriptor')
+if mutation == 'record-extra':
+    payload['invented-field'] = True
+if mutation == 'firmware-extra':
+    payload['firmware']['invented-field'] = True
+if mutation == 'capture-reuse':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['ui_health_sha256']
+if mutation == 'bool-schema':
+    payload['schema_version'] = True
+if mutation == 'integer-hardware':
+    payload['hardware_observed'] = 0
+payload['evidence_binding_sha256'] = commitment(payload)
+if mutation.startswith('capture-self-binding-'):
+    field = mutation.removeprefix('capture-self-binding-')
+    payload['capture_commitments'][field] = digest(f'tampered-{field}')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
     bsc10_adapter = root / "fake-bsc10-adapter.py"
     write_executable(
         bsc10_adapter,
@@ -2352,6 +2610,7 @@ sys.stdout.write(json.dumps(payload))
         "bsc04_adapter": bsc04_adapter,
         "bsc05_adapter": bsc05_adapter,
         "bsc06_adapter": bsc06_adapter,
+        "bsc07_adapter": bsc07_adapter,
         "bsc13_adapter": bsc13_adapter,
         "bsc11_adapter": bsc11_adapter,
         "bsc10_adapter": bsc10_adapter,
@@ -2948,6 +3207,80 @@ def run_bsc13_fixture(
         "--out-dir",
         str(out_dir),
     ]
+    if production_replay:
+        command.append("--production-replay")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc07_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    runs: int = 1,
+    mutation: str = "",
+    production_replay: bool = False,
+    acknowledge_vbus: bool = True,
+    drop_dut_capability: str | None = None,
+    drop_rig_capability: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    out_dir = root / "bsc07-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC07_MUTATION": mutation,
+        }
+    )
+    if drop_dut_capability is not None or drop_rig_capability is not None:
+        assert_true(
+            not (drop_dut_capability is not None and drop_rig_capability is not None),
+            "BSC-07 fixture removes one capability at a time",
+        )
+        inventory_path = Path(fixture["inventory"])
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        alias = "release" if drop_dut_capability is not None else "rig"
+        capability = drop_dut_capability or drop_rig_capability
+        assert capability is not None
+        board = next(item for item in inventory["boards"] if item["alias"] == alias)
+        board["capabilities"].remove(capability)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-07",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc07_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if acknowledge_vbus:
+        command.append("--ack-vbus-isolated")
     if production_replay:
         command.append("--production-replay")
     completed = subprocess.run(
@@ -4617,6 +4950,194 @@ def test_bsc13_physical_mode_remains_blocked_before_rig_mutation() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def test_bsc07_profile_v5_production_collector_is_bound_and_nonqualifying() -> None:
+    descriptor = hil_runner.load_bsc07_case_descriptor()
+    descriptor_sha = hil_runner.bsc07_descriptor_commitment(descriptor)
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        fixture = prepare_fixture(root)
+        completed, out_dir = run_bsc07_fixture(fixture, root)
+        assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+        result = json.loads((out_dir / "collection_result.json").read_text(encoding="utf-8"))
+        attempt = json.loads((out_dir / "attempt.json").read_text(encoding="utf-8"))
+        assert_true(result["result"] == "TEST_PASS", str(result))
+        assert_true(result["collection_role"] == "maintenance-power-safety", str(result))
+        assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
+        assert_true(result["execution_mode"] == "simulated", str(result))
+        assert_true(result["hardware_observed"] is False, str(result))
+        assert_true(result["authoritative"] is False, str(result))
+        assert_true(result["physical_collection_completed"] is False, str(result))
+        assert_true(result["non_qualifying"] is True, str(result))
+        assert_true(result["qualification_status"] == "BLOCKED", str(result))
+        assert_true(
+            result["qualification_blockers"]
+            == [
+                "build-generator-provenance-not-authenticated",
+                "board-resolution-provenance-not-authenticated",
+                "tracked-rig-adapter-not-implemented",
+            ],
+            str(result),
+        )
+        assert_true(result["runs_required"] == result["runs_completed"] == 1, str(result))
+        assert_true(result["production_replay_required"] is False, str(result))
+        assert_true(
+            result["firmware_target"]["environment"] == "waveshare-349"
+            and result["firmware_target"]["build_kind"] == "production"
+            and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+            and result["firmware_target"]["hil_fault_control_active"] is False,
+            str(result),
+        )
+        assert_true(attempt["case_descriptor"] == descriptor, str(attempt))
+        assert_true(attempt["case_descriptor_sha256"] == descriptor_sha, str(attempt))
+        assert_true(
+            [row["id"] for row in attempt["stimuli"]]
+            == descriptor["scenario"]["stimulus_ids"],
+            str(attempt),
+        )
+        assert_true(
+            attempt["observations"]["power"]
+            == {
+                "vbus_isolated": True,
+                "external_power_removed": True,
+                "power_removed_elapsed_ms": 12500,
+            },
+            str(attempt),
+        )
+        assert_true(
+            attempt["reset_observation"]
+            == {
+                "expected_kind": "intentional-shutdown",
+                "planned_count": 1,
+                "observed_count": 1,
+                "unexpected_count": 0,
+                "panic_observed": False,
+                "watchdog_reset_observed": False,
+            },
+            str(attempt),
+        )
+        captures = attempt["capture_commitments"]
+        assert_true(set(captures) == set(hil_runner.BSC07_CAPTURE_COMMITMENTS), str(captures))
+        assert_true(len(set(captures.values())) == len(captures), str(captures))
+        assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+        public_output = completed.stdout + completed.stderr + json.dumps(result)
+        assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+        assert_true(str(fixture["port"]) not in public_output, public_output)
+
+
+def test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations() -> None:
+    descriptor = hil_runner.load_bsc07_case_descriptor()
+    mutation_names = (
+        "role-id",
+        "target",
+        "descriptor",
+        "descriptor-digest",
+        "record-extra",
+        "firmware-extra",
+        "wrong-firmware",
+        "wrong-build",
+        "wrong-hil",
+        "stimulus-order",
+        "stimulus-timing",
+        "stimulus-missing",
+        "utc-duration",
+        "voltage-slow",
+        "hold-short",
+        "traffic-not-continuous",
+        "traffic-int",
+        "traffic-before-hold-missing",
+        "traffic-after-hold-missing",
+        "button-not-handled",
+        "grace-short",
+        "grace-long",
+        "warning-missing",
+        "warning-int",
+        "health-stale",
+        "health-after-shutdown",
+        "vbus-not-isolated",
+        "vbus-int",
+        "power-not-removed",
+        "power-removal-time",
+        "barrier-missing",
+        "barrier-timing",
+        "barrier-timeout",
+        "reset-kind",
+        "reset-count",
+        "unexpected-reset",
+        "panic",
+        "watchdog",
+        "reset-bool-count",
+        "panic-int",
+        "watchdog-int",
+        "capture-reuse",
+        "bool-schema",
+        "integer-hardware",
+    )
+    cases: tuple[tuple[dict[str, object], str], ...] = tuple(
+        ({"mutation": mutation}, "case_record_invalid") for mutation in mutation_names
+    )
+    cases += tuple(
+        ({"mutation": f"capture-self-binding-{field}"}, "case_record_invalid")
+        for field in hil_runner.BSC07_CAPTURE_COMMITMENTS
+    )
+    cases += (({"runs": 2}, "invalid_runs"),)
+    cases += (({"production_replay": True}, "unsupported_mode"),)
+    cases += (({"acknowledge_vbus": False}, "operator_preconditions_incomplete"),)
+    cases += tuple(
+        ({"drop_dut_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_dut_capabilities"]
+    )
+    cases += tuple(
+        ({"drop_rig_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_rig_capabilities"]
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc07_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc07_authoritative_mode_blocks_before_git_output_or_discovery() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        out_dir = root / "must-not-exist"
+        inventory = root / "missing-inventory.json"
+        with mock.patch.object(hil_runner, "read_git_state") as read_git, mock.patch.object(
+            hil_runner, "resolve_bsc07_hardware"
+        ) as resolve_hardware:
+            args = hil_runner.build_parser().parse_args(
+                [
+                    "--case",
+                    "BSC-07",
+                    "--board",
+                    "opaque-dut",
+                    "--rig",
+                    "opaque-rig",
+                    "--ack-vbus-isolated",
+                    "--inventory",
+                    str(inventory),
+                    "--out-dir",
+                    str(out_dir),
+                ]
+            )
+            with mock.patch.object(hil_runner, "test_hooks_enabled", return_value=False):
+                try:
+                    hil_runner.run_bsc07_case(args)
+                except hil_runner.RunnerError as exc:
+                    assert_true(exc.code == "case_rig_adapter_unavailable", str(exc))
+                else:
+                    raise AssertionError("authoritative BSC-07 unexpectedly passed admission")
+        read_git.assert_not_called()
+        resolve_hardware.assert_not_called()
+        assert_true(not out_dir.exists(), "authoritative BSC-07 created output before admission")
+        assert_true(not inventory.exists(), "authoritative BSC-07 touched inventory before admission")
+
+
 def test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc10_case_descriptor()
     descriptor_sha = hil_runner.bsc10_descriptor_commitment(descriptor)
@@ -5305,6 +5826,9 @@ def main() -> int:
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()
+    test_bsc07_profile_v5_production_collector_is_bound_and_nonqualifying()
+    test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations()
+    test_bsc07_authoritative_mode_blocks_before_git_output_or_discovery()
     test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc10_rejects_full_record_contract_mutations()
     test_bsc10_physical_mode_remains_blocked_before_rig_discovery()

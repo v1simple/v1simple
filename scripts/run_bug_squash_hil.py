@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -29,7 +29,6 @@ import xml.etree.ElementTree as ET
 
 import bug_squash_hil_adapter_protocol as adapter_protocol
 import bug_squash_hil_case_drivers as case_drivers
-import bug_squash_hil_adapter_protocol as adapter_protocol
 import bug_squash_hil_rig_adapters as rig_adapters
 import resolve_hil_board
 import check_bug_squash_hil_qualification as qualification
@@ -580,6 +579,7 @@ BSC13_CAPTURE_COMMITMENTS = (
 BSC08_CASE_ID = "BSC-08"
 BSC08_PRODUCTION_ENVIRONMENT = "waveshare-349"
 BSC08_REQUIRED_RUNS = 3
+BSC08_ADAPTER_TIMEOUT_SECONDS = 1_800
 BSC08_DUT_CAPABILITIES = (
     "firmware-execution",
     "proxy-connectivity",
@@ -9310,9 +9310,12 @@ def bsc08_source_capture_commitment(record: Mapping[str, object]) -> str:
         BSC08_CAPTURE_BINDING_DOMAIN,
         {
             "raw_artifact_manifest": record.get("raw_artifact_manifest"),
+            "firmware": record.get("firmware"),
             "serial_queries": record.get("serial_queries"),
             "stimuli": record.get("stimuli"),
             "barriers": record.get("barriers"),
+            "deliveries": record.get("deliveries"),
+            "resets": record.get("resets"),
             "safety": record.get("safety"),
             "facts": record.get("facts"),
         },
@@ -9524,74 +9527,348 @@ def validate_bsc08_queries(value: object) -> list[dict[str, object]]:
     return queries
 
 
-def validate_bsc08_serial_capture(
-    raw: bytes,
-    *,
-    queries: Sequence[Mapping[str, object]],
-) -> None:
-    """Bind typed query responses to the exact bytes captured from DUT serial."""
-
+def _bsc08_jsonl(raw: bytes, *, label: str) -> list[dict[str, object]]:
     try:
-        lines = raw.decode("utf-8").splitlines()
+        text = raw.decode("utf-8", errors="strict")
     except UnicodeError as exc:
-        raise RunnerError("case_record_invalid", "BSC-08 serial capture is not UTF-8") from exc
-    captured: list[object] = []
-    for line in lines:
-        if not line.startswith("QBSC08"):
-            continue
-        if not line.startswith("QBSC08 "):
-            raise RunnerError("case_record_invalid", "BSC-08 serial capture line is malformed")
+        raise RunnerError("case_record_invalid", f"BSC-08 {label} is not UTF-8") from exc
+    if not text.endswith("\n"):
+        raise RunnerError("case_record_invalid", f"BSC-08 {label} is incomplete")
+    rows: list[dict[str, object]] = []
+    for line in text.splitlines():
         try:
-            captured.append(
-                json.loads(
-                    line[len("QBSC08 ") :],
-                    object_pairs_hook=reject_duplicate_json_keys,
-                )
+            value = json.loads(line, object_pairs_hook=reject_duplicate_json_keys)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RunnerError("case_record_invalid", f"BSC-08 {label} is not strict JSONL") from exc
+        if not isinstance(value, dict):
+            raise RunnerError("case_record_invalid", f"BSC-08 {label} row is not an object")
+        rows.append(value)
+    return rows
+
+
+def bsc08_serial_nonce(request_nonce: str, phase: str) -> str:
+    return hashlib.sha256(
+        b"v1simple.bsc08.serial-nonce.v1\0"
+        + request_nonce.encode("ascii")
+        + b"\0"
+        + phase.encode("ascii")
+    ).hexdigest()[:32]
+
+
+def parse_bsc08_serial_capture(raw: bytes, *, request_nonce: str) -> list[dict[str, object]]:
+    rows = _bsc08_jsonl(raw, label="serial capture")
+    if len(rows) != len(BSC08_SNAPSHOT_PHASES):
+        raise RunnerError("case_record_invalid", "BSC-08 serial query coverage is incomplete")
+    queries: list[dict[str, object]] = []
+    for sequence, (row, phase) in enumerate(zip(rows, BSC08_SNAPSHOT_PHASES, strict=True), start=1):
+        typed = require_exact_object(
+            row,
+            {"schema_version", "phase", "sequence", "elapsed_ms", "nonce", "response_line"},
+            code="case_record_invalid",
+            label="BSC-08 serial capture row",
+        )
+        nonce = bsc08_serial_nonce(request_nonce, phase)
+        response_line = typed.get("response_line")
+        if (
+            type(typed.get("schema_version")) is not int
+            or typed.get("schema_version") != 1
+            or typed.get("phase") != phase
+            or type(typed.get("sequence")) is not int
+            or typed.get("sequence") != sequence
+            or typed.get("nonce") != nonce
+            or not isinstance(response_line, str)
+            or not response_line.startswith("QBSC08 ")
+        ):
+            raise RunnerError("case_record_invalid", "BSC-08 serial capture identity is invalid")
+        try:
+            response = json.loads(
+                response_line[len("QBSC08 ") :],
+                object_pairs_hook=reject_duplicate_json_keys,
             )
         except (json.JSONDecodeError, ValueError) as exc:
             raise RunnerError(
-                "case_record_invalid", "BSC-08 serial capture response is not strict JSON"
+                "case_record_invalid", "BSC-08 serial response is not strict JSON"
             ) from exc
-    expected_responses = [query.get("response") for query in queries]
-    if captured != expected_responses:
-        raise RunnerError(
-            "case_record_invalid",
-            "BSC-08 typed serial observations do not match the manifest-bound capture",
+        queries.append(
+            {
+                "phase": phase,
+                "sequence": sequence,
+                "elapsed_ms": typed.get("elapsed_ms"),
+                "nonce": nonce,
+                "response": response,
+            }
         )
+    return validate_bsc08_queries(queries)
 
 
-def load_bsc08_serial_capture(
+def parse_bsc08_stimuli(
+    raw: bytes,
     *,
-    raw_directory: Path,
-    manifest: object,
     request_commitment_sha256: str,
     queries: Sequence[Mapping[str, object]],
-) -> bytes:
-    """Reverify and parse the same serial bytes named by the runner manifest."""
-
-    artifacts = validate_bsc08_raw_artifact_manifest(
-        manifest,
-        expected_request_commitment_sha256=request_commitment_sha256,
-    )
-    contract = next(
-        artifact for artifact in _bsc08_role_contract().raw_artifacts if artifact.role == "serial-log"
-    )
-    row = artifacts[contract.role]
-    try:
-        raw = adapter_protocol.read_verified_raw_artifact(
-            raw_directory=raw_directory,
-            contract=contract,
-            expected_sha256=row["sha256"],
-            expected_size_bytes=row["size_bytes"],
+) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
+    rows = _bsc08_jsonl(raw, label="adapter transcript")
+    stimulus_phases = ("streaming", "disabled", "reenabled", "old-traffic", "fresh-traffic")
+    if len(rows) != len(BSC08_STIMULUS_IDS):
+        raise RunnerError("case_record_invalid", "BSC-08 adapter transcript is incomplete")
+    query_by_phase = {query["phase"]: query for query in queries}
+    stimuli: list[dict[str, object]] = []
+    payloads: dict[str, dict[str, str]] = {}
+    for sequence, (row, stimulus_id, phase) in enumerate(
+        zip(rows, BSC08_STIMULUS_IDS, stimulus_phases, strict=True), start=1
+    ):
+        typed = require_exact_object(
+            row,
+            {
+                "schema_version",
+                "request_commitment_sha256",
+                "event",
+                "id",
+                "sequence",
+                "phase",
+                "elapsed_ms",
+                "observed",
+                "payload_sha256",
+            },
+            code="case_record_invalid",
+            label="BSC-08 adapter transcript row",
         )
-    except adapter_protocol.AdapterProtocolError as exc:
-        raise RunnerError(exc.code, exc.message) from exc
-    validate_bsc08_serial_capture(raw, queries=queries)
-    return raw
+        raw_payloads = require_exact_object(
+            typed.get("payload_sha256"),
+            {"proxy_to_v1", "v1_to_proxy"},
+            code="case_record_invalid",
+            label="BSC-08 stimulus payload commitments",
+        )
+        traffic_phase = phase in {"old-traffic", "fresh-traffic"}
+        if traffic_phase:
+            payload_pair = {
+                direction: require_sha256(
+                    raw_payloads.get(direction),
+                    code="case_record_invalid",
+                    label=f"BSC-08 {phase} {direction} payload",
+                )
+                for direction in ("proxy_to_v1", "v1_to_proxy")
+            }
+            payloads[phase] = payload_pair
+        elif raw_payloads != {"proxy_to_v1": None, "v1_to_proxy": None}:
+            raise RunnerError("case_record_invalid", "BSC-08 non-traffic stimulus declared payloads")
+        expected_elapsed = query_by_phase[phase]["elapsed_ms"]
+        if (
+            type(typed.get("schema_version")) is not int
+            or typed.get("schema_version") != 1
+            or typed.get("request_commitment_sha256") != request_commitment_sha256
+            or typed.get("event") != "stimulus"
+            or typed.get("id") != stimulus_id
+            or type(typed.get("sequence")) is not int
+            or typed.get("sequence") != sequence
+            or typed.get("phase") != phase
+            or typed.get("elapsed_ms") != expected_elapsed
+            or typed.get("observed") is not True
+        ):
+            raise RunnerError("case_record_invalid", "BSC-08 stimulus is not bound to its serial phase")
+        stimuli.append(
+            {
+                "id": stimulus_id,
+                "sequence": sequence,
+                "elapsed_ms": expected_elapsed,
+                "observed": True,
+            }
+        )
+    return stimuli, payloads
+
+
+def parse_bsc08_firmware(
+    raw: bytes,
+    *,
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    firmware = require_exact_object(
+        read_json_bytes(raw, "BSC-08 firmware build"),
+        {
+            "schema_version",
+            "request_commitment_sha256",
+            "environment",
+            "build_kind",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+        },
+        code="case_record_invalid",
+        label="BSC-08 firmware build",
+    )
+    request_firmware = request.get("firmware")
+    if not isinstance(request_firmware, dict):
+        raise RunnerError("case_record_invalid", "BSC-08 request firmware identity is invalid")
+    if (
+        type(firmware.get("schema_version")) is not int
+        or firmware.get("schema_version") != 1
+        or firmware.get("request_commitment_sha256") != request.get("request_commitment_sha256")
+        or firmware.get("environment") != BSC08_PRODUCTION_ENVIRONMENT
+        or firmware.get("build_kind") != "production"
+        or firmware.get("target_sha") != request.get("target_sha")
+        or firmware.get("binary_sha256") != request_firmware.get("binary_sha256")
+        or firmware.get("hil_fault_control_active") is not False
+    ):
+        raise RunnerError("case_record_invalid", "BSC-08 firmware capture is not the requested production image")
+    require_sha256(firmware.get("binary_sha256"), code="case_record_invalid", label="BSC-08 firmware")
+    return {
+        "environment": firmware["environment"],
+        "target_sha": firmware["target_sha"],
+        "binary_sha256": firmware["binary_sha256"],
+        "hil_fault_control_active": firmware["hil_fault_control_active"],
+    }
+
+
+def parse_bsc08_safety(
+    raw: bytes,
+    *,
+    request_commitment_sha256: str,
+) -> tuple[dict[str, bool], dict[str, object]]:
+    summary = require_exact_object(
+        read_json_bytes(raw, "BSC-08 safety summary"),
+        {"schema_version", "request_commitment_sha256", "safety", "resets"},
+        code="case_record_invalid",
+        label="BSC-08 safety summary",
+    )
+    safety = require_exact_object(
+        summary.get("safety"),
+        {"panic_observed", "watchdog_reset_observed", "load_prohibited_observed"},
+        code="case_record_invalid",
+        label="BSC-08 safety",
+    )
+    resets = require_exact_object(
+        summary.get("resets"),
+        {"expected_kind", "planned", "observed", "unexpected"},
+        code="case_record_invalid",
+        label="BSC-08 resets",
+    )
+    if (
+        type(summary.get("schema_version")) is not int
+        or summary.get("schema_version") != 1
+        or summary.get("request_commitment_sha256") != request_commitment_sha256
+        or any(type(value) is not bool for value in safety.values())
+        or resets != {"expected_kind": "none", "planned": 0, "observed": 0, "unexpected": 0}
+    ):
+        raise RunnerError("case_record_invalid", "BSC-08 safety/reset capture is invalid")
+    return dict(safety), dict(resets)
+
+
+def parse_bsc08_peer_receipt(
+    raw: bytes,
+    *,
+    direction: str,
+    request_commitment_sha256: str,
+    payload_sha256: str,
+    current_epoch: int,
+    fresh_elapsed_ms: int,
+    final_elapsed_ms: int,
+) -> dict[str, object]:
+    rows = _bsc08_jsonl(raw, label=f"{direction} peer receipts")
+    if len(rows) != 1:
+        raise RunnerError("case_incomplete", f"BSC-08 {direction} delivery receipt is missing")
+    receipt = require_exact_object(
+        rows[0],
+        {
+            "schema_version",
+            "request_commitment_sha256",
+            "receipt_id",
+            "direction",
+            "phase",
+            "epoch",
+            "payload_sha256",
+            "delivered",
+            "elapsed_ms",
+        },
+        code="case_record_invalid",
+        label="BSC-08 peer receipt",
+    )
+    elapsed = receipt.get("elapsed_ms")
+    if (
+        type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 1
+        or receipt.get("request_commitment_sha256") != request_commitment_sha256
+        or not isinstance(receipt.get("receipt_id"), str)
+        or re.fullmatch(r"receipt-[a-z0-9][a-z0-9._-]{0,63}", receipt["receipt_id"]) is None
+        or receipt.get("direction") != direction
+        or receipt.get("phase") != "fresh-traffic"
+        or type(receipt.get("epoch")) is not int
+        or receipt.get("epoch") != current_epoch
+        or receipt.get("payload_sha256") != payload_sha256
+        or receipt.get("delivered") is not True
+        or type(elapsed) is not int
+        or not fresh_elapsed_ms <= elapsed <= final_elapsed_ms
+    ):
+        raise RunnerError("case_incomplete", f"BSC-08 {direction} traffic was not delivered")
+    return dict(receipt)
+
+
+def parse_bsc08_raw_evidence(
+    *,
+    raw_manifest: object,
+    raw_content: Mapping[str, bytes],
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    request_commitment = request.get("request_commitment_sha256")
+    request_nonce = request.get("nonce")
+    if not isinstance(request_commitment, str) or not isinstance(request_nonce, str):
+        raise RunnerError("case_record_invalid", "BSC-08 runner request identity is invalid")
+    validate_bsc08_raw_artifact_manifest(
+        raw_manifest,
+        expected_request_commitment_sha256=request_commitment,
+    )
+    if set(raw_content) != set(BSC08_RAW_ARTIFACT_ROLES):
+        raise RunnerError("case_record_invalid", "BSC-08 verified raw artifact content is incomplete")
+    queries = parse_bsc08_serial_capture(raw_content["serial-log"], request_nonce=request_nonce)
+    stimuli, payloads = parse_bsc08_stimuli(
+        raw_content["adapter-transcript"],
+        request_commitment_sha256=request_commitment,
+        queries=queries,
+    )
+    firmware = parse_bsc08_firmware(raw_content["firmware-build"], request=request)
+    safety, resets = parse_bsc08_safety(
+        raw_content["safety-summary"],
+        request_commitment_sha256=request_commitment,
+    )
+    fresh = queries[BSC08_SNAPSHOT_PHASES.index("fresh-traffic")]
+    final = queries[-1]
+    fresh_response = fresh["response"]
+    assert isinstance(fresh_response, dict)
+    current_epoch = fresh_response["epoch"]
+    assert isinstance(current_epoch, int)
+    deliveries = {
+        "v1_to_proxy": parse_bsc08_peer_receipt(
+            raw_content["proxy-peer-receipts"],
+            direction="v1-to-proxy",
+            request_commitment_sha256=request_commitment,
+            payload_sha256=payloads["fresh-traffic"]["v1_to_proxy"],
+            current_epoch=current_epoch,
+            fresh_elapsed_ms=int(fresh["elapsed_ms"]),
+            final_elapsed_ms=int(final["elapsed_ms"]),
+        ),
+        "proxy_to_v1": parse_bsc08_peer_receipt(
+            raw_content["v1-peer-receipts"],
+            direction="proxy-to-v1",
+            request_commitment_sha256=request_commitment,
+            payload_sha256=payloads["fresh-traffic"]["proxy_to_v1"],
+            current_epoch=current_epoch,
+            fresh_elapsed_ms=int(fresh["elapsed_ms"]),
+            final_elapsed_ms=int(final["elapsed_ms"]),
+        ),
+    }
+    return {
+        "firmware": firmware,
+        "queries": queries,
+        "stimuli": stimuli,
+        "deliveries": deliveries,
+        "safety": safety,
+        "resets": resets,
+    }
 
 
 def derive_bsc08_facts(
-    queries: Sequence[Mapping[str, object]], safety: Mapping[str, object]
+    queries: Sequence[Mapping[str, object]],
+    safety: Mapping[str, object],
+    deliveries: Mapping[str, object],
 ) -> dict[str, object]:
     responses = [query["response"] for query in queries]
     assert all(isinstance(response, dict) for response in responses)
@@ -9621,10 +9898,15 @@ def derive_bsc08_facts(
         and any(response["releaseOpportunity"] is True for response in typed[1:])
     )
     old_forwarded = any(response["oldForwarded"] is True for response in typed)
-    old_admissions = old_traffic["admissions"]
-    fresh_admissions = fresh_traffic["admissions"]
-    assert isinstance(old_admissions, list) and isinstance(fresh_admissions, list)
-    fresh_resumed = all(fresh > old for old, fresh in zip(old_admissions, fresh_admissions, strict=True))
+    delivery_rows = list(deliveries.values())
+    fresh_resumed = (
+        len(delivery_rows) == 2
+        and all(isinstance(row, dict) for row in delivery_rows)
+        and {row.get("direction") for row in delivery_rows if isinstance(row, dict)}
+        == {"v1-to-proxy", "proxy-to-v1"}
+        and all(row.get("delivered") is True for row in delivery_rows if isinstance(row, dict))
+        and all(row.get("epoch") == fresh_traffic["epoch"] for row in delivery_rows if isinstance(row, dict))
+    )
     return {
         "queue-index-corruption-observed": queue_corruption,
         "heap-corruption-observed": any(safety[field] is True for field in safety),
@@ -9639,9 +9921,17 @@ def validate_bsc08_record(
     payload: object,
     *,
     expected: Mapping[str, object],
+    raw_manifest: object,
+    raw_content: Mapping[str, bytes],
+    request: Mapping[str, object],
     qualifying: bool = True,
 ) -> dict[str, object]:
     code = "case_record_invalid"
+    source = parse_bsc08_raw_evidence(
+        raw_manifest=raw_manifest,
+        raw_content=raw_content,
+        request=request,
+    )
     record = require_exact_object(
         payload,
         {
@@ -9663,6 +9953,7 @@ def validate_bsc08_record(
             "serial_queries",
             "stimuli",
             "barriers",
+            "deliveries",
             "resets",
             "safety",
             "facts",
@@ -9710,8 +10001,12 @@ def validate_bsc08_record(
     ):
         raise RunnerError(code, "BSC-08 firmware is not the bound production image")
     require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-08 firmware binary")
+    if firmware != source["firmware"]:
+        raise RunnerError(code, "BSC-08 firmware record is not derived from collected build evidence")
 
     queries = validate_bsc08_queries(record.get("serial_queries"))
+    if queries != source["queries"]:
+        raise RunnerError(code, "BSC-08 serial observations are not derived from collected DUT bytes")
     duration_ms = int((completed - started).total_seconds() * 1000)
     if duration_ms <= 0 or queries[-1]["elapsed_ms"] > duration_ms:
         raise RunnerError(code, "BSC-08 serial timeline exceeds its UTC collection window")
@@ -9768,6 +10063,8 @@ def validate_bsc08_record(
         raise RunnerError(code, "BSC-08 final gate does not admit the fresh epoch")
 
     stimuli = record.get("stimuli")
+    if stimuli != source["stimuli"]:
+        raise RunnerError(code, "BSC-08 stimuli are not derived from the collected adapter transcript")
     stimulus_phases = ("streaming", "disabled", "reenabled", "old-traffic", "fresh-traffic")
     if not isinstance(stimuli, list) or len(stimuli) != len(BSC08_STIMULUS_IDS):
         raise RunnerError(code, "BSC-08 stimulus timeline is incomplete")
@@ -9782,18 +10079,33 @@ def validate_bsc08_record(
         raise RunnerError(code, "BSC-08 barrier evidence is incomplete")
     first_active = next(query for query in queries if query["response"]["activeOverlap"] is True)
     first_release = next(query for query in queries if query["response"]["releaseOpportunity"] is True)
-    for sequence, (raw, barrier_id, source) in enumerate(zip(barriers, BSC08_BARRIER_IDS, (first_active, first_release), strict=True), start=1):
+    for sequence, (raw, barrier_id, source_query) in enumerate(
+        zip(barriers, BSC08_BARRIER_IDS, (first_active, first_release), strict=True),
+        start=1,
+    ):
         row = require_exact_object(raw, {"id", "sequence", "elapsed_ms", "observed", "timed_out"}, code=code, label="BSC-08 barrier")
-        if row != {"id": barrier_id, "sequence": sequence, "elapsed_ms": source["elapsed_ms"], "observed": True, "timed_out": False}:
+        if row != {"id": barrier_id, "sequence": sequence, "elapsed_ms": source_query["elapsed_ms"], "observed": True, "timed_out": False}:
             raise RunnerError(code, "BSC-08 barrier is not bound to the first natural observation")
 
+    deliveries = require_exact_object(
+        record.get("deliveries"),
+        {"proxy_to_v1", "v1_to_proxy"},
+        code=code,
+        label="BSC-08 deliveries",
+    )
+    if deliveries != source["deliveries"]:
+        raise RunnerError(code, "BSC-08 deliveries are not derived from collected peer receipts")
     resets = require_exact_object(record.get("resets"), {"expected_kind", "planned", "observed", "unexpected"}, code=code, label="BSC-08 resets")
     if resets != {"expected_kind": "none", "planned": 0, "observed": 0, "unexpected": 0}:
         raise RunnerError(code, "BSC-08 reset contract is invalid")
+    if resets != source["resets"]:
+        raise RunnerError(code, "BSC-08 resets are not derived from the collected safety trace")
     safety = require_exact_object(record.get("safety"), {"panic_observed", "watchdog_reset_observed", "load_prohibited_observed"}, code=code, label="BSC-08 safety")
     if any(type(value) is not bool for value in safety.values()):
         raise RunnerError(code, "BSC-08 safety observations must be typed booleans")
-    derived = derive_bsc08_facts(queries, safety)
+    if safety != source["safety"]:
+        raise RunnerError(code, "BSC-08 safety is not derived from the collected safety trace")
+    derived = derive_bsc08_facts(queries, safety, deliveries)
     facts = require_exact_object(record.get("facts"), set(BSC08_FACT_IDS), code=code, label="BSC-08 facts")
     for field in BSC08_FACT_IDS:
         expected_type = int if field == "deferred-release-opportunities" else bool
@@ -9814,10 +10126,10 @@ def validate_bsc08_record(
     expected_request = expected.get("request_commitment_sha256")
     if not isinstance(expected_request, str):
         raise RunnerError(code, "BSC-08 runner invocation lacks its adapter request commitment")
-    validate_bsc08_raw_artifact_manifest(
-        record.get("raw_artifact_manifest"),
-        expected_request_commitment_sha256=expected_request,
-    )
+    if request.get("request_commitment_sha256") != expected_request:
+        raise RunnerError(code, "BSC-08 adapter request was substituted")
+    if record.get("raw_artifact_manifest") != raw_manifest:
+        raise RunnerError(code, "BSC-08 record does not embed the runner-collected manifest")
     source_binding = require_sha256(
         record.get("source_capture_binding_sha256"),
         code=code,
@@ -9829,6 +10141,85 @@ def validate_bsc08_record(
     if not secrets.compare_digest(binding, bsc08_record_commitment(record)):
         raise RunnerError(code, "BSC-08 evidence binding is stale")
     return record
+
+
+def build_bsc08_record_from_raw(
+    *,
+    expected: Mapping[str, object],
+    request: Mapping[str, object],
+    raw_manifest: object,
+    raw_content: Mapping[str, bytes],
+    started_at_utc: str,
+    completed_at_utc: str,
+) -> dict[str, object]:
+    source = parse_bsc08_raw_evidence(
+        raw_manifest=raw_manifest,
+        raw_content=raw_content,
+        request=request,
+    )
+    queries = source["queries"]
+    assert isinstance(queries, list)
+    first_active = next(
+        (query for query in queries if query["response"]["activeOverlap"] is True),
+        None,
+    )
+    first_release = next(
+        (query for query in queries if query["response"]["releaseOpportunity"] is True),
+        None,
+    )
+    if first_active is None or first_release is None:
+        raise RunnerError("case_incomplete", "BSC-08 natural callback/release race was not observed")
+    deliveries = source["deliveries"]
+    safety = source["safety"]
+    assert isinstance(deliveries, dict) and isinstance(safety, dict)
+    record: dict[str, object] = {
+        "schema_version": 1,
+        "case_id": BSC08_CASE_ID,
+        "role_id": "proxy-epoch-teardown",
+        "session_id": expected["session_id"],
+        "attempt_id": expected["attempt_id"],
+        "run_index": expected["run_index"],
+        "target_sha": expected["target_sha"],
+        "dut_alias": expected["dut_alias"],
+        "rig_alias": expected["rig_alias"],
+        "execution_mode": expected["execution_mode"],
+        "hardware_observed": expected["hardware_observed"],
+        "started_at_utc": started_at_utc,
+        "completed_at_utc": completed_at_utc,
+        "descriptor": bsc08_profile_descriptor(),
+        "firmware": source["firmware"],
+        "serial_queries": queries,
+        "stimuli": source["stimuli"],
+        "barriers": [
+            {
+                "id": barrier_id,
+                "sequence": sequence,
+                "elapsed_ms": query["elapsed_ms"],
+                "observed": True,
+                "timed_out": False,
+            }
+            for sequence, (barrier_id, query) in enumerate(
+                zip(BSC08_BARRIER_IDS, (first_active, first_release), strict=True), start=1
+            )
+        ],
+        "deliveries": deliveries,
+        "resets": source["resets"],
+        "safety": safety,
+        "facts": derive_bsc08_facts(queries, safety, deliveries),
+        "raw_artifact_manifest": raw_manifest,
+        "source_capture_binding_sha256": "0" * 64,
+        "evidence_binding_sha256": "0" * 64,
+    }
+    record["source_capture_binding_sha256"] = bsc08_source_capture_commitment(record)
+    record["evidence_binding_sha256"] = bsc08_record_commitment(record)
+    return validate_bsc08_record(
+        record,
+        expected=expected,
+        raw_manifest=raw_manifest,
+        raw_content=raw_content,
+        request=request,
+        qualifying=expected.get("execution_mode") == "physical",
+    )
 
 
 def validate_bsc08_distinct_runs(records: Sequence[Mapping[str, object]]) -> None:
@@ -9862,6 +10253,151 @@ def validate_bsc08_distinct_runs(records: Sequence[Mapping[str, object]]) -> Non
         if artifact_digests.intersection(run_digests):
             raise RunnerError("case_runs_reused", "BSC-08 raw receipts must be distinct across runs")
         artifact_digests.update(run_digests)
+
+
+def resolve_bsc08_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError("local_inventory_missing", "BSC-08 requires the ignored local hardware inventory")
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC08_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC08_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-08 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def build_bsc08_production_firmware(
+    *,
+    repository: Path,
+    pio_executable: Path,
+    environment: Mapping[str, str],
+) -> tuple[Path, str]:
+    try:
+        completed = subprocess.run(
+            [str(pio_executable), "run", "-e", BSC08_PRODUCTION_ENVIRONMENT],
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC08_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("firmware_build_timeout", "BSC-08 production build exceeded its timeout") from exc
+    except OSError as exc:
+        raise RunnerError("firmware_build_unavailable", "BSC-08 production build could not start") from exc
+    if completed.returncode != 0:
+        raise RunnerError("firmware_build_failed", "BSC-08 production firmware build failed")
+    binary = repository / ".pio" / "build" / BSC08_PRODUCTION_ENVIRONMENT / "firmware.bin"
+    require_no_symlink_components(binary, boundary=repository)
+    try:
+        metadata = os.stat(binary, follow_symlinks=False)
+    except OSError as exc:
+        raise RunnerError("firmware_build_invalid", "BSC-08 production binary is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size <= 0:
+        raise RunnerError("firmware_build_invalid", "BSC-08 production binary identity is invalid")
+    return binary, sha256_file(binary)
+
+
+def run_bsc08_adapter(
+    *,
+    adapter_path: Path,
+    adapter: rig_adapters.RigAdapter,
+    repository: Path,
+    request: Mapping[str, object],
+    expected: Mapping[str, object],
+    raw_directory: Path,
+    raw_manifest_path: Path,
+    environment: Mapping[str, str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    if adapter.entrypoint is None:
+        raise RunnerError("adapter_contract_invalid", "BSC-08 adapter entrypoint is unavailable")
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(adapter_path),
+                "--entrypoint",
+                adapter.entrypoint,
+                "--raw-artifact-dir",
+                str(raw_directory),
+            ],
+            cwd=repository,
+            env=dict(environment),
+            input=adapter_protocol.canonical_json_bytes(request) + b"\n",
+            capture_output=True,
+            check=False,
+            timeout=BSC08_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-08 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-08 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-08 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 16 * 1024 or len(completed.stderr) > 64 * 1024:
+        raise RunnerError("protocol_invalid", "BSC-08 adapter output size is invalid")
+    try:
+        adapter_protocol.parse_adapter_response(completed.stdout, request=request)
+        role = next(role for role in adapter.roles if role.role_id == "proxy-epoch-teardown")
+        raw_manifest = adapter_protocol.collect_raw_artifacts(
+            raw_directory=raw_directory,
+            role=role,
+            request_commitment_sha256=str(request["request_commitment_sha256"]),
+            manifest_path=raw_manifest_path,
+        )
+        raw_content = adapter_protocol.read_collected_raw_artifacts(
+            raw_directory=raw_directory,
+            role=role,
+            manifest=raw_manifest,
+        )
+    except adapter_protocol.AdapterProtocolError as exc:
+        raise RunnerError(exc.code, exc.message) from exc
+    record = build_bsc08_record_from_raw(
+        expected=expected,
+        request=request,
+        raw_manifest=raw_manifest,
+        raw_content=raw_content,
+        started_at_utc=command_started.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        completed_at_utc=command_completed.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+    )
+    return record, raw_manifest
+
+
+def _bsc08_test_adapter_descriptor(
+    adapter: rig_adapters.RigAdapter,
+) -> rig_adapters.RigAdapter:
+    return replace(
+        adapter,
+        status="implemented",
+        source_path="scripts/bug_squash_hil_bsc08_test_adapter.py",
+        entrypoint="main",
+    )
 
 
 def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> int:
@@ -11534,15 +12070,173 @@ def run_bsc08_case(args: argparse.Namespace) -> int:
         },
         role_id="proxy-epoch-teardown",
     )
+    pio_executable = validate_runtime_arguments(args)
+    repository = args.repo_root.resolve()
     if admission.simulated:
-        raise RunnerError(
-            "case_evidence_nonqualifying",
-            "BSC-08 simulated execution cannot qualify the physical race",
-        )
-    raise RunnerError(
-        "case_rig_adapter_unavailable",
-        "BSC-08 physical execution remains blocked until its tracked rig adapter exists",
+        if args.case_adapter is None:
+            raise RunnerError("case_adapter_required", "BSC-08 simulation requires a test adapter")
+        git_state = read_git_state(repository)
+        if not git_state.tracked_clean:
+            raise RunnerError("dirty_target", "BSC-08 requires a clean target worktree")
+        adapter_path = args.case_adapter.resolve()
+        if not adapter_path.is_file() or adapter_path.is_symlink():
+            raise RunnerError("case_adapter_unavailable", "BSC-08 adapter must be a regular file")
+        adapter_sha = sha256_file(adapter_path)
+        execution_adapter = _bsc08_test_adapter_descriptor(admission.adapter)
+    else:
+        if (
+            admission.git_state is None
+            or admission.source_sha256 is None
+            or admission.adapter.source_path is None
+            or not admission.adapter.implemented
+        ):
+            raise RunnerError("case_rig_adapter_unavailable", "BSC-08 tracked adapter is incomplete")
+        git_state = admission.git_state
+        adapter_sha = admission.source_sha256
+        execution_adapter = admission.adapter
+        adapter_path = repository / admission.adapter.source_path
+    environment = (
+        os.environ.copy()
+        if admission.simulated
+        else authoritative_child_environment(pio_executable)
     )
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc08_hardware(
+        args,
+        pio_executable,
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-08 DUT has no serial endpoint")
+    if not Path(endpoints["serial_port"]).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-08 serial endpoint is not present")
+    require_unchanged_git_state(repository, git_state)
+    _, firmware_sha = build_bsc08_production_firmware(
+        repository=repository,
+        pio_executable=pio_executable,
+        environment=environment,
+    )
+    require_unchanged_git_state(repository, git_state)
+
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc08-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / run_id
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-08 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    profile, profile_errors = qualification.load_pinned_profile()
+    if profile is None or profile_errors:
+        raise RunnerError("qualification_profile_invalid", "BSC-08 pinned profile is invalid")
+    session_id = f"bsc08-{secrets.token_hex(16)}"
+    records: list[dict[str, object]] = []
+    manifest_paths: list[Path] = []
+    for run_index in range(1, BSC08_REQUIRED_RUNS + 1):
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        attempt_root = run_root / f"attempt-{run_index}"
+        raw_directory = attempt_root / "raw"
+        raw_directory.mkdir(parents=True)
+        manifest_path = attempt_root / "raw-artifact-manifest.json"
+        request = adapter_protocol.build_adapter_request(
+            adapter=execution_adapter,
+            target_sha=git_state.head_sha,
+            profile_id=str(profile["profile_id"]),
+            profile_version=int(profile["profile_version"]),
+            profile_sha256=qualification.PINNED_PROFILE_SHA256,
+            adapter_source_sha256=adapter_sha,
+            role_id="proxy-epoch-teardown",
+            run_index=run_index,
+            session_id=session_id,
+            attempt_id=attempt_id,
+            nonce=secrets.token_hex(16),
+            dut_alias=args.board,
+            dut_capabilities=BSC08_DUT_CAPABILITIES,
+            rig_alias=str(args.rig),
+            rig_capabilities=BSC08_RIG_CAPABILITIES,
+            firmware_binary_sha256=firmware_sha,
+        )
+        expected: dict[str, object] = {
+            "case_id": BSC08_CASE_ID,
+            "role_id": "proxy-epoch-teardown",
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "run_index": run_index,
+            "target_sha": git_state.head_sha,
+            "dut_alias": args.board,
+            "rig_alias": args.rig,
+            "execution_mode": "simulated" if admission.simulated else "physical",
+            "hardware_observed": not admission.simulated,
+            "request_commitment_sha256": request["request_commitment_sha256"],
+        }
+        write_json_atomic(attempt_root / "adapter-request.json", request)
+        require_unchanged_git_state(repository, git_state)
+        record, _ = run_bsc08_adapter(
+            adapter_path=adapter_path,
+            adapter=execution_adapter,
+            repository=repository,
+            request=request,
+            expected=expected,
+            raw_directory=raw_directory,
+            raw_manifest_path=manifest_path,
+            environment=environment,
+        )
+        require_unchanged_git_state(repository, git_state)
+        write_json_atomic(attempt_root / "attempt.json", record)
+        records.append(record)
+        manifest_paths.append(manifest_path)
+    validate_bsc08_distinct_runs(records)
+
+    physical = not admission.simulated
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc08-proxy-epoch-teardown",
+        "case_id": BSC08_CASE_ID,
+        "collection_role": "proxy-epoch-teardown",
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "execution_mode": "physical" if physical else "simulated",
+        "hardware_observed": physical,
+        "authoritative": physical,
+        "physical_collection_completed": physical,
+        "non_qualifying": not physical,
+        "qualification_status": "PASS" if physical else "BLOCKED",
+        "qualification_blockers": []
+        if physical
+        else list(case_drivers.get_case_driver(BSC08_CASE_ID).qualification_blockers),
+        "artifact_role": "case-qualification" if physical else "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC08_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "production_replay_required": False,
+        "firmware_target": {
+            "environment": BSC08_PRODUCTION_ENVIRONMENT,
+            "target_sha": git_state.head_sha,
+            "binary_sha256": firmware_sha,
+            "hil_fault_control_active": False,
+        },
+        "run_evidence_binding_sha256": [record["evidence_binding_sha256"] for record in records],
+        "artifact_sha256": {
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "rig_adapter_registry": sha256_file(ROOT / rig_adapters.REGISTRY_SOURCE_PATH),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc08.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc08.rig-attestation.v1", rig_attestation
+            ),
+            **{
+                f"raw_artifact_manifest_{index}": sha256_file(path)
+                for index, path in enumerate(manifest_paths, start=1)
+            },
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 def load_bsc09_case_descriptor() -> dict[str, object]:

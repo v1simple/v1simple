@@ -6,13 +6,14 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, TextIO
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,11 +51,49 @@ SYNTHETIC_TOOL_IDENTITY["identity_sha256"] = qualification.canonical_commitment(
     "v1simple.hil.build-tools.v1",
     SYNTHETIC_TOOL_IDENTITY,
 )
+PINNED_PLATFORMIO_VERSION = "PlatformIO Core, version 6.1.19"
+PINNED_PLATFORMIO_UNAVAILABLE = "pinned PlatformIO toolchain unavailable"
 
 
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def pinned_platformio_toolchain() -> dict[str, Any] | None:
+    tools = qualification.current_build_tool_identity()
+    platformio = tools.get("platformio")
+    if not isinstance(platformio, dict) or platformio.get("version") != PINNED_PLATFORMIO_VERSION:
+        return None
+    return tools
+
+
+def require_pinned_platformio_toolchain(
+    probe: Callable[[], object | None], *, stream: TextIO
+) -> bool:
+    try:
+        identity = probe()
+    except (AssertionError, OSError, ValueError, subprocess.SubprocessError):
+        identity = None
+    if identity is not None:
+        return True
+    print(PINNED_PLATFORMIO_UNAVAILABLE, file=stream)
+    return False
+
+
+def test_missing_pinned_platformio_toolchain_reports_cleanly(tmpdir: Path) -> None:
+    del tmpdir
+
+    def unavailable() -> object:
+        raise ValueError("simulated missing toolchain")
+
+    stream = io.StringIO()
+    assert_true(
+        main(toolchain_probe=unavailable, error_stream=stream) == 1,
+        "missing pinned toolchain did not fail closed",
+    )
+    assert_true(stream.getvalue() == PINNED_PLATFORMIO_UNAVAILABLE + "\n", stream.getvalue())
+    assert_true("Traceback" not in stream.getvalue(), stream.getvalue())
 
 
 def has_error(errors: list[str], text: str) -> bool:
@@ -1704,8 +1743,18 @@ def test_filesystem_and_type_confusion_become_errors_not_exceptions(tmpdir: Path
     )
 
 
-def main() -> int:
+def main(
+    *,
+    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
+    error_stream: TextIO = sys.stderr,
+) -> int:
+    if not require_pinned_platformio_toolchain(
+        toolchain_probe,
+        stream=error_stream,
+    ):
+        return 1
     tests = (
+        test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_pinned_profile_has_exact_case_specific_contracts,
         test_incomplete_profile_rejects_synthetic_pass_pack,
         test_self_authored_build_and_board_integrity_cannot_activate,

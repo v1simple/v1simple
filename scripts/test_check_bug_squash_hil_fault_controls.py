@@ -3,21 +3,56 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
+from typing import Callable, TextIO
 
 import check_bug_squash_hil_fault_controls as checker
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FULL_SHA = "a" * 40
+PINNED_PLATFORMIO_UNAVAILABLE = "pinned PlatformIO toolchain unavailable"
 
 
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def require_pinned_platformio_toolchain(
+    probe: Callable[[], object | None], *, stream: TextIO
+) -> bool:
+    try:
+        identity = probe()
+    except (AssertionError, OSError, ValueError, subprocess.SubprocessError):
+        identity = None
+    if identity is not None:
+        return True
+    print(PINNED_PLATFORMIO_UNAVAILABLE, file=stream)
+    return False
+
+
+def pinned_platformio_toolchain() -> checker.PlatformioIdentity | None:
+    return checker.resolve_platformio_identity(ROOT, dict(checker.os.environ))
+
+
+def test_missing_pinned_platformio_toolchain_reports_cleanly() -> None:
+    def unavailable() -> object:
+        raise ValueError("simulated missing toolchain")
+
+    stream = io.StringIO()
+    assert_true(
+        main(toolchain_probe=unavailable, error_stream=stream) == 1,
+        "missing pinned toolchain did not fail closed",
+    )
+    assert_true(stream.getvalue() == PINNED_PLATFORMIO_UNAVAILABLE + "\n", stream.getvalue())
+    assert_true("Traceback" not in stream.getvalue(), stream.getvalue())
 
 
 def fixture_root(temporary: Path) -> Path:
@@ -919,8 +954,18 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
         )
 
 
-def main() -> int:
+def main(
+    *,
+    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
+    error_stream: TextIO = sys.stderr,
+) -> int:
+    if not require_pinned_platformio_toolchain(
+        toolchain_probe,
+        stream=error_stream,
+    ):
+        return 1
     tests = (
+        test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_repository_static_contract_passes,
         test_structural_guard_accepts_formatter_comment_spacing,
         test_hil_environment_cannot_become_default_or_leak_to_production_flags,

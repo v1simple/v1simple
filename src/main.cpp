@@ -642,7 +642,7 @@ void setup() {
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
-    static constexpr uint16_t kMaximumHilSerialBytesPerLoop = 256;
+    static constexpr uint16_t kMaximumHilSerialBytesPerLoop = 512;
     const uint32_t hilNowMs = millis();
     uint16_t hilSerialBytes = 0;
     while (Serial.available() > 0 && hilSerialBytes < kMaximumHilSerialBytesPerLoop) {

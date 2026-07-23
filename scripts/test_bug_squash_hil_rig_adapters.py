@@ -423,6 +423,93 @@ class RigAdapterRegistryTests(unittest.TestCase):
         serial_factory.assert_called_once_with(port=None, baudrate=115200, timeout=0.2)
         handle.open.assert_called_once_with()
 
+    def test_bsc16_hil_command_waits_for_serial_open_before_write(self) -> None:
+        events: list[str] = []
+
+        class SerialHandle:
+            def __enter__(self) -> "SerialHandle":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def reset_input_buffer(self) -> None:
+                events.append("reset")
+
+            def write(self, _content: bytes) -> None:
+                events.append("write")
+
+            def flush(self) -> None:
+                events.append("flush")
+
+            def readline(self) -> bytes:
+                return b'{"ok":true,"parse":"ok","result":"ok","case_id":"BSC-16"}\n'
+
+        with mock.patch.object(
+            bsc16_rig,
+            "open_serial_endpoint",
+            return_value=SerialHandle(),
+        ), mock.patch.object(
+            bsc16_rig.time,
+            "sleep",
+            side_effect=lambda _seconds: events.append("settle"),
+        ):
+            rows: list[dict[str, object]] = []
+            bsc16_rig.send_hil_commands(
+                lambda: "/resolved-port",
+                ("V1HIL STATUS",),
+                run_started=bsc16_rig.time.monotonic(),
+                serial_rows=rows,
+            )
+        self.assertEqual(events, ["settle", "reset", "write", "flush"])
+        self.assertEqual(len(rows), 1)
+
+    def test_bsc16_hil_sequence_is_sent_as_one_bounded_serial_burst(self) -> None:
+        writes: list[bytes] = []
+
+        class SerialHandle:
+            def __enter__(self) -> "SerialHandle":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def reset_input_buffer(self) -> None:
+                return None
+
+            def write(self, content: bytes) -> None:
+                writes.append(content)
+
+            def flush(self) -> None:
+                return None
+
+            def readline(self) -> bytes:
+                return b'{"ok":true,"parse":"ok","result":"ok","case_id":"BSC-16"}\n'
+
+        commands = ("V1HIL STATUS", "V1HIL STATUS")
+        with mock.patch.object(
+            bsc16_rig,
+            "open_serial_endpoint",
+            return_value=SerialHandle(),
+        ), mock.patch.object(bsc16_rig.time, "sleep"):
+            bsc16_rig.send_hil_commands(
+                lambda: "/resolved-port",
+                commands,
+                run_started=bsc16_rig.time.monotonic(),
+                serial_rows=[],
+            )
+        self.assertEqual(writes, [b"V1HIL STATUS\nV1HIL STATUS\n"])
+        with mock.patch.object(bsc16_rig, "open_serial_endpoint") as serial_open, self.assertRaises(
+            bsc16_rig.AdapterError
+        ):
+            bsc16_rig.send_hil_commands(
+                lambda: "/resolved-port",
+                ("X" * bsc16_rig.HIL_SERIAL_BURST_MAX_BYTES,),
+                run_started=bsc16_rig.time.monotonic(),
+                serial_rows=[],
+            )
+        serial_open.assert_not_called()
+
     def test_bsc16_logic_capture_is_measured_and_high_bounce_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

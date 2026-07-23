@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 OPAQUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+HIL_SERIAL_BURST_MAX_BYTES = 512
 BOOT_CLASSIFICATION_RE = re.compile(
     r"\[Battery\] Power detection: classification=(battery|usb|unknown) "
     r"reported=(battery|usb|unknown)",
@@ -231,25 +232,31 @@ def capture_serial(
     return rows
 
 
-def send_hil_command(
+def send_hil_commands(
     resolve_serial_port: Callable[[], str],
-    command: str,
+    commands: Sequence[str],
     *,
     run_started: float,
     serial_rows: list[dict[str, object]],
 ) -> None:
-    deadline = time.monotonic() + 8.0
+    if not commands:
+        raise AdapterError("HIL serial command sequence is empty")
+    content = b"".join(command.encode("ascii") + b"\n" for command in commands)
+    if len(content) > HIL_SERIAL_BURST_MAX_BYTES:
+        raise AdapterError("HIL serial command sequence exceeds the bounded RX budget")
     try:
         serial_port = resolve_serial_port()
         handle = open_serial_endpoint(serial_port, 0.2)
     except (AdapterError, OSError, serial.SerialException) as exc:
         raise AdapterError("HIL serial endpoint could not be opened") from exc
-    accepted = False
+    accepted = 0
     with handle:
+        time.sleep(1.0)
         handle.reset_input_buffer()
-        handle.write(command.encode("ascii") + b"\n")
+        handle.write(content)
         handle.flush()
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline and accepted < len(commands):
             raw = handle.readline()
             if not raw:
                 continue
@@ -272,10 +279,9 @@ def send_hil_command(
                 and payload.get("parse") == "ok"
                 and payload.get("result") == "ok"
             ):
-                accepted = True
-                break
-    if not accepted:
-        raise AdapterError("HIL serial command was not positively acknowledged")
+                accepted += 1
+    if accepted != len(commands):
+        raise AdapterError("HIL serial command sequence was not positively acknowledged")
 
 
 def run_firmware_install(
@@ -595,17 +601,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.role == "fault-collection":
             session_hash = hashlib.sha256(args.session_id.encode("ascii")).hexdigest()
-            for command in (
-                f"V1HIL BEGIN BSC-16 {session_hash} 60000",
-                f"V1HIL ARM BSC-16 battery-adc-init-fail-once {session_hash} 7",
-                f"V1HIL NEXT_BOOT BSC-16 battery-adc-init-fail-once {session_hash} 7",
-            ):
-                send_hil_command(
-                    resolve_serial_port,
-                    command,
-                    run_started=run_started,
-                    serial_rows=serial_rows,
-                )
+            send_hil_commands(
+                resolve_serial_port,
+                (
+                    f"V1HIL BEGIN BSC-16 {session_hash} 60000",
+                    f"V1HIL ARM BSC-16 battery-adc-init-fail-once {session_hash} 7",
+                    f"V1HIL NEXT_BOOT BSC-16 battery-adc-init-fail-once {session_hash} 7",
+                ),
+                run_started=run_started,
+                serial_rows=serial_rows,
+            )
             perform_stimulus(
                 instruction=(
                     "With the one-shot ADC fault staged, switch to battery-only, power-cycle, "

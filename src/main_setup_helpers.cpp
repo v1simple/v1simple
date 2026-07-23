@@ -355,6 +355,12 @@ void initializeEarlyBootDiagnostics() {
     digitalWrite(LCD_BL, HIGH);
 
     // Backlight is handled in display.begin() (inverted PWM for Waveshare).
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    // The authenticated BEGIN/ARM/NEXT_BOOT transaction is intentionally sent
+    // as one burst because opening the USB Serial/JTAG terminal resets the
+    // target. Preserve the complete bounded transaction across that boot.
+    Serial.setRxBufferSize(512);
+#endif
     Serial.begin(115200);
     delay(30); // Conservative USB CDC settle.
 

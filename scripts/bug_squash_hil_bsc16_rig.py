@@ -274,13 +274,9 @@ def run_firmware_install(
     resolve_serial_port: Callable[[], str],
     target_sha: str,
 ) -> tuple[str, dict[str, object]]:
-    serial_port = resolve_serial_port()
-    commands = (
-        ["pio", "run", "-e", environment],
-        ["pio", "run", "-e", environment, "-t", "upload", "--upload-port", serial_port],
-    )
     command_evidence: list[dict[str, object]] = []
-    for command in commands:
+
+    def run_command(command: list[str]) -> None:
         completed = subprocess.run(
             command,
             cwd=ROOT,
@@ -298,6 +294,21 @@ def run_firmware_install(
         )
         if completed.returncode != 0:
             raise AdapterError("firmware build or upload failed")
+
+    run_command(["pio", "run", "-e", environment])
+    serial_port = resolve_serial_port()
+    run_command(
+        [
+            "pio",
+            "run",
+            "-e",
+            environment,
+            "-t",
+            "upload",
+            "--upload-port",
+            serial_port,
+        ]
+    )
     binary = ROOT / ".pio" / "build" / environment / "firmware.bin"
     if not binary.is_file() or binary.is_symlink() or binary.stat().st_size <= 0:
         raise AdapterError("firmware binary is unavailable after upload")

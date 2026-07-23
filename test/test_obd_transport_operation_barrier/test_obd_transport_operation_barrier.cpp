@@ -61,6 +61,7 @@ void test_newer_cancellation_epoch_wins_before_another_transport_operation() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdTransportBarrierOutcome::CancellationEpochAdvanced),
                             static_cast<uint8_t>(ObdTransportOperationBarrier::wait(request, runtimeFor(fixture),
                                                                                     continuePause, &fixture)));
+    TEST_ASSERT_NOT_EQUAL(request.dispatchEpoch, fixture.cancellationEpoch.load());
     TEST_ASSERT_EQUAL_UINT32(0, fixture.yields.load());
 }
 
@@ -71,6 +72,7 @@ void test_matching_link_down_wins_before_another_transport_operation() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdTransportBarrierOutcome::LinkDownConfirmed),
                             static_cast<uint8_t>(ObdTransportOperationBarrier::wait(request, runtimeFor(fixture),
                                                                                     continuePause, &fixture)));
+    TEST_ASSERT_EQUAL_UINT32(request.dispatchEpoch, fixture.cancellationEpoch.load());
     TEST_ASSERT_EQUAL_UINT32(0, fixture.yields.load());
 }
 
@@ -114,6 +116,7 @@ void test_real_concurrent_cancellation_releases_the_transport_owner() {
 
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ObdTransportBarrierOutcome::CancellationEpochAdvanced),
                             static_cast<uint8_t>(outcome));
+    TEST_ASSERT_NOT_EQUAL(request.dispatchEpoch, fixture.cancellationEpoch.load());
     TEST_ASSERT_GREATER_THAN_UINT32(0, fixture.yields.load());
 }
 

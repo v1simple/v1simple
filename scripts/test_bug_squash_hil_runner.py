@@ -1072,6 +1072,379 @@ if mutation == 'tamper':
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc06_adapter = root / "fake-bsc06-adapter.py"
+    write_executable(
+        bsc06_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def canonical_commitment(domain, payload):
+    canonical = json.dumps(payload, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(domain.encode('ascii') + b'\\0' + canonical.encode('utf-8')).hexdigest()
+
+def record_commitment(payload):
+    return canonical_commitment('v1simple.bsc06.case-record.v1', payload)
+
+fault_role = {
+    'role_id': 'obd-transport-race-fault',
+    'schema': 'case-observation-v1',
+    'build_kind': 'hil-fault',
+    'stimulus_ids': [
+        'start-obd-polling', 'race-proxy-attach', 'race-adapter-loss',
+        'race-forget-device', 'race-shutdown', 'restore-obd-peer',
+    ],
+    'fault_ids': ['transport-ready-barrier'],
+    'barrier_ids': ['connect-window-ready', 'cancel-window-ready'],
+    'vbus_isolation_required': False,
+    'reset_contract': {'expected_kind': 'none', 'expected_count': 0, 'unexpected_count': 0},
+    'facts': [
+        {'id': 'post-cancel-gatt-observed', 'type': 'boolean', 'expected': False},
+        {'id': 'link-down-before-handle-retire', 'type': 'boolean', 'expected': True},
+        {'id': 'negative-ack-delay-ms', 'type': 'integer', 'minimum': 0, 'maximum': 5000},
+        {'id': 'clean-reconnect-count', 'type': 'integer', 'minimum': 1, 'maximum': 1},
+        {'id': 'heap-corruption-observed', 'type': 'boolean', 'expected': False},
+        {'id': 'barrier-generation-matched', 'type': 'boolean', 'expected': True},
+    ],
+}
+production_role = {
+    'role_id': 'obd-transport-production-replay',
+    'schema': 'case-observation-v1',
+    'build_kind': 'production',
+    'stimulus_ids': [
+        'start-obd-polling', 'race-proxy-attach', 'race-adapter-loss', 'restore-obd-peer',
+    ],
+    'fault_ids': [],
+    'barrier_ids': [],
+    'vbus_isolation_required': False,
+    'reset_contract': {'expected_kind': 'none', 'expected_count': 0, 'unexpected_count': 0},
+    'facts': [
+        {'id': 'transport-ownership-preserved', 'type': 'boolean', 'expected': True},
+        {'id': 'clean-reconnect-succeeded', 'type': 'boolean', 'expected': True},
+        {'id': 'hil-fault-control-active', 'type': 'boolean', 'expected': False},
+    ],
+}
+case_descriptor = {
+    'id': 'BSC-06',
+    'minimum_runs': 3,
+    'fault_build_required': True,
+    'production_replay_required': True,
+    'required_dut_capabilities': [
+        'firmware-execution', 'obd-connectivity', 'proxy-connectivity', 'serial',
+    ],
+    'required_rig_capabilities': [
+        'artifact-capture', 'obd-peer', 'proxy-client', 'utc-time-source', 'v1-peer',
+    ],
+    'scenario': fault_role,
+    'production_replay': production_role,
+}
+role_id = argument('--role-id')
+is_fault = role_id == fault_role['role_id']
+descriptor = dict(fault_role if is_fault else production_role)
+run_index = int(argument('--run-index'))
+mutation = os.environ.get('FAKE_BSC06_MUTATION', '')
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=30)
+stimuli = [
+    {'id': event_id, 'sequence': sequence, 'elapsed_ms': sequence * 100, 'result': 'pass'}
+    for sequence, event_id in enumerate(descriptor['stimulus_ids'], start=1)
+]
+if mutation == 'stimulus-order':
+    stimuli[1], stimuli[2] = stimuli[2], stimuli[1]
+if mutation == 'stimulus-timing':
+    stimuli[2]['elapsed_ms'] = stimuli[1]['elapsed_ms']
+
+race_specs = [
+    ('proxy-attach', 'race-proxy-attach', 'cancellation'),
+    ('adapter-loss', 'race-adapter-loss', 'link-down'),
+    ('forget-device', 'race-forget-device', 'cancellation'),
+    ('shutdown', 'race-shutdown', 'cancellation'),
+]
+if not is_fault:
+    race_specs = race_specs[:2]
+windows = []
+for sequence, (race_id, stimulus_id, release_cause) in enumerate(race_specs, start=1):
+    generation_run = 1 if mutation == 'reuse-generations' else run_index
+    generation = generation_run * 100 + sequence
+    start_ms = descriptor['stimulus_ids'].index(stimulus_id) * 100 + 100
+    cancel_ms = start_ms + 10
+    completion_ms = start_ms + 40
+    epoch_before = run_index * 100 + sequence
+    epoch_after = epoch_before if release_cause == 'link-down' else epoch_before + 1
+    hil_events = []
+    if is_fault:
+        device_ready_ms = run_index * 100000 + sequence * 100
+        common_event = {
+            'case_id': 'BSC-06',
+            'fault_id': 'obd-transport-operation-barrier-once',
+            'arm_sequence': run_index * 10 + sequence,
+            'ready_sequence': run_index * 10 + sequence,
+            'generation': generation,
+            'phase': 1,
+            'request_id': run_index * 1000 + sequence,
+            'dispatch_epoch': epoch_before,
+            'operation': 'write',
+            'runtime_state': 'polling',
+            'ready_timestamp_ms': device_ready_ms,
+        }
+        hil_events = [
+            {
+                **common_event,
+                'hil_event': 'ready',
+                'reason': 'polling_write_after_epoch_claim',
+                'sequence': 1,
+                'elapsed_ms': start_ms + 1,
+            },
+            {
+                **common_event,
+                'hil_event': 'fired',
+                'reason': 'transport_owner_barrier_active',
+                'sequence': 2,
+                'elapsed_ms': start_ms + 2,
+            },
+            {
+                **common_event,
+                'hil_event': 'released',
+                'reason': (
+                    'matching_link_down_suppressed_write'
+                    if release_cause == 'link-down'
+                    else 'newer_cancellation_epoch_suppressed_write'
+                ),
+                'sequence': 3,
+                'elapsed_ms': cancel_ms + 1,
+                'cancellation_epoch': epoch_after,
+                'link_down_generation': generation if release_cause == 'link-down' else 0,
+                'completion_timestamp_ms': device_ready_ms + 1,
+                'operation_suppressed': True,
+                'controller_release_recorded': True,
+            },
+        ]
+    barriers = []
+    if is_fault:
+        barriers = [
+            {
+                'id': 'connect-window-ready',
+                'sequence': 1,
+                'ready_elapsed_ms': start_ms + 1,
+                'released_elapsed_ms': start_ms + 2,
+            },
+            {
+                'id': 'cancel-window-ready',
+                'sequence': 2,
+                'ready_elapsed_ms': start_ms + 2,
+                'released_elapsed_ms': cancel_ms + 1,
+            },
+        ]
+    window = {
+        'race_id': race_id,
+        'sequence': sequence,
+        'stimulus_id': stimulus_id,
+        'release_cause': release_cause,
+        'start_elapsed_ms': start_ms,
+        'cancellation_elapsed_ms': cancel_ms,
+        'last_gatt_operation_elapsed_ms': start_ms + 5,
+        'negative_ack_elapsed_ms': start_ms + 20,
+        'link_down_elapsed_ms': start_ms + 25,
+        'handle_retired_elapsed_ms': start_ms + 30,
+        'completion_elapsed_ms': completion_ms,
+        'captured_generation': generation,
+        'cancellation_epoch_before': epoch_before,
+        'cancellation_epoch_after': epoch_after,
+        'callback_link_down_generation': generation,
+        'callback_confirmed_link_down': True,
+        'post_cancel_gatt_observed': False,
+        'negative_ack_delay_ms': 10,
+        'reconnect_count': 1,
+        'heap_corruption_observed': False,
+        'barrier_ready': is_fault,
+        'barrier_released': is_fault,
+        'barriers': barriers,
+        'hil_events': hil_events,
+    }
+    windows.append(window)
+
+if mutation == 'role':
+    role_id = 'substituted-role'
+if mutation == 'descriptor':
+    descriptor['role_id'] = 'substituted-role'
+if mutation == 'window-order':
+    windows[0], windows[1] = windows[1], windows[0]
+if mutation == 'wrong-generation':
+    windows[0]['callback_link_down_generation'] += 1
+if mutation == 'post-cancel-operation':
+    windows[0]['last_gatt_operation_elapsed_ms'] = windows[0]['cancellation_elapsed_ms'] + 1
+    windows[0]['post_cancel_gatt_observed'] = True
+if mutation == 'negative-last-gatt':
+    windows[0]['last_gatt_operation_elapsed_ms'] = -1
+if mutation == 'last-gatt-before-window':
+    windows[0]['last_gatt_operation_elapsed_ms'] = windows[0]['start_elapsed_ms'] - 1
+if mutation == 'overlapping-windows':
+    windows[0]['completion_elapsed_ms'] = windows[1]['start_elapsed_ms']
+if mutation == 'reconnect-cardinality':
+    windows[0]['reconnect_count'] = 2
+if mutation == 'barrier-missing':
+    windows[0]['barrier_released'] = False
+if mutation == 'barrier-order' and is_fault:
+    windows[0]['barriers'][0], windows[0]['barriers'][1] = (
+        windows[0]['barriers'][1], windows[0]['barriers'][0]
+    )
+if mutation == 'barrier-timing' and is_fault:
+    windows[0]['barriers'][1]['released_elapsed_ms'] = windows[0]['completion_elapsed_ms'] + 1
+if mutation == 'fault-identity' and is_fault:
+    windows[0]['hil_events'][0]['fault_id'] = 'substituted-fault'
+if mutation == 'fault-logical-id' and is_fault:
+    windows[0]['hil_events'][0]['fault_id'] = 'transport-ready-barrier'
+if mutation == 'fault-reason' and is_fault:
+    windows[0]['hil_events'][0]['reason'] = 'invented-ready-reason'
+if mutation == 'fault-completion-schema' and is_fault:
+    windows[0]['hil_events'][0]['cancellation_epoch'] = windows[0]['cancellation_epoch_before']
+if mutation == 'fault-completion-timestamp' and is_fault:
+    windows[0]['hil_events'][2]['completion_timestamp_ms'] += 1001
+if mutation == 'fault-order' and is_fault:
+    windows[0]['hil_events'][1], windows[0]['hil_events'][2] = (
+        windows[0]['hil_events'][2], windows[0]['hil_events'][1]
+    )
+if mutation == 'fault-timing' and is_fault:
+    windows[0]['hil_events'][2]['elapsed_ms'] = windows[0]['completion_elapsed_ms'] + 1
+if mutation == 'cancellation-epoch-unchanged' and is_fault:
+    windows[0]['cancellation_epoch_after'] = windows[0]['cancellation_epoch_before']
+    windows[0]['hil_events'][2]['cancellation_epoch'] = windows[0]['cancellation_epoch_before']
+if mutation == 'cancellation-link-generation' and is_fault:
+    windows[0]['hil_events'][2]['link_down_generation'] = windows[0]['captured_generation']
+if mutation == 'link-down-epoch-advanced' and is_fault:
+    windows[1]['cancellation_epoch_after'] += 1
+    windows[1]['hil_events'][2]['cancellation_epoch'] = windows[1]['cancellation_epoch_after']
+if mutation == 'link-down-generation-zero' and is_fault:
+    windows[1]['hil_events'][2]['link_down_generation'] = 0
+if mutation.startswith('event-operation-bool-') and is_fault:
+    value = {'zero': 0, 'one': 1, 'string': 'true'}[mutation.rsplit('-', 1)[1]]
+    windows[0]['hil_events'][2]['operation_suppressed'] = value
+if mutation.startswith('event-controller-bool-') and is_fault:
+    value = {'zero': 0, 'one': 1, 'string': 'true'}[mutation.rsplit('-', 1)[1]]
+    windows[0]['hil_events'][2]['controller_release_recorded'] = value
+if mutation == 'production-hil' and not is_fault:
+    windows[0]['barrier_ready'] = True
+    windows[0]['hil_events'] = [{'id': 'fired'}]
+
+facts = (
+    {
+        'post-cancel-gatt-observed': False,
+        'link-down-before-handle-retire': True,
+        'negative-ack-delay-ms': 10,
+        'clean-reconnect-count': 1,
+        'heap-corruption-observed': False,
+        'barrier-generation-matched': True,
+    }
+    if is_fault
+    else {
+        'transport-ownership-preserved': True,
+        'clean-reconnect-succeeded': True,
+        'hil-fault-control-active': False,
+    }
+)
+if mutation == 'aggregate-reconnect':
+    facts['clean-reconnect-count' if is_fault else 'clean-reconnect-succeeded'] = 2 if is_fault else False
+
+environment = 'waveshare-349-hil' if is_fault else 'waveshare-349'
+build_kind = 'hil-fault' if is_fault else 'production'
+hil_active = is_fault
+if mutation == 'wrong-firmware':
+    environment = 'waveshare-349' if is_fault else 'waveshare-349-hil'
+if mutation == 'wrong-build-role':
+    build_kind = 'production' if is_fault else 'hil-fault'
+if mutation == 'wrong-hil':
+    hil_active = not hil_active
+if mutation.startswith('firmware-hil-bool-'):
+    hil_active = {'zero': 0, 'one': 1, 'string': 'true'}[mutation.rsplit('-', 1)[1]]
+capture_run = '' if mutation == 'stale-run-capture-binding' else f'-run-{run_index}'
+capture_fields = (
+    'build_evidence_sha256', 'control_queue_timeline_sha256',
+    'obd_race_timeline_sha256', 'panic_summary_sha256', 'serial_log_sha256',
+)
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role_id': role_id,
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'run_index': run_index,
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor_sha256': canonical_commitment('v1simple.bsc06.case-descriptor.v1', case_descriptor),
+    'descriptor': descriptor,
+    'firmware': {
+        'environment': environment,
+        'build_kind': build_kind,
+        'target_sha': argument('--target-sha'),
+        'binary_sha256': digest(f'{role_id}-binary'),
+        'hil_fault_control_active': hil_active,
+    },
+    'stimuli': stimuli,
+    'race_windows': windows,
+    'reset_observation': {
+        'expected_kind': descriptor['reset_contract']['expected_kind'],
+        'expected_count': descriptor['reset_contract']['expected_count'],
+        'unexpected_count': descriptor['reset_contract']['unexpected_count'],
+        'panic_observed': False,
+        'watchdog_reset_observed': False,
+        'load_prohibited_observed': False,
+    },
+    'facts': facts,
+    'capture_commitments': {
+        field: digest(f'{role_id}-{field}{capture_run}') for field in capture_fields
+    },
+}
+if mutation == 'descriptor-digest':
+    payload['case_descriptor_sha256'] = 'f' * 64
+if mutation == 'role-capture-reuse':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['panic_summary_sha256']
+if mutation == 'utc-duration':
+    payload['completed_at_utc'] = payload['started_at_utc']
+if mutation == 'reset-expected':
+    payload['reset_observation']['expected_count'] = 1
+if mutation == 'reset-unexpected':
+    payload['reset_observation']['unexpected_count'] = 1
+if mutation == 'reset-panic':
+    payload['reset_observation']['panic_observed'] = True
+if mutation == 'reset-watchdog':
+    payload['reset_observation']['watchdog_reset_observed'] = True
+if mutation == 'reset-load-prohibited':
+    payload['reset_observation']['load_prohibited_observed'] = True
+if mutation == 'reset-expected-bool':
+    payload['reset_observation']['expected_count'] = False
+if mutation == 'reset-unexpected-string':
+    payload['reset_observation']['unexpected_count'] = '0'
+if mutation == 'reset-panic-int':
+    payload['reset_observation']['panic_observed'] = 0
+if mutation == 'reset-watchdog-int':
+    payload['reset_observation']['watchdog_reset_observed'] = 0
+if mutation == 'reset-load-prohibited-int':
+    payload['reset_observation']['load_prohibited_observed'] = 0
+if mutation == 'bool-schema':
+    payload['schema_version'] = True
+if mutation == 'integer-hardware':
+    payload['hardware_observed'] = 0
+payload['evidence_binding_sha256'] = record_commitment(payload)
+if mutation == 'stale-evidence-binding':
+    payload['capture_commitments']['serial_log_sha256'] = digest('tampered')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
+
     bsc13_adapter = root / "fake-bsc13-adapter.py"
     write_executable(
         bsc13_adapter,
@@ -1978,6 +2351,7 @@ sys.stdout.write(json.dumps(payload))
         "bsc03_adapter": bsc03_adapter,
         "bsc04_adapter": bsc04_adapter,
         "bsc05_adapter": bsc05_adapter,
+        "bsc06_adapter": bsc06_adapter,
         "bsc13_adapter": bsc13_adapter,
         "bsc11_adapter": bsc11_adapter,
         "bsc10_adapter": bsc10_adapter,
@@ -2442,6 +2816,64 @@ def run_bsc05_fixture(
         check=False,
     )
     return completed, out_dir
+
+
+def run_bsc06_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    production_replay: bool = False,
+    runs: int = 3,
+    mutation: str = "",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    role = "production" if production_replay else "fault"
+    out_dir = root / f"bsc06-{role}-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC06_MUTATION": mutation,
+        }
+    )
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-06",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc06_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
 
 
 def run_bsc13_fixture(
@@ -3785,6 +4217,265 @@ def test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation() -> N
         assert_true(not missing_inventory.exists(), "physical BSC-05 mutated discovery state")
 
 
+def test_bsc06_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
+    descriptor = hil_runner.load_bsc06_case_descriptor()
+    descriptor_sha = hil_runner.bsc06_descriptor_commitment(descriptor)
+    for production_replay, descriptor_key, expected_environment, expected_build, expected_hil in (
+        (False, "scenario", "waveshare-349-hil", "hil-fault", True),
+        (True, "production_replay", "waveshare-349", "production", False),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc06_fixture(
+                fixture, root, production_replay=production_replay
+            )
+            assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+            result = json.loads((out_dir / "collection_result.json").read_text(encoding="utf-8"))
+            assert_true(result["result"] == "TEST_PASS", str(result))
+            assert_true(result["collection_role"] == descriptor[descriptor_key]["role_id"], str(result))
+            assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
+            assert_true(result["execution_mode"] == "simulated", str(result))
+            assert_true(result["hardware_observed"] is False, str(result))
+            assert_true(result["authoritative"] is False, str(result))
+            assert_true(result["physical_collection_completed"] is False, str(result))
+            assert_true(result["non_qualifying"] is True, str(result))
+            assert_true(result["qualification_status"] == "BLOCKED", str(result))
+            assert_true(
+                result["qualification_blockers"]
+                == [
+                    "build-generator-provenance-not-authenticated",
+                    "board-resolution-provenance-not-authenticated",
+                    "tracked-rig-adapter-not-implemented",
+                ],
+                str(result),
+            )
+            assert_true(result["runs_required"] == result["runs_completed"] == 3, str(result))
+            assert_true(result["production_replay_required"] is (not production_replay), str(result))
+            assert_true(
+                result["firmware_target"]["environment"] == expected_environment
+                and result["firmware_target"]["build_kind"] == expected_build
+                and result["firmware_target"]["target_sha"] == fixture["target_sha"]
+                and result["firmware_target"]["hil_fault_control_active"] is expected_hil,
+                str(result),
+            )
+            assert_true(len(result["run_artifacts"]) == 3, str(result))
+            records = [
+                json.loads((out_dir / row["artifact"]).read_text(encoding="utf-8"))
+                for row in result["run_artifacts"]
+            ]
+            assert_true([record["run_index"] for record in records] == [1, 2, 3], str(records))
+            assert_true(all(record["descriptor"] == descriptor[descriptor_key] for record in records), str(records))
+            expected_races = ["proxy-attach", "adapter-loss"]
+            if not production_replay:
+                expected_races.extend(("forget-device", "shutdown"))
+            assert_true(
+                all(
+                    [window["race_id"] for window in record["race_windows"]] == expected_races
+                    for record in records
+                ),
+                str(records),
+            )
+            assert_true(
+                all(
+                    all(
+                        window["post_cancel_gatt_observed"] is False
+                        and window["last_gatt_operation_elapsed_ms"]
+                        <= window["cancellation_elapsed_ms"]
+                        and window["callback_link_down_generation"]
+                        == window["captured_generation"]
+                        and window["link_down_elapsed_ms"]
+                        <= window["handle_retired_elapsed_ms"]
+                        and window["reconnect_count"] == 1
+                        and (
+                            [event["hil_event"] for event in window["hil_events"]]
+                            == ["ready", "fired", "released"]
+                            and all(
+                                event["fault_id"] == "obd-transport-operation-barrier-once"
+                                for event in window["hil_events"]
+                            )
+                            and (
+                                window["cancellation_epoch_after"]
+                                == window["cancellation_epoch_before"]
+                                and window["hil_events"][2]["link_down_generation"]
+                                == window["captured_generation"]
+                                if window["release_cause"] == "link-down"
+                                else window["cancellation_epoch_after"]
+                                > window["cancellation_epoch_before"]
+                                and window["hil_events"][2]["link_down_generation"] == 0
+                            )
+                            and [barrier["id"] for barrier in window["barriers"]]
+                            == ["connect-window-ready", "cancel-window-ready"]
+                            if not production_replay
+                            else window["hil_events"] == [] and window["barriers"] == []
+                        )
+                        for window in record["race_windows"]
+                    )
+                    for record in records
+                ),
+                str(records),
+            )
+            assert_true(
+                all(
+                    record["reset_observation"]
+                    == {
+                        "expected_kind": "none",
+                        "expected_count": 0,
+                        "unexpected_count": 0,
+                        "panic_observed": False,
+                        "watchdog_reset_observed": False,
+                        "load_prohibited_observed": False,
+                    }
+                    for record in records
+                ),
+                str(records),
+            )
+            generations = [
+                window["captured_generation"]
+                for record in records
+                for window in record["race_windows"]
+            ]
+            assert_true(len(generations) == len(set(generations)), str(records))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+            public_output = completed.stdout + completed.stderr + json.dumps(result)
+            assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+            assert_true(str(fixture["port"]) not in public_output, public_output)
+
+
+def test_bsc06_rejects_descriptor_race_timing_role_reuse_and_stale_binding_mutations() -> None:
+    cases = (
+        ({"mutation": "role"}, "case_record_invalid"),
+        ({"mutation": "descriptor"}, "case_record_invalid"),
+        ({"mutation": "descriptor-digest"}, "case_record_invalid"),
+        ({"mutation": "stimulus-order"}, "case_record_invalid"),
+        ({"mutation": "stimulus-timing"}, "case_record_invalid"),
+        ({"mutation": "window-order"}, "case_record_invalid"),
+        ({"mutation": "wrong-generation"}, "case_record_invalid"),
+        ({"mutation": "post-cancel-operation"}, "case_record_invalid"),
+        ({"mutation": "negative-last-gatt"}, "case_record_invalid"),
+        ({"mutation": "last-gatt-before-window"}, "case_record_invalid"),
+        ({"mutation": "overlapping-windows"}, "case_record_invalid"),
+        ({"mutation": "utc-duration"}, "case_record_invalid"),
+        ({"mutation": "reconnect-cardinality"}, "case_record_invalid"),
+        ({"mutation": "aggregate-reconnect"}, "case_record_invalid"),
+        ({"mutation": "barrier-missing"}, "case_record_invalid"),
+        ({"mutation": "barrier-order"}, "case_record_invalid"),
+        ({"mutation": "barrier-timing"}, "case_record_invalid"),
+        ({"mutation": "fault-identity"}, "case_record_invalid"),
+        ({"mutation": "fault-logical-id"}, "case_record_invalid"),
+        ({"mutation": "fault-reason"}, "case_record_invalid"),
+        ({"mutation": "fault-completion-schema"}, "case_record_invalid"),
+        ({"mutation": "fault-completion-timestamp"}, "case_record_invalid"),
+        ({"mutation": "fault-order"}, "case_record_invalid"),
+        ({"mutation": "fault-timing"}, "case_record_invalid"),
+        ({"mutation": "cancellation-epoch-unchanged"}, "case_record_invalid"),
+        ({"mutation": "cancellation-link-generation"}, "case_record_invalid"),
+        ({"mutation": "link-down-epoch-advanced"}, "case_record_invalid"),
+        ({"mutation": "link-down-generation-zero"}, "case_record_invalid"),
+        ({"mutation": "event-operation-bool-zero"}, "case_record_invalid"),
+        ({"mutation": "event-operation-bool-one"}, "case_record_invalid"),
+        ({"mutation": "event-operation-bool-string"}, "case_record_invalid"),
+        ({"mutation": "event-controller-bool-zero"}, "case_record_invalid"),
+        ({"mutation": "event-controller-bool-one"}, "case_record_invalid"),
+        ({"mutation": "event-controller-bool-string"}, "case_record_invalid"),
+        ({"mutation": "wrong-firmware"}, "case_record_invalid"),
+        ({"mutation": "wrong-build-role"}, "case_record_invalid"),
+        ({"mutation": "wrong-hil"}, "case_record_invalid"),
+        ({"mutation": "firmware-hil-bool-zero"}, "case_record_invalid"),
+        ({"mutation": "firmware-hil-bool-one"}, "case_record_invalid"),
+        ({"mutation": "firmware-hil-bool-string"}, "case_record_invalid"),
+        (
+            {"production_replay": True, "mutation": "firmware-hil-bool-zero"},
+            "case_record_invalid",
+        ),
+        ({"mutation": "reset-expected"}, "case_record_invalid"),
+        ({"mutation": "reset-unexpected"}, "case_record_invalid"),
+        ({"mutation": "reset-panic"}, "case_record_invalid"),
+        ({"mutation": "reset-watchdog"}, "case_record_invalid"),
+        ({"mutation": "reset-load-prohibited"}, "case_record_invalid"),
+        ({"mutation": "reset-expected-bool"}, "case_record_invalid"),
+        ({"mutation": "reset-unexpected-string"}, "case_record_invalid"),
+        ({"mutation": "reset-panic-int"}, "case_record_invalid"),
+        ({"mutation": "reset-watchdog-int"}, "case_record_invalid"),
+        ({"mutation": "reset-load-prohibited-int"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "reset-panic"}, "case_record_invalid"),
+        ({"mutation": "role-capture-reuse"}, "case_record_invalid"),
+        ({"mutation": "stale-run-capture-binding"}, "case_runs_reused"),
+        ({"mutation": "reuse-generations"}, "case_runs_reused"),
+        ({"mutation": "stale-evidence-binding"}, "case_record_invalid"),
+        ({"mutation": "bool-schema"}, "case_record_invalid"),
+        ({"mutation": "integer-hardware"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "production-hil"}, "case_record_invalid"),
+        ({"runs": 2}, "invalid_runs"),
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc06_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc06_physical_mode_remains_blocked_before_discovery_or_mutation() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-06",
+            "--board",
+            "release",
+            "--rig",
+            "rig",
+            "--runs",
+            "3",
+            "--repo-root",
+            "/does-not-exist",
+            "--inventory",
+            "/does-not-exist/inventory.json",
+        ],
+        cwd=ROOT,
+        env={key: value for key, value in os.environ.items() if key != "V1SIMPLE_HIL_TEST_HOOKS"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-06 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+
+
+def test_bsc06_rejects_each_required_inventory_capability_removal() -> None:
+    required = (
+        ("release", tuple(hil_runner.BSC06_DUT_CAPABILITIES)),
+        ("rig", tuple(hil_runner.BSC06_RIG_CAPABILITIES)),
+    )
+    assert_true([len(capabilities) for _, capabilities in required] == [4, 5], str(required))
+    for alias, capabilities in required:
+        for capability in capabilities:
+            with tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = prepare_fixture(root)
+                inventory_path = Path(fixture["inventory"])
+                inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+                board = next(row for row in inventory["boards"] if row["alias"] == alias)
+                board["capabilities"].remove(capability)
+                inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+
+                completed, out_dir = run_bsc06_fixture(fixture, root)
+                assert_true(completed.returncode != 0, f"missing {alias}:{capability} unexpectedly passed")
+                payload = json.loads(completed.stdout)
+                assert_true(payload["error"]["code"] == "case_board_resolution_failed", str(payload))
+                assert_true(not (out_dir / "collection_result.json").exists(), str(payload))
+                assert_true(not (out_dir / "qualification_result.json").exists(), str(payload))
+
+
+
 def test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
     for production_replay, expected_role, expected_environment, expected_hil in (
         (False, "fault-collection", "waveshare-349-hil", True),
@@ -4607,6 +5298,10 @@ def main() -> int:
     test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift()
     test_bsc05_rejects_each_missing_pinned_hardware_capability()
     test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation()
+    test_bsc06_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
+    test_bsc06_rejects_descriptor_race_timing_role_reuse_and_stale_binding_mutations()
+    test_bsc06_physical_mode_remains_blocked_before_discovery_or_mutation()
+    test_bsc06_rejects_each_required_inventory_capability_removal()
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()

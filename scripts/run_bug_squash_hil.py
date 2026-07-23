@@ -285,6 +285,62 @@ BSC10_CAPTURE_COMMITMENTS = (
     "nvs_runtime_state_sha256",
     "serial_log_sha256",
 )
+BSC06_CASE_ID = "BSC-06"
+BSC06_HIL_ENVIRONMENT = "waveshare-349-hil"
+BSC06_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC06_REQUIRED_RUNS = 3
+BSC06_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC06_NEGATIVE_ACK_MAX_MS = 5_000
+BSC06_BARRIER_MAX_HOLD_MS = 1_000
+BSC06_PROFILE_FAULT_ID = "transport-ready-barrier"
+BSC06_CONTROLLER_FAULT_ID = "obd-transport-operation-barrier-once"
+BSC06_FAULT_ID_MAP = {BSC06_PROFILE_FAULT_ID: BSC06_CONTROLLER_FAULT_ID}
+BSC06_HIL_EVENT_REASONS = {
+    "ready": "polling_write_after_epoch_claim",
+    "fired": "transport_owner_barrier_active",
+    "cancellation": "newer_cancellation_epoch_suppressed_write",
+    "link-down": "matching_link_down_suppressed_write",
+}
+BSC06_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "obd-connectivity",
+    "proxy-connectivity",
+    "serial",
+)
+BSC06_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "obd-peer",
+    "proxy-client",
+    "utc-time-source",
+    "v1-peer",
+)
+BSC06_FAULT_RACES = (
+    ("proxy-attach", "race-proxy-attach", "cancellation"),
+    ("adapter-loss", "race-adapter-loss", "link-down"),
+    ("forget-device", "race-forget-device", "cancellation"),
+    ("shutdown", "race-shutdown", "cancellation"),
+)
+BSC06_PRODUCTION_RACES = BSC06_FAULT_RACES[:2]
+BSC06_FAULT_FACTS = {
+    "post-cancel-gatt-observed",
+    "link-down-before-handle-retire",
+    "negative-ack-delay-ms",
+    "clean-reconnect-count",
+    "heap-corruption-observed",
+    "barrier-generation-matched",
+}
+BSC06_PRODUCTION_FACTS = {
+    "transport-ownership-preserved",
+    "clean-reconnect-succeeded",
+    "hil-fault-control-active",
+}
+BSC06_CAPTURE_COMMITMENTS = (
+    "build_evidence_sha256",
+    "control_queue_timeline_sha256",
+    "obd_race_timeline_sha256",
+    "panic_summary_sha256",
+    "serial_log_sha256",
+)
 BSC13_CASE_ID = "BSC-13"
 BSC13_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC13_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -4174,6 +4230,904 @@ def run_bsc05_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_bsc06_case_descriptor() -> dict[str, object]:
+    profile, errors = qualification.load_pinned_profile()
+    if profile is None or errors:
+        raise RunnerError(
+            "qualification_profile_invalid",
+            "BSC-06 requires the exact pinned qualification profile",
+        )
+    matches = [case for case in profile["required_cases"] if case.get("id") == BSC06_CASE_ID]
+    if len(matches) != 1:
+        raise RunnerError("qualification_profile_invalid", "BSC-06 descriptor is unavailable")
+    descriptor = matches[0]
+    if (
+        set(descriptor)
+        != {
+            "id",
+            "minimum_runs",
+            "fault_build_required",
+            "production_replay_required",
+            "required_dut_capabilities",
+            "required_rig_capabilities",
+            "scenario",
+            "production_replay",
+        }
+        or descriptor.get("minimum_runs") != BSC06_REQUIRED_RUNS
+        or descriptor.get("fault_build_required") is not True
+        or descriptor.get("production_replay_required") is not True
+        or descriptor.get("required_dut_capabilities") != list(BSC06_DUT_CAPABILITIES)
+        or descriptor.get("required_rig_capabilities") != list(BSC06_RIG_CAPABILITIES)
+    ):
+        raise RunnerError("qualification_profile_invalid", "BSC-06 case contract drifted")
+    bsc06_role_descriptor(descriptor, production_replay=False)
+    bsc06_role_descriptor(descriptor, production_replay=True)
+    return descriptor
+
+
+def bsc06_role_descriptor(
+    case_descriptor: Mapping[str, object], *, production_replay: bool
+) -> dict[str, object]:
+    key = "production_replay" if production_replay else "scenario"
+    raw = case_descriptor.get(key)
+    if not isinstance(raw, dict):
+        raise RunnerError("qualification_profile_invalid", "BSC-06 role descriptor is missing")
+    role = dict(raw)
+    expected_stimuli = (
+        ["start-obd-polling", "race-proxy-attach", "race-adapter-loss", "restore-obd-peer"]
+        if production_replay
+        else [
+            "start-obd-polling",
+            "race-proxy-attach",
+            "race-adapter-loss",
+            "race-forget-device",
+            "race-shutdown",
+            "restore-obd-peer",
+        ]
+    )
+    expected_facts = BSC06_PRODUCTION_FACTS if production_replay else BSC06_FAULT_FACTS
+    if (
+        set(role)
+        != {
+            "role_id",
+            "schema",
+            "build_kind",
+            "stimulus_ids",
+            "fault_ids",
+            "barrier_ids",
+            "vbus_isolation_required",
+            "reset_contract",
+            "facts",
+        }
+        or role.get("role_id")
+        != ("obd-transport-production-replay" if production_replay else "obd-transport-race-fault")
+        or role.get("schema") != "case-observation-v1"
+        or role.get("build_kind") != ("production" if production_replay else "hil-fault")
+        or role.get("stimulus_ids") != expected_stimuli
+        or role.get("fault_ids") != ([] if production_replay else [BSC06_PROFILE_FAULT_ID])
+        or role.get("barrier_ids")
+        != ([] if production_replay else ["connect-window-ready", "cancel-window-ready"])
+        or role.get("vbus_isolation_required") is not False
+        or role.get("reset_contract")
+        != {"expected_kind": "none", "expected_count": 0, "unexpected_count": 0}
+        or not isinstance(role.get("facts"), list)
+        or {fact.get("id") for fact in role["facts"] if isinstance(fact, dict)} != expected_facts
+    ):
+        raise RunnerError("qualification_profile_invalid", "BSC-06 pinned role contract drifted")
+    return role
+
+
+def bsc06_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment("v1simple.bsc06.case-descriptor.v1", case_descriptor)
+
+
+def bsc06_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc06.case-record.v1", committed)
+
+
+def validate_bsc06_stimuli(
+    value: object, role_descriptor: Mapping[str, object], *, duration_ms: int
+) -> dict[str, int]:
+    expected_ids = role_descriptor["stimulus_ids"]
+    assert isinstance(expected_ids, list)
+    if not isinstance(value, list) or len(value) != len(expected_ids):
+        raise RunnerError("case_record_invalid", "BSC-06 stimulus coverage is incomplete")
+    elapsed_by_id: dict[str, int] = {}
+    previous = -1
+    for sequence, (raw, event_id) in enumerate(zip(value, expected_ids, strict=True), start=1):
+        event = require_exact_object(
+            raw,
+            {"id", "sequence", "elapsed_ms", "result"},
+            code="case_record_invalid",
+            label="BSC-06 stimulus",
+        )
+        elapsed = event.get("elapsed_ms")
+        if (
+            event.get("id") != event_id
+            or type(event.get("sequence")) is not int
+            or event.get("sequence") != sequence
+            or type(elapsed) is not int
+            or not 0 <= elapsed <= duration_ms
+            or elapsed <= previous
+            or event.get("result") != "pass"
+        ):
+            raise RunnerError("case_record_invalid", "BSC-06 stimulus order or timing is invalid")
+        elapsed_by_id[event_id] = elapsed
+        previous = elapsed
+    return elapsed_by_id
+
+
+def validate_bsc06_hil_events(
+    value: object,
+    *,
+    generation: int,
+    release_cause: str,
+    start_ms: int,
+    completion_ms: int,
+    cancellation_epoch_before: int,
+    cancellation_epoch_after: int,
+) -> None:
+    if not isinstance(value, list) or len(value) != 3:
+        raise RunnerError("case_record_invalid", "BSC-06 HIL lifecycle is incomplete")
+    identity: tuple[int, int, int, int, int, int, int] | None = None
+    previous = start_ms - 1
+    for sequence, (raw, event_id) in enumerate(
+        zip(value, ("ready", "fired", "released"), strict=True), start=1
+    ):
+        base_fields = {
+            "hil_event",
+            "reason",
+            "case_id",
+            "fault_id",
+            "sequence",
+            "elapsed_ms",
+            "arm_sequence",
+            "ready_sequence",
+            "generation",
+            "phase",
+            "request_id",
+            "dispatch_epoch",
+            "operation",
+            "runtime_state",
+            "ready_timestamp_ms",
+        }
+        completion_fields = {
+            "cancellation_epoch",
+            "link_down_generation",
+            "completion_timestamp_ms",
+            "operation_suppressed",
+            "controller_release_recorded",
+        }
+        event = require_exact_object(
+            raw,
+            base_fields | (completion_fields if event_id == "released" else set()),
+            code="case_record_invalid",
+            label="BSC-06 HIL event",
+        )
+        elapsed = event.get("elapsed_ms")
+        ready_timestamp_ms = event.get("ready_timestamp_ms")
+        current_identity = tuple(
+            event.get(field)
+            for field in (
+                "arm_sequence",
+                "ready_sequence",
+                "generation",
+                "phase",
+                "request_id",
+                "dispatch_epoch",
+                "ready_timestamp_ms",
+            )
+        )
+        expected_reason = (
+            BSC06_HIL_EVENT_REASONS[release_cause]
+            if event_id == "released"
+            else BSC06_HIL_EVENT_REASONS[event_id]
+        )
+        if (
+            event.get("hil_event") != event_id
+            or event.get("reason") != expected_reason
+            or event.get("case_id") != BSC06_CASE_ID
+            or event.get("fault_id") != BSC06_FAULT_ID_MAP[BSC06_PROFILE_FAULT_ID]
+            or type(event.get("sequence")) is not int
+            or event.get("sequence") != sequence
+            or type(elapsed) is not int
+            or elapsed <= previous
+            or elapsed > completion_ms
+            or any(type(item) is not int or item <= 0 for item in current_identity[:-1])
+            or type(ready_timestamp_ms) is not int
+            or not 0 <= ready_timestamp_ms <= 0xFFFFFFFF
+            or current_identity[2] != generation
+            or current_identity[3] != 1
+            or event.get("operation") != "write"
+            or event.get("runtime_state") != "polling"
+        ):
+            raise RunnerError("case_record_invalid", "BSC-06 HIL event identity or timing is invalid")
+        typed_identity = tuple(int(item) for item in current_identity)
+        if identity is None:
+            identity = typed_identity
+        elif typed_identity != identity:
+            raise RunnerError("case_record_invalid", "BSC-06 HIL identity changed inside a race")
+        if event_id == "released":
+            completion_timestamp_ms = event.get("completion_timestamp_ms")
+            cancellation_epoch = event.get("cancellation_epoch")
+            link_down_generation = event.get("link_down_generation")
+            expected_link_down = generation if release_cause == "link-down" else 0
+            if (
+                type(cancellation_epoch) is not int
+                or cancellation_epoch != cancellation_epoch_after
+                or type(link_down_generation) is not int
+                or link_down_generation != expected_link_down
+                or type(completion_timestamp_ms) is not int
+                or not 0 <= completion_timestamp_ms <= 0xFFFFFFFF
+                or (completion_timestamp_ms - ready_timestamp_ms) % (1 << 32)
+                > BSC06_BARRIER_MAX_HOLD_MS
+                or event.get("operation_suppressed") is not True
+                or event.get("controller_release_recorded") is not True
+            ):
+                raise RunnerError("case_record_invalid", "BSC-06 HIL completion evidence is invalid")
+        previous = elapsed
+
+
+def validate_bsc06_barriers(
+    value: object,
+    *,
+    hil_events: Sequence[Mapping[str, object]],
+    start_ms: int,
+    completion_ms: int,
+) -> None:
+    if not isinstance(value, list) or len(value) != 2:
+        raise RunnerError("case_record_invalid", "BSC-06 barrier coverage is incomplete")
+    expected_ids = ("connect-window-ready", "cancel-window-ready")
+    expected_times = (
+        (hil_events[0]["elapsed_ms"], hil_events[1]["elapsed_ms"]),
+        (hil_events[1]["elapsed_ms"], hil_events[2]["elapsed_ms"]),
+    )
+    previous_release = start_ms
+    for sequence, (raw, barrier_id, (ready_expected, released_expected)) in enumerate(
+        zip(value, expected_ids, expected_times, strict=True), start=1
+    ):
+        barrier = require_exact_object(
+            raw,
+            {"id", "sequence", "ready_elapsed_ms", "released_elapsed_ms"},
+            code="case_record_invalid",
+            label="BSC-06 barrier",
+        )
+        ready_ms = barrier.get("ready_elapsed_ms")
+        released_ms = barrier.get("released_elapsed_ms")
+        if (
+            barrier.get("id") != barrier_id
+            or type(barrier.get("sequence")) is not int
+            or barrier.get("sequence") != sequence
+            or type(ready_ms) is not int
+            or type(released_ms) is not int
+            or ready_ms != ready_expected
+            or released_ms != released_expected
+            or ready_ms < previous_release
+            or released_ms < ready_ms
+            or released_ms > completion_ms
+        ):
+            raise RunnerError("case_record_invalid", "BSC-06 barrier order or timing is invalid")
+        previous_release = released_ms
+
+
+def validate_bsc06_race_windows(
+    value: object,
+    *,
+    production_replay: bool,
+    stimuli: Mapping[str, int],
+    duration_ms: int,
+) -> list[dict[str, object]]:
+    expected_races = BSC06_PRODUCTION_RACES if production_replay else BSC06_FAULT_RACES
+    if not isinstance(value, list) or len(value) != len(expected_races):
+        raise RunnerError("case_record_invalid", "BSC-06 race-window coverage is incomplete")
+    windows: list[dict[str, object]] = []
+    generations: set[int] = set()
+    restore_ms = stimuli["restore-obd-peer"]
+    previous_completion_ms = -1
+    for sequence, (raw, (race_id, stimulus_id, release_cause)) in enumerate(
+        zip(value, expected_races, strict=True), start=1
+    ):
+        window = require_exact_object(
+            raw,
+            {
+                "race_id",
+                "sequence",
+                "stimulus_id",
+                "release_cause",
+                "start_elapsed_ms",
+                "cancellation_elapsed_ms",
+                "last_gatt_operation_elapsed_ms",
+                "negative_ack_elapsed_ms",
+                "link_down_elapsed_ms",
+                "handle_retired_elapsed_ms",
+                "completion_elapsed_ms",
+                "captured_generation",
+                "cancellation_epoch_before",
+                "cancellation_epoch_after",
+                "callback_link_down_generation",
+                "callback_confirmed_link_down",
+                "post_cancel_gatt_observed",
+                "negative_ack_delay_ms",
+                "reconnect_count",
+                "heap_corruption_observed",
+                "barrier_ready",
+                "barrier_released",
+                "barriers",
+                "hil_events",
+            },
+            code="case_record_invalid",
+            label="BSC-06 race window",
+        )
+        start_ms = window.get("start_elapsed_ms")
+        cancel_ms = window.get("cancellation_elapsed_ms")
+        last_gatt_ms = window.get("last_gatt_operation_elapsed_ms")
+        nack_ms = window.get("negative_ack_elapsed_ms")
+        link_down_ms = window.get("link_down_elapsed_ms")
+        retired_ms = window.get("handle_retired_elapsed_ms")
+        completion_ms = window.get("completion_elapsed_ms")
+        generation = window.get("captured_generation")
+        epoch_before = window.get("cancellation_epoch_before")
+        epoch_after = window.get("cancellation_epoch_after")
+        delay_ms = window.get("negative_ack_delay_ms")
+        if (
+            window.get("race_id") != race_id
+            or window.get("stimulus_id") != stimulus_id
+            or window.get("release_cause") != release_cause
+            or type(window.get("sequence")) is not int
+            or window.get("sequence") != sequence
+            or any(
+                type(item) is not int
+                for item in (
+                    start_ms,
+                    cancel_ms,
+                    last_gatt_ms,
+                    nack_ms,
+                    link_down_ms,
+                    retired_ms,
+                    completion_ms,
+                    generation,
+                    epoch_before,
+                    epoch_after,
+                    delay_ms,
+                )
+            )
+            or any(
+                not 0 <= item <= duration_ms
+                for item in (
+                    start_ms,
+                    cancel_ms,
+                    last_gatt_ms,
+                    nack_ms,
+                    link_down_ms,
+                    retired_ms,
+                    completion_ms,
+                )
+            )
+            or start_ms != stimuli[stimulus_id]
+            or not start_ms <= last_gatt_ms <= cancel_ms
+            or start_ms <= previous_completion_ms
+            or not (start_ms <= cancel_ms <= nack_ms <= completion_ms <= restore_ms)
+            or not (cancel_ms <= link_down_ms <= retired_ms <= completion_ms)
+            or delay_ms != nack_ms - cancel_ms
+            or not 0 <= delay_ms <= BSC06_NEGATIVE_ACK_MAX_MS
+            or generation <= 0
+            or generation in generations
+            or epoch_before < 0
+            or (
+                epoch_after <= epoch_before
+                if release_cause == "cancellation"
+                else epoch_after != epoch_before
+            )
+            or type(window.get("callback_link_down_generation")) is not int
+            or window.get("callback_link_down_generation") != generation
+            or window.get("callback_confirmed_link_down") is not True
+            or window.get("post_cancel_gatt_observed") is not False
+            or window.get("reconnect_count") != 1
+            or type(window.get("reconnect_count")) is not int
+            or window.get("heap_corruption_observed") is not False
+        ):
+            raise RunnerError("case_record_invalid", "BSC-06 transport race evidence is invalid")
+        generations.add(generation)
+        previous_completion_ms = completion_ms
+        if production_replay:
+            if (
+                window.get("barrier_ready") is not False
+                or window.get("barrier_released") is not False
+                or window.get("barriers") != []
+                or window.get("hil_events") != []
+            ):
+                raise RunnerError("case_record_invalid", "BSC-06 production replay contains HIL evidence")
+        else:
+            if window.get("barrier_ready") is not True or window.get("barrier_released") is not True:
+                raise RunnerError("case_record_invalid", "BSC-06 race lacks its barrier lifecycle")
+            validate_bsc06_hil_events(
+                window.get("hil_events"),
+                generation=generation,
+                release_cause=release_cause,
+                start_ms=start_ms,
+                completion_ms=completion_ms,
+                cancellation_epoch_before=epoch_before,
+                cancellation_epoch_after=epoch_after,
+            )
+            hil_events = window.get("hil_events")
+            assert isinstance(hil_events, list)
+            validate_bsc06_barriers(
+                window.get("barriers"),
+                hil_events=hil_events,
+                start_ms=start_ms,
+                completion_ms=completion_ms,
+            )
+        windows.append(window)
+    return windows
+
+
+def validate_bsc06_facts(
+    value: object, *, production_replay: bool, windows: Sequence[Mapping[str, object]]
+) -> None:
+    facts = require_exact_object(
+        value,
+        BSC06_PRODUCTION_FACTS if production_replay else BSC06_FAULT_FACTS,
+        code="case_record_invalid",
+        label="BSC-06 facts",
+    )
+    if production_replay:
+        valid = (
+            facts.get("transport-ownership-preserved") is True
+            and facts.get("clean-reconnect-succeeded") is True
+            and facts.get("hil-fault-control-active") is False
+        )
+    else:
+        max_delay = max(int(window["negative_ack_delay_ms"]) for window in windows)
+        valid = (
+            facts.get("post-cancel-gatt-observed") is False
+            and facts.get("link-down-before-handle-retire") is True
+            and type(facts.get("negative-ack-delay-ms")) is int
+            and facts.get("negative-ack-delay-ms") == max_delay
+            and type(facts.get("clean-reconnect-count")) is int
+            and facts.get("clean-reconnect-count") == 1
+            and facts.get("heap-corruption-observed") is False
+            and facts.get("barrier-generation-matched") is True
+        )
+    if not valid:
+        raise RunnerError("case_record_invalid", "BSC-06 aggregate facts are invalid")
+
+
+def validate_bsc06_reset_observation(
+    value: object, role_descriptor: Mapping[str, object]
+) -> None:
+    observation = require_exact_object(
+        value,
+        {
+            "expected_kind",
+            "expected_count",
+            "unexpected_count",
+            "panic_observed",
+            "watchdog_reset_observed",
+            "load_prohibited_observed",
+        },
+        code="case_record_invalid",
+        label="BSC-06 reset observation",
+    )
+    reset_contract = role_descriptor.get("reset_contract")
+    assert isinstance(reset_contract, dict)
+    if (
+        observation.get("expected_kind") != reset_contract.get("expected_kind")
+        or type(observation.get("expected_count")) is not int
+        or observation.get("expected_count") != reset_contract.get("expected_count")
+        or type(observation.get("unexpected_count")) is not int
+        or observation.get("unexpected_count") != reset_contract.get("unexpected_count")
+        or type(observation.get("panic_observed")) is not bool
+        or observation.get("panic_observed") is not False
+        or type(observation.get("watchdog_reset_observed")) is not bool
+        or observation.get("watchdog_reset_observed") is not False
+        or type(observation.get("load_prohibited_observed")) is not bool
+        or observation.get("load_prohibited_observed") is not False
+    ):
+        raise RunnerError("case_record_invalid", "BSC-06 reset observation violates the pinned contract")
+
+
+def validate_bsc06_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "session_id",
+            "attempt_id",
+            "run_index",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "case_descriptor_sha256",
+            "descriptor",
+            "firmware",
+            "stimuli",
+            "race_windows",
+            "reset_observation",
+            "facts",
+            "capture_commitments",
+            "evidence_binding_sha256",
+        },
+        code="case_record_invalid",
+        label="BSC-06 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role_id",
+        "session_id",
+        "attempt_id",
+        "run_index",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+        "case_descriptor_sha256",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError("case_record_invalid", f"BSC-06 {field} does not match the runner")
+    if (
+        type(record.get("schema_version")) is not int
+        or record.get("schema_version") != 1
+        or type(record.get("run_index")) is not int
+        or not 1 <= record["run_index"] <= BSC06_REQUIRED_RUNS
+        or type(record.get("hardware_observed")) is not bool
+    ):
+        raise RunnerError("case_record_invalid", "BSC-06 record identity types are invalid")
+    started = parse_runner_utc(record.get("started_at_utc"), code="case_record_invalid", label="BSC-06 start")
+    completed = parse_runner_utc(
+        record.get("completed_at_utc"), code="case_record_invalid", label="BSC-06 completion"
+    )
+    if completed < started:
+        raise RunnerError("case_record_invalid", "BSC-06 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError("case_record_invalid", "BSC-06 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=0):
+        raise RunnerError("case_record_invalid", "BSC-06 physical record postdates adapter execution")
+    duration_ms = int((completed - started).total_seconds() * 1000)
+
+    case_descriptor = expected["case_descriptor"]
+    assert isinstance(case_descriptor, dict)
+    production_replay = record.get("role_id") == "obd-transport-production-replay"
+    role_descriptor = bsc06_role_descriptor(case_descriptor, production_replay=production_replay)
+    descriptor = require_exact_object(
+        record.get("descriptor"),
+        set(role_descriptor),
+        code="case_record_invalid",
+        label="BSC-06 descriptor",
+    )
+    if descriptor != role_descriptor:
+        raise RunnerError("case_record_invalid", "BSC-06 descriptor does not match the pinned role")
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {"environment", "build_kind", "target_sha", "binary_sha256", "hil_fault_control_active"},
+        code="case_record_invalid",
+        label="BSC-06 firmware",
+    )
+    expected_environment = BSC06_PRODUCTION_ENVIRONMENT if production_replay else BSC06_HIL_ENVIRONMENT
+    expected_build = "production" if production_replay else "hil-fault"
+    hil_fault_control_active = firmware.get("hil_fault_control_active")
+    if (
+        firmware.get("environment") != expected_environment
+        or firmware.get("build_kind") != expected_build
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or type(hil_fault_control_active) is not bool
+        or hil_fault_control_active is not (not production_replay)
+    ):
+        raise RunnerError("case_record_invalid", "BSC-06 firmware role is invalid")
+    require_sha256(firmware.get("binary_sha256"), code="case_record_invalid", label="BSC-06 firmware")
+
+    stimuli = validate_bsc06_stimuli(
+        record.get("stimuli"), role_descriptor, duration_ms=duration_ms
+    )
+    windows = validate_bsc06_race_windows(
+        record.get("race_windows"),
+        production_replay=production_replay,
+        stimuli=stimuli,
+        duration_ms=duration_ms,
+    )
+    validate_bsc06_reset_observation(record.get("reset_observation"), role_descriptor)
+    validate_bsc06_facts(record.get("facts"), production_replay=production_replay, windows=windows)
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC06_CAPTURE_COMMITMENTS),
+        code="case_record_invalid",
+        label="BSC-06 capture commitments",
+    )
+    capture_hashes = [
+        require_sha256(commitments[field], code="case_record_invalid", label=field)
+        for field in BSC06_CAPTURE_COMMITMENTS
+    ]
+    if len(set(capture_hashes)) != len(capture_hashes):
+        raise RunnerError("case_record_invalid", "BSC-06 evidence roles reused a capture")
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code="case_record_invalid", label="BSC-06 binding"
+    )
+    if not secrets.compare_digest(binding, bsc06_record_commitment(record)):
+        raise RunnerError("case_record_invalid", "BSC-06 evidence binding is invalid")
+    return record
+
+
+def validate_bsc06_distinct_runs(records: Sequence[Mapping[str, object]]) -> None:
+    if len(records) != BSC06_REQUIRED_RUNS:
+        raise RunnerError("case_runs_incomplete", "BSC-06 requires exactly three runs")
+    for field in ("attempt_id", "evidence_binding_sha256"):
+        if len({record.get(field) for record in records}) != BSC06_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-06 run identities must be distinct")
+    for field in ("firmware", "case_descriptor_sha256", "descriptor"):
+        if any(record.get(field) != records[0].get(field) for record in records[1:]):
+            raise RunnerError("case_runs_mixed", "BSC-06 runs changed their bound target")
+    for field in BSC06_CAPTURE_COMMITMENTS:
+        values = []
+        for record in records:
+            captures = record.get("capture_commitments")
+            assert isinstance(captures, dict)
+            values.append(captures[field])
+        if len(set(values)) != BSC06_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", "BSC-06 run captures must be distinct")
+    generations = [
+        window["captured_generation"]
+        for record in records
+        for window in record["race_windows"]
+        if isinstance(window, dict)
+    ]
+    if len(generations) != len(set(generations)):
+        raise RunnerError("case_runs_reused", "BSC-06 race generations must be distinct")
+
+
+def resolve_bsc06_hardware(
+    args: argparse.Namespace, pio_executable: Path
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError("local_inventory_missing", "BSC-06 requires the ignored local hardware inventory")
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=BSC06_DUT_CAPABILITIES,
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=BSC06_RIG_CAPABILITIES,
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-06 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def run_bsc06_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC06_CASE_ID,
+        "--role-id",
+        str(expected["role_id"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC06_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-06 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-06 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-06 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 128 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-06 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-06 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc06_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc06_case(args: argparse.Namespace) -> int:
+    case_descriptor = load_bsc06_case_descriptor()
+    production_replay = args.production_replay
+    role_descriptor = bsc06_role_descriptor(case_descriptor, production_replay=production_replay)
+    if args.runs != BSC06_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-06 requires exactly three runs per collection role")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-06 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-06 collection roles are atomic")
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError("untrusted_override", "authoritative BSC-06 forbids an untracked rig adapter")
+        raise RunnerError(
+            "case_rig_adapter_unavailable",
+            "BSC-06 physical execution remains blocked until a tracked rig adapter exists",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-06 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-06 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-06 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc06_hardware(
+        args, Path(args.pio_command)
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-06 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-06 serial endpoint is not present")
+
+    role_id = role_descriptor["role_id"]
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc06-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role_id}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-06 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    descriptor_sha = bsc06_descriptor_commitment(case_descriptor)
+    session_id = f"bsc06-{secrets.token_hex(16)}"
+    records: list[dict[str, object]] = []
+    run_artifacts: list[dict[str, object]] = []
+    for run_index in range(1, BSC06_REQUIRED_RUNS + 1):
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        expected: dict[str, object] = {
+            "case_id": BSC06_CASE_ID,
+            "role_id": role_id,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "run_index": run_index,
+            "target_sha": git_state.head_sha,
+            "dut_alias": args.board,
+            "rig_alias": args.rig,
+            "execution_mode": "simulated",
+            "hardware_observed": False,
+            "case_descriptor": case_descriptor,
+            "case_descriptor_sha256": descriptor_sha,
+        }
+        require_unchanged_git_state(repository, git_state)
+        record = run_bsc06_adapter(
+            adapter=adapter,
+            repository=repository,
+            serial_port=serial_port,
+            expected=expected,
+            environment=os.environ.copy(),
+        )
+        require_unchanged_git_state(repository, git_state)
+        attempt_path = run_root / f"attempt-{run_index}.json"
+        write_json_atomic(attempt_path, record)
+        records.append(record)
+        run_artifacts.append(
+            {
+                "run_index": run_index,
+                "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+                "artifact": attempt_path.name,
+                "sha256": sha256_file(attempt_path),
+                "evidence_binding_sha256": record["evidence_binding_sha256"],
+            }
+        )
+    validate_bsc06_distinct_runs(records)
+    firmware = records[0]["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc06-obd-transport-races",
+        "case_id": BSC06_CASE_ID,
+        "collection_role": role_id,
+        "case_descriptor_sha256": descriptor_sha,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC06_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC06_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "production_replay_required": not production_replay,
+        "race_roles": [race[0] for race in (BSC06_PRODUCTION_RACES if production_replay else BSC06_FAULT_RACES)],
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "build_kind": firmware["build_kind"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "run_artifacts": run_artifacts,
+        "artifact_sha256": {
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc06.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc06.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+
 def bsc13_profile_descriptor(role: str) -> dict[str, object]:
     code = "case_driver_contract_invalid"
     profile, errors = qualification.load_pinned_profile()
@@ -7063,10 +8017,6 @@ def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> in
         "case_rig_adapter_unavailable",
         f"{case_id} physical execution remains blocked until its tracked rig adapter exists",
     )
-
-
-def run_bsc06_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-06")
 
 
 def run_bsc07_case(args: argparse.Namespace) -> int:

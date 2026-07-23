@@ -82,7 +82,7 @@ class ObdBsc06HilFaultModule {
     static const char* runtimeStateName(uint8_t stateCode) noexcept;
 
     void refreshArm() noexcept;
-    void emitEvent(const char* event, const char* reason) noexcept;
+    void emitEvent(const char* event, const char* reason, bool completionEvent) noexcept;
     void emitPendingEvents() noexcept;
 
     HilFaultRuntimeOwner& owner_;

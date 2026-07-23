@@ -152,10 +152,22 @@ void test_newer_cancellation_epoch_suppresses_polling_write_and_releases() {
     TEST_ASSERT_EQUAL_UINT32(22, snapshot.cancellationEpoch);
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HilFaultState::Released),
                             static_cast<uint8_t>(module.controllerSnapshot().state));
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "\"hil_event\":\"ready\""));
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "\"hil_event\":\"fired\""));
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "newer_cancellation_epoch_suppressed_write"));
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "\"operation_suppressed\":true"));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"hil_event\":\"ready\",\"reason\":\"polling_write_after_epoch_claim\",\"case_id\":\"BSC-06\","
+        "\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,\"ready_sequence\":1,"
+        "\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,\"operation\":\"write\","
+        "\"runtime_state\":\"polling\",\"ready_timestamp_ms\":100}\n"
+        "{\"hil_event\":\"fired\",\"reason\":\"transport_owner_barrier_active\",\"case_id\":\"BSC-06\","
+        "\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,\"ready_sequence\":1,"
+        "\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,\"operation\":\"write\","
+        "\"runtime_state\":\"polling\",\"ready_timestamp_ms\":100}\n"
+        "{\"hil_event\":\"released\",\"reason\":\"newer_cancellation_epoch_suppressed_write\","
+        "\"case_id\":\"BSC-06\",\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,"
+        "\"ready_sequence\":1,\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,"
+        "\"operation\":\"write\",\"runtime_state\":\"polling\",\"cancellation_epoch\":22,"
+        "\"link_down_generation\":0,\"ready_timestamp_ms\":100,\"completion_timestamp_ms\":101,"
+        "\"operation_suppressed\":true,\"controller_release_recorded\":true}\n",
+        fixture.output);
 }
 
 void test_matching_link_down_suppresses_polling_write_and_releases() {
@@ -170,8 +182,23 @@ void test_matching_link_down_suppresses_polling_write_and_releases() {
 
     TEST_ASSERT_TRUE(module.snapshot().operationSuppressed);
     TEST_ASSERT_TRUE(module.snapshot().controllerReleaseRecorded);
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "matching_link_down_suppressed_write"));
-    TEST_ASSERT_NOT_NULL(std::strstr(fixture.output, "\"link_down_generation\":31"));
+    TEST_ASSERT_EQUAL_UINT32(20, module.snapshot().cancellationEpoch);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"hil_event\":\"ready\",\"reason\":\"polling_write_after_epoch_claim\",\"case_id\":\"BSC-06\","
+        "\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,\"ready_sequence\":1,"
+        "\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,\"operation\":\"write\","
+        "\"runtime_state\":\"polling\",\"ready_timestamp_ms\":100}\n"
+        "{\"hil_event\":\"fired\",\"reason\":\"transport_owner_barrier_active\",\"case_id\":\"BSC-06\","
+        "\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,\"ready_sequence\":1,"
+        "\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,\"operation\":\"write\","
+        "\"runtime_state\":\"polling\",\"ready_timestamp_ms\":100}\n"
+        "{\"hil_event\":\"released\",\"reason\":\"matching_link_down_suppressed_write\","
+        "\"case_id\":\"BSC-06\",\"fault_id\":\"obd-transport-operation-barrier-once\",\"arm_sequence\":6,"
+        "\"ready_sequence\":1,\"generation\":31,\"phase\":1,\"request_id\":42,\"dispatch_epoch\":20,"
+        "\"operation\":\"write\",\"runtime_state\":\"polling\",\"cancellation_epoch\":20,"
+        "\"link_down_generation\":31,\"ready_timestamp_ms\":100,\"completion_timestamp_ms\":101,"
+        "\"operation_suppressed\":true,\"controller_release_recorded\":true}\n",
+        fixture.output);
 }
 
 void test_automatic_timeout_resumes_ordinary_write_without_qualifying() {

@@ -160,13 +160,13 @@ bool ObdBsc06HilFaultModule::routeOperation(const ObdBsc06HilAdmission& admissio
     return !operationSuppressed_;
 }
 
-void ObdBsc06HilFaultModule::emitEvent(const char* event, const char* reason) noexcept {
+void ObdBsc06HilFaultModule::emitEvent(const char* event, const char* reason, const bool completionEvent) noexcept {
     if (runtime_.writeEvidence == nullptr || event == nullptr || reason == nullptr) {
         return;
     }
     char response[768]{};
     int written = 0;
-    if (stage_.load() == static_cast<uint32_t>(Stage::Completed)) {
+    if (completionEvent) {
         written = std::snprintf(
             response, sizeof(response),
             "{\"hil_event\":\"%s\",\"reason\":\"%s\",\"case_id\":\"BSC-06\","
@@ -210,11 +210,11 @@ void ObdBsc06HilFaultModule::emitPendingEvents() noexcept {
         return;
     }
     if (readyEventPending_) {
-        emitEvent("ready", "polling_write_after_epoch_claim");
+        emitEvent("ready", "polling_write_after_epoch_claim", false);
         readyEventPending_ = false;
     }
     if (firedEventPending_) {
-        emitEvent("fired", "transport_owner_barrier_active");
+        emitEvent("fired", "transport_owner_barrier_active", false);
         firedEventPending_ = false;
     }
     if (stage != Stage::Completed || !completionEventPending_) {
@@ -222,20 +222,22 @@ void ObdBsc06HilFaultModule::emitPendingEvents() noexcept {
     }
 
     if (outcome_ == ObdTransportBarrierOutcome::CancellationEpochAdvanced) {
-        emitEvent(controllerReleaseRecorded_ ? "released" : "blocked", controllerReleaseRecorded_
-                                                                           ? "newer_cancellation_epoch_suppressed_write"
-                                                                           : "controller_refused_cancellation_release");
+        emitEvent(controllerReleaseRecorded_ ? "released" : "blocked",
+                  controllerReleaseRecorded_ ? "newer_cancellation_epoch_suppressed_write"
+                                             : "controller_refused_cancellation_release",
+                  true);
     } else if (outcome_ == ObdTransportBarrierOutcome::LinkDownConfirmed) {
-        emitEvent(controllerReleaseRecorded_ ? "released" : "blocked", controllerReleaseRecorded_
-                                                                           ? "matching_link_down_suppressed_write"
-                                                                           : "controller_refused_link_down_release");
+        emitEvent(controllerReleaseRecorded_ ? "released" : "blocked",
+                  controllerReleaseRecorded_ ? "matching_link_down_suppressed_write"
+                                             : "controller_refused_link_down_release",
+                  true);
     } else if (outcome_ == ObdTransportBarrierOutcome::DeadlineReached ||
                controllerStateAtCompletion_ == HilFaultState::Expired) {
-        emitEvent("expired", "automatic_timeout_resumed_write");
+        emitEvent("expired", "automatic_timeout_resumed_write", true);
     } else if (controllerStateAtCompletion_ == HilFaultState::Disarmed) {
-        emitEvent("expired", "session_end_resumed_write");
+        emitEvent("expired", "session_end_resumed_write", true);
     } else {
-        emitEvent("blocked", "barrier_runtime_ended_without_competing_operation");
+        emitEvent("blocked", "barrier_runtime_ended_without_competing_operation", true);
     }
     completionEventPending_ = false;
 }

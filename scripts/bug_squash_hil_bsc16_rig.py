@@ -584,8 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         perform_stimulus(
             instruction=(
-                "Connect the data-only USB cable (no VBUS), set battery-only power, "
-                "arm the analyzer, and wake with PWR."
+                "Start with the DUT fully OFF. Connect the data-only USB cable (no VBUS), "
+                "connect the battery, arm the analyzer, and press PWR only on ACTION NOW."
             ),
             stimulus_id="pwr-wake-on-battery",
             duration_seconds=7.0,

@@ -85,14 +85,13 @@ const char* wifiScanConsumerName(WifiScanConsumer consumer) {
 void observePhysicalWifiScan(const WifiScanObservation& observation, void* /*ctx*/) {
     // Qualification-safe lifecycle trace: intentionally excludes SSIDs, addresses,
     // credentials, and scan-result contents.
-    Serial.printf(
-        "[WiFiScanTrace] event=%s consumer=%s generation=%lu networks=%d pending=%u snapshots=%u running=%u "
-        "released=%u aborted=%u\n",
-        wifiScanObservationEventName(observation.event), wifiScanConsumerName(observation.consumer),
-        static_cast<unsigned long>(observation.generation), static_cast<int>(observation.networkCount),
-        static_cast<unsigned>(observation.pendingConsumerMask),
-        static_cast<unsigned>(observation.snapshotConsumerMask), observation.running ? 1U : 0U,
-        observation.released ? 1U : 0U, observation.aborted ? 1U : 0U);
+    Serial.printf("[WiFiScanTrace] event=%s consumer=%s generation=%lu networks=%d pending=%u snapshots=%u running=%u "
+                  "released=%u aborted=%u\n",
+                  wifiScanObservationEventName(observation.event), wifiScanConsumerName(observation.consumer),
+                  static_cast<unsigned long>(observation.generation), static_cast<int>(observation.networkCount),
+                  static_cast<unsigned>(observation.pendingConsumerMask),
+                  static_cast<unsigned>(observation.snapshotConsumerMask), observation.running ? 1U : 0U,
+                  observation.released ? 1U : 0U, observation.aborted ? 1U : 0U);
 }
 
 WifiScanResultOwner::Driver makeWifiScanDriver() {
@@ -173,8 +172,7 @@ std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
         return {};
     }
 
-    std::vector<ScannedNetwork> networks =
-        wifiScanOwner_.copySnapshot(WifiScanConsumer::UI, makeWifiScanDriver());
+    std::vector<ScannedNetwork> networks = wifiScanOwner_.copySnapshot(WifiScanConsumer::UI, makeWifiScanDriver());
     if (wifiScanOwner_.hasSnapshot(WifiScanConsumer::UI)) {
         Serial.printf("[WiFiClient] UI scan snapshot has %u network(s)\n", static_cast<unsigned>(networks.size()));
     }

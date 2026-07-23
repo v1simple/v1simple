@@ -136,8 +136,8 @@ WifiScanResultOwner::HarvestResult WifiScanResultOwner::harvest(const Driver& dr
         running_ = false;
         activeGeneration_ = 0;
         clearPendingGeneration(failedGeneration);
-        publishObservation(driver, WifiScanObservationEvent::HARVEST_FAILED, WifiScanConsumer::NONE,
-                           failedGeneration, -1, termination.released, termination.aborted);
+        publishObservation(driver, WifiScanObservationEvent::HARVEST_FAILED, WifiScanConsumer::NONE, failedGeneration,
+                           -1, termination.released, termination.aborted);
         return HarvestResult::FAILED;
     }
 
@@ -196,8 +196,8 @@ WifiScanResultOwner::HarvestResult WifiScanResultOwner::harvest(const Driver& dr
     if (released) {
         driver.release(driver.ctx);
     }
-    publishObservation(driver, WifiScanObservationEvent::HARVEST_COMPLETED, WifiScanConsumer::NONE,
-                       completedGeneration, static_cast<int16_t>(networks.size()), released, false);
+    publishObservation(driver, WifiScanObservationEvent::HARVEST_COMPLETED, WifiScanConsumer::NONE, completedGeneration,
+                       static_cast<int16_t>(networks.size()), released, false);
     return HarvestResult::COMPLETED;
 }
 
@@ -263,8 +263,7 @@ std::vector<ScannedNetwork> WifiScanResultOwner::copySnapshot(WifiScanConsumer c
     return snapshots_[index];
 }
 
-std::vector<ScannedNetwork> WifiScanResultOwner::copySnapshot(WifiScanConsumer consumer,
-                                                              const Driver& driver) const {
+std::vector<ScannedNetwork> WifiScanResultOwner::copySnapshot(WifiScanConsumer consumer, const Driver& driver) const {
     const size_t index = consumerIndex(consumer);
     std::vector<ScannedNetwork> snapshot = copySnapshot(consumer);
     if (snapshotValid_[index]) {

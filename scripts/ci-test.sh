@@ -23,7 +23,7 @@ Usage: scripts/ci-test.sh [--with-coverage] [--help]
                     so the authoritative main gate does not carry it. It runs out-of-band in
                     .github/workflows/coverage.yml. When this flag is passed the
                     coverage section runs AFTER the budget check, so it is not
-                    charged against the 1200s ci-test budget.
+                    charged against the 1800s ci-test budget.
   --help            Show this message.
 EOF
 }
@@ -82,6 +82,8 @@ echo "============================================"
 
 section "Toolchain"
 run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
+run_step "CI timing budget contract regression tests" python3 scripts/test_check_ci_budget.py
+run_step "CI timing budget contract" python3 scripts/check_ci_budget.py
 
 section "Semantic Gates"
 run_step "Bug pattern scanner" python3 scripts/check_bug_patterns.py
@@ -198,7 +200,7 @@ run_step "ci-test timing budget" python3 scripts/check_ci_budget.py ci-test "$TI
 
 # Opt-in only, and deliberately sequenced AFTER the budget check: the coverage
 # lane is not part of the authoritative main gate, so its wall clock must not be
-# charged against the 1200s ci-test budget. Without --with-coverage nothing
+# charged against the 1800s ci-test budget. Without --with-coverage nothing
 # below runs and the gate is unchanged.
 if [[ "$WITH_COVERAGE" -eq 1 ]]; then
   section "Firmware Coverage (opt-in, outside the ci-test budget)"

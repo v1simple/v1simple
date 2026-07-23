@@ -201,11 +201,14 @@ Measured on one host, over all 149 native suites:
 
 The instrumented suite itself is only ~21% slower — but the gate does not
 *replace* its native run with the instrumented one, it would have to add a whole
-second run. That is roughly +231s on a lane that already runs ~531s against a
-1200s budget (`tools/ci_time_budgets.json`), and the budget is calibrated for
-cold GitHub runners, which are slower than the host these numbers came from.
-Spending ~40% of the remaining headroom on a scheduled regression signal is not
-a good trade, so the authoritative main gate does not carry coverage.
+second run. The authoritative gate now also carries 192 native suites,
+sanitizers, linked-source pilots, HIL qualification, and bound production
+rebuilds. A cold GitHub run exceeded the former 25-minute workflow timeout after
+1482 seconds, while the same committed gate passed locally in 1106 seconds.
+The tracked 1800-second budget and 36-minute workflow timeout reserve 60 seconds
+for job setup plus a five-minute cancellation margin. They are enforced as one
+contract by `check_ci_budget.py`. Coverage remains out of band so that margin
+is reserved for cold-run variance rather than a duplicate native lane.
 
 ### Running it locally
 

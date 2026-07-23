@@ -6,8 +6,9 @@ name: Firmware Coverage
 # add a whole second
 # native run to ci-test.sh: measured on one host, the 149 native suites take
 # 170.7s uninstrumented vs 206.6s instrumented (1.21x), plus ~24s of gcovr
-# aggregation — roughly +230s on a lane that already runs ~531s against a 1200s
-# budget (tools/ci_time_budgets.json), and GitHub runners are slower than that
+# aggregation — roughly +230s on a lane that already carries the full native,
+# sanitizer, HIL qualification, and production-build gates against an 1800s
+# budget (tools/ci_time_budgets.json), and GitHub runners are slower than the
 # host. So it runs weekly and on demand instead.
 #
 # Scope: the native envs set test_build_src = false, so this measures the

@@ -7,6 +7,7 @@ import argparse
 import builtins
 from dataclasses import FrozenInstanceError, replace
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -370,6 +371,50 @@ class RigAdapterRegistryTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertEqual(completed.stdout, b"")
             self.assertEqual(list(artifact_root.iterdir()), [])
+
+    def test_bsc16_checkpoint_separates_setup_from_operator_timed_start(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(
+            builtins,
+            "input",
+            side_effect=("READY", "START"),
+        ), mock.patch.object(bsc16_rig.sys, "stderr", output):
+            bsc16_rig.prompt_ready(
+                "Leave the DUT fully OFF.",
+                "Press PWR once now.",
+            )
+        rendered = output.getvalue()
+        setup = rendered.index("BSC-16 SETUP ONLY: Leave the DUT fully OFF.")
+        waiting = rendered.index("Do not perform the timed action yet.")
+        preview = rendered.index("NEXT TIMED ACTION: Press PWR once now.")
+        start = rendered.index("Type START")
+        capture = rendered.index("CAPTURE STARTED — ACTION NOW: Press PWR once now.")
+        self.assertLess(setup, waiting)
+        self.assertLess(waiting, preview)
+        self.assertLess(preview, start)
+        self.assertLess(start, capture)
+        self.assertIn(
+            "perform that exact action immediately after sending START; "
+            "do not wait for another message",
+            rendered,
+        )
+        rejected = io.StringIO()
+        with mock.patch.object(
+            builtins,
+            "input",
+            side_effect=("READY", "GO"),
+        ), mock.patch.object(
+            bsc16_rig.sys,
+            "stderr",
+            rejected,
+        ), self.assertRaises(
+            bsc16_rig.AdapterError
+        ):
+            bsc16_rig.prompt_ready(
+                "Leave the DUT fully OFF.",
+                "Press PWR once now.",
+            )
+        self.assertNotIn("CAPTURE STARTED", rejected.getvalue())
 
     def test_bsc16_adapter_reresolves_exact_serial_after_device_renumber(self) -> None:
         endpoint_resolver = bsc16_rig.SerialEndpointResolver(

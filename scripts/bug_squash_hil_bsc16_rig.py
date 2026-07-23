@@ -166,12 +166,37 @@ def require_opaque(value: str, label: str) -> str:
     return value
 
 
-def prompt_ready(instruction: str) -> None:
-    print(f"\nBSC-16 PHYSICAL CHECKPOINT: {instruction}", file=sys.stderr, flush=True)
-    print("Type READY when the rig is prepared; the timed capture starts immediately.", file=sys.stderr, flush=True)
+def prompt_ready(setup_instruction: str, action_instruction: str) -> None:
+    print(
+        f"\nBSC-16 SETUP ONLY: {setup_instruction}",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(
+        "Do not perform the timed action yet. Type READY only when this setup is complete.",
+        file=sys.stderr,
+        flush=True,
+    )
     if input().strip() != "READY":
         raise AdapterError("operator checkpoint was not acknowledged exactly")
-    print("ACTION NOW", file=sys.stderr, flush=True)
+    print(
+        f"\nNEXT TIMED ACTION: {action_instruction}",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(
+        "Get physically ready. Type START, then perform that exact action immediately "
+        "after sending START; do not wait for another message.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if input().strip() != "START":
+        raise AdapterError("timed action was not acknowledged exactly")
+    print(
+        f"CAPTURE STARTED — ACTION NOW: {action_instruction}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def prompt_pass(question: str) -> None:
@@ -482,7 +507,8 @@ def import_logic_capture(destination: Path) -> int:
 
 def perform_stimulus(
     *,
-    instruction: str,
+    setup_instruction: str,
+    action_instruction: str,
     stimulus_id: str,
     duration_seconds: float,
     run_started: float,
@@ -490,7 +516,7 @@ def perform_stimulus(
     serial_rows: list[dict[str, object]],
     stimuli: list[dict[str, object]],
 ) -> None:
-    prompt_ready(instruction)
+    prompt_ready(setup_instruction, action_instruction)
     started_ms = int((time.monotonic() - run_started) * 1000)
     serial_rows.extend(
         capture_serial(
@@ -583,10 +609,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         poweroff_rows: list[dict[str, object]] = []
 
         perform_stimulus(
-            instruction=(
-                "Start with the DUT fully OFF. Connect the data-only USB cable (no VBUS), "
-                "connect the battery, arm the analyzer, and press PWR only on ACTION NOW."
+            setup_instruction=(
+                "Turn the DUT fully OFF. Connect the data-only USB cable (no VBUS), "
+                "connect the battery, and arm the analyzer. Leave the DUT OFF."
             ),
+            action_instruction="Press PWR once now to wake the DUT on battery.",
             stimulus_id="pwr-wake-on-battery",
             duration_seconds=7.0,
             run_started=run_started,
@@ -595,9 +622,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimuli=stimuli,
         )
         perform_stimulus(
-            instruction=(
-                "Remove all power and disconnect the data-only cable. Connect the powered "
-                "USB cable for a cold boot on ACTION NOW."
+            setup_instruction=(
+                "Turn the DUT fully OFF, remove all power, and disconnect the data-only "
+                "cable. Leave the powered USB cable disconnected."
+            ),
+            action_instruction=(
+                "Connect the powered USB cable now for a cold boot; do not press PWR."
             ),
             stimulus_id="usb-cold-boot",
             duration_seconds=7.0,
@@ -620,10 +650,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 serial_rows=serial_rows,
             )
             perform_stimulus(
-                instruction=(
-                    "Replace powered USB with the data-only cable. With the one-shot ADC fault "
-                    "staged and VBUS absent, power-cycle the battery rail and wake with PWR "
-                    "on ACTION NOW."
+                setup_instruction=(
+                    "Replace powered USB with the data-only cable. Turn the battery rail OFF "
+                    "and leave the DUT fully OFF. The one-shot ADC fault is already staged."
+                ),
+                action_instruction=(
+                    "Turn the battery rail ON, then immediately press PWR once to wake the DUT."
                 ),
                 stimulus_id="force-adc-init-failure",
                 duration_seconds=9.0,
@@ -634,9 +666,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         perform_stimulus(
-            instruction=(
-                "Keep the data-only USB cable connected. On battery-only power, hold PWR "
-                "for at least two seconds on ACTION NOW."
+            setup_instruction=(
+                "Keep the data-only USB cable connected and confirm the DUT is running on "
+                "battery power. Do not touch PWR yet."
+            ),
+            action_instruction=(
+                "Press and hold PWR now for at least two seconds, then release it."
             ),
             stimulus_id="hold-power-button",
             duration_seconds=7.0,
@@ -655,9 +690,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         perform_stimulus(
-            instruction=(
-                "Boot on battery with the data-only USB cable. Replace it with the powered "
-                "USB cable on ACTION NOW; battery must sustain the cable swap."
+            setup_instruction=(
+                "Confirm the DUT is running on battery with the data-only USB cable connected. "
+                "Have the powered USB cable ready, but do not swap cables yet."
+            ),
+            action_instruction=(
+                "Replace the data-only USB cable with the powered USB cable now; keep the "
+                "battery connected."
             ),
             stimulus_id="transition-battery-to-usb",
             duration_seconds=7.0,
@@ -667,9 +706,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimuli=stimuli,
         )
         perform_stimulus(
-            instruction=(
-                "While running with the powered USB cable, replace it with the data-only "
-                "USB cable on ACTION NOW; battery must sustain the cable swap."
+            setup_instruction=(
+                "Confirm the DUT is running with powered USB and the battery connected. Have "
+                "the data-only USB cable ready, but do not swap cables yet."
+            ),
+            action_instruction=(
+                "Replace the powered USB cable with the data-only USB cable now; keep the "
+                "battery connected."
             ),
             stimulus_id="transition-usb-to-battery",
             duration_seconds=7.0,

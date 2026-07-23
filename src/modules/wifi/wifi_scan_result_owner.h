@@ -18,6 +18,30 @@ struct ScannedNetwork {
 enum class WifiScanConsumer : uint8_t {
     UI = 0,
     MAINTENANCE,
+    NONE = 0xFF,
+};
+
+enum class WifiScanObservationEvent : uint8_t {
+    REQUEST_STARTED = 0,
+    REQUEST_JOINED,
+    REQUEST_FAILED,
+    HARVEST_COMPLETED,
+    HARVEST_FAILED,
+    CONSUMER_CANCELLED,
+    SNAPSHOT_READ,
+    OWNER_RESET,
+};
+
+struct WifiScanObservation {
+    WifiScanObservationEvent event = WifiScanObservationEvent::REQUEST_FAILED;
+    WifiScanConsumer consumer = WifiScanConsumer::NONE;
+    uint32_t generation = 0;
+    int16_t networkCount = -1;
+    uint8_t pendingConsumerMask = 0;
+    uint8_t snapshotConsumerMask = 0;
+    bool running = false;
+    bool released = false;
+    bool aborted = false;
 };
 
 class WifiScanStaDropGate {
@@ -50,6 +74,8 @@ class WifiScanResultOwner {
         uint8_t (*encryptionAt)(int16_t index, void* ctx) = nullptr;
         void (*release)(void* ctx) = nullptr;
         void (*abort)(void* ctx) = nullptr;
+        void* observationCtx = nullptr;
+        void (*observe)(const WifiScanObservation& observation, void* ctx) = nullptr;
     };
 
     enum class RequestResult : uint8_t {
@@ -76,6 +102,7 @@ class WifiScanResultOwner {
     uint32_t generation() const { return generation_; }
     uint32_t snapshotGeneration(WifiScanConsumer consumer) const;
     std::vector<ScannedNetwork> copySnapshot(WifiScanConsumer consumer) const;
+    std::vector<ScannedNetwork> copySnapshot(WifiScanConsumer consumer, const Driver& driver) const;
     void clearSnapshot(WifiScanConsumer consumer);
 
   private:
@@ -84,6 +111,11 @@ class WifiScanResultOwner {
     static size_t consumerIndex(WifiScanConsumer consumer);
     bool hasPendingConsumer() const;
     void clearPendingGeneration(uint32_t generation);
+    uint8_t pendingConsumerMask() const;
+    uint8_t snapshotConsumerMask() const;
+    void publishObservation(const Driver& driver, WifiScanObservationEvent event, WifiScanConsumer consumer,
+                            uint32_t generation, int16_t networkCount = -1, bool released = false,
+                            bool aborted = false) const;
 
     bool running_ = false;
     uint32_t generation_ = 0;

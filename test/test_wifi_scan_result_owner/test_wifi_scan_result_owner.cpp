@@ -36,6 +36,7 @@ struct FakeScanDriver {
     int readsAfterRelease = 0;
     bool released = false;
     bool hardwareActive = false;
+    std::vector<WifiScanObservation> observations;
 
     void complete(std::initializer_list<RawNetwork> networks) {
         rawNetworks.assign(networks.begin(), networks.end());
@@ -112,6 +113,10 @@ void abortScan(void* ctx) {
     fake->rawNetworks.clear();
 }
 
+void observeScan(const WifiScanObservation& observation, void* ctx) {
+    static_cast<FakeScanDriver*>(ctx)->observations.push_back(observation);
+}
+
 WifiScanResultOwner::Driver makeDriver(FakeScanDriver& fake) {
     WifiScanResultOwner::Driver driver;
     driver.ctx = &fake;
@@ -123,6 +128,8 @@ WifiScanResultOwner::Driver makeDriver(FakeScanDriver& fake) {
     driver.encryptionAt = scanEncryptionAt;
     driver.release = releaseScan;
     driver.abort = abortScan;
+    driver.observationCtx = &fake;
+    driver.observe = observeScan;
     return driver;
 }
 
@@ -356,6 +363,68 @@ void test_start_failure_aborts_stale_hardware_before_retry() {
     TEST_ASSERT_EQUAL_INT(2, fake.startCalls);
 }
 
+void test_observer_correlates_overlap_cancel_rejoin_release_and_reads_without_network_identity() {
+    WifiScanResultOwner owner;
+    FakeScanDriver fake;
+    const auto driver = makeDriver(fake);
+
+    TEST_ASSERT_EQUAL(WifiScanResultOwner::RequestResult::STARTED,
+                      owner.request(WifiScanConsumer::MAINTENANCE, driver));
+    TEST_ASSERT_EQUAL(WifiScanResultOwner::RequestResult::JOINED, owner.request(WifiScanConsumer::UI, driver));
+    const uint32_t generation = owner.generation();
+
+    TEST_ASSERT_EQUAL_UINT(2, fake.observations.size());
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::REQUEST_STARTED, fake.observations[0].event);
+    TEST_ASSERT_EQUAL(WifiScanConsumer::MAINTENANCE, fake.observations[0].consumer);
+    TEST_ASSERT_EQUAL_UINT32(generation, fake.observations[0].generation);
+    TEST_ASSERT_EQUAL_UINT8(0x02, fake.observations[0].pendingConsumerMask);
+    TEST_ASSERT_TRUE(fake.observations[0].running);
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::REQUEST_JOINED, fake.observations[1].event);
+    TEST_ASSERT_EQUAL_UINT8(0x03, fake.observations[1].pendingConsumerMask);
+
+    TEST_ASSERT_TRUE(owner.cancel(WifiScanConsumer::UI, driver));
+    const WifiScanObservation& cancelled = fake.observations.back();
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::CONSUMER_CANCELLED, cancelled.event);
+    TEST_ASSERT_EQUAL(WifiScanConsumer::UI, cancelled.consumer);
+    TEST_ASSERT_EQUAL_UINT32(generation, cancelled.generation);
+    TEST_ASSERT_EQUAL_UINT8(0x02, cancelled.pendingConsumerMask);
+    TEST_ASSERT_TRUE(cancelled.running);
+    TEST_ASSERT_FALSE(cancelled.released);
+    TEST_ASSERT_FALSE(cancelled.aborted);
+
+    TEST_ASSERT_EQUAL(WifiScanResultOwner::RequestResult::JOINED, owner.request(WifiScanConsumer::UI, driver));
+    TEST_ASSERT_EQUAL_UINT32(generation, fake.observations.back().generation);
+    TEST_ASSERT_EQUAL_UINT8(0x03, fake.observations.back().pendingConsumerMask);
+
+    fake.complete({{"Private network name never enters the observation", -33, WIFI_AUTH_WPA2_PSK},
+                   {"Second private network", -45, WIFI_AUTH_OPEN}});
+    TEST_ASSERT_EQUAL(WifiScanResultOwner::HarvestResult::COMPLETED, owner.harvest(driver));
+    const WifiScanObservation& completed = fake.observations.back();
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::HARVEST_COMPLETED, completed.event);
+    TEST_ASSERT_EQUAL_UINT32(generation, completed.generation);
+    TEST_ASSERT_EQUAL_INT16(2, completed.networkCount);
+    TEST_ASSERT_EQUAL_UINT8(0x00, completed.pendingConsumerMask);
+    TEST_ASSERT_EQUAL_UINT8(0x03, completed.snapshotConsumerMask);
+    TEST_ASSERT_FALSE(completed.running);
+    TEST_ASSERT_TRUE(completed.released);
+    TEST_ASSERT_FALSE(completed.aborted);
+
+    const auto uiSnapshot = owner.copySnapshot(WifiScanConsumer::UI, driver);
+    const WifiScanObservation uiRead = fake.observations.back();
+    const auto maintenanceSnapshot = owner.copySnapshot(WifiScanConsumer::MAINTENANCE, driver);
+    const WifiScanObservation maintenanceRead = fake.observations.back();
+    TEST_ASSERT_EQUAL_UINT(2, uiSnapshot.size());
+    TEST_ASSERT_EQUAL_UINT(2, maintenanceSnapshot.size());
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::SNAPSHOT_READ, uiRead.event);
+    TEST_ASSERT_EQUAL(WifiScanConsumer::UI, uiRead.consumer);
+    TEST_ASSERT_EQUAL_UINT32(generation, uiRead.generation);
+    TEST_ASSERT_EQUAL_INT16(2, uiRead.networkCount);
+    TEST_ASSERT_EQUAL(WifiScanObservationEvent::SNAPSHOT_READ, maintenanceRead.event);
+    TEST_ASSERT_EQUAL(WifiScanConsumer::MAINTENANCE, maintenanceRead.consumer);
+    TEST_ASSERT_EQUAL_UINT32(generation, maintenanceRead.generation);
+    TEST_ASSERT_EQUAL_INT16(2, maintenanceRead.networkCount);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_maintenance_scan_can_be_joined_by_ui_and_harvested_once);
@@ -368,5 +437,6 @@ int main() {
     RUN_TEST(test_rejected_maintenance_restart_preserves_deferred_sta_drop);
     RUN_TEST(test_failed_scan_aborts_hardware_and_allows_fresh_request);
     RUN_TEST(test_start_failure_aborts_stale_hardware_before_retry);
+    RUN_TEST(test_observer_correlates_overlap_cancel_rejoin_release_and_reads_without_network_identity);
     return UNITY_END();
 }

@@ -352,6 +352,78 @@ BSC10_CAPTURE_COMMITMENTS = (
     "nvs_runtime_state_sha256",
     "serial_log_sha256",
 )
+BSC09_CASE_ID = "BSC-09"
+BSC09_PROFILE_ID = "bug-squash-hil-v1"
+BSC09_PROFILE_VERSION = 5
+BSC09_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC09_REQUIRED_RUNS = 3
+BSC09_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC09_MAX_RECORD_BYTES = 512 * 1024
+BSC09_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "maintenance-mode",
+    "serial",
+    "wifi-scan",
+)
+BSC09_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "browser-client",
+    "multiple-access-points",
+    "utc-time-source",
+)
+BSC09_STIMULUS_IDS = (
+    "start-maintenance-autoconnect",
+    "open-scan-modal",
+    "close-scan-modal",
+    "reopen-scan-modal",
+    "drop-one-status-poll",
+    "retry-status-poll",
+)
+BSC09_BARRIER_IDS = ("scan-overlap-observed",)
+BSC09_FACT_IDS = (
+    "maintenance-snapshot-stable",
+    "ui-snapshot-stable",
+    "consumer-generations-isolated",
+    "retry-succeeded",
+    "spinner-terminated",
+    "wifi-mode-settled",
+    "accumulating-scan-heap-loss-observed",
+)
+BSC09_CAPTURE_COMMITMENTS = (
+    "browser_trace_sha256",
+    "firmware_build_sha256",
+    "heap_trace_sha256",
+    "serial_log_sha256",
+    "wifi_mode_trace_sha256",
+    "wifi_scan_trace_sha256",
+)
+BSC09_RAW_CAPTURE_FIELDS = {
+    "browser-trace": "browser_trace_sha256",
+    "firmware-build": "firmware_build_sha256",
+    "heap-trace": "heap_trace_sha256",
+    "serial-log": "serial_log_sha256",
+    "wifi-mode-trace": "wifi_mode_trace_sha256",
+    "wifi-scan-trace": "wifi_scan_trace_sha256",
+}
+BSC09_LIFECYCLE_EVENTS = (
+    ("request-started", "maintenance", 2, 0, True, False, False),
+    ("request-joined", "ui", 3, 0, True, False, False),
+    ("request-joined", "ui", 3, 0, True, False, False),
+    ("request-joined", "ui", 3, 0, True, False, False),
+    ("harvest-completed", "none", 0, 3, False, True, False),
+    ("snapshot-read", "maintenance", 0, 3, False, False, False),
+    ("snapshot-read", "ui", 0, 3, False, False, False),
+)
+BSC09_BROWSER_ACTIONS = (
+    ("initial-post", "POST", "/api/wifi/scan", 200, True, True, True, False, True),
+    ("close-modal", "LOCAL", "", 0, False, False, False, False, False),
+    ("reopen-post", "POST", "/api/wifi/scan", 200, True, True, True, False, True),
+    ("dropped-poll", "GET", "/api/wifi/scan", 0, False, False, False, True, False),
+    ("stale-poll-response", "GET", "/api/wifi/scan", 200, False, False, False, True, False),
+    ("retry-post", "POST", "/api/wifi/scan", 200, True, True, True, False, True),
+    ("resumed-poll", "GET", "/api/wifi/scan", 200, True, True, True, False, True),
+    ("terminal-poll", "GET", "/api/wifi/scan", 200, False, True, False, False, True),
+)
 BSC06_CASE_ID = "BSC-06"
 BSC06_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC06_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -11471,8 +11543,1125 @@ def run_bsc08_case(args: argparse.Namespace) -> int:
     )
 
 
+def load_bsc09_case_descriptor() -> dict[str, object]:
+    profile, errors = qualification.load_pinned_profile()
+    if (
+        profile is None
+        or errors
+        or profile.get("profile_id") != BSC09_PROFILE_ID
+        or profile.get("profile_version") != BSC09_PROFILE_VERSION
+    ):
+        raise RunnerError(
+            "qualification_profile_invalid",
+            "BSC-09 requires the exact pinned profile-v5 contract",
+        )
+    descriptor = next(
+        (case for case in profile["required_cases"] if case.get("id") == BSC09_CASE_ID),
+        None,
+    )
+    expected_facts = [
+        {"id": fact_id, "type": "boolean", "expected": fact_id != BSC09_FACT_IDS[-1]}
+        for fact_id in BSC09_FACT_IDS
+    ]
+    if not isinstance(descriptor, dict):
+        raise RunnerError("case_driver_contract_invalid", "BSC-09 descriptor is unavailable")
+    role = descriptor.get("scenario")
+    if (
+        set(descriptor)
+        != {
+            "id",
+            "minimum_runs",
+            "fault_build_required",
+            "production_replay_required",
+            "required_dut_capabilities",
+            "required_rig_capabilities",
+            "scenario",
+            "production_replay",
+        }
+        or descriptor.get("id") != BSC09_CASE_ID
+        or type(descriptor.get("minimum_runs")) is not int
+        or descriptor.get("minimum_runs") != BSC09_REQUIRED_RUNS
+        or descriptor.get("fault_build_required") is not False
+        or descriptor.get("production_replay_required") is not False
+        or descriptor.get("production_replay") is not None
+        or descriptor.get("required_dut_capabilities") != list(BSC09_DUT_CAPABILITIES)
+        or descriptor.get("required_rig_capabilities") != list(BSC09_RIG_CAPABILITIES)
+        or not isinstance(role, dict)
+        or set(role)
+        != {
+            "role_id",
+            "schema",
+            "build_kind",
+            "stimulus_ids",
+            "fault_ids",
+            "barrier_ids",
+            "vbus_isolation_required",
+            "reset_contract",
+            "facts",
+        }
+        or role.get("role_id") != "wifi-dual-consumer-scan"
+        or role.get("schema") != "case-observation-v1"
+        or role.get("build_kind") != "production"
+        or role.get("stimulus_ids") != list(BSC09_STIMULUS_IDS)
+        or role.get("fault_ids") != []
+        or role.get("barrier_ids") != list(BSC09_BARRIER_IDS)
+        or role.get("vbus_isolation_required") is not False
+        or role.get("reset_contract")
+        != {"expected_kind": "none", "expected_count": 0, "unexpected_count": 0}
+        or role.get("facts") != expected_facts
+    ):
+        raise RunnerError("case_driver_contract_invalid", "BSC-09 profile-v5 contract drifted")
+    return descriptor
+
+
+def bsc09_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment("v1simple.bsc09.case-descriptor.v1", case_descriptor)
+
+
+def bsc09_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc09.case-record.v1", committed)
+
+
+def bsc09_adapter_request_commitment(expected: Mapping[str, object]) -> str:
+    committed = dict(expected)
+    committed.pop("adapter_request_sha256", None)
+    return canonical_case_commitment("v1simple.bsc09.adapter-request.v1", committed)
+
+
+def bsc09_raw_manifest_commitment(manifest: Mapping[str, object]) -> str:
+    committed = dict(manifest)
+    committed.pop("manifest_commitment_sha256", None)
+    return canonical_case_commitment("v1simple.bsc09.raw-artifact-manifest.v1", committed)
+
+
+def resolve_bsc09_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+    case_descriptor: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-09 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=case_descriptor["required_dut_capabilities"],
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=case_descriptor["required_rig_capabilities"],
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-09 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def validate_bsc09_stimuli(value: object, *, duration_ms: int) -> dict[str, int]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(BSC09_STIMULUS_IDS):
+        raise RunnerError(code, "BSC-09 stimulus sequence is incomplete")
+    elapsed_by_id: dict[str, int] = {}
+    previous = -1
+    for sequence, (raw, stimulus_id) in enumerate(
+        zip(value, BSC09_STIMULUS_IDS, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {"id", "sequence", "elapsed_ms", "result"},
+            code=code,
+            label="BSC-09 stimulus",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != stimulus_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or not 0 <= elapsed <= duration_ms
+            or elapsed <= previous
+            or row.get("result") != "pass"
+        ):
+            raise RunnerError(code, "BSC-09 stimulus identity, order, or timing is invalid")
+        elapsed_by_id[stimulus_id] = elapsed
+        previous = elapsed
+    return elapsed_by_id
+
+
+def validate_bsc09_lifecycle(value: object, *, duration_ms: int) -> dict[str, object]:
+    code = "case_record_invalid"
+    trace = require_exact_object(
+        value,
+        {"source", "capture_sha256", "events"},
+        code=code,
+        label="BSC-09 scan lifecycle trace",
+    )
+    if trace.get("source") != "WiFiScanTrace":
+        raise RunnerError(code, "BSC-09 scan lifecycle source is not the product trace")
+    capture = require_sha256(
+        trace.get("capture_sha256"), code=code, label="BSC-09 scan lifecycle capture"
+    )
+    events = trace.get("events")
+    if not isinstance(events, list) or len(events) != len(BSC09_LIFECYCLE_EVENTS):
+        raise RunnerError(code, "BSC-09 scan lifecycle event coverage is incomplete")
+    generation: int | None = None
+    network_count: int | None = None
+    previous = -1
+    elapsed: list[int] = []
+    release_count = 0
+    for sequence, (raw, expected) in enumerate(
+        zip(events, BSC09_LIFECYCLE_EVENTS, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {
+                "event",
+                "consumer",
+                "generation",
+                "network_count",
+                "pending_consumer_mask",
+                "snapshot_consumer_mask",
+                "running",
+                "released",
+                "aborted",
+                "sequence",
+                "elapsed_ms",
+            },
+            code=code,
+            label="BSC-09 scan lifecycle event",
+        )
+        event, consumer, pending_mask, snapshot_mask, running, released, aborted = expected
+        current_generation = row.get("generation")
+        current_network_count = row.get("network_count")
+        current_elapsed = row.get("elapsed_ms")
+        if (
+            row.get("event") != event
+            or row.get("consumer") != consumer
+            or type(current_generation) is not int
+            or current_generation <= 0
+            or type(current_network_count) is not int
+            or type(row.get("pending_consumer_mask")) is not int
+            or row.get("pending_consumer_mask") != pending_mask
+            or type(row.get("snapshot_consumer_mask")) is not int
+            or row.get("snapshot_consumer_mask") != snapshot_mask
+            or type(row.get("running")) is not bool
+            or row.get("running") is not running
+            or type(row.get("released")) is not bool
+            or row.get("released") is not released
+            or type(row.get("aborted")) is not bool
+            or row.get("aborted") is not aborted
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(current_elapsed) is not int
+            or not 0 <= current_elapsed <= duration_ms
+            or current_elapsed <= previous
+        ):
+            raise RunnerError(code, "BSC-09 scan lifecycle identity or state is invalid")
+        if generation is None:
+            generation = current_generation
+        elif current_generation != generation:
+            raise RunnerError(code, "BSC-09 scan generation changed inside one physical scan")
+        if event in {"request-started", "request-joined"}:
+            if current_network_count != -1:
+                raise RunnerError(code, "BSC-09 request event exposed an invalid result count")
+        elif event == "harvest-completed":
+            if not 2 <= current_network_count <= 64:
+                raise RunnerError(code, "BSC-09 physical scan did not observe multiple access points")
+            network_count = current_network_count
+        elif current_network_count != network_count:
+            raise RunnerError(code, "BSC-09 consumer snapshots do not match the harvested scan")
+        if released:
+            release_count += 1
+        elapsed.append(current_elapsed)
+        previous = current_elapsed
+    if generation is None or network_count is None or release_count != 1:
+        raise RunnerError(code, "BSC-09 scan release or snapshot cardinality is invalid")
+    return {
+        "capture_sha256": capture,
+        "generation": generation,
+        "network_count": network_count,
+        "elapsed_ms": elapsed,
+    }
+
+
+def validate_bsc09_browser_trace(value: object, *, duration_ms: int) -> dict[str, object]:
+    code = "case_record_invalid"
+    trace = require_exact_object(
+        value,
+        {"capture_sha256", "steps"},
+        code=code,
+        label="BSC-09 browser trace",
+    )
+    capture = require_sha256(
+        trace.get("capture_sha256"), code=code, label="BSC-09 browser capture"
+    )
+    steps = trace.get("steps")
+    if not isinstance(steps, list) or len(steps) != len(BSC09_BROWSER_ACTIONS):
+        raise RunnerError(code, "BSC-09 browser trace is incomplete")
+    run_ids = ((1, 1), (1, 2), (3, 3), (3, 4), (3, 4), (5, 5), (5, 5), (5, 5))
+    previous = -1
+    elapsed: list[int] = []
+    for sequence, (raw, expected, expected_runs) in enumerate(
+        zip(steps, BSC09_BROWSER_ACTIONS, run_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {
+                "action",
+                "sequence",
+                "elapsed_ms",
+                "request_run_id",
+                "current_run_id",
+                "http_method",
+                "path",
+                "response_status",
+                "response_scanning",
+                "modal_open",
+                "spinner_active",
+                "error_visible",
+                "response_accepted",
+            },
+            code=code,
+            label="BSC-09 browser step",
+        )
+        (
+            action,
+            method,
+            path,
+            status,
+            scanning,
+            modal,
+            spinner,
+            error,
+            accepted,
+        ) = expected
+        current_elapsed = row.get("elapsed_ms")
+        if (
+            row.get("action") != action
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(current_elapsed) is not int
+            or not 0 <= current_elapsed <= duration_ms
+            or current_elapsed <= previous
+            or type(row.get("request_run_id")) is not int
+            or type(row.get("current_run_id")) is not int
+            or (row.get("request_run_id"), row.get("current_run_id")) != expected_runs
+            or row.get("http_method") != method
+            or row.get("path") != path
+            or type(row.get("response_status")) is not int
+            or row.get("response_status") != status
+            or type(row.get("response_scanning")) is not bool
+            or row.get("response_scanning") is not scanning
+            or type(row.get("modal_open")) is not bool
+            or row.get("modal_open") is not modal
+            or type(row.get("spinner_active")) is not bool
+            or row.get("spinner_active") is not spinner
+            or type(row.get("error_visible")) is not bool
+            or row.get("error_visible") is not error
+            or type(row.get("response_accepted")) is not bool
+            or row.get("response_accepted") is not accepted
+        ):
+            raise RunnerError(code, "BSC-09 browser retry state machine is invalid")
+        elapsed.append(current_elapsed)
+        previous = current_elapsed
+    return {"capture_sha256": capture, "elapsed_ms": elapsed}
+
+
+def validate_bsc09_barriers(
+    value: object,
+    *,
+    lifecycle: Mapping[str, object],
+) -> None:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != 1:
+        raise RunnerError(code, "BSC-09 overlap barrier is missing")
+    row = require_exact_object(
+        value[0],
+        {
+            "id",
+            "sequence",
+            "generation",
+            "ready_elapsed_ms",
+            "released_elapsed_ms",
+            "source_event_sequences",
+            "timed_out",
+        },
+        code=code,
+        label="BSC-09 overlap barrier",
+    )
+    elapsed = lifecycle["elapsed_ms"]
+    assert isinstance(elapsed, list)
+    if (
+        row.get("id") != BSC09_BARRIER_IDS[0]
+        or type(row.get("sequence")) is not int
+        or row.get("sequence") != 1
+        or type(row.get("generation")) is not int
+        or row.get("generation") != lifecycle["generation"]
+        or type(row.get("ready_elapsed_ms")) is not int
+        or row.get("ready_elapsed_ms") != elapsed[1]
+        or type(row.get("released_elapsed_ms")) is not int
+        or row.get("released_elapsed_ms") != elapsed[4]
+        or row.get("source_event_sequences") != [1, 2, 5]
+        or type(row.get("timed_out")) is not bool
+        or row.get("timed_out") is not False
+    ):
+        raise RunnerError(code, "BSC-09 overlap barrier is not derived from the lifecycle trace")
+
+
+def validate_bsc09_heap(
+    value: object,
+    *,
+    lifecycle: Mapping[str, object],
+    duration_ms: int,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    trace = require_exact_object(
+        value,
+        {"capture_sha256", "integrity_ok", "samples"},
+        code=code,
+        label="BSC-09 heap trace",
+    )
+    capture = require_sha256(
+        trace.get("capture_sha256"), code=code, label="BSC-09 heap capture"
+    )
+    samples = trace.get("samples")
+    if not isinstance(samples, list) or len(samples) != 3:
+        raise RunnerError(code, "BSC-09 heap phase coverage is incomplete")
+    phases = ("before-scan", "overlapped-scan", "released")
+    values: list[tuple[int, int, int]] = []
+    previous = -1
+    for sequence, (raw, phase) in enumerate(zip(samples, phases, strict=True), start=1):
+        row = require_exact_object(
+            raw,
+            {"phase", "sequence", "elapsed_ms", "free_heap_bytes", "largest_block_bytes"},
+            code=code,
+            label="BSC-09 heap sample",
+        )
+        current_elapsed = row.get("elapsed_ms")
+        free_heap = row.get("free_heap_bytes")
+        largest = row.get("largest_block_bytes")
+        if (
+            row.get("phase") != phase
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(current_elapsed) is not int
+            or not 0 <= current_elapsed <= duration_ms
+            or current_elapsed <= previous
+            or type(free_heap) is not int
+            or type(largest) is not int
+            or not 0 < largest <= free_heap
+        ):
+            raise RunnerError(code, "BSC-09 heap sample identity, ordering, or bounds are invalid")
+        values.append((current_elapsed, free_heap, largest))
+        previous = current_elapsed
+    lifecycle_elapsed = lifecycle["elapsed_ms"]
+    assert isinstance(lifecycle_elapsed, list)
+    before, overlap, released = values
+    if (
+        type(trace.get("integrity_ok")) is not bool
+        or trace.get("integrity_ok") is not True
+        or not before[0] <= lifecycle_elapsed[0]
+        or not lifecycle_elapsed[1] <= overlap[0] < lifecycle_elapsed[4]
+        or released[0] < lifecycle_elapsed[-1]
+        or overlap[1] >= before[1]
+        or overlap[2] >= before[2]
+        or released[1] < before[1]
+        or released[2] < before[2]
+    ):
+        raise RunnerError(code, "BSC-09 heap release or integrity evidence is invalid")
+    return {
+        "capture_sha256": capture,
+        "before_free_bytes": before[1],
+        "released_free_bytes": released[1],
+    }
+
+
+def validate_bsc09_wifi_mode(
+    value: object,
+    *,
+    lifecycle: Mapping[str, object],
+    duration_ms: int,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    trace = require_exact_object(
+        value,
+        {"capture_sha256", "samples"},
+        code=code,
+        label="BSC-09 WiFi mode trace",
+    )
+    capture = require_sha256(
+        trace.get("capture_sha256"), code=code, label="BSC-09 WiFi mode capture"
+    )
+    samples = trace.get("samples")
+    if not isinstance(samples, list) or len(samples) != 3:
+        raise RunnerError(code, "BSC-09 WiFi mode samples are incomplete")
+    phases = ("maintenance-start", "scan-overlap", "settled")
+    expected_settled = (False, False, True)
+    elapsed: list[int] = []
+    previous = -1
+    for sequence, (raw, phase, settled) in enumerate(
+        zip(samples, phases, expected_settled, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {"phase", "sequence", "elapsed_ms", "mode", "settled"},
+            code=code,
+            label="BSC-09 WiFi mode sample",
+        )
+        current_elapsed = row.get("elapsed_ms")
+        if (
+            row.get("phase") != phase
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(current_elapsed) is not int
+            or not 0 <= current_elapsed <= duration_ms
+            or current_elapsed <= previous
+            or row.get("mode") != "AP_STA"
+            or type(row.get("settled")) is not bool
+            or row.get("settled") is not settled
+        ):
+            raise RunnerError(code, "BSC-09 WiFi mode did not settle through the scan")
+        elapsed.append(current_elapsed)
+        previous = current_elapsed
+    lifecycle_elapsed = lifecycle["elapsed_ms"]
+    assert isinstance(lifecycle_elapsed, list)
+    if elapsed[0] > lifecycle_elapsed[0] or not lifecycle_elapsed[1] <= elapsed[1] < lifecycle_elapsed[4]:
+        raise RunnerError(code, "BSC-09 WiFi mode samples are not aligned to the scan")
+    if elapsed[2] < lifecycle_elapsed[-1]:
+        raise RunnerError(code, "BSC-09 WiFi mode settled before consumer completion")
+    return {"capture_sha256": capture, "settled_elapsed_ms": elapsed[2]}
+
+
+def validate_bsc09_health(value: object) -> dict[str, object]:
+    code = "case_record_invalid"
+    health = require_exact_object(
+        value,
+        {
+            "expected_kind",
+            "planned_count",
+            "observed_count",
+            "unexpected_count",
+            "panic_observed",
+            "watchdog_reset_observed",
+            "heap_corruption_observed",
+            "capture_sha256",
+        },
+        code=code,
+        label="BSC-09 reset and health observation",
+    )
+    capture = require_sha256(
+        health.get("capture_sha256"), code=code, label="BSC-09 serial health capture"
+    )
+    if (
+        health.get("expected_kind") != "none"
+        or type(health.get("planned_count")) is not int
+        or health.get("planned_count") != 0
+        or type(health.get("observed_count")) is not int
+        or health.get("observed_count") != 0
+        or type(health.get("unexpected_count")) is not int
+        or health.get("unexpected_count") != 0
+        or type(health.get("panic_observed")) is not bool
+        or health.get("panic_observed") is not False
+        or type(health.get("watchdog_reset_observed")) is not bool
+        or health.get("watchdog_reset_observed") is not False
+        or type(health.get("heap_corruption_observed")) is not bool
+        or health.get("heap_corruption_observed") is not False
+    ):
+        raise RunnerError(code, "BSC-09 reset, panic, watchdog, or heap health is invalid")
+    return {"capture_sha256": capture}
+
+
+def validate_bsc09_raw_manifest(
+    value: object,
+    *,
+    role_id: str,
+    request_sha256: str,
+) -> dict[str, str]:
+    code = "case_record_invalid"
+    manifest = require_exact_object(
+        value,
+        {
+            "schema_version",
+            "role_id",
+            "request_commitment_sha256",
+            "artifacts",
+            "manifest_commitment_sha256",
+        },
+        code=code,
+        label="BSC-09 raw artifact manifest",
+    )
+    artifacts = manifest.get("artifacts")
+    contract = rig_adapters.get_rig_adapter(BSC09_CASE_ID).roles[0].raw_artifacts
+    if not isinstance(artifacts, list) or len(artifacts) != len(contract):
+        raise RunnerError(code, "BSC-09 raw artifact manifest is incomplete")
+    digests: dict[str, str] = {}
+    for raw, expected in zip(artifacts, contract, strict=True):
+        row = require_exact_object(
+            raw,
+            {"role", "filename", "size_bytes", "sha256"},
+            code=code,
+            label="BSC-09 raw artifact",
+        )
+        size_bytes = row.get("size_bytes")
+        digest = require_sha256(
+            row.get("sha256"), code=code, label=f"BSC-09 {expected.role} raw artifact"
+        )
+        if (
+            row.get("role") != expected.role
+            or row.get("filename") != expected.filename
+            or type(size_bytes) is not int
+            or not 1 <= size_bytes <= expected.maximum_bytes
+        ):
+            raise RunnerError(code, "BSC-09 raw artifact role, filename, or size is invalid")
+        digests[expected.role] = digest
+    manifest_commitment = require_sha256(
+        manifest.get("manifest_commitment_sha256"),
+        code=code,
+        label="BSC-09 raw artifact manifest",
+    )
+    if (
+        type(manifest.get("schema_version")) is not int
+        or manifest.get("schema_version") != 1
+        or manifest.get("role_id") != role_id
+        or manifest.get("request_commitment_sha256") != request_sha256
+        or len(set(digests.values())) != len(digests)
+        or not secrets.compare_digest(manifest_commitment, bsc09_raw_manifest_commitment(manifest))
+    ):
+        raise RunnerError(code, "BSC-09 raw artifact manifest binding is invalid")
+    return digests
+
+
+def validate_bsc09_facts(
+    value: object,
+    *,
+    lifecycle: Mapping[str, object],
+    browser: Mapping[str, object],
+    heap: Mapping[str, object],
+    wifi_mode: Mapping[str, object],
+) -> None:
+    code = "case_record_invalid"
+    facts = require_exact_object(
+        value,
+        set(BSC09_FACT_IDS),
+        code=code,
+        label="BSC-09 derived facts",
+    )
+    expected = {
+        "maintenance-snapshot-stable": True,
+        "ui-snapshot-stable": True,
+        "consumer-generations-isolated": True,
+        "retry-succeeded": True,
+        "spinner-terminated": True,
+        "wifi-mode-settled": True,
+        "accumulating-scan-heap-loss-observed": False,
+    }
+    if any(type(facts.get(fact_id)) is not bool for fact_id in BSC09_FACT_IDS):
+        raise RunnerError(code, "BSC-09 facts must be typed booleans")
+    if facts != expected:
+        raise RunnerError(code, "BSC-09 facts do not match the typed observations")
+    lifecycle_elapsed = lifecycle.get("elapsed_ms")
+    browser_elapsed = browser.get("elapsed_ms")
+    if (
+        not isinstance(lifecycle_elapsed, list)
+        or not isinstance(browser_elapsed, list)
+        or browser_elapsed[0] != lifecycle_elapsed[1]
+        or browser_elapsed[2] != lifecycle_elapsed[2]
+        or browser_elapsed[5] != lifecycle_elapsed[3]
+        or browser_elapsed[-1] < lifecycle_elapsed[-1]
+        or heap.get("released_free_bytes", 0) < heap.get("before_free_bytes", 1)
+        or type(wifi_mode.get("settled_elapsed_ms")) is not int
+        or wifi_mode["settled_elapsed_ms"] < lifecycle_elapsed[-1]
+    ):
+        raise RunnerError(code, "BSC-09 aggregate facts are not traceable to the captured events")
+
+
+def validate_bsc09_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "run_index",
+            "session_id",
+            "attempt_id",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "qualification_profile",
+            "case_descriptor",
+            "case_descriptor_sha256",
+            "adapter_request_sha256",
+            "started_at_utc",
+            "completed_at_utc",
+            "duration_ms",
+            "dut_capabilities",
+            "rig_capabilities",
+            "firmware",
+            "stimuli",
+            "scan_lifecycle",
+            "browser_trace",
+            "barriers",
+            "heap_trace",
+            "wifi_mode_trace",
+            "health",
+            "facts",
+            "capture_commitments",
+            "raw_artifact_manifest",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-09 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role_id",
+        "run_index",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+        "qualification_profile",
+        "case_descriptor",
+        "case_descriptor_sha256",
+        "adapter_request_sha256",
+        "dut_capabilities",
+        "rig_capabilities",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-09 {field} does not match the runner invocation")
+    if (
+        type(record.get("schema_version")) is not int
+        or record.get("schema_version") != 1
+        or type(record.get("run_index")) is not int
+        or not 1 <= record["run_index"] <= BSC09_REQUIRED_RUNS
+        or type(record.get("hardware_observed")) is not bool
+        or record.get("execution_mode") not in {"simulated", "physical"}
+        or not isinstance(record.get("dut_capabilities"), list)
+        or not isinstance(record.get("rig_capabilities"), list)
+    ):
+        raise RunnerError(code, "BSC-09 record identity types are invalid")
+    case_descriptor = expected.get("case_descriptor")
+    if not isinstance(case_descriptor, dict):
+        raise RunnerError(code, "BSC-09 expected descriptor is invalid")
+    descriptor_sha = bsc09_descriptor_commitment(case_descriptor)
+    request_sha = bsc09_adapter_request_commitment(expected)
+    if (
+        expected.get("case_descriptor_sha256") != descriptor_sha
+        or record.get("case_descriptor_sha256") != descriptor_sha
+        or expected.get("adapter_request_sha256") != request_sha
+        or record.get("adapter_request_sha256") != request_sha
+    ):
+        raise RunnerError(code, "BSC-09 profile, descriptor, or request binding is invalid")
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-09 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-09 completion")
+    duration_ms = record.get("duration_ms")
+    actual_duration_ms = int((completed - started).total_seconds() * 1_000)
+    if (
+        completed <= started
+        or type(duration_ms) is not int
+        or duration_ms != actual_duration_ms
+        or not 1 <= duration_ms <= BSC09_ADAPTER_TIMEOUT_SECONDS * 1_000
+    ):
+        raise RunnerError(code, "BSC-09 UTC duration binding is invalid")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-09 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=999999):
+        raise RunnerError(code, "BSC-09 physical record postdates adapter execution")
+    captures = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC09_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-09 capture commitments",
+    )
+    capture_digests = {
+        field: require_sha256(captures.get(field), code=code, label=f"BSC-09 {field}")
+        for field in BSC09_CAPTURE_COMMITMENTS
+    }
+    if len(set(capture_digests.values())) != len(capture_digests):
+        raise RunnerError(code, "BSC-09 capture roles reused the same artifact")
+    raw_digests = validate_bsc09_raw_manifest(
+        record.get("raw_artifact_manifest"),
+        role_id=str(expected["role_id"]),
+        request_sha256=request_sha,
+    )
+    if any(
+        capture_digests[capture_field] != raw_digests[raw_role]
+        for raw_role, capture_field in BSC09_RAW_CAPTURE_FIELDS.items()
+    ):
+        raise RunnerError(code, "BSC-09 capture commitments are not bound to the raw manifest")
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {
+            "environment",
+            "build_kind",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+            "capture_sha256",
+        },
+        code=code,
+        label="BSC-09 firmware",
+    )
+    if (
+        firmware.get("environment") != BSC09_PRODUCTION_ENVIRONMENT
+        or firmware.get("build_kind") != "production"
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or type(firmware.get("hil_fault_control_active")) is not bool
+        or firmware.get("hil_fault_control_active") is not False
+        or require_sha256(
+            firmware.get("capture_sha256"), code=code, label="BSC-09 firmware build capture"
+        )
+        != capture_digests["firmware_build_sha256"]
+    ):
+        raise RunnerError(code, "BSC-09 firmware build, target, or capture is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-09 firmware binary")
+    stimuli = validate_bsc09_stimuli(record.get("stimuli"), duration_ms=duration_ms)
+    lifecycle = validate_bsc09_lifecycle(record.get("scan_lifecycle"), duration_ms=duration_ms)
+    browser = validate_bsc09_browser_trace(record.get("browser_trace"), duration_ms=duration_ms)
+    validate_bsc09_barriers(record.get("barriers"), lifecycle=lifecycle)
+    heap = validate_bsc09_heap(
+        record.get("heap_trace"), lifecycle=lifecycle, duration_ms=duration_ms
+    )
+    wifi_mode = validate_bsc09_wifi_mode(
+        record.get("wifi_mode_trace"), lifecycle=lifecycle, duration_ms=duration_ms
+    )
+    health = validate_bsc09_health(record.get("health"))
+    lifecycle_elapsed = lifecycle["elapsed_ms"]
+    browser_elapsed = browser["elapsed_ms"]
+    assert isinstance(lifecycle_elapsed, list) and isinstance(browser_elapsed, list)
+    if (
+        stimuli["start-maintenance-autoconnect"] != lifecycle_elapsed[0]
+        or stimuli["open-scan-modal"] != browser_elapsed[0]
+        or stimuli["close-scan-modal"] != browser_elapsed[1]
+        or stimuli["reopen-scan-modal"] != browser_elapsed[2]
+        or stimuli["drop-one-status-poll"] != browser_elapsed[3]
+        or stimuli["retry-status-poll"] != browser_elapsed[5]
+        or lifecycle["capture_sha256"] != capture_digests["wifi_scan_trace_sha256"]
+        or browser["capture_sha256"] != capture_digests["browser_trace_sha256"]
+        or heap["capture_sha256"] != capture_digests["heap_trace_sha256"]
+        or wifi_mode["capture_sha256"] != capture_digests["wifi_mode_trace_sha256"]
+        or health["capture_sha256"] != capture_digests["serial_log_sha256"]
+    ):
+        raise RunnerError(code, "BSC-09 stimuli or observations are not bound to their captures")
+    validate_bsc09_facts(
+        record.get("facts"),
+        lifecycle=lifecycle,
+        browser=browser,
+        heap=heap,
+        wifi_mode=wifi_mode,
+    )
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-09 evidence binding"
+    )
+    if not secrets.compare_digest(binding, bsc09_record_commitment(record)):
+        raise RunnerError(code, "BSC-09 exact record commitment is stale")
+    return record
+
+
+def validate_bsc09_runs(records: Sequence[Mapping[str, object]]) -> None:
+    if len(records) != BSC09_REQUIRED_RUNS:
+        raise RunnerError("case_runs_incomplete", "BSC-09 requires exactly three records")
+    if [record.get("run_index") for record in records] != [1, 2, 3]:
+        raise RunnerError("case_runs_reused", "BSC-09 run indices are incomplete or reused")
+    if len({record.get("session_id") for record in records}) != 1:
+        raise RunnerError("case_runs_reused", "BSC-09 records escaped their collection session")
+    for field in ("attempt_id", "evidence_binding_sha256"):
+        if len({record.get(field) for record in records}) != BSC09_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", f"BSC-09 {field} values must be distinct")
+    generations: list[object] = []
+    manifest_bindings: list[object] = []
+    before_heap: list[int] = []
+    released_heap: list[int] = []
+    capture_values: dict[str, list[object]] = {field: [] for field in BSC09_CAPTURE_COMMITMENTS}
+    for record in records:
+        lifecycle = record.get("scan_lifecycle")
+        manifest = record.get("raw_artifact_manifest")
+        captures = record.get("capture_commitments")
+        if not isinstance(lifecycle, dict) or not isinstance(manifest, dict) or not isinstance(captures, dict):
+            raise RunnerError("case_runs_reused", "BSC-09 aggregate record shape is invalid")
+        events = lifecycle.get("events")
+        if not isinstance(events, list) or not events or not isinstance(events[0], dict):
+            raise RunnerError("case_runs_reused", "BSC-09 aggregate lifecycle shape is invalid")
+        generations.append(events[0].get("generation"))
+        manifest_bindings.append(manifest.get("manifest_commitment_sha256"))
+        for field in BSC09_CAPTURE_COMMITMENTS:
+            capture_values[field].append(captures.get(field))
+        heap_trace = record.get("heap_trace")
+        if not isinstance(heap_trace, dict) or not isinstance(heap_trace.get("samples"), list):
+            raise RunnerError("case_runs_reused", "BSC-09 aggregate heap shape is invalid")
+        heap_samples = heap_trace["samples"]
+        if (
+            len(heap_samples) != 3
+            or not isinstance(heap_samples[0], dict)
+            or not isinstance(heap_samples[2], dict)
+            or type(heap_samples[0].get("free_heap_bytes")) is not int
+            or type(heap_samples[2].get("free_heap_bytes")) is not int
+        ):
+            raise RunnerError("case_runs_reused", "BSC-09 aggregate heap samples are invalid")
+        before_heap.append(heap_samples[0]["free_heap_bytes"])
+        released_heap.append(heap_samples[2]["free_heap_bytes"])
+    if len(set(generations)) != BSC09_REQUIRED_RUNS:
+        raise RunnerError("case_runs_reused", "BSC-09 physical scan generations must be distinct")
+    if len(set(manifest_bindings)) != BSC09_REQUIRED_RUNS:
+        raise RunnerError("case_runs_reused", "BSC-09 raw manifests must be distinct")
+    for field, values in capture_values.items():
+        if len(set(values)) != BSC09_REQUIRED_RUNS:
+            raise RunnerError("case_runs_reused", f"BSC-09 {field} captures must be distinct")
+    if any(released < before for before, released in zip(before_heap, released_heap, strict=True)):
+        raise RunnerError("case_runs_reused", "BSC-09 a scan run retained heap after release")
+    if released_heap[-1] < released_heap[0]:
+        raise RunnerError("case_runs_reused", "BSC-09 scan heap loss accumulated across runs")
+
+
+def run_bsc09_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    profile = expected["qualification_profile"]
+    assert isinstance(profile, dict)
+    command = [
+        str(adapter),
+        "--case",
+        BSC09_CASE_ID,
+        "--role-id",
+        str(expected["role_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--profile-id",
+        str(profile["profile_id"]),
+        "--profile-version",
+        str(profile["profile_version"]),
+        "--profile-sha256",
+        str(profile["profile_sha256"]),
+        "--case-descriptor-sha256",
+        str(expected["case_descriptor_sha256"]),
+        "--adapter-request-sha256",
+        str(expected["adapter_request_sha256"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC09_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-09 adapter exceeded its timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-09 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-09 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > BSC09_MAX_RECORD_BYTES:
+        raise RunnerError("case_record_invalid", "BSC-09 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-09 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc09_adapter_record(
+        payload,
+        expected=expected,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
 def run_bsc09_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-09")
+    case_descriptor = load_bsc09_case_descriptor()
+    role_descriptor = case_descriptor["scenario"]
+    assert isinstance(role_descriptor, dict)
+    if args.runs != BSC09_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-09 requires exactly three runs")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-09 requires an opaque local rig alias")
+    if args.resume or args.production_replay:
+        raise RunnerError("unsupported_mode", "BSC-09 has one atomic production collection role")
+    admit_case_rig_adapter(
+        args,
+        case_contract=case_descriptor,
+        role_id=str(role_descriptor["role_id"]),
+    )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-09 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-09 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-09 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc09_hardware(
+        args, Path(args.pio_command), case_descriptor
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-09 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-09 serial endpoint is not present")
+
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc09-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / run_id
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-09 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc09-{secrets.token_hex(16)}"
+    descriptor_sha = bsc09_descriptor_commitment(case_descriptor)
+    profile_binding: dict[str, object] = {
+        "profile_id": BSC09_PROFILE_ID,
+        "profile_version": BSC09_PROFILE_VERSION,
+        "profile_sha256": qualification.PINNED_PROFILE_SHA256,
+    }
+    records: list[dict[str, object]] = []
+    attempts: list[dict[str, object]] = []
+    for run_index in range(1, BSC09_REQUIRED_RUNS + 1):
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        expected: dict[str, object] = {
+            "case_id": BSC09_CASE_ID,
+            "role_id": role_descriptor["role_id"],
+            "run_index": run_index,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "target_sha": git_state.head_sha,
+            "dut_alias": args.board,
+            "rig_alias": args.rig,
+            "execution_mode": "simulated",
+            "hardware_observed": False,
+            "qualification_profile": profile_binding,
+            "case_descriptor": case_descriptor,
+            "case_descriptor_sha256": descriptor_sha,
+            "dut_capabilities": list(BSC09_DUT_CAPABILITIES),
+            "rig_capabilities": list(BSC09_RIG_CAPABILITIES),
+        }
+        expected["adapter_request_sha256"] = bsc09_adapter_request_commitment(expected)
+        require_unchanged_git_state(repository, git_state)
+        record = run_bsc09_adapter(
+            adapter=adapter,
+            repository=repository,
+            serial_port=serial_port,
+            expected=expected,
+            environment=os.environ.copy(),
+        )
+        require_unchanged_git_state(repository, git_state)
+        attempt_path = run_root / f"attempt-{run_index}.json"
+        write_json_atomic(attempt_path, record)
+        records.append(record)
+        attempts.append(
+            {
+                "run_index": run_index,
+                "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+                "record_sha256": sha256_file(attempt_path),
+                "scan_generation": record["scan_lifecycle"]["events"][0]["generation"],
+            }
+        )
+    validate_bsc09_runs(records)
+    firmware = records[0]["firmware"]
+    assert isinstance(firmware, dict)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc09-wifi-dual-consumer-scan",
+        "case_id": BSC09_CASE_ID,
+        "collection_role": role_descriptor["role_id"],
+        "case_descriptor_sha256": descriptor_sha,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC09_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC09_REQUIRED_RUNS,
+        "runs_completed": len(records),
+        "production_replay_required": False,
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "build_kind": firmware["build_kind"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "attempts": attempts,
+        "artifact_sha256": {
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc09.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc09.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

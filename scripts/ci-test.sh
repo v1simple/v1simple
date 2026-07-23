@@ -133,6 +133,7 @@ run_step "Bug-squash HIL case-driver registry tests" python3 scripts/test_bug_sq
 run_step "Bug-squash HIL rig-adapter registry tests" python3 scripts/test_bug_squash_hil_rig_adapters.py
 run_step "Bug-squash HIL adapter protocol tests" python3 scripts/test_bug_squash_hil_adapter_protocol.py
 run_step "Bug-squash HIL runner regression tests" python3 scripts/test_bug_squash_hil_runner.py
+run_step "BSC-09 typed collector regression tests" python3 scripts/test_bug_squash_hil_bsc09.py
 run_step "HIL fault-control exclusion regression tests" python3 scripts/test_check_bug_squash_hil_fault_controls.py
 run_step "HIL fault-control authoritative build gate" python3 scripts/check_bug_squash_hil_fault_controls.py
 run_step "HIL board resolver regression tests" python3 scripts/test_resolve_hil_board.py

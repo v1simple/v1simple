@@ -71,6 +71,22 @@ class RigAdapterRegistryTests(unittest.TestCase):
             ),
         )
 
+    def test_bsc09_capture_contract_has_exact_case_specific_limits(self) -> None:
+        role = adapters.get_rig_adapter("BSC-09").roles[0]
+        self.assertEqual(
+            tuple((item.role, item.filename, item.maximum_bytes) for item in role.raw_artifacts),
+            (
+                ("browser-trace", "browser-trace.json", 4 * 1024 * 1024),
+                ("firmware-build", "firmware-build.json", 1024 * 1024),
+                ("heap-trace", "heap-trace.json", 2 * 1024 * 1024),
+                ("serial-log", "serial.log", 16 * 1024 * 1024),
+                ("wifi-mode-trace", "wifi-mode-trace.json", 1024 * 1024),
+                ("wifi-scan-trace", "wifi-scan-trace.jsonl", 4 * 1024 * 1024),
+            ),
+        )
+        self.assertIsNone(adapters.get_rig_adapter("BSC-09").source_path)
+        self.assertIsNone(adapters.get_rig_adapter("BSC-09").entrypoint)
+
     def test_every_profile_role_run_and_capability_contract_matches(self) -> None:
         profile, errors = qualification.load_pinned_profile()
         self.assertEqual(errors, [])

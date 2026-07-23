@@ -100,11 +100,20 @@ BSC08_RAW_ARTIFACTS = (
     RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
     RawArtifactContract("v1-peer-receipts", "v1-peer-receipts.jsonl", 8 * 1024 * 1024),
 )
+BSC09_RAW_ARTIFACTS = (
+    RawArtifactContract("browser-trace", "browser-trace.json", 4 * 1024 * 1024),
+    RawArtifactContract("firmware-build", "firmware-build.json", 1024 * 1024),
+    RawArtifactContract("heap-trace", "heap-trace.json", 2 * 1024 * 1024),
+    RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
+    RawArtifactContract("wifi-mode-trace", "wifi-mode-trace.json", 1024 * 1024),
+    RawArtifactContract("wifi-scan-trace", "wifi-scan-trace.jsonl", 4 * 1024 * 1024),
+)
 
 RAW_ARTIFACTS_BY_CASE: Mapping[str, tuple[RawArtifactContract, ...]] = MappingProxyType(
     {
         "BSC-07": BSC07_RAW_ARTIFACTS,
         "BSC-08": BSC08_RAW_ARTIFACTS,
+        "BSC-09": BSC09_RAW_ARTIFACTS,
         "BSC-12": BSC12_RAW_ARTIFACTS,
     }
 )
@@ -235,6 +244,7 @@ _ADAPTERS = (
         dut=("firmware-execution", "maintenance-mode", "serial", "wifi-scan"),
         rig=("artifact-capture", "browser-client", "multiple-access-points", "utc-time-source"),
         roles=(("wifi-dual-consumer-scan", "production"),),
+        raw_artifacts=BSC09_RAW_ARTIFACTS,
     ),
     _adapter(
         "BSC-10",

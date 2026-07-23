@@ -73,6 +73,15 @@ RAW_ARTIFACTS = (
     RawArtifactContract("safety-summary", "safety-summary.json", 1024 * 1024),
     RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
 )
+BSC12_RAW_ARTIFACTS = (
+    RawArtifactContract("firmware-build", "firmware-build.json", 1024 * 1024),
+    RawArtifactContract("persistence-after", "persistence-after.json", 512 * 1024),
+    RawArtifactContract("persistence-before", "persistence-before.json", 512 * 1024),
+    RawArtifactContract("power-reset-trace", "power-reset-trace.json", 2 * 1024 * 1024),
+    RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
+    RawArtifactContract("shutdown-timeline", "shutdown-timeline.json", 2 * 1024 * 1024),
+    RawArtifactContract("wake-input-trace", "wake-input-trace.json", 2 * 1024 * 1024),
+)
 
 BSC07_RAW_ARTIFACTS = (
     RawArtifactContract("ap-traffic", "ap-traffic.json", 2 * 1024 * 1024),
@@ -240,6 +249,7 @@ _ADAPTERS = (
             "wake-input-control",
         ),
         roles=(("aborted-shutdown-recovery", "production"),),
+        raw_artifacts=BSC12_RAW_ARTIFACTS,
     ),
     _adapter(
         "BSC-13",
@@ -335,7 +345,10 @@ def validate_adapter_descriptor(adapter: RigAdapter) -> None:
         if role.firmware_environment != _environment_for(role.build_kind):
             raise RigAdapterContractError("rig-adapter firmware environment is inconsistent")
         _validate_raw_artifacts(role.raw_artifacts)
-        expected_artifacts = BSC07_RAW_ARTIFACTS if adapter.case_id == "BSC-07" else RAW_ARTIFACTS
+        expected_artifacts = {
+            "BSC-07": BSC07_RAW_ARTIFACTS,
+            "BSC-12": BSC12_RAW_ARTIFACTS,
+        }.get(adapter.case_id, RAW_ARTIFACTS)
         if role.raw_artifacts != expected_artifacts:
             raise RigAdapterContractError("rig-adapter raw-artifact contract drifted")
     if adapter.status not in {"unavailable", "implemented"}:

@@ -32,12 +32,14 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 self.assertIsNone(adapter.entrypoint)
                 self.assertEqual(adapter.protocol_version, adapters.ADAPTER_PROTOCOL_VERSION)
                 for role in adapter.roles:
-                    self.assertEqual(
-                        role.raw_artifacts,
+                    expected = (
                         adapters.BSC07_RAW_ARTIFACTS
                         if adapter.case_id == "BSC-07"
-                        else adapters.RAW_ARTIFACTS,
+                        else adapters.BSC12_RAW_ARTIFACTS
+                        if adapter.case_id == "BSC-12"
+                        else adapters.RAW_ARTIFACTS
                     )
+                    self.assertEqual(role.raw_artifacts, expected)
         with self.assertRaises(FrozenInstanceError):
             adapters.ADAPTERS[0].status = "implemented"  # type: ignore[misc]
         with self.assertRaises(TypeError):
@@ -54,6 +56,21 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 ("reset-summary", "reset-summary.json"),
                 ("serial-log", "serial.log"),
                 ("ui-health", "ui-health.json"),
+            ),
+        )
+
+    def test_bsc12_capture_contract_has_exact_case_specific_limits(self) -> None:
+        role = adapters.get_rig_adapter("BSC-12").roles[0]
+        self.assertEqual(
+            tuple((item.role, item.filename, item.maximum_bytes) for item in role.raw_artifacts),
+            (
+                ("firmware-build", "firmware-build.json", 1024 * 1024),
+                ("persistence-after", "persistence-after.json", 512 * 1024),
+                ("persistence-before", "persistence-before.json", 512 * 1024),
+                ("power-reset-trace", "power-reset-trace.json", 2 * 1024 * 1024),
+                ("serial-log", "serial.log", 16 * 1024 * 1024),
+                ("shutdown-timeline", "shutdown-timeline.json", 2 * 1024 * 1024),
+                ("wake-input-trace", "wake-input-trace.json", 2 * 1024 * 1024),
             ),
         )
 

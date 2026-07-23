@@ -148,6 +148,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
                             "usb-source",
                             "v1-peer",
                             "vbus-isolation",
+                            "wake-input-control",
                         ],
                     }
                 ],
@@ -2258,6 +2259,482 @@ if mutation == 'capture-stale-binding-tamper':
 sys.stdout.write(json.dumps(payload))
 """,
     )
+    bsc12_adapter = root / "fake-bsc12-adapter.py"
+    write_executable(
+        bsc12_adapter,
+        """#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+def commitment(payload):
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(b'v1simple.bsc12.case-record.v1\\0' + canonical.encode('utf-8')).hexdigest()
+
+case_descriptor = {
+    'fault_build_required': False,
+    'id': 'BSC-12',
+    'minimum_runs': 1,
+    'production_replay': None,
+    'production_replay_required': False,
+    'required_dut_capabilities': [
+        'firmware-execution', 'persistence', 'power-button', 'serial',
+    ],
+    'required_rig_capabilities': [
+        'artifact-capture', 'bond-peer', 'power-control', 'sd-media',
+        'utc-time-source', 'vbus-isolation', 'wake-input-control',
+    ],
+    'scenario': {
+        'barrier_ids': ['wake-input-asserted-during-handoff', 'writers-completed'],
+        'build_kind': 'production',
+        'facts': [
+            {'expected': True, 'id': 'poweroff-returned-false', 'type': 'boolean'},
+            {'expected': True, 'id': 'disconnected-screen-restored', 'type': 'boolean'},
+            {'expected': True, 'id': 'session-marker-unclean-after-reset', 'type': 'boolean'},
+            {'id': 'settings-writer-count', 'maximum': 1, 'minimum': 1, 'type': 'integer'},
+            {'id': 'bond-writer-count', 'maximum': 1, 'minimum': 1, 'type': 'integer'},
+            {'expected': True, 'id': 'setting-survived-reset', 'type': 'boolean'},
+            {'expected': True, 'id': 'bond-survived-reset', 'type': 'boolean'},
+            {'expected': True, 'id': 'real-rtc-wake-input-observed', 'type': 'boolean'},
+        ],
+        'fault_ids': [],
+        'reset_contract': {
+            'expected_count': 1, 'expected_kind': 'forced-reset', 'unexpected_count': 0,
+        },
+        'role_id': 'aborted-shutdown-recovery',
+        'schema': 'case-observation-v1',
+        'stimulus_ids': [
+            'begin-portable-shutdown', 'assert-wake-input', 'mutate-setting',
+            'mutate-bond', 'wait-for-writers', 'force-reset',
+        ],
+        'vbus_isolation_required': True,
+    },
+}
+role = case_descriptor['scenario']
+mutation = os.environ.get('FAKE_BSC12_MUTATION', '')
+now = datetime.now(timezone.utc)
+started = now - timedelta(seconds=10)
+stimulus_times = (100, 200, 350, 450, 550, 900)
+stimuli = [
+    {'id': stimulus_id, 'sequence': sequence, 'elapsed_ms': elapsed_ms, 'result': 'pass'}
+    for sequence, (stimulus_id, elapsed_ms) in enumerate(
+        zip(role['stimulus_ids'], stimulus_times), start=1
+    )
+]
+barriers = [
+    {
+        'id': 'wake-input-asserted-during-handoff',
+        'source': 'rtc-gpio-wake-input',
+        'sequence': 1,
+        'ready_elapsed_ms': 150,
+        'released_elapsed_ms': 250,
+        'timed_out': False,
+    },
+    {
+        'id': 'writers-completed',
+        'source': 'shutdown-persistence-writers',
+        'sequence': 2,
+        'ready_elapsed_ms': 550,
+        'released_elapsed_ms': 700,
+        'timed_out': False,
+    },
+]
+shutdown = {
+    'shutdown_begin_elapsed_ms': 100,
+    'handoff_begin_elapsed_ms': 150,
+    'wake_asserted_elapsed_ms': 200,
+    'power_off_return_elapsed_ms': 250,
+    'screen_restored_elapsed_ms': 260,
+    'marker_rewritten_elapsed_ms': 270,
+    'wake_input_source': 'rtc-gpio-wake-input',
+    'wake_trigger': 'active-low',
+    'real_rtc_wake_input': True,
+    'power_off_result': False,
+    'screen_state': 'disconnected',
+    'marker_state': 'unclean',
+}
+safety = {
+    'source': 'rig-power-reset-trace',
+    'vbus_isolated': True,
+    'vbus_verified_elapsed_ms': 50,
+    'destructive_reset_triggered': True,
+}
+writers = [
+    {
+        'writer_id': 'settings',
+        'source': 'deferred-settings-backup-writer',
+        'sequence': 1,
+        'mutation_elapsed_ms': 350,
+        'completion_elapsed_ms': 650,
+        'completion_count': 1,
+        'duplicate_count': 0,
+        'lost_count': 0,
+        'stalled': False,
+    },
+    {
+        'writer_id': 'bond',
+        'source': 'ble-bond-backup-writer',
+        'sequence': 2,
+        'mutation_elapsed_ms': 450,
+        'completion_elapsed_ms': 700,
+        'completion_count': 1,
+        'duplicate_count': 0,
+        'lost_count': 0,
+        'stalled': False,
+    },
+]
+setting_digest = digest('bsc12-setting-mutation')
+bond_digest = digest('bsc12-bond-mutation')
+persistence = {
+    'source': 'post-reset-persistence-readback',
+    'setting_mutation_sha256': setting_digest,
+    'setting_after_reset_sha256': setting_digest,
+    'bond_mutation_sha256': bond_digest,
+    'bond_after_reset_sha256': bond_digest,
+    'session_marker_after_reset': 'unclean',
+    'before_readback_elapsed_ms': 800,
+    'after_readback_elapsed_ms': 1200,
+}
+reset = {
+    'expected_kind': 'forced-reset',
+    'source': 'rig-forced-reset',
+    'planned': 1,
+    'observed': 1,
+    'unexpected': 0,
+    'forced_elapsed_ms': 900,
+    'boot_observed_elapsed_ms': 1100,
+    'panic_observed': False,
+    'watchdog_reset_observed': False,
+    'load_prohibited_observed': False,
+}
+facts = {
+    'poweroff-returned-false': True,
+    'disconnected-screen-restored': True,
+    'session-marker-unclean-after-reset': True,
+    'settings-writer-count': 1,
+    'bond-writer-count': 1,
+    'setting-survived-reset': True,
+    'bond-survived-reset': True,
+    'real-rtc-wake-input-observed': True,
+}
+
+if mutation == 'descriptor':
+    case_descriptor['required_dut_capabilities'].append('invented-capability')
+if mutation == 'stimulus-missing':
+    stimuli.pop()
+if mutation == 'stimulus-order':
+    stimuli[0], stimuli[1] = stimuli[1], stimuli[0]
+if mutation == 'stimulus-negative':
+    stimuli[0]['elapsed_ms'] = -1
+if mutation == 'stimulus-duration':
+    stimuli[-1]['elapsed_ms'] = 11000
+if mutation == 'barrier-id':
+    barriers[0]['id'] = 'invented-barrier'
+if mutation == 'barrier-source':
+    barriers[0]['source'] = 'invented-source'
+if mutation == 'barrier-order':
+    barriers[1]['sequence'] = 1
+if mutation == 'barrier-timing':
+    barriers[0]['released_elapsed_ms'] = 100
+if mutation == 'barrier-timeout':
+    barriers[0]['timed_out'] = True
+if mutation == 'barrier-duration':
+    barriers[1]['released_elapsed_ms'] = 11000
+if mutation == 'handoff-order':
+    shutdown['wake_asserted_elapsed_ms'] = 260
+if mutation == 'wake-source':
+    shutdown['wake_input_source'] = 'invented-source'
+if mutation == 'wake-trigger':
+    shutdown['wake_trigger'] = 'active-high'
+if mutation == 'wake-not-real':
+    shutdown['real_rtc_wake_input'] = False
+if mutation == 'wake-bool-int':
+    shutdown['real_rtc_wake_input'] = 1
+if mutation == 'poweroff-result':
+    shutdown['power_off_result'] = True
+if mutation == 'poweroff-bool-int':
+    shutdown['power_off_result'] = 0
+if mutation == 'screen-state':
+    shutdown['screen_state'] = 'goodbye'
+if mutation == 'marker-state':
+    shutdown['marker_state'] = 'clean'
+if mutation == 'marker-timing':
+    shutdown['marker_rewritten_elapsed_ms'] = 400
+if mutation == 'writer-missing':
+    writers.pop()
+if mutation == 'writer-source':
+    writers[0]['source'] = 'invented-writer'
+if mutation == 'writer-count-zero':
+    writers[0]['completion_count'] = 0
+if mutation == 'writer-count-two':
+    writers[0]['completion_count'] = 2
+if mutation == 'writer-duplicate':
+    writers[0]['duplicate_count'] = 1
+if mutation == 'writer-lost':
+    writers[0]['lost_count'] = 1
+if mutation == 'writer-stalled':
+    writers[0]['stalled'] = True
+if mutation == 'writer-stalled-int':
+    writers[0]['stalled'] = 0
+if mutation == 'writer-completion-timing':
+    writers[0]['completion_elapsed_ms'] = 901
+if mutation == 'writer-mutation-timing':
+    writers[0]['mutation_elapsed_ms'] = 351
+if mutation == 'persistence-source':
+    persistence['source'] = 'invented-source'
+if mutation == 'setting-lost':
+    persistence['setting_after_reset_sha256'] = digest('lost-setting')
+if mutation == 'bond-lost':
+    persistence['bond_after_reset_sha256'] = digest('lost-bond')
+if mutation == 'post-reset-marker':
+    persistence['session_marker_after_reset'] = 'clean'
+if mutation == 'persistence-digest':
+    persistence['setting_after_reset_sha256'] = 'invalid'
+if mutation == 'reset-kind':
+    reset['expected_kind'] = 'hard-reset'
+if mutation == 'reset-source':
+    reset['source'] = 'invented-source'
+if mutation == 'reset-planned':
+    reset['planned'] = 0
+if mutation == 'reset-observed':
+    reset['observed'] = 0
+if mutation == 'reset-unexpected':
+    reset['unexpected'] = 1
+if mutation == 'reset-forced-timing':
+    reset['forced_elapsed_ms'] = 899
+if mutation == 'reset-boot-timing':
+    reset['boot_observed_elapsed_ms'] = 900
+if mutation == 'panic':
+    reset['panic_observed'] = True
+if mutation == 'watchdog':
+    reset['watchdog_reset_observed'] = True
+if mutation == 'load-prohibited':
+    reset['load_prohibited_observed'] = True
+if mutation == 'panic-int':
+    reset['panic_observed'] = 0
+if mutation.startswith('fact-'):
+    fact_id = {
+        'fact-poweroff': 'poweroff-returned-false',
+        'fact-screen': 'disconnected-screen-restored',
+        'fact-marker': 'session-marker-unclean-after-reset',
+        'fact-settings-writer': 'settings-writer-count',
+        'fact-bond-writer': 'bond-writer-count',
+        'fact-setting': 'setting-survived-reset',
+        'fact-bond': 'bond-survived-reset',
+        'fact-wake': 'real-rtc-wake-input-observed',
+    }[mutation]
+    facts[fact_id] = 2 if fact_id.endswith('writer-count') else False
+
+raw_root = Path(argument('--raw-artifact-dir'))
+raw_root.mkdir(parents=True, exist_ok=True)
+firmware_record = {
+    'environment': 'waveshare-349',
+    'build_kind': 'production',
+    'target_sha': argument('--target-sha'),
+    'binary_sha256': digest('bsc12-production-binary'),
+    'hil_fault_control_active': False,
+}
+raw_payloads = {
+    'firmware-build.json': {
+        'schema_version': 1,
+        'source': 'platformio-production-build',
+        'firmware': firmware_record,
+    },
+    'persistence-before.json': {
+        'schema_version': 1,
+        'source': 'pre-reset-persistence-readback',
+        'captured_elapsed_ms': persistence['before_readback_elapsed_ms'],
+        'setting_sha256': persistence['setting_mutation_sha256'],
+        'bond_sha256': persistence['bond_mutation_sha256'],
+        'session_marker': 'unclean',
+    },
+    'persistence-after.json': {
+        'schema_version': 1,
+        'source': 'post-reset-persistence-readback',
+        'captured_elapsed_ms': persistence['after_readback_elapsed_ms'],
+        'setting_sha256': persistence['setting_after_reset_sha256'],
+        'bond_sha256': persistence['bond_after_reset_sha256'],
+        'session_marker': persistence['session_marker_after_reset'],
+    },
+    'power-reset-trace.json': {
+        'schema_version': 1,
+        'source': 'rig-power-reset-trace',
+        'vbus_isolated': True,
+        'vbus_verified_elapsed_ms': 50,
+        'forced_reset_edges_elapsed_ms': [reset['forced_elapsed_ms']],
+    },
+    'shutdown-timeline.json': {
+        'schema_version': 1,
+        'source': 'dut-serial-timeline',
+        **{
+            field: shutdown[field]
+            for field in (
+                'shutdown_begin_elapsed_ms', 'handoff_begin_elapsed_ms',
+                'power_off_return_elapsed_ms', 'screen_restored_elapsed_ms',
+                'marker_rewritten_elapsed_ms', 'power_off_result', 'screen_state', 'marker_state',
+            )
+        },
+    },
+    'wake-input-trace.json': {
+        'schema_version': 1,
+        'source': 'rtc-gpio-wake-input',
+        'trigger': 'active-low',
+        'asserted_elapsed_ms': 200,
+        'deasserted_elapsed_ms': 240,
+        'observed_during_handoff': True,
+    },
+}
+serial_events = [
+    {'event': 'shutdown-begin', 'elapsed_ms': 100},
+    {'event': 'handoff-begin', 'elapsed_ms': 150},
+    {'event': 'wake-asserted', 'elapsed_ms': 200},
+    {'event': 'power-off-returned-false', 'elapsed_ms': 250},
+    {'event': 'screen-restored-disconnected', 'elapsed_ms': 260},
+    {'event': 'marker-rewritten-unclean', 'elapsed_ms': 270},
+    {'event': 'reset-forced', 'elapsed_ms': 900},
+    {'event': 'boot-observed', 'elapsed_ms': 1100},
+    {'event': 'setting-readback', 'elapsed_ms': 1200},
+    {'event': 'bond-readback', 'elapsed_ms': 1200},
+]
+if mutation == 'fabricated-equal-persistence':
+    raw_payloads['persistence-after.json']['setting_sha256'] = digest('actual-lost-setting')
+if mutation == 'preboot-readback':
+    persistence['after_readback_elapsed_ms'] = 1000
+    raw_payloads['persistence-after.json']['captured_elapsed_ms'] = 1000
+    serial_events[-2]['elapsed_ms'] = 1000
+    serial_events[-1]['elapsed_ms'] = 1000
+if mutation == 'assertion-only-vbus':
+    raw_payloads['power-reset-trace.json']['vbus_isolated'] = False
+if mutation == 'assertion-only-wake':
+    raw_payloads['wake-input-trace.json']['observed_during_handoff'] = False
+if mutation == 'assertion-only-reset':
+    raw_payloads['power-reset-trace.json']['forced_reset_edges_elapsed_ms'] = []
+if mutation == 'assertion-only-crash':
+    serial_events.append({'event': 'panic', 'elapsed_ms': 1250})
+
+for filename, raw_payload in raw_payloads.items():
+    (raw_root / filename).write_text(
+        json.dumps(raw_payload, separators=(',', ':'), sort_keys=True) + '\\n', encoding='utf-8'
+    )
+(raw_root / 'serial.log').write_text(
+    ''.join(json.dumps(event, separators=(',', ':'), sort_keys=True) + '\\n' for event in serial_events),
+    encoding='utf-8',
+)
+raw_roles = (
+    ('firmware-build', 'firmware-build.json', 'firmware_build_sha256'),
+    ('persistence-after', 'persistence-after.json', 'persistence_after_sha256'),
+    ('persistence-before', 'persistence-before.json', 'persistence_before_sha256'),
+    ('power-reset-trace', 'power-reset-trace.json', 'power_reset_trace_sha256'),
+    ('serial-log', 'serial.log', 'serial_log_sha256'),
+    ('shutdown-timeline', 'shutdown-timeline.json', 'shutdown_timeline_sha256'),
+    ('wake-input-trace', 'wake-input-trace.json', 'wake_input_trace_sha256'),
+)
+capture_commitments = {}
+raw_artifact_manifest = []
+for raw_role, filename, commitment_field in raw_roles:
+    data = (raw_root / filename).read_bytes()
+    capture_commitments[commitment_field] = hashlib.sha256(data).hexdigest()
+    raw_artifact_manifest.append({
+        'role': raw_role,
+        'filename': filename,
+        'bytes': len(data),
+        'sha256': capture_commitments[commitment_field],
+    })
+shutdown['shutdown_timeline_sha256'] = capture_commitments['shutdown_timeline_sha256']
+shutdown['wake_input_trace_sha256'] = capture_commitments['wake_input_trace_sha256']
+shutdown['serial_log_sha256'] = capture_commitments['serial_log_sha256']
+persistence['persistence_before_sha256'] = capture_commitments['persistence_before_sha256']
+persistence['persistence_after_sha256'] = capture_commitments['persistence_after_sha256']
+reset['power_reset_trace_sha256'] = capture_commitments['power_reset_trace_sha256']
+reset['serial_log_sha256'] = capture_commitments['serial_log_sha256']
+safety['power_reset_trace_sha256'] = capture_commitments['power_reset_trace_sha256']
+
+payload = {
+    'schema_version': 1,
+    'case_id': argument('--case'),
+    'role_id': argument('--role-id'),
+    'session_id': argument('--session-id'),
+    'attempt_id': argument('--attempt-id'),
+    'run_index': int(argument('--run-index')),
+    'target_sha': argument('--target-sha'),
+    'dut_alias': argument('--dut-alias'),
+    'rig_alias': argument('--rig-alias'),
+    'execution_mode': 'simulated',
+    'hardware_observed': False,
+    'started_at_utc': started.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'completed_at_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    'case_descriptor': case_descriptor,
+    'case_descriptor_sha256': argument('--case-descriptor-sha256'),
+    'descriptor': role,
+    'firmware': firmware_record,
+    'preconditions': {
+        'vbus_isolated': argument('--vbus-isolated') == 'true',
+        'destructive_reset_acknowledged': argument('--destructive-reset-acknowledged') == 'true',
+    },
+    'safety_observation': safety,
+    'stimuli': stimuli,
+    'barriers': barriers,
+    'shutdown_observation': shutdown,
+    'writers': writers,
+    'persistence': persistence,
+    'reset': reset,
+    'facts': facts,
+    'capture_commitments': capture_commitments,
+    'raw_artifact_manifest': raw_artifact_manifest,
+}
+if mutation == 'role':
+    payload['role_id'] = 'substituted-role'
+if mutation == 'session':
+    payload['session_id'] = 'substituted-session'
+if mutation == 'attempt':
+    payload['attempt_id'] = 'substituted-attempt'
+if mutation == 'run-index-bool':
+    payload['run_index'] = True
+if mutation == 'target':
+    payload['target_sha'] = 'f' * 40
+if mutation == 'descriptor-digest':
+    payload['case_descriptor_sha256'] = digest('wrong-descriptor')
+if mutation == 'firmware-environment':
+    payload['firmware']['environment'] = 'waveshare-349-hil'
+if mutation == 'firmware-build':
+    payload['firmware']['build_kind'] = 'hil-fault'
+if mutation == 'firmware-hil':
+    payload['firmware']['hil_fault_control_active'] = True
+if mutation == 'firmware-hil-int':
+    payload['firmware']['hil_fault_control_active'] = 0
+if mutation == 'vbus-precondition':
+    payload['preconditions']['vbus_isolated'] = False
+if mutation == 'reset-precondition':
+    payload['preconditions']['destructive_reset_acknowledged'] = False
+if mutation == 'precondition-int':
+    payload['preconditions']['vbus_isolated'] = 1
+if mutation == 'utc-duration':
+    payload['completed_at_utc'] = payload['started_at_utc']
+if mutation == 'capture-reuse':
+    payload['capture_commitments']['serial_log_sha256'] = payload['capture_commitments']['shutdown_timeline_sha256']
+if mutation == 'capture-missing':
+    payload['capture_commitments'].pop('serial_log_sha256')
+if mutation == 'unrelated-capture':
+    payload['capture_commitments']['persistence_after_sha256'] = digest('unrelated-capture')
+if mutation == 'bool-schema':
+    payload['schema_version'] = True
+if mutation == 'integer-hardware':
+    payload['hardware_observed'] = 0
+payload['evidence_binding_sha256'] = commitment(payload)
+if mutation == 'stale-binding':
+    payload['capture_commitments']['serial_log_sha256'] = digest('stale-serial')
+sys.stdout.write(json.dumps(payload))
+""",
+    )
     bsc14_adapter = root / "fake-bsc14-adapter.py"
     write_executable(
         bsc14_adapter,
@@ -2699,6 +3176,7 @@ sys.stdout.write(json.dumps(payload))
         "bsc13_adapter": bsc13_adapter,
         "bsc11_adapter": bsc11_adapter,
         "bsc10_adapter": bsc10_adapter,
+        "bsc12_adapter": bsc12_adapter,
         "bsc14_adapter": bsc14_adapter,
         "bsc16_adapter": bsc16_adapter,
     }
@@ -3509,6 +3987,83 @@ def run_bsc14_fixture(
     if production_replay:
         command.append("--production-replay")
     if include_reset_acknowledgement and not production_replay:
+        command.append("--ack-destructive-hard-cuts")
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, out_dir
+
+
+def run_bsc12_fixture(
+    fixture: dict[str, Path | str],
+    root: Path,
+    *,
+    runs: int = 1,
+    production_replay: bool = False,
+    include_vbus_acknowledgement: bool = True,
+    include_reset_acknowledgement: bool = True,
+    mutation: str = "",
+    drop_dut_capability: str | None = None,
+    drop_rig_capability: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    out_dir = root / "bsc12-out"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "V1SIMPLE_HIL_TEST_HOOKS": "1",
+            "FAKE_BSC12_MUTATION": mutation,
+        }
+    )
+    if drop_dut_capability is not None or drop_rig_capability is not None:
+        assert_true(
+            not (drop_dut_capability is not None and drop_rig_capability is not None),
+            "BSC-12 fixture removes one capability at a time",
+        )
+        inventory_path = Path(fixture["inventory"])
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        alias = "release" if drop_dut_capability is not None else "rig"
+        capability = drop_dut_capability or drop_rig_capability
+        assert capability is not None
+        board = next(item for item in inventory["boards"] if item["alias"] == alias)
+        board["capabilities"].remove(capability)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    command = [
+        "python3",
+        "-B",
+        str(RUNNER),
+        "--case",
+        "BSC-12",
+        "--board",
+        "release",
+        "--rig",
+        "rig",
+        "--runs",
+        str(runs),
+        "--repo-root",
+        str(fixture["repository"]),
+        "--template",
+        str(fixture["template"]),
+        "--inventory",
+        str(fixture["inventory"]),
+        "--ports-json",
+        str(fixture["ports"]),
+        "--pio-command",
+        str(fixture["pio"]),
+        "--case-adapter",
+        str(fixture["bsc12_adapter"]),
+        "--out-dir",
+        str(out_dir),
+    ]
+    if production_replay:
+        command.append("--production-replay")
+    if include_vbus_acknowledgement:
+        command.append("--ack-vbus-isolated")
+    if include_reset_acknowledgement:
         command.append("--ack-destructive-hard-cuts")
     completed = subprocess.run(
         command,
@@ -5462,6 +6017,320 @@ def test_bsc10_physical_mode_remains_blocked_before_rig_discovery() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def test_bsc12_profile_v5_shutdown_recovery_is_bound_and_nonqualifying() -> None:
+    descriptor = hil_runner.load_bsc12_case_descriptor()
+    role = descriptor["scenario"]
+    descriptor_sha = hil_runner.bsc12_descriptor_commitment(descriptor)
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        fixture = prepare_fixture(root)
+        completed, out_dir = run_bsc12_fixture(fixture, root)
+        assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+        result = json.loads((out_dir / "collection_result.json").read_text(encoding="utf-8"))
+        attempt = json.loads((out_dir / "attempt.json").read_text(encoding="utf-8"))
+        assert_true(result["result"] == "TEST_PASS", str(result))
+        assert_true(result["collection_role"] == "aborted-shutdown-recovery", str(result))
+        assert_true(result["case_descriptor_sha256"] == descriptor_sha, str(result))
+        assert_true(result["execution_mode"] == "simulated", str(result))
+        assert_true(result["hardware_observed"] is False, str(result))
+        assert_true(result["authoritative"] is False, str(result))
+        assert_true(result["physical_collection_completed"] is False, str(result))
+        assert_true(result["non_qualifying"] is True, str(result))
+        assert_true(result["qualification_status"] == "BLOCKED", str(result))
+        assert_true(
+            result["qualification_blockers"]
+            == [
+                "build-generator-provenance-not-authenticated",
+                "board-resolution-provenance-not-authenticated",
+                "tracked-rig-adapter-not-implemented",
+            ],
+            str(result),
+        )
+        assert_true(result["runs_required"] == result["runs_completed"] == 1, str(result))
+        assert_true(result["production_replay_required"] is False, str(result))
+        assert_true(result["vbus_isolation_acknowledged"] is True, str(result))
+        assert_true(result["destructive_reset_acknowledged"] is True, str(result))
+        assert_true(
+            result["firmware_target"]
+            == {
+                "environment": "waveshare-349",
+                "build_kind": "production",
+                "target_sha": fixture["target_sha"],
+                "binary_sha256": attempt["firmware"]["binary_sha256"],
+                "hil_fault_control_active": False,
+            },
+            str(result),
+        )
+        assert_true(attempt["case_descriptor"] == descriptor, str(attempt))
+        assert_true(attempt["descriptor"] == role, str(attempt))
+        assert_true(attempt["case_descriptor_sha256"] == descriptor_sha, str(attempt))
+        assert_true(attempt["run_index"] == 1, str(attempt))
+        assert_true(
+            attempt["preconditions"]
+            == {"vbus_isolated": True, "destructive_reset_acknowledged": True},
+            str(attempt),
+        )
+        assert_true(
+            [row["id"] for row in attempt["stimuli"]] == role["stimulus_ids"],
+            str(attempt),
+        )
+        assert_true(
+            [row["id"] for row in attempt["barriers"]] == role["barrier_ids"],
+            str(attempt),
+        )
+        assert_true(
+            attempt["shutdown_observation"]["wake_trigger"] == "active-low"
+            and attempt["shutdown_observation"]["real_rtc_wake_input"] is True
+            and attempt["shutdown_observation"]["power_off_result"] is False
+            and attempt["shutdown_observation"]["screen_state"] == "disconnected"
+            and attempt["shutdown_observation"]["marker_state"] == "unclean",
+            str(attempt),
+        )
+        assert_true(
+            [(row["writer_id"], row["completion_count"]) for row in attempt["writers"]]
+            == [("settings", 1), ("bond", 1)],
+            str(attempt),
+        )
+        assert_true(
+            all(
+                row["duplicate_count"] == 0
+                and row["lost_count"] == 0
+                and row["stalled"] is False
+                for row in attempt["writers"]
+            ),
+            str(attempt),
+        )
+        assert_true(
+            attempt["persistence"]["session_marker_after_reset"] == "unclean"
+            and attempt["persistence"]["setting_mutation_sha256"]
+            == attempt["persistence"]["setting_after_reset_sha256"]
+            and attempt["persistence"]["bond_mutation_sha256"]
+            == attempt["persistence"]["bond_after_reset_sha256"],
+            str(attempt),
+        )
+        assert_true(
+            attempt["reset"]["expected_kind"] == "forced-reset"
+            and attempt["reset"]["planned"] == attempt["reset"]["observed"] == 1
+            and attempt["reset"]["unexpected"] == 0
+            and attempt["reset"]["panic_observed"] is False
+            and attempt["reset"]["watchdog_reset_observed"] is False
+            and attempt["reset"]["load_prohibited_observed"] is False,
+            str(attempt),
+        )
+        expected_facts = {
+            fact["id"]: fact["expected"] if fact["type"] == "boolean" else fact["minimum"]
+            for fact in role["facts"]
+        }
+        assert_true(attempt["facts"] == expected_facts, str(attempt))
+        assert_true(
+            result["raw_artifact_contract"]
+            == [
+                {
+                    "role": artifact.role,
+                    "filename": artifact.filename,
+                    "maximum_bytes": artifact.maximum_bytes,
+                }
+                for artifact in hil_runner.rig_adapters.BSC12_RAW_ARTIFACTS
+            ],
+            str(result),
+        )
+        assert_true(
+            [row["role"] for row in attempt["raw_artifact_manifest"]]
+            == [artifact.role for artifact in hil_runner.rig_adapters.BSC12_RAW_ARTIFACTS],
+            str(attempt),
+        )
+        for row in attempt["raw_artifact_manifest"]:
+            raw_path = out_dir / "raw" / row["filename"]
+            assert_true(raw_path.is_file() and not raw_path.is_symlink(), str(row))
+            assert_true(raw_path.stat().st_size == row["bytes"], str(row))
+            assert_true(hil_runner.sha256_file(raw_path) == row["sha256"], str(row))
+        assert_true(
+            result["raw_artifact_sha256"]
+            == {row["role"]: row["sha256"] for row in attempt["raw_artifact_manifest"]},
+            str(result),
+        )
+        assert_true(
+            attempt["persistence"]["after_readback_elapsed_ms"]
+            > attempt["reset"]["boot_observed_elapsed_ms"],
+            str(attempt),
+        )
+        assert_true(
+            attempt["safety_observation"]["power_reset_trace_sha256"]
+            == attempt["reset"]["power_reset_trace_sha256"]
+            == attempt["capture_commitments"]["power_reset_trace_sha256"],
+            str(attempt),
+        )
+        assert_true(
+            all(
+                len(value) == 64
+                for value in (
+                    result["session_sha256"],
+                    result["attempt_sha256"],
+                    result["case_descriptor_sha256"],
+                    result["evidence_binding_sha256"],
+                    *result["artifact_sha256"].values(),
+                )
+            ),
+            str(result),
+        )
+        assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
+        public_output = completed.stdout + completed.stderr + json.dumps(result)
+        assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
+        assert_true(str(fixture["port"]) not in public_output, public_output)
+        assert_true("release" not in public_output and '"rig"' not in public_output, public_output)
+
+
+def test_bsc12_rejects_typed_source_timing_reset_fact_and_capture_mutations() -> None:
+    mutation_names = (
+        "role",
+        "session",
+        "attempt",
+        "run-index-bool",
+        "target",
+        "descriptor",
+        "descriptor-digest",
+        "firmware-environment",
+        "firmware-build",
+        "firmware-hil",
+        "firmware-hil-int",
+        "vbus-precondition",
+        "reset-precondition",
+        "precondition-int",
+        "stimulus-missing",
+        "stimulus-order",
+        "stimulus-negative",
+        "stimulus-duration",
+        "barrier-id",
+        "barrier-source",
+        "barrier-order",
+        "barrier-timing",
+        "barrier-timeout",
+        "barrier-duration",
+        "handoff-order",
+        "wake-source",
+        "wake-trigger",
+        "wake-not-real",
+        "wake-bool-int",
+        "poweroff-result",
+        "poweroff-bool-int",
+        "screen-state",
+        "marker-state",
+        "marker-timing",
+        "writer-missing",
+        "writer-source",
+        "writer-count-zero",
+        "writer-count-two",
+        "writer-duplicate",
+        "writer-lost",
+        "writer-stalled",
+        "writer-stalled-int",
+        "writer-completion-timing",
+        "writer-mutation-timing",
+        "persistence-source",
+        "setting-lost",
+        "bond-lost",
+        "post-reset-marker",
+        "persistence-digest",
+        "fabricated-equal-persistence",
+        "preboot-readback",
+        "reset-kind",
+        "reset-source",
+        "reset-planned",
+        "reset-observed",
+        "reset-unexpected",
+        "reset-forced-timing",
+        "reset-boot-timing",
+        "panic",
+        "watchdog",
+        "load-prohibited",
+        "assertion-only-vbus",
+        "assertion-only-wake",
+        "assertion-only-reset",
+        "assertion-only-crash",
+        "panic-int",
+        "fact-poweroff",
+        "fact-screen",
+        "fact-marker",
+        "fact-settings-writer",
+        "fact-bond-writer",
+        "fact-setting",
+        "fact-bond",
+        "fact-wake",
+        "utc-duration",
+        "capture-reuse",
+        "capture-missing",
+        "unrelated-capture",
+        "bool-schema",
+        "integer-hardware",
+        "stale-binding",
+    )
+    cases = tuple(({"mutation": mutation}, "case_record_invalid") for mutation in mutation_names)
+    cases += (
+        ({"runs": 2}, "invalid_runs"),
+        ({"production_replay": True}, "unsupported_mode"),
+        ({"include_vbus_acknowledgement": False}, "operator_preconditions_incomplete"),
+        ({"include_reset_acknowledgement": False}, "safety_ack_required"),
+    )
+    descriptor = hil_runner.load_bsc12_case_descriptor()
+    cases += tuple(
+        ({"drop_dut_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_dut_capabilities"]
+    )
+    cases += tuple(
+        ({"drop_rig_capability": capability}, "case_board_resolution_failed")
+        for capability in descriptor["required_rig_capabilities"]
+    )
+    for options, expected_code in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = prepare_fixture(root)
+            completed, out_dir = run_bsc12_fixture(fixture, root, **options)
+            assert_true(completed.returncode != 0, f"{options} unexpectedly passed")
+            payload = json.loads(completed.stdout)
+            assert_true(payload["error"]["code"] == expected_code, str(payload))
+            assert_true(not (out_dir / "collection_result.json").exists(), str(options))
+            assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc12_authoritative_admission_blocks_before_git_output_or_discovery() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        out_dir = Path(raw) / "must-not-exist"
+        completed = subprocess.run(
+            [
+                "python3",
+                "-B",
+                str(RUNNER),
+                "--case",
+                "BSC-12",
+                "--board",
+                "opaque-dut",
+                "--rig",
+                "opaque-rig",
+                "--repo-root",
+                "/does-not-exist",
+                "--inventory",
+                "/does-not-exist/inventory.json",
+                "--out-dir",
+                str(out_dir),
+                "--ack-vbus-isolated",
+                "--ack-destructive-hard-cuts",
+            ],
+            cwd=ROOT,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if key != "V1SIMPLE_HIL_TEST_HOOKS"
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert_true(completed.returncode != 0, "physical BSC-12 must remain blocked")
+        payload = json.loads(completed.stdout)
+        assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+        assert_true(not out_dir.exists(), str(payload))
+
+
 def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc14_case_descriptor()
     descriptor_sha = hil_runner.bsc14_descriptor_commitment(descriptor)
@@ -5943,6 +6812,9 @@ def main() -> int:
     test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc10_rejects_full_record_contract_mutations()
     test_bsc10_physical_mode_remains_blocked_before_rig_discovery()
+    test_bsc12_profile_v5_shutdown_recovery_is_bound_and_nonqualifying()
+    test_bsc12_rejects_typed_source_timing_reset_fact_and_capture_mutations()
+    test_bsc12_authoritative_admission_blocks_before_git_output_or_discovery()
     test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc14_rejects_descriptor_capability_observation_and_evidence_drift()
     test_bsc14_physical_mode_remains_blocked_without_tracked_adapter()

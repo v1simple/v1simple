@@ -277,6 +277,69 @@ BSC11_CAPTURE_COMMITMENTS = (
     "service_timeline_sha256",
     "v1_exchange_sha256",
 )
+BSC12_CASE_ID = "BSC-12"
+BSC12_PROFILE_VERSION = 5
+BSC12_PRODUCTION_ENVIRONMENT = "waveshare-349"
+BSC12_REQUIRED_RUNS = 1
+BSC12_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC12_DUT_CAPABILITIES = (
+    "firmware-execution",
+    "persistence",
+    "power-button",
+    "serial",
+)
+BSC12_RIG_CAPABILITIES = (
+    "artifact-capture",
+    "bond-peer",
+    "power-control",
+    "sd-media",
+    "utc-time-source",
+    "vbus-isolation",
+    "wake-input-control",
+)
+BSC12_STIMULUS_IDS = (
+    "begin-portable-shutdown",
+    "assert-wake-input",
+    "mutate-setting",
+    "mutate-bond",
+    "wait-for-writers",
+    "force-reset",
+)
+BSC12_BARRIER_IDS = (
+    "wake-input-asserted-during-handoff",
+    "writers-completed",
+)
+BSC12_FACT_IDS = (
+    "poweroff-returned-false",
+    "disconnected-screen-restored",
+    "session-marker-unclean-after-reset",
+    "settings-writer-count",
+    "bond-writer-count",
+    "setting-survived-reset",
+    "bond-survived-reset",
+    "real-rtc-wake-input-observed",
+)
+BSC12_CAPTURE_COMMITMENTS = (
+    "firmware_build_sha256",
+    "persistence_after_sha256",
+    "persistence_before_sha256",
+    "power_reset_trace_sha256",
+    "serial_log_sha256",
+    "shutdown_timeline_sha256",
+    "wake_input_trace_sha256",
+)
+BSC12_CAPTURE_ROLE_FIELDS = tuple(
+    (artifact.role, artifact.filename, commitment)
+    for artifact, commitment in zip(
+        rig_adapters.BSC12_RAW_ARTIFACTS,
+        BSC12_CAPTURE_COMMITMENTS,
+        strict=True,
+    )
+)
+BSC12_WRITER_SOURCES = (
+    ("settings", "deferred-settings-backup-writer"),
+    ("bond", "ble-bond-backup-writer"),
+)
 BSC10_CASE_ID = "BSC-10"
 BSC10_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC10_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -9061,6 +9124,1281 @@ def admit_case_rig_adapter(
     )
 
 
+def load_bsc12_case_descriptor() -> dict[str, object]:
+    profile, errors = qualification.load_pinned_profile()
+    if (
+        profile is None
+        or errors
+        or profile.get("profile_id") != "bug-squash-hil-v1"
+        or profile.get("profile_version") != BSC12_PROFILE_VERSION
+    ):
+        raise RunnerError(
+            "qualification_profile_invalid",
+            "BSC-12 requires the exact pinned profile-v5 contract",
+        )
+    matches = [
+        case for case in profile["required_cases"] if case.get("id") == BSC12_CASE_ID
+    ]
+    if len(matches) != 1:
+        raise RunnerError("qualification_profile_invalid", "BSC-12 descriptor is unavailable")
+    descriptor = matches[0]
+    if (
+        set(descriptor)
+        != {
+            "id",
+            "minimum_runs",
+            "fault_build_required",
+            "production_replay_required",
+            "required_dut_capabilities",
+            "required_rig_capabilities",
+            "scenario",
+            "production_replay",
+        }
+        or descriptor.get("minimum_runs") != BSC12_REQUIRED_RUNS
+        or descriptor.get("fault_build_required") is not False
+        or descriptor.get("production_replay_required") is not False
+        or descriptor.get("required_dut_capabilities") != list(BSC12_DUT_CAPABILITIES)
+        or descriptor.get("required_rig_capabilities") != list(BSC12_RIG_CAPABILITIES)
+        or descriptor.get("production_replay") is not None
+    ):
+        raise RunnerError("qualification_profile_invalid", "BSC-12 case contract drifted")
+    bsc12_role_descriptor(descriptor)
+    return descriptor
+
+
+def bsc12_role_descriptor(case_descriptor: Mapping[str, object]) -> dict[str, object]:
+    raw = case_descriptor.get("scenario")
+    if not isinstance(raw, dict):
+        raise RunnerError("qualification_profile_invalid", "BSC-12 role descriptor is missing")
+    role = dict(raw)
+    expected_facts = [
+        {"id": "poweroff-returned-false", "type": "boolean", "expected": True},
+        {"id": "disconnected-screen-restored", "type": "boolean", "expected": True},
+        {"id": "session-marker-unclean-after-reset", "type": "boolean", "expected": True},
+        {"id": "settings-writer-count", "type": "integer", "minimum": 1, "maximum": 1},
+        {"id": "bond-writer-count", "type": "integer", "minimum": 1, "maximum": 1},
+        {"id": "setting-survived-reset", "type": "boolean", "expected": True},
+        {"id": "bond-survived-reset", "type": "boolean", "expected": True},
+        {"id": "real-rtc-wake-input-observed", "type": "boolean", "expected": True},
+    ]
+    if (
+        set(role)
+        != {
+            "role_id",
+            "schema",
+            "build_kind",
+            "stimulus_ids",
+            "fault_ids",
+            "barrier_ids",
+            "vbus_isolation_required",
+            "reset_contract",
+            "facts",
+        }
+        or role.get("role_id") != "aborted-shutdown-recovery"
+        or role.get("schema") != "case-observation-v1"
+        or role.get("build_kind") != "production"
+        or role.get("stimulus_ids") != list(BSC12_STIMULUS_IDS)
+        or role.get("fault_ids") != []
+        or role.get("barrier_ids") != list(BSC12_BARRIER_IDS)
+        or role.get("vbus_isolation_required") is not True
+        or role.get("reset_contract")
+        != {"expected_kind": "forced-reset", "expected_count": 1, "unexpected_count": 0}
+        or role.get("facts") != expected_facts
+    ):
+        raise RunnerError("qualification_profile_invalid", "BSC-12 role contract drifted")
+    return role
+
+
+def bsc12_descriptor_commitment(case_descriptor: Mapping[str, object]) -> str:
+    return canonical_case_commitment("v1simple.bsc12.case-descriptor.v1", case_descriptor)
+
+
+def bsc12_record_commitment(record: Mapping[str, object]) -> str:
+    committed = dict(record)
+    committed.pop("evidence_binding_sha256", None)
+    return canonical_case_commitment("v1simple.bsc12.case-record.v1", committed)
+
+
+def validate_bsc12_raw_artifacts(
+    artifact_root: Path,
+    manifest_value: object,
+    commitments_value: object,
+) -> dict[str, object]:
+    """Hash the adapter's exact raw outputs and bind every declared role to its file."""
+
+    code = "case_record_invalid"
+    if artifact_root.is_symlink() or not artifact_root.is_dir():
+        raise RunnerError(code, "BSC-12 raw artifact directory is unavailable")
+    contracts = rig_adapters.BSC12_RAW_ARTIFACTS
+    expected_names = {artifact.filename for artifact in contracts}
+    try:
+        entries = list(artifact_root.iterdir())
+    except OSError as exc:
+        raise RunnerError(code, "BSC-12 raw artifact directory could not be read") from exc
+    if {entry.name for entry in entries} != expected_names or len(entries) != len(expected_names):
+        raise RunnerError(code, "BSC-12 raw artifact set is incomplete or contains extras")
+    if not isinstance(manifest_value, list) or len(manifest_value) != len(contracts):
+        raise RunnerError(code, "BSC-12 raw artifact manifest is incomplete")
+    commitments = require_exact_object(
+        commitments_value,
+        set(BSC12_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-12 capture commitments",
+    )
+
+    parsed: dict[str, object] = {}
+    observed_hashes: list[str] = []
+    for index, (contract, commitment_field) in enumerate(
+        zip(contracts, BSC12_CAPTURE_COMMITMENTS, strict=True)
+    ):
+        path = artifact_root / contract.filename
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise RunnerError(code, "BSC-12 raw artifact is unavailable") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or not 1 <= metadata.st_size <= contract.maximum_bytes
+        ):
+            raise RunnerError(code, "BSC-12 raw artifact is not a bounded regular file")
+        digest = sha256_file(path)
+        row = require_exact_object(
+            manifest_value[index],
+            {"role", "filename", "bytes", "sha256"},
+            code=code,
+            label="BSC-12 raw artifact manifest row",
+        )
+        if (
+            row.get("role") != contract.role
+            or row.get("filename") != contract.filename
+            or type(row.get("bytes")) is not int
+            or row.get("bytes") != metadata.st_size
+            or row.get("sha256") != digest
+            or commitments.get(commitment_field) != digest
+        ):
+            raise RunnerError(code, "BSC-12 raw artifact manifest does not match collected bytes")
+        observed_hashes.append(digest)
+        if contract.role == "serial-log":
+            try:
+                parsed[contract.role] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise RunnerError(code, "BSC-12 serial capture is unreadable") from exc
+        else:
+            parsed[contract.role] = read_json(path, f"BSC-12 {contract.role}")
+    if len(set(observed_hashes)) != len(observed_hashes):
+        raise RunnerError(code, "BSC-12 evidence roles reused collected bytes")
+    return parsed
+
+
+def parse_bsc12_serial_events(value: object, *, duration_ms: int) -> dict[str, int]:
+    code = "case_record_invalid"
+    if not isinstance(value, str) or not value.endswith("\n"):
+        raise RunnerError(code, "BSC-12 serial capture is incomplete")
+    events: dict[str, int] = {}
+    allowed = {
+        "shutdown-begin",
+        "handoff-begin",
+        "wake-asserted",
+        "power-off-returned-false",
+        "screen-restored-disconnected",
+        "marker-rewritten-unclean",
+        "reset-forced",
+        "boot-observed",
+        "setting-readback",
+        "bond-readback",
+        "panic",
+        "watchdog-reset",
+        "load-prohibited",
+    }
+    previous = -1
+    for line in value.splitlines():
+        try:
+            row = json.loads(line, object_pairs_hook=reject_duplicate_json_keys)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RunnerError(code, "BSC-12 serial capture is not strict JSONL") from exc
+        row = require_exact_object(
+            row,
+            {"event", "elapsed_ms"},
+            code=code,
+            label="BSC-12 serial event",
+        )
+        event = row.get("event")
+        elapsed = row.get("elapsed_ms")
+        if (
+            not isinstance(event, str)
+            or event not in allowed
+            or event in events
+            or type(elapsed) is not int
+            or not 0 <= elapsed <= duration_ms
+            or elapsed < previous
+        ):
+            raise RunnerError(code, "BSC-12 serial event identity or timing is invalid")
+        events[event] = elapsed
+        previous = elapsed
+    required = allowed - {"panic", "watchdog-reset", "load-prohibited"}
+    if not required.issubset(events):
+        raise RunnerError(code, "BSC-12 serial capture is missing required events")
+    return events
+
+
+def resolve_bsc12_hardware(
+    args: argparse.Namespace,
+    pio_executable: Path,
+    case_descriptor: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    inventory_path = args.inventory.resolve()
+    if not inventory_path.is_file() or inventory_path.is_symlink():
+        raise RunnerError(
+            "local_inventory_missing",
+            "BSC-12 requires the ignored local hardware inventory",
+        )
+    try:
+        inventory = resolve_hil_board.load_inventory(args.template, inventory_path)
+        port_records = (
+            resolve_hil_board.parse_port_records(
+                resolve_hil_board._read_json(args.ports_json, "serial port inventory")
+            )
+            if args.ports_json is not None
+            else resolve_hil_board.enumerate_serial_ports(str(pio_executable))
+        )
+    except resolve_hil_board.ResolverError as exc:
+        raise RunnerError("case_board_resolution_failed", exc.message) from exc
+    dut_resolution, dut_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.board,
+        required_capabilities=case_descriptor["required_dut_capabilities"],
+        port_records=port_records,
+    )
+    _, rig_attestation = bsc03_board_attestation(
+        inventory=inventory,
+        alias=args.rig,
+        required_capabilities=case_descriptor["required_rig_capabilities"],
+        port_records=port_records,
+    )
+    if args.board == args.rig:
+        raise RunnerError("case_alias_reused", "BSC-12 requires distinct DUT and rig aliases")
+    return dut_resolution, dut_attestation, rig_attestation
+
+
+def validate_bsc12_stimuli(value: object, *, duration_ms: int) -> dict[str, int]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(BSC12_STIMULUS_IDS):
+        raise RunnerError(code, "BSC-12 stimulus sequence is incomplete")
+    elapsed_by_id: dict[str, int] = {}
+    previous = -1
+    for sequence, (raw, stimulus_id) in enumerate(
+        zip(value, BSC12_STIMULUS_IDS, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {"id", "sequence", "elapsed_ms", "result"},
+            code=code,
+            label="BSC-12 stimulus",
+        )
+        elapsed = row.get("elapsed_ms")
+        if (
+            row.get("id") != stimulus_id
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(elapsed) is not int
+            or not 0 <= elapsed <= duration_ms
+            or elapsed <= previous
+            or row.get("result") != "pass"
+        ):
+            raise RunnerError(code, "BSC-12 stimulus identity, timing, or result is invalid")
+        elapsed_by_id[stimulus_id] = elapsed
+        previous = elapsed
+    return elapsed_by_id
+
+
+def validate_bsc12_barriers(
+    value: object,
+    *,
+    duration_ms: int,
+) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(BSC12_BARRIER_IDS):
+        raise RunnerError(code, "BSC-12 barrier coverage is incomplete")
+    expected_sources = ("rtc-gpio-wake-input", "shutdown-persistence-writers")
+    barriers: list[dict[str, object]] = []
+    previous_release = -1
+    for sequence, (raw, barrier_id, source) in enumerate(
+        zip(value, BSC12_BARRIER_IDS, expected_sources, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {
+                "id",
+                "source",
+                "sequence",
+                "ready_elapsed_ms",
+                "released_elapsed_ms",
+                "timed_out",
+            },
+            code=code,
+            label="BSC-12 barrier",
+        )
+        ready = row.get("ready_elapsed_ms")
+        released = row.get("released_elapsed_ms")
+        if (
+            row.get("id") != barrier_id
+            or row.get("source") != source
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(ready) is not int
+            or type(released) is not int
+            or not 0 <= ready <= released <= duration_ms
+            or ready <= previous_release
+            or row.get("timed_out") is not False
+        ):
+            raise RunnerError(code, "BSC-12 barrier source, order, or timing is invalid")
+        barriers.append(row)
+        previous_release = released
+    return barriers
+
+
+def validate_bsc12_shutdown_observation(
+    value: object,
+    *,
+    stimuli: Mapping[str, int],
+    duration_ms: int,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    observation = require_exact_object(
+        value,
+        {
+            "shutdown_begin_elapsed_ms",
+            "handoff_begin_elapsed_ms",
+            "wake_asserted_elapsed_ms",
+            "power_off_return_elapsed_ms",
+            "screen_restored_elapsed_ms",
+            "marker_rewritten_elapsed_ms",
+            "wake_input_source",
+            "wake_trigger",
+            "real_rtc_wake_input",
+            "power_off_result",
+            "screen_state",
+            "marker_state",
+            "shutdown_timeline_sha256",
+            "wake_input_trace_sha256",
+            "serial_log_sha256",
+        },
+        code=code,
+        label="BSC-12 shutdown observation",
+    )
+    times = tuple(
+        observation.get(field)
+        for field in (
+            "shutdown_begin_elapsed_ms",
+            "handoff_begin_elapsed_ms",
+            "wake_asserted_elapsed_ms",
+            "power_off_return_elapsed_ms",
+            "screen_restored_elapsed_ms",
+            "marker_rewritten_elapsed_ms",
+        )
+    )
+    if (
+        any(type(item) is not int for item in times)
+        or not 0 <= times[0] <= times[1] <= times[2] < times[3] <= times[4] <= times[5] <= duration_ms
+        or times[0] != stimuli["begin-portable-shutdown"]
+        or times[2] != stimuli["assert-wake-input"]
+        or times[5] >= stimuli["mutate-setting"]
+        or observation.get("wake_input_source") != "rtc-gpio-wake-input"
+        or observation.get("wake_trigger") != "active-low"
+        or observation.get("real_rtc_wake_input") is not True
+        or observation.get("power_off_result") is not False
+        or observation.get("screen_state") != "disconnected"
+        or observation.get("marker_state") != "unclean"
+    ):
+        raise RunnerError(code, "BSC-12 shutdown handoff or abort recovery is invalid")
+    return observation
+
+
+def validate_bsc12_writers(
+    value: object,
+    *,
+    stimuli: Mapping[str, int],
+    duration_ms: int,
+) -> list[dict[str, object]]:
+    code = "case_record_invalid"
+    if not isinstance(value, list) or len(value) != len(BSC12_WRITER_SOURCES):
+        raise RunnerError(code, "BSC-12 writer completion evidence is incomplete")
+    rows: list[dict[str, object]] = []
+    mutation_ids = ("mutate-setting", "mutate-bond")
+    for sequence, (raw, (writer_id, source), mutation_id) in enumerate(
+        zip(value, BSC12_WRITER_SOURCES, mutation_ids, strict=True), start=1
+    ):
+        row = require_exact_object(
+            raw,
+            {
+                "writer_id",
+                "source",
+                "sequence",
+                "mutation_elapsed_ms",
+                "completion_elapsed_ms",
+                "completion_count",
+                "duplicate_count",
+                "lost_count",
+                "stalled",
+            },
+            code=code,
+            label="BSC-12 writer",
+        )
+        mutation_elapsed = row.get("mutation_elapsed_ms")
+        completion_elapsed = row.get("completion_elapsed_ms")
+        if (
+            row.get("writer_id") != writer_id
+            or row.get("source") != source
+            or type(row.get("sequence")) is not int
+            or row.get("sequence") != sequence
+            or type(mutation_elapsed) is not int
+            or mutation_elapsed != stimuli[mutation_id]
+            or type(completion_elapsed) is not int
+            or not stimuli["wait-for-writers"] <= completion_elapsed < stimuli["force-reset"]
+            or completion_elapsed > duration_ms
+            or type(row.get("completion_count")) is not int
+            or row.get("completion_count") != 1
+            or type(row.get("duplicate_count")) is not int
+            or row.get("duplicate_count") != 0
+            or type(row.get("lost_count")) is not int
+            or row.get("lost_count") != 0
+            or row.get("stalled") is not False
+        ):
+            raise RunnerError(code, "BSC-12 writer source, cardinality, or completion is invalid")
+        rows.append(row)
+    return rows
+
+
+def validate_bsc12_persistence(value: object) -> dict[str, object]:
+    code = "case_record_invalid"
+    observation = require_exact_object(
+        value,
+        {
+            "source",
+            "setting_mutation_sha256",
+            "setting_after_reset_sha256",
+            "bond_mutation_sha256",
+            "bond_after_reset_sha256",
+            "session_marker_after_reset",
+            "before_readback_elapsed_ms",
+            "after_readback_elapsed_ms",
+            "persistence_before_sha256",
+            "persistence_after_sha256",
+        },
+        code=code,
+        label="BSC-12 persistence",
+    )
+    hashes = {
+        field: require_sha256(observation.get(field), code=code, label=f"BSC-12 {field}")
+        for field in (
+            "setting_mutation_sha256",
+            "setting_after_reset_sha256",
+            "bond_mutation_sha256",
+            "bond_after_reset_sha256",
+        )
+    }
+    before_readback = observation.get("before_readback_elapsed_ms")
+    after_readback = observation.get("after_readback_elapsed_ms")
+    if (
+        observation.get("source") != "post-reset-persistence-readback"
+        or observation.get("session_marker_after_reset") != "unclean"
+        or type(before_readback) is not int
+        or type(after_readback) is not int
+        or before_readback < 0
+        or after_readback <= before_readback
+        or require_sha256(
+            observation.get("persistence_before_sha256"),
+            code=code,
+            label="BSC-12 persistence-before capture",
+        )
+        == require_sha256(
+            observation.get("persistence_after_sha256"),
+            code=code,
+            label="BSC-12 persistence-after capture",
+        )
+        or not secrets.compare_digest(
+            hashes["setting_mutation_sha256"], hashes["setting_after_reset_sha256"]
+        )
+        or not secrets.compare_digest(
+            hashes["bond_mutation_sha256"], hashes["bond_after_reset_sha256"]
+        )
+    ):
+        raise RunnerError(code, "BSC-12 post-reset persistence observation is invalid")
+    return observation
+
+
+def validate_bsc12_reset(
+    value: object,
+    *,
+    reset_contract: Mapping[str, object],
+    stimuli: Mapping[str, int],
+    duration_ms: int,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    reset = require_exact_object(
+        value,
+        {
+            "expected_kind",
+            "source",
+            "planned",
+            "observed",
+            "unexpected",
+            "forced_elapsed_ms",
+            "boot_observed_elapsed_ms",
+            "panic_observed",
+            "watchdog_reset_observed",
+            "load_prohibited_observed",
+            "power_reset_trace_sha256",
+            "serial_log_sha256",
+        },
+        code=code,
+        label="BSC-12 reset",
+    )
+    forced = reset.get("forced_elapsed_ms")
+    boot = reset.get("boot_observed_elapsed_ms")
+    require_sha256(
+        reset.get("power_reset_trace_sha256"),
+        code=code,
+        label="BSC-12 power/reset capture",
+    )
+    require_sha256(reset.get("serial_log_sha256"), code=code, label="BSC-12 reset serial capture")
+    if (
+        reset.get("expected_kind") != reset_contract.get("expected_kind")
+        or reset.get("source") != "rig-forced-reset"
+        or type(reset.get("planned")) is not int
+        or reset.get("planned") != reset_contract.get("expected_count")
+        or type(reset.get("observed")) is not int
+        or reset.get("observed") != reset_contract.get("expected_count")
+        or type(reset.get("unexpected")) is not int
+        or reset.get("unexpected") != reset_contract.get("unexpected_count")
+        or type(forced) is not int
+        or forced != stimuli["force-reset"]
+        or type(boot) is not int
+        or not forced < boot <= duration_ms
+        or type(reset.get("panic_observed")) is not bool
+        or reset.get("panic_observed") is not False
+        or type(reset.get("watchdog_reset_observed")) is not bool
+        or reset.get("watchdog_reset_observed") is not False
+        or type(reset.get("load_prohibited_observed")) is not bool
+        or reset.get("load_prohibited_observed") is not False
+    ):
+        raise RunnerError(code, "BSC-12 reset or crash evidence violates the pinned contract")
+    return reset
+
+
+def validate_bsc12_safety_observation(value: object) -> dict[str, object]:
+    code = "case_record_invalid"
+    observation = require_exact_object(
+        value,
+        {
+            "source",
+            "vbus_isolated",
+            "vbus_verified_elapsed_ms",
+            "destructive_reset_triggered",
+            "power_reset_trace_sha256",
+        },
+        code=code,
+        label="BSC-12 safety observation",
+    )
+    if (
+        observation.get("source") != "rig-power-reset-trace"
+        or observation.get("vbus_isolated") is not True
+        or type(observation.get("vbus_verified_elapsed_ms")) is not int
+        or observation.get("vbus_verified_elapsed_ms") < 0
+        or observation.get("destructive_reset_triggered") is not True
+    ):
+        raise RunnerError(code, "BSC-12 VBUS/reset safety observation is invalid")
+    require_sha256(
+        observation.get("power_reset_trace_sha256"),
+        code=code,
+        label="BSC-12 safety capture",
+    )
+    return observation
+
+
+def validate_bsc12_source_evidence(
+    raw: Mapping[str, object],
+    *,
+    commitments: Mapping[str, object],
+    firmware: Mapping[str, object],
+    safety: Mapping[str, object],
+    shutdown: Mapping[str, object],
+    writers: Sequence[Mapping[str, object]],
+    persistence: Mapping[str, object],
+    reset: Mapping[str, object],
+    duration_ms: int,
+) -> dict[str, object]:
+    """Derive the safety and persistence facts from the captured role bytes."""
+
+    code = "case_record_invalid"
+    firmware_raw = require_exact_object(
+        raw.get("firmware-build"),
+        {"schema_version", "source", "firmware"},
+        code=code,
+        label="BSC-12 firmware build capture",
+    )
+    if (
+        firmware_raw.get("schema_version") != 1
+        or type(firmware_raw.get("schema_version")) is not int
+        or firmware_raw.get("source") != "platformio-production-build"
+        or firmware_raw.get("firmware") != firmware
+    ):
+        raise RunnerError(code, "BSC-12 firmware build capture is not bound to the record")
+
+    before = require_exact_object(
+        raw.get("persistence-before"),
+        {
+            "schema_version",
+            "source",
+            "captured_elapsed_ms",
+            "setting_sha256",
+            "bond_sha256",
+            "session_marker",
+        },
+        code=code,
+        label="BSC-12 pre-reset persistence capture",
+    )
+    after = require_exact_object(
+        raw.get("persistence-after"),
+        {
+            "schema_version",
+            "source",
+            "captured_elapsed_ms",
+            "setting_sha256",
+            "bond_sha256",
+            "session_marker",
+        },
+        code=code,
+        label="BSC-12 post-reset persistence capture",
+    )
+    before_elapsed = before.get("captured_elapsed_ms")
+    after_elapsed = after.get("captured_elapsed_ms")
+    before_setting = require_sha256(
+        before.get("setting_sha256"), code=code, label="BSC-12 pre-reset setting"
+    )
+    before_bond = require_sha256(before.get("bond_sha256"), code=code, label="BSC-12 pre-reset bond")
+    after_setting = require_sha256(
+        after.get("setting_sha256"), code=code, label="BSC-12 post-reset setting"
+    )
+    after_bond = require_sha256(after.get("bond_sha256"), code=code, label="BSC-12 post-reset bond")
+    last_writer = max(int(writer["completion_elapsed_ms"]) for writer in writers)
+    if (
+        before.get("schema_version") != 1
+        or after.get("schema_version") != 1
+        or type(before.get("schema_version")) is not int
+        or type(after.get("schema_version")) is not int
+        or before.get("source") != "pre-reset-persistence-readback"
+        or after.get("source") != "post-reset-persistence-readback"
+        or type(before_elapsed) is not int
+        or not last_writer <= before_elapsed < int(reset["forced_elapsed_ms"])
+        or type(after_elapsed) is not int
+        or not int(reset["boot_observed_elapsed_ms"]) < after_elapsed <= duration_ms
+        or before.get("session_marker") != "unclean"
+        or after.get("session_marker") != "unclean"
+        or persistence.get("before_readback_elapsed_ms") != before_elapsed
+        or persistence.get("after_readback_elapsed_ms") != after_elapsed
+        or persistence.get("setting_mutation_sha256") != before_setting
+        or persistence.get("setting_after_reset_sha256") != after_setting
+        or persistence.get("bond_mutation_sha256") != before_bond
+        or persistence.get("bond_after_reset_sha256") != after_bond
+        or persistence.get("session_marker_after_reset") != after.get("session_marker")
+        or persistence.get("persistence_before_sha256")
+        != commitments.get("persistence_before_sha256")
+        or persistence.get("persistence_after_sha256")
+        != commitments.get("persistence_after_sha256")
+    ):
+        raise RunnerError(code, "BSC-12 persistence claims are not derived from readback captures")
+
+    power = require_exact_object(
+        raw.get("power-reset-trace"),
+        {
+            "schema_version",
+            "source",
+            "vbus_isolated",
+            "vbus_verified_elapsed_ms",
+            "forced_reset_edges_elapsed_ms",
+        },
+        code=code,
+        label="BSC-12 power/reset trace",
+    )
+    forced_edges = power.get("forced_reset_edges_elapsed_ms")
+    if (
+        power.get("schema_version") != 1
+        or type(power.get("schema_version")) is not int
+        or power.get("source") != "rig-power-reset-trace"
+        or power.get("vbus_isolated") is not True
+        or type(power.get("vbus_verified_elapsed_ms")) is not int
+        or not 0 <= power.get("vbus_verified_elapsed_ms") <= int(shutdown["shutdown_begin_elapsed_ms"])
+        or not isinstance(forced_edges, list)
+        or len(forced_edges) != 1
+        or type(forced_edges[0]) is not int
+        or forced_edges[0] != reset.get("forced_elapsed_ms")
+        or safety.get("source") != power.get("source")
+        or safety.get("vbus_isolated") is not power.get("vbus_isolated")
+        or safety.get("vbus_verified_elapsed_ms") != power.get("vbus_verified_elapsed_ms")
+        or safety.get("destructive_reset_triggered") is not True
+        or safety.get("power_reset_trace_sha256")
+        != commitments.get("power_reset_trace_sha256")
+        or reset.get("power_reset_trace_sha256")
+        != commitments.get("power_reset_trace_sha256")
+    ):
+        raise RunnerError(code, "BSC-12 VBUS/reset claims are not derived from the rig trace")
+
+    wake = require_exact_object(
+        raw.get("wake-input-trace"),
+        {
+            "schema_version",
+            "source",
+            "trigger",
+            "asserted_elapsed_ms",
+            "deasserted_elapsed_ms",
+            "observed_during_handoff",
+        },
+        code=code,
+        label="BSC-12 wake-input trace",
+    )
+    wake_asserted = wake.get("asserted_elapsed_ms")
+    wake_deasserted = wake.get("deasserted_elapsed_ms")
+    if (
+        wake.get("schema_version") != 1
+        or type(wake.get("schema_version")) is not int
+        or wake.get("source") != "rtc-gpio-wake-input"
+        or wake.get("trigger") != "active-low"
+        or type(wake_asserted) is not int
+        or type(wake_deasserted) is not int
+        or not int(shutdown["handoff_begin_elapsed_ms"])
+        <= wake_asserted
+        < wake_deasserted
+        <= int(shutdown["power_off_return_elapsed_ms"])
+        or wake.get("observed_during_handoff") is not True
+        or shutdown.get("wake_input_source") != wake.get("source")
+        or shutdown.get("wake_trigger") != wake.get("trigger")
+        or shutdown.get("wake_asserted_elapsed_ms") != wake_asserted
+        or shutdown.get("real_rtc_wake_input") is not wake.get("observed_during_handoff")
+        or shutdown.get("wake_input_trace_sha256")
+        != commitments.get("wake_input_trace_sha256")
+    ):
+        raise RunnerError(code, "BSC-12 wake claim is not derived from the wake trace")
+
+    timeline = require_exact_object(
+        raw.get("shutdown-timeline"),
+        {
+            "schema_version",
+            "source",
+            "shutdown_begin_elapsed_ms",
+            "handoff_begin_elapsed_ms",
+            "power_off_return_elapsed_ms",
+            "screen_restored_elapsed_ms",
+            "marker_rewritten_elapsed_ms",
+            "power_off_result",
+            "screen_state",
+            "marker_state",
+        },
+        code=code,
+        label="BSC-12 shutdown timeline",
+    )
+    timeline_projection = {
+        field: shutdown[field]
+        for field in (
+            "shutdown_begin_elapsed_ms",
+            "handoff_begin_elapsed_ms",
+            "power_off_return_elapsed_ms",
+            "screen_restored_elapsed_ms",
+            "marker_rewritten_elapsed_ms",
+            "power_off_result",
+            "screen_state",
+            "marker_state",
+        )
+    }
+    if (
+        timeline.get("schema_version") != 1
+        or type(timeline.get("schema_version")) is not int
+        or timeline.get("source") != "dut-serial-timeline"
+        or {key: timeline[key] for key in timeline_projection} != timeline_projection
+        or shutdown.get("shutdown_timeline_sha256")
+        != commitments.get("shutdown_timeline_sha256")
+        or shutdown.get("serial_log_sha256") != commitments.get("serial_log_sha256")
+    ):
+        raise RunnerError(code, "BSC-12 shutdown claims are not derived from the timeline capture")
+
+    serial_events = parse_bsc12_serial_events(raw.get("serial-log"), duration_ms=duration_ms)
+    expected_serial = {
+        "shutdown-begin": shutdown["shutdown_begin_elapsed_ms"],
+        "handoff-begin": shutdown["handoff_begin_elapsed_ms"],
+        "wake-asserted": shutdown["wake_asserted_elapsed_ms"],
+        "power-off-returned-false": shutdown["power_off_return_elapsed_ms"],
+        "screen-restored-disconnected": shutdown["screen_restored_elapsed_ms"],
+        "marker-rewritten-unclean": shutdown["marker_rewritten_elapsed_ms"],
+        "reset-forced": reset["forced_elapsed_ms"],
+        "boot-observed": reset["boot_observed_elapsed_ms"],
+        "setting-readback": after_elapsed,
+        "bond-readback": after_elapsed,
+    }
+    if (
+        any(serial_events.get(event) != elapsed for event, elapsed in expected_serial.items())
+        or reset.get("serial_log_sha256") != commitments.get("serial_log_sha256")
+        or reset.get("panic_observed") is not ("panic" in serial_events)
+        or reset.get("watchdog_reset_observed") is not ("watchdog-reset" in serial_events)
+        or reset.get("load_prohibited_observed") is not ("load-prohibited" in serial_events)
+    ):
+        raise RunnerError(code, "BSC-12 reset/crash claims are not derived from the serial capture")
+
+    return {
+        "poweroff-returned-false": timeline["power_off_result"] is False,
+        "disconnected-screen-restored": timeline["screen_state"] == "disconnected",
+        "session-marker-unclean-after-reset": after["session_marker"] == "unclean",
+        "settings-writer-count": writers[0]["completion_count"],
+        "bond-writer-count": writers[1]["completion_count"],
+        "setting-survived-reset": secrets.compare_digest(before_setting, after_setting),
+        "bond-survived-reset": secrets.compare_digest(before_bond, after_bond),
+        "real-rtc-wake-input-observed": wake["observed_during_handoff"] is True,
+    }
+
+
+def validate_bsc12_facts(value: object, contracts: object) -> dict[str, object]:
+    code = "case_record_invalid"
+    if not isinstance(contracts, list) or [item.get("id") for item in contracts] != list(
+        BSC12_FACT_IDS
+    ):
+        raise RunnerError(code, "BSC-12 fact descriptor is invalid")
+    facts = require_exact_object(value, set(BSC12_FACT_IDS), code=code, label="BSC-12 facts")
+    for contract in contracts:
+        fact_id = contract["id"]
+        observed = facts.get(fact_id)
+        if contract.get("type") == "boolean":
+            if type(observed) is not bool or observed is not contract.get("expected"):
+                raise RunnerError(code, f"BSC-12 fact {fact_id} is invalid")
+        elif contract.get("type") == "integer":
+            if (
+                type(observed) is not int
+                or observed != contract.get("minimum")
+                or observed != contract.get("maximum")
+            ):
+                raise RunnerError(code, f"BSC-12 fact {fact_id} is invalid")
+        else:
+            raise RunnerError(code, "BSC-12 fact descriptor type is invalid")
+    return facts
+
+
+def validate_bsc12_adapter_record(
+    payload: object,
+    *,
+    expected: Mapping[str, object],
+    artifact_root: Path,
+    command_started: datetime | None = None,
+    command_completed: datetime | None = None,
+) -> dict[str, object]:
+    code = "case_record_invalid"
+    record = require_exact_object(
+        payload,
+        {
+            "schema_version",
+            "case_id",
+            "role_id",
+            "session_id",
+            "attempt_id",
+            "run_index",
+            "target_sha",
+            "dut_alias",
+            "rig_alias",
+            "execution_mode",
+            "hardware_observed",
+            "started_at_utc",
+            "completed_at_utc",
+            "case_descriptor",
+            "case_descriptor_sha256",
+            "descriptor",
+            "firmware",
+            "preconditions",
+            "safety_observation",
+            "stimuli",
+            "barriers",
+            "shutdown_observation",
+            "writers",
+            "persistence",
+            "reset",
+            "facts",
+            "capture_commitments",
+            "raw_artifact_manifest",
+            "evidence_binding_sha256",
+        },
+        code=code,
+        label="BSC-12 adapter record",
+    )
+    for field in (
+        "case_id",
+        "role_id",
+        "session_id",
+        "attempt_id",
+        "run_index",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+    ):
+        if record.get(field) != expected.get(field):
+            raise RunnerError(code, f"BSC-12 {field} does not match the runner invocation")
+    if (
+        type(record.get("schema_version")) is not int
+        or record.get("schema_version") != 1
+        or type(record.get("run_index")) is not int
+        or record.get("run_index") != 1
+        or type(record.get("hardware_observed")) is not bool
+    ):
+        raise RunnerError(code, "BSC-12 record identity types are invalid")
+
+    case_descriptor = expected.get("case_descriptor")
+    role_descriptor = expected.get("role_descriptor")
+    if not isinstance(case_descriptor, dict) or not isinstance(role_descriptor, dict):
+        raise RunnerError(code, "BSC-12 pinned descriptor binding is invalid")
+    descriptor_sha = bsc12_descriptor_commitment(case_descriptor)
+    if (
+        record.get("case_descriptor") != case_descriptor
+        or record.get("descriptor") != role_descriptor
+        or expected.get("case_descriptor_sha256") != descriptor_sha
+        or record.get("case_descriptor_sha256") != descriptor_sha
+    ):
+        raise RunnerError(code, "BSC-12 record does not match the pinned profile-v5 descriptor")
+
+    started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-12 start")
+    completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-12 completion")
+    if completed < started:
+        raise RunnerError(code, "BSC-12 completion predates its start")
+    if command_started is not None and started < command_started.replace(microsecond=0):
+        raise RunnerError(code, "BSC-12 physical record predates adapter execution")
+    if command_completed is not None and completed > command_completed.replace(microsecond=999999):
+        raise RunnerError(code, "BSC-12 physical record postdates adapter execution")
+    duration_ms = int((completed - started).total_seconds() * 1_000)
+    raw = validate_bsc12_raw_artifacts(
+        artifact_root,
+        record.get("raw_artifact_manifest"),
+        record.get("capture_commitments"),
+    )
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC12_CAPTURE_COMMITMENTS),
+        code=code,
+        label="BSC-12 capture commitments",
+    )
+
+    firmware = require_exact_object(
+        record.get("firmware"),
+        {
+            "environment",
+            "build_kind",
+            "target_sha",
+            "binary_sha256",
+            "hil_fault_control_active",
+        },
+        code=code,
+        label="BSC-12 firmware",
+    )
+    if (
+        firmware.get("environment") != BSC12_PRODUCTION_ENVIRONMENT
+        or firmware.get("build_kind") != "production"
+        or firmware.get("target_sha") != expected.get("target_sha")
+        or type(firmware.get("hil_fault_control_active")) is not bool
+        or firmware.get("hil_fault_control_active") is not False
+    ):
+        raise RunnerError(code, "BSC-12 firmware role or target is invalid")
+    require_sha256(firmware.get("binary_sha256"), code=code, label="BSC-12 firmware binary")
+
+    preconditions = require_exact_object(
+        record.get("preconditions"),
+        {"vbus_isolated", "destructive_reset_acknowledged"},
+        code=code,
+        label="BSC-12 preconditions",
+    )
+    if (
+        preconditions.get("vbus_isolated") is not True
+        or preconditions.get("destructive_reset_acknowledged") is not True
+    ):
+        raise RunnerError(code, "BSC-12 operator preconditions are incomplete")
+    safety = validate_bsc12_safety_observation(record.get("safety_observation"))
+
+    stimuli = validate_bsc12_stimuli(record.get("stimuli"), duration_ms=duration_ms)
+    barriers = validate_bsc12_barriers(record.get("barriers"), duration_ms=duration_ms)
+    shutdown = validate_bsc12_shutdown_observation(
+        record.get("shutdown_observation"), stimuli=stimuli, duration_ms=duration_ms
+    )
+    writers = validate_bsc12_writers(
+        record.get("writers"), stimuli=stimuli, duration_ms=duration_ms
+    )
+    persistence = validate_bsc12_persistence(record.get("persistence"))
+    reset = validate_bsc12_reset(
+        record.get("reset"),
+        reset_contract=role_descriptor["reset_contract"],
+        stimuli=stimuli,
+        duration_ms=duration_ms,
+    )
+    facts = validate_bsc12_facts(record.get("facts"), role_descriptor["facts"])
+    derived_facts = validate_bsc12_source_evidence(
+        raw,
+        commitments=commitments,
+        firmware=firmware,
+        safety=safety,
+        shutdown=shutdown,
+        writers=writers,
+        persistence=persistence,
+        reset=reset,
+        duration_ms=duration_ms,
+    )
+
+    wake_barrier, writers_barrier = barriers
+    if (
+        wake_barrier["ready_elapsed_ms"] != shutdown["handoff_begin_elapsed_ms"]
+        or wake_barrier["released_elapsed_ms"] != shutdown["power_off_return_elapsed_ms"]
+        or not wake_barrier["ready_elapsed_ms"]
+        <= shutdown["wake_asserted_elapsed_ms"]
+        < wake_barrier["released_elapsed_ms"]
+        or writers_barrier["ready_elapsed_ms"] != stimuli["wait-for-writers"]
+        or writers_barrier["released_elapsed_ms"]
+        != max(int(writer["completion_elapsed_ms"]) for writer in writers)
+        or facts != derived_facts
+        or reset["boot_observed_elapsed_ms"] > duration_ms
+    ):
+        raise RunnerError(code, "BSC-12 facts are not traceable to typed observations")
+
+    binding = require_sha256(
+        record.get("evidence_binding_sha256"), code=code, label="BSC-12 binding"
+    )
+    if not secrets.compare_digest(binding, bsc12_record_commitment(record)):
+        raise RunnerError(code, "BSC-12 evidence binding is stale")
+    return record
+
+
+def run_bsc12_adapter(
+    *,
+    adapter: Path,
+    repository: Path,
+    serial_port: str,
+    artifact_root: Path,
+    expected: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    command = [
+        str(adapter),
+        "--case",
+        BSC12_CASE_ID,
+        "--role-id",
+        str(expected["role_id"]),
+        "--case-descriptor-sha256",
+        str(expected["case_descriptor_sha256"]),
+        "--session-id",
+        str(expected["session_id"]),
+        "--attempt-id",
+        str(expected["attempt_id"]),
+        "--run-index",
+        str(expected["run_index"]),
+        "--target-sha",
+        str(expected["target_sha"]),
+        "--dut-alias",
+        str(expected["dut_alias"]),
+        "--rig-alias",
+        str(expected["rig_alias"]),
+        "--serial-port",
+        serial_port,
+        "--raw-artifact-dir",
+        str(artifact_root),
+        "--vbus-isolated",
+        "true",
+        "--destructive-reset-acknowledged",
+        "true",
+    ]
+    command_started = datetime.now(timezone.utc)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=BSC12_ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError("case_adapter_timeout", "BSC-12 adapter exceeded its bounded timeout") from exc
+    except OSError as exc:
+        raise RunnerError("case_adapter_unavailable", "BSC-12 adapter could not start") from exc
+    command_completed = datetime.now(timezone.utc)
+    if completed.returncode != 0:
+        raise RunnerError("case_adapter_failed", "BSC-12 adapter did not complete successfully")
+    if not completed.stdout or len(completed.stdout) > 128 * 1024:
+        raise RunnerError("case_record_invalid", "BSC-12 adapter output size is invalid")
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RunnerError("case_record_invalid", "BSC-12 adapter output is not strict JSON") from exc
+    physical = expected.get("execution_mode") == "physical"
+    return validate_bsc12_adapter_record(
+        payload,
+        expected=expected,
+        artifact_root=artifact_root,
+        command_started=command_started if physical else None,
+        command_completed=command_completed if physical else None,
+    )
+
+
+def run_bsc12_case(args: argparse.Namespace) -> int:
+    case_descriptor = load_bsc12_case_descriptor()
+    if args.runs != BSC12_REQUIRED_RUNS:
+        raise RunnerError("invalid_runs", "BSC-12 requires exactly one run")
+    if args.rig is None:
+        raise RunnerError("rig_alias_required", "BSC-12 requires an opaque local rig alias")
+    if args.resume:
+        raise RunnerError("unsupported_mode", "BSC-12 collection is atomic")
+    if args.production_replay:
+        raise RunnerError("unsupported_mode", "BSC-12 has no production-replay role")
+    role_descriptor = bsc12_role_descriptor(case_descriptor)
+    admission = admit_case_rig_adapter(
+        args,
+        case_contract=case_descriptor,
+        role_id=str(role_descriptor["role_id"]),
+    )
+    if not args.ack_vbus_isolated:
+        raise RunnerError(
+            "operator_preconditions_incomplete",
+            "BSC-12 requires explicit VBUS-isolation acknowledgement",
+        )
+    if not args.ack_destructive_hard_cuts:
+        raise RunnerError(
+            "safety_ack_required",
+            "BSC-12 requires destructive-reset acknowledgement",
+        )
+    if args.case_adapter is None:
+        raise RunnerError("case_adapter_required", "BSC-12 test execution requires a mocked adapter")
+
+    repository = args.repo_root.resolve()
+    git_state = read_git_state(repository)
+    if not git_state.tracked_clean:
+        raise RunnerError("dirty_target", "BSC-12 requires a clean target worktree")
+    adapter = args.case_adapter.resolve()
+    if not adapter.is_file() or adapter.is_symlink():
+        raise RunnerError("case_adapter_unavailable", "BSC-12 adapter must be a regular file")
+    adapter_sha = sha256_file(adapter)
+    dut_resolution, dut_attestation, rig_attestation = resolve_bsc12_hardware(
+        args, Path(args.pio_command), case_descriptor
+    )
+    endpoints = dut_resolution.get("endpoints")
+    if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
+        raise RunnerError("case_board_resolution_failed", "BSC-12 DUT has no serial endpoint")
+    serial_port = endpoints["serial_port"]
+    if not Path(serial_port).exists():
+        raise RunnerError("case_board_resolution_failed", "BSC-12 serial endpoint is not present")
+
+    role_id = str(role_descriptor["role_id"])
+    if args.out_dir is None:
+        run_id = datetime.now(timezone.utc).strftime("bsc12-%Y%m%dT%H%M%SZ")
+        run_root = ROOT / ".artifacts" / "hil" / "bug_squash_closeout" / f"{run_id}-{role_id}"
+    else:
+        run_root = Path(os.path.abspath(args.out_dir))
+    require_no_symlink_components(run_root, boundary=Path(os.path.abspath(args.repo_root)).parent)
+    if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
+        raise RunnerError("output_not_empty", "BSC-12 output must be new")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    session_id = f"bsc12-{secrets.token_hex(16)}"
+    attempt_id = f"attempt-{secrets.token_hex(16)}"
+    descriptor_sha = bsc12_descriptor_commitment(case_descriptor)
+    expected: dict[str, object] = {
+        "case_id": BSC12_CASE_ID,
+        "role_id": role_id,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "run_index": 1,
+        "target_sha": git_state.head_sha,
+        "dut_alias": args.board,
+        "rig_alias": args.rig,
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "case_descriptor": case_descriptor,
+        "case_descriptor_sha256": descriptor_sha,
+        "role_descriptor": role_descriptor,
+    }
+    require_unchanged_git_state(repository, git_state)
+    raw_artifact_root = run_root / "raw"
+    raw_artifact_root.mkdir()
+    record = run_bsc12_adapter(
+        adapter=adapter,
+        repository=repository,
+        serial_port=serial_port,
+        artifact_root=raw_artifact_root,
+        expected=expected,
+        environment=os.environ.copy(),
+    )
+    require_unchanged_git_state(repository, git_state)
+    attempt_path = run_root / "attempt.json"
+    write_json_atomic(attempt_path, record)
+    firmware = record["firmware"]
+    assert isinstance(firmware, dict)
+    adapter_role = next(role for role in admission.adapter.roles if role.role_id == role_id)
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_kind": "bug-squash-bsc12-aborted-shutdown-recovery",
+        "case_id": BSC12_CASE_ID,
+        "collection_role": role_id,
+        "case_descriptor_sha256": descriptor_sha,
+        "target_sha": git_state.head_sha,
+        "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
+        "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
+        "execution_mode": "simulated",
+        "hardware_observed": False,
+        "authoritative": False,
+        "physical_collection_completed": False,
+        "non_qualifying": True,
+        "qualification_status": "BLOCKED",
+        "qualification_blockers": list(
+            case_drivers.get_case_driver(BSC12_CASE_ID).qualification_blockers
+        ),
+        "artifact_role": "non-qualifying-case-collection",
+        "result": "TEST_PASS",
+        "runs_required": BSC12_REQUIRED_RUNS,
+        "runs_completed": 1,
+        "production_replay_required": False,
+        "vbus_isolation_acknowledged": True,
+        "destructive_reset_acknowledged": True,
+        "firmware_target": {
+            "environment": firmware["environment"],
+            "build_kind": firmware["build_kind"],
+            "target_sha": firmware["target_sha"],
+            "binary_sha256": firmware["binary_sha256"],
+            "hil_fault_control_active": firmware["hil_fault_control_active"],
+        },
+        "raw_artifact_contract": [
+            {
+                "role": artifact.role,
+                "filename": artifact.filename,
+                "maximum_bytes": artifact.maximum_bytes,
+            }
+            for artifact in adapter_role.raw_artifacts
+        ],
+        "raw_artifact_sha256": {
+            role: record["capture_commitments"][commitment]
+            for role, _, commitment in BSC12_CAPTURE_ROLE_FIELDS
+        },
+        "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "artifact_sha256": {
+            "adapter_record": sha256_file(attempt_path),
+            "adapter": adapter_sha,
+            "runner": sha256_file(Path(__file__)),
+            "rig_adapter_registry": sha256_file(ROOT / rig_adapters.REGISTRY_SOURCE_PATH),
+            "inventory": sha256_file(args.inventory.resolve()),
+            "dut_attestation": canonical_case_commitment(
+                "v1simple.bsc12.dut-attestation.v1", dut_attestation
+            ),
+            "rig_attestation": canonical_case_commitment(
+                "v1simple.bsc12.rig-attestation.v1", rig_attestation
+            ),
+        },
+    }
+    write_json_atomic(run_root / "collection_result.json", result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> int:
     """Fail closed at the tracked rig boundary for a registered case.
 
@@ -9279,10 +10617,6 @@ def run_bsc08_case(args: argparse.Namespace) -> int:
 
 def run_bsc09_case(args: argparse.Namespace) -> int:
     return run_registered_case_foundation(args, "BSC-09")
-
-
-def run_bsc12_case(args: argparse.Namespace) -> int:
-    return run_registered_case_foundation(args, "BSC-12")
 
 
 def build_parser() -> argparse.ArgumentParser:

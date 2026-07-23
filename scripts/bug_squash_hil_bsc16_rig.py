@@ -584,8 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         perform_stimulus(
             instruction=(
-                "Keep USB data connected through the isolator with VBUS OFF. "
-                "Set battery-only power, arm the analyzer, and wake with PWR."
+                "Connect the data-only USB cable (no VBUS), set battery-only power, "
+                "arm the analyzer, and wake with PWR."
             ),
             stimulus_id="pwr-wake-on-battery",
             duration_seconds=7.0,
@@ -596,8 +596,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         perform_stimulus(
             instruction=(
-                "Keep USB data connected. Remove battery power and switch only isolated "
-                "USB VBUS ON for a cold boot on ACTION NOW."
+                "Remove all power and disconnect the data-only cable. Connect the powered "
+                "USB cable for a cold boot on ACTION NOW."
             ),
             stimulus_id="usb-cold-boot",
             duration_seconds=7.0,
@@ -621,8 +621,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             perform_stimulus(
                 instruction=(
-                    "Keep USB data connected with VBUS OFF. With the one-shot ADC fault staged, "
-                    "power-cycle the battery rail and wake with PWR on ACTION NOW."
+                    "Replace powered USB with the data-only cable. With the one-shot ADC fault "
+                    "staged and VBUS absent, power-cycle the battery rail and wake with PWR "
+                    "on ACTION NOW."
                 ),
                 stimulus_id="force-adc-init-failure",
                 duration_seconds=9.0,
@@ -634,7 +635,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         perform_stimulus(
             instruction=(
-                "Keep USB data connected with VBUS OFF. On battery-only power, hold PWR "
+                "Keep the data-only USB cable connected. On battery-only power, hold PWR "
                 "for at least two seconds on ACTION NOW."
             ),
             stimulus_id="hold-power-button",
@@ -655,8 +656,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         perform_stimulus(
             instruction=(
-                "Keep USB data connected and VBUS OFF. Boot on battery, then switch only "
-                "isolated USB VBUS ON on ACTION NOW."
+                "Boot on battery with the data-only USB cable. Replace it with the powered "
+                "USB cable on ACTION NOW; battery must sustain the cable swap."
             ),
             stimulus_id="transition-battery-to-usb",
             duration_seconds=7.0,
@@ -667,8 +668,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         perform_stimulus(
             instruction=(
-                "Keep USB data connected. While running on USB, switch only isolated USB "
-                "VBUS OFF to continue on battery on ACTION NOW."
+                "While running with the powered USB cable, replace it with the data-only "
+                "USB cable on ACTION NOW; battery must sustain the cable swap."
             ),
             stimulus_id="transition-usb-to-battery",
             duration_seconds=7.0,

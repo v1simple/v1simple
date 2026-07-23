@@ -279,7 +279,7 @@ BSC11_CAPTURE_COMMITMENTS = (
     "v1_exchange_sha256",
 )
 BSC12_CASE_ID = "BSC-12"
-BSC12_PROFILE_VERSION = 5
+BSC12_PROFILE_VERSION = 6
 BSC12_PRODUCTION_ENVIRONMENT = "waveshare-349"
 BSC12_REQUIRED_RUNS = 1
 BSC12_ADAPTER_TIMEOUT_SECONDS = 1_800
@@ -354,7 +354,7 @@ BSC10_CAPTURE_COMMITMENTS = (
 )
 BSC09_CASE_ID = "BSC-09"
 BSC09_PROFILE_ID = "bug-squash-hil-v1"
-BSC09_PROFILE_VERSION = 5
+BSC09_PROFILE_VERSION = 6
 BSC09_PRODUCTION_ENVIRONMENT = "waveshare-349"
 BSC09_REQUIRED_RUNS = 3
 BSC09_ADAPTER_TIMEOUT_SECONDS = 1_800
@@ -8368,7 +8368,7 @@ def run_bsc10_case(args: argparse.Namespace) -> int:
 
 def load_bsc07_case_descriptor() -> dict[str, object]:
     profile, errors = qualification.load_pinned_profile()
-    if profile is None or errors or profile.get("profile_version") != 5:
+    if profile is None or errors or profile.get("profile_version") != 6:
         raise RunnerError(
             "qualification_profile_invalid",
             "pinned BSC-07 qualification descriptor is invalid",
@@ -8436,7 +8436,7 @@ def load_bsc07_case_descriptor() -> dict[str, object]:
     ):
         raise RunnerError(
             "case_driver_contract_invalid",
-            "BSC-07 profile-v5 contract drifted",
+            "BSC-07 profile-v6 contract drifted",
         )
     return descriptor
 
@@ -9250,7 +9250,7 @@ def admit_case_rig_adapter(
 def bsc08_profile_descriptor() -> dict[str, object]:
     code = "case_driver_contract_invalid"
     profile, errors = qualification.load_pinned_profile()
-    if profile is None or errors or profile.get("profile_version") != 5:
+    if profile is None or errors or profile.get("profile_version") != 6:
         raise RunnerError(code, "BSC-08 requires the exact pinned profile v5 contract")
     contract = next(
         (candidate for candidate in profile["required_cases"] if candidate["id"] == BSC08_CASE_ID),
@@ -10464,7 +10464,7 @@ def load_bsc12_case_descriptor() -> dict[str, object]:
     ):
         raise RunnerError(
             "qualification_profile_invalid",
-            "BSC-12 requires the exact pinned profile-v5 contract",
+            "BSC-12 requires the exact pinned profile-v6 contract",
         )
     matches = [
         case for case in profile["required_cases"] if case.get("id") == BSC12_CASE_ID
@@ -11438,7 +11438,7 @@ def validate_bsc12_adapter_record(
         or expected.get("case_descriptor_sha256") != descriptor_sha
         or record.get("case_descriptor_sha256") != descriptor_sha
     ):
-        raise RunnerError(code, "BSC-12 record does not match the pinned profile-v5 descriptor")
+        raise RunnerError(code, "BSC-12 record does not match the pinned profile-v6 descriptor")
 
     started = parse_runner_utc(record.get("started_at_utc"), code=code, label="BSC-12 start")
     completed = parse_runner_utc(record.get("completed_at_utc"), code=code, label="BSC-12 completion")
@@ -12255,7 +12255,7 @@ def load_bsc09_case_descriptor() -> dict[str, object]:
     ):
         raise RunnerError(
             "qualification_profile_invalid",
-            "BSC-09 requires the exact pinned profile-v5 contract",
+            "BSC-09 requires the exact pinned profile-v6 contract",
         )
     descriptor = next(
         (case for case in profile["required_cases"] if case.get("id") == BSC09_CASE_ID),
@@ -12312,7 +12312,7 @@ def load_bsc09_case_descriptor() -> dict[str, object]:
         != {"expected_kind": "none", "expected_count": 0, "unexpected_count": 0}
         or role.get("facts") != expected_facts
     ):
-        raise RunnerError("case_driver_contract_invalid", "BSC-09 profile-v5 contract drifted")
+        raise RunnerError("case_driver_contract_invalid", "BSC-09 profile-v6 contract drifted")
     return descriptor
 
 

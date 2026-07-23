@@ -532,7 +532,6 @@ class Bsc09CollectorTests(unittest.TestCase):
             self.assertEqual(
                 result["qualification_blockers"],
                 [
-                    "build-generator-provenance-not-authenticated",
                     "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],

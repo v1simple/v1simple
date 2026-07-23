@@ -176,14 +176,13 @@ class CaseDriverRegistryTests(unittest.TestCase):
         self.assertIs(runner.resolve_case_handler(bsc05), runner.run_bsc05_case)
         self.assertIsNot(runner.run_bsc05_case, runner.run_registered_case_foundation)
 
-    def test_bsc07_owns_the_typed_profile_v5_production_collector(self) -> None:
+    def test_bsc07_owns_the_typed_profile_v6_production_collector(self) -> None:
         bsc07 = case_drivers.get_case_driver("BSC-07")
         self.assertTrue(bsc07.implemented)
         self.assertNotIn("hil-fault-control-not-implemented", bsc07.qualification_blockers)
         self.assertEqual(
             bsc07.qualification_blockers,
             (
-                "build-generator-provenance-not-authenticated",
                 "board-resolution-provenance-not-authenticated",
                 "tracked-rig-adapter-not-implemented",
             ),

@@ -353,6 +353,12 @@ class RigAdapterRegistryTests(unittest.TestCase):
                     "rig",
                     "--serial-port",
                     "/not/a/device",
+                    "--template",
+                    "/not/a/template",
+                    "--inventory",
+                    "/not/an/inventory",
+                    "--pio-command",
+                    "pio",
                     "--artifact-dir",
                     str(artifact_root),
                     "--raw-artifact-request-sha256",
@@ -364,6 +370,41 @@ class RigAdapterRegistryTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertEqual(completed.stdout, b"")
             self.assertEqual(list(artifact_root.iterdir()), [])
+
+    def test_bsc16_adapter_reresolves_exact_serial_after_device_renumber(self) -> None:
+        endpoint_resolver = bsc16_rig.SerialEndpointResolver(
+            template=Path("/template"),
+            inventory=Path("/inventory"),
+            dut_alias="dut",
+            pio_command="pio",
+        )
+        records = ([{"port": "/first"}], [{"port": "/second"}])
+
+        def resolve_board(
+            _inventory: object,
+            _alias: str,
+            _capabilities: tuple[str, ...],
+            *,
+            port_records: list[dict[str, str]],
+        ) -> dict[str, object]:
+            return {"endpoints": {"serial_port": port_records[0]["port"]}}
+
+        with mock.patch.object(
+            bsc16_rig.resolve_hil_board,
+            "load_inventory",
+            return_value=object(),
+        ), mock.patch.object(
+            bsc16_rig.resolve_hil_board,
+            "enumerate_serial_ports",
+            side_effect=records,
+        ) as enumerate_ports, mock.patch.object(
+            bsc16_rig.resolve_hil_board,
+            "resolve_board",
+            side_effect=resolve_board,
+        ):
+            self.assertEqual(endpoint_resolver(), "/first")
+            self.assertEqual(endpoint_resolver(), "/second")
+        self.assertEqual(enumerate_ports.call_count, 2)
 
     def test_bsc16_logic_capture_is_measured_and_high_bounce_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

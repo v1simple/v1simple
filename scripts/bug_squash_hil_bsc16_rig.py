@@ -22,9 +22,10 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import serial
+import resolve_hil_board
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,46 @@ ARTIFACT_FILENAMES = {
 
 class AdapterError(RuntimeError):
     """Fail-closed physical adapter error safe to summarize."""
+
+
+class SerialEndpointResolver:
+    """Re-resolve the exact USB identity after every destructive power action."""
+
+    def __init__(
+        self,
+        *,
+        template: Path,
+        inventory: Path,
+        dut_alias: str,
+        pio_command: str,
+    ) -> None:
+        self.template = template
+        self.inventory = inventory
+        self.dut_alias = dut_alias
+        self.pio_command = pio_command
+
+    def __call__(self) -> str:
+        try:
+            inventory = resolve_hil_board.load_inventory(
+                self.template,
+                self.inventory,
+            )
+            resolution = resolve_hil_board.resolve_board(
+                inventory,
+                self.dut_alias,
+                ("serial",),
+                port_records=resolve_hil_board.enumerate_serial_ports(
+                    self.pio_command
+                ),
+            )
+        except resolve_hil_board.ResolverError as exc:
+            raise AdapterError("exact USB-serial endpoint is not currently resolvable") from exc
+        endpoints = resolution.get("endpoints")
+        if not isinstance(endpoints, dict) or not isinstance(
+            endpoints.get("serial_port"), str
+        ):
+            raise AdapterError("exact USB-serial resolution lacks a serial endpoint")
+        return endpoints["serial_port"]
 
 
 def utc_now() -> str:
@@ -140,7 +181,7 @@ def prompt_pass(question: str) -> None:
 
 
 def capture_serial(
-    serial_port: str,
+    resolve_serial_port: Callable[[], str],
     *,
     duration_seconds: float,
     run_started: float,
@@ -151,9 +192,10 @@ def capture_serial(
     opened = False
     while time.monotonic() < deadline:
         try:
+            serial_port = resolve_serial_port()
             handle = serial.Serial(serial_port, 115200, timeout=0.2)
-        except (OSError, serial.SerialException):
-            time.sleep(0.2)
+        except (AdapterError, OSError, serial.SerialException):
+            time.sleep(0.5)
             continue
         opened = True
         with handle:
@@ -181,7 +223,7 @@ def capture_serial(
 
 
 def send_hil_command(
-    serial_port: str,
+    resolve_serial_port: Callable[[], str],
     command: str,
     *,
     run_started: float,
@@ -189,8 +231,9 @@ def send_hil_command(
 ) -> None:
     deadline = time.monotonic() + 8.0
     try:
+        serial_port = resolve_serial_port()
         handle = serial.Serial(serial_port, 115200, timeout=0.2)
-    except (OSError, serial.SerialException) as exc:
+    except (AdapterError, OSError, serial.SerialException) as exc:
         raise AdapterError("HIL serial endpoint could not be opened") from exc
     accepted = False
     with handle:
@@ -226,7 +269,12 @@ def send_hil_command(
         raise AdapterError("HIL serial command was not positively acknowledged")
 
 
-def run_firmware_install(environment: str, serial_port: str, target_sha: str) -> tuple[str, dict[str, object]]:
+def run_firmware_install(
+    environment: str,
+    resolve_serial_port: Callable[[], str],
+    target_sha: str,
+) -> tuple[str, dict[str, object]]:
+    serial_port = resolve_serial_port()
     commands = (
         ["pio", "run", "-e", environment],
         ["pio", "run", "-e", environment, "-t", "upload", "--upload-port", serial_port],
@@ -410,7 +458,7 @@ def perform_stimulus(
     stimulus_id: str,
     duration_seconds: float,
     run_started: float,
-    serial_port: str,
+    resolve_serial_port: Callable[[], str],
     serial_rows: list[dict[str, object]],
     stimuli: list[dict[str, object]],
 ) -> None:
@@ -418,7 +466,7 @@ def perform_stimulus(
     started_ms = int((time.monotonic() - run_started) * 1000)
     serial_rows.extend(
         capture_serial(
-            serial_port,
+            resolve_serial_port,
             duration_seconds=duration_seconds,
             run_started=run_started,
             stimulus_id=stimulus_id,
@@ -445,6 +493,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dut-alias", required=True)
     parser.add_argument("--rig-alias", required=True)
     parser.add_argument("--serial-port", required=True)
+    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument("--pio-command", required=True)
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--raw-artifact-request-sha256", required=True)
     return parser
@@ -477,13 +528,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         started_at = utc_now()
         run_started = time.monotonic()
         environment = "waveshare-349-hil" if args.role == "fault-collection" else "waveshare-349"
+        resolve_serial_port = SerialEndpointResolver(
+            template=args.template,
+            inventory=args.inventory,
+            dut_alias=args.dut_alias,
+            pio_command=args.pio_command,
+        )
         print(
             f"\nStarting BSC-16 {args.role}. Keep USB VBUS isolated for every true battery cut.",
             file=sys.stderr,
             flush=True,
         )
         binary_sha, build_evidence = run_firmware_install(
-            environment, args.serial_port, args.target_sha
+            environment, resolve_serial_port, args.target_sha
         )
         build_evidence["evidence_label"] = (
             "fault-instrumented"
@@ -502,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimulus_id="pwr-wake-on-battery",
             duration_seconds=7.0,
             run_started=run_started,
-            serial_port=args.serial_port,
+            resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
@@ -511,7 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimulus_id="usb-cold-boot",
             duration_seconds=7.0,
             run_started=run_started,
-            serial_port=args.serial_port,
+            resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
@@ -524,7 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"V1HIL NEXT_BOOT BSC-16 battery-adc-init-fail-once {session_hash} 7",
             ):
                 send_hil_command(
-                    args.serial_port,
+                    resolve_serial_port,
                     command,
                     run_started=run_started,
                     serial_rows=serial_rows,
@@ -537,7 +594,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 stimulus_id="force-adc-init-failure",
                 duration_seconds=9.0,
                 run_started=run_started,
-                serial_port=args.serial_port,
+                resolve_serial_port=resolve_serial_port,
                 serial_rows=serial_rows,
                 stimuli=stimuli,
             )
@@ -547,7 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimulus_id="hold-power-button",
             duration_seconds=7.0,
             run_started=run_started,
-            serial_port=args.serial_port,
+            resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
@@ -565,7 +622,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimulus_id="transition-battery-to-usb",
             duration_seconds=7.0,
             run_started=run_started,
-            serial_port=args.serial_port,
+            resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
@@ -574,7 +631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimulus_id="transition-usb-to-battery",
             duration_seconds=7.0,
             run_started=run_started,
-            serial_port=args.serial_port,
+            resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
@@ -698,7 +755,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         record["evidence_binding_sha256"] = commitment(record)
         sys.stdout.buffer.write(canonical_json_bytes(record) + b"\n")
         return 0
-    except (AdapterError, EOFError, KeyboardInterrupt):
+    except AdapterError as exc:
+        print(
+            f"BSC-16 adapter failed closed: {exc}. No qualifying record was emitted.",
+            file=sys.stderr,
+        )
+        return 2
+    except (EOFError, KeyboardInterrupt):
         print("BSC-16 adapter failed closed; no qualifying record was emitted.", file=sys.stderr)
         return 2
 

@@ -363,7 +363,9 @@ def require_classification(
 ) -> list[tuple[int, str]]:
     observed = classifications(rows, stimulus_id)
     if not observed or expected not in {value for _, value in observed}:
-        raise AdapterError("required source classification was not captured")
+        raise AdapterError(
+            f"required {expected} source classification was not captured for {stimulus_id}"
+        )
     return observed
 
 
@@ -581,7 +583,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         poweroff_rows: list[dict[str, object]] = []
 
         perform_stimulus(
-            instruction="Set battery-only power with USB VBUS isolated, arm the analyzer, and wake with PWR.",
+            instruction=(
+                "Keep USB data connected through the isolator with VBUS OFF. "
+                "Set battery-only power, arm the analyzer, and wake with PWR."
+            ),
             stimulus_id="pwr-wake-on-battery",
             duration_seconds=7.0,
             run_started=run_started,
@@ -590,7 +595,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimuli=stimuli,
         )
         perform_stimulus(
-            instruction="Remove all power, configure USB cold boot, and connect USB on ACTION NOW.",
+            instruction=(
+                "Keep USB data connected. Remove battery power and switch only isolated "
+                "USB VBUS ON for a cold boot on ACTION NOW."
+            ),
             stimulus_id="usb-cold-boot",
             duration_seconds=7.0,
             run_started=run_started,
@@ -613,8 +621,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             perform_stimulus(
                 instruction=(
-                    "With the one-shot ADC fault staged, switch to battery-only, power-cycle, "
-                    "and wake with PWR on ACTION NOW."
+                    "Keep USB data connected with VBUS OFF. With the one-shot ADC fault staged, "
+                    "power-cycle the battery rail and wake with PWR on ACTION NOW."
                 ),
                 stimulus_id="force-adc-init-failure",
                 duration_seconds=9.0,
@@ -625,7 +633,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         perform_stimulus(
-            instruction="On battery-only power, hold PWR for at least two seconds on ACTION NOW.",
+            instruction=(
+                "Keep USB data connected with VBUS OFF. On battery-only power, hold PWR "
+                "for at least two seconds on ACTION NOW."
+            ),
             stimulus_id="hold-power-button",
             duration_seconds=7.0,
             run_started=run_started,
@@ -643,7 +654,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         perform_stimulus(
-            instruction="Boot on battery, then connect isolated USB source on ACTION NOW.",
+            instruction=(
+                "Keep USB data connected and VBUS OFF. Boot on battery, then switch only "
+                "isolated USB VBUS ON on ACTION NOW."
+            ),
             stimulus_id="transition-battery-to-usb",
             duration_seconds=7.0,
             run_started=run_started,
@@ -652,7 +666,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             stimuli=stimuli,
         )
         perform_stimulus(
-            instruction="While running on USB, disconnect the USB source to battery on ACTION NOW.",
+            instruction=(
+                "Keep USB data connected. While running on USB, switch only isolated USB "
+                "VBUS OFF to continue on battery on ACTION NOW."
+            ),
             stimulus_id="transition-usb-to-battery",
             duration_seconds=7.0,
             run_started=run_started,

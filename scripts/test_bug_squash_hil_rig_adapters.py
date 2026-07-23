@@ -406,6 +406,23 @@ class RigAdapterRegistryTests(unittest.TestCase):
             self.assertEqual(endpoint_resolver(), "/second")
         self.assertEqual(enumerate_ports.call_count, 2)
 
+    def test_bsc16_serial_endpoint_disables_reset_lines_before_open(self) -> None:
+        handle = mock.Mock()
+
+        def assert_safe_open() -> None:
+            self.assertFalse(handle.dtr)
+            self.assertFalse(handle.rts)
+            self.assertEqual(handle.port, "/resolved-port")
+
+        handle.open.side_effect = assert_safe_open
+        with mock.patch.object(bsc16_rig.serial, "Serial", return_value=handle) as serial_factory:
+            self.assertIs(
+                bsc16_rig.open_serial_endpoint("/resolved-port", 0.2),
+                handle,
+            )
+        serial_factory.assert_called_once_with(port=None, baudrate=115200, timeout=0.2)
+        handle.open.assert_called_once_with()
+
     def test_bsc16_logic_capture_is_measured_and_high_bounce_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

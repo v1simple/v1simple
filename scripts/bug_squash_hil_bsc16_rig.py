@@ -180,6 +180,15 @@ def prompt_pass(question: str) -> None:
         raise AdapterError("physical observation did not pass")
 
 
+def open_serial_endpoint(serial_port: str, timeout: float) -> serial.Serial:
+    handle = serial.Serial(port=None, baudrate=115200, timeout=timeout)
+    handle.dtr = False
+    handle.rts = False
+    handle.port = serial_port
+    handle.open()
+    return handle
+
+
 def capture_serial(
     resolve_serial_port: Callable[[], str],
     *,
@@ -193,7 +202,7 @@ def capture_serial(
     while time.monotonic() < deadline:
         try:
             serial_port = resolve_serial_port()
-            handle = serial.Serial(serial_port, 115200, timeout=0.2)
+            handle = open_serial_endpoint(serial_port, 0.2)
         except (AdapterError, OSError, serial.SerialException):
             time.sleep(0.5)
             continue
@@ -232,7 +241,7 @@ def send_hil_command(
     deadline = time.monotonic() + 8.0
     try:
         serial_port = resolve_serial_port()
-        handle = serial.Serial(serial_port, 115200, timeout=0.2)
+        handle = open_serial_endpoint(serial_port, 0.2)
     except (AdapterError, OSError, serial.SerialException) as exc:
         raise AdapterError("HIL serial endpoint could not be opened") from exc
     accepted = False

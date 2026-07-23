@@ -122,12 +122,15 @@ class CaseDriverRegistryTests(unittest.TestCase):
                 payload = json.loads(completed.stdout)
                 self.assertEqual(payload["error"]["code"], "case_rig_adapter_unavailable")
 
-    def test_bsc11_owns_its_blocker_contract(self) -> None:
+    def test_bsc03_and_bsc11_own_their_production_only_blocker_contracts(self) -> None:
         bsc03 = case_drivers.get_case_driver("BSC-03")
         bsc11 = case_drivers.get_case_driver("BSC-11")
-        self.assertIn("hil-fault-control-not-implemented", bsc03.qualification_blockers)
-        self.assertNotIn("hil-fault-control-not-implemented", bsc11.qualification_blockers)
-        self.assertIn("tracked-rig-adapter-not-implemented", bsc11.qualification_blockers)
+        for driver in (bsc03, bsc11):
+            with self.subTest(case_id=driver.case_id):
+                self.assertTrue(driver.implemented)
+                self.assertNotIn("hil-fault-control-not-implemented", driver.qualification_blockers)
+                self.assertIn("tracked-rig-adapter-not-implemented", driver.qualification_blockers)
+                self.assertIs(runner.resolve_case_handler(driver), runner.case_handler_map()[driver.entrypoint])
 
     def test_bsc16_owns_the_implemented_fault_hook_contract(self) -> None:
         bsc16 = case_drivers.get_case_driver("BSC-16")

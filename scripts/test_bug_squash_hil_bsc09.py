@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -15,6 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import bug_squash_hil_adapter_protocol as adapter_protocol
 import bug_squash_hil_rig_adapters as rig_adapters
 import run_bug_squash_hil as runner
 
@@ -89,7 +91,7 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
     ]
     manifest: dict[str, object] = {
         "schema_version": 1,
-        "role_id": expected["role_id"],
+        "protocol_version": rig_adapters.ADAPTER_PROTOCOL_VERSION,
         "request_commitment_sha256": expected["adapter_request_sha256"],
         "artifacts": artifacts,
     }
@@ -179,11 +181,11 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
         ],
         "scan_lifecycle": {
             "source": "WiFiScanTrace",
-            "capture_sha256": captures["wifi_scan_trace_sha256"],
+            "capture_sha256": captures["wifi_scan_projection_sha256"],
             "events": lifecycle,
         },
         "browser_trace": {
-            "capture_sha256": captures["browser_trace_sha256"],
+            "capture_sha256": captures["browser_projection_sha256"],
             "steps": browser_steps,
         },
         "barriers": [
@@ -198,7 +200,7 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
             }
         ],
         "heap_trace": {
-            "capture_sha256": captures["heap_trace_sha256"],
+            "capture_sha256": captures["heap_projection_sha256"],
             "integrity_ok": True,
             "samples": [
                 {
@@ -225,7 +227,7 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
             ],
         },
         "wifi_mode_trace": {
-            "capture_sha256": captures["wifi_mode_trace_sha256"],
+            "capture_sha256": captures["wifi_mode_projection_sha256"],
             "samples": [
                 {"phase": "maintenance-start", "sequence": 1, "elapsed_ms": 1000, "mode": "AP_STA", "settled": False},
                 {"phase": "scan-overlap", "sequence": 2, "elapsed_ms": 4500, "mode": "AP_STA", "settled": False},
@@ -240,7 +242,7 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
             "panic_observed": False,
             "watchdog_reset_observed": False,
             "heap_corruption_observed": False,
-            "capture_sha256": captures["serial_log_sha256"],
+            "capture_sha256": captures["health_projection_sha256"],
         },
         "facts": {
             "maintenance-snapshot-stable": True,
@@ -256,6 +258,54 @@ def valid_record(expected: dict[str, object]) -> dict[str, object]:
     }
     rebind_record(record)
     return record
+
+
+def valid_raw_projections(expected: dict[str, object]) -> dict[str, dict[str, object]]:
+    record = valid_record(expected)
+    case_fields = {
+        "schema_version",
+        "case_id",
+        "role_id",
+        "run_index",
+        "session_id",
+        "attempt_id",
+        "target_sha",
+        "dut_alias",
+        "rig_alias",
+        "execution_mode",
+        "hardware_observed",
+        "qualification_profile",
+        "case_descriptor_sha256",
+        "adapter_request_sha256",
+        "started_at_utc",
+        "completed_at_utc",
+        "duration_ms",
+        "dut_capabilities",
+        "rig_capabilities",
+        "stimuli",
+        "barriers",
+        "facts",
+    }
+
+    def projection(field: str) -> dict[str, object]:
+        value = copy.deepcopy(record[field])
+        assert isinstance(value, dict)
+        value.pop("capture_sha256")
+        return {
+            "schema_version": 1,
+            "request_commitment_sha256": expected["adapter_request_sha256"],
+            **value,
+        }
+
+    return {
+        "browser-projection": projection("browser_trace"),
+        "case-observation": {key: copy.deepcopy(record[key]) for key in case_fields},
+        "firmware-build": projection("firmware"),
+        "health-projection": projection("health"),
+        "heap-projection": projection("heap_trace"),
+        "wifi-mode-projection": projection("wifi_mode_trace"),
+        "wifi-scan-projection": projection("scan_lifecycle"),
+    }
 
 
 def write_executable(path: Path, source: str) -> None:
@@ -332,10 +382,12 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
         """#!/usr/bin/env python3
 import json
 import os
+from pathlib import Path
 import sys
 
 root = os.environ['V1SIMPLE_BSC09_TEST_ROOT']
 sys.path.insert(0, root + '/scripts')
+import bug_squash_hil_adapter_protocol as adapter_protocol
 import run_bug_squash_hil as runner
 import test_bug_squash_hil_bsc09 as tests
 
@@ -366,7 +418,20 @@ expected = {
     'dut_capabilities': list(runner.BSC09_DUT_CAPABILITIES),
     'rig_capabilities': list(runner.BSC09_RIG_CAPABILITIES),
 }
-sys.stdout.write(json.dumps(tests.valid_record(expected)))
+raw_directory = Path(argument('--raw-artifact-dir'))
+projections = tests.valid_raw_projections(expected)
+role = runner.rig_adapters.get_rig_adapter('BSC-09').roles[0]
+for contract in role.raw_artifacts:
+    (raw_directory / contract.filename).write_bytes(
+        adapter_protocol.canonical_json_bytes(projections[contract.role]) + b'\\n'
+    )
+sys.stdout.write(json.dumps({
+    'schema_version': 1,
+    'protocol_version': runner.rig_adapters.ADAPTER_PROTOCOL_VERSION,
+    'status': 'complete',
+    'request_commitment_sha256': expected['adapter_request_sha256'],
+    'nonce': expected['attempt_id'],
+}))
 """,
     )
     return {
@@ -514,8 +579,8 @@ class Bsc09CollectorTests(unittest.TestCase):
             "dut-capability": lambda row: row["dut_capabilities"].pop(),
             "rig-capability": lambda row: row["rig_capabilities"].pop(),
             "capture-extra": lambda row: row["capture_commitments"].__setitem__("unrelated_sha256", digest("unrelated")),
-            "capture-unrelated": lambda row: row["capture_commitments"].__setitem__("browser_trace_sha256", digest("unrelated")),
-            "capture-reuse": lambda row: row["capture_commitments"].__setitem__("serial_log_sha256", row["capture_commitments"]["heap_trace_sha256"]),
+            "capture-unrelated": lambda row: row["capture_commitments"].__setitem__("browser_projection_sha256", digest("unrelated")),
+            "capture-reuse": lambda row: row["capture_commitments"].__setitem__("health_projection_sha256", row["capture_commitments"]["heap_projection_sha256"]),
             "manifest-order": lambda row: row["raw_artifact_manifest"]["artifacts"].__setitem__(slice(0, 2), list(reversed(row["raw_artifact_manifest"]["artifacts"][0:2]))),
             "manifest-reuse": lambda row: row["raw_artifact_manifest"]["artifacts"][1].__setitem__("sha256", row["raw_artifact_manifest"]["artifacts"][0]["sha256"]),
             "session-replay": lambda row: row.__setitem__("session_id", "bsc09-replayed-session"),
@@ -553,7 +618,7 @@ class Bsc09CollectorTests(unittest.TestCase):
                 runner.validate_bsc09_runs(replay)
 
         capture_reuse = copy.deepcopy(records)
-        capture_reuse[2]["capture_commitments"]["browser_trace_sha256"] = capture_reuse[1]["capture_commitments"]["browser_trace_sha256"]
+        capture_reuse[2]["capture_commitments"]["browser_projection_sha256"] = capture_reuse[1]["capture_commitments"]["browser_projection_sha256"]
         with self.assertRaises(runner.RunnerError):
             runner.validate_bsc09_runs(capture_reuse)
 
@@ -610,6 +675,136 @@ class Bsc09CollectorTests(unittest.TestCase):
             resolve_hardware.assert_not_called()
             self.assertFalse(out_dir.exists())
             self.assertFalse(inventory.exists())
+
+    def test_adapter_hash_claims_without_exact_raw_files_fail(self) -> None:
+        adapters = {
+            "no-files": (
+                """#!/usr/bin/env python3
+import json
+import sys
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+print(json.dumps({
+    'schema_version': 1,
+    'protocol_version': 1,
+    'status': 'complete',
+    'request_commitment_sha256': argument('--adapter-request-sha256'),
+    'nonce': argument('--attempt-id'),
+}))
+""",
+                "raw_artifact_set_invalid",
+            ),
+            "adapter-hashes": (
+                """#!/usr/bin/env python3
+import json
+import sys
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+print(json.dumps({
+    'schema_version': 1,
+    'protocol_version': 1,
+    'status': 'complete',
+    'request_commitment_sha256': argument('--adapter-request-sha256'),
+    'nonce': argument('--attempt-id'),
+    'artifact_sha256': {'wifi-scan-projection': 'f' * 64},
+}))
+""",
+                "protocol_invalid",
+            ),
+        }
+        for name, (source, code) in adapters.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = prepare_fixture(root)
+                write_executable(Path(fixture["adapter"]), source)
+                completed, out_dir = run_fixture(fixture, root)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(json.loads(completed.stdout)["error"]["code"], code)
+                self.assertFalse((out_dir / "collection_result.json").exists())
+
+    def test_bsc09_verified_read_rejects_projection_changed_after_manifest(self) -> None:
+        expected = valid_expected(1)
+        projections = valid_raw_projections(expected)
+        role = rig_adapters.get_rig_adapter("BSC-09").roles[0]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            raw_directory = root / "raw"
+            raw_directory.mkdir()
+            for contract in role.raw_artifacts:
+                (raw_directory / contract.filename).write_bytes(
+                    adapter_protocol.canonical_json_bytes(projections[contract.role]) + b"\n"
+                )
+            manifest = adapter_protocol.collect_raw_artifacts(
+                raw_directory=raw_directory,
+                role=role,
+                request_commitment_sha256=str(expected["adapter_request_sha256"]),
+                manifest_path=root / "manifest.json",
+            )
+            browser = raw_directory / "browser-projection.json"
+            browser.write_bytes(browser.read_bytes() + b" ")
+            with self.assertRaises(adapter_protocol.AdapterProtocolError) as raised:
+                adapter_protocol.read_collected_raw_artifacts(
+                    raw_directory=raw_directory,
+                    role=role,
+                    manifest=manifest,
+                )
+            self.assertEqual(raised.exception.code, "raw_artifact_changed")
+
+    def test_tracked_activation_uses_admitted_source_and_forbids_override(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            source_path = Path("scripts/bug_squash_hil_bsc09_rig.py")
+            tracked_source = repository / source_path
+            tracked_source.parent.mkdir()
+            tracked_source.write_text("def main():\n    return 0\n", encoding="utf-8")
+            descriptor = replace(
+                rig_adapters.get_rig_adapter("BSC-09"),
+                status="implemented",
+                source_path=source_path.as_posix(),
+                entrypoint="main",
+            )
+            source_sha256 = hashlib.sha256(tracked_source.read_bytes()).hexdigest()
+            admission = runner.RigAdapterAdmission(
+                adapter=descriptor,
+                simulated=False,
+                git_state=runner.GitState("a" * 40, True),
+                source_sha256=source_sha256,
+            )
+            args = runner.build_parser().parse_args(
+                ["--case", "BSC-09", "--board", "release", "--rig", "rig", "--runs", "3"]
+            )
+            resolved = runner.resolve_bsc09_adapter_execution(
+                args,
+                admission=admission,
+                repository=repository,
+            )
+            self.assertEqual(resolved, (tracked_source, "main", source_sha256, True))
+
+            args.case_adapter = repository / "untracked.py"
+            with self.assertRaises(runner.RunnerError) as raised:
+                runner.resolve_bsc09_adapter_execution(
+                    args,
+                    admission=admission,
+                    repository=repository,
+                )
+            self.assertEqual(raised.exception.code, "untrusted_override")
+
+    def test_private_network_identifiers_are_rejected_before_projection_commitment(self) -> None:
+        private_payloads = (
+            {"schema_version": 1, "steps": [], "ssid": "PrivateNetwork"},
+            {"schema_version": 1, "steps": [{"detail": "password=secret"}]},
+            {"schema_version": 1, "steps": [{"detail": "bssid=aa:bb:cc:dd:ee:ff"}]},
+            {"schema_version": 1, "steps": [{"detail": "192.168.4.1"}]},
+            {"schema_version": 1, "steps": [], "network_sha256": "f" * 64},
+        )
+        for payload in private_payloads:
+            with self.subTest(payload=payload), self.assertRaises(runner.RunnerError) as raised:
+                runner.parse_bsc09_projection(
+                    json.dumps(payload).encode("utf-8"),
+                    role="privacy regression",
+                    fields={"steps"},
+                )
+            self.assertEqual(raised.exception.code, "case_projection_private")
 
     def test_invalid_run_count_and_production_replay_fail_without_output(self) -> None:
         for options, code in (({"runs": 2}, "invalid_runs"), ({"production_replay": True}, "unsupported_mode")):

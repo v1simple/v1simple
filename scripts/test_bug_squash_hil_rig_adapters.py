@@ -76,12 +76,13 @@ class RigAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(
             tuple((item.role, item.filename, item.maximum_bytes) for item in role.raw_artifacts),
             (
-                ("browser-trace", "browser-trace.json", 4 * 1024 * 1024),
+                ("browser-projection", "browser-projection.json", 2 * 1024 * 1024),
+                ("case-observation", "case-observation.json", 2 * 1024 * 1024),
                 ("firmware-build", "firmware-build.json", 1024 * 1024),
-                ("heap-trace", "heap-trace.json", 2 * 1024 * 1024),
-                ("serial-log", "serial.log", 16 * 1024 * 1024),
-                ("wifi-mode-trace", "wifi-mode-trace.json", 1024 * 1024),
-                ("wifi-scan-trace", "wifi-scan-trace.jsonl", 4 * 1024 * 1024),
+                ("health-projection", "health-projection.json", 1024 * 1024),
+                ("heap-projection", "heap-projection.json", 2 * 1024 * 1024),
+                ("wifi-mode-projection", "wifi-mode-projection.json", 1024 * 1024),
+                ("wifi-scan-projection", "wifi-scan-projection.json", 2 * 1024 * 1024),
             ),
         )
         self.assertIsNone(adapters.get_rig_adapter("BSC-09").source_path)

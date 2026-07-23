@@ -47,7 +47,10 @@ jobs:
           restore-keys: ${{ runner.os }}-pio-
 
       - name: Install Python toolchain
-        run: pip install "platformio==6.1.19" "cryptography>=41" "Pillow>=10.4,<13" "clang-format==22.1.8"
+        run: |
+          python3 -m venv --copies "$HOME/.platformio/penv"
+          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "cryptography>=41" "Pillow>=10.4,<13" "clang-format==22.1.8"
+          echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
 
       - name: Run ci-test.sh
         run: |

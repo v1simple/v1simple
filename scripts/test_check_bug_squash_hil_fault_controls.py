@@ -202,6 +202,44 @@ def test_hil_environment_cannot_become_default_or_leak_to_production_flags() -> 
         )
         assert_error_contains(checker.validate_static(root), "install exactly the pinned")
 
+        ci_workflow.write_text(
+            (ROOT / checker.CI_WORKFLOW_FILE)
+            .read_text(encoding="utf-8")
+            .replace("python3 -m venv --copies", "python3 -m venv"),
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root), "trusted copied-interpreter environment"
+        )
+
+        ci_workflow.write_text(
+            (ROOT / checker.CI_WORKFLOW_FILE)
+            .read_text(encoding="utf-8")
+            .replace(
+                f"          {checker.CI_PLATFORMIO_INSTALL}\n"
+                f"          {checker.CI_PLATFORMIO_PATH_EXPORT}",
+                f"          {checker.CI_PLATFORMIO_PATH_EXPORT}\n"
+                f"          {checker.CI_PLATFORMIO_INSTALL}",
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root), "trusted copied-interpreter environment"
+        )
+
+        ci_workflow.write_text(
+            (ROOT / checker.CI_WORKFLOW_FILE)
+            .read_text(encoding="utf-8")
+            .replace(
+                'echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"',
+                'export PATH="$HOME/.platformio/penv/bin:$PATH"',
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(
+            checker.validate_static(root), "trusted copied-interpreter environment"
+        )
+
 
 def test_unguarded_and_elif_call_sites_are_rejected() -> None:
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:

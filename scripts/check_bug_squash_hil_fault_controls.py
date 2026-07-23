@@ -34,9 +34,14 @@ RELEASE_CONFIGURATION_FILES = (
 )
 CI_TEST_FILE = "scripts/ci-test.sh"
 CI_WORKFLOW_FILE = ".github/workflows/ci.yml"
+CI_PLATFORMIO_VENV_CREATE = 'python3 -m venv --copies "$HOME/.platformio/penv"'
 CI_PLATFORMIO_INSTALL = (
-    'pip install "platformio==6.1.19" "cryptography>=41" '
+    '"$HOME/.platformio/penv/bin/python" -m pip install '
+    '"platformio==6.1.19" "cryptography>=41" '
     '"Pillow>=10.4,<13" "clang-format==22.1.8"'
+)
+CI_PLATFORMIO_PATH_EXPORT = (
+    'echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"'
 )
 CI_REGRESSION_GATE = (
     'run_step "HIL fault-control exclusion regression tests" '
@@ -380,8 +385,34 @@ def validate_static(root: Path) -> list[str]:
     except (OSError, UnicodeError):
         errors.append("CI PlatformIO version pin is unavailable")
     else:
-        if ci_workflow.count(CI_PLATFORMIO_INSTALL) != 1:
-            errors.append("CI must install exactly the pinned PlatformIO 6.1.19 toolchain")
+        ci_workflow_lines = ci_workflow.splitlines()
+        bootstrap_lines = (
+            CI_PLATFORMIO_VENV_CREATE,
+            CI_PLATFORMIO_INSTALL,
+            CI_PLATFORMIO_PATH_EXPORT,
+        )
+        bootstrap_indices = [
+            [
+                index
+                for index, line in enumerate(ci_workflow_lines)
+                if line.strip() == expected
+            ]
+            for expected in bootstrap_lines
+        ]
+        if (
+            any(len(indices) != 1 for indices in bootstrap_indices)
+            or [indices[0] for indices in bootstrap_indices]
+            != list(
+                range(
+                    bootstrap_indices[0][0],
+                    bootstrap_indices[0][0] + len(bootstrap_lines),
+                )
+            )
+        ):
+            errors.append(
+                "CI must install exactly the pinned PlatformIO 6.1.19 toolchain "
+                "in the trusted copied-interpreter environment"
+            )
 
     hil_root = root / "src" / "modules" / "hil"
     actual_hil_files: set[str] = set()

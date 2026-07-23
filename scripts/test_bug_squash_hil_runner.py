@@ -15,10 +15,17 @@ import tempfile
 from unittest import mock
 
 import run_bug_squash_hil as hil_runner
+import hil_board_inventory_test_support as inventory_test_support
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_bug_squash_hil.py"
+BOARD_SIGNER_TEMP = tempfile.TemporaryDirectory(
+    prefix="bug-squash-hil-board-signer-"
+)
+BOARD_SIGNING_KEY, BOARD_TRUST_ROOT = inventory_test_support.create_test_signer(
+    Path(BOARD_SIGNER_TEMP.name)
+)
 EXPECTED_SUITES = (
     "test_device_boot",
     "test_device_heap",
@@ -57,6 +64,19 @@ def read_cpp_integer_constant(path: Path, name: str) -> int:
 def write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
+
+
+def fixture_environment(fixture: dict[str, Path | str]) -> dict[str, str]:
+    return inventory_test_support.test_environment(
+        Path(fixture["board_trust_root"])
+    )
+
+
+def resign_fixture_inventory(fixture: dict[str, Path | str]) -> None:
+    inventory_test_support.sign_inventory(
+        Path(fixture["inventory"]),
+        Path(fixture["board_signing_key"]),
+    )
 
 
 def initialize_repository(path: Path) -> str:
@@ -158,6 +178,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
         ),
         encoding="utf-8",
     )
+    inventory_test_support.sign_inventory(inventory, BOARD_SIGNING_KEY)
     ports.write_text(
         json.dumps(
             [
@@ -3173,6 +3194,8 @@ sys.stdout.write(json.dumps(payload))
         "port": fake_port,
         "template": template,
         "inventory": inventory,
+        "board_signing_key": BOARD_SIGNING_KEY,
+        "board_trust_root": BOARD_TRUST_ROOT,
         "ports": ports,
         "device_runner": device_runner,
         "pio": fake_pio,
@@ -3212,7 +3235,7 @@ def run_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     out_dir = root / "out"
     restore_marker = root / "restored.txt"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "FAKE_SUITE_STATUS": suite_status,
@@ -3287,7 +3310,7 @@ def run_bsc03_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     if out_dir is None:
         out_dir = root / "bsc03-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3376,7 +3399,7 @@ def run_bsc02_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc02-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3455,7 +3478,7 @@ def run_bsc11_fixture(
     tampered_evidence: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out_dir = root / "bsc11-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3532,7 +3555,7 @@ def run_bsc04_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc04-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3602,7 +3625,7 @@ def run_bsc05_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc05-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3659,7 +3682,7 @@ def run_bsc06_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc06-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3731,7 +3754,7 @@ def run_bsc13_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc13-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3804,7 +3827,7 @@ def run_bsc07_fixture(
     drop_rig_capability: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out_dir = root / "bsc07-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3878,7 +3901,7 @@ def run_bsc10_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc10-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -3951,7 +3974,7 @@ def run_bsc14_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc14-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -4021,7 +4044,7 @@ def run_bsc12_fixture(
     drop_rig_capability: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out_dir = root / "bsc12-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -4107,7 +4130,7 @@ def run_bsc16_fixture(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     role = "production" if production_replay else "fault"
     out_dir = root / f"bsc16-{role}-out"
-    environment = os.environ.copy()
+    environment = fixture_environment(fixture)
     environment.update(
         {
             "V1SIMPLE_HIL_TEST_HOOKS": "1",
@@ -4226,18 +4249,20 @@ def test_success_is_full_sha_bound_sanitized_and_restored() -> None:
             == "SECRET-USB-IDENTITY",
             "private inventory identity is retained only in the ignored raw binding",
         )
-        assert_true(attestation["schema_version"] == 2, str(attestation))
+        assert_true(attestation["schema_version"] == 3, str(attestation))
         assert_true(
             attestation
             == hil_runner.qualification.build_board_inventory_attestation(
                 binding,
                 observed_at_utc=attestation["observed_at_utc"],
+                board_trust_root_path=Path(fixture["board_trust_root"]),
             ),
-            "published attestation exactly commits to the selected private inventory",
+            "published attestation exactly authenticates the selected private inventory",
         )
         attestation_text = json.dumps(attestation)
         assert_true("SECRET-USB-IDENTITY" not in attestation_text, attestation_text)
         assert_true(str(fixture["port"]) not in attestation_text, attestation_text)
+        assert_true("signature" not in attestation_text, attestation_text)
         hashes = result["device_artifact_sha256"]
         assert_true(len(hashes) == 30, str(hashes))
         assert_true(
@@ -4580,7 +4605,6 @@ def test_bsc02_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -4730,7 +4754,6 @@ def test_bsc11_simulation_is_one_run_bound_hashed_and_nonqualifying() -> None:
         assert_true(
             result["qualification_blockers"]
             == [
-                "board-resolution-provenance-not-authenticated",
                 "tracked-rig-adapter-not-implemented",
             ],
             str(result),
@@ -4932,7 +4955,6 @@ def test_bsc04_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -5058,7 +5080,6 @@ def test_bsc05_hil_fault_and_production_roles_are_three_run_bound_and_nonqualify
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -5256,7 +5277,6 @@ def test_bsc06_fault_and_production_roles_are_three_run_bound_and_nonqualifying(
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -5511,7 +5531,6 @@ def test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying(
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -5627,7 +5646,7 @@ def test_bsc13_physical_mode_remains_blocked_before_rig_mutation() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
-def test_bsc07_profile_v6_production_collector_is_bound_and_nonqualifying() -> None:
+def test_bsc07_profile_v7_production_collector_is_bound_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc07_case_descriptor()
     descriptor_sha = hil_runner.bsc07_descriptor_commitment(descriptor)
     with tempfile.TemporaryDirectory() as raw:
@@ -5649,7 +5668,6 @@ def test_bsc07_profile_v6_production_collector_is_bound_and_nonqualifying() -> N
         assert_true(
             result["qualification_blockers"]
             == [
-                "board-resolution-provenance-not-authenticated",
                 "tracked-rig-adapter-not-implemented",
             ],
             str(result),
@@ -5871,7 +5889,6 @@ def test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -6052,7 +6069,7 @@ def test_bsc10_physical_mode_remains_blocked_before_rig_discovery() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
-def test_bsc12_profile_v6_shutdown_recovery_is_bound_and_nonqualifying() -> None:
+def test_bsc12_profile_v7_shutdown_recovery_is_bound_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc12_case_descriptor()
     role = descriptor["scenario"]
     descriptor_sha = hil_runner.bsc12_descriptor_commitment(descriptor)
@@ -6075,7 +6092,6 @@ def test_bsc12_profile_v6_shutdown_recovery_is_bound_and_nonqualifying() -> None
         assert_true(
             result["qualification_blockers"]
             == [
-                "board-resolution-provenance-not-authenticated",
                 "tracked-rig-adapter-not-implemented",
             ],
             str(result),
@@ -6398,7 +6414,6 @@ def test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -6608,7 +6623,6 @@ def test_bsc16_fault_and_production_roles_are_bound_hashed_and_nonqualifying() -
             assert_true(
                 result["qualification_blockers"]
                 == [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
                 str(result),
@@ -6941,7 +6955,7 @@ def rebind_bsc08(record: dict[str, object]) -> None:
     record["evidence_binding_sha256"] = hil_runner.bsc08_record_commitment(record)
 
 
-def test_bsc08_typed_record_is_profile_v6_bound_and_simulation_is_nonqualifying() -> None:
+def test_bsc08_typed_record_is_profile_v7_bound_and_simulation_is_nonqualifying() -> None:
     record, expected, request, manifest, content = make_bsc08_record()
     validated = hil_runner.validate_bsc08_record(
         record, expected=expected, raw_manifest=manifest, raw_content=content, request=request
@@ -7358,7 +7372,7 @@ def main() -> int:
     test_bsc06_rejects_descriptor_race_timing_role_reuse_and_stale_binding_mutations()
     test_bsc06_physical_mode_remains_blocked_before_discovery_or_mutation()
     test_bsc06_rejects_each_required_inventory_capability_removal()
-    test_bsc08_typed_record_is_profile_v6_bound_and_simulation_is_nonqualifying()
+    test_bsc08_typed_record_is_profile_v7_bound_and_simulation_is_nonqualifying()
     test_bsc08_runner_hashes_and_reverifies_serial_capture_bytes()
     test_bsc08_rejects_adversarial_nonce_epoch_race_fact_and_capture_mutations()
     test_bsc08_authenticated_tracked_adapter_is_executed()
@@ -7366,13 +7380,13 @@ def main() -> int:
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()
-    test_bsc07_profile_v6_production_collector_is_bound_and_nonqualifying()
+    test_bsc07_profile_v7_production_collector_is_bound_and_nonqualifying()
     test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations()
     test_bsc07_authoritative_mode_blocks_before_git_output_or_discovery()
     test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc10_rejects_full_record_contract_mutations()
     test_bsc10_physical_mode_remains_blocked_before_rig_discovery()
-    test_bsc12_profile_v6_shutdown_recovery_is_bound_and_nonqualifying()
+    test_bsc12_profile_v7_shutdown_recovery_is_bound_and_nonqualifying()
     test_bsc12_rejects_typed_source_timing_reset_fact_and_capture_mutations()
     test_bsc12_authoritative_admission_blocks_before_git_output_or_discovery()
     test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying()

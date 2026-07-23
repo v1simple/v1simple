@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import check_bug_squash_hil_qualification as qualification  # type: ignore  # noqa: E402
+import hil_board_inventory_test_support as inventory_test_support  # noqa: E402
 import resolve_hil_board as resolver  # type: ignore  # noqa: E402
 
 TARGET_SHA = subprocess.check_output(
@@ -74,6 +75,13 @@ SYNTHETIC_TOOL_IDENTITY["identity_sha256"] = qualification.canonical_commitment(
 )
 PINNED_PLATFORMIO_VERSION = "PlatformIO Core, version 6.1.19"
 PINNED_PLATFORMIO_UNAVAILABLE = "pinned PlatformIO toolchain unavailable"
+BOARD_TRUST_ROOTS: dict[Path, Path] = {}
+BOARD_SIGNER_TEMP = tempfile.TemporaryDirectory(
+    prefix="bug-squash-hil-qualification-board-signer-"
+)
+BOARD_SIGNING_KEY, BOARD_TRUST_ROOT = inventory_test_support.create_test_signer(
+    Path(BOARD_SIGNER_TEMP.name)
+)
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -457,6 +465,35 @@ def make_valid_artifact(
             for capability in case["required_rig_capabilities"]
         }
     )
+    inventory_path = tmpdir / "authenticated-board-inventory.json"
+    inventory_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "boards": [
+                    {
+                        "alias": "dut-primary",
+                        "capabilities": dut_capabilities,
+                        "usb_serial": "synthetic-local-identity",
+                    },
+                    {
+                        "alias": "rig-primary",
+                        "capabilities": rig_capabilities,
+                    },
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inventory_test_support.sign_inventory(inventory_path, BOARD_SIGNING_KEY)
+    _inventory_payload, inventory_authentication = (
+        resolver.authenticate_local_inventory(
+            inventory_path,
+            trust_root_path=BOARD_TRUST_ROOT,
+        )
+    )
     dut_resolution = {
         "schema_version": 1,
         "alias": "dut-primary",
@@ -464,8 +501,9 @@ def make_valid_artifact(
         "endpoints": {"serial_port": "synthetic-endpoint"},
     }
     dut_binding = {
-        "schema_version": 1,
+        "schema_version": 2,
         "commitment_salt_hex": "a1" * 32,
+        "inventory_authentication": inventory_authentication.as_binding(),
         "inventory_record": {
             "alias": "dut-primary",
             "capabilities": dut_capabilities,
@@ -480,6 +518,7 @@ def make_valid_artifact(
     resolver_attestation = qualification.build_board_inventory_attestation(
         dut_binding,
         observed_at_utc="2025-07-21T20:10:00Z",
+        board_trust_root_path=BOARD_TRUST_ROOT,
     )
     add_artifact(
         "resolver-attestation",
@@ -496,8 +535,9 @@ def make_valid_artifact(
         "endpoints": {},
     }
     rig_binding = {
-        "schema_version": 1,
+        "schema_version": 2,
         "commitment_salt_hex": "b2" * 32,
+        "inventory_authentication": inventory_authentication.as_binding(),
         "inventory_record": {
             "alias": "rig-primary",
             "capabilities": rig_capabilities,
@@ -509,6 +549,7 @@ def make_valid_artifact(
     rig_attestation = qualification.build_board_inventory_attestation(
         rig_binding,
         observed_at_utc="2025-07-21T20:11:00Z",
+        board_trust_root_path=BOARD_TRUST_ROOT,
     )
     add_artifact(
         "rig-resolver-attestation",
@@ -621,6 +662,7 @@ def make_valid_artifact(
         "cases": case_results,
     }
     write_json(artifact_path, payload)
+    BOARD_TRUST_ROOTS[artifact_path.resolve()] = BOARD_TRUST_ROOT
     return artifact_path, payload, profile
 
 
@@ -648,6 +690,7 @@ def validate(payload: Any, artifact_path: Path) -> list[str]:
             artifact_path,
             TARGET_SHA,
             now=VALIDATION_NOW,
+            board_trust_root_path=BOARD_TRUST_ROOTS.get(artifact_path.resolve()),
         )
 
 
@@ -750,7 +793,7 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 6, "profile must be version 6")
+    assert_true(profile["profile_version"] == 7, "profile must be version 7")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
@@ -785,16 +828,17 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
             for requirement in profile["activation_contract"]["requirements"]
             if requirement["status"] == "blocked"
         }
-        == {
-            "bounded-hil-fault-control",
-            "authenticated-board-inventory-resolver-provenance",
-        },
-        "only the unimplemented fault control and board root stay blocked",
+        == {"bounded-hil-fault-control"},
+        "only the unimplemented fault control stays blocked",
     )
     assert_true(
         profile["build_provenance_contract"]["status"] == "authenticated"
-        and profile["board_provenance_contract"]["status"] == "integrity-bound",
-        "build authentication is active while board authentication stays blocked",
+        and profile["board_provenance_contract"]["status"] == "authenticated"
+        and profile["board_provenance_contract"]["trust_root_sha256"]
+        == qualification.sha256_bytes(
+            qualification.BOARD_INVENTORY_TRUST_ROOT.read_bytes()
+        ),
+        "build and board authentication roots are active and pinned",
     )
     cases = {case["id"]: case for case in profile["required_cases"]}
     bsc03 = cases["BSC-03"]
@@ -850,7 +894,7 @@ def test_incomplete_profile_rejects_synthetic_pass_pack(tmpdir: Path) -> None:
     )
 
 
-def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -> None:
+def test_self_authored_build_and_unsigned_board_cannot_activate(tmpdir: Path) -> None:
     profile, profile_errors = qualification.load_pinned_profile()
     assert_true(profile is not None and profile_errors == [], "profile loads")
     assert profile is not None
@@ -923,26 +967,35 @@ def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -
             "endpoints": {"serial_port": "author-controlled-endpoint"},
         },
     }
-    authored_attestation = qualification.build_board_inventory_attestation(
-        authored_binding,
-        observed_at_utc="2025-07-21T20:03:00Z",
-    )
-    assert_true(
-        bool(authored_attestation["inventory_commitment_sha256"]),
-        "an evidence author can self-consistently commit an untrusted board binding",
-    )
+    try:
+        qualification.build_board_inventory_attestation(
+            authored_binding,
+            observed_at_utc="2025-07-21T20:03:00Z",
+        )
+    except ValueError as exc:
+        assert_true("exact provenance schema" in str(exc), str(exc))
+    else:
+        raise AssertionError("unsigned author-controlled board binding was authenticated")
 
     activation_errors = qualification.profile_activation_errors(profile)
     blocker_codes = {blocker["code"] for blocker in profile["blockers"]}
+    requirement_status = {
+        requirement["id"]: requirement["status"]
+        for requirement in profile["activation_contract"]["requirements"]
+    }
     assert_true(
         has_error(activation_errors, "authenticated provenance verifier is not implemented")
-        and has_error(
+        and not has_error(
             activation_errors,
             "authenticated-board-inventory-resolver-provenance",
         )
         and "build-generator-provenance-not-authenticated" not in blocker_codes
-        and "board-resolution-provenance-not-authenticated" in blocker_codes,
-        "the authenticated build root closes only its recorded activation blocker",
+        and "board-resolution-provenance-not-authenticated" not in blocker_codes
+        and requirement_status[
+            "authenticated-board-inventory-resolver-provenance"
+        ]
+        == "active",
+        "the authenticated board root closes only its recorded activation blocker",
     )
 
 
@@ -1404,7 +1457,15 @@ def test_board_inventory_commitment_is_private_and_exact(tmpdir: Path) -> None:
         attestation["inventory_commitment_sha256"]
         and attestation["commitment_algorithm"]
         == qualification.BOARD_COMMITMENT_ALGORITHM,
-        "sanitized attestation retains only the inventory commitment",
+        "sanitized attestation retains the inventory commitment",
+    )
+    assert_true(
+        attestation["authentication_algorithm"]
+        == qualification.BOARD_AUTHENTICATION_ALGORITHM
+        and len(attestation["trust_root_sha256"]) == 64
+        and len(attestation["inventory_sha256"]) == 64
+        and "signature" not in attestation,
+        "sanitized attestation retains authentication identities but not the signature",
     )
 
     for index, mutation in enumerate(
@@ -1429,12 +1490,37 @@ def test_board_inventory_commitment_is_private_and_exact(tmpdir: Path) -> None:
         if index == 2:
             binding["inventory_record"]["capabilities"].sort()
         write_json(binding_path, binding)
-        assert_true(
-            has_error(
-                validate(local_candidate, local_path),
-                "recomputed local resolution attestation",
+        errors = validate(local_candidate, local_path)
+        expected = (
+            "recomputed local resolution attestation"
+            if index == 1
+            else "local resolution could not be attested"
+        )
+        assert_true(has_error(errors, expected), "inventory bytes and salt are bound")
+
+    for index, mutation in enumerate(
+        (
+            lambda authentication: authentication.pop("inventory_json"),
+            lambda authentication: authentication.update(
+                {"inventory_json": authentication["inventory_json"] + " "}
             ),
-            "inventory bytes and salt are commitment-bound",
+            lambda authentication: authentication.update(
+                {"signature": authentication["signature"].replace("U1NI", "U1NJ", 1)}
+            ),
+        )
+    ):
+        case_dir = tmpdir / f"authentication-{index}"
+        case_dir.mkdir()
+        local_path, local_candidate, _ = make_valid_artifact(case_dir)
+        binding_path = (
+            local_path.parent / local_candidate["duts"][0]["local_resolution_path"]
+        )
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        mutation(binding["inventory_authentication"])
+        write_json(binding_path, binding)
+        assert_true(
+            has_error(validate(local_candidate, local_path), "could not be attested"),
+            "missing, tampered, or substituted inventory authentication must fail",
         )
 
 
@@ -1778,7 +1864,7 @@ def main(
         test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_pinned_profile_has_exact_case_specific_contracts,
         test_incomplete_profile_rejects_synthetic_pass_pack,
-        test_self_authored_build_and_board_integrity_cannot_activate,
+        test_self_authored_build_and_unsigned_board_cannot_activate,
         test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages,
         test_profile_ready_mutation_cannot_authenticate_forged_provenance,
         test_profile_scope_digest_and_case_set_cannot_be_overridden,

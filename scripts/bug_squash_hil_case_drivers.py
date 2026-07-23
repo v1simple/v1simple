@@ -31,8 +31,6 @@ class CaseDriver:
         return self.status == "implemented"
 
 
-_BOARD_BLOCKER = "board-resolution-provenance-not-authenticated"
-_FAULT_BLOCKER = "hil-fault-control-not-implemented"
 _RIG_BLOCKER = "tracked-rig-adapter-not-implemented"
 
 
@@ -57,72 +55,72 @@ _DRIVERS = (
     _driver(
         "BSC-02",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-03",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-04",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-05",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-06",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-07",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-08",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-09",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-10",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-11",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-12",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-13",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-14",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
     _driver(
         "BSC-16",
         status="implemented",
-        blockers=(_BOARD_BLOCKER, _RIG_BLOCKER),
+        blockers=(_RIG_BLOCKER,),
     ),
 )
 

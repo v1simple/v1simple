@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -28,11 +29,21 @@ from urllib.parse import urlsplit, urlunsplit
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = ROOT / "test" / "device" / "board_inventory.json"
 DEFAULT_LOCAL_INVENTORY = ROOT / "test" / "device" / "board_inventory.local.json"
+DEFAULT_LOCAL_INVENTORY_SIGNATURE = Path(f"{DEFAULT_LOCAL_INVENTORY}.sig")
+DEFAULT_BOARD_TRUST_ROOT = (
+    ROOT / "tools" / "bug_squash_hil_board_inventory_allowed_signers_v1"
+)
 
 SCHEMA_VERSION = 1
 ATTESTATION_SCHEMA_VERSION = 1
+INVENTORY_AUTHENTICATION_SCHEMA_VERSION = 1
+INVENTORY_AUTHENTICATION_ALGORITHM = "ssh-ed25519-sshsig-v1"
+INVENTORY_SIGNATURE_NAMESPACE = "v1simple-hil-board-inventory-v1"
+INVENTORY_SIGNER_PRINCIPAL = "v1simple-board-inventory"
+SSH_KEYGEN = Path("/usr/bin/ssh-keygen")
 ALIAS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 FIRMWARE_IP_PREFIX = "[WiFiClient] Connected! IP: "
 PLACEHOLDER_MARKERS = ("REPLACE_", "CHANGEME", "YOUR_")
 UTC_TIMESTAMP_PATTERN = re.compile(
@@ -75,24 +86,257 @@ class Board:
 @dataclass(frozen=True)
 class Inventory:
     boards: Mapping[str, Board]
+    authentication: "InventoryAuthentication | None" = None
+
+
+@dataclass(frozen=True)
+class InventoryAuthentication:
+    inventory_json: str
+    signature: str
+    inventory_sha256: str
+    trust_root_sha256: str
+
+    def as_binding(self) -> dict[str, object]:
+        return {
+            "schema_version": INVENTORY_AUTHENTICATION_SCHEMA_VERSION,
+            "algorithm": INVENTORY_AUTHENTICATION_ALGORITHM,
+            "namespace": INVENTORY_SIGNATURE_NAMESPACE,
+            "signer_principal": INVENTORY_SIGNER_PRINCIPAL,
+            "trust_root_sha256": self.trust_root_sha256,
+            "inventory_sha256": self.inventory_sha256,
+            "inventory_json": self.inventory_json,
+            "signature": self.signature,
+        }
 
 
 def _is_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _read_json(path: Path, label: str) -> object:
+def _read_text(path: Path, label: str) -> str:
+    if path.is_symlink():
+        raise ResolverError("inventory_unreadable", f"{label} must not be a symlink")
     try:
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_reject_duplicate_json_keys,
-        )
+        return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise ResolverError("inventory_missing", f"{label} file does not exist") from exc
     except (OSError, UnicodeError) as exc:
         raise ResolverError("inventory_unreadable", f"{label} file could not be read") from exc
+
+
+def _parse_json_text(content: str, label: str) -> object:
+    try:
+        return json.loads(content, object_pairs_hook=_reject_duplicate_json_keys)
     except (json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         raise ResolverError("inventory_invalid_json", f"{label} is not valid JSON") from exc
+
+
+def _read_json(path: Path, label: str) -> object:
+    return _parse_json_text(_read_text(path, label), label)
+
+
+def _read_trust_root(path: Path) -> tuple[str, str]:
+    if path.is_symlink():
+        raise ResolverError(
+            "inventory_trust_root_invalid",
+            "board inventory trust root must not be a symlink",
+        )
+    try:
+        content = path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise ResolverError(
+            "inventory_trust_root_missing",
+            "board inventory trust root is unavailable",
+        ) from exc
+    lines = [line for line in content.splitlines() if line]
+    expected_prefix = (
+        f'{INVENTORY_SIGNER_PRINCIPAL} '
+        f'namespaces="{INVENTORY_SIGNATURE_NAMESPACE}" ssh-ed25519 '
+    )
+    if len(lines) != 1 or not lines[0].startswith(expected_prefix):
+        raise ResolverError(
+            "inventory_trust_root_invalid",
+            "board inventory trust root is invalid",
+        )
+    return content, hashlib.sha256(content.encode("ascii")).hexdigest()
+
+
+def _test_trust_root_override() -> Path | None:
+    if os.environ.get("V1SIMPLE_HIL_TEST_HOOKS") != "1":
+        return None
+    raw = os.environ.get("V1SIMPLE_HIL_TEST_BOARD_TRUST_ROOT")
+    return Path(raw) if raw else None
+
+
+def _verify_inventory_signature(
+    inventory_json: str,
+    signature: str,
+    *,
+    trust_root_path: Path,
+) -> str:
+    _content, trust_root_sha256 = _read_trust_root(trust_root_path)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".sshsig") as signature_file:
+            signature_file.write(signature.encode("ascii"))
+            signature_file.flush()
+            completed = subprocess.run(
+                [
+                    str(SSH_KEYGEN),
+                    "-Y",
+                    "verify",
+                    "-f",
+                    str(trust_root_path),
+                    "-I",
+                    INVENTORY_SIGNER_PRINCIPAL,
+                    "-n",
+                    INVENTORY_SIGNATURE_NAMESPACE,
+                    "-s",
+                    signature_file.name,
+                ],
+                input=inventory_json.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=15,
+            )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise ResolverError(
+            "inventory_authentication_unavailable",
+            "board inventory signature could not be verified",
+        ) from exc
+    if completed.returncode != 0:
+        raise ResolverError(
+            "inventory_authentication_failed",
+            "board inventory does not match the pinned signing root",
+        )
+    if b"Good " not in completed.stdout:
+        raise ResolverError(
+            "inventory_authentication_failed",
+            "board inventory signature verification was inconclusive",
+        )
+    return trust_root_sha256
+
+
+def authenticate_local_inventory(
+    local_path: Path,
+    *,
+    signature_path: Path | None = None,
+    trust_root_path: Path | None = None,
+) -> tuple[object, InventoryAuthentication]:
+    inventory_json = _read_text(local_path, "local inventory")
+    if signature_path is None:
+        signature_path = Path(f"{local_path}.sig")
+    try:
+        signature = _read_text(signature_path, "local inventory signature")
+    except ResolverError as exc:
+        if exc.code == "inventory_missing":
+            raise ResolverError(
+                "inventory_signature_missing",
+                "local inventory signature file does not exist",
+            ) from exc
+        raise
+    if (
+        len(signature) > 16_384
+        or not signature.startswith("-----BEGIN SSH SIGNATURE-----\n")
+        or not signature.rstrip().endswith("-----END SSH SIGNATURE-----")
+    ):
+        raise ResolverError(
+            "inventory_signature_invalid",
+            "local inventory signature is invalid",
+        )
+    selected_root = (
+        trust_root_path
+        or _test_trust_root_override()
+        or DEFAULT_BOARD_TRUST_ROOT
+    )
+    trust_root_sha256 = _verify_inventory_signature(
+        inventory_json,
+        signature,
+        trust_root_path=selected_root,
+    )
+    payload = _parse_json_text(inventory_json, "local inventory")
+    return payload, InventoryAuthentication(
+        inventory_json=inventory_json,
+        signature=signature,
+        inventory_sha256=hashlib.sha256(inventory_json.encode("utf-8")).hexdigest(),
+        trust_root_sha256=trust_root_sha256,
+    )
+
+
+def authenticate_inventory_binding(
+    payload: object,
+    *,
+    trust_root_path: Path | None = None,
+) -> Inventory:
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version",
+        "algorithm",
+        "namespace",
+        "signer_principal",
+        "trust_root_sha256",
+        "inventory_sha256",
+        "inventory_json",
+        "signature",
+    }:
+        raise ResolverError(
+            "inventory_authentication_invalid",
+            "board inventory authentication binding is invalid",
+        )
+    if (
+        payload.get("schema_version") != INVENTORY_AUTHENTICATION_SCHEMA_VERSION
+        or payload.get("algorithm") != INVENTORY_AUTHENTICATION_ALGORITHM
+        or payload.get("namespace") != INVENTORY_SIGNATURE_NAMESPACE
+        or payload.get("signer_principal") != INVENTORY_SIGNER_PRINCIPAL
+    ):
+        raise ResolverError(
+            "inventory_authentication_invalid",
+            "board inventory authentication contract is invalid",
+        )
+    inventory_json = payload.get("inventory_json")
+    signature = payload.get("signature")
+    inventory_sha256 = payload.get("inventory_sha256")
+    trust_root_sha256 = payload.get("trust_root_sha256")
+    if (
+        not isinstance(inventory_json, str)
+        or not isinstance(signature, str)
+        or not isinstance(inventory_sha256, str)
+        or SHA256_PATTERN.fullmatch(inventory_sha256) is None
+        or not isinstance(trust_root_sha256, str)
+        or SHA256_PATTERN.fullmatch(trust_root_sha256) is None
+    ):
+        raise ResolverError(
+            "inventory_authentication_invalid",
+            "board inventory authentication values are invalid",
+        )
+    if hashlib.sha256(inventory_json.encode("utf-8")).hexdigest() != inventory_sha256:
+        raise ResolverError(
+            "inventory_authentication_failed",
+            "board inventory content digest does not match its authentication binding",
+        )
+    selected_root = trust_root_path or DEFAULT_BOARD_TRUST_ROOT
+    actual_root_sha256 = _verify_inventory_signature(
+        inventory_json,
+        signature,
+        trust_root_path=selected_root,
+    )
+    if trust_root_sha256 != actual_root_sha256:
+        raise ResolverError(
+            "inventory_authentication_failed",
+            "board inventory trust root identity does not match its authentication binding",
+        )
+    boards = _validate_document(
+        _parse_json_text(inventory_json, "authenticated local inventory"),
+        "authenticated local inventory",
+    )
+    return Inventory(
+        boards=boards,
+        authentication=InventoryAuthentication(
+            inventory_json=inventory_json,
+            signature=signature,
+            inventory_sha256=inventory_sha256,
+            trust_root_sha256=trust_root_sha256,
+        ),
+    )
 
 
 def _validate_lan_base_url(value: str) -> str:
@@ -249,12 +493,22 @@ def _validate_document(payload: object, label: str) -> dict[str, Board]:
     return boards
 
 
-def load_inventory(template_path: Path, local_path: Path | None = None) -> Inventory:
-    """Load the tracked template and optionally overlay complete local boards."""
+def load_inventory(
+    template_path: Path,
+    local_path: Path | None = None,
+    *,
+    trust_root_path: Path | None = None,
+) -> Inventory:
+    """Load the tracked template and authenticate any explicit local overlay."""
 
     boards = _validate_document(_read_json(template_path, "tracked inventory"), "tracked inventory")
-    if local_path is not None and local_path.exists():
-        local_boards = _validate_document(_read_json(local_path, "local inventory"), "local inventory")
+    authentication: InventoryAuthentication | None = None
+    if local_path is not None:
+        local_payload, authentication = authenticate_local_inventory(
+            local_path,
+            trust_root_path=trust_root_path,
+        )
+        local_boards = _validate_document(local_payload, "local inventory")
         boards.update(local_boards)
 
     usb_owners: dict[str, str] = {}
@@ -265,7 +519,7 @@ def load_inventory(template_path: Path, local_path: Path | None = None) -> Inven
             raise ResolverError("duplicate_usb_identity", "merged inventory reuses a USB identity")
         usb_owners[board.usb_serial] = board.alias
 
-    return Inventory(boards=boards)
+    return Inventory(boards=boards, authentication=authentication)
 
 
 def _port_device(record: Mapping[str, object]) -> str | None:

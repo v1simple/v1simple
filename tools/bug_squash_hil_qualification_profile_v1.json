@@ -1,13 +1,9 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 6,
+  "profile_version": 7,
   "qualification_status": "blocked",
   "blockers": [
-    {
-      "code": "board-resolution-provenance-not-authenticated",
-      "affected_component": "board-resolver"
-    },
     {
       "code": "hil-fault-control-not-implemented",
       "affected_component": "hil-fault"
@@ -32,7 +28,7 @@
       },
       {
         "id": "authenticated-board-inventory-resolver-provenance",
-        "status": "blocked"
+        "status": "active"
       }
     ]
   },
@@ -50,10 +46,15 @@
     ]
   },
   "board_provenance_contract": {
-    "schema_version": 1,
-    "status": "integrity-bound",
+    "schema_version": 2,
+    "status": "authenticated",
     "commitment_algorithm": "sha256-salted-inventory-canonical-json-v1",
-    "salt_bytes": 32
+    "salt_bytes": 32,
+    "authentication_algorithm": "ssh-ed25519-sshsig-v1",
+    "signature_namespace": "v1simple-hil-board-inventory-v1",
+    "signer_principal": "v1simple-board-inventory",
+    "trust_root_path": "tools/bug_squash_hil_board_inventory_allowed_signers_v1",
+    "trust_root_sha256": "fa0ab4e1d7726eabd66038171ec5a4ff44b56f64822a5ff29b0b46ac403f160b"
   },
   "case_driver_contract": {
     "schema_version": 1,

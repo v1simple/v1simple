@@ -25,14 +25,16 @@ import resolve_hil_board as hil_resolver
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "tools" / "bug_squash_hil_qualification_profile_v1.json"
 BUILD_EVIDENCE_GENERATOR = ROOT / "scripts" / "generate_bug_squash_build_evidence.py"
-PINNED_PROFILE_SHA256 = "9ff2a556f89c73e57423e0cd785e8c4bcb541ebaff5ab833c52633cbb6e88953"
+BOARD_INVENTORY_TRUST_ROOT = hil_resolver.DEFAULT_BOARD_TRUST_ROOT
+PINNED_PROFILE_SHA256 = "43f6f19d4d4f48da52d198d1e47458e2235ae98dd96f2d818c61fe90ecb4a99a"
 MINIMUM_READY_PROFILE_VERSION = 3
-PINNED_PROFILE_VERSION = 6
+PINNED_PROFILE_VERSION = 7
 INTEGRITY_PROVENANCE_VERIFIER_VERSION = 1
 AUTHENTICATED_PROVENANCE_VERIFIER_VERSION: int | None = None
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
 COMMITMENT_ALGORITHM = "sha256-domain-separated-canonical-json-v1"
 BOARD_COMMITMENT_ALGORITHM = "sha256-salted-inventory-canonical-json-v1"
+BOARD_AUTHENTICATION_ALGORITHM = hil_resolver.INVENTORY_AUTHENTICATION_ALGORITHM
 EXPECTED_CASE_IDS = tuple(
     [f"BSC-{number:02d}" for number in range(2, 15)] + ["BSC-16"]
 )
@@ -587,23 +589,52 @@ def validate_provenance_profile_contracts(
             errors.append("pinned profile build provenance tool identities mismatch")
 
     board = profile.get("board_provenance_contract")
+    board_status: str | None = None
     if not isinstance(board, dict):
         errors.append("pinned profile board_provenance_contract must be an object")
     else:
         reject_unknown_keys(
             board,
-            {"schema_version", "status", "commitment_algorithm", "salt_bytes"},
+            {
+                "schema_version",
+                "status",
+                "commitment_algorithm",
+                "salt_bytes",
+                "authentication_algorithm",
+                "signature_namespace",
+                "signer_principal",
+                "trust_root_path",
+                "trust_root_sha256",
+            },
             "pinned profile.board_provenance_contract",
             errors,
         )
-        if board.get("schema_version") != 1 or board.get("status") != "integrity-bound":
+        board_status = board.get("status") if isinstance(board.get("status"), str) else None
+        if board.get("schema_version") != 2 or board_status != "authenticated":
             errors.append(
-                "pinned profile board provenance contract must be integrity-bound schema 1"
+                "pinned profile board provenance contract must be authenticated schema 2"
             )
         if board.get("commitment_algorithm") != BOARD_COMMITMENT_ALGORITHM:
             errors.append("pinned profile board commitment algorithm mismatch")
         if board.get("salt_bytes") != 32:
             errors.append("pinned profile board commitment salt must be 32 bytes")
+        if board.get("authentication_algorithm") != BOARD_AUTHENTICATION_ALGORITHM:
+            errors.append("pinned profile board authentication algorithm mismatch")
+        if board.get("signature_namespace") != hil_resolver.INVENTORY_SIGNATURE_NAMESPACE:
+            errors.append("pinned profile board signature namespace mismatch")
+        if board.get("signer_principal") != hil_resolver.INVENTORY_SIGNER_PRINCIPAL:
+            errors.append("pinned profile board signer principal mismatch")
+        if board.get("trust_root_path") != (
+            BOARD_INVENTORY_TRUST_ROOT.relative_to(ROOT).as_posix()
+        ):
+            errors.append("pinned profile board trust root path mismatch")
+        try:
+            trust_root_sha256 = sha256_bytes(BOARD_INVENTORY_TRUST_ROOT.read_bytes())
+        except OSError:
+            trust_root_sha256 = None
+            errors.append("pinned board inventory trust root is unavailable")
+        if board.get("trust_root_sha256") != trust_root_sha256:
+            errors.append("pinned profile board trust root digest mismatch")
 
     driver = profile.get("case_driver_contract")
     driver_status: str | None = None
@@ -680,11 +711,14 @@ def validate_provenance_profile_contracts(
         for item in requirements
         if isinstance(item, dict)
     }
+    board_requirement_status = (
+        "active" if board_status == "authenticated" else "blocked"
+    )
     expected_status = {
         "authenticated-build-generator-provenance": (
             "active" if build_status == "authenticated" else "blocked"
         ),
-        "authenticated-board-inventory-resolver-provenance": "blocked",
+        "authenticated-board-inventory-resolver-provenance": board_requirement_status,
         "authenticated-case-driver-source-provenance": driver_status,
         "bounded-hil-fault-control": fault_status,
     }
@@ -697,7 +731,10 @@ def validate_provenance_profile_contracts(
                 "build-generator-provenance-not-authenticated",
                 "active" if build_status == "authenticated" else "blocked",
             ),
-            ("board-resolution-provenance-not-authenticated", "blocked"),
+            (
+                "board-resolution-provenance-not-authenticated",
+                board_requirement_status,
+            ),
             ("case-source-provenance-not-authenticated", driver_status),
             ("hil-fault-control-not-implemented", fault_status),
         )
@@ -1284,16 +1321,25 @@ def build_board_inventory_attestation(
     binding: Any,
     *,
     observed_at_utc: str | None = None,
+    board_trust_root_path: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(binding, dict) or set(binding) != {
         "schema_version",
         "commitment_salt_hex",
+        "inventory_authentication",
         "inventory_record",
         "resolution",
     }:
         raise ValueError("board binding must use the exact provenance schema")
-    if binding.get("schema_version") != 1:
-        raise ValueError("board binding schema_version must be 1")
+    if binding.get("schema_version") != 2:
+        raise ValueError("board binding schema_version must be 2")
+    try:
+        authenticated_inventory = hil_resolver.authenticate_inventory_binding(
+            binding.get("inventory_authentication"),
+            trust_root_path=board_trust_root_path or BOARD_INVENTORY_TRUST_ROOT,
+        )
+    except hil_resolver.ResolverError as exc:
+        raise ValueError(f"board inventory authentication failed: {exc.message}") from exc
     salt = binding.get("commitment_salt_hex")
     if not isinstance(salt, str) or re.fullmatch(r"[0-9a-f]{64}", salt) is None:
         raise ValueError("board binding commitment salt must be 32 lowercase hex bytes")
@@ -1327,6 +1373,19 @@ def build_board_inventory_attestation(
         )
     ):
         raise ValueError("board binding inventory record fields are invalid")
+    authenticated_board = authenticated_inventory.boards.get(alias)
+    if authenticated_board is None:
+        raise ValueError("board binding alias is absent from authenticated inventory")
+    authenticated_record = {
+        "alias": authenticated_board.alias,
+        "capabilities": list(authenticated_board.capabilities),
+        "connection": {
+            "lan_base_url": authenticated_board.lan_base_url,
+            "usb_serial": authenticated_board.usb_serial,
+        },
+    }
+    if inventory_record != authenticated_record:
+        raise ValueError("board binding record does not match authenticated inventory")
     resolution = binding.get("resolution")
     base_attestation = hil_resolver.build_resolution_attestation(
         resolution,
@@ -1337,14 +1396,22 @@ def build_board_inventory_attestation(
     ).issubset(capabilities):
         raise ValueError("board binding resolution does not match inventory record")
     inventory_commitment = canonical_commitment(
-        "v1simple.hil.board-inventory.v1",
-        {"commitment_salt_hex": salt, "inventory_record": inventory_record},
+        "v1simple.hil.board-inventory.v2",
+        {
+            "commitment_salt_hex": salt,
+            "inventory_record": inventory_record,
+            "inventory_sha256": authenticated_inventory.authentication.inventory_sha256,
+            "trust_root_sha256": authenticated_inventory.authentication.trust_root_sha256,
+        },
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "resolver_schema_version": base_attestation["resolver_schema_version"],
-        "board_provenance_schema_version": 1,
+        "board_provenance_schema_version": 2,
         "commitment_algorithm": BOARD_COMMITMENT_ALGORITHM,
+        "authentication_algorithm": BOARD_AUTHENTICATION_ALGORITHM,
+        "trust_root_sha256": authenticated_inventory.authentication.trust_root_sha256,
+        "inventory_sha256": authenticated_inventory.authentication.inventory_sha256,
         "alias": base_attestation["alias"],
         "capabilities": base_attestation["capabilities"],
         "resolution_sha256": base_attestation["resolution_sha256"],
@@ -1364,6 +1431,8 @@ def validate_resolver_attestation(
     qualification_end: datetime | None,
     now: datetime,
     errors: list[str],
+    *,
+    board_trust_root_path: Path | None = None,
 ) -> None:
     if not isinstance(payload, dict):
         errors.append(f"{field} must be an object")
@@ -1375,6 +1444,9 @@ def validate_resolver_attestation(
             "resolver_schema_version",
             "board_provenance_schema_version",
             "commitment_algorithm",
+            "authentication_algorithm",
+            "trust_root_sha256",
+            "inventory_sha256",
             "alias",
             "capabilities",
             "resolution_sha256",
@@ -1384,14 +1456,20 @@ def validate_resolver_attestation(
         field,
         errors,
     )
-    if payload.get("schema_version") != 2:
-        errors.append(f"{field}.schema_version must be 2")
+    if payload.get("schema_version") != 3:
+        errors.append(f"{field}.schema_version must be 3")
     if payload.get("resolver_schema_version") != 1:
         errors.append(f"{field}.resolver_schema_version must be 1")
-    if payload.get("board_provenance_schema_version") != 1:
-        errors.append(f"{field}.board_provenance_schema_version must be 1")
+    if payload.get("board_provenance_schema_version") != 2:
+        errors.append(f"{field}.board_provenance_schema_version must be 2")
     if payload.get("commitment_algorithm") != BOARD_COMMITMENT_ALGORITHM:
         errors.append(f"{field}.commitment_algorithm must match the pinned board contract")
+    if payload.get("authentication_algorithm") != BOARD_AUTHENTICATION_ALGORITHM:
+        errors.append(
+            f"{field}.authentication_algorithm must match the pinned board contract"
+        )
+    valid_sha256(payload.get("trust_root_sha256"), f"{field}.trust_root_sha256", errors)
+    valid_sha256(payload.get("inventory_sha256"), f"{field}.inventory_sha256", errors)
     if payload.get("alias") != dut_alias:
         errors.append(f"{field}.alias must match the approved board alias")
     capabilities = parse_slug_list(
@@ -1429,6 +1507,7 @@ def validate_resolver_attestation(
         expected = build_board_inventory_attestation(
             raw_binding,
             observed_at_utc=payload.get("observed_at_utc"),
+            board_trust_root_path=board_trust_root_path,
         )
     except (ValueError, hil_resolver.ResolverError) as exc:
         errors.append(f"{field} local resolution could not be attested: {exc}")
@@ -2362,6 +2441,7 @@ def validate_artifact(
     expected_git_sha: Any,
     *,
     now: datetime | None = None,
+    board_trust_root_path: Path | None = None,
 ) -> list[str]:
     profile, errors = load_pinned_profile()
     if profile is None:
@@ -2623,6 +2703,7 @@ def validate_artifact(
                     qualification_end,
                     now,
                     errors,
+                    board_trust_root_path=board_trust_root_path,
                 )
 
     rigs: dict[str, tuple[str, ...]] = {}
@@ -2683,6 +2764,7 @@ def validate_artifact(
                     qualification_end,
                     now,
                     errors,
+                    board_trust_root_path=board_trust_root_path,
                 )
 
     build_manifest_id = parse_safe_id(

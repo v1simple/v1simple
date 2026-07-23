@@ -18,11 +18,18 @@ from unittest import mock
 
 import bug_squash_hil_adapter_protocol as adapter_protocol
 import bug_squash_hil_rig_adapters as rig_adapters
+import hil_board_inventory_test_support as inventory_test_support
 import run_bug_squash_hil as runner
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_bug_squash_hil.py"
+BOARD_SIGNER_TEMP = tempfile.TemporaryDirectory(
+    prefix="bug-squash-hil-bsc09-board-signer-"
+)
+BOARD_SIGNING_KEY, BOARD_TRUST_ROOT = inventory_test_support.create_test_signer(
+    Path(BOARD_SIGNER_TEMP.name)
+)
 
 
 def digest(label: str) -> str:
@@ -370,6 +377,7 @@ def prepare_fixture(root: Path) -> dict[str, Path | str]:
         ),
         encoding="utf-8",
     )
+    inventory_test_support.sign_inventory(inventory, BOARD_SIGNING_KEY)
     ports.write_text(
         json.dumps([{"port": str(port), "serial_number": "SECRET-BSC09-USB"}]),
         encoding="utf-8",
@@ -440,6 +448,8 @@ sys.stdout.write(json.dumps({
         "port": port,
         "template": template,
         "inventory": inventory,
+        "board_signing_key": BOARD_SIGNING_KEY,
+        "board_trust_root": BOARD_TRUST_ROOT,
         "ports": ports,
         "pio": fake_pio,
         "adapter": adapter,
@@ -452,6 +462,10 @@ def drop_capability(fixture: dict[str, Path | str], alias: str, capability: str)
     board = next(item for item in inventory["boards"] if item["alias"] == alias)
     board["capabilities"].remove(capability)
     inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    inventory_test_support.sign_inventory(
+        inventory_path,
+        Path(fixture["board_signing_key"]),
+    )
 
 
 def run_fixture(
@@ -491,7 +505,9 @@ def run_fixture(
     ]
     if production_replay:
         command.append("--production-replay")
-    environment = os.environ.copy()
+    environment = inventory_test_support.test_environment(
+        Path(fixture["board_trust_root"])
+    )
     environment.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -532,7 +548,6 @@ class Bsc09CollectorTests(unittest.TestCase):
             self.assertEqual(
                 result["qualification_blockers"],
                 [
-                    "board-resolution-provenance-not-authenticated",
                     "tracked-rig-adapter-not-implemented",
                 ],
             )

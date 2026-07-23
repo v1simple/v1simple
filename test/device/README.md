@@ -66,6 +66,24 @@ address when firmware will report it over serial; that dynamic mode also
 requires `serial` and its USB identity so the resolver can collect from the
 exact selected board itself.
 
+The overlay is accepted only with a detached SSH signature rooted in the
+committed, namespace-restricted board-inventory verification key. Restore the
+approved ignored signing key to
+`test/device/board_inventory_signing_key.local`, then sign the exact overlay
+bytes:
+
+```bash
+ssh-keygen -Y sign \
+  -f test/device/board_inventory_signing_key.local \
+  -n v1simple-hil-board-inventory-v1 \
+  test/device/board_inventory.local.json
+```
+
+This creates the ignored `board_inventory.local.json.sig`. The resolver rejects
+a missing overlay, missing signature, changed overlay bytes, or signature from
+any key outside the committed root. The private signing key, overlay, and
+signature remain local; only the public allowed-signers root is tracked.
+
 Resolve only the capabilities a job needs:
 
 ```bash
@@ -104,18 +122,15 @@ The standalone resolver attestation contains only the resolver schema, alias,
 requested capabilities, UTC observation time, and a stable SHA-256 of the
 complete local resolution.
 
-The bug-squash HIL wrapper adds the qualification integrity layer. It stores a
-random 32-byte salt, the selected private inventory record, and the exact
-resolution together in an ignored local binding, then publishes a schema 2
-attestation containing the resolution digest and a salted inventory commitment.
-The qualification validator recomputes both from the unique local binding for
-every DUT and rig. The public attestation never exposes the salt, USB identity,
-serial path, LAN endpoint, or unrelated inventory records; changing any bound
-private inventory or resolution byte invalidates it.
-This detects mutation and prevents identifier disclosure, but it is not an
-origin proof because the local evidence author supplies the salt, record, and
-resolution. Qualification keeps board provenance blocked until an external
-signature or pinned inventory trust root is available.
+The bug-squash HIL wrapper adds the qualification layer. It stores a random
+32-byte salt, authenticated private inventory bytes and detached signature, the
+selected record, and the exact resolution together in an ignored local binding.
+It publishes a schema 3 attestation containing only the resolution digest,
+salted inventory commitment, inventory digest, and committed trust-root
+identity. The qualification validator reverifies the signature and recomputes
+the selected record and both public digests for every DUT and rig. The public
+attestation never exposes the signature, salt, USB identity, serial path, LAN
+endpoint, or unrelated inventory records.
 
 ## Suites
 

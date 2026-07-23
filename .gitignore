@@ -131,5 +131,8 @@ CLAUDE.md
 
 # Local hardware lab config (template checked in, local values are not)
 test/device/board_inventory.local.json
+test/device/board_inventory.local.json.sig
+test/device/board_inventory_signing_key.local
+test/device/board_inventory_signing_key.local.pub
 test/device/serial_ports.local.json
 node_modules

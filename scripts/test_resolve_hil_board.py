@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import resolve_hil_board as resolver  # noqa: E402
+import hil_board_inventory_test_support as inventory_test_support  # noqa: E402
 
 
 def document(*boards: dict[str, object]) -> dict[str, object]:
@@ -41,9 +42,23 @@ class TemporaryInventories:
         directory = Path(self._directory.name)
         self.template = directory / "board_inventory.json"
         self.local = directory / "board_inventory.local.json"
+        self.signing_key, self.trust_root = inventory_test_support.create_test_signer(
+            directory
+        )
         self.template.write_text(json.dumps(template), encoding="utf-8")
         if local is not None:
             self.local.write_text(json.dumps(local), encoding="utf-8")
+            inventory_test_support.sign_inventory(self.local, self.signing_key)
+
+    def load(self) -> resolver.Inventory:
+        return resolver.load_inventory(
+            self.template,
+            self.local,
+            trust_root_path=self.trust_root,
+        )
+
+    def environment(self) -> dict[str, str]:
+        return inventory_test_support.test_environment(self.trust_root)
 
     def close(self) -> None:
         self._directory.cleanup()
@@ -63,10 +78,50 @@ class InventoryValidationTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, code)
         return raised.exception
 
-    def test_local_inventory_is_optional(self) -> None:
+    def test_tracked_inventory_does_not_require_a_local_overlay(self) -> None:
         with TemporaryInventories(document()) as files:
-            inventory = resolver.load_inventory(files.template, files.local)
+            inventory = resolver.load_inventory(files.template)
         self.assertEqual(inventory.boards, {})
+
+    def test_explicit_local_inventory_must_exist_and_be_signed(self) -> None:
+        with TemporaryInventories(document()) as files:
+            with self.assertRaises(resolver.ResolverError) as missing:
+                files.load()
+        self.assertEqual(missing.exception.code, "inventory_missing")
+
+        with TemporaryInventories(document(), document()) as files:
+            Path(f"{files.local}.sig").unlink()
+            with self.assertRaises(resolver.ResolverError) as unsigned:
+                files.load()
+        self.assertEqual(unsigned.exception.code, "inventory_signature_missing")
+
+    def test_tampered_or_substituted_local_inventory_is_rejected(self) -> None:
+        with TemporaryInventories(
+            document(),
+            document(board(alias="bench-a", usb_serial="SERIAL-A")),
+        ) as files:
+            files.local.write_text(
+                json.dumps(document(board(alias="bench-a", usb_serial="TAMPERED"))),
+                encoding="utf-8",
+            )
+            with self.assertRaises(resolver.ResolverError) as tampered:
+                files.load()
+        self.assertEqual(tampered.exception.code, "inventory_authentication_failed")
+
+        with TemporaryInventories(
+            document(),
+            document(board(alias="bench-a", usb_serial="SERIAL-A")),
+        ) as files:
+            _other_key, other_root = inventory_test_support.create_test_signer(
+                files.local.parent / "other"
+            )
+            with self.assertRaises(resolver.ResolverError) as substituted:
+                resolver.load_inventory(
+                    files.template,
+                    files.local,
+                    trust_root_path=other_root,
+                )
+        self.assertEqual(substituted.exception.code, "inventory_authentication_failed")
 
     def test_duplicate_json_keys_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -94,7 +149,7 @@ class InventoryValidationTests(unittest.TestCase):
         tracked = document(board(usb_serial="TRACKED"))
         local = document(board(capabilities=["lan"], lan_base_url="http://192.0.2.10/"))
         with TemporaryInventories(tracked, local) as files:
-            inventory = resolver.load_inventory(files.template, files.local)
+            inventory = files.load()
         selected = inventory.boards["bench-a"]
         self.assertEqual(selected.capabilities, ("lan",))
         self.assertIsNone(selected.usb_serial)
@@ -104,7 +159,7 @@ class InventoryValidationTests(unittest.TestCase):
         tracked = document(board(alias="bench-a", usb_serial="SERIAL-A"))
         local = document(board(alias="bench-b", usb_serial="SERIAL-B"))
         with TemporaryInventories(tracked, local) as files:
-            inventory = resolver.load_inventory(files.template, files.local)
+            inventory = files.load()
         self.assertEqual(set(inventory.boards), {"bench-a", "bench-b"})
 
     def test_schema_version_rejects_boolean_and_unknown_versions(self) -> None:
@@ -604,6 +659,7 @@ class CliTests(unittest.TestCase):
                     str(ports_path),
                 ],
                 cwd=ROOT,
+                env=files.environment(),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -642,6 +698,7 @@ class CliTests(unittest.TestCase):
                     str(resolution_path),
                 ],
                 cwd=ROOT,
+                env=files.environment(),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -677,6 +734,7 @@ class CliTests(unittest.TestCase):
                     str(ports_path),
                 ],
                 cwd=ROOT,
+                env=files.environment(),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -722,6 +780,7 @@ class CliTests(unittest.TestCase):
                     str(attestation_path),
                 ],
                 cwd=ROOT,
+                env=files.environment(),
                 capture_output=True,
                 text=True,
                 check=False,

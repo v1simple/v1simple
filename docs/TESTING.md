@@ -284,19 +284,17 @@ The versioned bug-squash profile covers exactly `BSC-02` through `BSC-14` plus
 `BSC-16`. It is an evidence contract, not a scenario runner, and hardware is
 not operated by the validator.
 
-The current version 3 profile is explicitly `blocked`. Production and
+The current version 7 profile is explicitly `blocked`. Production and
 car-production builds map to real PlatformIO environments, but the required
 bounded HIL fault-control build is marked
 `hil-fault-control-not-implemented`; it has no claimed environment or build
-command. The case-driver contract is also blocked with
-`case-source-provenance-not-authenticated` because no typed physical
-driver/collector exists yet. Version 3 adds useful integrity binding for build
-artifacts and private board inventory, but neither is authenticated: the build
-flow has no pinned/trusted PlatformIO or rebuild root, and the board flow has no
-external signing key or pinned inventory trust root. All four activation
-requirements therefore remain blocked. Adding a made-up environment, editing
-readiness flags, or recomputing self-declared evidence digests does not activate
-the profile or authenticate old evidence.
+command. Build inputs are authenticated against the pinned package root, case
+drivers are target-source-bound, and private board inventory is authenticated
+by a detached SSH signature under the committed namespace-restricted root.
+Profile activation remains blocked until the existing fault-control/profile
+release contract is completed. Adding a made-up environment, editing readiness
+flags, or recomputing self-declared evidence digests does not activate the
+profile or authenticate old evidence.
 
 Each local evidence pack must bind its result to the caller-supplied full target
 commit and the repository's current, existing `HEAD`; the live worktree must be
@@ -316,11 +314,10 @@ target-, profile-, tool-, log-, and artifact-derived value; merely rewriting
 the unkeyed commitments cannot conceal a stale commit, changed tool, changed
 contract, changed log, or changed binary.
 
-These commitments provide mutation detection, not an origin certificate. An
-evidence author who controls the selected PlatformIO executable and stale build
-directory can author a mutually consistent pack. Build provenance must remain
-blocked until validation is rooted in a trusted tool identity or independent
-rebuild service.
+The observed PlatformIO core and complete package graph are authenticated
+against the committed vendor-checksum and exact-commit root before and after
+the three qualification rebuilds. Unknown or changed tool and package
+identities fail before evidence acceptance.
 
 The validator also runs `esptool image-info` against every retained binary.
 Each must be a complete ESP32-S3 application image with valid checksum and
@@ -330,20 +327,20 @@ missing active PlatformIO environments, dirty source, failed builds, and
 invalid images. A blocked build contract is never executed or silently treated
 as optional qualification evidence.
 
-Every selected DUT and rig has a salted inventory commitment and a sanitized
-resolver attestation. The attestation exposes only the alias, selected
-capabilities, resolution digest, inventory commitment, schemas, algorithm, and
-observation time; it never embeds the salt, configured USB identity, serial
-path, LAN endpoint, or unrelated inventory metadata. The ignored local binding
-retains the salt, selected private inventory record, and exact resolution so
-the validator can independently recompute both public digests. Any change to
-the selected inventory bytes, salt, or resolution invalidates the attestation.
+Every selected DUT and rig has a signed local inventory, salted inventory
+commitment, and sanitized resolver attestation. The attestation exposes only
+the alias, selected capabilities, resolution digest, inventory commitment,
+inventory digest, committed trust-root digest, schemas, algorithms, and
+observation time; it never embeds the signature, salt, configured USB identity,
+serial path, LAN endpoint, or unrelated inventory metadata. The ignored local
+binding retains the signed inventory bytes, signature, salt, selected private
+record, and exact resolution so the validator can independently reverify the
+signature and recompute both public digests. Missing, unsigned, tampered, or
+substituted inventory fails closed.
 For dynamic LAN, the resolver opens the exact selected serial port and performs
 bounded collection; it does not accept a caller-provided serial log.
-Because the evidence author still supplies the local salt, inventory record,
-and resolution, this is also integrity binding rather than authentication.
-Board provenance must remain blocked until an external signature or pinned
-private inventory root is verified.
+The allowed-signers root is tracked and pinned by the qualification profile;
+its corresponding private key remains outside version control.
 
 Case runs bind an approved DUT and rig to case-specific structured roles. Those
 roles enumerate the exact stimuli, bounded fault lifecycle,
@@ -352,14 +349,14 @@ contract, instrumentation mode, and typed acceptance facts. Every observation
 also references a separate source artifact whose exact record set, values,
 timestamps, and causal ordering are validated. Its commitment binds the exact
 pinned case definition, driver contract, and target-tracked
-execution-provenance manifest. That manifest digests the runner, future driver
-sources, and future fault-control implementation/tests exactly as stored in the
+execution-provenance manifest. That manifest digests the runner, typed driver
+sources, and fault-control implementation/tests exactly as stored in the
 target commit. Roles with a fault or barrier cannot claim manual-only
 instrumentation. HIL-fault cases require separate production-replay evidence.
 Opaque or reused evidence cannot close multiple roles, and `ACCEPTED_RISK`
-cannot close the pack or any case. The source schema is ready to bind tracked
-drivers, but the current driver and fault-control path lists remain empty and
-blocked, so authored source records still cannot close qualification.
+cannot close the pack or any case. Physical rig adapters and the remaining
+profile-release contract still prevent authored records from closing
+qualification.
 
 All referenced artifacts must be unique, nonempty regular files below the pack
 directory. Every path component is lstat-checked, symlinks and operationally

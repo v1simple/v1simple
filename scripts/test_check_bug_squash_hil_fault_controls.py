@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -111,6 +112,9 @@ def fixture_root(temporary: Path) -> Path:
     ci_workflow = root / checker.CI_WORKFLOW_FILE
     ci_workflow.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / checker.CI_WORKFLOW_FILE, ci_workflow)
+    trust_root = root / "tools" / checker.build_root.TRUST_ROOT.name
+    trust_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(checker.build_root.TRUST_ROOT, trust_root)
     return root
 
 
@@ -121,6 +125,152 @@ def assert_error_contains(errors: list[str], fragment: str) -> None:
 def test_repository_static_contract_passes() -> None:
     errors = checker.validate_static(ROOT)
     assert_true(not errors, f"repository static contract failed: {errors}")
+
+
+def test_authenticated_package_root_rejects_tampered_and_unknown_identity() -> None:
+    with tempfile.TemporaryDirectory(prefix="platformio-package-root-") as raw:
+        temporary = Path(raw)
+        project = temporary / "project"
+        pio_home = temporary / "platformio"
+        compiler = pio_home / "packages" / "compiler"
+        library = project / ".pio" / "libdeps" / "test-env" / "Library"
+        compiler.mkdir(parents=True)
+        library.mkdir(parents=True)
+        compiler_file = compiler / "compiler"
+        compiler_file.write_bytes(b"authenticated compiler")
+        library_file = library / "library.h"
+        library_file.write_bytes(b"authenticated library")
+        (compiler / ".piopm").write_text(
+            json.dumps(
+                {
+                    "type": "tool",
+                    "name": "compiler",
+                    "version": "1.0.0",
+                    "spec": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (library / ".piopm").write_text(
+            json.dumps(
+                {
+                    "type": "library",
+                    "name": "Library",
+                    "version": "2.0.0",
+                    "spec": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        trust = {
+            "schema_version": 1,
+            "qualification_environments": ["test-env"],
+            "platformio_core": {
+                "version": "6.1.19",
+                "launcher_body_sha256": "1" * 64,
+                "sources": [
+                    {
+                        "id": "test-core",
+                        "source": {
+                            "authentication": "sha256",
+                            "url": "https://example.invalid/platformio.whl",
+                            "sha256": "2" * 64,
+                        },
+                        "module_tree_sha256": "3" * 64,
+                        "python_package_sha256": "4" * 64,
+                    }
+                ],
+            },
+            "packages": [
+                {
+                    "name": "compiler",
+                    "kind": "compiler",
+                    "version": "1.0.0",
+                    "location": {
+                        "scope": "platformio-home",
+                        "path": "packages/compiler",
+                    },
+                    "metadata": {
+                        "type": "tool",
+                        "name": "compiler",
+                        "version": "1.0.0",
+                    },
+                    "source": {
+                        "authentication": "sha256",
+                        "url": "https://example.invalid/compiler.tar.xz",
+                        "sha256": "5" * 64,
+                    },
+                    "tree_sha256": {
+                        "linux-amd64": [
+                            checker.build_root.package_tree_sha256(compiler)
+                        ]
+                    },
+                },
+                {
+                    "name": "Library",
+                    "kind": "library",
+                    "version": "2.0.0",
+                    "location": {
+                        "scope": "project-libdeps",
+                        "path": "Library",
+                    },
+                    "metadata": {
+                        "type": "library",
+                        "name": "Library",
+                        "version": "2.0.0",
+                    },
+                    "source": {
+                        "authentication": "sha256",
+                        "url": "https://example.invalid/library.tar.gz",
+                        "sha256": "6" * 64,
+                    },
+                    "tree_sha256": {
+                        "any": [checker.build_root.package_tree_sha256(library)]
+                    },
+                },
+            ],
+        }
+        trust_path = project / "tools" / checker.build_root.TRUST_ROOT.name
+        trust_path.parent.mkdir(parents=True)
+        trust_path.write_text(
+            json.dumps(trust, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        identity = checker.build_root.authenticate_platformio_packages(
+            project,
+            platformio_home=pio_home,
+            platform_key="linux-amd64",
+        )
+        assert_true(
+            len(identity["identity_sha256"]) == 64,
+            "authenticated package set must emit a full identity",
+        )
+
+        compiler_file.write_bytes(b"tampered compiler")
+        try:
+            checker.build_root.authenticate_platformio_packages(
+                project,
+                platformio_home=pio_home,
+                platform_key="linux-amd64",
+            )
+        except checker.build_root.AuthenticationError as exc:
+            assert_true("tree identity is not pinned" in str(exc), str(exc))
+        else:
+            raise AssertionError("tampered compiler identity was accepted")
+        compiler_file.write_bytes(b"authenticated compiler")
+
+        unknown = project / ".pio" / "libdeps" / "test-env" / "Unknown"
+        unknown.mkdir()
+        try:
+            checker.build_root.authenticate_platformio_packages(
+                project,
+                platformio_home=pio_home,
+                platform_key="linux-amd64",
+            )
+        except checker.build_root.AuthenticationError as exc:
+            assert_true("inventory is unknown" in str(exc), str(exc))
+        else:
+            raise AssertionError("unknown package identity was accepted")
 
 
 def test_structural_guard_accepts_formatter_comment_spacing() -> None:
@@ -633,6 +783,7 @@ def bound_manifest(root: Path, full_sha: str = FULL_SHA) -> checker.BoundBuildMa
         full_sha=full_sha,
         platformio_version="PlatformIO Core, version 6.1.19",
         platformio_tree_sha256=next(iter(checker.EXPECTED_PLATFORMIO_TREE_SHA256)),
+        platformio_packages_sha256="d" * 64,
         interpreter_sha256="b" * 64,
         artifact_sha256=digests,
     )
@@ -647,6 +798,7 @@ def test_binary_absence_requires_complete_real_artifacts_and_scans_markers() -> 
                 FULL_SHA,
                 "PlatformIO Core, version 6.1.19",
                 next(iter(checker.EXPECTED_PLATFORMIO_TREE_SHA256)),
+                "d" * 64,
                 "b" * 64,
                 {
                     (environment, kind): "c" * 64
@@ -743,12 +895,19 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
             "SCONSFLAGS": "--site-dir=/tmp/injected",
         }
     )
+
+    def authenticated_packages(_root: Path) -> dict[str, str]:
+        return {"identity_sha256": "d" * 64}
+
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
         bound_root = fixture_root(Path(raw))
         active_root = bound_root
         complete_artifacts(bound_root, FULL_SHA, checker.BUILD_ENVIRONMENTS)
         build_errors, manifest = checker.validate_bound_builds(
-            bound_root, successful_runner, injected
+            bound_root,
+            successful_runner,
+            injected,
+            authenticated_packages,
         )
         assert_true(
             not build_errors and manifest is not None and manifest.full_sha == FULL_SHA,
@@ -757,6 +916,10 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
         assert_true(
             len(manifest.artifact_sha256) == len(checker.BUILD_ENVIRONMENTS) * 2,
             f"artifact manifest incomplete: {manifest.artifact_sha256}",
+        )
+        assert_true(
+            manifest.platformio_packages_sha256 == "d" * 64,
+            "bound manifest omitted the authenticated package-set identity",
         )
     expected_pio = []
     identity = checker.resolve_platformio_identity(ROOT, injected)
@@ -816,6 +979,11 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
                     "HEAD^{commit}",
                 ),
                 (*pio, "--version"),
+            ]
+        )
+    for environment in checker.BUILD_ENVIRONMENTS:
+        expected_pio.extend(
+            [
                 (*pio, "run", "-e", environment, "-t", "clean"),
                 (*pio, "run", "-e", environment),
             ]
@@ -911,13 +1079,17 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
         stale_root = fixture_root(Path(raw))
         complete_artifacts(stale_root, FULL_SHA, checker.BUILD_ENVIRONMENTS)
-        stale_errors, _ = checker.validate_bound_builds(stale_root, stale_clean_runner)
+        stale_errors, _ = checker.validate_bound_builds(
+            stale_root,
+            stale_clean_runner,
+            package_authenticator=authenticated_packages,
+        )
         assert_error_contains(stale_errors, "bound clean left canonical artifact present")
 
     with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
         fake_root = fixture_root(Path(raw))
         repository_tool = fake_root / "tools" / "pio"
-        repository_tool.parent.mkdir()
+        repository_tool.parent.mkdir(exist_ok=True)
         repository_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         repository_tool.chmod(0o700)
         repository_environment = dict(checker.os.environ)
@@ -967,6 +1139,7 @@ def main(
     tests = (
         test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_repository_static_contract_passes,
+        test_authenticated_package_root_rejects_tampered_and_unknown_identity,
         test_structural_guard_accepts_formatter_comment_spacing,
         test_hil_environment_cannot_become_default_or_leak_to_production_flags,
         test_unguarded_and_elif_call_sites_are_rejected,

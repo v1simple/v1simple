@@ -19,14 +19,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+import authenticate_platformio_packages as build_root
 import resolve_hil_board as hil_resolver
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "tools" / "bug_squash_hil_qualification_profile_v1.json"
 BUILD_EVIDENCE_GENERATOR = ROOT / "scripts" / "generate_bug_squash_build_evidence.py"
-PINNED_PROFILE_SHA256 = "688eb26b58906183761fd2b8ba456d5a0366874c926e8d8d9b2b7a99dfec9a08"
+PINNED_PROFILE_SHA256 = "9ff2a556f89c73e57423e0cd785e8c4bcb541ebaff5ab833c52633cbb6e88953"
 MINIMUM_READY_PROFILE_VERSION = 3
-PINNED_PROFILE_VERSION = 5
+PINNED_PROFILE_VERSION = 6
 INTEGRITY_PROVENANCE_VERIFIER_VERSION = 1
 AUTHENTICATED_PROVENANCE_VERIFIER_VERSION: int | None = None
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
@@ -334,11 +335,21 @@ def current_build_tool_identity() -> dict[str, Any]:
     if python_command is None:
         raise ValueError("PlatformIO Python environment is unavailable")
     python = python_command.resolve()
+    build_root.authenticate_platformio_launcher(pio, python)
+    platformio_root = build_root.authenticate_platformio_core(
+        python_package_sha256=python_package_sha256,
+    )
+    build_root.authenticate_python_package(
+        "tool-esptoolpy",
+        esptool_package_sha256,
+    )
+    platformio_packages = build_root.authenticate_platformio_packages(ROOT)
     tools = {
-        "schema_version": 1,
+        "schema_version": 2,
         "platformio": {
             "sha256": file_sha256(pio),
             "package_sha256": python_package_sha256,
+            "root": platformio_root,
             "version": _tool_version(
                 [str(pio), "--version"],
                 r"PlatformIO Core, version \d+\.\d+\.\d+",
@@ -361,6 +372,7 @@ def current_build_tool_identity() -> dict[str, Any]:
             "sha256": esptool_package_sha256,
             "version": esptool_version,
         },
+        "platformio_packages": platformio_packages,
     }
     tools["identity_sha256"] = canonical_commitment(
         "v1simple.hil.build-tools.v1",
@@ -540,6 +552,7 @@ def validate_provenance_profile_contracts(
     errors: list[str],
 ) -> None:
     build = profile.get("build_provenance_contract")
+    build_status: str | None = None
     if not isinstance(build, dict):
         errors.append("pinned profile build_provenance_contract must be an object")
     else:
@@ -555,9 +568,10 @@ def validate_provenance_profile_contracts(
             "pinned profile.build_provenance_contract",
             errors,
         )
-        if build.get("schema_version") != 1 or build.get("status") != "integrity-bound":
+        build_status = build.get("status")
+        if build.get("schema_version") != 1 or build_status != "authenticated":
             errors.append(
-                "pinned profile build provenance contract must be integrity-bound schema 1"
+                "pinned profile build provenance contract must be authenticated schema 1"
             )
         if build.get("commitment_algorithm") != COMMITMENT_ALGORITHM:
             errors.append("pinned profile build provenance commitment algorithm mismatch")
@@ -567,6 +581,7 @@ def validate_provenance_profile_contracts(
             "esptool",
             "git",
             "platformio",
+            "platformio-package-set",
             "python",
         ]:
             errors.append("pinned profile build provenance tool identities mismatch")
@@ -666,7 +681,9 @@ def validate_provenance_profile_contracts(
         if isinstance(item, dict)
     }
     expected_status = {
-        "authenticated-build-generator-provenance": "blocked",
+        "authenticated-build-generator-provenance": (
+            "active" if build_status == "authenticated" else "blocked"
+        ),
         "authenticated-board-inventory-resolver-provenance": "blocked",
         "authenticated-case-driver-source-provenance": driver_status,
         "bounded-hil-fault-control": fault_status,
@@ -676,7 +693,10 @@ def validate_provenance_profile_contracts(
     expected_blockers = {
         code
         for code, status in (
-            ("build-generator-provenance-not-authenticated", "blocked"),
+            (
+                "build-generator-provenance-not-authenticated",
+                "active" if build_status == "authenticated" else "blocked",
+            ),
             ("board-resolution-provenance-not-authenticated", "blocked"),
             ("case-source-provenance-not-authenticated", driver_status),
             ("hil-fault-control-not-implemented", fault_status),

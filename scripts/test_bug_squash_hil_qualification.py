@@ -37,15 +37,36 @@ SYNTHETIC_REPOSITORY_STATE = qualification.RepositoryState(
 ORIGINAL_READ_REPOSITORY_STATE = qualification.read_repository_state
 SYNTHETIC_TREE_SHA256 = "1" * 64
 SYNTHETIC_TOOL_IDENTITY = {
-    "schema_version": 1,
+    "schema_version": 2,
     "platformio": {
         "sha256": "2" * 64,
         "package_sha256": "6" * 64,
+        "root": {
+            "id": "synthetic-vendor-root",
+            "source": {
+                "authentication": "sha256",
+                "url": "https://example.invalid/platformio.whl",
+                "sha256": "7" * 64,
+            },
+            "version": "6.1.19",
+        },
         "version": "PlatformIO Core, version 6.1.19",
     },
     "python": {"sha256": "3" * 64, "version": "3.13.5"},
     "git": {"sha256": "4" * 64, "version": "git version 2.50.1"},
     "esptool": {"sha256": "5" * 64, "version": "esptool v5.2.0"},
+    "platformio_packages": {
+        "schema_version": 1,
+        "platform": "linux-amd64",
+        "qualification_environments": [
+            "waveshare-349-hil",
+            "waveshare-349",
+            "esp32-s3-car-install",
+        ],
+        "trust_root_sha256": "8" * 64,
+        "packages": [],
+        "identity_sha256": "9" * 64,
+    },
 }
 SYNTHETIC_TOOL_IDENTITY["identity_sha256"] = qualification.canonical_commitment(
     "v1simple.hil.build-tools.v1",
@@ -729,7 +750,7 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 5, "profile must be version 5")
+    assert_true(profile["profile_version"] == 6, "profile must be version 6")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
@@ -766,15 +787,14 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
         }
         == {
             "bounded-hil-fault-control",
-            "authenticated-build-generator-provenance",
             "authenticated-board-inventory-resolver-provenance",
         },
-        "the three remaining unauthenticated activation roots stay blocked",
+        "only the unimplemented fault control and board root stay blocked",
     )
     assert_true(
-        profile["build_provenance_contract"]["status"] == "integrity-bound"
+        profile["build_provenance_contract"]["status"] == "authenticated"
         and profile["board_provenance_contract"]["status"] == "integrity-bound",
-        "build and board commitments are not mislabeled authenticated or active",
+        "build authentication is active while board authentication stays blocked",
     )
     cases = {case["id"]: case for case in profile["required_cases"]}
     bsc03 = cases["BSC-03"]
@@ -849,12 +869,17 @@ def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -
         clear=False,
     ):
         qualification.current_build_tool_identity.cache_clear()
-        fake_tools = qualification.current_build_tool_identity()
+        try:
+            qualification.current_build_tool_identity()
+        except ValueError as exc:
+            assert_true(
+                "launcher" in str(exc).lower(),
+                f"fake PlatformIO failed for the wrong reason: {exc}",
+            )
+        else:
+            raise AssertionError("PATH-selected fake PlatformIO was authenticated")
     qualification.current_build_tool_identity.cache_clear()
-    assert_true(
-        fake_tools["platformio"]["sha256"] == qualification.file_sha256(fake_pio),
-        "PATH-selected fake PlatformIO can author internally consistent integrity metadata",
-    )
+    fake_tools = SYNTHETIC_TOOL_IDENTITY
 
     stale_binary = tmpdir / "stale-firmware.bin"
     stale_log = tmpdir / "forged-build.log"
@@ -913,15 +938,11 @@ def test_self_authored_build_and_board_integrity_cannot_activate(tmpdir: Path) -
         has_error(activation_errors, "authenticated provenance verifier is not implemented")
         and has_error(
             activation_errors,
-            "authenticated-build-generator-provenance",
-        )
-        and has_error(
-            activation_errors,
             "authenticated-board-inventory-resolver-provenance",
         )
-        and "build-generator-provenance-not-authenticated" in blocker_codes
+        and "build-generator-provenance-not-authenticated" not in blocker_codes
         and "board-resolution-provenance-not-authenticated" in blocker_codes,
-        "self-consistent build and board commitments cannot activate qualification",
+        "the authenticated build root closes only its recorded activation blocker",
     )
 
 

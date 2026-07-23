@@ -1,13 +1,9 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 5,
+  "profile_version": 6,
   "qualification_status": "blocked",
   "blockers": [
-    {
-      "code": "build-generator-provenance-not-authenticated",
-      "affected_component": "build-evidence"
-    },
     {
       "code": "board-resolution-provenance-not-authenticated",
       "affected_component": "board-resolver"
@@ -28,7 +24,7 @@
       },
       {
         "id": "authenticated-build-generator-provenance",
-        "status": "blocked"
+        "status": "active"
       },
       {
         "id": "authenticated-case-driver-source-provenance",
@@ -42,13 +38,14 @@
   },
   "build_provenance_contract": {
     "schema_version": 1,
-    "status": "integrity-bound",
+    "status": "authenticated",
     "commitment_algorithm": "sha256-domain-separated-canonical-json-v1",
     "source_tree_scope": "full-git-tree",
     "required_tool_identities": [
       "esptool",
       "git",
       "platformio",
+      "platformio-package-set",
       "python"
     ]
   },

@@ -178,13 +178,20 @@ def test_real_build_tool_identity_is_content_bound(tmpdir: Path) -> None:
             "python",
             "git",
             "esptool",
+            "platformio_packages",
             "identity_sha256",
         },
         "tool identity schema is exact",
     )
     assert_true(
-        set(tools["platformio"]) == {"sha256", "package_sha256", "version"},
-        "PlatformIO binds launcher and package bytes",
+        tools["schema_version"] == 2
+        and set(tools["platformio"])
+        == {"sha256", "package_sha256", "root", "version"},
+        "PlatformIO binds launcher, package bytes, and an authenticated source root",
+    )
+    assert_true(
+        len(tools["platformio_packages"]["identity_sha256"]) == 64,
+        "PlatformIO package graph has an authenticated aggregate identity",
     )
     unsigned = {
         key: value for key, value in tools.items() if key != "identity_sha256"

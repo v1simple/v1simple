@@ -13,17 +13,14 @@ import stat
 import subprocess
 import sys
 
+import authenticate_platformio_packages as build_root
+
 ROOT = Path(__file__).resolve().parents[1]
 HIL_MACRO = "V1SIMPLE_HIL_FAULT_CONTROL"
 WIFI_SCAN_TRACE_MACRO = "V1SIMPLE_WIFI_SCAN_TRACE"
 HIL_ENVIRONMENT = "waveshare-349-hil"
 EXPECTED_PLATFORMIO_VERSION = "6.1.19"
-EXPECTED_PLATFORMIO_TREE_SHA256 = {
-    # Official PyPI platformio==6.1.19 wheel used by GitHub Actions.
-    "0002aa2f70cd2ce5934e25a8fcfafaef1ded3c5ea579206b851a12b5bde92394",
-    # PlatformIO/pioarduino 6.1.19 standalone environment used by maintainers.
-    "5712e0d34c18cd9af6232737c0550d6e25e98646f1101710f205310abdbe4fc2",
-}
+EXPECTED_PLATFORMIO_TREE_SHA256 = build_root.platformio_module_tree_pins()
 PRODUCTION_ENVIRONMENTS = ("waveshare-349", "esp32-s3-car-install")
 BUILD_ENVIRONMENTS = (HIL_ENVIRONMENT, *PRODUCTION_ENVIRONMENTS)
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
@@ -143,6 +140,7 @@ class BoundBuildManifest:
     full_sha: str
     platformio_version: str
     platformio_tree_sha256: str
+    platformio_packages_sha256: str
     interpreter_sha256: str
     artifact_sha256: dict[tuple[str, str], str]
 
@@ -314,6 +312,18 @@ def has_structural_outer_guard(text: str) -> bool:
 
 def validate_static(root: Path) -> list[str]:
     errors: list[str] = []
+    try:
+        trust_root = build_root.load_trust_root(
+            root / "tools" / build_root.TRUST_ROOT.name
+        )
+    except build_root.AuthenticationError as exc:
+        errors.append(f"authenticated PlatformIO rebuild root is invalid: {exc}")
+    else:
+        if trust_root["qualification_environments"] != list(BUILD_ENVIRONMENTS):
+            errors.append(
+                "authenticated PlatformIO rebuild root environments do not match "
+                "the qualification builds"
+            )
     parser = load_platformio(root, errors)
     if parser is not None:
         required_sections = {"platformio", f"env:{HIL_ENVIRONMENT}", *(
@@ -946,6 +956,10 @@ def validate_binary_absence(root: Path, manifest: BoundBuildManifest) -> list[st
     if (
         re.fullmatch(r"[0-9a-f]{40,64}", manifest.full_sha) is None
         or manifest.platformio_tree_sha256 not in EXPECTED_PLATFORMIO_TREE_SHA256
+        or re.fullmatch(
+            r"[0-9a-f]{64}", manifest.platformio_packages_sha256
+        )
+        is None
         or re.fullmatch(r"[0-9a-f]{64}", manifest.interpreter_sha256) is None
         or manifest.platformio_version
         != f"PlatformIO Core, version {EXPECTED_PLATFORMIO_VERSION}"
@@ -1149,7 +1163,12 @@ def resolve_platformio_identity(
             ):
                 continue
             tree_sha256 = platformio_tree_sha256(module_root)
-            if tree_sha256 not in EXPECTED_PLATFORMIO_TREE_SHA256:
+            try:
+                build_root.authenticate_platformio_core(
+                    module_tree_sha256=tree_sha256,
+                    trust_root_path=root / "tools" / build_root.TRUST_ROOT.name,
+                )
+            except build_root.AuthenticationError:
                 continue
             return PlatformioIdentity(
                 interpreter=interpreter,
@@ -1209,6 +1228,7 @@ def validate_bound_builds(
     root: Path,
     runner=subprocess.run,
     source_environment: dict[str, str] | None = None,
+    package_authenticator=build_root.authenticate_platformio_packages,
 ) -> tuple[list[str], BoundBuildManifest | None]:
     errors: list[str] = []
     source_environment = dict(os.environ) if source_environment is None else source_environment
@@ -1290,7 +1310,6 @@ def validate_bound_builds(
             )
         return None
 
-    artifact_sha256: dict[tuple[str, str], str] = {}
     for build_environment in BUILD_ENVIRONMENTS:
         binding_error = dependency_binding_error(build_environment, "before")
         if binding_error is not None:
@@ -1312,6 +1331,23 @@ def validate_bound_builds(
         binding_error = dependency_binding_error(build_environment, "after")
         if binding_error is not None:
             return [binding_error], None
+
+    try:
+        initial_packages = package_authenticator(root)
+        package_set_sha256 = initial_packages["identity_sha256"]
+    except (KeyError, OSError, ValueError) as exc:
+        return [
+            "authenticated PlatformIO package identity is unavailable: "
+            f"{type(exc).__name__}"
+        ], None
+    if (
+        not isinstance(package_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", package_set_sha256) is None
+    ):
+        return ["authenticated PlatformIO package identity is malformed"], None
+
+    artifact_sha256: dict[tuple[str, str], str] = {}
+    for build_environment in BUILD_ENVIRONMENTS:
         for command_kind, command in (
             ("clean", [*pio_command, "run", "-e", build_environment, "-t", "clean"]),
             ("build", [*pio_command, "run", "-e", build_environment]),
@@ -1351,6 +1387,13 @@ def validate_bound_builds(
         final_identity = resolve_platformio_identity(root, source_environment)
     except OSError as exc:
         return [f"post-build Git binding unavailable: {type(exc).__name__}"], None
+    try:
+        final_packages = package_authenticator(root)
+    except (OSError, ValueError) as exc:
+        return [
+            "post-build PlatformIO package authentication failed: "
+            f"{type(exc).__name__}"
+        ], None
     if final_status.returncode != 0 or final_status.stdout.strip():
         errors.append("target Git worktree changed during the bound rebuild")
     if final_revision.returncode != 0 or final_revision.stdout.strip().lower() != full_sha:
@@ -1361,10 +1404,13 @@ def validate_bound_builds(
         or final_identity != initial_identity
     ):
         errors.append("authoritative PlatformIO identity changed during the bound rebuild")
+    if final_packages != initial_packages:
+        errors.append("authenticated PlatformIO package identity changed during the bound rebuild")
     manifest = BoundBuildManifest(
         full_sha=full_sha,
         platformio_version=pio_version.stdout.strip(),
         platformio_tree_sha256=initial_identity.tree_sha256,
+        platformio_packages_sha256=package_set_sha256,
         interpreter_sha256=initial_identity.interpreter_sha256,
         artifact_sha256=artifact_sha256,
     )
@@ -1388,7 +1434,10 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[hil-fault-controls] bound rebuild, static isolation, and production binary absence verified")
+    print(
+        "[hil-fault-controls] authenticated package root, bound rebuild, "
+        "static isolation, and production binary absence verified"
+    )
     return 0
 
 

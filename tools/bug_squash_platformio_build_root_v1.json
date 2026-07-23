@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "qualification_environments": [
+    "waveshare-349-hil",
+    "waveshare-349",
+    "esp32-s3-car-install"
+  ],
+  "platformio_core": {
+    "version": "6.1.19",
+    "launcher_body_sha256": "f265f4cf979a1a461a2d5ac99842c75dfdc3338e4d2630e24712969ec6278e9c",
+    "sources": [
+      {
+        "id": "platformio-pypi-wheel",
+        "source": {
+          "authentication": "sha256",
+          "url": "https://files.pythonhosted.org/packages/cf/15/ecb78457241aef59977cafe52b521ed99c7f42e78016d55bbaa953a2b6ae/platformio-6.1.19-py3-none-any.whl",
+          "sha256": "4f93b00cf2759035d76ebece4840a3274096f7343ee5bba56cbc0bc3ce2eb6f5"
+        },
+        "module_tree_sha256": "0002aa2f70cd2ce5934e25a8fcfafaef1ded3c5ea579206b851a12b5bde92394",
+        "python_package_sha256": "48e95b0e1ff3e5a67158f3ed9a03413444eea21aa1571c76ae03e961914fa38a"
+      },
+      {
+        "id": "pioarduino-signed-tag",
+        "source": {
+          "authentication": "signed-git",
+          "repository": "https://github.com/pioarduino/platformio-core",
+          "commit": "d3321155afaadd4e1d53373910c047132d48374b",
+          "tree": "133ac47758169ac18b1173fa6865ed40fc8dfd70",
+          "signature": "github-verified-commit"
+        },
+        "module_tree_sha256": "5712e0d34c18cd9af6232737c0550d6e25e98646f1101710f205310abdbe4fc2",
+        "python_package_sha256": "0915ae1069945bc02989c7273d6a046e0fb205edaf6b52a85403e57a494048c4"
+      }
+    ]
+  },
+  "packages": [
+    {
+      "name": "platform-espressif32",
+      "kind": "platform",
+      "version": "55.3.38",
+      "location": {
+        "scope": "platformio-home",
+        "path": "platforms/espressif32"
+      },
+      "metadata": {
+        "type": "platform",
+        "name": "espressif32",
+        "version": "55.3.38"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip",
+        "sha256": "54ca527d9920815d8fef77319b9c35679cf71c0299a3a9bf4ad8ae33a6cd95c4"
+      },
+      "tree_sha256": {
+        "any": [
+          "b8b83f584803252a8a3941f5ee594b8afdcdea904d82f0dc7bcaa409b37c0998"
+        ]
+      }
+    },
+    {
+      "name": "framework-arduinoespressif32",
+      "kind": "framework",
+      "version": "3.3.8",
+      "location": {
+        "scope": "platformio-home",
+        "path": "packages/framework-arduinoespressif32"
+      },
+      "metadata": {
+        "type": "tool",
+        "name": "framework-arduinoespressif32",
+        "version": "3.3.8"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.8/esp32-core-3.3.8.tar.xz",
+        "sha256": "f7f63825cfb98269514b977ea78c17ab292904e47e1ca47329fbe0ccccc5a83d"
+      },
+      "tree_sha256": {
+        "any": [
+          "00b7aee0eb906a74b804258891de22356ecb2ab40a4f9b62057e75fcc896b6b6",
+          "0ddfc51bb0501930c59bcaa0093b163721e2ba887db29220afb25b75b869d459"
+        ]
+      }
+    },
+    {
+      "name": "framework-arduinoespressif32-libs",
+      "kind": "framework",
+      "version": "5.5.4+sha.735507283d",
+      "location": {
+        "scope": "platformio-home",
+        "path": "packages/framework-arduinoespressif32-libs"
+      },
+      "metadata": {
+        "type": "tool",
+        "name": "framework-arduinoespressif32-libs",
+        "version": "5.5.4+sha.735507283d"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.8/esp32-core-3.3.8-libs.tar.xz",
+        "sha256": "0b3130250deeac0da31a91fa9eef688a691ca0dc75394538808722639c1335a5"
+      },
+      "tree_sha256": {
+        "any": [
+          "a75e381cc80f51d2ae3821a9dd3b146d73823e3aead7494bb714085a58dbe959",
+          "70e37cd67f4b145e723b6806e66097f055f9f35f75b6e5bae80e8e25cd58b092"
+        ]
+      }
+    },
+    {
+      "name": "toolchain-xtensa-esp-elf",
+      "kind": "compiler",
+      "version": "14.2.0+20260121",
+      "location": {
+        "scope": "platformio-home",
+        "path": "packages/toolchain-xtensa-esp-elf"
+      },
+      "metadata": {
+        "type": "tool",
+        "name": "toolchain-xtensa-esp-elf",
+        "version": "14.2.0+20260121"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/xtensa-esp-elf-14.2.0_20260121.zip",
+        "sha256": "b9d3638a44744d1ea87c058c429eb5d4b5bbb02cabaadbf3d668bc7246722c31",
+        "payload_sha256": {
+          "linux-amd64": "da31f36d79d4e99f24e55a90a71e65d5694714f16199960bf7885724b706a48c",
+          "macos-arm64": "a450db49cea5f191a96345c5b7f0e1a9671a9cf132fecfd9fb1faf6c2a30637e"
+        }
+      },
+      "tree_sha256": {
+        "linux-amd64": [
+          "bbf8a2f5f163fc0987596348be8ea775086b012c3c4954f7eadf5ee6368071b5"
+        ],
+        "macos-arm64": [
+          "f76919bf55bef8cb39a82ee92513ffe972dec08d4506571e96e8e6c607cd5333"
+        ]
+      }
+    },
+    {
+      "name": "tool-esptoolpy",
+      "kind": "tool",
+      "version": "5.2.0",
+      "location": {
+        "scope": "platformio-home",
+        "path": "packages/tool-esptoolpy"
+      },
+      "metadata": {
+        "type": "tool",
+        "name": "tool-esptoolpy",
+        "version": "5.2.0"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/esptoolpy-v5.2.0.zip",
+        "sha256": "8fb5f2b96053dc42ce0a59ab1a11b5f28c449761769f1452a6d42050bf8bc96d",
+        "payload_sha256": {
+          "any": "fb679d019593309ca57e0b8565980cc82c5e31e549392c6b8c675a8502eccb05"
+        }
+      },
+      "python_package_sha256": "a21a504fa483ce96d6c62337195661f3bf52bc2bf02219783869d4508f909635",
+      "tree_sha256": {
+        "any": [
+          "8709ca11674b92241d75c1feb9b2dbbf600da20336b22997275b60033582dc78"
+        ]
+      }
+    },
+    {
+      "name": "tool-scons",
+      "kind": "tool",
+      "version": "4.40801.0",
+      "location": {
+        "scope": "platformio-home",
+        "path": "packages/tool-scons"
+      },
+      "metadata": {
+        "type": "tool",
+        "name": "tool-scons",
+        "version": "4.40801.0"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://dl.registry.platformio.org/download/platformio/tool/tool-scons/4.40801.0/tool-scons-4.40801.0.tar.gz",
+        "sha256": "289b1abf389b730ab5a1018ed9fc84e22d301e0d16c64548eb9db5bf8ba59d06"
+      },
+      "tree_sha256": {
+        "any": [
+          "2520ee28d5a97dd6e2cd88c168370cc84e5b6aaf6863d775294c13535822a248"
+        ]
+      }
+    },
+    {
+      "name": "ArduinoJson",
+      "kind": "library",
+      "version": "7.4.3",
+      "location": {
+        "scope": "project-libdeps",
+        "path": "ArduinoJson"
+      },
+      "metadata": {
+        "type": "library",
+        "name": "ArduinoJson",
+        "version": "7.4.3"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://dl.registry.platformio.org/download/bblanchon/library/ArduinoJson/7.4.3/ArduinoJson-7.4.3.tar.gz",
+        "sha256": "5a6a61292733a365e9384ce6a3d61dbedf7125a814b1424a3417e3135dc25190"
+      },
+      "tree_sha256": {
+        "any": [
+          "814bdb1d76f83923221f2d9e2a98f21af3d0f6ca93d8078a2bbab16f48a545fe"
+        ]
+      }
+    },
+    {
+      "name": "GFX Library for Arduino",
+      "kind": "library",
+      "version": "1.6.5",
+      "location": {
+        "scope": "project-libdeps",
+        "path": "GFX Library for Arduino"
+      },
+      "metadata": {
+        "type": "library",
+        "name": "GFX Library for Arduino",
+        "version": "1.6.5"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://dl.registry.platformio.org/download/moononournation/library/GFX%20Library%20for%20Arduino/1.6.5/GFXLibraryforArduino-1.6.5.tar.gz",
+        "sha256": "e710146e52bfdc4338f3c033ac16014b51b5ba689d713e377561c3d5d06d7410"
+      },
+      "tree_sha256": {
+        "any": [
+          "a0cd4013530087c85bc9161782e6f9af448778518905c80db51a114e8a0ef59d"
+        ]
+      }
+    },
+    {
+      "name": "NimBLE-Arduino",
+      "kind": "library",
+      "version": "2.5.0",
+      "location": {
+        "scope": "project-libdeps",
+        "path": "NimBLE-Arduino"
+      },
+      "metadata": {
+        "type": "library",
+        "name": "NimBLE-Arduino",
+        "version": "2.5.0"
+      },
+      "source": {
+        "authentication": "sha256",
+        "url": "https://dl.registry.platformio.org/download/h2zero/library/NimBLE-Arduino/2.5.0/NimBLE-Arduino-2.5.0.tar.gz",
+        "sha256": "2e1e0e99eb469bfc03e381c472f625301a4a0b8c4201863bf54c9d5fba1b5ad2"
+      },
+      "tree_sha256": {
+        "any": [
+          "1c6a8c4bdb2da74fd64f9c6fedd38c57cb0b816afd22fa80d457b3eadf907cad"
+        ]
+      }
+    },
+    {
+      "name": "OpenFontRender",
+      "kind": "library",
+      "version": "1.2.0+sha.a9acf54",
+      "location": {
+        "scope": "project-libdeps",
+        "path": "OpenFontRender"
+      },
+      "metadata": {
+        "type": "git",
+        "commit": "a9acf5498ed058a034acaa1becbad790627b9ec1"
+      },
+      "source": {
+        "authentication": "git-commit-lock",
+        "repository": "https://github.com/takkaO/OpenFontRender",
+        "commit": "a9acf5498ed058a034acaa1becbad790627b9ec1",
+        "tree": "2c670eec121b1264a3971278f87c0282ac46c890"
+      },
+      "tree_sha256": {
+        "any": [
+          "8f321bcbee277493863a4d6a8220f83212acbc2b3ed42086ff1b6809d9cd3341",
+          "08cffc570e9351e82a297544cc07fcb20be58a01868595aa8e9fe3b6331a7328"
+        ]
+      }
+    }
+  ]
+}

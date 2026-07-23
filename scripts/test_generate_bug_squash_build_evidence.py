@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Regressions for the fail-closed bug-squash build evidence generator."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import generate_bug_squash_build_evidence as generator  # type: ignore  # noqa: E402
+
+
+def assert_true(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def test_output_must_be_below_ignored_artifact_root(tmpdir: Path) -> None:
+    artifact_root = tmpdir / ".artifacts"
+    with mock.patch.object(generator, "ARTIFACT_ROOT", artifact_root):
+        accepted = generator.require_ignored_output(str(artifact_root / "qualification"))
+        assert_true(accepted.is_dir(), "ignored child is accepted")
+        try:
+            generator.require_ignored_output(str(tmpdir / "public-output"))
+        except generator.GenerationError as exc:
+            assert_true("ignored .artifacts" in str(exc), "outside path fails closed")
+        else:
+            raise AssertionError("outside artifact path was accepted")
+
+
+def test_contract_preflight_requires_real_exact_environments(tmpdir: Path) -> None:
+    del tmpdir
+    contracts = [
+        {
+            "kind": "production",
+            "implementation_status": "active",
+            "blocker_code": None,
+            "environment": "real-env",
+            "build_command": ["pio", "run", "-e", "real-env"],
+        }
+    ]
+    assert_true(
+        generator.preflight_build_contracts(contracts, {"real-env"}) == contracts,
+        "declared exact environment passes",
+    )
+    for candidate, declared, expected in (
+        (contracts, set(), "not implemented"),
+        (
+            [dict(contracts[0], build_command=["pio", "run"])],
+            {"real-env"},
+            "exact environment",
+        ),
+        (contracts * 2, {"real-env"}, "unique"),
+    ):
+        try:
+            generator.preflight_build_contracts(candidate, declared)
+        except generator.GenerationError as exc:
+            assert_true(expected in str(exc), expected)
+        else:
+            raise AssertionError(f"invalid preflight accepted: {expected}")
+
+
+def test_current_profile_builds_only_active_contracts(tmpdir: Path) -> None:
+    del tmpdir
+    profile, errors = generator.qualification.load_pinned_profile()
+    assert_true(profile is not None and errors == [], "pinned profile loads")
+    assert profile is not None
+    active = generator.preflight_build_contracts(
+        profile["build_contracts"],
+        generator.declared_platformio_environments(),
+    )
+    assert_true(
+        [contract["kind"] for contract in active]
+        == ["production", "car-production"],
+        "generator retains active builds without claiming the blocked HIL build",
+    )
+    assert_true(
+        all(contract["kind"] != "hil-fault" for contract in active),
+        "blocked HIL build is never executable",
+    )
+
+    malformed = [dict(contract) for contract in profile["build_contracts"]]
+    blocked = next(contract for contract in malformed if contract["kind"] == "hil-fault")
+    blocked["environment"] = "invented-hil"
+    try:
+        generator.preflight_build_contracts(
+            malformed,
+            generator.declared_platformio_environments() | {"invented-hil"},
+        )
+    except generator.GenerationError as exc:
+        assert_true("blocked pinned build contract is inconsistent" in str(exc), "blocked")
+    else:
+        raise AssertionError("blocked build with an executable environment was accepted")
+
+
+def test_evidence_index_entry_is_relative_and_content_bound(tmpdir: Path) -> None:
+    output = tmpdir / "pack"
+    binary = output / "binaries" / "production.bin"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"image")
+    entry = generator.evidence_entry(
+        "firmware-production",
+        "firmware-production",
+        "binary",
+        binary,
+        output,
+    )
+    assert_true(entry["path"] == "binaries/production.bin", "relative path")
+    original_sha = entry["sha256"]
+    binary.write_bytes(b"different-image")
+    assert_true(
+        generator.qualification.file_sha256(binary) != original_sha,
+        "content mutation changes digest",
+    )
+    json.dumps(entry)
+
+
+def test_real_build_tool_identity_is_content_bound(tmpdir: Path) -> None:
+    del tmpdir
+    generator.qualification.current_build_tool_identity.cache_clear()
+    tools = generator.qualification.current_build_tool_identity()
+    generator.qualification.current_build_tool_identity.cache_clear()
+    repeated_tools = generator.qualification.current_build_tool_identity()
+    assert_true(tools == repeated_tools, "tool identity is stable across fresh inspection")
+    assert_true(
+        set(tools) == {
+            "schema_version",
+            "platformio",
+            "python",
+            "git",
+            "esptool",
+            "identity_sha256",
+        },
+        "tool identity schema is exact",
+    )
+    assert_true(
+        set(tools["platformio"]) == {"sha256", "package_sha256", "version"},
+        "PlatformIO binds launcher and package bytes",
+    )
+    unsigned = {
+        key: value for key, value in tools.items() if key != "identity_sha256"
+    }
+    assert_true(
+        tools["identity_sha256"]
+        == generator.qualification.canonical_commitment(
+            "v1simple.hil.build-tools.v1",
+            unsigned,
+        ),
+        "aggregate tool identity binds every independently observed tool",
+    )
+
+    injected = {
+        "BASH_ENV": "/tmp/injected-shell",
+        "GIT_DIR": "/tmp/injected-git",
+        "PLATFORMIO_BUILD_FLAGS": "-D FORGED_BUILD=1",
+        "PYTHONPATH": "/tmp/injected-python",
+        "CXXFLAGS": "-DFORGED_TOOLCHAIN=1",
+    }
+    with mock.patch.dict(os.environ, injected, clear=False):
+        environment = generator.qualification.authoritative_tool_environment(
+            Path(generator.shutil.which("pio") or "")
+        )
+    for key in injected:
+        assert_true(key not in environment, f"build environment retained {key}")
+
+
+def main() -> int:
+    tests = (
+        test_output_must_be_below_ignored_artifact_root,
+        test_contract_preflight_requires_real_exact_environments,
+        test_current_profile_builds_only_active_contracts,
+        test_evidence_index_entry_is_relative_and_content_bound,
+        test_real_build_tool_identity_is_content_bound,
+    )
+    with tempfile.TemporaryDirectory(prefix="bug_squash_build_evidence_") as tmp:
+        root = Path(tmp)
+        for index, test in enumerate(tests):
+            case_dir = root / f"case-{index}"
+            case_dir.mkdir()
+            test(case_dir)
+    print(f"[bug-squash-build-evidence] {len(tests)} regression groups passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

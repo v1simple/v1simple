@@ -13,6 +13,8 @@ inline constexpr const char* kNvsSettingsVer = "settingsVer";
 // consulted.  While present, SD backup restore remains authoritative even if
 // later boot/shutdown paths persist factory defaults into NVS.
 inline constexpr const char* kNvsRestorePending = "restorePend";
+inline constexpr const char* kNvsBackupDueRevision = "backupDueRev";
+inline constexpr const char* kNvsBackupCompletedRevision = "backupDoneRev";
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsEnableWifi = "enableWifi";

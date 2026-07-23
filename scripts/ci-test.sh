@@ -107,13 +107,14 @@ run_step "clang-format check regression tests" python3 scripts/test_check_clang_
 run_step "Modified font reserved-name contract" python3 scripts/check_modified_font_names.py
 run_step "Retired ALP terms" python3 scripts/check_retired_alp_terms.py
 run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_terms.py
+run_step "Trigger-term scanner regression tests" python3 scripts/test_scan_trigger_terms.py
 run_step "Stabilization manifest contract" python3 scripts/check_stabilization_manifest.py
 run_step "Native linked-source manifest contract" python3 scripts/native_test_source_manifest.py --check
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native_car
-run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_wifi_client_enable_transaction test_wifi_scan_result_owner
-run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_wifi_client_enable_transaction test_wifi_scan_result_owner
+run_step "Native linked-source pilot" python3 scripts/run_native_tests_serial.py --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_obd_physical_link_preownership_barrier test_obd_transport_operation_barrier test_sd_mutex_hold_lifecycle test_wifi_client_enable_transaction test_wifi_scan_result_owner
+run_step "Native sanitized linked-source pilot" python3 scripts/run_native_tests_serial.py --env native-sanitized --linked-pilot test_alp_event_latch test_api_maintenance_runtime_matrix test_ble_proxy_alloc test_obd_ble_client_race test_obd_physical_link_preownership_barrier test_obd_transport_operation_barrier test_sd_mutex_hold_lifecycle test_wifi_client_enable_transaction test_wifi_scan_result_owner
 run_step "Functional scenarios" ./scripts/run_functional_tests.sh
 
 section "Critical Mutation Gate"
@@ -128,6 +129,16 @@ run_step "Perf CSV import regression tests" python3 scripts/test_perf_csv_import
 run_step "Soak metrics parser regression tests" python3 scripts/test_soak_parse_metrics.py
 run_step "Bench scorer regression tests" python3 scripts/test_bench_score.py
 run_step "Device test runner regression tests" python3 scripts/test_run_device_tests_script.py
+run_step "Bug-squash HIL case-driver registry tests" python3 scripts/test_bug_squash_hil_case_drivers.py
+run_step "Bug-squash HIL rig-adapter registry tests" python3 scripts/test_bug_squash_hil_rig_adapters.py
+run_step "Bug-squash HIL adapter protocol tests" python3 scripts/test_bug_squash_hil_adapter_protocol.py
+run_step "Bug-squash HIL runner regression tests" python3 scripts/test_bug_squash_hil_runner.py
+run_step "BSC-09 typed collector regression tests" python3 scripts/test_bug_squash_hil_bsc09.py
+run_step "HIL fault-control exclusion regression tests" python3 scripts/test_check_bug_squash_hil_fault_controls.py
+run_step "HIL fault-control authoritative build gate" python3 scripts/check_bug_squash_hil_fault_controls.py
+run_step "HIL board resolver regression tests" python3 scripts/test_resolve_hil_board.py
+run_step "Bug-squash HIL qualification validator regression tests" python3 scripts/test_bug_squash_hil_qualification.py
+run_step "Bug-squash build evidence generator regression tests" python3 scripts/test_generate_bug_squash_build_evidence.py
 run_step "OBD/proxy qualification validator regression tests" python3 scripts/test_obd_proxy_qualification.py
 run_step "Release evidence manifest regression tests" python3 scripts/test_release_evidence_manifest.py
 run_step "Release evidence generator regression tests" python3 scripts/test_prepare_release_evidence_manifest.py

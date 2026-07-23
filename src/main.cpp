@@ -54,6 +54,17 @@
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/ble/ble_bsc05_hil_fault_module.h"
+#include "modules/obd/obd_bsc06_hil_fault_module.h"
+#include "modules/obd/obd_bsc13_hil_fault_module.h"
+#include "modules/wifi/wifi_bsc02_hil_fault_module.h"
+#include "modules/wifi/wifi_bsc10_hil_fault_module.h"
+#include "modules/power/battery_bsc16_hil_fault_module.h"
+#include "modules/hil/hil_fault_serial_module.h"
+#include "modules/system/connection_bsc04_hil_fault_module.h"
+#include "modules/storage/storage_bsc14_hil_fault_module.h"
+#endif
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_state_module.h"
@@ -114,6 +125,47 @@
 V1BLEClient bleClient;
 PacketParser parser;
 V1Display display;
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+namespace {
+bool stageWifiNextBootFault(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
+                            const uint32_t stagedAtMs, void*) noexcept {
+    return wifiBsc02HilFaultModule().stageNextBoot(identity, sessionDeadlineMs, stagedAtMs);
+}
+
+void clearWifiNextBootFault(void*) noexcept {
+    wifiBsc02HilFaultModule().clearNextBoot();
+}
+
+bool stageBatteryNextBootFault(const HilArmedFaultIdentity& identity, const uint32_t sessionDeadlineMs,
+                               const uint32_t stagedAtMs, void*) noexcept {
+    return batteryBsc16HilFaultModule().stageNextBoot(identity, sessionDeadlineMs, stagedAtMs);
+}
+
+void clearBatteryNextBootFault(void*) noexcept {
+    batteryBsc16HilFaultModule().clearNextBoot();
+}
+
+HilNextBootFaultRouter& hilNextBootFaultRouter() noexcept {
+    static HilNextBootFaultRouter router;
+    return router;
+}
+
+bool configureHilNextBootFaultRouter() noexcept {
+    HilNextBootFaultRouter& router = hilNextBootFaultRouter();
+    const bool wifiConfigured = router.configure(0, {HilCaseId::Bsc02, HilFaultId::WifiApStartFailOnce,
+                                                     stageWifiNextBootFault, clearWifiNextBootFault, nullptr});
+    const bool batteryConfigured = router.configure(1, {HilCaseId::Bsc16, HilFaultId::BatteryAdcInitFailOnce,
+                                                        stageBatteryNextBootFault, clearBatteryNextBootFault, nullptr});
+    if (!wifiConfigured || !batteryConfigured) {
+        return false;
+    }
+    hilFaultRuntimeOwner().configureNextBoot(HilNextBootFaultRouter::stageCallback,
+                                             HilNextBootFaultRouter::clearCallback, &router);
+    return true;
+}
+} // namespace
+#endif
 TouchHandler touchHandler;
 SpeedSourceSelector speedSourceSelector;
 
@@ -212,6 +264,11 @@ QualificationSerialModule qualificationSerialModule;
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
 void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    if (!bleBsc05HilFaultModule().routeNotification(data, length, charUUID, sessionGeneration, millis())) {
+        return;
+    }
+#endif
     bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);
 }
 
@@ -551,6 +608,29 @@ void setup() {
         SerialLog.println("[MaintBoot] request consumed; entering maintenance boot");
     }
 
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    configureWifiBsc02HilDeviceRuntime(WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY,
+                                       WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY);
+    configureBatteryBsc16HilDeviceRuntime();
+    configureConnectionBsc04HilDeviceRuntime();
+    configureWifiBsc10HilDeviceRuntime();
+    if (!configureStorageBsc14HilDeviceRuntime(storageManager.getSDMutex())) {
+        SerialLog.println("[HIL] ERROR: BSC-14 SD mutex holder task configuration failed");
+    }
+    configureBleBsc05HilDeviceRuntime(
+        [](const uint8_t* data, const size_t length, const uint16_t characteristicUuid,
+           const uint32_t sessionGeneration,
+           void*) noexcept { return bleQueueModule.tryOnNotify(data, length, characteristicUuid, sessionGeneration); },
+        nullptr);
+    if (!configureHilNextBootFaultRouter()) {
+        SerialLog.println("[HIL] ERROR: next-boot fault router configuration failed");
+    }
+    const HilFaultResult restoredBsc02Fault = wifiBsc02HilFaultModule().restoreNextBoot(maintenanceBoot, millis());
+    SerialLog.printf("[HIL] BSC-02 next-boot restore result=%u\n", static_cast<unsigned>(restoredBsc02Fault));
+    const HilFaultResult restoredBsc16Fault = batteryBsc16HilFaultModule().restoreNextBoot(millis());
+    SerialLog.printf("[HIL] BSC-16 next-boot restore result=%u\n", static_cast<unsigned>(restoredBsc16Fault));
+#endif
+
     esp_reset_reason_t resetReason = initializeResetReasonAndCadenceState(logBootCheckpoint);
 
     initializePreflightDisplayAndBootUi(resetReason, maintenanceBoot, logBootCheckpoint, logBootStage);
@@ -561,12 +641,35 @@ void setup() {
 
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    static constexpr uint16_t kMaximumHilSerialBytesPerLoop = 256;
+    const uint32_t hilNowMs = millis();
+    uint16_t hilSerialBytes = 0;
+    while (Serial.available() > 0 && hilSerialBytes < kMaximumHilSerialBytesPerLoop) {
+        const int value = Serial.read();
+        if (value >= 0) {
+            hilFaultRuntimeOwner().acceptSerialByte(static_cast<char>(value), hilNowMs);
+            ++hilSerialBytes;
+        }
+    }
+    wifiBsc02HilFaultModule().service(hilNowMs);
+    connectionBsc04HilFaultModule().service(hilNowMs);
+    bleBsc05HilFaultModule().service(hilNowMs);
+    obdBsc06HilFaultModule().service(hilNowMs);
+    obdBsc13HilFaultModule().service(hilNowMs);
+    storageBsc14HilFaultModule().service(hilNowMs);
+#endif
     if (mainRuntimeState.maintenanceBootActive) {
         audio_process_amp_timeout();
         const unsigned long now = millis();
 
         powerModule.process(now);
         wifiManager.process();
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        wifiBsc02HilFaultModule().serviceSramPressure(true, wifiManager.isWifiServiceReachable(),
+                                                      static_cast<uint32_t>(now));
+#endif
 
         // The maintenance session exists to serve the web UI, so it must not
         // sit WiFi-dead for its bounded lifetime: the AP can fail to start at
@@ -728,12 +831,18 @@ void loop() {
         const ObdRuntimeStatus obdStatus = obdRuntimeModule.snapshot(now);
         const V1Settings& currentSettings = settingsManager.get();
         const bool wifiManualStartIntentLatched = mainRuntimeState.wifiManualStartIntentLatched;
+        bool v1VerifyPushMatchEdge = bleClient.consumeVerifyPushMatchEdge();
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        v1VerifyPushMatchEdge = connectionBsc04HilFaultModule().routeVerifyPushMatchEdge(
+            {v1VerifyPushMatchEdge, bleConnectedNow, static_cast<uint8_t>(connectionCycleCoordinatorModule.state())},
+            static_cast<uint32_t>(now));
+#endif
         const CycleContext cycleContext{
             now,
             mainRuntimeState.bootReady,
             bleConnectedNow,
             currentSettings.autoPushEnabled,
-            bleClient.consumeVerifyPushMatchEdge(),
+            v1VerifyPushMatchEdge,
             bleClient.lastV1ConnectionEventMs(),
             obdStatus.enabled,
             obdStatus.savedAddressValid,

@@ -67,17 +67,18 @@ json_path = Path(sys.argv[1])
 xml_path = Path(sys.argv[2])
 suite = sys.argv[3]
 bad_metric = os.environ.get("FAKE_PIO_BAD_METRIC") == "1"
+zero_exit_error = os.environ.get("FAKE_PIO_ZERO_EXIT_ERROR") == "1"
 
 payload = {
     "test_suites": [
         {
             "env_name": "device",
             "test_suite_name": suite,
-            "status": "PASSED",
+            "status": "ERRORED" if zero_exit_error else "PASSED",
             "testcase_nums": 1,
-            "pass_nums": 1,
+            "pass_nums": 0 if zero_exit_error else 1,
             "failure_nums": 0,
-            "error_nums": 0,
+            "error_nums": 1 if zero_exit_error else 0,
             "duration": 0.01,
         }
     ]
@@ -108,13 +109,22 @@ print(f"fake pio running {suite}")
 for metric, value in metrics_by_suite.get(suite, {}).items():
     print(json.dumps({"metric": metric, "value": value, "unit": "count", "tags": {}}))
 PY_FAKE_PIO
+if [[ "${FAKE_PIO_INFRA_EXIT:-0}" == "1" ]]; then
+  exit 9
+fi
 ''',
         encoding="utf-8",
     )
     path.chmod(0o755)
 
 
-def run_device_tests(tmp_dir: Path, *, bad_metric: bool = False) -> tuple[subprocess.CompletedProcess[str], Path]:
+def run_device_tests(
+    tmp_dir: Path,
+    *,
+    bad_metric: bool = False,
+    infra_exit: bool = False,
+    zero_exit_error: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin = tmp_dir / "bin"
     write_fake_pio(fake_bin / "pio")
     fake_port = tmp_dir / "ttyFAKE0"
@@ -133,6 +143,11 @@ def run_device_tests(tmp_dir: Path, *, bad_metric: bool = False) -> tuple[subpro
     )
     if bad_metric:
         env["FAKE_PIO_BAD_METRIC"] = "1"
+    if infra_exit:
+        env["FAKE_PIO_INFRA_EXIT"] = "1"
+        env["DEVICE_FAIL_CLOSED_TRANSPORT"] = "1"
+    if zero_exit_error:
+        env["FAKE_PIO_ZERO_EXIT_ERROR"] = "1"
 
     completed = subprocess.run(
         [str(RUNNER), "--quick", "--cooldown-seconds", "0", "--out-dir", str(out_dir)],
@@ -155,6 +170,7 @@ def test_empty_compare_args_passes_on_nounset_shells() -> None:
         )
 
         manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert_true(len(manifest["git_sha"]) == 40, f"git SHA must be full: {manifest}")
         assert_true(manifest["base_result"] == "PASS", f"unexpected suite base result: {manifest}")
         assert_true(manifest["result"] == "NO_BASELINE", f"unexpected manifest result: {manifest}")
         assert_true((out_dir / "scoring.json").exists(), "scoring.json should be written")
@@ -172,9 +188,31 @@ def test_scorer_hard_failure_controls_exit_status() -> None:
         assert_true(scoring["result"] == "FAIL", f"scoring should fail: {scoring}")
 
 
+def test_fail_closed_transport_rejects_nonzero_pio_exit() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir_raw:
+        completed, out_dir = run_device_tests(Path(tmp_dir_raw), infra_exit=True)
+        assert_true(completed.returncode != 0, "fail-closed transport must reject nonzero pio exit")
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        first = manifest["suite_results"][0]
+        assert_true(first["status"] == "INFRA_ERROR", f"transport status must be explicit: {manifest}")
+        assert_true(manifest["base_result"] == "FAIL", f"base result must fail: {manifest}")
+
+
+def test_zero_exit_with_reported_test_error_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir_raw:
+        completed, out_dir = run_device_tests(Path(tmp_dir_raw), zero_exit_error=True)
+        assert_true(completed.returncode != 0, "reported test errors must fail even on exit zero")
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        first = manifest["suite_results"][0]
+        assert_true(first["status"] == "PASS", f"raw row remains transport-oriented: {manifest}")
+        assert_true(manifest["base_result"] == "FAIL", f"base result must fail: {manifest}")
+
+
 def main() -> int:
     test_empty_compare_args_passes_on_nounset_shells()
     test_scorer_hard_failure_controls_exit_status()
+    test_fail_closed_transport_rejects_nonzero_pio_exit()
+    test_zero_exit_with_reported_test_error_fails()
     print("run_device_tests.sh regression tests passed")
     return 0
 

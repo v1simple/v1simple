@@ -47,6 +47,7 @@ class BleQueueModule {
 
     // Callback entry from BLE notifications.
     void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
+    bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
 
     // Open/close the V1 notification boundary. closeSession() rejects new
     // notifications and discards every queued, buffered, and parsed signal

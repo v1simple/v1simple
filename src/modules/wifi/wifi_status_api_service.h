@@ -69,6 +69,6 @@ void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& la
 
 void handleApiStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,
                      unsigned long& lastStatusJsonTime, unsigned long cacheTtlMs, unsigned long (*millisFn)(void* ctx),
-                     void* millisCtx, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
+                     void* millisCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
 } // namespace WifiStatusApiService

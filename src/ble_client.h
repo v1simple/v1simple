@@ -16,6 +16,7 @@
 #include <memory>
 
 #include "ble_log_rate_limit.h"
+#include "modules/ble/ble_proxy_epoch_observer.h"
 #include "modules/obd/obd_ble_arbitration.h"
 
 // Forward declarations
@@ -312,6 +313,10 @@ class V1BLEClient {
     // Reset proxy notify/send metrics only; phone command drop counters reset with perfMetricsReset().
     void resetProxyMetrics() { proxyMetrics_.reset(); }
 
+    // Main-loop qualification snapshot. Both callback-owned queue mutexes are
+    // attempted with zero timeout; false means busy and never waits.
+    bool trySnapshotProxyEpochQualification(BleProxyEpochQualificationSnapshot& snapshot);
+
     // WiFi priority mode - deprioritize BLE when web UI is active
     void setWifiPriority(bool enabled); // Enable = suppress BLE activity
     bool isWifiPriority() const { return wifiPriorityMode_; }
@@ -426,6 +431,7 @@ class V1BLEClient {
     std::atomic<bool> proxyQueueReleasePending_{false};
     // Fences callbacks that began before a disable/re-enable allocation cycle.
     std::atomic<uint32_t> proxyQueueEpoch_{0};
+    BleProxyEpochObserver proxyEpochObserver_{};
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};

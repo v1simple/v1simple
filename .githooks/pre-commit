@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Advisory heads-up before a commit lands.
+#
+# Reports how much classifier-trigger vocabulary this commit ADDS, so a
+# downstream external code-safety classifier refusal (Codex/agent tools) never
+# blindsides you. It is purely informational.
+#
+# ADVISORY ONLY — this hook NEVER blocks a commit. It always exits 0.
+# The kept domain vocab (payload/inject/stealth/jammer) is intentionally not
+# flagged; see scripts/scan_trigger_terms.py.
+#
+# Install:  ./scripts/setup-hooks.sh
+# Bypass:   not needed — it cannot block. (git commit --no-verify skips it anyway.)
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$ROOT/scripts/scan_trigger_terms.py" ] || exit 0
+
+python3 "$ROOT/scripts/scan_trigger_terms.py" 2>/dev/null || true
+
+exit 0

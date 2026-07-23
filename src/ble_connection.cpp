@@ -939,6 +939,8 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     }
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
+    BleProxyEpochObserver::CallbackLease callbackLease(instancePtr->proxyEpochObserver_,
+                                                       BleProxyCallbackDirection::V1ToProxy, proxyQueueEpoch);
     if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) ||
         !instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
         return;

@@ -1,0 +1,1573 @@
+{
+  "schema_version": 1,
+  "profile_id": "bug-squash-hil-v1",
+  "profile_version": 5,
+  "qualification_status": "blocked",
+  "blockers": [
+    {
+      "code": "build-generator-provenance-not-authenticated",
+      "affected_component": "build-evidence"
+    },
+    {
+      "code": "board-resolution-provenance-not-authenticated",
+      "affected_component": "board-resolver"
+    },
+    {
+      "code": "hil-fault-control-not-implemented",
+      "affected_component": "hil-fault"
+    }
+  ],
+  "activation_contract": {
+    "minimum_ready_profile_version": 3,
+    "required_validator_provenance_version": 1,
+    "status": "blocked",
+    "requirements": [
+      {
+        "id": "bounded-hil-fault-control",
+        "status": "blocked"
+      },
+      {
+        "id": "authenticated-build-generator-provenance",
+        "status": "blocked"
+      },
+      {
+        "id": "authenticated-case-driver-source-provenance",
+        "status": "active"
+      },
+      {
+        "id": "authenticated-board-inventory-resolver-provenance",
+        "status": "blocked"
+      }
+    ]
+  },
+  "build_provenance_contract": {
+    "schema_version": 1,
+    "status": "integrity-bound",
+    "commitment_algorithm": "sha256-domain-separated-canonical-json-v1",
+    "source_tree_scope": "full-git-tree",
+    "required_tool_identities": [
+      "esptool",
+      "git",
+      "platformio",
+      "python"
+    ]
+  },
+  "board_provenance_contract": {
+    "schema_version": 1,
+    "status": "integrity-bound",
+    "commitment_algorithm": "sha256-salted-inventory-canonical-json-v1",
+    "salt_bytes": 32
+  },
+  "case_driver_contract": {
+    "schema_version": 1,
+    "status": "active",
+    "runner_path": "scripts/run_bug_squash_hil.py",
+    "driver_source_paths": [
+      "scripts/bug_squash_hil_case_drivers.py"
+    ]
+  },
+  "fault_control_contract": {
+    "schema_version": 1,
+    "status": "blocked",
+    "build_kind": "hil-fault",
+    "implementation_source_paths": [],
+    "test_source_paths": []
+  },
+  "allowed_instrumentation_modes": [
+    "automated",
+    "hybrid",
+    "manual-observation"
+  ],
+  "build_contracts": [
+    {
+      "kind": "production",
+      "implementation_status": "active",
+      "blocker_code": null,
+      "environment": "waveshare-349",
+      "build_command": [
+        "pio",
+        "run",
+        "-e",
+        "waveshare-349"
+      ],
+      "binary_role": "firmware-production"
+    },
+    {
+      "kind": "hil-fault",
+      "implementation_status": "blocked",
+      "blocker_code": "hil-fault-control-not-implemented",
+      "environment": null,
+      "build_command": [],
+      "binary_role": "firmware-hil-fault"
+    },
+    {
+      "kind": "car-production",
+      "implementation_status": "active",
+      "blocker_code": null,
+      "environment": "esp32-s3-car-install",
+      "build_command": [
+        "pio",
+        "run",
+        "-e",
+        "esp32-s3-car-install"
+      ],
+      "binary_role": "firmware-car-production"
+    }
+  ],
+  "required_cases": [
+    {
+      "id": "BSC-02",
+      "minimum_runs": 1,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "maintenance-mode",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "lan-client",
+        "sram-pressure-control",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "maintenance-recovery-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "maintenance-boot",
+          "ap-start-attempt",
+          "sram-pressure-applied",
+          "sram-pressure-cleared"
+        ],
+        "fault_ids": [
+          "ap-start-fail-once",
+          "internal-sram-pressure"
+        ],
+        "barrier_ids": [
+          "maintenance-retry-window"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "failed-ap-never-published-active",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "first-retry-delay-ms",
+            "type": "integer",
+            "minimum": 2500,
+            "maximum": 5000
+          },
+          {
+            "id": "later-retry-delay-ms",
+            "type": "integer",
+            "minimum": 25000,
+            "maximum": 35000
+          },
+          {
+            "id": "pressure-removal-restores-ap",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "maintenance-status-reachable",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "heap-collapse-observed",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "maintenance-recovery-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "maintenance-boot",
+          "maintenance-status-request"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "maintenance-status-reachable",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-03",
+      "minimum_runs": 3,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "persistence",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "bond-peer",
+        "obd-peer",
+        "power-control",
+        "sd-media",
+        "utc-time-source",
+        "v1-peer",
+        "vbus-isolation"
+      ],
+      "scenario": {
+        "role_id": "connected-persistence-hard-cut",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "mutate-four-persistence-classes",
+          "wait-for-persistence-admission",
+          "isolated-ignition-cut",
+          "ignition-restore"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "persistence-admitted"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "ignition-hard-cut",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "persistence-admission-ms",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          {
+            "id": "settings-state-survived",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "bond-state-survived",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "obd-state-survived",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "v1-device-state-survived",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "peers-reconnected-without-pairing",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "loop-slo-preserved",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "early-cut-durability-not-claimed",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-04",
+      "minimum_runs": 1,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "serial",
+        "v1-connectivity"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "obd-peer",
+        "proxy-client",
+        "utc-time-source",
+        "v1-power-control"
+      ],
+      "scenario": {
+        "role_id": "late-v1-verify-timeout-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "delay-v1-power",
+          "connect-v1",
+          "hold-verifypush",
+          "release-verifypush"
+        ],
+        "fault_ids": [
+          "verifypush-suppression"
+        ],
+        "barrier_ids": [
+          "late-v1-link-observed",
+          "verify-hard-deadline"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "v1-link-delay-ms",
+            "type": "integer",
+            "minimum": 30000,
+            "maximum": 120000
+          },
+          {
+            "id": "settle-entered-same-loop",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "obd-sequencing-started",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "proxy-sequencing-started",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "verify-fallback-delay-ms",
+            "type": "integer",
+            "minimum": 9000,
+            "maximum": 11000
+          },
+          {
+            "id": "v1-remained-connected",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "late-v1-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "delay-v1-power",
+          "connect-v1",
+          "normal-verifypush"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "late-v1-link-observed"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "normal-verifypush-observed",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "downstream-services-reached",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-05",
+      "minimum_runs": 3,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "display",
+        "firmware-execution",
+        "serial",
+        "v1-connectivity"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "display-capture",
+        "programmable-v1-peer",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "alert-generation-fence",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "fragment-alert",
+          "disconnect-mid-packet",
+          "release-old-callback",
+          "send-display-only-packet",
+          "send-fresh-alert"
+        ],
+        "fault_ids": [
+          "v1-notification-delay-once"
+        ],
+        "barrier_ids": [
+          "old-callback-held"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "old-queue-state-cleared",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "old-partial-state-cleared",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "old-persisted-state-cleared",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "logical-display-idle-after-reconnect",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "physical-display-idle-after-reconnect",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "old-callback-rejected",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "fresh-alert-rendered",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "fresh-alert-persisted",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "fresh-alert-faded",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "alert-generation-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "fragment-alert",
+          "disconnect-mid-packet",
+          "send-fresh-alert"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "old-generation-state-absent",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "fresh-alert-normal",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-06",
+      "minimum_runs": 3,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "obd-connectivity",
+        "proxy-connectivity",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "obd-peer",
+        "proxy-client",
+        "utc-time-source",
+        "v1-peer"
+      ],
+      "scenario": {
+        "role_id": "obd-transport-race-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "start-obd-polling",
+          "race-proxy-attach",
+          "race-adapter-loss",
+          "race-forget-device",
+          "race-shutdown",
+          "restore-obd-peer"
+        ],
+        "fault_ids": [
+          "transport-ready-barrier"
+        ],
+        "barrier_ids": [
+          "connect-window-ready",
+          "cancel-window-ready"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "post-cancel-gatt-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "link-down-before-handle-retire",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "negative-ack-delay-ms",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          {
+            "id": "clean-reconnect-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "heap-corruption-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "barrier-generation-matched",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "obd-transport-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "start-obd-polling",
+          "race-proxy-attach",
+          "race-adapter-loss",
+          "restore-obd-peer"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "transport-ownership-preserved",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "clean-reconnect-succeeded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-07",
+      "minimum_runs": 1,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "battery-monitor",
+        "firmware-execution",
+        "maintenance-mode",
+        "power-button",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "ap-traffic",
+        "artifact-capture",
+        "power-control",
+        "utc-time-source",
+        "vbus-isolation"
+      ],
+      "scenario": {
+        "role_id": "maintenance-power-safety",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "maintenance-boot",
+          "apply-ap-load",
+          "change-battery-voltage",
+          "hold-power-button",
+          "apply-critical-voltage"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "critical-voltage-grace"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "intentional-shutdown",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "voltage-refresh-delay-ms",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          {
+            "id": "power-button-handled-under-ap-load",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "critical-shutdown-grace-ms",
+            "type": "integer",
+            "minimum": 4500,
+            "maximum": 6500
+          },
+          {
+            "id": "critical-warning-observed",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "ui-responsive-until-shutdown",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "loop-stall-observed",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-08",
+      "minimum_runs": 3,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "proxy-connectivity",
+        "serial",
+        "v1-connectivity"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "proxy-client",
+        "utc-time-source",
+        "v1-peer"
+      ],
+      "scenario": {
+        "role_id": "proxy-epoch-teardown",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "start-bidirectional-stream",
+          "disable-proxy",
+          "reenable-proxy",
+          "send-old-epoch-traffic",
+          "send-fresh-epoch-traffic"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "active-callback-observed",
+          "release-opportunity-observed"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "queue-index-corruption-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "heap-corruption-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "old-epoch-forwarded",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "deferred-release-opportunities",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "fresh-bidirectional-traffic-resumed",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "monotonic-heap-loss-observed",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-09",
+      "minimum_runs": 3,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "maintenance-mode",
+        "serial",
+        "wifi-scan"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "browser-client",
+        "multiple-access-points",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "wifi-dual-consumer-scan",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "start-maintenance-autoconnect",
+          "open-scan-modal",
+          "close-scan-modal",
+          "reopen-scan-modal",
+          "drop-one-status-poll",
+          "retry-status-poll"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "scan-overlap-observed"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "maintenance-snapshot-stable",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "ui-snapshot-stable",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "consumer-generations-isolated",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "retry-succeeded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "spinner-terminated",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "wifi-mode-settled",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "accumulating-scan-heap-loss-observed",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-10",
+      "minimum_runs": 1,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "maintenance-mode",
+        "serial",
+        "wifi-client"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "browser-client",
+        "http-response-control",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "wifi-enable-transaction-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "request-enable",
+          "clear-admission-fault",
+          "retry-enable-once",
+          "drop-success-response",
+          "refresh-authoritative-status"
+        ],
+        "fault_ids": [
+          "wifi-enable-admission-fail-once",
+          "drop-post-response-once"
+        ],
+        "barrier_ids": [
+          "admission-rejection-observed"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "nvs-remained-disabled-after-rejection",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "runtime-remained-disabled-after-rejection",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "selected-slot-unchanged-after-rejection",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "ui-remained-disabled-after-rejection",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "retry-mutation-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "persist-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "unknown-outcome-followup-mutations",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 0
+          },
+          {
+            "id": "authoritative-status-reconciled",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "wifi-enable-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "request-enable",
+          "refresh-authoritative-status"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "ordinary-enable-succeeded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "authoritative-status-reconciled",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-11",
+      "minimum_runs": 1,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "car-mode",
+        "firmware-execution",
+        "serial",
+        "v1-connectivity"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "ignition-control",
+        "power-button",
+        "utc-time-source",
+        "vbus-isolation"
+      ],
+      "scenario": {
+        "role_id": "car-shutdown-isolation",
+        "schema": "case-observation-v1",
+        "build_kind": "car-production",
+        "stimulus_ids": [
+          "connect-v1",
+          "disconnect-v1",
+          "wait-beyond-auto-shutdown",
+          "hold-power-button",
+          "remove-ignition"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "auto-shutdown-window-elapsed"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "ignition-removal",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "portable-shutdown-marker-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "deep-sleep-observed-before-ignition-removal",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "ble-service-continued",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "wifi-service-continued",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "display-service-continued",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "logging-service-continued",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "long-power-hold-inert",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "ignition-removal-caused-powerdown",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-12",
+      "minimum_runs": 1,
+      "fault_build_required": false,
+      "production_replay_required": false,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "persistence",
+        "power-button",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "bond-peer",
+        "power-control",
+        "sd-media",
+        "utc-time-source",
+        "vbus-isolation",
+        "wake-input-control"
+      ],
+      "scenario": {
+        "role_id": "aborted-shutdown-recovery",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "begin-portable-shutdown",
+          "assert-wake-input",
+          "mutate-setting",
+          "mutate-bond",
+          "wait-for-writers",
+          "force-reset"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "wake-input-asserted-during-handoff",
+          "writers-completed"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "forced-reset",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "poweroff-returned-false",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "disconnected-screen-restored",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "session-marker-unclean-after-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "settings-writer-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "bond-writer-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "setting-survived-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "bond-survived-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "real-rtc-wake-input-observed",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": null
+    },
+    {
+      "id": "BSC-13",
+      "minimum_runs": 3,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "obd-connectivity",
+        "proxy-connectivity",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "obd-peer",
+        "proxy-client",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "obd-connect-edge-preemption-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "begin-obd-connect",
+          "preempt-with-proxy",
+          "preempt-with-disable",
+          "remove-preemption"
+        ],
+        "fault_ids": [
+          "obd-connect-edge-barrier"
+        ],
+        "barrier_ids": [
+          "physical-link-before-session",
+          "preemption-release"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "unowned-link-disconnected",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "callback-confirmed-link-down",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "coordinator-reached-idle",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "phantom-connected-status-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "resume-scan-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "successful-reconnect-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "barrier-generation-matched",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "obd-connect-edge-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "begin-obd-connect",
+          "preempt-with-proxy",
+          "preempt-with-disable",
+          "remove-preemption"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "orphan-link-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "phantom-connected-status-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "single-reconnect-succeeded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-14",
+      "minimum_runs": 1,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "firmware-execution",
+        "persistence",
+        "serial",
+        "touchscreen"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "reset-control",
+        "sd-media",
+        "utc-time-source"
+      ],
+      "scenario": {
+        "role_id": "touch-persistence-sd-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "hold-sd-mutex",
+          "slider-exit",
+          "stealth-double-press",
+          "profile-triple-tap",
+          "hard-reset-before-backup",
+          "release-sd-mutex"
+        ],
+        "fault_ids": [
+          "sd-mutex-holder"
+        ],
+        "barrier_ids": [
+          "gesture-persisted-to-nvs",
+          "reset-before-deferred-backup"
+        ],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "hard-reset",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "slider-loop-stall-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "stealth-loop-stall-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "profile-loop-stall-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "slider-state-survived-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "stealth-state-survived-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "profile-state-survived-reset",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "coalesced-backup-count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "id": "backup-contains-latest-state",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "real-touch-input-observed",
+            "type": "boolean",
+            "expected": true
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "touch-persistence-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "slider-exit",
+          "stealth-double-press",
+          "profile-triple-tap",
+          "use-slow-sd-media"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [],
+        "vbus_isolation_required": false,
+        "reset_contract": {
+          "expected_kind": "none",
+          "expected_count": 0,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "gesture-loop-stall-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "latest-state-backup-valid",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "BSC-16",
+      "minimum_runs": 1,
+      "fault_build_required": true,
+      "production_replay_required": true,
+      "required_dut_capabilities": [
+        "battery-monitor",
+        "firmware-execution",
+        "power-button",
+        "serial"
+      ],
+      "required_rig_capabilities": [
+        "artifact-capture",
+        "battery-source",
+        "logic-analyzer",
+        "power-control",
+        "usb-source",
+        "utc-time-source",
+        "vbus-isolation"
+      ],
+      "scenario": {
+        "role_id": "battery-source-policy-fault",
+        "schema": "case-observation-v1",
+        "build_kind": "hil-fault",
+        "stimulus_ids": [
+          "pwr-wake-on-battery",
+          "usb-cold-boot",
+          "force-adc-init-failure",
+          "hold-power-button",
+          "transition-battery-to-usb",
+          "transition-usb-to-battery"
+        ],
+        "fault_ids": [
+          "adc-init-failure"
+        ],
+        "barrier_ids": [
+          "usb-confirmation-holdoff",
+          "source-transition-settled"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "intentional-shutdown",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "pwr-wake-transient-usb-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "usb-confirmation-delay-ms",
+            "type": "integer",
+            "minimum": 2800,
+            "maximum": 4000
+          },
+          {
+            "id": "adc-failure-voltage-degraded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "adc-failure-power-button-operational",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "long-hold-classified-as-usb",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "long-hold-shutdown-succeeded",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "source-flapping-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "gpio16-bounce-ms",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 24
+          }
+        ]
+      },
+      "production_replay": {
+        "role_id": "battery-source-production-replay",
+        "schema": "case-observation-v1",
+        "build_kind": "production",
+        "stimulus_ids": [
+          "pwr-wake-on-battery",
+          "usb-cold-boot",
+          "hold-power-button",
+          "transition-battery-to-usb",
+          "transition-usb-to-battery"
+        ],
+        "fault_ids": [],
+        "barrier_ids": [
+          "source-transition-settled"
+        ],
+        "vbus_isolation_required": true,
+        "reset_contract": {
+          "expected_kind": "intentional-shutdown",
+          "expected_count": 1,
+          "unexpected_count": 0
+        },
+        "facts": [
+          {
+            "id": "battery-classification-correct",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "usb-classification-correct",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "power-button-operational",
+            "type": "boolean",
+            "expected": true
+          },
+          {
+            "id": "source-flapping-observed",
+            "type": "boolean",
+            "expected": false
+          },
+          {
+            "id": "hil-fault-control-active",
+            "type": "boolean",
+            "expected": false
+          }
+        ]
+      }
+    }
+  ]
+}

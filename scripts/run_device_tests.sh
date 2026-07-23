@@ -218,7 +218,7 @@ SUITE_INDEX_TSV="$OUT_DIR/suite_index.tsv"
 : > "$METRICS_NDJSON"
 printf "suite\tstatus\tjson\txml\tlog\tmetric_count\n" > "$SUITE_INDEX_TSV"
 
-GIT_SHA="$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+GIT_SHA="${DEVICE_GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
 GIT_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 RUN_ID="device_${timestamp}_${GIT_SHA}"
 BOARD_ID="${DEVICE_BOARD_ID:-unknown}"
@@ -303,12 +303,14 @@ echo "==> Inter-suite cooldown: ${SUITE_COOLDOWN_SECONDS}s"
 
 summarize_json() {
   local json_path="$1"
-  python3 - "device" "$json_path" <<'PY'
+  local command_status="$2"
+  python3 - "device" "$json_path" "$command_status" <<'PY'
 import json
 import sys
 
 env_name = sys.argv[1]
 json_path = sys.argv[2]
+command_status = int(sys.argv[3])
 
 with open(json_path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -342,10 +344,12 @@ print(f"  Suites: {suite_count}  Tests: {test_count}"
 print(f"  Duration: {duration_s:.3f}s")
 print(f"{'='*60}\n")
 
-if failure_count > 0:
+if failure_count > 0 or (error_count > 0 and command_status == 0):
     for s in suites:
         if int(s.get("failure_nums", 0)) > 0:
             print(f"  FAILED: {s.get('test_suite_name', 'unknown')}")
+        if command_status == 0 and int(s.get("error_nums", 0)) > 0:
+            print(f"  ERROR: {s.get('test_suite_name', 'unknown')}")
     print()
     sys.exit(1)
 
@@ -569,6 +573,13 @@ except Exception:
       tail -n 40 "$suite_log" >&2 || true
       return "$cmd_status"
     fi
+    if [[ "${DEVICE_FAIL_CLOSED_TRANSPORT:-0}" == "1" ]]; then
+      suite_status="INFRA_ERROR"
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$suite" "$suite_status" "$suite_json" "$suite_xml" "$suite_log" "$metric_count" >> "$SUITE_INDEX_TSV"
+      echo "Suite '$suite' had a nonzero transport exit despite passing assertions; fail-closed mode rejects the run." >&2
+      return "$cmd_status"
+    fi
     echo "" >&2
     echo "Warning: Suite '$suite' exited $cmd_status but all assertions passed (infra error)." >&2
   fi
@@ -576,7 +587,7 @@ except Exception:
   printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
     "$suite" "$suite_status" "$suite_json" "$suite_xml" "$suite_log" "$metric_count" >> "$SUITE_INDEX_TSV"
 
-  summarize_json "$suite_json"
+  summarize_json "$suite_json" "$cmd_status"
 }
 
 failed_suite=""

@@ -18,6 +18,10 @@
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
 #include "obd_transport_control_dispatch.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "obd_bsc06_hil_fault_module.h"
+#include "obd_bsc13_hil_fault_module.h"
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -63,6 +67,7 @@ struct ObdTransportRequest {
     uint32_t timeoutMs = 0;
     uint32_t nowMs = 0;
     uint32_t dispatchEpoch = 0;
+    uint8_t runtimeStateCode = 0;
     char address[OBD_TRANSPORT_ADDR_BUF_LEN] = {};
     uint8_t addrType = 0;
     bool preferCachedAttributes = false;
@@ -94,6 +99,18 @@ struct ObdTransportRuntime {
 };
 
 ObdTransportRuntime sObdTransport;
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+uint32_t readObdTransportCancellationEpoch(void*) noexcept {
+    return sObdTransport.requestEpoch.snapshot();
+}
+
+bool obdTransportLinkDownConfirmed(const uint32_t generation, void* const context) noexcept {
+    const auto* transport = static_cast<const ObdTransportContext*>(context);
+    return transport != nullptr && transport->bleClient != nullptr &&
+           transport->bleClient->linkDownConfirmed(generation);
+}
+#endif
 
 void publishObdTransportResult(const ObdTransportResult& result) {
     if (sObdTransport.resultQueue) {
@@ -165,6 +182,25 @@ void obdTransportTaskEntry(void* param) {
         if (!sObdTransport.requestEpoch.tryClaim(request.dispatchEpoch)) {
             continue;
         }
+
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        const ObdBsc06HilAdmission bsc06Admission{
+            request.op == ObdTransportOp::WRITE ? ObdBsc06Operation::Write : ObdBsc06Operation::None,
+            context->bleClient->activeLinkGeneration(),
+            request.requestId,
+            request.dispatchEpoch,
+            request.runtimeStateCode,
+        };
+        if (!obdBsc06HilFaultModule().routeOperation(bsc06Admission, static_cast<uint32_t>(millis()))) {
+            result.success = false;
+            result.bleError = context->bleClient->getLastBleError();
+            sObdTransport.requestEpoch.releaseClaim();
+            context->bleClient->serviceDeferredLinkState();
+            publishObdTransportResult(result);
+            taskYIELD();
+            continue;
+        }
+#endif
 
         switch (request.op) {
         case ObdTransportOp::CONNECT:
@@ -253,6 +289,12 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
     if (!sObdTransport.task) {
         sObdTransport.context.bleClient = bleClient;
         sObdTransport.context.runtime = runtime;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        configureObdBsc06HilDeviceRuntime(readObdTransportCancellationEpoch, obdTransportLinkDownConfirmed,
+                                          &sObdTransport.context);
+        configureObdBsc13HilDeviceRuntime(readObdTransportCancellationEpoch, obdTransportLinkDownConfirmed,
+                                          &sObdTransport.context);
+#endif
 
         const BaseType_t rc =
             createTaskPinnedToCoreInternalStack(obdTransportTaskEntry, "ObdTransport", OBD_TRANSPORT_STACK_SIZE,
@@ -661,6 +703,7 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
     request.timeoutMs = timeoutMs;
     request.nowMs = nowMs;
     request.dispatchEpoch = sObdTransport.requestEpoch.snapshot();
+    request.runtimeStateCode = static_cast<uint8_t>(state_);
     const char* const address = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
     const uint8_t addrType = connectAddress_[0] != '\0' ? connectAddrType_ : savedAddrType_;
     request.addrType = addrType;

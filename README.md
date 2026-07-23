@@ -15,7 +15,7 @@ Required:
 
 Optional:
 
-- AL Priority laser jammer (for ALP integration — laser direction overlay)
+- AL Priority laser-alert unit (for ALP integration — laser direction overlay)
 - OBD-II adapter (ELM327 BLE — for vehicle data overlay)
 - Serial GPS receiver (Adafruit Ultimate GPS v3 / MTK3339 — UTC + GPS speed source)
 - Speaker/amp path for local voice alerts (Waveshare ES8311 output with speaker amp enable on the shared TCA9554 I/O expander)

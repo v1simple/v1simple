@@ -167,9 +167,13 @@ void BleQueueModule::closeSession() {
 }
 
 void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+    (void)tryOnNotify(data, length, charUUID, sessionGeneration);
+}
+
+bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
     if (!queueHandle_ || !acceptNotifications_.load(std::memory_order_acquire) ||
         sessionGeneration != sessionGeneration_.load(std::memory_order_acquire))
-        return;
+        return false;
 
     if (length > 0 && length <= sizeof(BLEDataPacket::data)) {
         PERF_INC(rxPackets);
@@ -186,7 +190,7 @@ void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charU
         // races after this point, process() rejects the stamped generation.
         if (!acceptNotifications_.load(std::memory_order_acquire) ||
             sessionGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
-            return;
+            return false;
         }
 
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
@@ -195,9 +199,11 @@ void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charU
         }
         UBaseType_t depth = uxQueueMessagesWaiting(queueHandle_);
         PERF_MAX(queueHighWater, depth);
+        return result == pdTRUE;
     } else if (length > sizeof(BLEDataPacket::data)) {
         PERF_INC(oversizeDrops);
     }
+    return false;
 }
 
 #ifdef UNIT_TEST

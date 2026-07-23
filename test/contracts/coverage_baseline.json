@@ -5,13 +5,14 @@
     "description": "Native (host) test suites only. test_build_src = false, so this measures the firmware code the native suites actually compile, NOT the whole firmware image. Device-only driver code is outside this denominator and is covered by the mutation gate and the device suites.",
     "environment": "native-coverage",
     "full_suite": true,
-    "suite_count": 149,
+    "suite_count": 181,
     "suites": [
       "test_alert_persistence",
       "test_alp_api_service",
       "test_alp_event_latch",
       "test_alp_runtime",
       "test_alp_sd_logger",
+      "test_api_maintenance_runtime_matrix",
       "test_audio",
       "test_audio_i2c_guardrails",
       "test_audio_i2c_utils",
@@ -22,18 +23,23 @@
       "test_backup_api_service",
       "test_backup_payload_builder",
       "test_backup_snapshot_cache",
+      "test_battery_bsc16_hil_fault_module",
       "test_battery_manager",
+      "test_battery_source_policy",
       "test_ble_bond_backup_store",
       "test_ble_bond_backup_writer",
+      "test_ble_bsc05_hil_fault_module",
       "test_ble_client",
       "test_ble_connection",
       "test_ble_deferred_bond_backup",
       "test_ble_display_pipeline",
       "test_ble_fresh_flash_policy",
+      "test_ble_notification_delay_gate",
       "test_ble_proxy_alloc",
       "test_ble_settled_signals",
       "test_caps_task_delete_contract",
       "test_client_write_retry",
+      "test_connection_bsc04_hil_fault_module",
       "test_connection_cycle_coordinator_invariants",
       "test_connection_cycle_coordinator_module",
       "test_connection_runtime_module",
@@ -72,6 +78,7 @@
       "test_gps_observation_log",
       "test_gps_publishers",
       "test_gps_runtime",
+      "test_hil_fault_controller",
       "test_json_stream_response",
       "test_littlefs_mount",
       "test_loop_connection_early_module",
@@ -87,10 +94,20 @@
       "test_main_boot",
       "test_main_loop_phases",
       "test_main_manual_wifi_intent",
+      "test_main_runtime_maintenance_policy",
+      "test_obd_api_fixture_emitter",
       "test_obd_api_service",
+      "test_obd_ble_client_race",
+      "test_obd_bsc06_hil_fault_module",
+      "test_obd_bsc13_hil_fault_module",
+      "test_obd_physical_link_preownership_barrier",
       "test_obd_runtime",
       "test_obd_settings_sync",
       "test_obd_speed_source",
+      "test_obd_transport_control_dispatch",
+      "test_obd_transport_link_fence",
+      "test_obd_transport_operation_barrier",
+      "test_obd_transport_ownership_contract",
       "test_packet_parser",
       "test_packet_parser_stream",
       "test_parsed_frame_event_module",
@@ -106,17 +123,20 @@
       "test_quiet_coordinator",
       "test_release_compliance_contract",
       "test_render_frame_composer",
+      "test_sd_mutex_hold_lifecycle",
       "test_settings",
       "test_settings_backup_protection",
       "test_settings_deferred_backup",
       "test_settings_deferred_persist",
       "test_settings_namespace_cleanup",
       "test_settings_persistence",
+      "test_settings_restore_watchdog",
       "test_settings_runtime_sync",
       "test_settings_schema",
       "test_speed_mute",
       "test_stack_hygiene_source_contract",
       "test_status_observability_payload",
+      "test_storage_bsc14_hil_fault_module",
       "test_storage_manager",
       "test_system_event_bus",
       "test_tap_gesture_module",
@@ -125,39 +145,51 @@
       "test_v1_device_store",
       "test_v1_display_render_frame",
       "test_v1_profiles",
+      "test_v1_settings_json",
       "test_v1simple_logo_asset",
       "test_voice_module",
       "test_voice_speed_cache",
       "test_volume_fade",
+      "test_wifi_api_fixture_emitter",
+      "test_wifi_api_fixture_remaining_emitter",
       "test_wifi_audio_api_service",
       "test_wifi_auto_start_module",
       "test_wifi_auto_timeout_module",
       "test_wifi_autopush_api_service",
       "test_wifi_boot_policy",
+      "test_wifi_bsc02_hil_fault_module",
+      "test_wifi_bsc10_hil_fault_module",
       "test_wifi_client_api_service",
+      "test_wifi_client_enable_transaction",
       "test_wifi_credential_export_contract",
+      "test_wifi_diagnostics_api_service",
       "test_wifi_display_colors_api_service",
       "test_wifi_display_visual_api_service",
       "test_wifi_heap_guard_module",
       "test_wifi_json_document",
+      "test_wifi_maintenance_recovery_module",
       "test_wifi_maintenance_write_policy",
       "test_wifi_manager",
       "test_wifi_orchestrator_module",
       "test_wifi_portal_api_service",
       "test_wifi_priority_policy",
       "test_wifi_process_cadence_module",
+      "test_wifi_quiet_api_service",
       "test_wifi_rate_limiter",
       "test_wifi_runtime_module",
+      "test_wifi_scan_result_owner",
       "test_wifi_settings_api_service",
       "test_wifi_sta_slot_policy",
       "test_wifi_static_path_guard",
       "test_wifi_status_api_service",
       "test_wifi_stop_reason_module",
+      "test_wifi_system_api_service",
       "test_wifi_v1_devices_api_service",
+      "test_wifi_v1_profile_api_body_and_errors",
       "test_wifi_v1_profile_api_service",
       "test_wifi_visual_sync_module"
     ],
-    "measured_file_count": 188,
+    "measured_file_count": 229,
     "filters": [
       "^src/",
       "^include/"
@@ -173,9 +205,9 @@
   },
   "tolerance_pp": 0.5,
   "overall": {
-    "line_percent": 73.7,
-    "line_total": 23436,
-    "line_covered": 17277
+    "line_percent": 75.6,
+    "line_total": 27978,
+    "line_covered": 21158
   },
   "files": {
     "include/audio_i2c_utils.h": {
@@ -197,6 +229,11 @@
       "line_percent": 100.0,
       "line_total": 10,
       "line_covered": 10
+    },
+    "include/battery_source_policy.h": {
+      "line_percent": 100.0,
+      "line_total": 72,
+      "line_covered": 72
     },
     "include/ble_internals.h": {
       "line_percent": 30.8,
@@ -293,10 +330,30 @@
       "line_total": 9,
       "line_covered": 9
     },
+    "include/main_runtime_state.h": {
+      "line_percent": 100.0,
+      "line_total": 22,
+      "line_covered": 22
+    },
+    "include/poweroff_policy.h": {
+      "line_percent": 100.0,
+      "line_total": 9,
+      "line_covered": 9
+    },
+    "include/settings_backup_revision.h": {
+      "line_percent": 100.0,
+      "line_total": 16,
+      "line_covered": 16
+    },
     "include/settings_internals.h": {
       "line_percent": 100.0,
       "line_total": 15,
       "line_covered": 15
+    },
+    "include/v1_settings_json.h": {
+      "line_percent": 100.0,
+      "line_total": 14,
+      "line_covered": 14
     },
     "include/wifi_manager_internals.h": {
       "line_percent": 92.3,
@@ -309,8 +366,8 @@
       "line_covered": 19
     },
     "src/audio_i2c_utils.cpp": {
-      "line_percent": 73.3,
-      "line_total": 60,
+      "line_percent": 67.7,
+      "line_total": 65,
       "line_covered": 44
     },
     "src/backup_payload_builder.cpp": {
@@ -329,9 +386,9 @@
       "line_covered": 43
     },
     "src/ble_bond_backup_writer.cpp": {
-      "line_percent": 66.1,
-      "line_total": 233,
-      "line_covered": 154
+      "line_percent": 71.2,
+      "line_total": 260,
+      "line_covered": 185
     },
     "src/ble_client.h": {
       "line_percent": 97.9,
@@ -349,9 +406,9 @@
       "line_covered": 73
     },
     "src/ble_connection.cpp": {
-      "line_percent": 2.7,
-      "line_total": 521,
-      "line_covered": 14
+      "line_percent": 3.2,
+      "line_total": 529,
+      "line_covered": 17
     },
     "src/ble_fresh_flash_policy.cpp": {
       "line_percent": 100.0,
@@ -359,9 +416,9 @@
       "line_covered": 18
     },
     "src/ble_proxy.cpp": {
-      "line_percent": 64.3,
-      "line_total": 476,
-      "line_covered": 306
+      "line_percent": 69.0,
+      "line_total": 538,
+      "line_covered": 371
     },
     "src/display.h": {
       "line_percent": 94.4,
@@ -380,8 +437,8 @@
     },
     "src/display_cards.cpp": {
       "line_percent": 88.3,
-      "line_total": 266,
-      "line_covered": 235
+      "line_total": 265,
+      "line_covered": 234
     },
     "src/display_font_manager.h": {
       "line_percent": 92.9,
@@ -409,8 +466,8 @@
       "line_covered": 91
     },
     "src/display_screens.cpp": {
-      "line_percent": 11.1,
-      "line_total": 244,
+      "line_percent": 10.8,
+      "line_total": 249,
       "line_covered": 27
     },
     "src/display_status_bar.cpp": {
@@ -419,9 +476,9 @@
       "line_covered": 288
     },
     "src/display_top_counter.cpp": {
-      "line_percent": 28.3,
-      "line_total": 290,
-      "line_covered": 82
+      "line_percent": 28.0,
+      "line_total": 289,
+      "line_covered": 81
     },
     "src/display_update.cpp": {
       "line_percent": 88.5,
@@ -434,24 +491,34 @@
       "line_covered": 2
     },
     "src/main_boot.cpp": {
-      "line_percent": 28.9,
-      "line_total": 128,
-      "line_covered": 37
+      "line_percent": 41.4,
+      "line_total": 140,
+      "line_covered": 58
     },
     "src/main_loop_phases.cpp": {
       "line_percent": 100.0,
-      "line_total": 111,
-      "line_covered": 111
+      "line_total": 114,
+      "line_covered": 114
+    },
+    "src/modules/alert_persistence/alert_persistence_module.cpp": {
+      "line_percent": 79.4,
+      "line_total": 34,
+      "line_covered": 27
     },
     "src/modules/alert_persistence/alert_persistence_module.h": {
       "line_percent": 100.0,
-      "line_total": 1,
-      "line_covered": 1
+      "line_total": 2,
+      "line_covered": 2
     },
     "src/modules/alp/alp_api_service.cpp": {
-      "line_percent": 97.2,
-      "line_total": 72,
-      "line_covered": 70
+      "line_percent": 97.4,
+      "line_total": 78,
+      "line_covered": 76
+    },
+    "src/modules/alp/alp_api_service.h": {
+      "line_percent": 100.0,
+      "line_total": 3,
+      "line_covered": 3
     },
     "src/modules/alp/alp_event_latch.cpp": {
       "line_percent": 89.5,
@@ -493,15 +560,30 @@
       "line_total": 2,
       "line_covered": 2
     },
+    "src/modules/ble/ble_bsc05_hil_fault_module.cpp": {
+      "line_percent": 82.6,
+      "line_total": 172,
+      "line_covered": 142
+    },
+    "src/modules/ble/ble_notification_delay_gate.cpp": {
+      "line_percent": 95.9,
+      "line_total": 74,
+      "line_covered": 71
+    },
+    "src/modules/ble/ble_notification_delay_gate.h": {
+      "line_percent": 100.0,
+      "line_total": 4,
+      "line_covered": 4
+    },
     "src/modules/ble/ble_queue_module.cpp": {
-      "line_percent": 69.7,
-      "line_total": 221,
-      "line_covered": 154
+      "line_percent": 81.4,
+      "line_total": 269,
+      "line_covered": 219
     },
     "src/modules/ble/ble_queue_module.h": {
       "line_percent": 100.0,
-      "line_total": 6,
-      "line_covered": 6
+      "line_total": 7,
+      "line_covered": 7
     },
     "src/modules/ble/connection_runtime_module.cpp": {
       "line_percent": 100.0,
@@ -519,9 +601,9 @@
       "line_covered": 35
     },
     "src/modules/ble/connection_state_module.cpp": {
-      "line_percent": 65.9,
-      "line_total": 44,
-      "line_covered": 29
+      "line_percent": 97.1,
+      "line_total": 137,
+      "line_covered": 133
     },
     "src/modules/display/display_correctness_trace.cpp": {
       "line_percent": 98.8,
@@ -544,34 +626,39 @@
       "line_covered": 64
     },
     "src/modules/display/display_pipeline_module.cpp": {
-      "line_percent": 83.4,
-      "line_total": 427,
-      "line_covered": 356
+      "line_percent": 83.2,
+      "line_total": 429,
+      "line_covered": 357
     },
     "src/modules/display/display_preview_module.cpp": {
-      "line_percent": 86.9,
-      "line_total": 320,
-      "line_covered": 278
+      "line_percent": 89.1,
+      "line_total": 322,
+      "line_covered": 287
     },
     "src/modules/display/display_preview_module.h": {
       "line_percent": 100.0,
-      "line_total": 4,
-      "line_covered": 4
+      "line_total": 5,
+      "line_covered": 5
     },
     "src/modules/display/display_restore_module.cpp": {
-      "line_percent": 61.5,
-      "line_total": 26,
-      "line_covered": 16
+      "line_percent": 96.6,
+      "line_total": 29,
+      "line_covered": 28
     },
     "src/modules/display/render_frame_composer.cpp": {
       "line_percent": 97.7,
-      "line_total": 86,
-      "line_covered": 84
+      "line_total": 87,
+      "line_covered": 85
     },
     "src/modules/gps/gps_api_service.cpp": {
-      "line_percent": 41.8,
-      "line_total": 98,
-      "line_covered": 41
+      "line_percent": 97.4,
+      "line_total": 152,
+      "line_covered": 148
+    },
+    "src/modules/gps/gps_api_service.h": {
+      "line_percent": 100.0,
+      "line_total": 6,
+      "line_covered": 6
     },
     "src/modules/gps/gps_observation_log.cpp": {
       "line_percent": 97.9,
@@ -589,19 +676,69 @@
       "line_covered": 52
     },
     "src/modules/gps/gps_runtime_module.cpp": {
-      "line_percent": 79.3,
-      "line_total": 614,
-      "line_covered": 487
+      "line_percent": 79.8,
+      "line_total": 615,
+      "line_covered": 491
     },
     "src/modules/gps/gps_runtime_module.h": {
-      "line_percent": 0.0,
+      "line_percent": 100.0,
       "line_total": 1,
-      "line_covered": 0
+      "line_covered": 1
+    },
+    "src/modules/hil/hil_fault_controller.cpp": {
+      "line_percent": 86.0,
+      "line_total": 379,
+      "line_covered": 326
+    },
+    "src/modules/hil/hil_fault_controller.h": {
+      "line_percent": 100.0,
+      "line_total": 34,
+      "line_covered": 34
+    },
+    "src/modules/hil/hil_fault_serial_module.cpp": {
+      "line_percent": 74.9,
+      "line_total": 362,
+      "line_covered": 271
+    },
+    "src/modules/hil/hil_next_boot_fault.h": {
+      "line_percent": 92.3,
+      "line_total": 117,
+      "line_covered": 108
+    },
+    "src/modules/hil/hil_ready_barrier.h": {
+      "line_percent": 100.0,
+      "line_total": 7,
+      "line_covered": 7
     },
     "src/modules/obd/obd_api_service.cpp": {
-      "line_percent": 92.6,
-      "line_total": 242,
-      "line_covered": 224
+      "line_percent": 93.8,
+      "line_total": 272,
+      "line_covered": 255
+    },
+    "src/modules/obd/obd_api_service.h": {
+      "line_percent": 100.0,
+      "line_total": 15,
+      "line_covered": 15
+    },
+    "src/modules/obd/obd_ble_client.cpp": {
+      "line_percent": 38.4,
+      "line_total": 310,
+      "line_covered": 119
+    },
+    "src/modules/obd/obd_ble_client.h": {
+      "line_percent": 85.7,
+      "line_total": 7,
+      "line_covered": 6
+    },
+    "src/modules/obd/obd_bsc06_hil_fault_module.cpp": {
+      "line_percent": 90.6,
+      "line_total": 170,
+      "line_covered": 154
+    },
+    "src/modules/obd/obd_bsc13_hil_fault_module.cpp": {
+      "line_percent": 83.9,
+      "line_total": 161,
+      "line_covered": 135
     },
     "src/modules/obd/obd_elm327_parser.cpp": {
       "line_percent": 85.6,
@@ -613,30 +750,35 @@
       "line_total": 2,
       "line_covered": 2
     },
+    "src/modules/obd/obd_physical_link_preownership_barrier.cpp": {
+      "line_percent": 100.0,
+      "line_total": 15,
+      "line_covered": 15
+    },
     "src/modules/obd/obd_runtime_commands.cpp": {
-      "line_percent": 58.4,
-      "line_total": 245,
-      "line_covered": 143
+      "line_percent": 58.2,
+      "line_total": 244,
+      "line_covered": 142
     },
     "src/modules/obd/obd_runtime_module.cpp": {
-      "line_percent": 88.4,
-      "line_total": 561,
-      "line_covered": 496
+      "line_percent": 88.8,
+      "line_total": 581,
+      "line_covered": 516
     },
     "src/modules/obd/obd_runtime_module.h": {
       "line_percent": 100.0,
-      "line_total": 32,
-      "line_covered": 32
+      "line_total": 43,
+      "line_covered": 43
     },
     "src/modules/obd/obd_runtime_state_machine.cpp": {
-      "line_percent": 67.7,
+      "line_percent": 67.2,
       "line_total": 186,
-      "line_covered": 126
+      "line_covered": 125
     },
     "src/modules/obd/obd_runtime_transport.cpp": {
-      "line_percent": 85.8,
-      "line_total": 219,
-      "line_covered": 188
+      "line_percent": 83.6,
+      "line_total": 220,
+      "line_covered": 184
     },
     "src/modules/obd/obd_settings_sync_module.cpp": {
       "line_percent": 90.7,
@@ -653,15 +795,35 @@
       "line_total": 33,
       "line_covered": 26
     },
+    "src/modules/obd/obd_transport_control_dispatch.h": {
+      "line_percent": 56.7,
+      "line_total": 358,
+      "line_covered": 203
+    },
+    "src/modules/obd/obd_transport_link_fence.h": {
+      "line_percent": 100.0,
+      "line_total": 12,
+      "line_covered": 12
+    },
+    "src/modules/obd/obd_transport_operation_barrier.cpp": {
+      "line_percent": 100.0,
+      "line_total": 18,
+      "line_covered": 18
+    },
+    "src/modules/power/battery_bsc16_hil_fault_module.cpp": {
+      "line_percent": 81.6,
+      "line_total": 98,
+      "line_covered": 80
+    },
     "src/modules/power/power_module.cpp": {
-      "line_percent": 88.4,
-      "line_total": 86,
-      "line_covered": 76
+      "line_percent": 90.6,
+      "line_total": 106,
+      "line_covered": 96
     },
     "src/modules/power/power_module.h": {
       "line_percent": 100.0,
-      "line_total": 4,
-      "line_covered": 4
+      "line_total": 8,
+      "line_covered": 8
     },
     "src/modules/qualification/qualification_serial_module.cpp": {
       "line_percent": 66.0,
@@ -713,10 +875,30 @@
       "line_total": 2,
       "line_covered": 2
     },
+    "src/modules/storage/sd_mutex_hold_lifecycle.cpp": {
+      "line_percent": 89.6,
+      "line_total": 48,
+      "line_covered": 43
+    },
+    "src/modules/storage/sd_mutex_hold_lifecycle.h": {
+      "line_percent": 100.0,
+      "line_total": 1,
+      "line_covered": 1
+    },
+    "src/modules/storage/storage_bsc14_hil_fault_module.cpp": {
+      "line_percent": 76.3,
+      "line_total": 152,
+      "line_covered": 116
+    },
+    "src/modules/system/connection_bsc04_hil_fault_module.cpp": {
+      "line_percent": 68.0,
+      "line_total": 97,
+      "line_covered": 66
+    },
     "src/modules/system/connection_cycle_coordinator_module.cpp": {
-      "line_percent": 87.2,
-      "line_total": 258,
-      "line_covered": 225
+      "line_percent": 90.9,
+      "line_total": 264,
+      "line_covered": 240
     },
     "src/modules/system/connection_cycle_coordinator_module.h": {
       "line_percent": 100.0,
@@ -729,9 +911,9 @@
       "line_covered": 34
     },
     "src/modules/system/loop_display_module.cpp": {
-      "line_percent": 84.4,
-      "line_total": 45,
-      "line_covered": 38
+      "line_percent": 84.8,
+      "line_total": 46,
+      "line_covered": 39
     },
     "src/modules/system/loop_ingest_module.cpp": {
       "line_percent": 100.0,
@@ -780,8 +962,8 @@
     },
     "src/modules/system/periodic_maintenance_module.cpp": {
       "line_percent": 100.0,
-      "line_total": 28,
-      "line_covered": 28
+      "line_total": 41,
+      "line_covered": 41
     },
     "src/modules/system/system_event_bus.h": {
       "line_percent": 99.0,
@@ -794,9 +976,9 @@
       "line_covered": 72
     },
     "src/modules/touch/touch_ui_module.cpp": {
-      "line_percent": 82.4,
+      "line_percent": 88.0,
       "line_total": 125,
-      "line_covered": 103
+      "line_covered": 110
     },
     "src/modules/touch/touch_ui_module.h": {
       "line_percent": 100.0,
@@ -804,9 +986,9 @@
       "line_covered": 1
     },
     "src/modules/voice/voice_module.cpp": {
-      "line_percent": 63.5,
-      "line_total": 373,
-      "line_covered": 237
+      "line_percent": 81.7,
+      "line_total": 378,
+      "line_covered": 309
     },
     "src/modules/voice/voice_module.h": {
       "line_percent": 100.0,
@@ -814,8 +996,8 @@
       "line_covered": 12
     },
     "src/modules/volume_fade/volume_fade_module.cpp": {
-      "line_percent": 80.7,
-      "line_total": 176,
+      "line_percent": 78.5,
+      "line_total": 181,
       "line_covered": 142
     },
     "src/modules/volume_fade/volume_fade_module.h": {
@@ -824,9 +1006,9 @@
       "line_covered": 5
     },
     "src/modules/wifi/backup_api_service.cpp": {
-      "line_percent": 68.8,
-      "line_total": 64,
-      "line_covered": 44
+      "line_percent": 90.9,
+      "line_total": 66,
+      "line_covered": 60
     },
     "src/modules/wifi/backup_api_service.h": {
       "line_percent": 100.0,
@@ -849,9 +1031,9 @@
       "line_covered": 112
     },
     "src/modules/wifi/wifi_auto_start_module.cpp": {
-      "line_percent": 82.9,
-      "line_total": 82,
-      "line_covered": 68
+      "line_percent": 83.5,
+      "line_total": 85,
+      "line_covered": 71
     },
     "src/modules/wifi/wifi_auto_start_module.h": {
       "line_percent": 100.0,
@@ -859,24 +1041,49 @@
       "line_covered": 1
     },
     "src/modules/wifi/wifi_auto_timeout_module.cpp": {
-      "line_percent": 100.0,
-      "line_total": 14,
-      "line_covered": 14
+      "line_percent": 96.8,
+      "line_total": 31,
+      "line_covered": 30
     },
     "src/modules/wifi/wifi_autopush_api_service.cpp": {
-      "line_percent": 78.1,
-      "line_total": 169,
-      "line_covered": 132
+      "line_percent": 79.7,
+      "line_total": 172,
+      "line_covered": 137
     },
     "src/modules/wifi/wifi_boot_policy.h": {
       "line_percent": 100.0,
       "line_total": 14,
       "line_covered": 14
     },
+    "src/modules/wifi/wifi_bsc02_hil_fault_module.cpp": {
+      "line_percent": 84.8,
+      "line_total": 387,
+      "line_covered": 328
+    },
+    "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp": {
+      "line_percent": 78.1,
+      "line_total": 64,
+      "line_covered": 50
+    },
     "src/modules/wifi/wifi_client_api_service.cpp": {
-      "line_percent": 79.1,
-      "line_total": 374,
-      "line_covered": 296
+      "line_percent": 78.6,
+      "line_total": 379,
+      "line_covered": 298
+    },
+    "src/modules/wifi/wifi_client_enable_transaction.cpp": {
+      "line_percent": 100.0,
+      "line_total": 13,
+      "line_covered": 13
+    },
+    "src/modules/wifi/wifi_diagnostics_api_service.cpp": {
+      "line_percent": 92.4,
+      "line_total": 238,
+      "line_covered": 220
+    },
+    "src/modules/wifi/wifi_diagnostics_stream.h": {
+      "line_percent": 65.9,
+      "line_total": 182,
+      "line_covered": 120
     },
     "src/modules/wifi/wifi_display_colors_api_service.cpp": {
       "line_percent": 72.3,
@@ -884,9 +1091,9 @@
       "line_covered": 185
     },
     "src/modules/wifi/wifi_display_visual_api_service.cpp": {
-      "line_percent": 96.6,
-      "line_total": 1874,
-      "line_covered": 1810
+      "line_percent": 95.9,
+      "line_total": 1890,
+      "line_covered": 1812
     },
     "src/modules/wifi/wifi_heap_guard_module.cpp": {
       "line_percent": 100.0,
@@ -898,15 +1105,25 @@
       "line_total": 16,
       "line_covered": 15
     },
+    "src/modules/wifi/wifi_maintenance_recovery_module.cpp": {
+      "line_percent": 100.0,
+      "line_total": 23,
+      "line_covered": 23
+    },
+    "src/modules/wifi/wifi_maintenance_recovery_module.h": {
+      "line_percent": 100.0,
+      "line_total": 1,
+      "line_covered": 1
+    },
     "src/modules/wifi/wifi_maintenance_write_policy.h": {
       "line_percent": 100.0,
       "line_total": 6,
       "line_covered": 6
     },
     "src/modules/wifi/wifi_orchestrator_module.cpp": {
-      "line_percent": 23.3,
-      "line_total": 73,
-      "line_covered": 17
+      "line_percent": 29.3,
+      "line_total": 75,
+      "line_covered": 22
     },
     "src/modules/wifi/wifi_portal_api_service.cpp": {
       "line_percent": 100.0,
@@ -923,10 +1140,25 @@
       "line_total": 9,
       "line_covered": 9
     },
+    "src/modules/wifi/wifi_quiet_api_service.cpp": {
+      "line_percent": 91.8,
+      "line_total": 61,
+      "line_covered": 56
+    },
     "src/modules/wifi/wifi_runtime_module.cpp": {
       "line_percent": 100.0,
-      "line_total": 42,
-      "line_covered": 42
+      "line_total": 43,
+      "line_covered": 43
+    },
+    "src/modules/wifi/wifi_scan_result_owner.cpp": {
+      "line_percent": 81.7,
+      "line_total": 131,
+      "line_covered": 107
+    },
+    "src/modules/wifi/wifi_scan_result_owner.h": {
+      "line_percent": 100.0,
+      "line_total": 11,
+      "line_covered": 11
     },
     "src/modules/wifi/wifi_settings_api_service.cpp": {
       "line_percent": 80.6,
@@ -944,14 +1176,19 @@
       "line_covered": 48
     },
     "src/modules/wifi/wifi_status_api_service.cpp": {
-      "line_percent": 99.0,
-      "line_total": 104,
-      "line_covered": 103
+      "line_percent": 99.1,
+      "line_total": 106,
+      "line_covered": 105
     },
     "src/modules/wifi/wifi_stop_reason_module.cpp": {
-      "line_percent": 96.2,
-      "line_total": 52,
+      "line_percent": 94.3,
+      "line_total": 53,
       "line_covered": 50
+    },
+    "src/modules/wifi/wifi_system_api_service.cpp": {
+      "line_percent": 100.0,
+      "line_total": 15,
+      "line_covered": 15
     },
     "src/modules/wifi/wifi_v1_devices_api_service.cpp": {
       "line_percent": 78.5,
@@ -959,9 +1196,9 @@
       "line_covered": 51
     },
     "src/modules/wifi/wifi_v1_profile_api_service.cpp": {
-      "line_percent": 87.7,
-      "line_total": 204,
-      "line_covered": 179
+      "line_percent": 89.7,
+      "line_total": 203,
+      "line_covered": 182
     },
     "src/modules/wifi/wifi_visual_sync_module.cpp": {
       "line_percent": 100.0,
@@ -969,8 +1206,8 @@
       "line_covered": 16
     },
     "src/packet_parser.cpp": {
-      "line_percent": 85.9,
-      "line_total": 276,
+      "line_percent": 84.3,
+      "line_total": 281,
       "line_covered": 237
     },
     "src/packet_parser.h": {
@@ -979,9 +1216,9 @@
       "line_covered": 5
     },
     "src/packet_parser_alerts.cpp": {
-      "line_percent": 92.9,
-      "line_total": 295,
-      "line_covered": 274
+      "line_percent": 93.8,
+      "line_total": 304,
+      "line_covered": 285
     },
     "src/packet_parser_types.h": {
       "line_percent": 100.0,
@@ -995,7 +1232,7 @@
     },
     "src/perf_sd_logger.cpp": {
       "line_percent": 16.7,
-      "line_total": 598,
+      "line_total": 600,
       "line_covered": 100
     },
     "src/perf_sd_logger.h": {
@@ -1014,29 +1251,29 @@
       "line_covered": 23
     },
     "src/settings.cpp": {
-      "line_percent": 92.7,
-      "line_total": 327,
-      "line_covered": 303
+      "line_percent": 93.4,
+      "line_total": 346,
+      "line_covered": 323
     },
     "src/settings.h": {
       "line_percent": 92.6,
-      "line_total": 162,
-      "line_covered": 150
+      "line_total": 163,
+      "line_covered": 151
     },
     "src/settings_backup.cpp": {
-      "line_percent": 79.3,
-      "line_total": 426,
-      "line_covered": 338
+      "line_percent": 82.2,
+      "line_total": 499,
+      "line_covered": 410
     },
     "src/settings_backup_doc.cpp": {
-      "line_percent": 74.8,
-      "line_total": 532,
-      "line_covered": 398
+      "line_percent": 75.6,
+      "line_total": 541,
+      "line_covered": 409
     },
     "src/settings_nvs.cpp": {
       "line_percent": 70.5,
-      "line_total": 684,
-      "line_covered": 482
+      "line_total": 685,
+      "line_covered": 483
     },
     "src/settings_restore.cpp": {
       "line_percent": 58.2,
@@ -1054,9 +1291,9 @@
       "line_covered": 79
     },
     "src/settings_setters.cpp": {
-      "line_percent": 33.2,
-      "line_total": 569,
-      "line_covered": 189
+      "line_percent": 34.5,
+      "line_total": 571,
+      "line_covered": 197
     },
     "src/status_observability_payload.cpp": {
       "line_percent": 100.0,
@@ -1069,8 +1306,8 @@
       "line_covered": 31
     },
     "src/storage_manager.cpp": {
-      "line_percent": 49.1,
-      "line_total": 53,
+      "line_percent": 44.8,
+      "line_total": 58,
       "line_covered": 26
     },
     "src/storage_manager.h": {
@@ -1079,8 +1316,8 @@
       "line_covered": 26
     },
     "src/touch_handler.cpp": {
-      "line_percent": 88.8,
-      "line_total": 160,
+      "line_percent": 86.1,
+      "line_total": 165,
       "line_covered": 142
     },
     "src/touch_handler.h": {
@@ -1089,8 +1326,8 @@
       "line_covered": 3
     },
     "src/v1_devices.cpp": {
-      "line_percent": 56.9,
-      "line_total": 339,
+      "line_percent": 56.8,
+      "line_total": 340,
       "line_covered": 193
     },
     "src/v1_devices.h": {
@@ -1104,9 +1341,9 @@
       "line_covered": 10
     },
     "src/v1_profiles.cpp": {
-      "line_percent": 33.8,
-      "line_total": 600,
-      "line_covered": 203
+      "line_percent": 39.3,
+      "line_total": 608,
+      "line_covered": 239
     },
     "src/v1_profiles.h": {
       "line_percent": 100.0,
@@ -1115,8 +1352,8 @@
     },
     "src/wifi_manager.h": {
       "line_percent": 100.0,
-      "line_total": 8,
-      "line_covered": 8
+      "line_total": 7,
+      "line_covered": 7
     }
   }
 }

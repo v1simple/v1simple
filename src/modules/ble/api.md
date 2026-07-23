@@ -42,12 +42,16 @@ Wires dependencies, allocates the FreeRTOS queue, primes the RX buffer.
 Called from the NimBLE notify callback with the immutable V1 session generation captured by `V1BLEClient`. Enqueues the packet only when that generation is open. Must be safe from interrupt-ish context.
 **Source:** `ble_queue_module.h:49`.
 
+#### `bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration)`
+Uses the same callback-safe admission path and returns whether the generation-stamped packet was actually queued. `onNotify()` remains the ordinary fire-and-forget entry point.
+**Source:** `ble_queue_module.h:50`.
+
 #### `void openSession(uint32_t sessionGeneration)` / `void closeSession()`
 Opens notification admission for an authoritative V1 link generation, or closes the outgoing session and discards its queued bytes, partial frame buffer, and parsed-frame signal. Queue entries carry the captured generation so a callback racing the close cannot republish outgoing data.
 
 #### `void process()`
 Drains the queue, frames packets out of the byte stream, parses, and forwards results to the rest of the pipeline. Call once per main-loop tick.
-**Source:** `ble_queue_module.h:58`.
+**Source:** `ble_queue_module.h:59`.
 
 ### Status
 
@@ -61,11 +65,11 @@ Returns true if at least one packet was successfully parsed since the last call,
 
 #### `unsigned long getLastRxMillis() const`
 Timestamp of last received notification (regardless of parse outcome).
-**Source:** `ble_queue_module.h:60`.
+**Source:** `ble_queue_module.h:61`.
 
 #### `bool isBackpressured() const`
 True when the queue / RX buffer is in the high-water region. Consumers throttle non-essential work.
-**Source:** `ble_queue_module.h:61`.
+**Source:** `ble_queue_module.h:62`.
 
 ## Class: `ConnectionStateModule`
 

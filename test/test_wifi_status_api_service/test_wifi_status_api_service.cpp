@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include "../mocks/mock_heap_caps_state.h"
 #include "../mocks/esp_heap_caps.h"
+#include "../../include/wifi_rate_limiter.h"
 #include "../../src/modules/wifi/wifi_json_document.h"
 #include "../../src/modules/wifi/wifi_status_api_service.h"
 #include "../../src/modules/wifi/wifi_status_api_service.cpp"  // Pull implementation for UNIT_TEST.
@@ -153,7 +154,7 @@ void test_handle_status_builds_core_payload() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"setup_mode\":true"));
@@ -197,7 +198,7 @@ void test_handle_status_merges_legacy_status_and_alert_json() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"foo\":123"));
@@ -227,7 +228,7 @@ void test_handle_status_preserves_nested_wifi_merges() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"low_dma_cooldown_ms\":9000"));
@@ -254,7 +255,7 @@ void test_handle_status_surfaces_appended_maintenance_boot_fields() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"maintenanceBoot\":true"));
@@ -278,7 +279,7 @@ void test_handle_status_cache_hit_reuses_cached_payload() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     const String firstBody = server.lastBody;
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"InitialAP\""));
@@ -294,7 +295,7 @@ void test_handle_status_cache_hit_reuses_cached_payload() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_STRING(firstBody.c_str(), server.lastBody.c_str());
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"InitialAP\""));
@@ -318,7 +319,7 @@ void test_handle_status_cache_expiry_rebuilds_payload() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"InitialAP\""));
     TEST_ASSERT_EQUAL_INT(1, rt.setupModeActiveCalls);
@@ -333,7 +334,7 @@ void test_handle_status_cache_expiry_rebuilds_payload() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"ChangedAP\""));
     TEST_ASSERT_EQUAL_INT(2, rt.setupModeActiveCalls);
@@ -353,7 +354,7 @@ void test_handle_status_prefers_psram_cache_allocation() {
         cacheTime,
         500,
         [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_GREATER_THAN_UINT32(1u, g_mock_heap_caps_malloc_calls);
     TEST_ASSERT_EQUAL_UINT32(MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM, g_mock_heap_caps_last_malloc_caps);
@@ -382,7 +383,7 @@ void test_handle_status_falls_back_to_internal_cache_allocation() {
         cacheTime,
         500,
         [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_UINT32(7, g_mock_heap_caps_malloc_calls);
     TEST_ASSERT_EQUAL_UINT32(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL, g_mock_heap_caps_last_malloc_caps);
@@ -409,7 +410,7 @@ void test_handle_status_allocation_failure_falls_back_to_uncached_send() {
         cacheTime,
         500,
         [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"FallbackAP\""));
@@ -435,7 +436,7 @@ void test_handle_status_invalidation_forces_rebuild_within_ttl() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"InitialAP\""));
     TEST_ASSERT_EQUAL_INT(1, rt.setupModeActiveCalls);
@@ -451,7 +452,7 @@ void test_handle_status_invalidation_forces_rebuild_within_ttl() {
         cacheTime,
         500,
         [](void* ctx) -> unsigned long { return *static_cast<unsigned long*>(ctx); }, &now,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"UpdatedAP\""));
     TEST_ASSERT_EQUAL_UINT32(1200, cacheTime);
@@ -472,7 +473,7 @@ void test_release_status_cache_frees_buffer_and_resets_state() {
         cacheTime,
         500,
         [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_NOT_NULL(cache.data);
     const uint32_t freeCallsBeforeRelease = g_mock_heap_caps_free_calls;
@@ -486,26 +487,42 @@ void test_release_status_cache_frees_buffer_and_resets_state() {
     TEST_ASSERT_EQUAL_UINT32(0, cacheTime);
 }
 
-void test_handle_api_status_rate_limited_short_circuits() {
+void test_sustained_status_polling_marks_activity_without_consuming_mutation_capacity() {
     WebServer server(80);
     FakeStatusRuntime rt;
     WifiStatusApiService::StatusJsonCache cache;
     unsigned long cacheTime = 0;
+    SlidingWindowRateLimiter mutationLimiter;
+    for (size_t i = 0; i + 1 < SlidingWindowRateLimiter::MAX_REQUESTS; ++i) {
+        TEST_ASSERT_TRUE(mutationLimiter.evaluate(1000).allowed);
+    }
 
-    WifiStatusApiService::handleApiStatus(
-        server,
-        makeRuntime(rt),
-        cache,
-        cacheTime,
-        500,
-        [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
-        [](void* /*ctx*/) { return false; }, nullptr);
+    int uiActivityCalls = 0;
 
-    TEST_ASSERT_EQUAL_INT(0, server.lastStatusCode);
-    TEST_ASSERT_EQUAL_INT(0, rt.setupModeActiveCalls);
+    constexpr size_t statusPollCount = 256;
+    for (size_t i = 0; i < statusPollCount; ++i) {
+        WifiStatusApiService::handleApiStatus(
+            server,
+            makeRuntime(rt),
+            cache,
+            cacheTime,
+            500,
+            [](void* /*ctx*/) -> unsigned long { return 1000UL; }, nullptr,
+            [](void* ctx) { ++*static_cast<int*>(ctx); }, &uiActivityCalls);
+    }
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(statusPollCount, uiActivityCalls);
+    TEST_ASSERT_EQUAL_INT(1, rt.setupModeActiveCalls);
+
+    const SlidingWindowRateLimitDecision finalMutation = mutationLimiter.evaluate(1001);
+    TEST_ASSERT_TRUE(finalMutation.allowed);
+    TEST_ASSERT_EQUAL_UINT32(SlidingWindowRateLimiter::MAX_REQUESTS, finalMutation.requestCount);
+    TEST_ASSERT_FALSE(mutationLimiter.evaluate(1002).allowed);
+    releaseCache(cache, cacheTime);
 }
 
-void test_handle_api_status_delegates_when_allowed() {
+void test_handle_api_status_delegates_without_activity_callback() {
     WebServer server(80);
     FakeStatusRuntime rt;
     rt.apSsid = "StatusApiAP";
@@ -519,7 +536,7 @@ void test_handle_api_status_delegates_when_allowed() {
         cacheTime,
         500,
         [](void* /*ctx*/) -> unsigned long { return 2000UL; }, nullptr,
-        [](void* /*ctx*/) { return true; }, nullptr);
+        nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"ssid\":\"StatusApiAP\""));
@@ -540,7 +557,7 @@ int main() {
     RUN_TEST(test_handle_status_allocation_failure_falls_back_to_uncached_send);
     RUN_TEST(test_handle_status_invalidation_forces_rebuild_within_ttl);
     RUN_TEST(test_release_status_cache_frees_buffer_and_resets_state);
-    RUN_TEST(test_handle_api_status_rate_limited_short_circuits);
-    RUN_TEST(test_handle_api_status_delegates_when_allowed);
+    RUN_TEST(test_sustained_status_polling_marks_activity_without_consuming_mutation_capacity);
+    RUN_TEST(test_handle_api_status_delegates_without_activity_callback);
     return UNITY_END();
 }

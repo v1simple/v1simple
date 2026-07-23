@@ -8,6 +8,9 @@
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "modules/wifi/wifi_client_enable_transaction.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/wifi/wifi_bsc10_hil_fault_module.h"
+#endif
 #include "modules/wifi/wifi_sta_slot_policy.h"
 #include <vector>
 
@@ -45,6 +48,52 @@ void abortPhysicalWifiScan(void* /*ctx*/) {
     WiFi.scanDelete();
 }
 
+const char* wifiScanObservationEventName(WifiScanObservationEvent event) {
+    switch (event) {
+    case WifiScanObservationEvent::REQUEST_STARTED:
+        return "request-started";
+    case WifiScanObservationEvent::REQUEST_JOINED:
+        return "request-joined";
+    case WifiScanObservationEvent::REQUEST_FAILED:
+        return "request-failed";
+    case WifiScanObservationEvent::HARVEST_COMPLETED:
+        return "harvest-completed";
+    case WifiScanObservationEvent::HARVEST_FAILED:
+        return "harvest-failed";
+    case WifiScanObservationEvent::CONSUMER_CANCELLED:
+        return "consumer-cancelled";
+    case WifiScanObservationEvent::SNAPSHOT_READ:
+        return "snapshot-read";
+    case WifiScanObservationEvent::OWNER_RESET:
+        return "owner-reset";
+    }
+    return "unknown";
+}
+
+const char* wifiScanConsumerName(WifiScanConsumer consumer) {
+    switch (consumer) {
+    case WifiScanConsumer::UI:
+        return "ui";
+    case WifiScanConsumer::MAINTENANCE:
+        return "maintenance";
+    case WifiScanConsumer::NONE:
+        return "none";
+    }
+    return "unknown";
+}
+
+void observePhysicalWifiScan(const WifiScanObservation& observation, void* /*ctx*/) {
+    // Qualification-safe lifecycle trace: intentionally excludes SSIDs, addresses,
+    // credentials, and scan-result contents.
+    Serial.printf("[WiFiScanTrace] event=%s consumer=%s generation=%lu networks=%d pending=%u snapshots=%u running=%u "
+                  "released=%u aborted=%u\n",
+                  wifiScanObservationEventName(observation.event), wifiScanConsumerName(observation.consumer),
+                  static_cast<unsigned long>(observation.generation), static_cast<int>(observation.networkCount),
+                  static_cast<unsigned>(observation.pendingConsumerMask),
+                  static_cast<unsigned>(observation.snapshotConsumerMask), observation.running ? 1U : 0U,
+                  observation.released ? 1U : 0U, observation.aborted ? 1U : 0U);
+}
+
 WifiScanResultOwner::Driver makeWifiScanDriver() {
     WifiScanResultOwner::Driver driver;
     driver.runningStatus = WIFI_SCAN_RUNNING;
@@ -55,6 +104,7 @@ WifiScanResultOwner::Driver makeWifiScanDriver() {
     driver.encryptionAt = getPhysicalWifiScanEncryption;
     driver.release = releasePhysicalWifiScan;
     driver.abort = abortPhysicalWifiScan;
+    driver.observe = observePhysicalWifiScan;
     return driver;
 }
 
@@ -122,7 +172,7 @@ std::vector<ScannedNetwork> WiFiManager::getScannedNetworks() {
         return {};
     }
 
-    std::vector<ScannedNetwork> networks = wifiScanOwner_.copySnapshot(WifiScanConsumer::UI);
+    std::vector<ScannedNetwork> networks = wifiScanOwner_.copySnapshot(WifiScanConsumer::UI, makeWifiScanDriver());
     if (wifiScanOwner_.hasSnapshot(WifiScanConsumer::UI)) {
         Serial.printf("[WiFiClient] UI scan snapshot has %u network(s)\n", static_cast<unsigned>(networks.size()));
     }
@@ -294,6 +344,16 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
                                 wifiClientState_ == WIFI_CLIENT_CONNECTED ||
                                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
                                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+    runtime.admitStart = [](void* ctx) {
+        const auto* transaction = static_cast<EnableContext*>(ctx);
+        WifiBsc10Admission admission{};
+        admission.persistedEnabled = settingsManager.get().wifiClientEnabled;
+        admission.lifecycleState = static_cast<uint8_t>(transaction->manager->wifiClientState_);
+        admission.selectedSlot = transaction->manager->currentConnectedSlotIndex_;
+        return wifiBsc10HilFaultModule().admitLifecycleStart(admission, millis());
+    };
+#endif
     runtime.attemptStart = [](void* ctx) {
         auto* transaction = static_cast<EnableContext*>(ctx);
         WiFiManager* self = transaction->manager;
@@ -502,7 +562,8 @@ void WiFiManager::processMaintenanceAutoConnect() {
         return;
     }
 
-    const std::vector<ScannedNetwork> scannedNetworks = wifiScanOwner_.copySnapshot(WifiScanConsumer::MAINTENANCE);
+    const std::vector<ScannedNetwork> scannedNetworks =
+        wifiScanOwner_.copySnapshot(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
     wifiScanOwner_.clearSnapshot(WifiScanConsumer::MAINTENANCE);
 
     const V1Settings& settings = settingsManager.get();

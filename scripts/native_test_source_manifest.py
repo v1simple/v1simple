@@ -44,6 +44,10 @@ LINKED_NATIVE_TEST_SPECS = {
         define="V1_LINKED_TEST_BLE_PROXY_ALLOC",
         library_include_dirs=("ArduinoJson/src",),
     ),
+    "test_ble_notification_delay_gate": LinkedNativeTestSpec(
+        sources=("src/modules/ble/ble_notification_delay_gate.cpp",),
+        define="V1_LINKED_TEST_BLE_NOTIFICATION_DELAY_GATE",
+    ),
     "test_alp_event_latch": LinkedNativeTestSpec(
         sources=("src/modules/alp/alp_event_latch.cpp",),
         define="V1_LINKED_TEST_ALP_EVENT_LATCH",
@@ -51,6 +55,18 @@ LINKED_NATIVE_TEST_SPECS = {
     "test_obd_ble_client_race": LinkedNativeTestSpec(
         sources=("src/modules/obd/obd_ble_client.cpp",),
         define="V1_LINKED_TEST_OBD_BLE_CLIENT",
+    ),
+    "test_obd_transport_operation_barrier": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_transport_operation_barrier.cpp",),
+        define="V1_LINKED_TEST_OBD_TRANSPORT_OPERATION_BARRIER",
+    ),
+    "test_obd_physical_link_preownership_barrier": LinkedNativeTestSpec(
+        sources=("src/modules/obd/obd_physical_link_preownership_barrier.cpp",),
+        define="V1_LINKED_TEST_OBD_PHYSICAL_LINK_PREOWNERSHIP_BARRIER",
+    ),
+    "test_sd_mutex_hold_lifecycle": LinkedNativeTestSpec(
+        sources=("src/modules/storage/sd_mutex_hold_lifecycle.cpp",),
+        define="V1_LINKED_TEST_SD_MUTEX_HOLD_LIFECYCLE",
     ),
     "test_wifi_scan_result_owner": LinkedNativeTestSpec(
         sources=("src/modules/wifi/wifi_scan_result_owner.cpp",),

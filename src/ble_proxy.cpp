@@ -200,6 +200,9 @@ bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
         return true;
     }
 
+    // Linearize runtime disable before advertising or peer teardown so a
+    // callback on the other core cannot enter during the main-loop sequence.
+    proxyEpochObserver_.close();
     clearProxyAdvertisingSchedule();
     stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
     disconnectProxyPhones();
@@ -348,6 +351,8 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
         return;
     }
     const uint32_t queueEpoch = bleClient->proxyQueueEpoch_.load(std::memory_order_acquire);
+    BleProxyEpochObserver::CallbackLease callbackLease(bleClient->proxyEpochObserver_,
+                                                       BleProxyCallbackDirection::ProxyToV1, queueEpoch);
 
     if (!bleClient->connected_.load(std::memory_order_relaxed)) {
         return;
@@ -430,8 +435,9 @@ bool V1BLEClient::allocateProxyQueues() {
     phone2v1QueueTail_ = 0;
     phone2v1QueueCount_ = 0;
     proxyMetrics_.reset();
-    proxyQueueEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    const uint32_t queueEpoch = proxyQueueEpoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
     proxyQueueReleasePending_.store(false, std::memory_order_release);
+    proxyEpochObserver_.open(queueEpoch);
 
     Serial.printf("[BLE] Proxy queues allocated (proxy=%s phone=%s)\n",
                   proxyQueueAllocatedInPsram ? "PSRAM" : "INTERNAL", phoneQueueAllocatedInPsram ? "PSRAM" : "INTERNAL");
@@ -441,6 +447,7 @@ bool V1BLEClient::allocateProxyQueues() {
 void V1BLEClient::releaseProxyQueues() {
     // Close admission before attempting either lock. A callback that already
     // passed its first gate rechecks this state after acquiring its queue lock.
+    proxyEpochObserver_.close();
     proxyQueueReleasePending_.store(true, std::memory_order_release);
     phoneCmdPendingClear_.store(true, std::memory_order_release);
     tryFinalizeProxyQueueRelease();
@@ -471,12 +478,14 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
     bool phoneLocked = false;
     if (bleNotifyMutex_) {
         if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
+            proxyEpochObserver_.noteReleaseTryLockFailed(BleProxyCallbackDirection::V1ToProxy);
             return false;
         }
         notifyLocked = true;
     }
     if (phoneCmdMutex_) {
         if (xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
+            proxyEpochObserver_.noteReleaseTryLockFailed(BleProxyCallbackDirection::ProxyToV1);
             if (notifyLocked) {
                 xSemaphoreGive(bleNotifyMutex_);
             }
@@ -505,6 +514,7 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
         heap_caps_free(phoneQueue);
     }
     proxyQueueReleasePending_.store(false, std::memory_order_release);
+    proxyEpochObserver_.noteReleaseCompleted();
 
     if (phoneLocked) {
         xSemaphoreGive(phoneCmdMutex_);
@@ -668,7 +678,9 @@ void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t so
 
 void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
                                          uint32_t queueEpoch) {
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEnabled_ || !proxyClientConnected_) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
+        !proxyClientConnected_) {
+        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, false);
         return;
     }
 
@@ -683,10 +695,13 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
         proxyMetrics_.dropCount++;
         return;
     }
+    proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::V1ToProxy);
 
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
         proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_) {
         proxyMetrics_.dropCount++;
+        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, false);
+        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
         if (bleNotifyMutex_)
             xSemaphoreGive(bleNotifyMutex_);
         return;
@@ -709,6 +724,7 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     pkt.tsMs = static_cast<uint32_t>(millis());
     proxyQueueHead_ = (proxyQueueHead_ + 1) % PROXY_QUEUE_SIZE;
     proxyQueueCount_++;
+    proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, true);
 
     // Track high water mark
     if (proxyQueueCount_ > proxyMetrics_.queueHighWater) {
@@ -717,7 +733,10 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     PERF_MAX(proxyQueueHighWater, proxyQueueCount_);
 
     if (bleNotifyMutex_) {
+        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
         xSemaphoreGive(bleNotifyMutex_);
+    } else {
+        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
     }
 }
 
@@ -774,8 +793,8 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
         PERF_INC(phoneCmdDropsInvalid);
         return false;
     }
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
-        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
+        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
         return false;
     }
 
@@ -783,14 +802,17 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
         PERF_INC(phoneCmdDropsLockBusy);
         return false;
     }
+    proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::ProxyToV1);
 
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
-        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
+        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
+        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
     if (!phone2v1Queue_) {
         PERF_INC(phoneCmdDropsInvalid);
+        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
@@ -808,9 +830,48 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     pkt.charUUID = sourceCharUUID;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
+    proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, true);
     PERF_MAX(phoneCmdQueueHighWater, phone2v1QueueCount_);
 
+    proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
     xSemaphoreGive(phoneCmdMutex_);
+    return true;
+}
+
+bool V1BLEClient::trySnapshotProxyEpochQualification(BleProxyEpochQualificationSnapshot& snapshot) {
+    bool notifyLocked = false;
+    if (bleNotifyMutex_) {
+        if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
+            return false;
+        }
+        notifyLocked = true;
+    }
+    if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
+        if (notifyLocked) {
+            xSemaphoreGive(bleNotifyMutex_);
+        }
+        return false;
+    }
+    const bool phoneLocked = phoneCmdMutex_ != nullptr;
+
+    snapshot.epoch = proxyEpochObserver_.snapshot();
+    snapshot.proxyQueueHead = static_cast<uint32_t>(proxyQueueHead_.load(std::memory_order_relaxed));
+    snapshot.proxyQueueTail = static_cast<uint32_t>(proxyQueueTail_.load(std::memory_order_relaxed));
+    snapshot.proxyQueueCount = static_cast<uint32_t>(proxyQueueCount_.load(std::memory_order_relaxed));
+    snapshot.proxyQueueCapacity = static_cast<uint32_t>(PROXY_QUEUE_SIZE);
+    snapshot.phoneQueueHead = static_cast<uint32_t>(phone2v1QueueHead_.load(std::memory_order_relaxed));
+    snapshot.phoneQueueTail = static_cast<uint32_t>(phone2v1QueueTail_.load(std::memory_order_relaxed));
+    snapshot.phoneQueueCount = static_cast<uint32_t>(phone2v1QueueCount_.load(std::memory_order_relaxed));
+    snapshot.phoneQueueCapacity = static_cast<uint32_t>(PHONE_CMD_QUEUE_SIZE);
+    snapshot.freeInternalBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    snapshot.largestInternalBlockBytes = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (phoneLocked) {
+        xSemaphoreGive(phoneCmdMutex_);
+    }
+    if (notifyLocked) {
+        xSemaphoreGive(bleNotifyMutex_);
+    }
     return true;
 }
 

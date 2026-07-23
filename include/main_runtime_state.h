@@ -34,10 +34,11 @@ namespace MainRuntimePolicy {
 //
 // ─── Why the cap has to do the heavy lifting ──────────────────────────
 //
-// The only activity signal in the firmware is WiFiManager::markUiActivity(),
-// which is called from WiFiManager::checkRateLimit() — i.e. on EVERY HTTP
-// request, including the web UI's own /api/status poll (every 3 s from
-// interface/src/lib/stores/runtimeStatus.svelte.js). There is deliberately no
+// The only activity signal in the firmware is WiFiManager::markUiActivity().
+// Mutation admission calls it from WiFiManager::checkRateLimit(), while the
+// read-only /api/status poll calls it directly so polling cannot consume or
+// starve mutation capacity. The web UI polls that route every 3 s from
+// interface/src/lib/stores/runtimeStatus.svelte.js. There is deliberately no
 // second, parallel activity signal.
 //
 // Consequence: an abandoned-but-open browser tab keeps marking activity with

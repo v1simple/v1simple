@@ -133,7 +133,7 @@ bool WiFiManager::setupWebServer() {
         WifiStatusApiService::handleApiStatus(
             server_, makeStatusRuntime(), cachedStatusJson_, lastStatusJsonTime_, STATUS_CACHE_TTL_MS,
             [](void* /*ctx*/) -> unsigned long { return millis(); }, nullptr,
-            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
+            [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
 
     server_.on("/api/device/settings", HTTP_GET,

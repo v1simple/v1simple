@@ -1,4 +1,6 @@
 #include <unity.h>
+#include <atomic>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -414,7 +416,96 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     client.forwardToProxy(packet, sizeof(packet), 0xB2CE);
     TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
     TEST_ASSERT_EQUAL_UINT32(1, client.proxyQueueCount_);
+
+    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
+    TEST_ASSERT_EQUAL_UINT32(1, observation.staleV1ToProxyRejections);
+    TEST_ASSERT_EQUAL_UINT32(1, observation.staleProxyToV1Rejections);
+    TEST_ASSERT_EQUAL_UINT32(1, observation.v1ToProxyAdmissions);
+    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1Admissions);
+    TEST_ASSERT_FALSE(observation.oldEpochForwarded);
 }
+
+void test_runtime_disable_closes_epoch_admission_before_queue_release() {
+    V1BLEClient client;
+    client.proxyEnabled_ = true;
+    client.proxyServerInitialized_ = client.initProxyServer("Proxy");
+    TEST_ASSERT_TRUE(client.proxyServerInitialized_);
+    const uint32_t epoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
+    TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(epoch));
+
+    TEST_ASSERT_TRUE(client.setProxyRuntimeEnabled(false));
+
+    TEST_ASSERT_FALSE(client.proxyEpochObserver_.accepts(epoch));
+    TEST_ASSERT_FALSE(client.proxyEnabled_);
+}
+
+void test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    client.bleNotifyMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8101u);
+    client.phoneCmdMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8102u);
+    BleProxyEpochQualificationSnapshot snapshot;
+    snapshot.proxyQueueCapacity = 99;
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    TEST_ASSERT_FALSE(client.trySnapshotProxyEpochQualification(snapshot));
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_semaphore_state.lastTakeTimeout);
+    TEST_ASSERT_EQUAL_UINT32(99, snapshot.proxyQueueCapacity);
+
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    TEST_ASSERT_TRUE(client.trySnapshotProxyEpochQualification(snapshot));
+    TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PROXY_QUEUE_SIZE, snapshot.proxyQueueCapacity);
+    TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PHONE_CMD_QUEUE_SIZE, snapshot.phoneQueueCapacity);
+    TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_free_size, snapshot.freeInternalBytes);
+    TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_largest_block, snapshot.largestInternalBlockBytes);
+}
+
+#if defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
+void test_linked_source_epoch_gate_rejects_a_callback_crossing_disable_and_reenable() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    client.bleNotifyMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8201u);
+    client.phoneCmdMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8202u);
+    const uint32_t oldEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
+    std::atomic<bool> callbackEntered{false};
+    std::atomic<bool> callbackMayExit{false};
+
+    // This deterministic host barrier proves the linked production observer's
+    // ordering only. It is explicitly non-qualifying for the physical race.
+    std::thread callback([&]() {
+        BleProxyEpochObserver::CallbackLease lease(client.proxyEpochObserver_, BleProxyCallbackDirection::V1ToProxy,
+                                                   oldEpoch);
+        client.proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::V1ToProxy);
+        callbackEntered.store(true, std::memory_order_release);
+        while (!callbackMayExit.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        client.proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
+    });
+    while (!callbackEntered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    client.releaseProxyQueues();
+    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
+    callbackMayExit.store(true, std::memory_order_release);
+    callback.join();
+    mock_queue_semaphore_take_result(pdTRUE);
+    mock_queue_semaphore_take_result(pdTRUE);
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    TEST_ASSERT_EQUAL_UINT32(oldEpoch + 1, client.proxyQueueEpoch_.load(std::memory_order_acquire));
+    client.proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, oldEpoch, false);
+
+    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
+    TEST_ASSERT_TRUE(observation.activeCallbackObserved);
+    TEST_ASSERT_TRUE(observation.releaseOpportunityObserved);
+    TEST_ASSERT_EQUAL_UINT32(1, observation.staleV1ToProxyRejections);
+    TEST_ASSERT_FALSE(observation.oldEpochForwarded);
+    TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(oldEpoch + 1));
+}
+#endif
 
 void test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation() {
     V1BLEClient client;
@@ -461,6 +552,7 @@ void test_phone_command_lock_busy_drop_updates_getters_and_metrics_payload() {
     V1BLEClient client;
     const uint8_t cmd[] = {0x11};
 
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.phoneCmdMutex_ = nullptr;
     TEST_ASSERT_FALSE(client.enqueuePhoneCommand(cmd, sizeof(cmd), 0xB2CE));
 
@@ -663,6 +755,25 @@ void test_forward_to_proxy_immediate_queues_until_main_loop_send() {
     TEST_ASSERT_EQUAL_UINT32(1, client.proxyMetrics_.sendCount);
 }
 
+void test_proxy_write_callback_records_real_direction_and_admission() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    client.connected_.store(true, std::memory_order_relaxed);
+    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
+    NimBLECharacteristic writeCharacteristic(V1_COMMAND_WRITE_UUID);
+    const uint8_t command[] = {0x11, 0x22};
+    writeCharacteristic.setValue(command, sizeof(command));
+    NimBLEConnInfo connInfo;
+    V1BLEClient::ProxyWriteCallbacks callbacks(&client);
+
+    callbacks.onWrite(&writeCharacteristic, connInfo);
+
+    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
+    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1CallbackEntries);
+    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1Admissions);
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+}
+
 void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding() {
     V1BLEClient client;
     client.proxyEnabled_ = true;
@@ -705,6 +816,10 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
     TEST_ASSERT_EQUAL_STRING(V1_DISPLAY_DATA_LONG_UUID, g_mock_nimble_state.lastNotifyUuid.c_str());
     TEST_ASSERT_EQUAL_UINT32(sizeof(longData), g_mock_nimble_state.lastNotifyData.size());
     TEST_ASSERT_EQUAL_UINT8_ARRAY(longData, g_mock_nimble_state.lastNotifyData.data(), sizeof(longData));
+
+    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
+    TEST_ASSERT_EQUAL_UINT32(2, observation.v1ToProxyCallbackEntries);
+    TEST_ASSERT_EQUAL_UINT32(2, observation.v1ToProxyAdmissions);
 }
 
 int main(int argc, char** argv) {
@@ -720,6 +835,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_pending_release_gates_queue_producers_and_consumers);
     RUN_TEST(test_allocateProxyQueues_does_not_overwrite_a_pending_release);
     RUN_TEST(test_reallocated_queues_reject_callbacks_from_the_previous_epoch);
+    RUN_TEST(test_runtime_disable_closes_epoch_admission_before_queue_release);
+    RUN_TEST(test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state);
+#if defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
+    RUN_TEST(test_linked_source_epoch_gate_rejects_a_callback_crossing_disable_and_reenable);
+#endif
     RUN_TEST(test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation);
     RUN_TEST(test_initProxyServer_partial_failure_frees_partial_allocation_and_resets_state);
     RUN_TEST(test_phone_command_invalid_drop_updates_getters_and_metrics_payload);
@@ -733,6 +853,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_proxy_default_name_adopts_v1_advertised_name);
     RUN_TEST(test_proxy_custom_name_does_not_adopt_v1_advertised_name);
     RUN_TEST(test_forward_to_proxy_immediate_queues_until_main_loop_send);
+    RUN_TEST(test_proxy_write_callback_records_real_direction_and_admission);
     RUN_TEST(test_notify_callback_preserves_source_characteristic_for_proxy_forwarding);
 
     return UNITY_END();

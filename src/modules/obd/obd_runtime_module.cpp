@@ -18,6 +18,9 @@ extern "C" {
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
 #include "perf_metrics.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "obd_bsc13_hil_fault_module.h"
+#endif
 
 #ifndef UNIT_TEST
 #include "ble_client.h"
@@ -463,6 +466,12 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
             }
         }
         if (isBleConnected()) {
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+            if (!obdBsc13HilFaultModule().admitSessionOwnership(
+                    {true, bleClient_->activeLinkGeneration(), static_cast<uint8_t>(state_)}, nowMs)) {
+                break;
+            }
+#endif
             connectAttempts_ = 0;
             connectSuccesses_++;
             lastConnectSuccessMs_ = nowMs;

@@ -403,6 +403,9 @@ void releaseSerializedSettingsBackupPayload(SerializedSettingsBackupPayload& pay
     payload.inPsram = false;
     payload.protectExistingBackupFromProvisionalNvs = false;
     payload.snapshotMs = 0;
+    payload.backupRevision = 0;
+    payload.markCompleted = nullptr;
+    payload.completionContext = nullptr;
     payload.profilesBackedUp = 0;
 }
 
@@ -444,6 +447,7 @@ bool SettingsManager::backupToSD() {
         }
     }
 
+    const uint32_t snapshotRevision = backupDueRevision_;
     SerializedSettingsBackupPayload payload;
     if (!buildSerializedSdBackupPayload(payload, settings_, v1ProfileManager, millis())) {
         return false;
@@ -458,10 +462,48 @@ bool SettingsManager::backupToSD() {
         return false;
     }
 
+    if (!markBackupRevisionCompleted(snapshotRevision)) {
+        return false;
+    }
+    backupCompletedRevision_ = snapshotRevision;
+
     Serial.printf("[Settings] Full backup saved to SD card (%d profiles)\n", profilesBackedUp);
     Serial.printf("[Settings] Backed up: slot0Mode=%d, slot1Mode=%d, slot2Mode=%d\n", settings_.slot0_default.mode,
                   settings_.slot1_highway.mode, settings_.slot2_comfort.mode);
     return true;
+}
+
+uint32_t SettingsManager::readBackupRevisionCompleted() {
+    Preferences meta;
+    if (!meta.begin(SETTINGS_NS_META, true)) {
+        return 0;
+    }
+    const uint32_t revision = meta.getUInt(kNvsBackupCompletedRevision, 0);
+    meta.end();
+    return revision;
+}
+
+bool SettingsManager::markBackupRevisionCompleted(const uint32_t revision) {
+    if (revision == 0u) {
+        return true;
+    }
+    Preferences meta;
+    if (!meta.begin(SETTINGS_NS_META, false)) {
+        Serial.println("[Settings] ERROR: Failed to open backup completion metadata");
+        return false;
+    }
+    const bool stored = meta.putUInt(kNvsBackupCompletedRevision, revision) > 0 &&
+                        meta.getUInt(kNvsBackupCompletedRevision, 0) == revision;
+    meta.end();
+    if (!stored) {
+        Serial.println("[Settings] ERROR: Failed to persist backup completion revision");
+    }
+    return stored;
+}
+
+bool SettingsManager::markDeferredBackupRevisionCompleted(const uint32_t revision, void* const context) {
+    (void)context;
+    return markBackupRevisionCompleted(revision);
 }
 
 // ============================================================================
@@ -533,7 +575,10 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
 }
 
 bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload) {
-    const bool ok = writeDeferredBackupPayloadNow(payload);
+    bool ok = writeDeferredBackupPayloadNow(payload);
+    if (ok && payload.markCompleted != nullptr) {
+        ok = payload.markCompleted(payload.backupRevision, payload.completionContext);
+    }
     if (!ok) {
         gDeferredSettingsBackupState.writerRetryPending.store(true, std::memory_order_relaxed);
     }
@@ -752,12 +797,11 @@ void resumeDeferredSettingsBackupWriterAfterAbortedShutdown() {
 }
 
 bool SettingsManager::saveDeferredBackup() {
-    if (!persistSettingsAtomically()) {
+    if (!persistSettingsWithBackupIntent()) {
         return false;
     }
 
     clearDeferredPersistState();
-    bumpBackupRevision();
     Serial.println("Settings saved atomically");
     requestDeferredBackupFromCurrentState();
     return true;
@@ -816,6 +860,9 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
         return;
     }
     payload.protectExistingBackupFromProvisionalNvs = restorePending_;
+    payload.backupRevision = backupDueRevision_;
+    payload.markCompleted = markDeferredBackupRevisionCompleted;
+    payload.completionContext = nullptr;
 
     if (!enqueueDeferredBackupPayload(payload)) {
         releaseSerializedSettingsBackupPayload(payload);

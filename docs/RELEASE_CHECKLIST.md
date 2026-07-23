@@ -4,10 +4,12 @@
 > Date: 2026-05-27
 
 Use this before publishing a release-ready merge to the public `main` branch.
-The public remote is main-only: development branches remain local and are
-preserved through the private workflow. Publishing the candidate merge to
-`main` starts authoritative CI; only a successful push-origin run for that
-exact commit can start the automatic patch release.
+Public publication is main-only: development branches remain local and are
+preserved through the private workflow. GitHub-managed Dependabot updates may
+create transient branches under `dependabot/github_actions/`; those branches
+are not publication paths. Publishing the candidate merge to `main` starts
+authoritative CI; only a successful push-origin run for that exact commit can
+start the automatic patch release.
 The workflow prepares the version commit and publishes both the GitHub Release
 assets and the GitHub Pages ESP Web Tools installer from the same generated
 manifest and merged firmware image. There is no second release button or
@@ -156,7 +158,7 @@ collect a clean `PASS`; the generator does not provide a manual WARN override.
   merge commit to public `main`; never publish its local development branch.
   The public ruleset must restrict direct updates to the approved promotion
   identity and reject force pushes and deletion. It must not require the
-  public-PR check that this main-only flow deliberately does not create.
+  public-PR check that this PR-less promotion flow deliberately does not create.
 - The `main` push starts `.github/workflows/ci.yml`. A failure leaves `main`
   unreleased. Correct a code failure with a new reviewed merge commit (or a
   reviewed revert), repeat the local evidence gates, and let its push receive a

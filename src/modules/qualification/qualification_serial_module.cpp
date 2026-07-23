@@ -256,6 +256,10 @@ void QualificationSerialModule::handleCommand(char* line) {
         handleGetCsv(trim(line + 7));
         return;
     }
+    if (strncmp(line, "QBSC08", 6) == 0 && (line[6] == '\0' || isspace(static_cast<unsigned char>(line[6])))) {
+        handleBsc08(trim(line + 6));
+        return;
+    }
     if (strcmp(line, "QABORT") == 0) {
         handleAbort();
         return;
@@ -302,6 +306,82 @@ void QualificationSerialModule::handleGetCsv(char* args) {
     if (!openExport(requested)) {
         sendErrorLine(lastError_[0] ? lastError_ : "export_open_failed");
     }
+}
+
+void QualificationSerialModule::handleBsc08(char* args) {
+    if (!validNonce(args)) {
+        sendErrorLine("invalid_bsc08_nonce");
+        return;
+    }
+    if (!providers_.tryProxyEpochSnapshot) {
+        sendErrorLine("bsc08_provider_missing");
+        return;
+    }
+
+    BleProxyEpochQualificationSnapshot snapshot;
+    if (!providers_.tryProxyEpochSnapshot(snapshot, providers_.ctx)) {
+        io_->print("QBSC08 {\"schema\":1,\"nonce\":\"");
+        io_->print(args);
+        io_->println("\",\"status\":\"busy\"}");
+        return;
+    }
+
+    const BleProxyEpochObserverSnapshot& epoch = snapshot.epoch;
+    io_->print("QBSC08 {\"schema\":1,\"nonce\":\"");
+    io_->print(args);
+    io_->print("\",\"status\":\"ready\",\"epoch\":");
+    io_->print(epoch.currentEpoch);
+    io_->print(",\"gateEpoch\":");
+    io_->print(epoch.admittedEpoch);
+    io_->print(",\"active\":");
+    io_->print(epoch.activeCallbacks);
+    io_->print(",\"callbackEntries\":[");
+    io_->print(epoch.v1ToProxyCallbackEntries);
+    io_->print(',');
+    io_->print(epoch.proxyToV1CallbackEntries);
+    io_->print("],\"admissions\":[");
+    io_->print(epoch.v1ToProxyAdmissions);
+    io_->print(',');
+    io_->print(epoch.proxyToV1Admissions);
+    io_->print("],\"staleRejects\":[");
+    io_->print(epoch.staleV1ToProxyRejections);
+    io_->print(',');
+    io_->print(epoch.staleProxyToV1Rejections);
+    io_->print("],\"lifecycle\":[");
+    io_->print(epoch.allocationCount);
+    io_->print(',');
+    io_->print(epoch.disableCount);
+    io_->print(',');
+    io_->print(epoch.releaseCount);
+    io_->print(',');
+    io_->print(epoch.reenableCount);
+    io_->print("],\"activeOverlap\":");
+    io_->print(epoch.activeCallbackObserved ? "true" : "false");
+    io_->print(",\"releaseOpportunity\":");
+    io_->print(epoch.releaseOpportunityObserved ? "true" : "false");
+    io_->print(",\"oldForwarded\":");
+    io_->print(epoch.oldEpochForwarded ? "true" : "false");
+    io_->print(",\"proxyQueue\":[");
+    io_->print(snapshot.proxyQueueHead);
+    io_->print(',');
+    io_->print(snapshot.proxyQueueTail);
+    io_->print(',');
+    io_->print(snapshot.proxyQueueCount);
+    io_->print(',');
+    io_->print(snapshot.proxyQueueCapacity);
+    io_->print("],\"phoneQueue\":[");
+    io_->print(snapshot.phoneQueueHead);
+    io_->print(',');
+    io_->print(snapshot.phoneQueueTail);
+    io_->print(',');
+    io_->print(snapshot.phoneQueueCount);
+    io_->print(',');
+    io_->print(snapshot.phoneQueueCapacity);
+    io_->print("],\"heap\":[");
+    io_->print(snapshot.freeInternalBytes);
+    io_->print(',');
+    io_->print(snapshot.largestInternalBlockBytes);
+    io_->println("]}");
 }
 
 void QualificationSerialModule::handleAbort() {
@@ -580,6 +660,19 @@ uint32_t QualificationSerialModule::crc32Update(uint32_t crc, const uint8_t* dat
         }
     }
     return crc;
+}
+
+bool QualificationSerialModule::validNonce(const char* value) {
+    if (!value || strlen(value) != 32) {
+        return false;
+    }
+    for (size_t index = 0; index < 32; ++index) {
+        const char c = value[index];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 char* QualificationSerialModule::trim(char* text) {

@@ -2,6 +2,9 @@
 
 #include "../perf/debug_macros.h"
 #include "../quiet/quiet_coordinator_module.h"
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+#include "modules/storage/storage_bsc14_hil_fault_module.h"
+#endif
 
 #ifndef UNIT_TEST
 #include "modules/alert_persistence/alert_persistence_module.h"
@@ -57,7 +60,14 @@ void TapGestureModule::process(unsigned long nowMs) {
     auto performProfileCycle = [&]() {
         const V1Settings& s = settings_->get();
         int newSlot = (s.activeSlot + 1) % 3;
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        const uint32_t previousRevision = settings_->backupRevision();
+#endif
         settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup);
+#if defined(V1SIMPLE_HIL_FAULT_CONTROL)
+        storageBsc14HilFaultModule().recordGesturePersisted(StorageBsc14Gesture::ProfileTripleTap, previousRevision,
+                                                            settings_->backupRevision(), nowMs);
+#endif
         *displayMode_ = DisplayMode::IDLE;
 
         alertPersistence_->clearPersistence();

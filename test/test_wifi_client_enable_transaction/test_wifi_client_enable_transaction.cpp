@@ -11,15 +11,25 @@ struct FakeRuntime {
     bool enabled = false;
     bool startResult = true;
     int sequence = 0;
+    int admissionOrder = 0;
     int startOrder = 0;
     int rollbackOrder = 0;
     int commitOrder = 0;
     int startCalls = 0;
+    int admissionCalls = 0;
     int rollbackCalls = 0;
     int commitCalls = 0;
     int logicalState = 0;
     int priorLogicalState = 0;
+    bool admissionResult = true;
 };
+
+bool admitStart(void* ctx) {
+    auto* fake = static_cast<FakeRuntime*>(ctx);
+    fake->admissionCalls++;
+    fake->admissionOrder = ++fake->sequence;
+    return fake->admissionResult;
+}
 
 bool attemptStart(void* ctx) {
     auto* fake = static_cast<FakeRuntime*>(ctx);
@@ -46,6 +56,7 @@ void commitEnabled(void* ctx) {
 WifiClientEnableTransaction::Runtime makeRuntime(FakeRuntime& fake) {
     WifiClientEnableTransaction::Runtime runtime;
     runtime.ctx = &fake;
+    runtime.admitStart = admitStart;
     runtime.attemptStart = attemptStart;
     runtime.rollbackFailedStart = rollbackFailedStart;
     runtime.commitEnabled = commitEnabled;
@@ -62,8 +73,9 @@ void test_failed_start_does_not_commit_disabled_state() {
     TEST_ASSERT_EQUAL_INT(0, fake.commitCalls);
     TEST_ASSERT_FALSE(fake.enabled);
     TEST_ASSERT_EQUAL_INT(0, fake.logicalState);
-    TEST_ASSERT_EQUAL_INT(1, fake.startOrder);
-    TEST_ASSERT_EQUAL_INT(2, fake.rollbackOrder);
+    TEST_ASSERT_EQUAL_INT(1, fake.admissionOrder);
+    TEST_ASSERT_EQUAL_INT(2, fake.startOrder);
+    TEST_ASSERT_EQUAL_INT(3, fake.rollbackOrder);
 }
 
 void test_failed_reenable_preserves_prior_enabled_state() {
@@ -118,8 +130,24 @@ void test_success_commits_once_after_start_admission() {
     TEST_ASSERT_EQUAL_INT(1, fake.startCalls);
     TEST_ASSERT_EQUAL_INT(0, fake.rollbackCalls);
     TEST_ASSERT_EQUAL_INT(1, fake.commitCalls);
-    TEST_ASSERT_EQUAL_INT(1, fake.startOrder);
-    TEST_ASSERT_EQUAL_INT(2, fake.commitOrder);
+    TEST_ASSERT_EQUAL_INT(1, fake.admissionOrder);
+    TEST_ASSERT_EQUAL_INT(2, fake.startOrder);
+    TEST_ASSERT_EQUAL_INT(3, fake.commitOrder);
+}
+
+void test_rejected_hil_admission_precedes_every_product_mutation() {
+    FakeRuntime fake;
+    fake.admissionResult = false;
+    fake.logicalState = 7;
+    fake.priorLogicalState = 7;
+
+    TEST_ASSERT_FALSE(WifiClientEnableTransaction::execute(makeRuntime(fake)));
+    TEST_ASSERT_EQUAL_INT(1, fake.admissionCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.startCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.rollbackCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.commitCalls);
+    TEST_ASSERT_EQUAL_INT(7, fake.logicalState);
+    TEST_ASSERT_FALSE(fake.enabled);
 }
 
 void test_missing_commit_callback_fails_before_start_side_effects() {
@@ -167,6 +195,7 @@ int main() {
     RUN_TEST(test_persisted_but_not_admitted_retries_without_recommit);
     RUN_TEST(test_persisted_and_admitted_is_idempotent);
     RUN_TEST(test_success_commits_once_after_start_admission);
+    RUN_TEST(test_rejected_hil_admission_precedes_every_product_mutation);
     RUN_TEST(test_missing_commit_callback_fails_before_start_side_effects);
     RUN_TEST(test_missing_start_callback_fails_without_commit);
     RUN_TEST(test_missing_rollback_callback_fails_before_start_side_effects);

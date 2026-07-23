@@ -32,6 +32,91 @@ Bench evidence is separate from device-unit suites: `./bench.sh` measures core
 and display runtime windows, while `./scripts/run_device_tests.sh` validates
 hardware-specific unit behavior.
 
+## Local board inventory
+
+Hardware runners must address a board by a stable local alias, never by the
+first serial path returned by the operating system. The tracked
+`test/device/board_inventory.json` file is an empty, versioned template. Copy it
+to the ignored local overlay and add the capabilities and connection identity
+available on each physical board:
+
+```bash
+cp test/device/board_inventory.json test/device/board_inventory.local.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "boards": [
+    {
+      "alias": "bench-a",
+      "capabilities": ["device-tests", "display", "lan", "serial"],
+      "usb_serial": "A1B2C3D4",
+      "lan_base_url": "http://192.0.2.10"
+    }
+  ]
+}
+```
+
+Replace the example values with local values. Aliases and capabilities are
+lowercase slugs. Capability names are intentionally extensible; a pinned HIL
+profile selects which ones a job requires. A board advertising `serial` must
+have a unique USB serial. A board may advertise `lan` without storing an
+address when firmware will report it over serial; that dynamic mode also
+requires `serial` and its USB identity so the resolver can collect from the
+exact selected board itself.
+
+Resolve only the capabilities a job needs:
+
+```bash
+python3 scripts/resolve_hil_board.py bench-a \
+  --capability device-tests \
+  --capability serial
+```
+
+The resolver obtains PlatformIO's port inventory and exact-matches the
+configured USB serial. It does not fall back to a sole or first-enumerated
+device path. For deterministic runner input, pass a saved PlatformIO JSON list
+with `--ports-json`; `test/device/serial_ports.local.json` is ignored for that
+purpose.
+
+For LAN jobs, `lan_base_url` is preferred. If the local inventory omits it,
+request both `lan` and `serial`. The resolver opens only the port selected by
+the configured USB serial and collects the most recent exact firmware line
+`[WiFiClient] Connected! IP: <IPv4 address>` within the bounded
+`--lan-collection-timeout-seconds` window. Caller-supplied serial captures are
+not accepted, so a capture from a different port cannot be substituted.
+
+Successful stdout is a sanitized resolver attestation only. It contains no USB
+serial, device path, LAN endpoint, or unrelated board metadata. A runner that
+needs resolved endpoints must explicitly retain the raw resolution under the
+ignored `.artifacts/` tree and retain the sanitized attestation separately:
+
+```bash
+python3 scripts/resolve_hil_board.py dut-bench-a \
+  --capability device-tests \
+  --capability serial \
+  --local-resolution-output .artifacts/bug-squash-hil/<run-id>/local/dut-resolution.json \
+  --attestation-output .artifacts/bug-squash-hil/<run-id>/resolver-attestation.json
+```
+
+The standalone resolver attestation contains only the resolver schema, alias,
+requested capabilities, UTC observation time, and a stable SHA-256 of the
+complete local resolution.
+
+The bug-squash HIL wrapper adds the qualification integrity layer. It stores a
+random 32-byte salt, the selected private inventory record, and the exact
+resolution together in an ignored local binding, then publishes a schema 2
+attestation containing the resolution digest and a salted inventory commitment.
+The qualification validator recomputes both from the unique local binding for
+every DUT and rig. The public attestation never exposes the salt, USB identity,
+serial path, LAN endpoint, or unrelated inventory records; changing any bound
+private inventory or resolution byte invalidates it.
+This detects mutation and prevents identifier disclosure, but it is not an
+origin proof because the local evidence author supplies the salt, record, and
+resolution. Qualification keeps board provenance blocked until an external
+signature or pinned inventory trust root is available.
+
 ## Suites
 
 | Suite | Category | What it catches |

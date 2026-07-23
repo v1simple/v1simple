@@ -23,6 +23,10 @@ prefixed so the host can ignore unrelated boot/runtime serial logs.
 - `QSTATUS` — report state, suite, elapsed time, and CSV path.
 - `QGETCSV [path]` — export the last run CSV, or an explicit absolute `/perf/...`
   path, as hex chunks.
+- `QBSC08 <32-lowercase-hex-nonce>` — take one zero-timeout, main-loop-only
+  proxy-epoch snapshot. The response contains only bounded counters, queue
+  indices/capacities, heap scalars, and the exact request nonce. A busy queue
+  mutex returns `status=busy`; it is never waited on.
 - `QABORT` — stop the active qualification run and pause CSV capture.
 
 ### Response prefixes

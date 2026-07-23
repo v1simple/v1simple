@@ -6685,34 +6685,66 @@ def test_bsc16_rejects_missing_unsafe_wrong_role_and_tampered_evidence() -> None
             assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
 
 
-def test_bsc16_physical_mode_remains_blocked_without_tracked_adapter() -> None:
-    completed = subprocess.run(
-        [
-            "python3",
-            "-B",
-            str(RUNNER),
-            "--case",
-            "BSC-16",
-            "--board",
-            "release",
-            "--rig",
-            "rig",
-            "--ack-vbus-isolated",
-            "--ack-destructive-hard-cuts",
-        ],
-        cwd=ROOT,
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if key != "V1SIMPLE_HIL_TEST_HOOKS"
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert_true(completed.returncode != 0, "physical BSC-16 must remain blocked")
-    payload = json.loads(completed.stdout)
-    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+def test_bsc16_authoritative_admission_binds_tracked_source_before_discovery() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        repository = root / "repository"
+        source = repository / "scripts" / "bug_squash_hil_bsc16_rig.py"
+        source.parent.mkdir(parents=True)
+        source.write_bytes((ROOT / "scripts" / "bug_squash_hil_bsc16_rig.py").read_bytes())
+        source.chmod(0o755)
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(["git", "add", "scripts/bug_squash_hil_bsc16_rig.py"], cwd=repository, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=BSC16 Test",
+                "-c",
+                "user.email=bsc16@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            ],
+            cwd=repository,
+            check=True,
+        )
+        out_dir = root / "must-not-exist"
+        completed = subprocess.run(
+            [
+                "python3",
+                "-B",
+                str(RUNNER),
+                "--case",
+                "BSC-16",
+                "--board",
+                "release",
+                "--rig",
+                "rig",
+                "--repo-root",
+                str(repository),
+                "--inventory",
+                str(root / "missing-inventory.json"),
+                "--out-dir",
+                str(out_dir),
+                "--ack-vbus-isolated",
+                "--ack-destructive-hard-cuts",
+            ],
+            cwd=ROOT,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if key != "V1SIMPLE_HIL_TEST_HOOKS"
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert_true(completed.returncode != 0, "missing authenticated inventory must fail")
+        payload = json.loads(completed.stdout)
+        assert_true(payload["error"]["code"] == "local_inventory_missing", str(payload))
+        assert_true(not out_dir.exists(), str(payload))
 
 
 def make_bsc08_record(
@@ -7394,7 +7426,7 @@ def main() -> int:
     test_bsc14_physical_mode_remains_blocked_without_tracked_adapter()
     test_bsc16_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc16_rejects_missing_unsafe_wrong_role_and_tampered_evidence()
-    test_bsc16_physical_mode_remains_blocked_without_tracked_adapter()
+    test_bsc16_authoritative_admission_binds_tracked_source_before_discovery()
     test_authoritative_mode_rejects_tool_path_overrides()
     test_git_and_child_environment_overrides_are_ignored()
     print("bug-squash HIL runner regression tests passed")

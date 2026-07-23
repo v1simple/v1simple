@@ -635,7 +635,7 @@ BSC16_CASE_ID = "BSC-16"
 BSC16_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC16_PRODUCTION_ENVIRONMENT = "waveshare-349"
 BSC16_REQUIRED_RUNS = 1
-BSC16_ADAPTER_TIMEOUT_SECONDS = 1_800
+BSC16_ADAPTER_TIMEOUT_SECONDS = 10_800
 BSC16_DUT_CAPABILITIES = (
     "battery-monitor",
     "firmware-execution",
@@ -689,6 +689,14 @@ BSC16_CAPTURE_COMMITMENTS = (
     "poweroff_log_sha256",
     "serial_log_sha256",
     "source_transitions_sha256",
+)
+BSC16_CAPTURE_ROLE_FIELDS = tuple(
+    (artifact.role, artifact.filename, commitment)
+    for artifact, commitment in zip(
+        rig_adapters.BSC16_RAW_ARTIFACTS,
+        BSC16_CAPTURE_COMMITMENTS,
+        strict=True,
+    )
 )
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 UTC_TIMESTAMP_PATTERN = re.compile(
@@ -7000,9 +7008,13 @@ def run_bsc16_adapter(
     adapter: Path,
     repository: Path,
     serial_port: str,
+    artifact_root: Path,
+    raw_manifest_path: Path,
+    role_contract: rig_adapters.AdapterRoleContract,
+    raw_request_sha256: str,
     expected: Mapping[str, object],
     environment: Mapping[str, str],
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, object] | None]:
     command = [
         str(adapter),
         "--case",
@@ -7021,6 +7033,10 @@ def run_bsc16_adapter(
         str(expected["rig_alias"]),
         "--serial-port",
         serial_port,
+        "--artifact-dir",
+        str(artifact_root),
+        "--raw-artifact-request-sha256",
+        raw_request_sha256,
     ]
     command_started = datetime.now(timezone.utc)
     try:
@@ -7028,7 +7044,10 @@ def run_bsc16_adapter(
             command,
             cwd=repository,
             env=dict(environment),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+            if expected.get("execution_mode") == "simulated"
+            else None,
             check=False,
             timeout=BSC16_ADAPTER_TIMEOUT_SECONDS,
         )
@@ -7048,15 +7067,49 @@ def run_bsc16_adapter(
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise RunnerError("case_record_invalid", "BSC-16 adapter output is not strict JSON") from exc
     physical = expected.get("execution_mode") == "physical"
-    return validate_bsc16_adapter_record(
+    record = validate_bsc16_adapter_record(
         payload,
         expected=expected,
         command_started=command_started if physical else None,
         command_completed=command_completed if physical else None,
     )
+    if not physical:
+        return record, None
+    try:
+        raw_manifest = adapter_protocol.collect_raw_artifacts(
+            raw_directory=artifact_root,
+            role=role_contract,
+            request_commitment_sha256=raw_request_sha256,
+            manifest_path=raw_manifest_path,
+        )
+        raw_content = adapter_protocol.read_collected_raw_artifacts(
+            raw_directory=artifact_root,
+            role=role_contract,
+            manifest=raw_manifest,
+        )
+    except adapter_protocol.AdapterProtocolError as exc:
+        raise RunnerError(exc.code, exc.message) from exc
+    commitments = record["capture_commitments"]
+    assert isinstance(commitments, dict)
+    for artifact_role, _, commitment_field in BSC16_CAPTURE_ROLE_FIELDS:
+        if hashlib.sha256(raw_content[artifact_role]).hexdigest() != commitments.get(
+            commitment_field
+        ):
+            raise RunnerError(
+                "case_record_invalid",
+                "BSC-16 capture commitment does not match its runner-hashed artifact",
+            )
+    return record, raw_manifest
 
 
 def run_bsc16_case(args: argparse.Namespace) -> int:
+    profile, profile_errors = qualification.load_pinned_profile()
+    if profile is None or profile_errors:
+        raise RunnerError("profile_invalid", "pinned qualification profile is invalid")
+    matches = [case for case in profile["required_cases"] if case.get("id") == BSC16_CASE_ID]
+    if len(matches) != 1:
+        raise RunnerError("profile_invalid", "pinned BSC-16 case contract is invalid")
+    case_descriptor = matches[0]
     if args.runs != BSC16_REQUIRED_RUNS:
         raise RunnerError("invalid_runs", "BSC-16 requires exactly one run per collection role")
     if args.rig is None:
@@ -7068,24 +7121,38 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
             "safety_ack_required",
             "BSC-16 requires explicit VBUS-isolation and destructive-cut acknowledgements",
         )
-    if not test_hooks_enabled():
-        if args.case_adapter is not None:
-            raise RunnerError("untrusted_override", "authoritative BSC-16 forbids an untracked rig adapter")
-        raise RunnerError(
-            "case_rig_adapter_unavailable",
-            "BSC-16 physical execution remains blocked until a tracked rig adapter exists",
-        )
-    if args.case_adapter is None:
-        raise RunnerError("case_adapter_required", "BSC-16 test execution requires a mocked adapter")
-
+    profile_role = (
+        case_descriptor["production_replay"]
+        if args.production_replay
+        else case_descriptor["scenario"]
+    )
+    assert isinstance(profile_role, dict)
+    admission = admit_case_rig_adapter(
+        args,
+        case_contract=case_descriptor,
+        role_id=str(profile_role["role_id"]),
+    )
     repository = args.repo_root.resolve()
-    git_state = read_git_state(repository)
-    if not git_state.tracked_clean:
-        raise RunnerError("dirty_target", "BSC-16 requires a clean target worktree")
-    adapter = args.case_adapter.resolve()
-    if not adapter.is_file() or adapter.is_symlink():
-        raise RunnerError("case_adapter_unavailable", "BSC-16 adapter must be a regular file")
-    adapter_sha = sha256_file(adapter)
+    if admission.simulated:
+        if args.case_adapter is None:
+            raise RunnerError("case_adapter_required", "BSC-16 simulation requires a test adapter")
+        git_state = read_git_state(repository)
+        if not git_state.tracked_clean:
+            raise RunnerError("dirty_target", "BSC-16 requires a clean target worktree")
+        adapter = args.case_adapter.resolve()
+        if not adapter.is_file() or adapter.is_symlink():
+            raise RunnerError("case_adapter_unavailable", "BSC-16 adapter must be a regular file")
+        adapter_sha = sha256_file(adapter)
+    else:
+        if (
+            admission.git_state is None
+            or admission.source_sha256 is None
+            or admission.adapter.source_path is None
+        ):
+            raise RunnerError("case_rig_adapter_unavailable", "BSC-16 tracked adapter is incomplete")
+        git_state = admission.git_state
+        adapter = repository / admission.adapter.source_path
+        adapter_sha = admission.source_sha256
     dut_resolution, dut_attestation, rig_attestation = resolve_bsc16_hardware(args, Path(args.pio_command))
     endpoints = dut_resolution.get("endpoints")
     if not isinstance(endpoints, dict) or not isinstance(endpoints.get("serial_port"), str):
@@ -7104,9 +7171,35 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
     if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
         raise RunnerError("output_not_empty", "BSC-16 output must be new")
     run_root.mkdir(parents=True, exist_ok=True)
+    raw_artifact_root = run_root / "raw"
+    raw_artifact_root.mkdir()
+    raw_manifest_path = run_root / "raw-artifact-manifest.json"
 
     session_id = f"bsc16-{secrets.token_hex(16)}"
     attempt_id = f"attempt-{secrets.token_hex(16)}"
+    adapter_role = next(
+        item for item in admission.adapter.roles if item.role_id == profile_role["role_id"]
+    )
+    raw_request_payload = {
+        "case_id": BSC16_CASE_ID,
+        "role_id": profile_role["role_id"],
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "adapter_sha256": adapter_sha,
+        "raw_artifacts": [
+            {
+                "role": item.role,
+                "filename": item.filename,
+                "maximum_bytes": item.maximum_bytes,
+            }
+            for item in adapter_role.raw_artifacts
+        ],
+    }
+    raw_request_sha = canonical_case_commitment(
+        "v1simple.bsc16.raw-artifact-request.v1", raw_request_payload
+    )
+    physical = not admission.simulated
     expected: dict[str, object] = {
         "case_id": BSC16_CASE_ID,
         "role": role,
@@ -7115,14 +7208,18 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
         "target_sha": git_state.head_sha,
         "dut_alias": args.board,
         "rig_alias": args.rig,
-        "execution_mode": "simulated",
-        "hardware_observed": False,
+        "execution_mode": "physical" if physical else "simulated",
+        "hardware_observed": physical,
     }
     require_unchanged_git_state(repository, git_state)
-    record = run_bsc16_adapter(
+    record, raw_manifest = run_bsc16_adapter(
         adapter=adapter,
         repository=repository,
         serial_port=serial_port,
+        artifact_root=raw_artifact_root,
+        raw_manifest_path=raw_manifest_path,
+        role_contract=adapter_role,
+        raw_request_sha256=raw_request_sha,
         expected=expected,
         environment=os.environ.copy(),
     )
@@ -7139,20 +7236,24 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
         "target_sha": git_state.head_sha,
         "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
         "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
-        "execution_mode": "simulated",
-        "hardware_observed": False,
-        "authoritative": False,
-        "physical_collection_completed": False,
-        "non_qualifying": True,
-        "qualification_status": "BLOCKED",
-        "qualification_blockers": list(
-            case_drivers.get_case_driver(BSC16_CASE_ID).qualification_blockers
-        ),
-        "artifact_role": "non-qualifying-case-collection",
+        "execution_mode": "physical" if physical else "simulated",
+        "hardware_observed": physical,
+        "authoritative": physical,
+        "physical_collection_completed": physical,
+        "non_qualifying": not physical,
+        "qualification_status": "PASS" if physical else "BLOCKED",
+        "qualification_blockers": []
+        if physical
+        else list(case_drivers.get_case_driver(BSC16_CASE_ID).qualification_blockers),
+        "artifact_role": "case-qualification"
+        if physical
+        else "non-qualifying-case-collection",
         "result": "TEST_PASS",
         "runs_required": BSC16_REQUIRED_RUNS,
         "runs_completed": 1,
         "production_replay_required": role == "fault-collection",
+        "vbus_isolation_acknowledged": True,
+        "destructive_cut_acknowledged": True,
         "firmware_target": {
             "environment": firmware["environment"],
             "target_sha": firmware["target_sha"],
@@ -7164,6 +7265,7 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
             "adapter_record": sha256_file(attempt_path),
             "adapter": adapter_sha,
             "runner": sha256_file(Path(__file__)),
+            "rig_adapter_registry": sha256_file(ROOT / rig_adapters.REGISTRY_SOURCE_PATH),
             "inventory": sha256_file(args.inventory.resolve()),
             "dut_attestation": canonical_case_commitment(
                 "v1simple.bsc16.dut-attestation.v1", dut_attestation
@@ -7173,6 +7275,26 @@ def run_bsc16_case(args: argparse.Namespace) -> int:
             ),
         },
     }
+    if raw_manifest is not None:
+        result["raw_artifact_contract"] = [
+            {
+                "role": item.role,
+                "filename": item.filename,
+                "maximum_bytes": item.maximum_bytes,
+            }
+            for item in adapter_role.raw_artifacts
+        ]
+        result["raw_artifact_sha256"] = {
+            artifact_role: record["capture_commitments"][commitment_field]
+            for artifact_role, _, commitment_field in BSC16_CAPTURE_ROLE_FIELDS
+        }
+        result["raw_artifact_request_sha256"] = raw_request_sha
+        result["raw_artifact_manifest_commitment_sha256"] = raw_manifest[
+            "manifest_commitment_sha256"
+        ]
+        result["artifact_sha256"]["raw_artifact_manifest"] = sha256_file(
+            raw_manifest_path
+        )
     write_json_atomic(run_root / "collection_result.json", result)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

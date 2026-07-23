@@ -82,6 +82,13 @@ BSC12_RAW_ARTIFACTS = (
     RawArtifactContract("shutdown-timeline", "shutdown-timeline.json", 2 * 1024 * 1024),
     RawArtifactContract("wake-input-trace", "wake-input-trace.json", 2 * 1024 * 1024),
 )
+BSC16_RAW_ARTIFACTS = (
+    RawArtifactContract("build-evidence", "build-evidence.json", 1024 * 1024),
+    RawArtifactContract("logic-analyzer", "logic-analyzer-capture", 32 * 1024 * 1024),
+    RawArtifactContract("poweroff-log", "poweroff.log", 2 * 1024 * 1024),
+    RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
+    RawArtifactContract("source-transitions", "source-transitions.ndjson", 2 * 1024 * 1024),
+)
 
 BSC07_RAW_ARTIFACTS = (
     RawArtifactContract("ap-traffic", "ap-traffic.json", 2 * 1024 * 1024),
@@ -116,6 +123,7 @@ RAW_ARTIFACTS_BY_CASE: Mapping[str, tuple[RawArtifactContract, ...]] = MappingPr
         "BSC-08": BSC08_RAW_ARTIFACTS,
         "BSC-09": BSC09_RAW_ARTIFACTS,
         "BSC-12": BSC12_RAW_ARTIFACTS,
+        "BSC-16": BSC16_RAW_ARTIFACTS,
     }
 )
 
@@ -300,11 +308,21 @@ _ADAPTERS = (
             ("touch-persistence-production-replay", "production"),
         ),
     ),
-    _adapter(
-        "BSC-16",
+    RigAdapter(
+        case_id="BSC-16",
+        adapter_id="bug-squash-bsc-16-rig-v1",
+        protocol_version=ADAPTER_PROTOCOL_VERSION,
+        status="implemented",
+        source_path="scripts/bug_squash_hil_bsc16_rig.py",
+        entrypoint="main",
         minimum_runs=1,
-        dut=("battery-monitor", "firmware-execution", "power-button", "serial"),
-        rig=(
+        required_dut_capabilities=(
+            "battery-monitor",
+            "firmware-execution",
+            "power-button",
+            "serial",
+        ),
+        required_rig_capabilities=(
             "artifact-capture",
             "battery-source",
             "logic-analyzer",
@@ -314,8 +332,8 @@ _ADAPTERS = (
             "vbus-isolation",
         ),
         roles=(
-            ("battery-source-policy-fault", "hil-fault"),
-            ("battery-source-production-replay", "production"),
+            _role("battery-source-policy-fault", "hil-fault", BSC16_RAW_ARTIFACTS),
+            _role("battery-source-production-replay", "production", BSC16_RAW_ARTIFACTS),
         ),
     ),
 )

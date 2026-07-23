@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import os
@@ -14,22 +15,32 @@ import unittest
 from unittest import mock
 
 import bug_squash_hil_case_drivers as case_drivers
+import bug_squash_hil_bsc16_rig as bsc16_rig
 import bug_squash_hil_rig_adapters as adapters
 import check_bug_squash_hil_qualification as qualification
 import run_bug_squash_hil as runner
 
 
 class RigAdapterRegistryTests(unittest.TestCase):
-    def test_registry_is_exact_immutable_and_entirely_unavailable(self) -> None:
+    def test_registry_is_exact_immutable_and_only_bsc16_is_implemented(self) -> None:
         self.assertEqual(adapters.CASE_IDS, case_drivers.CASE_IDS)
         self.assertEqual(tuple(adapters.ADAPTER_BY_CASE), adapters.CASE_IDS)
         self.assertEqual(len(adapters.ADAPTERS), 14)
         for adapter in adapters.ADAPTERS:
             with self.subTest(case_id=adapter.case_id):
-                self.assertFalse(adapter.implemented)
-                self.assertEqual(adapter.status, "unavailable")
-                self.assertIsNone(adapter.source_path)
-                self.assertIsNone(adapter.entrypoint)
+                if adapter.case_id == "BSC-16":
+                    self.assertTrue(adapter.implemented)
+                    self.assertEqual(adapter.status, "implemented")
+                    self.assertEqual(
+                        adapter.source_path,
+                        "scripts/bug_squash_hil_bsc16_rig.py",
+                    )
+                    self.assertEqual(adapter.entrypoint, "main")
+                else:
+                    self.assertFalse(adapter.implemented)
+                    self.assertEqual(adapter.status, "unavailable")
+                    self.assertIsNone(adapter.source_path)
+                    self.assertIsNone(adapter.entrypoint)
                 self.assertEqual(adapter.protocol_version, adapters.ADAPTER_PROTOCOL_VERSION)
                 for role in adapter.roles:
                     expected_artifacts = adapters.RAW_ARTIFACTS_BY_CASE.get(
@@ -70,6 +81,19 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 ("wake-input-trace", "wake-input-trace.json", 2 * 1024 * 1024),
             ),
         )
+
+    def test_bsc16_capture_contract_has_exact_power_evidence_roles(self) -> None:
+        for role in adapters.get_rig_adapter("BSC-16").roles:
+            self.assertEqual(
+                tuple((item.role, item.filename) for item in role.raw_artifacts),
+                (
+                    ("build-evidence", "build-evidence.json"),
+                    ("logic-analyzer", "logic-analyzer-capture"),
+                    ("poweroff-log", "poweroff.log"),
+                    ("serial-log", "serial.log"),
+                    ("source-transitions", "source-transitions.ndjson"),
+                ),
+            )
 
     def test_bsc09_capture_contract_has_exact_case_specific_limits(self) -> None:
         role = adapters.get_rig_adapter("BSC-09").roles[0]
@@ -306,6 +330,73 @@ class RigAdapterRegistryTests(unittest.TestCase):
             with self.assertRaises(runner.RunnerError) as missing:
                 runner.verify_tracked_rig_adapter_source(repository, git_state, untracked)
             self.assertEqual(missing.exception.code, "adapter_source_invalid")
+
+    def test_bsc16_adapter_fails_closed_without_an_interactive_bench(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            artifact_root = Path(raw)
+            completed = subprocess.run(
+                [
+                    str(Path(__file__).resolve().parent / "bug_squash_hil_bsc16_rig.py"),
+                    "--case",
+                    "BSC-16",
+                    "--role",
+                    "fault-collection",
+                    "--session-id",
+                    "session",
+                    "--attempt-id",
+                    "attempt",
+                    "--target-sha",
+                    "a" * 40,
+                    "--dut-alias",
+                    "dut",
+                    "--rig-alias",
+                    "rig",
+                    "--serial-port",
+                    "/not/a/device",
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--raw-artifact-request-sha256",
+                    "b" * 64,
+                ],
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, b"")
+            self.assertEqual(list(artifact_root.iterdir()), [])
+
+    def test_bsc16_logic_capture_is_measured_and_high_bounce_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            accepted = root / "accepted.csv"
+            accepted.write_text(
+                "Time (s),gpio16\n"
+                "0.000,1\n"
+                "0.100,0\n"
+                "0.104,1\n"
+                "0.108,0\n"
+                "1.000,1\n",
+                encoding="utf-8",
+            )
+            destination = root / "capture"
+            with mock.patch.object(builtins, "input", return_value=str(accepted)):
+                self.assertEqual(bsc16_rig.import_logic_capture(destination), 8)
+            self.assertEqual(destination.read_bytes(), accepted.read_bytes())
+
+            rejected = root / "rejected.csv"
+            rejected.write_text(
+                "Time (s),gpio16\n"
+                "0.000,1\n"
+                "0.100,0\n"
+                "0.115,1\n"
+                "0.130,0\n"
+                "1.000,1\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(builtins, "input", return_value=str(rejected)), self.assertRaises(
+                bsc16_rig.AdapterError
+            ):
+                bsc16_rig.import_logic_capture(root / "must-not-exist")
 
 
 if __name__ == "__main__":

@@ -812,6 +812,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     }
     if (!phone2v1Queue_) {
         PERF_INC(phoneCmdDropsInvalid);
+        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
         proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
         xSemaphoreGive(phoneCmdMutex_);
         return false;

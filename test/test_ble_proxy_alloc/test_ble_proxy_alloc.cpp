@@ -425,6 +425,28 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     TEST_ASSERT_FALSE(observation.oldEpochForwarded);
 }
 
+void test_missing_phone_queue_records_rejected_epoch_admission() {
+    V1BLEClient client;
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
+    heap_caps_free(client.phone2v1Queue_);
+    client.phone2v1Queue_ = nullptr;
+    const uint32_t queueEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
+
+    // Keep admission open for the callback epoch while making a rejected
+    // decision observable in the epoch-accounting snapshot.
+    client.proxyEpochObserver_.currentEpoch_.store(queueEpoch + 1, std::memory_order_release);
+    TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(queueEpoch));
+
+    const uint8_t packet[] = {0x11};
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch));
+
+    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
+    TEST_ASSERT_EQUAL_UINT32(1, observation.staleProxyToV1Rejections);
+    TEST_ASSERT_EQUAL_UINT32(0, observation.proxyToV1Admissions);
+    TEST_ASSERT_EQUAL_UINT32(1, client.getPhoneCmdDropsInvalid());
+}
+
 void test_runtime_disable_closes_epoch_admission_before_queue_release() {
     V1BLEClient client;
     client.proxyEnabled_ = true;
@@ -835,6 +857,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_pending_release_gates_queue_producers_and_consumers);
     RUN_TEST(test_allocateProxyQueues_does_not_overwrite_a_pending_release);
     RUN_TEST(test_reallocated_queues_reject_callbacks_from_the_previous_epoch);
+    RUN_TEST(test_missing_phone_queue_records_rejected_epoch_admission);
     RUN_TEST(test_runtime_disable_closes_epoch_admission_before_queue_release);
     RUN_TEST(test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state);
 #if defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)

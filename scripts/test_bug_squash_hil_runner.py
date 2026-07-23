@@ -4167,6 +4167,40 @@ def run_bsc16_fixture(
     return completed, out_dir
 
 
+def test_final_device_commands_have_a_bounded_fail_closed_timeout() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        stdout_path = root / "stdout.log"
+        stderr_path = root / "stderr.log"
+        timeout = subprocess.TimeoutExpired(
+            cmd=["wedged-command"],
+            timeout=hil_runner.FINAL_DEVICE_COMMAND_TIMEOUT_SECONDS,
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+        with mock.patch.object(hil_runner.subprocess, "run", side_effect=timeout) as run:
+            try:
+                hil_runner.run_command(
+                    ["wedged-command"],
+                    cwd=root,
+                    environment={},
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
+            except hil_runner.RunnerError as exc:
+                assert_true(exc.code == "command_timeout", exc.code)
+            else:
+                raise AssertionError("timed-out hardware command did not fail closed")
+
+        assert_true(
+            run.call_args.kwargs["timeout"]
+            == hil_runner.FINAL_DEVICE_COMMAND_TIMEOUT_SECONDS,
+            "final device command did not use the bounded timeout",
+        )
+        assert_true(stdout_path.read_bytes() == b"partial stdout", "partial stdout was not retained")
+        assert_true(stderr_path.read_bytes() == b"partial stderr", "partial stderr was not retained")
+
+
 def test_success_is_full_sha_bound_sanitized_and_restored() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -7303,6 +7337,7 @@ def test_git_and_child_environment_overrides_are_ignored() -> None:
 
 
 def main() -> int:
+    test_final_device_commands_have_a_bounded_fail_closed_timeout()
     test_success_is_full_sha_bound_sanitized_and_restored()
     test_existing_output_and_duplicate_suite_rows_fail_closed()
     test_nonpass_transport_status_fails_closed_and_restores()

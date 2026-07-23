@@ -36,6 +36,7 @@ import check_bug_squash_hil_qualification as qualification
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_ENVIRONMENT = "waveshare-349"
+FINAL_DEVICE_COMMAND_TIMEOUT_SECONDS = 1_800
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
 EXPECTED_DEVICE_SUITES = (
     "test_device_boot",
@@ -1349,7 +1350,12 @@ def run_command(
             env=dict(environment),
             capture_output=True,
             check=False,
+            timeout=FINAL_DEVICE_COMMAND_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        write_bytes(stdout_path, exc.stdout if isinstance(exc.stdout, bytes) else b"")
+        write_bytes(stderr_path, exc.stderr if isinstance(exc.stderr, bytes) else b"")
+        raise RunnerError("command_timeout", "required hardware command exceeded its timeout") from exc
     except OSError as exc:
         write_bytes(stdout_path, b"")
         write_bytes(stderr_path, b"")

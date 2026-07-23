@@ -21,12 +21,14 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 from typing import Callable, Mapping, Sequence
 import xml.etree.ElementTree as ET
 
 import bug_squash_hil_case_drivers as case_drivers
+import bug_squash_hil_rig_adapters as rig_adapters
 import resolve_hil_board
 import check_bug_squash_hil_qualification as qualification
 
@@ -494,6 +496,14 @@ class GitState:
     tracked_clean: bool
 
 
+@dataclass(frozen=True)
+class RigAdapterAdmission:
+    adapter: rig_adapters.RigAdapter
+    simulated: bool
+    git_state: GitState | None
+    source_sha256: str | None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -564,6 +574,145 @@ def require_unchanged_git_state(repository: Path, expected: GitState) -> None:
         or not expected.tracked_clean
     ):
         raise RunnerError("target_mutated", "target Git state changed during hardware execution")
+
+
+def verify_tracked_rig_adapter_source(
+    repository: Path,
+    git_state: GitState,
+    adapter: rig_adapters.RigAdapter,
+) -> str:
+    """Bind an implemented adapter's worktree bytes to its target-commit blob."""
+
+    try:
+        rig_adapters.validate_adapter_descriptor(adapter)
+    except rig_adapters.RigAdapterContractError as exc:
+        raise RunnerError("adapter_contract_invalid", "rig-adapter descriptor is invalid") from exc
+    if not adapter.implemented or adapter.source_path is None:
+        raise RunnerError("case_rig_adapter_unavailable", "tracked rig adapter is unavailable")
+    source_path = repository / adapter.source_path
+    require_no_symlink_components(source_path, boundary=repository)
+    try:
+        before = os.stat(source_path, follow_symlinks=False)
+    except OSError as exc:
+        raise RunnerError("adapter_source_invalid", "tracked rig-adapter source is unavailable") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or not 1 <= before.st_size <= 4 * 1024 * 1024
+    ):
+        raise RunnerError("adapter_source_invalid", "tracked rig-adapter source is not a safe file")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise RunnerError("adapter_source_invalid", "safe source opening is unavailable")
+    flags = os.O_RDONLY | nofollow
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = -1
+    try:
+        descriptor = os.open(source_path, flags)
+        opened = os.fstat(descriptor)
+        before_identity = (before.st_dev, before.st_ino, before.st_mode, before.st_nlink, before.st_size)
+        opened_identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_nlink,
+            opened.st_size,
+        )
+        if opened_identity != before_identity:
+            raise RunnerError("adapter_source_changed", "rig-adapter source changed before hashing")
+        digest = hashlib.sha256()
+        worktree_bytes = bytearray()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            worktree_bytes.extend(chunk)
+            if len(worktree_bytes) > 4 * 1024 * 1024:
+                raise RunnerError("adapter_source_invalid", "rig-adapter source is oversized")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_nlink,
+            after.st_size,
+        )
+        if after_identity != opened_identity or len(worktree_bytes) != after.st_size:
+            raise RunnerError("adapter_source_changed", "rig-adapter source changed while hashing")
+    except RunnerError:
+        raise
+    except OSError as exc:
+        raise RunnerError("adapter_source_invalid", "rig-adapter source could not be hashed") from exc
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    git_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    git_environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "0",
+        }
+    )
+    git_prefix = [
+        str(AUTHORITATIVE_GIT),
+        "-C",
+        str(repository),
+        "-c",
+        "core.fsmonitor=false",
+    ]
+    tree = subprocess.run(
+        [*git_prefix, "ls-tree", "-z", git_state.head_sha, "--", adapter.source_path],
+        cwd=repository,
+        env=git_environment,
+        capture_output=True,
+        check=False,
+    )
+    if tree.returncode != 0:
+        raise RunnerError("adapter_source_invalid", "rig-adapter source is not tracked")
+    rows = [row for row in tree.stdout.split(b"\0") if row]
+    if len(rows) != 1:
+        raise RunnerError("adapter_source_invalid", "rig-adapter source is not uniquely tracked")
+    try:
+        metadata, tracked_path = rows[0].split(b"\t", 1)
+        mode, object_type, blob_sha = metadata.split(b" ", 2)
+    except ValueError as exc:
+        raise RunnerError("adapter_source_invalid", "rig-adapter tree record is invalid") from exc
+    if (
+        mode not in {b"100644", b"100755"}
+        or object_type != b"blob"
+        or tracked_path.decode("utf-8", errors="strict") != adapter.source_path
+        or re.fullmatch(rb"[0-9a-f]{40,64}", blob_sha) is None
+    ):
+        raise RunnerError("adapter_source_invalid", "rig-adapter tree identity is invalid")
+    committed = subprocess.run(
+        [*git_prefix, "cat-file", "blob", blob_sha.decode("ascii")],
+        cwd=repository,
+        env=git_environment,
+        capture_output=True,
+        check=False,
+    )
+    if committed.returncode != 0 or committed.stdout != bytes(worktree_bytes):
+        raise RunnerError(
+            "adapter_source_mismatch",
+            "rig-adapter worktree source does not match the target commit",
+        )
+    try:
+        final = os.stat(source_path, follow_symlinks=False)
+    except OSError as exc:
+        raise RunnerError("adapter_source_changed", "rig-adapter source changed after hashing") from exc
+    final_identity = (final.st_dev, final.st_ino, final.st_mode, final.st_nlink, final.st_size)
+    if final_identity != before_identity:
+        raise RunnerError("adapter_source_changed", "rig-adapter source path changed while hashing")
+    return digest.hexdigest()
 
 
 def read_json(path: Path, label: str) -> object:
@@ -7853,13 +8002,11 @@ def run_bsc10_case(args: argparse.Namespace) -> int:
     role_descriptor = bsc10_role_descriptor(
         case_descriptor, production_replay=args.production_replay
     )
-    if not test_hooks_enabled():
-        if args.case_adapter is not None:
-            raise RunnerError("untrusted_override", "authoritative BSC-10 forbids an untracked rig adapter")
-        raise RunnerError(
-            "case_rig_adapter_unavailable",
-            "BSC-10 physical execution remains blocked until a tracked rig adapter exists",
-        )
+    admit_case_rig_adapter(
+        args,
+        case_contract=case_descriptor,
+        role_id=str(role_descriptor["role_id"]),
+    )
     if args.case_adapter is None:
         raise RunnerError("case_adapter_required", "BSC-10 test execution requires a mocked adapter")
 
@@ -7974,6 +8121,81 @@ def run_bsc10_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def admit_case_rig_adapter(
+    args: argparse.Namespace,
+    *,
+    case_contract: Mapping[str, object],
+    role_id: str,
+) -> RigAdapterAdmission:
+    """Validate the shared adapter boundary before discovery or output mutation."""
+
+    case_id = case_contract.get("id")
+    if not isinstance(case_id, str):
+        raise RunnerError("adapter_contract_invalid", "case contract lacks a safe identity")
+    try:
+        adapter = rig_adapters.get_rig_adapter(case_id)
+        rig_adapters.validate_adapter_descriptor(adapter)
+    except rig_adapters.RigAdapterContractError as exc:
+        raise RunnerError(
+            "adapter_contract_invalid", "tracked rig-adapter registry is invalid"
+        ) from exc
+    raw_roles = [case_contract.get("scenario")]
+    production = case_contract.get("production_replay")
+    if production is not None:
+        raw_roles.append(production)
+    expected_roles: list[tuple[str, str]] = []
+    for raw_role in raw_roles:
+        if not isinstance(raw_role, dict):
+            raise RunnerError("adapter_contract_invalid", "case role contract is invalid")
+        profile_role_id = raw_role.get("role_id")
+        build_kind = raw_role.get("build_kind")
+        if not isinstance(profile_role_id, str) or not isinstance(build_kind, str):
+            raise RunnerError("adapter_contract_invalid", "case role contract is invalid")
+        expected_roles.append((profile_role_id, build_kind))
+    observed_roles = [(role.role_id, role.build_kind) for role in adapter.roles]
+    if (
+        adapter.minimum_runs != case_contract.get("minimum_runs")
+        or list(adapter.required_dut_capabilities)
+        != case_contract.get("required_dut_capabilities")
+        or list(adapter.required_rig_capabilities)
+        != case_contract.get("required_rig_capabilities")
+        or observed_roles != expected_roles
+        or role_id not in {item[0] for item in expected_roles}
+    ):
+        raise RunnerError(
+            "adapter_contract_invalid",
+            "tracked rig-adapter contract does not match the pinned profile",
+        )
+    if not test_hooks_enabled():
+        if args.case_adapter is not None:
+            raise RunnerError(
+                "untrusted_override",
+                f"authoritative {case_id} forbids an untracked rig adapter",
+            )
+        if not adapter.implemented:
+            raise RunnerError(
+                "case_rig_adapter_unavailable",
+                f"{case_id} physical execution remains blocked until its tracked rig adapter exists",
+            )
+        repository = Path(os.path.abspath(args.repo_root))
+        git_state = read_git_state(repository)
+        if not git_state.tracked_clean:
+            raise RunnerError("dirty_target", "tracked rig adapter requires a clean target worktree")
+        source_sha256 = verify_tracked_rig_adapter_source(repository, git_state, adapter)
+        return RigAdapterAdmission(
+            adapter=adapter,
+            simulated=False,
+            git_state=git_state,
+            source_sha256=source_sha256,
+        )
+    return RigAdapterAdmission(
+        adapter=adapter,
+        simulated=True,
+        git_state=None,
+        source_sha256=None,
+    )
+
+
 def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> int:
     """Fail closed at the tracked rig boundary for a registered case.
 
@@ -8008,11 +8230,15 @@ def run_registered_case_foundation(args: argparse.Namespace, case_id: str) -> in
                 "operator_preconditions_incomplete",
                 f"{case_id} requires explicit VBUS-isolation acknowledgement",
             )
-    if args.case_adapter is not None:
-        raise RunnerError(
-            "untrusted_override",
-            f"authoritative {case_id} forbids an untracked rig adapter",
-        )
+    role_key = "production_replay" if args.production_replay else "scenario"
+    role_contract = case_contract.get(role_key)
+    if not isinstance(role_contract, dict) or not isinstance(role_contract.get("role_id"), str):
+        raise RunnerError("adapter_contract_invalid", f"{case_id} role contract is unavailable")
+    admit_case_rig_adapter(
+        args,
+        case_contract=case_contract,
+        role_id=role_contract["role_id"],
+    )
     raise RunnerError(
         "case_rig_adapter_unavailable",
         f"{case_id} physical execution remains blocked until its tracked rig adapter exists",

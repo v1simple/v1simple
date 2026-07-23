@@ -32,14 +32,11 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 self.assertIsNone(adapter.entrypoint)
                 self.assertEqual(adapter.protocol_version, adapters.ADAPTER_PROTOCOL_VERSION)
                 for role in adapter.roles:
-                    expected = (
-                        adapters.BSC07_RAW_ARTIFACTS
-                        if adapter.case_id == "BSC-07"
-                        else adapters.BSC12_RAW_ARTIFACTS
-                        if adapter.case_id == "BSC-12"
-                        else adapters.RAW_ARTIFACTS
+                    expected_artifacts = adapters.RAW_ARTIFACTS_BY_CASE.get(
+                        adapter.case_id,
+                        adapters.RAW_ARTIFACTS,
                     )
-                    self.assertEqual(role.raw_artifacts, expected)
+                    self.assertEqual(role.raw_artifacts, expected_artifacts)
         with self.assertRaises(FrozenInstanceError):
             adapters.ADAPTERS[0].status = "implemented"  # type: ignore[misc]
         with self.assertRaises(TypeError):

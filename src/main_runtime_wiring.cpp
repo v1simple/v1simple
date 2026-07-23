@@ -472,6 +472,9 @@ static void configureQualificationSerialModule() {
     providers.isSDCard = [](void*) { return storageManager.isSDCard(); };
     providers.filesystem = [](void*) { return storageManager.getFilesystem(); };
     providers.sdMutex = [](void*) { return storageManager.getSDMutex(); };
+    providers.tryProxyEpochSnapshot = [](BleProxyEpochQualificationSnapshot& snapshot, void*) {
+        return bleClient.trySnapshotProxyEpochQualification(snapshot);
+    };
     providers.nowMs = [](void*) { return millis(); };
     qualificationSerialModule.begin(&Serial, providers);
 }

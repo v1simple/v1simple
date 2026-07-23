@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -6676,6 +6678,305 @@ def test_bsc16_physical_mode_remains_blocked_without_tracked_adapter() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
+def make_bsc08_record(run_index: int = 1, *, physical: bool = True) -> tuple[dict[str, object], dict[str, object]]:
+    old_epoch = 100 + (run_index * 10)
+    new_epoch = old_epoch + 1
+    elapsed = (10, 20, 30, 40, 50, 60, 70)
+    rows = (
+        (old_epoch, old_epoch, [10, 10], [8, 8], [0, 0], [1, 0, 0, 0], False, False, [100000, 50000]),
+        (old_epoch, old_epoch, [11, 11], [9, 9], [0, 0], [1, 0, 0, 0], False, False, [99900, 50100]),
+        (old_epoch, 0, [12, 12], [9, 9], [0, 0], [1, 1, 1, 0], True, True, [99850, 50050]),
+        (new_epoch, new_epoch, [12, 12], [9, 9], [0, 0], [2, 1, 1, 1], True, True, [99950, 50150]),
+        (new_epoch, new_epoch, [13, 13], [9, 9], [1, 1], [2, 1, 1, 1], True, True, [99800, 50000]),
+        (new_epoch, new_epoch, [14, 14], [10, 10], [1, 1], [2, 1, 1, 1], True, True, [99900, 50100]),
+        (new_epoch, new_epoch, [14, 14], [10, 10], [1, 1], [2, 1, 1, 1], True, True, [99875, 50075]),
+    )
+    queries: list[dict[str, object]] = []
+    for sequence, (phase, at_ms, row) in enumerate(
+        zip(hil_runner.BSC08_SNAPSHOT_PHASES, elapsed, rows, strict=True), start=1
+    ):
+        epoch, gate, entries, admissions, stale, lifecycle, overlap, release, heap = row
+        nonce = f"{run_index:02x}{sequence:02x}" + f"{run_index * 100 + sequence:028x}"
+        queries.append(
+            {
+                "phase": phase,
+                "sequence": sequence,
+                "elapsed_ms": at_ms,
+                "nonce": nonce,
+                "response": {
+                    "schema": 1,
+                    "nonce": nonce,
+                    "status": "ready",
+                    "epoch": epoch,
+                    "gateEpoch": gate,
+                    "active": 0,
+                    "callbackEntries": entries,
+                    "admissions": admissions,
+                    "staleRejects": stale,
+                    "lifecycle": lifecycle,
+                    "activeOverlap": overlap,
+                    "releaseOpportunity": release,
+                    "oldForwarded": False,
+                    "proxyQueue": [1, 0, 1, 8],
+                    "phoneQueue": [1, 0, 1, 16],
+                    "heap": heap,
+                },
+            }
+        )
+    phase_elapsed = {query["phase"]: query["elapsed_ms"] for query in queries}
+    safety = {
+        "panic_observed": False,
+        "watchdog_reset_observed": False,
+        "load_prohibited_observed": False,
+    }
+    request_commitment = hashlib.sha256(f"bsc08-request-{run_index}".encode("ascii")).hexdigest()
+    raw_manifest: dict[str, object] = {
+        "schema_version": hil_runner.adapter_protocol.SCHEMA_VERSION,
+        "protocol_version": hil_runner.rig_adapters.ADAPTER_PROTOCOL_VERSION,
+        "request_commitment_sha256": request_commitment,
+        "artifacts": [
+            {
+                "filename": contract.filename,
+                "role": contract.role,
+                "sha256": hashlib.sha256(
+                    f"bsc08-{run_index}-{contract.role}".encode("ascii")
+                ).hexdigest(),
+                "size_bytes": 100 + index,
+            }
+            for index, contract in enumerate(hil_runner.rig_adapters.BSC08_RAW_ARTIFACTS, start=1)
+        ],
+    }
+    raw_manifest["manifest_commitment_sha256"] = hil_runner.adapter_protocol.canonical_commitment(
+        hil_runner.adapter_protocol.MANIFEST_DOMAIN,
+        raw_manifest,
+    )
+    target_sha = "a" * 40
+    record: dict[str, object] = {
+        "schema_version": 1,
+        "case_id": "BSC-08",
+        "role_id": "proxy-epoch-teardown",
+        "session_id": "bsc08-session",
+        "attempt_id": f"bsc08-attempt-{run_index}",
+        "run_index": run_index,
+        "target_sha": target_sha,
+        "dut_alias": "release",
+        "rig_alias": "rig",
+        "execution_mode": "physical" if physical else "simulated",
+        "hardware_observed": physical,
+        "started_at_utc": "2026-07-22T20:00:00Z",
+        "completed_at_utc": "2026-07-22T20:01:00Z",
+        "descriptor": hil_runner.bsc08_profile_descriptor(),
+        "firmware": {
+            "environment": "waveshare-349",
+            "target_sha": target_sha,
+            "binary_sha256": "b" * 64,
+            "hil_fault_control_active": False,
+        },
+        "serial_queries": queries,
+        "stimuli": [
+            {"id": stimulus_id, "sequence": sequence, "elapsed_ms": phase_elapsed[phase], "observed": True}
+            for sequence, (stimulus_id, phase) in enumerate(
+                zip(
+                    hil_runner.BSC08_STIMULUS_IDS,
+                    ("streaming", "disabled", "reenabled", "old-traffic", "fresh-traffic"),
+                    strict=True,
+                ),
+                start=1,
+            )
+        ],
+        "barriers": [
+            {"id": barrier_id, "sequence": sequence, "elapsed_ms": phase_elapsed["disabled"], "observed": True, "timed_out": False}
+            for sequence, barrier_id in enumerate(hil_runner.BSC08_BARRIER_IDS, start=1)
+        ],
+        "resets": {"expected_kind": "none", "planned": 0, "observed": 0, "unexpected": 0},
+        "safety": safety,
+        "facts": hil_runner.derive_bsc08_facts(queries, safety),
+        "raw_artifact_manifest": raw_manifest,
+        "source_capture_binding_sha256": "0" * 64,
+        "evidence_binding_sha256": "0" * 64,
+    }
+    record["source_capture_binding_sha256"] = hil_runner.bsc08_source_capture_commitment(record)
+    record["evidence_binding_sha256"] = hil_runner.bsc08_record_commitment(record)
+    expected = {
+        field: record[field]
+        for field in ("case_id", "role_id", "session_id", "attempt_id", "run_index", "target_sha", "dut_alias", "rig_alias")
+    }
+    expected["request_commitment_sha256"] = request_commitment
+    return record, expected
+
+
+def rebind_bsc08(record: dict[str, object]) -> None:
+    record["source_capture_binding_sha256"] = hil_runner.bsc08_source_capture_commitment(record)
+    record["evidence_binding_sha256"] = hil_runner.bsc08_record_commitment(record)
+
+
+def test_bsc08_typed_record_is_profile_v5_bound_and_simulation_is_nonqualifying() -> None:
+    record, expected = make_bsc08_record()
+    validated = hil_runner.validate_bsc08_record(record, expected=expected)
+    assert_true(validated is record, "physical BSC-08 record did not validate")
+
+    simulated, simulated_expected = make_bsc08_record(physical=False)
+    validated_simulated = hil_runner.validate_bsc08_record(
+        simulated, expected=simulated_expected, qualifying=False
+    )
+    assert_true(validated_simulated is simulated, "non-qualifying simulation should remain testable")
+    try:
+        hil_runner.validate_bsc08_record(simulated, expected=simulated_expected)
+    except hil_runner.RunnerError as exc:
+        assert_true(exc.code == "case_evidence_nonqualifying", exc.code)
+    else:
+        raise AssertionError("simulated BSC-08 evidence qualified")
+
+    records = []
+    for run_index in range(1, 4):
+        current, current_expected = make_bsc08_record(run_index)
+        hil_runner.validate_bsc08_record(current, expected=current_expected)
+        records.append(current)
+    hil_runner.validate_bsc08_distinct_runs(records)
+
+
+def test_bsc08_runner_hashes_and_reverifies_serial_capture_bytes() -> None:
+    record, expected = make_bsc08_record()
+    queries = record["serial_queries"]
+    serial_bytes = b"\n".join(
+        b"QBSC08 "
+        + json.dumps(
+            query["response"],
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        for query in queries
+    ) + b"\n"
+    with tempfile.TemporaryDirectory() as temp_name:
+        root = Path(temp_name)
+        raw_directory = root / "raw"
+        raw_directory.mkdir()
+        for contract in hil_runner.rig_adapters.BSC08_RAW_ARTIFACTS:
+            data = (
+                serial_bytes
+                if contract.role == "serial-log"
+                else f"capture-{contract.role}\n".encode("ascii")
+            )
+            (raw_directory / contract.filename).write_bytes(data)
+        manifest = hil_runner.collect_bsc08_raw_artifact_manifest(
+            raw_directory=raw_directory,
+            request_commitment_sha256=expected["request_commitment_sha256"],
+            manifest_path=root / "manifest.json",
+        )
+        captured = hil_runner.load_bsc08_serial_capture(
+            raw_directory=raw_directory,
+            manifest=manifest,
+            request_commitment_sha256=expected["request_commitment_sha256"],
+            queries=queries,
+        )
+        assert_true(captured == serial_bytes, "BSC-08 runner did not parse its verified serial bytes")
+        serial_path = raw_directory / "serial.log"
+        serial_path.write_bytes(serial_bytes + b"QBSC08 {}\n")
+        try:
+            hil_runner.load_bsc08_serial_capture(
+                raw_directory=raw_directory,
+                manifest=manifest,
+                request_commitment_sha256=expected["request_commitment_sha256"],
+                queries=queries,
+            )
+        except hil_runner.RunnerError as exc:
+            assert_true(exc.code == "raw_artifact_changed", exc.code)
+        else:
+            raise AssertionError("BSC-08 accepted a serial capture changed after manifest hashing")
+
+
+def test_bsc08_rejects_adversarial_nonce_epoch_race_fact_and_capture_mutations() -> None:
+    def mutate_nonce(record: dict[str, object]) -> None:
+        record["serial_queries"][1]["response"]["nonce"] = "f" * 32
+
+    def duplicate_nonce(record: dict[str, object]) -> None:
+        record["serial_queries"][1]["nonce"] = record["serial_queries"][0]["nonce"]
+        record["serial_queries"][1]["response"]["nonce"] = record["serial_queries"][0]["nonce"]
+
+    def miss_race(record: dict[str, object]) -> None:
+        record["serial_queries"][2]["response"]["activeOverlap"] = False
+
+    def miss_release(record: dict[str, object]) -> None:
+        record["serial_queries"][2]["response"]["releaseOpportunity"] = False
+
+    def forward_old(record: dict[str, object]) -> None:
+        record["serial_queries"][4]["response"]["oldForwarded"] = True
+
+    def reuse_capture(record: dict[str, object]) -> None:
+        manifest = record["raw_artifact_manifest"]
+        artifacts = manifest["artifacts"]
+        artifacts[1]["sha256"] = artifacts[0]["sha256"]
+        committed = dict(manifest)
+        committed.pop("manifest_commitment_sha256")
+        manifest["manifest_commitment_sha256"] = hil_runner.adapter_protocol.canonical_commitment(
+            hil_runner.adapter_protocol.MANIFEST_DOMAIN,
+            committed,
+        )
+
+    mutations = (
+        mutate_nonce,
+        duplicate_nonce,
+        miss_race,
+        miss_release,
+        forward_old,
+        lambda record: record["serial_queries"][3]["response"].__setitem__("epoch", record["serial_queries"][0]["response"]["epoch"]),
+        lambda record: record["serial_queries"][4]["response"]["admissions"].__setitem__(0, 10),
+        lambda record: record["serial_queries"][5]["response"]["admissions"].__setitem__(1, 9),
+        lambda record: record["serial_queries"][2]["response"].__setitem__("active", True),
+        lambda record: record["resets"].__setitem__("unexpected", 1),
+        lambda record: record["firmware"].__setitem__("hil_fault_control_active", True),
+        lambda record: record["facts"].__setitem__("old-epoch-forwarded", True),
+        reuse_capture,
+    )
+    for mutation in mutations:
+        record, expected = make_bsc08_record()
+        mutation(record)
+        rebind_bsc08(record)
+        try:
+            hil_runner.validate_bsc08_record(record, expected=expected)
+        except hil_runner.RunnerError:
+            pass
+        else:
+            raise AssertionError(f"BSC-08 mutation passed: {mutation}")
+
+    record, expected = make_bsc08_record()
+    record["evidence_binding_sha256"] = "f" * 64
+    try:
+        hil_runner.validate_bsc08_record(record, expected=expected)
+    except hil_runner.RunnerError as exc:
+        assert_true(exc.code == "case_record_invalid", exc.code)
+    else:
+        raise AssertionError("BSC-08 stale binding passed")
+
+
+def test_bsc08_physical_mode_remains_blocked_before_hardware_discovery() -> None:
+    completed = subprocess.run(
+        [
+            "python3",
+            "-B",
+            str(RUNNER),
+            "--case",
+            "BSC-08",
+            "--board",
+            "release",
+            "--rig",
+            "rig",
+            "--runs",
+            "3",
+        ],
+        cwd=ROOT,
+        env={key: value for key, value in os.environ.items() if key != "V1SIMPLE_HIL_TEST_HOOKS"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_true(completed.returncode != 0, "physical BSC-08 must remain blocked")
+    payload = json.loads(completed.stdout)
+    assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
+
+
 def test_authoritative_mode_rejects_tool_path_overrides() -> None:
     completed = subprocess.run(
         [
@@ -6812,6 +7113,10 @@ def main() -> int:
     test_bsc06_rejects_descriptor_race_timing_role_reuse_and_stale_binding_mutations()
     test_bsc06_physical_mode_remains_blocked_before_discovery_or_mutation()
     test_bsc06_rejects_each_required_inventory_capability_removal()
+    test_bsc08_typed_record_is_profile_v5_bound_and_simulation_is_nonqualifying()
+    test_bsc08_runner_hashes_and_reverifies_serial_capture_bytes()
+    test_bsc08_rejects_adversarial_nonce_epoch_race_fact_and_capture_mutations()
+    test_bsc08_physical_mode_remains_blocked_before_hardware_discovery()
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()

@@ -5,6 +5,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include "modules/ble/ble_proxy_epoch_observer.h"
+
 class QualificationSerialModule {
   public:
     enum class Suite : uint8_t {
@@ -34,6 +36,7 @@ class QualificationSerialModule {
         bool (*isSDCard)(void* ctx) = nullptr;
         fs::FS* (*filesystem)(void* ctx) = nullptr;
         SemaphoreHandle_t (*sdMutex)(void* ctx) = nullptr;
+        bool (*tryProxyEpochSnapshot)(BleProxyEpochQualificationSnapshot& snapshot, void* ctx) = nullptr;
         uint32_t (*nowMs)(void* ctx) = nullptr;
         void* ctx = nullptr;
     };
@@ -94,6 +97,7 @@ class QualificationSerialModule {
     void handleStart(char* args);
     void handleStatus();
     void handleGetCsv(char* args);
+    void handleBsc08(char* args);
     void handleAbort();
 
     bool parseStartArgs(char* args, Suite& suite, uint32_t& durationSeconds, Mode& mode) const;
@@ -110,5 +114,6 @@ class QualificationSerialModule {
     void printJsonString(const char* value);
 
     static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len);
+    static bool validNonce(const char* value);
     static char* trim(char* text);
 };

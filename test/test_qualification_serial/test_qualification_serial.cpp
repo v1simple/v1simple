@@ -58,6 +58,8 @@ struct Harness {
     bool applyModeReturn = true;
     bool storageReady = false;
     bool sdCard = false;
+    bool proxySnapshotReady = true;
+    BleProxyEpochQualificationSnapshot proxySnapshot{};
     const char* path = "/perf/qualification.csv";
     uint32_t now = 0;
     uint8_t lastMode = 0;
@@ -79,6 +81,8 @@ struct Harness {
         applyModeReturn = true;
         storageReady = false;
         sdCard = false;
+        proxySnapshotReady = true;
+        proxySnapshot = BleProxyEpochQualificationSnapshot{};
         path = "/perf/qualification.csv";
         now = 0;
         lastMode = 0;
@@ -132,6 +136,14 @@ struct Harness {
     static bool isSDCard(void* ctx) { return static_cast<Harness*>(ctx)->sdCard; }
     static fs::FS* filesystem(void* /*ctx*/) { return nullptr; }
     static SemaphoreHandle_t sdMutex(void* ctx) { return static_cast<Harness*>(ctx)->mutex; }
+    static bool tryProxyEpochSnapshot(BleProxyEpochQualificationSnapshot& snapshot, void* ctx) {
+        Harness* h = static_cast<Harness*>(ctx);
+        if (!h->proxySnapshotReady) {
+            return false;
+        }
+        snapshot = h->proxySnapshot;
+        return true;
+    }
     static uint32_t nowMs(void* ctx) { return static_cast<Harness*>(ctx)->now; }
 
     QualificationSerialModule::Providers providers() {
@@ -150,6 +162,7 @@ struct Harness {
         p.isSDCard = isSDCard;
         p.filesystem = filesystem;
         p.sdMutex = sdMutex;
+        p.tryProxyEpochSnapshot = tryProxyEpochSnapshot;
         p.nowMs = nowMs;
         p.ctx = this;
         return p;
@@ -250,12 +263,77 @@ void test_getcsv_rejects_when_storage_unavailable() {
     TEST_ASSERT_TRUE_MESSAGE(io.outputContains("\"durationMs\":0"), io.output().c_str());
 }
 
+void test_bsc08_snapshot_echoes_exact_nonce_and_only_privacy_safe_scalars() {
+    harness.proxySnapshot.epoch.currentEpoch = 42;
+    harness.proxySnapshot.epoch.admittedEpoch = 42;
+    harness.proxySnapshot.epoch.v1ToProxyCallbackEntries = 3;
+    harness.proxySnapshot.epoch.proxyToV1CallbackEntries = 4;
+    harness.proxySnapshot.epoch.v1ToProxyAdmissions = 2;
+    harness.proxySnapshot.epoch.proxyToV1Admissions = 1;
+    harness.proxySnapshot.epoch.staleV1ToProxyRejections = 1;
+    harness.proxySnapshot.epoch.staleProxyToV1Rejections = 2;
+    harness.proxySnapshot.epoch.allocationCount = 2;
+    harness.proxySnapshot.epoch.disableCount = 1;
+    harness.proxySnapshot.epoch.releaseCount = 1;
+    harness.proxySnapshot.epoch.reenableCount = 1;
+    harness.proxySnapshot.epoch.activeCallbackObserved = true;
+    harness.proxySnapshot.epoch.releaseOpportunityObserved = true;
+    harness.proxySnapshot.proxyQueueCapacity = 8;
+    harness.proxySnapshot.phoneQueueCapacity = 16;
+    harness.proxySnapshot.freeInternalBytes = 123456;
+    harness.proxySnapshot.largestInternalBlockBytes = 65432;
+
+    io.feed("QBSC08 0123456789abcdef0123456789abcdef\n");
+    module.process();
+
+    TEST_ASSERT_TRUE(io.outputContains("QBSC08 {\"schema\":1"));
+    TEST_ASSERT_TRUE(io.outputContains("\"nonce\":\"0123456789abcdef0123456789abcdef\""));
+    TEST_ASSERT_TRUE(io.outputContains("\"status\":\"ready\""));
+    TEST_ASSERT_TRUE(io.outputContains("\"callbackEntries\":[3,4]"));
+    TEST_ASSERT_TRUE(io.outputContains("\"lifecycle\":[2,1,1,1]"));
+    TEST_ASSERT_TRUE(io.outputContains("\"heap\":[123456,65432]"));
+    TEST_ASSERT_FALSE(io.outputContains("address"));
+    TEST_ASSERT_FALSE(io.outputContains("payload"));
+    TEST_ASSERT_FALSE(io.outputContains("handle"));
+    TEST_ASSERT_FALSE(io.outputContains("path"));
+    TEST_ASSERT_FALSE(io.outputContains("uuid"));
+}
+
+void test_bsc08_snapshot_returns_busy_without_partial_state() {
+    harness.proxySnapshotReady = false;
+    io.feed("QBSC08 fedcba9876543210fedcba9876543210\n");
+    module.process();
+
+    TEST_ASSERT_TRUE(io.outputContains("\"status\":\"busy\""));
+    TEST_ASSERT_TRUE(io.outputContains("fedcba9876543210fedcba9876543210"));
+    TEST_ASSERT_FALSE(io.outputContains("\"epoch\""));
+}
+
+void test_bsc08_snapshot_rejects_missing_uppercase_or_extended_nonce() {
+    io.feed("QBSC08\nQBSC08 0123456789ABCDEF0123456789ABCDEF\n");
+    io.feed("QBSC08 0123456789abcdef0123456789abcdef extra\n");
+    module.process();
+
+    const std::string output = io.output();
+    size_t errors = 0;
+    size_t offset = 0;
+    while ((offset = output.find("QERR ", offset)) != std::string::npos) {
+        ++errors;
+        offset += 1;
+    }
+    TEST_ASSERT_EQUAL_UINT32(3, errors);
+    TEST_ASSERT_FALSE(io.outputContains("QBSC08 {"));
+}
+
 void runAllTests() {
     RUN_TEST(test_status_reports_idle);
     RUN_TEST(test_invalid_start_args_returns_error);
     RUN_TEST(test_core_start_runs_finalizes_and_clears_mode);
     RUN_TEST(test_display_start_and_abort_cancel_preview);
     RUN_TEST(test_getcsv_rejects_when_storage_unavailable);
+    RUN_TEST(test_bsc08_snapshot_echoes_exact_nonce_and_only_privacy_safe_scalars);
+    RUN_TEST(test_bsc08_snapshot_returns_busy_without_partial_state);
+    RUN_TEST(test_bsc08_snapshot_rejects_missing_uppercase_or_extended_nonce);
 }
 
 #ifdef ARDUINO

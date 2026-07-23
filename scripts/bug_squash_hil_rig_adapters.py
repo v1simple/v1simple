@@ -92,6 +92,23 @@ BSC07_RAW_ARTIFACTS = (
     RawArtifactContract("ui-health", "ui-health.json", 2 * 1024 * 1024),
 )
 
+BSC08_RAW_ARTIFACTS = (
+    RawArtifactContract("adapter-transcript", "adapter-transcript.jsonl", 4 * 1024 * 1024),
+    RawArtifactContract("firmware-build", "firmware-build.json", 1024 * 1024),
+    RawArtifactContract("proxy-peer-receipts", "proxy-peer-receipts.jsonl", 8 * 1024 * 1024),
+    RawArtifactContract("safety-summary", "safety-summary.json", 1024 * 1024),
+    RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
+    RawArtifactContract("v1-peer-receipts", "v1-peer-receipts.jsonl", 8 * 1024 * 1024),
+)
+
+RAW_ARTIFACTS_BY_CASE: Mapping[str, tuple[RawArtifactContract, ...]] = MappingProxyType(
+    {
+        "BSC-07": BSC07_RAW_ARTIFACTS,
+        "BSC-08": BSC08_RAW_ARTIFACTS,
+        "BSC-12": BSC12_RAW_ARTIFACTS,
+    }
+)
+
 
 def _environment_for(build_kind: BuildKind) -> str:
     if build_kind == "hil-fault":
@@ -210,6 +227,7 @@ _ADAPTERS = (
         dut=("firmware-execution", "proxy-connectivity", "serial", "v1-connectivity"),
         rig=("artifact-capture", "proxy-client", "utc-time-source", "v1-peer"),
         roles=(("proxy-epoch-teardown", "production"),),
+        raw_artifacts=BSC08_RAW_ARTIFACTS,
     ),
     _adapter(
         "BSC-09",
@@ -345,10 +363,7 @@ def validate_adapter_descriptor(adapter: RigAdapter) -> None:
         if role.firmware_environment != _environment_for(role.build_kind):
             raise RigAdapterContractError("rig-adapter firmware environment is inconsistent")
         _validate_raw_artifacts(role.raw_artifacts)
-        expected_artifacts = {
-            "BSC-07": BSC07_RAW_ARTIFACTS,
-            "BSC-12": BSC12_RAW_ARTIFACTS,
-        }.get(adapter.case_id, RAW_ARTIFACTS)
+        expected_artifacts = RAW_ARTIFACTS_BY_CASE.get(adapter.case_id, RAW_ARTIFACTS)
         if role.raw_artifacts != expected_artifacts:
             raise RigAdapterContractError("rig-adapter raw-artifact contract drifted")
     if adapter.status not in {"unavailable", "implemented"}:

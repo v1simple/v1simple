@@ -330,11 +330,13 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
-def _hash_raw_file(
+def _read_raw_file_with_retention(
     directory_fd: int,
     filename: str,
     contract: rig_adapters.RawArtifactContract,
-) -> tuple[str, int]:
+    *,
+    retain_bytes: bool,
+) -> tuple[str, int, bytes | None]:
     try:
         before_path = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
     except OSError as exc:
@@ -358,6 +360,7 @@ def _hash_raw_file(
         if _identity(before_fd) != _identity(before_path):
             raise AdapterProtocolError("raw_artifact_changed", "raw artifact changed before hashing")
         digest = hashlib.sha256()
+        retained: list[bytes] | None = [] if retain_bytes else None
         total = 0
         while True:
             chunk = os.read(descriptor, READ_CHUNK_BYTES)
@@ -367,6 +370,8 @@ def _hash_raw_file(
             if total > contract.maximum_bytes:
                 raise AdapterProtocolError("raw_artifact_invalid", "raw artifact exceeded its size limit")
             digest.update(chunk)
+            if retained is not None:
+                retained.append(chunk)
         after_fd = os.fstat(descriptor)
         if _identity(after_fd) != _identity(before_fd) or total != after_fd.st_size:
             raise AdapterProtocolError("raw_artifact_changed", "raw artifact changed while hashing")
@@ -386,7 +391,90 @@ def _hash_raw_file(
         raise AdapterProtocolError("raw_artifact_changed", "raw artifact changed after hashing") from exc
     if _identity(after_path) != _identity(before_path):
         raise AdapterProtocolError("raw_artifact_changed", "raw artifact path changed while hashing")
-    return digest.hexdigest(), total
+    return digest.hexdigest(), total, b"".join(retained) if retained is not None else None
+
+
+def _hash_raw_file(
+    directory_fd: int,
+    filename: str,
+    contract: rig_adapters.RawArtifactContract,
+) -> tuple[str, int]:
+    digest, size, _ = _read_raw_file_with_retention(
+        directory_fd,
+        filename,
+        contract,
+        retain_bytes=False,
+    )
+    return digest, size
+
+
+def read_verified_raw_artifact(
+    *,
+    raw_directory: Path,
+    contract: rig_adapters.RawArtifactContract,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> bytes:
+    """Read one manifest-bound artifact while reverifying its identity and digest."""
+
+    expected_digest = _sha256(expected_sha256, "raw artifact digest")
+    if (
+        type(expected_size_bytes) is not int
+        or not 1 <= expected_size_bytes <= contract.maximum_bytes
+    ):
+        raise AdapterProtocolError("raw_artifact_invalid", "raw artifact size is invalid")
+    raw_absolute = Path(os.path.abspath(raw_directory))
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise AdapterProtocolError("raw_artifact_invalid", "safe directory opening is unavailable")
+    flags = os.O_RDONLY | nofollow | directory_flag
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    directory_fd = -1
+    try:
+        directory_fd = os.open(raw_absolute, flags)
+        before_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(before_directory.st_mode):
+            raise AdapterProtocolError(
+                "raw_artifact_invalid", "raw artifact path is not a real directory"
+            )
+        digest, size, data = _read_raw_file_with_retention(
+            directory_fd,
+            contract.filename,
+            contract,
+            retain_bytes=True,
+        )
+        after_directory = os.fstat(directory_fd)
+        try:
+            after_path = os.stat(raw_absolute, follow_symlinks=False)
+        except OSError as exc:
+            raise AdapterProtocolError(
+                "raw_artifact_changed", "raw artifact directory path changed while reading"
+            ) from exc
+        if (
+            _identity(after_directory) != _identity(before_directory)
+            or _identity(after_path) != _identity(before_directory)
+            or not secrets.compare_digest(digest, expected_digest)
+            or size != expected_size_bytes
+            or data is None
+        ):
+            raise AdapterProtocolError(
+                "raw_artifact_changed", "raw artifact no longer matches its manifest"
+            )
+        return data
+    except AdapterProtocolError:
+        raise
+    except OSError as exc:
+        raise AdapterProtocolError(
+            "raw_artifact_invalid", "raw artifact could not be reverified"
+        ) from exc
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
 
 
 def _read_raw_file(

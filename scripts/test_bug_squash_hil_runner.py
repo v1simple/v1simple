@@ -2600,6 +2600,8 @@ serial_events = [
     {'event': 'power-off-returned-false', 'elapsed_ms': 250},
     {'event': 'screen-restored-disconnected', 'elapsed_ms': 260},
     {'event': 'marker-rewritten-unclean', 'elapsed_ms': 270},
+    {'event': 'settings-writer-complete', 'elapsed_ms': 650},
+    {'event': 'bond-writer-complete', 'elapsed_ms': 700},
     {'event': 'reset-forced', 'elapsed_ms': 900},
     {'event': 'boot-observed', 'elapsed_ms': 1100},
     {'event': 'setting-readback', 'elapsed_ms': 1200},
@@ -2620,6 +2622,10 @@ if mutation == 'assertion-only-reset':
     raw_payloads['power-reset-trace.json']['forced_reset_edges_elapsed_ms'] = []
 if mutation == 'assertion-only-crash':
     serial_events.append({'event': 'panic', 'elapsed_ms': 1250})
+if mutation == 'serial-writer-missing':
+    serial_events = [event for event in serial_events if event['event'] != 'settings-writer-complete']
+if mutation == 'serial-writer-timing':
+    next(event for event in serial_events if event['event'] == 'settings-writer-complete')['elapsed_ms'] = 651
 
 for filename, raw_payload in raw_payloads.items():
     (raw_root / filename).write_text(
@@ -2690,6 +2696,7 @@ payload = {
     'facts': facts,
     'capture_commitments': capture_commitments,
     'raw_artifact_manifest': raw_artifact_manifest,
+    'raw_artifact_request_sha256': argument('--raw-artifact-request-sha256'),
 }
 if mutation == 'role':
     payload['role_id'] = 'substituted-role'
@@ -6247,6 +6254,8 @@ def test_bsc12_rejects_typed_source_timing_reset_fact_and_capture_mutations() ->
         "assertion-only-wake",
         "assertion-only-reset",
         "assertion-only-crash",
+        "serial-writer-missing",
+        "serial-writer-timing",
         "panic-int",
         "fact-poweroff",
         "fact-screen",

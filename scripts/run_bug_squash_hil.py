@@ -9220,25 +9220,54 @@ def bsc12_record_commitment(record: Mapping[str, object]) -> str:
 
 
 def validate_bsc12_raw_artifacts(
-    artifact_root: Path,
     manifest_value: object,
+    adapter_manifest_value: object,
     commitments_value: object,
+    content_by_role: Mapping[str, bytes],
+    *,
+    expected_request_sha256: str,
 ) -> dict[str, object]:
-    """Hash the adapter's exact raw outputs and bind every declared role to its file."""
+    """Bind typed evidence to the exact bytes in a runner-owned manifest."""
 
     code = "case_record_invalid"
-    if artifact_root.is_symlink() or not artifact_root.is_dir():
-        raise RunnerError(code, "BSC-12 raw artifact directory is unavailable")
     contracts = rig_adapters.BSC12_RAW_ARTIFACTS
-    expected_names = {artifact.filename for artifact in contracts}
-    try:
-        entries = list(artifact_root.iterdir())
-    except OSError as exc:
-        raise RunnerError(code, "BSC-12 raw artifact directory could not be read") from exc
-    if {entry.name for entry in entries} != expected_names or len(entries) != len(expected_names):
-        raise RunnerError(code, "BSC-12 raw artifact set is incomplete or contains extras")
-    if not isinstance(manifest_value, list) or len(manifest_value) != len(contracts):
-        raise RunnerError(code, "BSC-12 raw artifact manifest is incomplete")
+    manifest = require_exact_object(
+        manifest_value,
+        {
+            "schema_version",
+            "protocol_version",
+            "request_commitment_sha256",
+            "artifacts",
+            "manifest_commitment_sha256",
+        },
+        code=code,
+        label="BSC-12 runner raw artifact manifest",
+    )
+    runner_rows = manifest.get("artifacts")
+    if (
+        type(manifest.get("schema_version")) is not int
+        or manifest.get("schema_version") != adapter_protocol.SCHEMA_VERSION
+        or type(manifest.get("protocol_version")) is not int
+        or manifest.get("protocol_version") != rig_adapters.ADAPTER_PROTOCOL_VERSION
+        or manifest.get("request_commitment_sha256") != expected_request_sha256
+        or not isinstance(runner_rows, list)
+        or len(runner_rows) != len(contracts)
+    ):
+        raise RunnerError(code, "BSC-12 runner raw artifact manifest identity is invalid")
+    manifest_commitment = require_sha256(
+        manifest.get("manifest_commitment_sha256"), code=code, label="BSC-12 raw manifest"
+    )
+    uncommitted_manifest = dict(manifest)
+    uncommitted_manifest.pop("manifest_commitment_sha256")
+    if not secrets.compare_digest(
+        manifest_commitment,
+        adapter_protocol.canonical_commitment(adapter_protocol.MANIFEST_DOMAIN, uncommitted_manifest),
+    ):
+        raise RunnerError(code, "BSC-12 runner raw artifact manifest binding is stale")
+    if not isinstance(adapter_manifest_value, list) or len(adapter_manifest_value) != len(contracts):
+        raise RunnerError(code, "BSC-12 adapter raw artifact manifest is incomplete")
+    if set(content_by_role) != {artifact.role for artifact in contracts}:
+        raise RunnerError(code, "BSC-12 verified raw artifact content is incomplete")
     commitments = require_exact_object(
         commitments_value,
         set(BSC12_CAPTURE_COMMITMENTS),
@@ -9251,41 +9280,47 @@ def validate_bsc12_raw_artifacts(
     for index, (contract, commitment_field) in enumerate(
         zip(contracts, BSC12_CAPTURE_COMMITMENTS, strict=True)
     ):
-        path = artifact_root / contract.filename
-        try:
-            metadata = path.lstat()
-        except OSError as exc:
-            raise RunnerError(code, "BSC-12 raw artifact is unavailable") from exc
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-            or not 1 <= metadata.st_size <= contract.maximum_bytes
-        ):
-            raise RunnerError(code, "BSC-12 raw artifact is not a bounded regular file")
-        digest = sha256_file(path)
-        row = require_exact_object(
-            manifest_value[index],
+        runner_row = require_exact_object(
+            runner_rows[index],
+            {"role", "filename", "size_bytes", "sha256"},
+            code=code,
+            label="BSC-12 runner raw artifact manifest row",
+        )
+        adapter_row = require_exact_object(
+            adapter_manifest_value[index],
             {"role", "filename", "bytes", "sha256"},
             code=code,
-            label="BSC-12 raw artifact manifest row",
+            label="BSC-12 adapter raw artifact manifest row",
         )
+        digest = require_sha256(
+            runner_row.get("sha256"), code=code, label="BSC-12 runner raw artifact"
+        )
+        size = runner_row.get("size_bytes")
         if (
-            row.get("role") != contract.role
-            or row.get("filename") != contract.filename
-            or type(row.get("bytes")) is not int
-            or row.get("bytes") != metadata.st_size
-            or row.get("sha256") != digest
+            runner_row.get("role") != contract.role
+            or runner_row.get("filename") != contract.filename
+            or type(size) is not int
+            or not 1 <= size <= contract.maximum_bytes
+            or adapter_row.get("role") != contract.role
+            or adapter_row.get("filename") != contract.filename
+            or type(adapter_row.get("bytes")) is not int
+            or adapter_row.get("bytes") != size
+            or adapter_row.get("sha256") != digest
             or commitments.get(commitment_field) != digest
         ):
             raise RunnerError(code, "BSC-12 raw artifact manifest does not match collected bytes")
         observed_hashes.append(digest)
         if contract.role == "serial-log":
             try:
-                parsed[contract.role] = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
+                parsed[contract.role] = content_by_role[contract.role].decode(
+                    "utf-8", errors="strict"
+                )
+            except UnicodeError as exc:
                 raise RunnerError(code, "BSC-12 serial capture is unreadable") from exc
         else:
-            parsed[contract.role] = read_json(path, f"BSC-12 {contract.role}")
+            parsed[contract.role] = read_json_bytes(
+                content_by_role[contract.role], f"BSC-12 {contract.role}"
+            )
     if len(set(observed_hashes)) != len(observed_hashes):
         raise RunnerError(code, "BSC-12 evidence roles reused collected bytes")
     return parsed
@@ -9303,6 +9338,8 @@ def parse_bsc12_serial_events(value: object, *, duration_ms: int) -> dict[str, i
         "power-off-returned-false",
         "screen-restored-disconnected",
         "marker-rewritten-unclean",
+        "settings-writer-complete",
+        "bond-writer-complete",
         "reset-forced",
         "boot-observed",
         "setting-readback",
@@ -9930,6 +9967,8 @@ def validate_bsc12_source_evidence(
         "power-off-returned-false": shutdown["power_off_return_elapsed_ms"],
         "screen-restored-disconnected": shutdown["screen_restored_elapsed_ms"],
         "marker-rewritten-unclean": shutdown["marker_rewritten_elapsed_ms"],
+        "settings-writer-complete": writers[0]["completion_elapsed_ms"],
+        "bond-writer-complete": writers[1]["completion_elapsed_ms"],
         "reset-forced": reset["forced_elapsed_ms"],
         "boot-observed": reset["boot_observed_elapsed_ms"],
         "setting-readback": after_elapsed,
@@ -9948,8 +9987,8 @@ def validate_bsc12_source_evidence(
         "poweroff-returned-false": timeline["power_off_result"] is False,
         "disconnected-screen-restored": timeline["screen_state"] == "disconnected",
         "session-marker-unclean-after-reset": after["session_marker"] == "unclean",
-        "settings-writer-count": writers[0]["completion_count"],
-        "bond-writer-count": writers[1]["completion_count"],
+        "settings-writer-count": int("settings-writer-complete" in serial_events),
+        "bond-writer-count": int("bond-writer-complete" in serial_events),
         "setting-survived-reset": secrets.compare_digest(before_setting, after_setting),
         "bond-survived-reset": secrets.compare_digest(before_bond, after_bond),
         "real-rtc-wake-input-observed": wake["observed_during_handoff"] is True,
@@ -9985,7 +10024,8 @@ def validate_bsc12_adapter_record(
     payload: object,
     *,
     expected: Mapping[str, object],
-    artifact_root: Path,
+    raw_manifest: object,
+    raw_content: Mapping[str, bytes],
     command_started: datetime | None = None,
     command_completed: datetime | None = None,
 ) -> dict[str, object]:
@@ -10021,6 +10061,7 @@ def validate_bsc12_adapter_record(
             "facts",
             "capture_commitments",
             "raw_artifact_manifest",
+            "raw_artifact_request_sha256",
             "evidence_binding_sha256",
         },
         code=code,
@@ -10048,6 +10089,13 @@ def validate_bsc12_adapter_record(
         or type(record.get("hardware_observed")) is not bool
     ):
         raise RunnerError(code, "BSC-12 record identity types are invalid")
+    request_sha = require_sha256(
+        record.get("raw_artifact_request_sha256"),
+        code=code,
+        label="BSC-12 raw artifact request",
+    )
+    if request_sha != expected.get("raw_artifact_request_sha256"):
+        raise RunnerError(code, "BSC-12 raw artifact request was substituted")
 
     case_descriptor = expected.get("case_descriptor")
     role_descriptor = expected.get("role_descriptor")
@@ -10072,9 +10120,11 @@ def validate_bsc12_adapter_record(
         raise RunnerError(code, "BSC-12 physical record postdates adapter execution")
     duration_ms = int((completed - started).total_seconds() * 1_000)
     raw = validate_bsc12_raw_artifacts(
-        artifact_root,
+        raw_manifest,
         record.get("raw_artifact_manifest"),
         record.get("capture_commitments"),
+        raw_content,
+        expected_request_sha256=request_sha,
     )
     commitments = require_exact_object(
         record.get("capture_commitments"),
@@ -10175,9 +10225,11 @@ def run_bsc12_adapter(
     repository: Path,
     serial_port: str,
     artifact_root: Path,
+    raw_manifest_path: Path,
+    role_contract: rig_adapters.AdapterRoleContract,
     expected: Mapping[str, object],
     environment: Mapping[str, str],
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, object]]:
     command = [
         str(adapter),
         "--case",
@@ -10202,6 +10254,8 @@ def run_bsc12_adapter(
         serial_port,
         "--raw-artifact-dir",
         str(artifact_root),
+        "--raw-artifact-request-sha256",
+        str(expected["raw_artifact_request_sha256"]),
         "--vbus-isolated",
         "true",
         "--destructive-reset-acknowledged",
@@ -10232,13 +10286,31 @@ def run_bsc12_adapter(
         )
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise RunnerError("case_record_invalid", "BSC-12 adapter output is not strict JSON") from exc
+    try:
+        raw_manifest = adapter_protocol.collect_raw_artifacts(
+            raw_directory=artifact_root,
+            role=role_contract,
+            request_commitment_sha256=str(expected["raw_artifact_request_sha256"]),
+            manifest_path=raw_manifest_path,
+        )
+        raw_content = adapter_protocol.read_collected_raw_artifacts(
+            raw_directory=artifact_root,
+            role=role_contract,
+            manifest=raw_manifest,
+        )
+    except adapter_protocol.AdapterProtocolError as exc:
+        raise RunnerError(exc.code, exc.message) from exc
     physical = expected.get("execution_mode") == "physical"
-    return validate_bsc12_adapter_record(
-        payload,
-        expected=expected,
-        artifact_root=artifact_root,
-        command_started=command_started if physical else None,
-        command_completed=command_completed if physical else None,
+    return (
+        validate_bsc12_adapter_record(
+            payload,
+            expected=expected,
+            raw_manifest=raw_manifest,
+            raw_content=raw_content,
+            command_started=command_started if physical else None,
+            command_completed=command_completed if physical else None,
+        ),
+        raw_manifest,
     )
 
 
@@ -10268,17 +10340,27 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
             "safety_ack_required",
             "BSC-12 requires destructive-reset acknowledgement",
         )
-    if args.case_adapter is None:
-        raise RunnerError("case_adapter_required", "BSC-12 test execution requires a mocked adapter")
-
     repository = args.repo_root.resolve()
-    git_state = read_git_state(repository)
-    if not git_state.tracked_clean:
-        raise RunnerError("dirty_target", "BSC-12 requires a clean target worktree")
-    adapter = args.case_adapter.resolve()
-    if not adapter.is_file() or adapter.is_symlink():
-        raise RunnerError("case_adapter_unavailable", "BSC-12 adapter must be a regular file")
-    adapter_sha = sha256_file(adapter)
+    if admission.simulated:
+        if args.case_adapter is None:
+            raise RunnerError("case_adapter_required", "BSC-12 simulation requires a test adapter")
+        git_state = read_git_state(repository)
+        if not git_state.tracked_clean:
+            raise RunnerError("dirty_target", "BSC-12 requires a clean target worktree")
+        adapter = args.case_adapter.resolve()
+        if not adapter.is_file() or adapter.is_symlink():
+            raise RunnerError("case_adapter_unavailable", "BSC-12 adapter must be a regular file")
+        adapter_sha = sha256_file(adapter)
+    else:
+        if (
+            admission.git_state is None
+            or admission.source_sha256 is None
+            or admission.adapter.source_path is None
+        ):
+            raise RunnerError("case_rig_adapter_unavailable", "BSC-12 tracked adapter is incomplete")
+        git_state = admission.git_state
+        adapter = repository / admission.adapter.source_path
+        adapter_sha = admission.source_sha256
     dut_resolution, dut_attestation, rig_attestation = resolve_bsc12_hardware(
         args, Path(args.pio_command), case_descriptor
     )
@@ -10303,6 +10385,27 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
     session_id = f"bsc12-{secrets.token_hex(16)}"
     attempt_id = f"attempt-{secrets.token_hex(16)}"
     descriptor_sha = bsc12_descriptor_commitment(case_descriptor)
+    raw_request_payload: dict[str, object] = {
+        "case_id": BSC12_CASE_ID,
+        "role_id": role_id,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "case_descriptor_sha256": descriptor_sha,
+        "raw_artifacts": [
+            {
+                "role": artifact.role,
+                "filename": artifact.filename,
+                "maximum_bytes": artifact.maximum_bytes,
+            }
+            for artifact in next(
+                role for role in admission.adapter.roles if role.role_id == role_id
+            ).raw_artifacts
+        ],
+    }
+    raw_request_sha = canonical_case_commitment(
+        "v1simple.bsc12.raw-artifact-request.v1", raw_request_payload
+    )
     expected: dict[str, object] = {
         "case_id": BSC12_CASE_ID,
         "role_id": role_id,
@@ -10312,20 +10415,25 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
         "target_sha": git_state.head_sha,
         "dut_alias": args.board,
         "rig_alias": args.rig,
-        "execution_mode": "simulated",
-        "hardware_observed": False,
+        "execution_mode": "simulated" if admission.simulated else "physical",
+        "hardware_observed": not admission.simulated,
         "case_descriptor": case_descriptor,
         "case_descriptor_sha256": descriptor_sha,
         "role_descriptor": role_descriptor,
+        "raw_artifact_request_sha256": raw_request_sha,
     }
     require_unchanged_git_state(repository, git_state)
     raw_artifact_root = run_root / "raw"
     raw_artifact_root.mkdir()
-    record = run_bsc12_adapter(
+    raw_manifest_path = run_root / "raw-artifact-manifest.json"
+    adapter_role = next(role for role in admission.adapter.roles if role.role_id == role_id)
+    record, raw_manifest = run_bsc12_adapter(
         adapter=adapter,
         repository=repository,
         serial_port=serial_port,
         artifact_root=raw_artifact_root,
+        raw_manifest_path=raw_manifest_path,
+        role_contract=adapter_role,
         expected=expected,
         environment=os.environ.copy(),
     )
@@ -10334,7 +10442,7 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
     write_json_atomic(attempt_path, record)
     firmware = record["firmware"]
     assert isinstance(firmware, dict)
-    adapter_role = next(role for role in admission.adapter.roles if role.role_id == role_id)
+    physical = not admission.simulated
     result: dict[str, object] = {
         "schema_version": 1,
         "run_kind": "bug-squash-bsc12-aborted-shutdown-recovery",
@@ -10344,16 +10452,18 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
         "target_sha": git_state.head_sha,
         "session_sha256": hashlib.sha256(session_id.encode("ascii")).hexdigest(),
         "attempt_sha256": hashlib.sha256(attempt_id.encode("ascii")).hexdigest(),
-        "execution_mode": "simulated",
-        "hardware_observed": False,
-        "authoritative": False,
-        "physical_collection_completed": False,
-        "non_qualifying": True,
-        "qualification_status": "BLOCKED",
-        "qualification_blockers": list(
-            case_drivers.get_case_driver(BSC12_CASE_ID).qualification_blockers
-        ),
-        "artifact_role": "non-qualifying-case-collection",
+        "execution_mode": "physical" if physical else "simulated",
+        "hardware_observed": physical,
+        "authoritative": physical,
+        "physical_collection_completed": physical,
+        "non_qualifying": not physical,
+        "qualification_status": "PASS" if physical else "BLOCKED",
+        "qualification_blockers": []
+        if physical
+        else list(case_drivers.get_case_driver(BSC12_CASE_ID).qualification_blockers),
+        "artifact_role": "case-qualification"
+        if physical
+        else "non-qualifying-case-collection",
         "result": "TEST_PASS",
         "runs_required": BSC12_REQUIRED_RUNS,
         "runs_completed": 1,
@@ -10380,11 +10490,16 @@ def run_bsc12_case(args: argparse.Namespace) -> int:
             for role, _, commitment in BSC12_CAPTURE_ROLE_FIELDS
         },
         "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "raw_artifact_request_sha256": raw_request_sha,
+        "raw_artifact_manifest_commitment_sha256": raw_manifest[
+            "manifest_commitment_sha256"
+        ],
         "artifact_sha256": {
             "adapter_record": sha256_file(attempt_path),
             "adapter": adapter_sha,
             "runner": sha256_file(Path(__file__)),
             "rig_adapter_registry": sha256_file(ROOT / rig_adapters.REGISTRY_SOURCE_PATH),
+            "raw_artifact_manifest": sha256_file(raw_manifest_path),
             "inventory": sha256_file(args.inventory.resolve()),
             "dut_attestation": canonical_case_commitment(
                 "v1simple.bsc12.dut-attestation.v1", dut_attestation

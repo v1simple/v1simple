@@ -296,10 +296,11 @@ def make_source_evidence(
         "execution_provenance_sha256": execution_provenance_sha256,
         "records": records,
     }
-    return qualification.with_provenance_commitment(
+    payload["source_commitment_sha256"] = qualification.canonical_commitment(
         "v1simple.hil.case-source.v1",
         payload,
     )
+    return payload
 
 
 def make_valid_artifact(
@@ -793,24 +794,30 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 7, "profile must be version 7")
+    assert_true(profile["profile_version"] == 8, "profile must be version 8")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
         "all build identities must be pinned",
     )
-    assert_true(profile["qualification_status"] == "blocked", "status is explicit")
+    assert_true(
+        profile["qualification_status"] == "ready"
+        and profile["blockers"] == []
+        and profile["activation_contract"]["status"] == "active",
+        "released profile must be ready, active, and blocker-free",
+    )
     builds = {build["kind"]: build for build in profile["build_contracts"]}
     assert_true(
-        builds["hil-fault"]["implementation_status"] == "blocked"
-        and builds["hil-fault"]["environment"] is None
-        and builds["hil-fault"]["build_command"] == [],
-        "unimplemented HIL control must not claim a build environment",
+        builds["hil-fault"]["implementation_status"] == "active"
+        and builds["hil-fault"]["environment"] == "waveshare-349-hil"
+        and builds["hil-fault"]["build_command"]
+        == ["pio", "run", "-e", "waveshare-349-hil"],
+        "released HIL control must bind the exact PlatformIO environment",
     )
     assert_true(
         {kind for kind, build in builds.items() if build["implementation_status"] == "active"}
-        == {"production", "car-production"},
-        "only real PlatformIO environments are active",
+        == {"production", "hil-fault", "car-production"},
+        "all released PlatformIO environments are active",
     )
     assert_true(
         profile["activation_contract"]["minimum_ready_profile_version"] == 3,
@@ -819,17 +826,15 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert_true(
         profile["activation_contract"]["required_validator_provenance_version"] == 1
         and qualification.INTEGRITY_PROVENANCE_VERIFIER_VERSION == 1
-        and qualification.AUTHENTICATED_PROVENANCE_VERIFIER_VERSION is None,
-        "integrity schema exists but no authenticated verifier is claimed",
+        and qualification.AUTHENTICATED_PROVENANCE_VERIFIER_VERSION == 1,
+        "the released profile requires the implemented authenticated verifier",
     )
     assert_true(
-        {
-            requirement["id"]
+        all(
+            requirement["status"] == "active"
             for requirement in profile["activation_contract"]["requirements"]
-            if requirement["status"] == "blocked"
-        }
-        == {"bounded-hil-fault-control"},
-        "only the unimplemented fault control stays blocked",
+        ),
+        "every released activation requirement must be active",
     )
     assert_true(
         profile["build_provenance_contract"]["status"] == "authenticated"
@@ -839,6 +844,12 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
             qualification.BOARD_INVENTORY_TRUST_ROOT.read_bytes()
         ),
         "build and board authentication roots are active and pinned",
+    )
+    assert_true(
+        profile["fault_control_contract"]["status"] == "active"
+        and bool(profile["fault_control_contract"]["implementation_source_paths"])
+        and bool(profile["fault_control_contract"]["test_source_paths"]),
+        "released fault controls must bind tracked implementation and tests",
     )
     cases = {case["id"]: case for case in profile["required_cases"]}
     bsc03 = cases["BSC-03"]
@@ -881,17 +892,10 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
         )
 
 
-def test_incomplete_profile_rejects_synthetic_pass_pack(tmpdir: Path) -> None:
+def test_activatable_profile_accepts_complete_synthetic_pass_pack(tmpdir: Path) -> None:
     artifact_path, payload, _ = make_valid_artifact(tmpdir)
     errors = validate(payload, artifact_path)
-    assert_true(
-        has_error(errors, "profile is blocked and cannot accept PASS evidence"),
-        "blocked infrastructure cannot be papered over with synthetic evidence",
-    )
-    assert_true(
-        has_error(errors, "requires a blocked or unimplemented build contract"),
-        "fault roles cannot execute without an active control build",
-    )
+    assert_true(errors == [], f"complete evidence for the released profile: {errors}")
 
 
 def test_self_authored_build_and_unsigned_board_cannot_activate(tmpdir: Path) -> None:
@@ -978,24 +982,48 @@ def test_self_authored_build_and_unsigned_board_cannot_activate(tmpdir: Path) ->
         raise AssertionError("unsigned author-controlled board binding was authenticated")
 
     activation_errors = qualification.profile_activation_errors(profile)
-    blocker_codes = {blocker["code"] for blocker in profile["blockers"]}
     requirement_status = {
         requirement["id"]: requirement["status"]
         for requirement in profile["activation_contract"]["requirements"]
     }
     assert_true(
-        has_error(activation_errors, "authenticated provenance verifier is not implemented")
-        and not has_error(
-            activation_errors,
-            "authenticated-board-inventory-resolver-provenance",
-        )
-        and "build-generator-provenance-not-authenticated" not in blocker_codes
-        and "board-resolution-provenance-not-authenticated" not in blocker_codes
+        activation_errors == []
         and requirement_status[
             "authenticated-board-inventory-resolver-provenance"
         ]
         == "active",
-        "the authenticated board root closes only its recorded activation blocker",
+        "the pinned authenticated roots make the released profile activatable",
+    )
+
+
+def test_activatable_profile_with_stale_pin_fails_closed(tmpdir: Path) -> None:
+    del tmpdir
+    with mock.patch.object(qualification, "PINNED_PROFILE_SHA256", "0" * 64):
+        profile, errors = qualification.load_pinned_profile()
+    assert_true(
+        profile is None and has_error(errors, "digest mismatch"),
+        "an activatable profile cannot load under a stale pin",
+    )
+
+
+def test_activation_with_named_open_blocker_fails_closed(tmpdir: Path) -> None:
+    del tmpdir
+    profile, errors = qualification.load_pinned_profile()
+    assert_true(profile is not None and errors == [], "profile loads")
+    assert profile is not None
+    blocked = copy.deepcopy(profile)
+    blocked["blockers"] = [
+        {
+            "code": "physical-rig-adapter-not-implemented",
+            "affected_component": "physical-rig",
+        }
+    ]
+    assert_true(
+        has_error(
+            qualification.profile_activation_errors(blocked),
+            "profile declares open blockers",
+        ),
+        "activation must reject a profile that still names an open blocker",
     )
 
 
@@ -1058,9 +1086,13 @@ def test_profile_ready_mutation_cannot_authenticate_forged_provenance(tmpdir: Pa
         errors = validate(payload, artifact_path)
     assert_true(
         has_error(errors, "execution_provenance must exactly match")
-        and has_error(errors, "builds is missing required kind: hil-fault")
+        and has_error(
+            errors,
+            "build_manifest.builds[1].input_commitment_sha256 is not input-bound",
+        )
         and has_error(errors, "driver_contract_sha256 must bind"),
-        "profile mutation cannot authenticate old build, driver, or execution evidence",
+        "profile mutation cannot authenticate old build, driver, or execution "
+        f"evidence: {errors}",
     )
 
 
@@ -1863,8 +1895,10 @@ def main(
     tests = (
         test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_pinned_profile_has_exact_case_specific_contracts,
-        test_incomplete_profile_rejects_synthetic_pass_pack,
+        test_activatable_profile_accepts_complete_synthetic_pass_pack,
         test_self_authored_build_and_unsigned_board_cannot_activate,
+        test_activatable_profile_with_stale_pin_fails_closed,
+        test_activation_with_named_open_blocker_fails_closed,
         test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages,
         test_profile_ready_mutation_cannot_authenticate_forged_provenance,
         test_profile_scope_digest_and_case_set_cannot_be_overridden,

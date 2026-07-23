@@ -5646,7 +5646,7 @@ def test_bsc13_physical_mode_remains_blocked_before_rig_mutation() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
-def test_bsc07_profile_v7_production_collector_is_bound_and_nonqualifying() -> None:
+def test_bsc07_profile_v8_production_collector_is_bound_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc07_case_descriptor()
     descriptor_sha = hil_runner.bsc07_descriptor_commitment(descriptor)
     with tempfile.TemporaryDirectory() as raw:
@@ -6069,7 +6069,7 @@ def test_bsc10_physical_mode_remains_blocked_before_rig_discovery() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
-def test_bsc12_profile_v7_shutdown_recovery_is_bound_and_nonqualifying() -> None:
+def test_bsc12_profile_v8_shutdown_recovery_is_bound_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc12_case_descriptor()
     role = descriptor["scenario"]
     descriptor_sha = hil_runner.bsc12_descriptor_commitment(descriptor)
@@ -6955,7 +6955,7 @@ def rebind_bsc08(record: dict[str, object]) -> None:
     record["evidence_binding_sha256"] = hil_runner.bsc08_record_commitment(record)
 
 
-def test_bsc08_typed_record_is_profile_v7_bound_and_simulation_is_nonqualifying() -> None:
+def test_bsc08_typed_record_is_profile_v8_bound_and_simulation_is_nonqualifying() -> None:
     record, expected, request, manifest, content = make_bsc08_record()
     validated = hil_runner.validate_bsc08_record(
         record, expected=expected, raw_manifest=manifest, raw_content=content, request=request
@@ -7372,7 +7372,7 @@ def main() -> int:
     test_bsc06_rejects_descriptor_race_timing_role_reuse_and_stale_binding_mutations()
     test_bsc06_physical_mode_remains_blocked_before_discovery_or_mutation()
     test_bsc06_rejects_each_required_inventory_capability_removal()
-    test_bsc08_typed_record_is_profile_v7_bound_and_simulation_is_nonqualifying()
+    test_bsc08_typed_record_is_profile_v8_bound_and_simulation_is_nonqualifying()
     test_bsc08_runner_hashes_and_reverifies_serial_capture_bytes()
     test_bsc08_rejects_adversarial_nonce_epoch_race_fact_and_capture_mutations()
     test_bsc08_authenticated_tracked_adapter_is_executed()
@@ -7380,13 +7380,13 @@ def main() -> int:
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()
     test_bsc13_physical_mode_remains_blocked_before_rig_mutation()
-    test_bsc07_profile_v7_production_collector_is_bound_and_nonqualifying()
+    test_bsc07_profile_v8_production_collector_is_bound_and_nonqualifying()
     test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations()
     test_bsc07_authoritative_mode_blocks_before_git_output_or_discovery()
     test_bsc10_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc10_rejects_full_record_contract_mutations()
     test_bsc10_physical_mode_remains_blocked_before_rig_discovery()
-    test_bsc12_profile_v7_shutdown_recovery_is_bound_and_nonqualifying()
+    test_bsc12_profile_v8_shutdown_recovery_is_bound_and_nonqualifying()
     test_bsc12_rejects_typed_source_timing_reset_fact_and_capture_mutations()
     test_bsc12_authoritative_admission_blocks_before_git_output_or_discovery()
     test_bsc14_fault_and_production_roles_are_bound_hashed_and_nonqualifying()

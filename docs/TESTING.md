@@ -284,17 +284,15 @@ The versioned bug-squash profile covers exactly `BSC-02` through `BSC-14` plus
 `BSC-16`. It is an evidence contract, not a scenario runner, and hardware is
 not operated by the validator.
 
-The current version 7 profile is explicitly `blocked`. Production and
-car-production builds map to real PlatformIO environments, but the required
-bounded HIL fault-control build is marked
-`hil-fault-control-not-implemented`; it has no claimed environment or build
-command. Build inputs are authenticated against the pinned package root, case
-drivers are target-source-bound, and private board inventory is authenticated
-by a detached SSH signature under the committed namespace-restricted root.
-Profile activation remains blocked until the existing fault-control/profile
-release contract is completed. Adding a made-up environment, editing readiness
-flags, or recomputing self-declared evidence digests does not activate the
-profile or authenticate old evidence.
+The current version 8 profile is explicitly `ready`. Production,
+car-production, and bounded HIL fault-control builds map to real PlatformIO
+environments. Build inputs are authenticated against the pinned package root,
+case drivers and fault controls are target-source-bound, and private board
+inventory is authenticated by a detached SSH signature under the committed
+namespace-restricted root. The activation contract is fail-closed: a stale
+profile pin, a named open profile blocker, an inactive requirement, or
+recomputed self-declared evidence cannot activate the profile or authenticate
+old evidence.
 
 Each local evidence pack must bind its result to the caller-supplied full target
 commit and the repository's current, existing `HEAD`; the live worktree must be
@@ -354,9 +352,9 @@ sources, and fault-control implementation/tests exactly as stored in the
 target commit. Roles with a fault or barrier cannot claim manual-only
 instrumentation. HIL-fault cases require separate production-replay evidence.
 Opaque or reused evidence cannot close multiple roles, and `ACCEPTED_RISK`
-cannot close the pack or any case. Physical rig adapters and the remaining
-profile-release contract still prevent authored records from closing
-qualification.
+cannot close the pack or any case. Physical rig adapters and the ignored,
+signed local inventory overlay are still required at the bench before authored
+records can close qualification.
 
 All referenced artifacts must be unique, nonempty regular files below the pack
 directory. Every path component is lstat-checked, symlinks and operationally
@@ -378,12 +376,11 @@ python3 scripts/check_bug_squash_hil_qualification.py \
   --expected-git-sha <40-hex-target-sha>
 ```
 
-With the current blocked profile, the generator builds and retains only the
-active production and car-production contracts. It records but never executes
-the blocked `hil-fault` contract. The qualification validator rejects every
-claimed PASS pack until the typed case driver and bounded fault control are
-implemented, trusted build and board provenance roots are verified, and all
-four pinned activation requirements are deliberately activated.
+With the current ready profile, the generator builds and retains all three
+active contracts, including `hil-fault`. The qualification validator accepts
+PASS only after the physical rig adapters execute every typed case against the
+ignored signed local inventory, and all resulting evidence satisfies the
+authenticated profile.
 
 ### Final-device wrapper
 

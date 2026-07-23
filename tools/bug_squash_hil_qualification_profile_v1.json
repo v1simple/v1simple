@@ -1,22 +1,17 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 7,
-  "qualification_status": "blocked",
-  "blockers": [
-    {
-      "code": "hil-fault-control-not-implemented",
-      "affected_component": "hil-fault"
-    }
-  ],
+  "profile_version": 8,
+  "qualification_status": "ready",
+  "blockers": [],
   "activation_contract": {
     "minimum_ready_profile_version": 3,
     "required_validator_provenance_version": 1,
-    "status": "blocked",
+    "status": "active",
     "requirements": [
       {
         "id": "bounded-hil-fault-control",
-        "status": "blocked"
+        "status": "active"
       },
       {
         "id": "authenticated-build-generator-provenance",
@@ -66,10 +61,43 @@
   },
   "fault_control_contract": {
     "schema_version": 1,
-    "status": "blocked",
+    "status": "active",
     "build_kind": "hil-fault",
-    "implementation_source_paths": [],
-    "test_source_paths": []
+    "implementation_source_paths": [
+      "src/modules/ble/ble_bsc05_hil_fault_module.cpp",
+      "src/modules/ble/ble_bsc05_hil_fault_module.h",
+      "src/modules/hil/hil_fault_controller.cpp",
+      "src/modules/hil/hil_fault_controller.h",
+      "src/modules/hil/hil_fault_serial_module.cpp",
+      "src/modules/hil/hil_fault_serial_module.h",
+      "src/modules/hil/hil_next_boot_fault.h",
+      "src/modules/hil/hil_ready_barrier.h",
+      "src/modules/obd/obd_bsc06_hil_fault_module.cpp",
+      "src/modules/obd/obd_bsc06_hil_fault_module.h",
+      "src/modules/obd/obd_bsc13_hil_fault_module.cpp",
+      "src/modules/obd/obd_bsc13_hil_fault_module.h",
+      "src/modules/power/battery_bsc16_hil_fault_module.cpp",
+      "src/modules/power/battery_bsc16_hil_fault_module.h",
+      "src/modules/storage/storage_bsc14_hil_fault_module.cpp",
+      "src/modules/storage/storage_bsc14_hil_fault_module.h",
+      "src/modules/system/connection_bsc04_hil_fault_module.cpp",
+      "src/modules/system/connection_bsc04_hil_fault_module.h",
+      "src/modules/wifi/wifi_bsc02_hil_fault_module.cpp",
+      "src/modules/wifi/wifi_bsc02_hil_fault_module.h",
+      "src/modules/wifi/wifi_bsc10_hil_fault_module.cpp",
+      "src/modules/wifi/wifi_bsc10_hil_fault_module.h"
+    ],
+    "test_source_paths": [
+      "test/test_battery_bsc16_hil_fault_module/test_battery_bsc16_hil_fault_module.cpp",
+      "test/test_ble_bsc05_hil_fault_module/test_ble_bsc05_hil_fault_module.cpp",
+      "test/test_connection_bsc04_hil_fault_module/test_connection_bsc04_hil_fault_module.cpp",
+      "test/test_hil_fault_controller/test_hil_fault_controller.cpp",
+      "test/test_obd_bsc06_hil_fault_module/test_obd_bsc06_hil_fault_module.cpp",
+      "test/test_obd_bsc13_hil_fault_module/test_obd_bsc13_hil_fault_module.cpp",
+      "test/test_storage_bsc14_hil_fault_module/test_storage_bsc14_hil_fault_module.cpp",
+      "test/test_wifi_bsc02_hil_fault_module/test_wifi_bsc02_hil_fault_module.cpp",
+      "test/test_wifi_bsc10_hil_fault_module/test_wifi_bsc10_hil_fault_module.cpp"
+    ]
   },
   "allowed_instrumentation_modes": [
     "automated",
@@ -92,10 +120,15 @@
     },
     {
       "kind": "hil-fault",
-      "implementation_status": "blocked",
-      "blocker_code": "hil-fault-control-not-implemented",
-      "environment": null,
-      "build_command": [],
+      "implementation_status": "active",
+      "blocker_code": null,
+      "environment": "waveshare-349-hil",
+      "build_command": [
+        "pio",
+        "run",
+        "-e",
+        "waveshare-349-hil"
+      ],
       "binary_role": "firmware-hil-fault"
     },
     {

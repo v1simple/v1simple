@@ -120,26 +120,30 @@ def test_current_profile_builds_only_active_contracts(tmpdir: Path) -> None:
     )
     assert_true(
         [contract["kind"] for contract in active]
-        == ["production", "car-production"],
-        "generator retains active builds without claiming the blocked HIL build",
+        == ["production", "hil-fault", "car-production"],
+        "generator retains every released build contract",
     )
     assert_true(
-        all(contract["kind"] != "hil-fault" for contract in active),
-        "blocked HIL build is never executable",
+        next(contract for contract in active if contract["kind"] == "hil-fault")[
+            "environment"
+        ]
+        == "waveshare-349-hil",
+        "released HIL build uses its exact declared environment",
     )
 
     malformed = [dict(contract) for contract in profile["build_contracts"]]
-    blocked = next(contract for contract in malformed if contract["kind"] == "hil-fault")
-    blocked["environment"] = "invented-hil"
+    hil = next(contract for contract in malformed if contract["kind"] == "hil-fault")
+    hil["environment"] = "invented-hil"
+    hil["build_command"] = ["pio", "run", "-e", "invented-hil"]
     try:
         generator.preflight_build_contracts(
             malformed,
-            generator.declared_platformio_environments() | {"invented-hil"},
+            generator.declared_platformio_environments(),
         )
     except generator.GenerationError as exc:
-        assert_true("blocked pinned build contract is inconsistent" in str(exc), "blocked")
+        assert_true("not implemented" in str(exc), "unknown environment")
     else:
-        raise AssertionError("blocked build with an executable environment was accepted")
+        raise AssertionError("active build with an unknown environment was accepted")
 
 
 def test_evidence_index_entry_is_relative_and_content_bound(tmpdir: Path) -> None:

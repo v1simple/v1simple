@@ -26,11 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "tools" / "bug_squash_hil_qualification_profile_v1.json"
 BUILD_EVIDENCE_GENERATOR = ROOT / "scripts" / "generate_bug_squash_build_evidence.py"
 BOARD_INVENTORY_TRUST_ROOT = hil_resolver.DEFAULT_BOARD_TRUST_ROOT
-PINNED_PROFILE_SHA256 = "43f6f19d4d4f48da52d198d1e47458e2235ae98dd96f2d818c61fe90ecb4a99a"
+PINNED_PROFILE_SHA256 = "f516231b379fb95001bb2944f6eb082efe76c7b601a2a2870452fe3547400502"
 MINIMUM_READY_PROFILE_VERSION = 3
-PINNED_PROFILE_VERSION = 7
+PINNED_PROFILE_VERSION = 8
 INTEGRITY_PROVENANCE_VERIFIER_VERSION = 1
-AUTHENTICATED_PROVENANCE_VERIFIER_VERSION: int | None = None
+AUTHENTICATED_PROVENANCE_VERIFIER_VERSION = 1
 AUTHORITATIVE_GIT = Path("/usr/bin/git")
 COMMITMENT_ALGORITHM = "sha256-domain-separated-canonical-json-v1"
 BOARD_COMMITMENT_ALGORITHM = "sha256-salted-inventory-canonical-json-v1"
@@ -1160,6 +1160,11 @@ def profile_activation_errors(profile: dict[str, Any]) -> list[str]:
         )
     if profile.get("qualification_status") != "ready":
         errors.append("qualification_status is not ready")
+    blockers = profile.get("blockers")
+    if not isinstance(blockers, list):
+        errors.append("profile blockers are invalid")
+    elif blockers:
+        errors.append("profile declares open blockers")
     activation = profile.get("activation_contract")
     if not isinstance(activation, dict):
         errors.append("activation_contract is not active")

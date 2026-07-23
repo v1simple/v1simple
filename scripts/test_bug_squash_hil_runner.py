@@ -3398,7 +3398,7 @@ def test_bsc03_simulation_is_three_run_bound_and_explicitly_nonqualifying() -> N
         assert_true(result["runs_completed"] == 3, str(result))
         assert_true(result["early_cut_durability_claimed"] is False, str(result))
         assert_true(
-            "hil-fault-control-not-implemented" in result["qualification_blockers"],
+            "tracked-rig-adapter-not-implemented" in result["qualification_blockers"],
             str(result),
         )
         records = [

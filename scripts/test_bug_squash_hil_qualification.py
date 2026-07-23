@@ -690,7 +690,7 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
     assert profile is not None
     ids = tuple(case["id"] for case in profile["required_cases"])
     assert_true(ids == qualification.EXPECTED_CASE_IDS, "exact case inventory")
-    assert_true(profile["profile_version"] == 4, "profile must be version 4")
+    assert_true(profile["profile_version"] == 5, "profile must be version 5")
     assert_true(
         {build["kind"] for build in profile["build_contracts"]}
         == {"production", "hil-fault", "car-production"},
@@ -736,6 +736,24 @@ def test_pinned_profile_has_exact_case_specific_contracts(tmpdir: Path) -> None:
         profile["build_provenance_contract"]["status"] == "integrity-bound"
         and profile["board_provenance_contract"]["status"] == "integrity-bound",
         "build and board commitments are not mislabeled authenticated or active",
+    )
+    cases = {case["id"]: case for case in profile["required_cases"]}
+    bsc03 = cases["BSC-03"]
+    assert_true(
+        qualification.canonical_commitment("v1simple.hil.bsc03-profile.v1", bsc03)
+        == "fca2da20edfdbbeb0d0a145dfc80e43310e2a58d701017b660bae389669299e4",
+        "BSC-03 connected-persistence hard-cut contract must remain exact",
+    )
+    bsc05 = cases["BSC-05"]
+    assert_true(
+        bsc05["fault_build_required"] is True
+        and bsc05["scenario"]["build_kind"] == "hil-fault"
+        and bsc05["scenario"]["fault_ids"] == ["v1-notification-delay-once"]
+        and bsc05["scenario"]["barrier_ids"] == ["old-callback-held"]
+        and bsc05["production_replay"]["build_kind"] == "production"
+        and bsc05["production_replay"]["fault_ids"] == []
+        and bsc05["production_replay"]["barrier_ids"] == [],
+        "BSC-05 must bind the HIL callback fence and a clean production replay",
     )
     for case in profile["required_cases"]:
         assert_true(case["scenario"]["stimulus_ids"], f"{case['id']} stimuli")

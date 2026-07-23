@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "profile_id": "bug-squash-hil-v1",
-  "profile_version": 4,
+  "profile_version": 5,
   "qualification_status": "blocked",
   "blockers": [
     {
@@ -421,7 +421,7 @@
     {
       "id": "BSC-05",
       "minimum_runs": 3,
-      "fault_build_required": false,
+      "fault_build_required": true,
       "production_replay_required": true,
       "required_dut_capabilities": [
         "display",
@@ -438,7 +438,7 @@
       "scenario": {
         "role_id": "alert-generation-fence",
         "schema": "case-observation-v1",
-        "build_kind": "production",
+        "build_kind": "hil-fault",
         "stimulus_ids": [
           "fragment-alert",
           "disconnect-mid-packet",
@@ -446,7 +446,9 @@
           "send-display-only-packet",
           "send-fresh-alert"
         ],
-        "fault_ids": [],
+        "fault_ids": [
+          "v1-notification-delay-once"
+        ],
         "barrier_ids": [
           "old-callback-held"
         ],

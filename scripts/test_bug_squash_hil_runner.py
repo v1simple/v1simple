@@ -862,12 +862,19 @@ def commitment(payload):
 
 role_id = argument('--role-id')
 production_replay = role_id == 'alert-generation-production-replay'
+is_fault = not production_replay
 run_index = int(argument('--run-index'))
 mutation = os.environ.get('FAKE_BSC05_MUTATION', '')
 case_descriptor = json.loads(argument('--case-descriptor-json'))
 role_descriptor = case_descriptor['production_replay' if production_replay else 'scenario']
 if mutation == 'descriptor':
     case_descriptor['required_dut_capabilities'].append('invented-capability')
+if mutation == 'wrong-fault-id':
+    role_descriptor['fault_ids'] = ['substituted-notification-fault']
+if mutation == 'missing-fault-id':
+    role_descriptor['fault_ids'] = []
+if mutation == 'replay-fault-id':
+    role_descriptor['fault_ids'] = ['v1-notification-delay-once']
 
 elapsed = [100, 200, 500] if production_replay else [100, 200, 400, 500, 700]
 stimuli = [
@@ -879,6 +886,9 @@ if mutation == 'stimulus-order':
 
 old_generation = run_index * 10 + 1
 new_generation = run_index * 10 + 2
+if mutation == 'reuse-generations':
+    old_generation = 11
+    new_generation = 12
 timeline = {
     'old_generation': old_generation,
     'new_generation': new_generation,
@@ -919,9 +929,83 @@ if not production_replay:
 elif mutation == 'replay-barrier':
     barriers = [{'id': 'old-callback-held'}]
 
+fault_lifecycle = []
+if is_fault:
+    lifecycle_times = (150, 160, 425)
+    lifecycle_reasons = (
+        'notification_copied_without_callback_pointer',
+        'old_generation_notification_delayed',
+        'new_session_rejected_old_generation_copy',
+    )
+    fault_lifecycle = [
+        {
+            'id': event_id,
+            'sequence': sequence,
+            'elapsed_ms': lifecycle_times[sequence - 1],
+            'reason': lifecycle_reasons[sequence - 1],
+            'case_id': 'BSC-05',
+            'fault_id': 'v1-notification-delay-once',
+            'arm_sequence': 7,
+            'ready_sequence': 3,
+            'generation': old_generation,
+            'phase': 1,
+            'old_generation': old_generation,
+            'new_generation': new_generation if event_id == 'released' else 0,
+            'characteristic_class': 'display',
+            'old_session_closed_elapsed_ms': 250 if event_id == 'released' else 0,
+            'new_session_opened_elapsed_ms': 350 if event_id == 'released' else 0,
+            'wrong_generation_rejected': event_id == 'released',
+        }
+        for sequence, event_id in enumerate(
+            ('ready', 'fired', 'released'), start=1
+        )
+    ]
+    if mutation == 'missing-hil-event':
+        fault_lifecycle.pop(1)
+    if mutation == 'reordered-hil-events':
+        fault_lifecycle[0], fault_lifecycle[1] = (
+            fault_lifecycle[1], fault_lifecycle[0]
+        )
+    if mutation == 'substituted-hil-event':
+        fault_lifecycle[1]['fault_id'] = 'substituted-notification-fault'
+    if mutation == 'hil-arm':
+        fault_lifecycle[1]['arm_sequence'] = 8
+    if mutation == 'hil-generation':
+        fault_lifecycle[1]['generation'] = new_generation
+    if mutation == 'hil-timing':
+        fault_lifecycle[2]['elapsed_ms'] = 300
+elif mutation == 'replay-hil-event':
+    fault_lifecycle = [{'id': 'ready'}]
+
+if mutation == 'shifted-beyond-duration':
+    shift_ms = 60000
+    for stimulus in stimuli:
+        stimulus['elapsed_ms'] += shift_ms
+    for field in tuple(timeline):
+        if field.endswith('_elapsed_ms'):
+            timeline[field] += shift_ms
+    for barrier in barriers:
+        barrier['ready_elapsed_ms'] += shift_ms
+        barrier['released_elapsed_ms'] += shift_ms
+    for event in fault_lifecycle:
+        event['elapsed_ms'] += shift_ms
+        if event['old_session_closed_elapsed_ms']:
+            event['old_session_closed_elapsed_ms'] += shift_ms
+        if event['new_session_opened_elapsed_ms']:
+            event['new_session_opened_elapsed_ms'] += shift_ms
+if mutation == 'negative-elapsed':
+    stimuli[0]['elapsed_ms'] = -1
+    timeline['fragment_started_elapsed_ms'] = -1
+
 facts = {descriptor['id']: True for descriptor in role_descriptor['facts']}
 if mutation == 'fact':
     facts[next(iter(facts))] = False
+resets = {
+    'expected_kind': 'none',
+    'planned': False if mutation == 'bool-reset' else 0,
+    'observed': 0,
+    'unexpected': 1 if mutation == 'unexpected-reset' else 0,
+}
 
 now = datetime.now(timezone.utc)
 started = now - timedelta(seconds=30)
@@ -936,6 +1020,15 @@ capture_fields = (
 binary_label = f'{role_id}-binary'
 if mutation == 'mixed-firmware' and run_index == 2:
     binary_label += '-different'
+environment = 'waveshare-349-hil' if is_fault else 'waveshare-349'
+hil_active = is_fault
+if mutation == 'fault-production-build':
+    environment = 'waveshare-349'
+if mutation == 'hil-inactive':
+    hil_active = False
+if mutation == 'replay-hil-build':
+    environment = 'waveshare-349-hil'
+    hil_active = True
 payload = {
     'schema_version': True if mutation == 'bool-schema' else 1,
     'case_id': argument('--case'),
@@ -955,15 +1048,17 @@ payload = {
         '0' * 64 if mutation == 'descriptor-digest' else argument('--case-descriptor-sha256')
     ),
     'firmware': {
-        'environment': 'waveshare-349-hil' if mutation == 'firmware' else 'waveshare-349',
+        'environment': environment,
         'target_sha': argument('--target-sha'),
         'binary_sha256': digest(binary_label),
-        'hil_fault_control_active': mutation == 'hil-active',
+        'hil_fault_control_active': hil_active,
         'build_kind': role_descriptor['build_kind'],
     },
     'stimuli': stimuli,
     'generation_timeline': timeline,
     'barriers': barriers,
+    'fault_lifecycle': fault_lifecycle,
+    'resets': resets,
     'facts': facts,
     'capture_commitments': {
         field: digest(f'{role_id}-{field}{capture_run}') for field in capture_fields
@@ -3484,12 +3579,18 @@ def test_bsc04_physical_mode_remains_blocked_without_tracked_adapter() -> None:
     assert_true(payload["error"]["code"] == "case_rig_adapter_unavailable", str(payload))
 
 
-def test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
+def test_bsc05_hil_fault_and_production_roles_are_three_run_bound_and_nonqualifying() -> None:
     descriptor = hil_runner.load_bsc05_case_descriptor()
     descriptor_sha = hil_runner.bsc05_descriptor_commitment(descriptor)
-    for production_replay, collection_role, profile_role in (
-        (False, "fault-collection", "alert-generation-fence"),
-        (True, "production-replay", "alert-generation-production-replay"),
+    assert_true(descriptor["fault_build_required"] is True, str(descriptor))
+    assert_true(
+        descriptor["scenario"]["build_kind"] == "hil-fault"
+        and descriptor["scenario"]["fault_ids"] == ["v1-notification-delay-once"],
+        str(descriptor),
+    )
+    for production_replay, collection_role, profile_role, expected_environment, expected_hil in (
+        (False, "fault-collection", "alert-generation-fence", "waveshare-349-hil", True),
+        (True, "production-replay", "alert-generation-production-replay", "waveshare-349", False),
     ):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -3523,10 +3624,11 @@ def test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying(
                 result["production_replay_required"] is (not production_replay), str(result)
             )
             assert_true(
-                result["firmware_target"]["environment"] == "waveshare-349"
+                result["firmware_target"]["environment"] == expected_environment
                 and result["firmware_target"]["target_sha"] == fixture["target_sha"]
-                and result["firmware_target"]["hil_fault_control_active"] is False
-                and result["firmware_target"]["build_kind"] == "production",
+                and result["firmware_target"]["hil_fault_control_active"] is expected_hil
+                and result["firmware_target"]["build_kind"]
+                == ("production" if production_replay else "hil-fault"),
                 str(result),
             )
             assert_true(len(result["run_artifacts"]) == 3, str(result))
@@ -3547,6 +3649,19 @@ def test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying(
                         record["barriers"] == []
                         if production_replay
                         else record["barriers"][0]["timed_out"] is False
+                        and [event["id"] for event in record["fault_lifecycle"]]
+                        == ["ready", "fired", "released"]
+                        and all(
+                            event["fault_id"] == "v1-notification-delay-once"
+                            for event in record["fault_lifecycle"]
+                        )
+                        and record["resets"]
+                        == {
+                            "expected_kind": "none",
+                            "planned": 0,
+                            "observed": 0,
+                            "unexpected": 0,
+                        }
                     )
                     for record in records
                 ),
@@ -3565,18 +3680,34 @@ def test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift() ->
         ({"mutation": "role"}, "case_record_invalid"),
         ({"mutation": "stimulus-order"}, "case_record_invalid"),
         ({"mutation": "timeline-order"}, "case_record_invalid"),
+        ({"mutation": "shifted-beyond-duration"}, "case_record_invalid"),
+        ({"mutation": "negative-elapsed"}, "case_record_invalid"),
         ({"mutation": "generation"}, "case_record_invalid"),
         ({"mutation": "barrier-timeout"}, "case_record_invalid"),
         ({"mutation": "fact"}, "case_record_invalid"),
-        ({"mutation": "firmware"}, "case_record_invalid"),
-        ({"mutation": "hil-active"}, "case_record_invalid"),
+        ({"mutation": "unexpected-reset"}, "case_record_invalid"),
+        ({"mutation": "bool-reset"}, "case_record_invalid"),
+        ({"mutation": "fault-production-build"}, "case_record_invalid"),
+        ({"mutation": "hil-inactive"}, "case_record_invalid"),
+        ({"mutation": "wrong-fault-id"}, "case_record_invalid"),
+        ({"mutation": "missing-fault-id"}, "case_record_invalid"),
+        ({"mutation": "missing-hil-event"}, "case_record_invalid"),
+        ({"mutation": "reordered-hil-events"}, "case_record_invalid"),
+        ({"mutation": "substituted-hil-event"}, "case_record_invalid"),
+        ({"mutation": "hil-arm"}, "case_record_invalid"),
+        ({"mutation": "hil-generation"}, "case_record_invalid"),
+        ({"mutation": "hil-timing"}, "case_record_invalid"),
         ({"mutation": "capture-role-reuse"}, "case_record_invalid"),
         ({"mutation": "reuse-captures"}, "case_runs_reused"),
+        ({"mutation": "reuse-generations"}, "case_runs_reused"),
         ({"mutation": "mixed-firmware"}, "case_runs_mixed"),
         ({"mutation": "tamper"}, "case_record_invalid"),
         ({"mutation": "bool-schema"}, "case_record_invalid"),
         ({"mutation": "integer-hardware"}, "case_record_invalid"),
         ({"production_replay": True, "mutation": "replay-barrier"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "replay-fault-id"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "replay-hil-event"}, "case_record_invalid"),
+        ({"production_replay": True, "mutation": "replay-hil-build"}, "case_record_invalid"),
         ({"runs": 2}, "invalid_runs"),
     )
     for options, expected_code in cases:
@@ -3589,6 +3720,34 @@ def test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift() ->
             assert_true(payload["error"]["code"] == expected_code, str(payload))
             assert_true(not (out_dir / "collection_result.json").exists(), str(options))
             assert_true(not (out_dir / "qualification_result.json").exists(), str(options))
+
+
+def test_bsc05_rejects_each_missing_pinned_hardware_capability() -> None:
+    descriptor = hil_runner.load_bsc05_case_descriptor()
+    for alias, capability_field in (
+        ("release", "required_dut_capabilities"),
+        ("rig", "required_rig_capabilities"),
+    ):
+        capabilities = descriptor[capability_field]
+        assert isinstance(capabilities, list)
+        for capability in capabilities:
+            with tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = prepare_fixture(root)
+                inventory_path = fixture["inventory"]
+                assert isinstance(inventory_path, Path)
+                inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+                board = next(row for row in inventory["boards"] if row["alias"] == alias)
+                board["capabilities"].remove(capability)
+                inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+                completed, out_dir = run_bsc05_fixture(fixture, root)
+                assert_true(
+                    completed.returncode != 0,
+                    f"BSC-05 accepted {alias} without {capability}",
+                )
+                payload = json.loads(completed.stdout)
+                assert_true(payload["error"]["code"] == "case_board_resolution_failed", str(payload))
+                assert_true(not (out_dir / "collection_result.json").exists(), capability)
 
 
 def test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation() -> None:
@@ -4444,8 +4603,9 @@ def main() -> int:
     test_bsc04_fault_and_production_roles_are_bound_hashed_and_nonqualifying()
     test_bsc04_rejects_missing_timing_disconnect_role_and_tampered_evidence()
     test_bsc04_physical_mode_remains_blocked_without_tracked_adapter()
-    test_bsc05_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
+    test_bsc05_hil_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc05_rejects_descriptor_generation_timing_fact_and_evidence_drift()
+    test_bsc05_rejects_each_missing_pinned_hardware_capability()
     test_bsc05_physical_mode_remains_blocked_before_discovery_or_mutation()
     test_bsc13_fault_and_production_roles_are_three_run_bound_and_nonqualifying()
     test_bsc13_rejects_window_descriptor_identity_and_evidence_substitution()

@@ -198,6 +198,9 @@ void test_maintenance_ap_bringup_failure_is_propagated() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, setupApBody.find("return true;"));
     TEST_ASSERT_EQUAL_UINT64(2, countOccurrences(startBody, "if (!setupAP())"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, startBody.find("if (!canStartSetupMode("));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        startBody.find("apInterfaceEnabled_ = WifiApLifecyclePolicy::afterBringupAbort(apInterfaceEnabled_);"));
 }
 
 void test_maintenance_lifecycle_suppresses_every_idle_stop() {

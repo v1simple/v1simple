@@ -17,6 +17,7 @@
 #include "wifi_rate_limiter.h"
 #include "settings.h"
 #include "modules/wifi/backup_snapshot_cache.h"
+#include "modules/wifi/wifi_ap_lifecycle_policy.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_client_api_service.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
@@ -130,7 +131,9 @@ class WiFiManager {
     bool stopSetupMode(bool manual = false, const char* reason = nullptr); // Stop AP (manual/timeout/low_dma)
 
     bool isWifiServiceActive() const { return setupModeState_ == SETUP_MODE_AP_ON; }
-    bool isSetupModeActive() const { return setupModeState_ == SETUP_MODE_AP_ON && apInterfaceEnabled_; }
+    bool isSetupModeActive() const {
+        return WifiApLifecyclePolicy::isSetupModeActive(setupModeState_ == SETUP_MODE_AP_ON, apInterfaceEnabled_);
+    }
     bool isStopping() const;
     bool hasPendingLifecycleWork() const;
     void setBoundaryTransitionAdmission(bool allow);

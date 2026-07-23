@@ -253,7 +253,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     if (!setupAP()) {
         Serial.println("[SetupMode] ABORT: AP bring-up failed");
         WiFi.mode(WIFI_OFF);
-        apInterfaceEnabled_ = false;
+        apInterfaceEnabled_ = WifiApLifecyclePolicy::afterBringupAbort(apInterfaceEnabled_);
         wifiClientState_ = WIFI_CLIENT_DISABLED;
         currentConnectedSlotIndex_ = -1;
 #if defined(V1SIMPLE_HIL_FAULT_CONTROL)
@@ -346,7 +346,7 @@ bool WiFiManager::stopSetupModeImmediate(bool emergencyLowDma) {
         currentConnectedSlotIndex_ = -1;
         recordStaDisconnect(PERF_TIMESTAMP_US() - staDisconnectStartUs);
     }
-    if (modeHasAp || apInterfaceEnabled_) {
+    if (WifiApLifecyclePolicy::shouldDisableInterfaceOnStop(modeHasAp, apInterfaceEnabled_)) {
         const uint32_t apDisableStartUs = PERF_TIMESTAMP_US();
         if (!WiFi.enableAP(false)) {
             WiFi.softAPdisconnect(true);
@@ -458,7 +458,7 @@ void WiFiManager::processStopSetupModePhase() {
     }
 
     case WifiStopPhase::DISABLE_AP: {
-        if (wifiStopHadAp_ || apInterfaceEnabled_) {
+        if (WifiApLifecyclePolicy::shouldDisableInterfaceOnStop(wifiStopHadAp_, apInterfaceEnabled_)) {
             const uint32_t phaseStartUs = PERF_TIMESTAMP_US();
             if (!WiFi.enableAP(false)) {
                 WiFi.softAPdisconnect(true);

@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include "../../src/modules/wifi/wifi_ap_lifecycle_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_recovery_module.cpp"
 
 // Regression coverage for the maintenance-boot WiFi recovery policy.
@@ -112,6 +113,16 @@ void test_rollover_safe_delta() {
     TEST_ASSERT_TRUE(module.evaluate(makeInput(false, afterRollover)).attemptRestart);
 }
 
+void test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers() {
+    bool apInterfaceEnabled = true;
+
+    apInterfaceEnabled = WifiApLifecyclePolicy::afterBringupAbort(apInterfaceEnabled);
+
+    TEST_ASSERT_FALSE(apInterfaceEnabled);
+    TEST_ASSERT_FALSE(WifiApLifecyclePolicy::isSetupModeActive(true, apInterfaceEnabled));
+    TEST_ASSERT_FALSE(WifiApLifecyclePolicy::shouldDisableInterfaceOnStop(false, apInterfaceEnabled));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_service_active_never_attempts);
@@ -121,5 +132,6 @@ int main() {
     RUN_TEST(test_service_recovery_resets_schedule);
     RUN_TEST(test_now_zero_anchor_is_preserved_across_repeated_ticks);
     RUN_TEST(test_rollover_safe_delta);
+    RUN_TEST(test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers);
     return UNITY_END();
 }

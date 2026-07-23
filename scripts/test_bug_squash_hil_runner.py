@@ -1655,6 +1655,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 
 def argument(name):
@@ -1756,6 +1757,9 @@ reset_observation = {
     'unexpected_count': 0,
     'panic_observed': False,
     'watchdog_reset_observed': False,
+    'shutdown_elapsed_ms': 12500,
+    'observed_elapsed_ms': 12500,
+    'reason': 'intentional-critical-voltage-shutdown',
 }
 facts = {
     'voltage-refresh-delay-ms': 500,
@@ -1846,6 +1850,83 @@ if mutation == 'wrong-build':
 if mutation == 'wrong-hil':
     hil_active = True
 
+raw_directory = Path(argument('--raw-artifact-dir'))
+raw_payloads = {
+    'ap-traffic.json': json.dumps(observations['ap_traffic'], sort_keys=True).encode('utf-8'),
+    'firmware-build.json': json.dumps({
+        'environment': environment,
+        'build_kind': build_kind,
+        'target_sha': argument('--target-sha'),
+        'hil_fault_control_active': hil_active,
+    }, sort_keys=True).encode('utf-8'),
+    'power-timeline.json': json.dumps({
+        'voltage_refresh': observations['voltage_refresh'],
+        'power_button': observations['power_button'],
+        'critical_shutdown': observations['critical_shutdown'],
+        'power': observations['power'],
+    }, sort_keys=True).encode('utf-8'),
+    'reset-summary.json': json.dumps(reset_observation, sort_keys=True).encode('utf-8'),
+    'serial.log': json.dumps({
+        'health': observations['health'],
+        'reset': reset_observation,
+    }, sort_keys=True).encode('utf-8'),
+    'ui-health.json': json.dumps(observations['health'], sort_keys=True).encode('utf-8'),
+}
+if mutation == 'raw-missing':
+    raw_payloads.pop('power-timeline.json')
+if mutation == 'raw-extra':
+    raw_payloads['extra.json'] = b'not-declared'
+for filename, content in raw_payloads.items():
+    (raw_directory / filename).write_bytes(content)
+raw_digest_by_filename = {
+    filename: hashlib.sha256(content).hexdigest()
+    for filename, content in raw_payloads.items()
+}
+capture_commitments = {
+    'ap_traffic_sha256': raw_digest_by_filename.get('ap-traffic.json', digest('missing')),
+    'build_evidence_sha256': raw_digest_by_filename.get('firmware-build.json', digest('missing')),
+    'power_timeline_sha256': raw_digest_by_filename.get('power-timeline.json', digest('missing')),
+    'reset_summary_sha256': raw_digest_by_filename.get('reset-summary.json', digest('missing')),
+    'serial_log_sha256': raw_digest_by_filename.get('serial.log', digest('missing')),
+    'ui_health_sha256': raw_digest_by_filename.get('ui-health.json', digest('missing')),
+}
+observations['voltage_refresh'].update({
+    'source_role': 'power-timeline',
+    'source_sha256': capture_commitments['power_timeline_sha256'],
+})
+observations['ap_traffic'].update({
+    'source_role': 'ap-traffic',
+    'source_sha256': capture_commitments['ap_traffic_sha256'],
+})
+observations['power_button'].update({
+    'source_role': 'power-timeline',
+    'source_sha256': capture_commitments['power_timeline_sha256'],
+})
+observations['critical_shutdown'].update({
+    'source_role': 'power-timeline',
+    'source_sha256': capture_commitments['power_timeline_sha256'],
+})
+observations['health']['source_commitments'] = {
+    'serial_log_sha256': capture_commitments['serial_log_sha256'],
+    'ui_health_sha256': capture_commitments['ui_health_sha256'],
+}
+observations['power'].update({
+    'source_role': 'power-timeline',
+    'source_sha256': capture_commitments['power_timeline_sha256'],
+})
+reset_observation.update({
+    'source_role': 'reset-summary',
+    'source_sha256': capture_commitments['reset_summary_sha256'],
+})
+if mutation == 'source-power-unbound':
+    observations['power']['source_sha256'] = digest('unrelated-power-source')
+if mutation == 'source-health-unbound':
+    observations['health']['source_commitments']['serial_log_sha256'] = digest('unrelated-serial')
+if mutation == 'reset-source-unbound':
+    reset_observation['source_sha256'] = digest('unrelated-reset')
+if mutation == 'reset-timing-unbound':
+    reset_observation['observed_elapsed_ms'] = 12499
+
 capture_fields = (
     'ap_traffic_sha256', 'build_evidence_sha256', 'power_timeline_sha256',
     'reset_summary_sha256', 'serial_log_sha256', 'ui_health_sha256',
@@ -1877,9 +1958,8 @@ payload = {
     'barriers': barriers,
     'reset_observation': reset_observation,
     'facts': facts,
-    'capture_commitments': {
-        field: digest(f'bsc07-{field}') for field in capture_fields
-    },
+    'capture_commitments': capture_commitments,
+    'raw_artifact_request_sha256': argument('--raw-artifact-request-sha256'),
 }
 if mutation == 'role-id':
     payload['role_id'] = 'substituted-role'
@@ -1897,10 +1977,12 @@ if mutation == 'bool-schema':
     payload['schema_version'] = True
 if mutation == 'integer-hardware':
     payload['hardware_observed'] = 0
-payload['evidence_binding_sha256'] = commitment(payload)
 if mutation.startswith('capture-self-binding-'):
     field = mutation.removeprefix('capture-self-binding-')
     payload['capture_commitments'][field] = digest(f'tampered-{field}')
+if mutation == 'raw-request-substitution':
+    payload['raw_artifact_request_sha256'] = digest('substituted-request')
+payload['evidence_binding_sha256'] = commitment(payload)
 sys.stdout.write(json.dumps(payload))
 """,
     )
@@ -4994,30 +5076,46 @@ def test_bsc07_profile_v5_production_collector_is_bound_and_nonqualifying() -> N
             == descriptor["scenario"]["stimulus_ids"],
             str(attempt),
         )
+        power = attempt["observations"]["power"]
         assert_true(
-            attempt["observations"]["power"]
-            == {
-                "vbus_isolated": True,
-                "external_power_removed": True,
-                "power_removed_elapsed_ms": 12500,
-            },
+            power["vbus_isolated"] is True
+            and power["external_power_removed"] is True
+            and power["power_removed_elapsed_ms"] == 12500
+            and power["source_role"] == "power-timeline",
             str(attempt),
         )
+        reset = attempt["reset_observation"]
         assert_true(
-            attempt["reset_observation"]
-            == {
-                "expected_kind": "intentional-shutdown",
-                "planned_count": 1,
-                "observed_count": 1,
-                "unexpected_count": 0,
-                "panic_observed": False,
-                "watchdog_reset_observed": False,
-            },
+            reset["expected_kind"] == "intentional-shutdown"
+            and reset["planned_count"] == reset["observed_count"] == 1
+            and reset["unexpected_count"] == 0
+            and reset["panic_observed"] is False
+            and reset["watchdog_reset_observed"] is False
+            and reset["shutdown_elapsed_ms"] == reset["observed_elapsed_ms"] == 12500
+            and reset["reason"] == "intentional-critical-voltage-shutdown"
+            and reset["source_role"] == "reset-summary",
             str(attempt),
         )
         captures = attempt["capture_commitments"]
         assert_true(set(captures) == set(hil_runner.BSC07_CAPTURE_COMMITMENTS), str(captures))
         assert_true(len(set(captures.values())) == len(captures), str(captures))
+        manifest = json.loads(
+            (out_dir / "raw-artifact-manifest.json").read_text(encoding="utf-8")
+        )
+        manifest_by_role = {row["role"]: row["sha256"] for row in manifest["artifacts"]}
+        assert_true(
+            captures
+            == {
+                field: manifest_by_role[role]
+                for field, role in hil_runner.BSC07_CAPTURE_ROLE_BY_FIELD.items()
+            },
+            str(manifest),
+        )
+        assert_true(
+            attempt["raw_artifact_request_sha256"]
+            == manifest["request_commitment_sha256"],
+            str(manifest),
+        )
         assert_true(not (out_dir / "qualification_result.json").exists(), str(result))
         public_output = completed.stdout + completed.stderr + json.dumps(result)
         assert_true("SECRET-USB-IDENTITY" not in public_output, public_output)
@@ -5071,6 +5169,11 @@ def test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations() -> No
         "capture-reuse",
         "bool-schema",
         "integer-hardware",
+        "source-power-unbound",
+        "source-health-unbound",
+        "reset-source-unbound",
+        "reset-timing-unbound",
+        "raw-request-substitution",
     )
     cases: tuple[tuple[dict[str, object], str], ...] = tuple(
         ({"mutation": mutation}, "case_record_invalid") for mutation in mutation_names
@@ -5078,6 +5181,10 @@ def test_bsc07_rejects_timeline_health_power_reset_and_capture_mutations() -> No
     cases += tuple(
         ({"mutation": f"capture-self-binding-{field}"}, "case_record_invalid")
         for field in hil_runner.BSC07_CAPTURE_COMMITMENTS
+    )
+    cases += (
+        ({"mutation": "raw-missing"}, "raw_artifact_set_invalid"),
+        ({"mutation": "raw-extra"}, "raw_artifact_set_invalid"),
     )
     cases += (({"runs": 2}, "invalid_runs"),)
     cases += (({"production_replay": True}, "unsupported_mode"),)

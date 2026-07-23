@@ -74,6 +74,15 @@ RAW_ARTIFACTS = (
     RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
 )
 
+BSC07_RAW_ARTIFACTS = (
+    RawArtifactContract("ap-traffic", "ap-traffic.json", 2 * 1024 * 1024),
+    RawArtifactContract("firmware-build", "firmware-build.json", 1024 * 1024),
+    RawArtifactContract("power-timeline", "power-timeline.json", 2 * 1024 * 1024),
+    RawArtifactContract("reset-summary", "reset-summary.json", 1024 * 1024),
+    RawArtifactContract("serial-log", "serial.log", 16 * 1024 * 1024),
+    RawArtifactContract("ui-health", "ui-health.json", 2 * 1024 * 1024),
+)
+
 
 def _environment_for(build_kind: BuildKind) -> str:
     if build_kind == "hil-fault":
@@ -85,12 +94,16 @@ def _environment_for(build_kind: BuildKind) -> str:
     raise RigAdapterContractError("rig-adapter build kind is invalid")
 
 
-def _role(role_id: str, build_kind: BuildKind) -> AdapterRoleContract:
+def _role(
+    role_id: str,
+    build_kind: BuildKind,
+    raw_artifacts: tuple[RawArtifactContract, ...] = RAW_ARTIFACTS,
+) -> AdapterRoleContract:
     return AdapterRoleContract(
         role_id=role_id,
         build_kind=build_kind,
         firmware_environment=_environment_for(build_kind),
-        raw_artifacts=RAW_ARTIFACTS,
+        raw_artifacts=raw_artifacts,
     )
 
 
@@ -101,6 +114,7 @@ def _adapter(
     dut: tuple[str, ...],
     rig: tuple[str, ...],
     roles: tuple[tuple[str, BuildKind], ...],
+    raw_artifacts: tuple[RawArtifactContract, ...] = RAW_ARTIFACTS,
 ) -> RigAdapter:
     return RigAdapter(
         case_id=case_id,
@@ -112,7 +126,7 @@ def _adapter(
         minimum_runs=minimum_runs,
         required_dut_capabilities=dut,
         required_rig_capabilities=rig,
-        roles=tuple(_role(role_id, build_kind) for role_id, build_kind in roles),
+        roles=tuple(_role(role_id, build_kind, raw_artifacts) for role_id, build_kind in roles),
     )
 
 
@@ -179,6 +193,7 @@ _ADAPTERS = (
         dut=("battery-monitor", "firmware-execution", "maintenance-mode", "power-button", "serial"),
         rig=("ap-traffic", "artifact-capture", "power-control", "utc-time-source", "vbus-isolation"),
         roles=(("maintenance-power-safety", "production"),),
+        raw_artifacts=BSC07_RAW_ARTIFACTS,
     ),
     _adapter(
         "BSC-08",
@@ -320,7 +335,8 @@ def validate_adapter_descriptor(adapter: RigAdapter) -> None:
         if role.firmware_environment != _environment_for(role.build_kind):
             raise RigAdapterContractError("rig-adapter firmware environment is inconsistent")
         _validate_raw_artifacts(role.raw_artifacts)
-        if role.raw_artifacts != RAW_ARTIFACTS:
+        expected_artifacts = BSC07_RAW_ARTIFACTS if adapter.case_id == "BSC-07" else RAW_ARTIFACTS
+        if role.raw_artifacts != expected_artifacts:
             raise RigAdapterContractError("rig-adapter raw-artifact contract drifted")
     if adapter.status not in {"unavailable", "implemented"}:
         raise RigAdapterContractError("rig-adapter status is invalid")

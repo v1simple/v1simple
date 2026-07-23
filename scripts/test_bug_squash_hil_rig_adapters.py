@@ -32,11 +32,30 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 self.assertIsNone(adapter.entrypoint)
                 self.assertEqual(adapter.protocol_version, adapters.ADAPTER_PROTOCOL_VERSION)
                 for role in adapter.roles:
-                    self.assertEqual(role.raw_artifacts, adapters.RAW_ARTIFACTS)
+                    self.assertEqual(
+                        role.raw_artifacts,
+                        adapters.BSC07_RAW_ARTIFACTS
+                        if adapter.case_id == "BSC-07"
+                        else adapters.RAW_ARTIFACTS,
+                    )
         with self.assertRaises(FrozenInstanceError):
             adapters.ADAPTERS[0].status = "implemented"  # type: ignore[misc]
         with self.assertRaises(TypeError):
             adapters.ADAPTER_BY_CASE["BSC-02"] = adapters.ADAPTERS[0]  # type: ignore[index]
+
+    def test_bsc07_capture_contract_has_exact_power_safety_roles(self) -> None:
+        role = adapters.get_rig_adapter("BSC-07").roles[0]
+        self.assertEqual(
+            tuple((item.role, item.filename) for item in role.raw_artifacts),
+            (
+                ("ap-traffic", "ap-traffic.json"),
+                ("firmware-build", "firmware-build.json"),
+                ("power-timeline", "power-timeline.json"),
+                ("reset-summary", "reset-summary.json"),
+                ("serial-log", "serial.log"),
+                ("ui-health", "ui-health.json"),
+            ),
+        )
 
     def test_every_profile_role_run_and_capability_contract_matches(self) -> None:
         profile, errors = qualification.load_pinned_profile()

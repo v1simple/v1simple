@@ -28,6 +28,7 @@ from typing import Callable, Mapping, Sequence
 import xml.etree.ElementTree as ET
 
 import bug_squash_hil_case_drivers as case_drivers
+import bug_squash_hil_adapter_protocol as adapter_protocol
 import bug_squash_hil_rig_adapters as rig_adapters
 import resolve_hil_board
 import check_bug_squash_hil_qualification as qualification
@@ -381,6 +382,14 @@ BSC07_CAPTURE_COMMITMENTS = (
     "serial_log_sha256",
     "ui_health_sha256",
 )
+BSC07_CAPTURE_ROLE_BY_FIELD = {
+    "ap_traffic_sha256": "ap-traffic",
+    "build_evidence_sha256": "firmware-build",
+    "power_timeline_sha256": "power-timeline",
+    "reset_summary_sha256": "reset-summary",
+    "serial_log_sha256": "serial-log",
+    "ui_health_sha256": "ui-health",
+}
 BSC13_CASE_ID = "BSC-13"
 BSC13_HIL_ENVIRONMENT = "waveshare-349-hil"
 BSC13_PRODUCTION_ENVIRONMENT = "waveshare-349"
@@ -8244,6 +8253,72 @@ def bsc07_record_commitment(record: Mapping[str, object]) -> str:
     return canonical_case_commitment("v1simple.bsc07.case-record.v1", committed)
 
 
+def bsc07_manifest_capture_commitments(
+    manifest: object,
+    *,
+    expected_request_sha256: str,
+) -> dict[str, str]:
+    payload = require_exact_object(
+        manifest,
+        {
+            "schema_version",
+            "protocol_version",
+            "request_commitment_sha256",
+            "artifacts",
+            "manifest_commitment_sha256",
+        },
+        code="raw_artifact_manifest_invalid",
+        label="BSC-07 raw artifact manifest",
+    )
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != adapter_protocol.SCHEMA_VERSION
+        or type(payload.get("protocol_version")) is not int
+        or payload.get("protocol_version") != rig_adapters.ADAPTER_PROTOCOL_VERSION
+        or payload.get("request_commitment_sha256") != expected_request_sha256
+    ):
+        raise RunnerError("raw_artifact_manifest_invalid", "BSC-07 raw manifest identity is invalid")
+    rows = payload.get("artifacts")
+    if not isinstance(rows, list) or len(rows) != len(rig_adapters.BSC07_RAW_ARTIFACTS):
+        raise RunnerError("raw_artifact_manifest_invalid", "BSC-07 raw artifact set is incomplete")
+    digest_by_role: dict[str, str] = {}
+    for raw, contract in zip(rows, rig_adapters.BSC07_RAW_ARTIFACTS, strict=True):
+        row = require_exact_object(
+            raw,
+            {"filename", "role", "sha256", "size_bytes"},
+            code="raw_artifact_manifest_invalid",
+            label="BSC-07 raw artifact",
+        )
+        digest = require_sha256(
+            row.get("sha256"), code="raw_artifact_manifest_invalid", label="BSC-07 raw artifact"
+        )
+        if (
+            row.get("filename") != contract.filename
+            or row.get("role") != contract.role
+            or type(row.get("size_bytes")) is not int
+            or not 0 < row["size_bytes"] <= contract.maximum_bytes
+            or contract.role in digest_by_role
+        ):
+            raise RunnerError("raw_artifact_manifest_invalid", "BSC-07 raw artifact contract drifted")
+        digest_by_role[contract.role] = digest
+    manifest_commitment = require_sha256(
+        payload.get("manifest_commitment_sha256"),
+        code="raw_artifact_manifest_invalid",
+        label="BSC-07 raw manifest binding",
+    )
+    committed = dict(payload)
+    committed.pop("manifest_commitment_sha256")
+    if not secrets.compare_digest(
+        manifest_commitment,
+        adapter_protocol.canonical_commitment(adapter_protocol.MANIFEST_DOMAIN, committed),
+    ):
+        raise RunnerError("raw_artifact_manifest_invalid", "BSC-07 raw manifest binding is stale")
+    return {
+        field: digest_by_role[role]
+        for field, role in BSC07_CAPTURE_ROLE_BY_FIELD.items()
+    }
+
+
 def resolve_bsc07_hardware(
     args: argparse.Namespace,
     pio_executable: Path,
@@ -8318,6 +8393,7 @@ def validate_bsc07_observations(
     *,
     stimuli: Mapping[str, int],
     duration_ms: int,
+    expected_capture: Callable[[str], str],
 ) -> dict[str, object]:
     observations = require_exact_object(
         value,
@@ -8327,7 +8403,7 @@ def validate_bsc07_observations(
     )
     voltage = require_exact_object(
         observations.get("voltage_refresh"),
-        {"changed_elapsed_ms", "refreshed_elapsed_ms"},
+        {"changed_elapsed_ms", "refreshed_elapsed_ms", "source_role", "source_sha256"},
         code="case_record_invalid",
         label="BSC-07 voltage refresh",
     )
@@ -8338,19 +8414,33 @@ def validate_bsc07_observations(
             "last_success_before_hold_elapsed_ms",
             "first_success_after_hold_elapsed_ms",
             "continuous",
+            "source_role",
+            "source_sha256",
         },
         code="case_record_invalid",
         label="BSC-07 AP traffic",
     )
     button = require_exact_object(
         observations.get("power_button"),
-        {"hold_started_elapsed_ms", "hold_released_elapsed_ms", "handled_elapsed_ms"},
+        {
+            "hold_started_elapsed_ms",
+            "hold_released_elapsed_ms",
+            "handled_elapsed_ms",
+            "source_role",
+            "source_sha256",
+        },
         code="case_record_invalid",
         label="BSC-07 power button",
     )
     shutdown = require_exact_object(
         observations.get("critical_shutdown"),
-        {"applied_elapsed_ms", "warning_elapsed_ms", "shutdown_elapsed_ms"},
+        {
+            "applied_elapsed_ms",
+            "warning_elapsed_ms",
+            "shutdown_elapsed_ms",
+            "source_role",
+            "source_sha256",
+        },
         code="case_record_invalid",
         label="BSC-07 critical shutdown",
     )
@@ -8361,13 +8451,20 @@ def validate_bsc07_observations(
             "battery_last_healthy_elapsed_ms",
             "loop_last_healthy_elapsed_ms",
             "watchdog_last_healthy_elapsed_ms",
+            "source_commitments",
         },
         code="case_record_invalid",
         label="BSC-07 health",
     )
     power = require_exact_object(
         observations.get("power"),
-        {"vbus_isolated", "external_power_removed", "power_removed_elapsed_ms"},
+        {
+            "vbus_isolated",
+            "external_power_removed",
+            "power_removed_elapsed_ms",
+            "source_role",
+            "source_sha256",
+        },
         code="case_record_invalid",
         label="BSC-07 power observation",
     )
@@ -8382,7 +8479,21 @@ def validate_bsc07_observations(
     critical = shutdown.get("applied_elapsed_ms")
     warning = shutdown.get("warning_elapsed_ms")
     shutdown_ms = shutdown.get("shutdown_elapsed_ms")
-    health_times = tuple(health.get(field) for field in health)
+    health_times = tuple(
+        health.get(field)
+        for field in (
+            "ui_last_healthy_elapsed_ms",
+            "battery_last_healthy_elapsed_ms",
+            "loop_last_healthy_elapsed_ms",
+            "watchdog_last_healthy_elapsed_ms",
+        )
+    )
+    health_sources = require_exact_object(
+        health.get("source_commitments"),
+        {"serial_log_sha256", "ui_health_sha256"},
+        code="case_record_invalid",
+        label="BSC-07 health sources",
+    )
     numeric = (
         changed,
         refreshed,
@@ -8415,6 +8526,18 @@ def validate_bsc07_observations(
         or not BSC07_CRITICAL_GRACE_MIN_MS <= shutdown_ms - warning <= BSC07_CRITICAL_GRACE_MAX_MS
         or any(not warning <= item <= shutdown_ms for item in health_times)
         or any(shutdown_ms - item > BSC07_HEALTH_SAMPLE_MAX_AGE_MS for item in health_times)
+        or voltage.get("source_role") != "power-timeline"
+        or traffic.get("source_role") != "ap-traffic"
+        or button.get("source_role") != "power-timeline"
+        or shutdown.get("source_role") != "power-timeline"
+        or power.get("source_role") != "power-timeline"
+        or voltage.get("source_sha256") != expected_capture("power_timeline_sha256")
+        or traffic.get("source_sha256") != expected_capture("ap_traffic_sha256")
+        or button.get("source_sha256") != expected_capture("power_timeline_sha256")
+        or shutdown.get("source_sha256") != expected_capture("power_timeline_sha256")
+        or power.get("source_sha256") != expected_capture("power_timeline_sha256")
+        or health_sources.get("serial_log_sha256") != expected_capture("serial_log_sha256")
+        or health_sources.get("ui_health_sha256") != expected_capture("ui_health_sha256")
         or power.get("vbus_isolated") is not True
         or power.get("external_power_removed") is not True
         or power.get("power_removed_elapsed_ms") != shutdown_ms
@@ -8451,7 +8574,12 @@ def validate_bsc07_barriers(
         raise RunnerError("case_record_invalid", "BSC-07 critical grace barrier is invalid")
 
 
-def validate_bsc07_reset_observation(value: object) -> None:
+def validate_bsc07_reset_observation(
+    value: object,
+    *,
+    observations: Mapping[str, object],
+    expected_capture: Callable[[str], str],
+) -> None:
     observation = require_exact_object(
         value,
         {
@@ -8461,6 +8589,11 @@ def validate_bsc07_reset_observation(value: object) -> None:
             "unexpected_count",
             "panic_observed",
             "watchdog_reset_observed",
+            "source_role",
+            "source_sha256",
+            "shutdown_elapsed_ms",
+            "observed_elapsed_ms",
+            "reason",
         },
         code="case_record_invalid",
         label="BSC-07 reset observation",
@@ -8477,8 +8610,21 @@ def validate_bsc07_reset_observation(value: object) -> None:
         or observation.get("panic_observed") is not False
         or type(observation.get("watchdog_reset_observed")) is not bool
         or observation.get("watchdog_reset_observed") is not False
+        or observation.get("source_role") != "reset-summary"
+        or observation.get("source_sha256") != expected_capture("reset_summary_sha256")
+        or type(observation.get("shutdown_elapsed_ms")) is not int
+        or type(observation.get("observed_elapsed_ms")) is not int
+        or observation.get("reason") != "intentional-critical-voltage-shutdown"
     ):
         raise RunnerError("case_record_invalid", "BSC-07 reset evidence is invalid")
+    shutdown = observations.get("critical_shutdown")
+    power = observations.get("power")
+    assert isinstance(shutdown, dict) and isinstance(power, dict)
+    if (
+        observation.get("shutdown_elapsed_ms") != shutdown.get("shutdown_elapsed_ms")
+        or observation.get("observed_elapsed_ms") != power.get("power_removed_elapsed_ms")
+    ):
+        raise RunnerError("case_record_invalid", "BSC-07 reset timing is not bound to power removal")
 
 
 def validate_bsc07_facts(
@@ -8500,19 +8646,33 @@ def validate_bsc07_facts(
         label="BSC-07 facts",
     )
     voltage = observations.get("voltage_refresh")
+    traffic = observations.get("ap_traffic")
+    button = observations.get("power_button")
     shutdown = observations.get("critical_shutdown")
-    assert isinstance(voltage, dict) and isinstance(shutdown, dict)
+    health = observations.get("health")
+    assert all(isinstance(row, dict) for row in (voltage, traffic, button, shutdown, health))
     refresh_delay = int(voltage["refreshed_elapsed_ms"]) - int(voltage["changed_elapsed_ms"])
     grace = int(shutdown["shutdown_elapsed_ms"]) - int(shutdown["warning_elapsed_ms"])
     if (
         type(facts.get("voltage-refresh-delay-ms")) is not int
         or facts.get("voltage-refresh-delay-ms") != refresh_delay
-        or facts.get("power-button-handled-under-ap-load") is not True
+        or type(facts.get("power-button-handled-under-ap-load")) is not bool
+        or facts.get("power-button-handled-under-ap-load")
+        is not (
+            traffic["continuous"] is True
+            and traffic["last_success_before_hold_elapsed_ms"] <= button["handled_elapsed_ms"]
+            and button["handled_elapsed_ms"] <= traffic["first_success_after_hold_elapsed_ms"]
+        )
         or type(facts.get("critical-shutdown-grace-ms")) is not int
         or facts.get("critical-shutdown-grace-ms") != grace
-        or facts.get("critical-warning-observed") is not True
-        or facts.get("ui-responsive-until-shutdown") is not True
-        or facts.get("loop-stall-observed") is not False
+        or type(facts.get("critical-warning-observed")) is not bool
+        or facts.get("critical-warning-observed") is not (shutdown["warning_elapsed_ms"] >= shutdown["applied_elapsed_ms"])
+        or type(facts.get("ui-responsive-until-shutdown")) is not bool
+        or facts.get("ui-responsive-until-shutdown")
+        is not (health["ui_last_healthy_elapsed_ms"] <= shutdown["shutdown_elapsed_ms"])
+        or type(facts.get("loop-stall-observed")) is not bool
+        or facts.get("loop-stall-observed")
+        is not (shutdown["shutdown_elapsed_ms"] - health["loop_last_healthy_elapsed_ms"] > BSC07_HEALTH_SAMPLE_MAX_AGE_MS)
     ):
         raise RunnerError("case_record_invalid", "BSC-07 facts do not match the observations")
 
@@ -8521,6 +8681,7 @@ def validate_bsc07_adapter_record(
     payload: object,
     *,
     expected: Mapping[str, object],
+    raw_manifest: object,
     command_started: datetime | None = None,
     command_completed: datetime | None = None,
 ) -> dict[str, object]:
@@ -8548,6 +8709,7 @@ def validate_bsc07_adapter_record(
             "reset_observation",
             "facts",
             "capture_commitments",
+            "raw_artifact_request_sha256",
             "evidence_binding_sha256",
         },
         code="case_record_invalid",
@@ -8572,6 +8734,32 @@ def validate_bsc07_adapter_record(
         or type(record.get("hardware_observed")) is not bool
     ):
         raise RunnerError("case_record_invalid", "BSC-07 record identity types are invalid")
+    raw_request_sha = require_sha256(
+        record.get("raw_artifact_request_sha256"),
+        code="case_record_invalid",
+        label="BSC-07 raw artifact request",
+    )
+    if raw_request_sha != expected.get("raw_artifact_request_sha256"):
+        raise RunnerError("case_record_invalid", "BSC-07 raw artifact request was substituted")
+    manifest_commitments = bsc07_manifest_capture_commitments(
+        raw_manifest,
+        expected_request_sha256=raw_request_sha,
+    )
+    commitments = require_exact_object(
+        record.get("capture_commitments"),
+        set(BSC07_CAPTURE_COMMITMENTS),
+        code="case_record_invalid",
+        label="BSC-07 capture commitments",
+    )
+    for field in BSC07_CAPTURE_COMMITMENTS:
+        observed = require_sha256(commitments.get(field), code="case_record_invalid", label=field)
+        if observed != manifest_commitments[field]:
+            raise RunnerError("case_record_invalid", f"BSC-07 {field} is not runner-hashed evidence")
+    if len(set(manifest_commitments.values())) != len(manifest_commitments):
+        raise RunnerError("case_record_invalid", "BSC-07 evidence roles reused a capture")
+
+    def expected_capture(field: str) -> str:
+        return manifest_commitments[field]
     case_descriptor = expected.get("case_descriptor")
     descriptor_sha = bsc07_descriptor_commitment(case_descriptor) if isinstance(case_descriptor, dict) else ""
     if (
@@ -8609,23 +8797,18 @@ def validate_bsc07_adapter_record(
     require_sha256(firmware.get("binary_sha256"), code="case_record_invalid", label="BSC-07 firmware")
     stimuli = validate_bsc07_stimuli(record.get("stimuli"), duration_ms=duration_ms)
     observations = validate_bsc07_observations(
-        record.get("observations"), stimuli=stimuli, duration_ms=duration_ms
+        record.get("observations"),
+        stimuli=stimuli,
+        duration_ms=duration_ms,
+        expected_capture=expected_capture,
     )
     validate_bsc07_barriers(record.get("barriers"), observations=observations)
-    validate_bsc07_reset_observation(record.get("reset_observation"))
-    validate_bsc07_facts(record.get("facts"), observations=observations)
-    commitments = require_exact_object(
-        record.get("capture_commitments"),
-        set(BSC07_CAPTURE_COMMITMENTS),
-        code="case_record_invalid",
-        label="BSC-07 capture commitments",
+    validate_bsc07_reset_observation(
+        record.get("reset_observation"),
+        observations=observations,
+        expected_capture=expected_capture,
     )
-    capture_hashes = [
-        require_sha256(commitments[field], code="case_record_invalid", label=field)
-        for field in BSC07_CAPTURE_COMMITMENTS
-    ]
-    if len(set(capture_hashes)) != len(capture_hashes):
-        raise RunnerError("case_record_invalid", "BSC-07 evidence roles reused a capture")
+    validate_bsc07_facts(record.get("facts"), observations=observations)
     binding = require_sha256(
         record.get("evidence_binding_sha256"), code="case_record_invalid", label="BSC-07 binding"
     )
@@ -8641,7 +8824,10 @@ def run_bsc07_adapter(
     serial_port: str,
     expected: Mapping[str, object],
     environment: Mapping[str, str],
-) -> dict[str, object]:
+    raw_directory: Path,
+    raw_manifest_path: Path,
+    role_contract: rig_adapters.AdapterRoleContract,
+) -> tuple[dict[str, object], dict[str, object]]:
     command = [
         str(adapter),
         "--case",
@@ -8662,6 +8848,10 @@ def run_bsc07_adapter(
         str(expected["rig_alias"]),
         "--serial-port",
         serial_port,
+        "--raw-artifact-dir",
+        str(raw_directory),
+        "--raw-artifact-request-sha256",
+        str(expected["raw_artifact_request_sha256"]),
     ]
     command_started = datetime.now(timezone.utc)
     try:
@@ -8688,12 +8878,25 @@ def run_bsc07_adapter(
         )
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise RunnerError("case_record_invalid", "BSC-07 adapter output is not strict JSON") from exc
+    try:
+        raw_manifest = adapter_protocol.collect_raw_artifacts(
+            raw_directory=raw_directory,
+            role=role_contract,
+            request_commitment_sha256=str(expected["raw_artifact_request_sha256"]),
+            manifest_path=raw_manifest_path,
+        )
+    except adapter_protocol.AdapterProtocolError as exc:
+        raise RunnerError(exc.code, exc.message) from exc
     physical = expected.get("execution_mode") == "physical"
-    return validate_bsc07_adapter_record(
-        payload,
-        expected=expected,
-        command_started=command_started if physical else None,
-        command_completed=command_completed if physical else None,
+    return (
+        validate_bsc07_adapter_record(
+            payload,
+            expected=expected,
+            raw_manifest=raw_manifest,
+            command_started=command_started if physical else None,
+            command_completed=command_completed if physical else None,
+        ),
+        raw_manifest,
     )
 
 
@@ -8836,7 +9039,7 @@ def run_bsc07_case(args: argparse.Namespace) -> int:
             "operator_preconditions_incomplete",
             "BSC-07 requires explicit VBUS-isolation acknowledgement",
         )
-    admit_case_rig_adapter(
+    admission = admit_case_rig_adapter(
         args,
         case_contract=case_descriptor,
         role_id=str(role_descriptor["role_id"]),
@@ -8871,10 +9074,36 @@ def run_bsc07_case(args: argparse.Namespace) -> int:
     if run_root.exists() and (not run_root.is_dir() or any(run_root.iterdir())):
         raise RunnerError("output_not_empty", "BSC-07 output must be new")
     run_root.mkdir(parents=True, exist_ok=True)
+    raw_directory = run_root / "raw"
+    raw_directory.mkdir()
+    raw_manifest_path = run_root / "raw-artifact-manifest.json"
 
     session_id = f"bsc07-{secrets.token_hex(16)}"
     attempt_id = f"attempt-{secrets.token_hex(16)}"
     descriptor_sha = bsc07_descriptor_commitment(case_descriptor)
+    role_contract = next(
+        role for role in admission.adapter.roles if role.role_id == role_descriptor["role_id"]
+    )
+    raw_request_payload = {
+        "case_id": BSC07_CASE_ID,
+        "role_id": role_descriptor["role_id"],
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "target_sha": git_state.head_sha,
+        "adapter_sha256": adapter_sha,
+        "case_descriptor_sha256": descriptor_sha,
+        "raw_artifacts": [
+            {
+                "role": item.role,
+                "filename": item.filename,
+                "maximum_bytes": item.maximum_bytes,
+            }
+            for item in role_contract.raw_artifacts
+        ],
+    }
+    raw_request_sha = canonical_case_commitment(
+        "v1simple.bsc07.raw-artifact-request.v1", raw_request_payload
+    )
     expected: dict[str, object] = {
         "case_id": BSC07_CASE_ID,
         "role_id": role_descriptor["role_id"],
@@ -8887,14 +9116,18 @@ def run_bsc07_case(args: argparse.Namespace) -> int:
         "hardware_observed": False,
         "case_descriptor": case_descriptor,
         "case_descriptor_sha256": descriptor_sha,
+        "raw_artifact_request_sha256": raw_request_sha,
     }
     require_unchanged_git_state(repository, git_state)
-    record = run_bsc07_adapter(
+    record, raw_manifest = run_bsc07_adapter(
         adapter=adapter,
         repository=repository,
         serial_port=serial_port,
         expected=expected,
         environment=os.environ.copy(),
+        raw_directory=raw_directory,
+        raw_manifest_path=raw_manifest_path,
+        role_contract=role_contract,
     )
     require_unchanged_git_state(repository, git_state)
     attempt_path = run_root / "attempt.json"
@@ -8932,6 +9165,9 @@ def run_bsc07_case(args: argparse.Namespace) -> int:
             "hil_fault_control_active": firmware["hil_fault_control_active"],
         },
         "evidence_binding_sha256": record["evidence_binding_sha256"],
+        "raw_artifact_manifest_commitment_sha256": raw_manifest[
+            "manifest_commitment_sha256"
+        ],
         "artifact_sha256": {
             "adapter_record": sha256_file(attempt_path),
             "adapter": adapter_sha,
@@ -8943,6 +9179,7 @@ def run_bsc07_case(args: argparse.Namespace) -> int:
             "rig_attestation": canonical_case_commitment(
                 "v1simple.bsc07.rig-attestation.v1", rig_attestation
             ),
+            "raw_artifact_manifest": sha256_file(raw_manifest_path),
         },
     }
     write_json_atomic(run_root / "collection_result.json", result)

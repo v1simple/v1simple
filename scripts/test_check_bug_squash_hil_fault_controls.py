@@ -510,6 +510,47 @@ def test_bsc10_hook_rejects_missing_or_late_admission() -> None:
         assert_error_contains(checker.validate_static(root), "WiFi admission wiring must contain exactly one")
 
 
+def test_wifi_scan_trace_is_compile_time_opt_in_and_production_default_off() -> None:
+    with tempfile.TemporaryDirectory(prefix="hil-fault-controls-") as raw:
+        root = fixture_root(Path(raw))
+        wifi_client = root / checker.BSC10_WIFI_CLIENT
+        original = wifi_client.read_text(encoding="utf-8")
+
+        wifi_client.write_text(
+            original.replace(
+                "#if defined(V1SIMPLE_WIFI_SCAN_TRACE)\n"
+                "const char* wifiScanObservationEventName",
+                "const char* wifiScanObservationEventName",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "WiFi scan trace must be compile-time opt-in")
+
+        wifi_client.write_text(
+            original.replace(
+                "#if defined(V1SIMPLE_WIFI_SCAN_TRACE)\n"
+                "    driver.observe = observePhysicalWifiScan;\n"
+                "#endif",
+                "    driver.observe = observePhysicalWifiScan;",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "WiFi scan trace must be compile-time opt-in")
+
+        platformio = root / "platformio.ini"
+        platformio.write_text(
+            platformio.read_text(encoding="utf-8").replace(
+                "build_flags = \n",
+                "build_flags = \n    -D V1SIMPLE_WIFI_SCAN_TRACE=1\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert_error_contains(checker.validate_static(root), "production environment defines WiFi scan trace macro")
+
+
 def complete_artifacts(
     root: Path,
     full_sha: str = FULL_SHA,
@@ -892,6 +933,7 @@ def main() -> int:
         test_bsc06_hook_rejects_missing_or_preclaim_transport_routing,
         test_bsc13_hook_rejects_missing_or_post_adoption_routing,
         test_bsc10_hook_rejects_missing_or_late_admission,
+        test_wifi_scan_trace_is_compile_time_opt_in_and_production_default_off,
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,
         test_bound_build_requires_clean_full_sha_and_exact_environment_commands,

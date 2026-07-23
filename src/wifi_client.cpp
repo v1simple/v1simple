@@ -48,6 +48,7 @@ void abortPhysicalWifiScan(void* /*ctx*/) {
     WiFi.scanDelete();
 }
 
+#if defined(V1SIMPLE_WIFI_SCAN_TRACE)
 const char* wifiScanObservationEventName(WifiScanObservationEvent event) {
     switch (event) {
     case WifiScanObservationEvent::REQUEST_STARTED:
@@ -93,6 +94,7 @@ void observePhysicalWifiScan(const WifiScanObservation& observation, void* /*ctx
                   static_cast<unsigned>(observation.snapshotConsumerMask), observation.running ? 1U : 0U,
                   observation.released ? 1U : 0U, observation.aborted ? 1U : 0U);
 }
+#endif
 
 WifiScanResultOwner::Driver makeWifiScanDriver() {
     WifiScanResultOwner::Driver driver;
@@ -104,7 +106,9 @@ WifiScanResultOwner::Driver makeWifiScanDriver() {
     driver.encryptionAt = getPhysicalWifiScanEncryption;
     driver.release = releasePhysicalWifiScan;
     driver.abort = abortPhysicalWifiScan;
+#if defined(V1SIMPLE_WIFI_SCAN_TRACE)
     driver.observe = observePhysicalWifiScan;
+#endif
     return driver;
 }
 

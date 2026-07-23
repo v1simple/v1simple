@@ -15,6 +15,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HIL_MACRO = "V1SIMPLE_HIL_FAULT_CONTROL"
+WIFI_SCAN_TRACE_MACRO = "V1SIMPLE_WIFI_SCAN_TRACE"
 HIL_ENVIRONMENT = "waveshare-349-hil"
 EXPECTED_PLATFORMIO_VERSION = "6.1.19"
 EXPECTED_PLATFORMIO_TREE_SHA256 = {
@@ -133,6 +134,7 @@ FORBIDDEN_BINARY_MARKERS = (
     b"StorageBsc14HilFaultModule",
     b"bsc14_sd_hold",
     b"battery-adc-init-fail-once",
+    b"[WiFiScanTrace]",
 )
 
 
@@ -216,21 +218,23 @@ def reachable_sections(
     return reached
 
 
-def line_is_guarded(lines: list[str], target_index: int) -> bool:
+def line_is_guarded_by_macro(
+    lines: list[str], target_index: int, macro: str
+) -> bool:
     frames: list[dict[str, bool]] = []
-    possible_without_hil = True
+    possible_without_macro = True
 
-    def condition_without_hil(directive: str) -> tuple[bool, bool]:
+    def condition_without_macro(directive: str) -> tuple[bool, bool]:
         positive = re.fullmatch(
-            r"#\s*(?:if\s+defined\s*\(\s*V1SIMPLE_HIL_FAULT_CONTROL\s*\)|"
-            r"ifdef\s+V1SIMPLE_HIL_FAULT_CONTROL)",
+            rf"#\s*(?:if\s+defined\s*\(\s*{re.escape(macro)}\s*\)|"
+            rf"ifdef\s+{re.escape(macro)})",
             directive,
         )
         if positive is not None:
             return False, False
         negative = re.fullmatch(
-            r"#\s*(?:if\s+!\s*defined\s*\(\s*V1SIMPLE_HIL_FAULT_CONTROL\s*\)|"
-            r"ifndef\s+V1SIMPLE_HIL_FAULT_CONTROL)",
+            rf"#\s*(?:if\s+!\s*defined\s*\(\s*{re.escape(macro)}\s*\)|"
+            rf"ifndef\s+{re.escape(macro)})",
             directive,
         )
         if negative is not None:
@@ -242,20 +246,20 @@ def line_is_guarded(lines: list[str], target_index: int) -> bool:
     for index, line in enumerate(lines):
         stripped = line.strip()
         if re.match(r"^#\s*(if|ifdef|ifndef)\b", stripped):
-            condition_possible, condition_always = condition_without_hil(stripped)
+            condition_possible, condition_always = condition_without_macro(stripped)
             frames.append(
                 {
-                    "parent_possible": possible_without_hil,
+                    "parent_possible": possible_without_macro,
                     "prior_always": condition_always,
                 }
             )
-            possible_without_hil = possible_without_hil and condition_possible
+            possible_without_macro = possible_without_macro and condition_possible
         elif re.match(r"^#\s*elif\b", stripped) and frames:
             frame = frames[-1]
-            condition_possible, condition_always = condition_without_hil(
+            condition_possible, condition_always = condition_without_macro(
                 re.sub(r"^#\s*elif\b", "#if", stripped, count=1)
             )
-            possible_without_hil = (
+            possible_without_macro = (
                 frame["parent_possible"]
                 and not frame["prior_always"]
                 and condition_possible
@@ -263,13 +267,17 @@ def line_is_guarded(lines: list[str], target_index: int) -> bool:
             frame["prior_always"] = frame["prior_always"] or condition_always
         elif re.match(r"^#\s*else\b", stripped) and frames:
             frame = frames[-1]
-            possible_without_hil = frame["parent_possible"] and not frame["prior_always"]
+            possible_without_macro = frame["parent_possible"] and not frame["prior_always"]
             frame["prior_always"] = True
         elif re.match(r"^#\s*endif\b", stripped) and frames:
-            possible_without_hil = frames.pop()["parent_possible"]
+            possible_without_macro = frames.pop()["parent_possible"]
         if index == target_index:
-            return not possible_without_hil
+            return not possible_without_macro
     return False
+
+
+def line_is_guarded(lines: list[str], target_index: int) -> bool:
+    return line_is_guarded_by_macro(lines, target_index, HIL_MACRO)
 
 
 def has_structural_outer_guard(text: str) -> bool:
@@ -327,6 +335,8 @@ def validate_static(root: Path) -> list[str]:
                 errors.append("HIL environment must extend the portable production environment")
             if re.search(rf"(?:-D\s*|\b){HIL_MACRO}(?:=1)?\b", hil_text) is None:
                 errors.append("HIL environment must define the HIL-only compile macro")
+            if re.search(rf"(?:-D\s*|\b){WIFI_SCAN_TRACE_MACRO}(?:=1)?\b", hil_text) is None:
+                errors.append("HIL environment must enable the WiFi scan trace")
         for section in parser.sections():
             if section == hil_section or HIL_MACRO not in section_text(parser, section):
                 continue
@@ -349,6 +359,15 @@ def validate_static(root: Path) -> list[str]:
             if leaking_sections:
                 errors.append(
                     f"production environment effectively defines HIL macro: {environment}"
+                )
+            trace_leaking_sections = sorted(
+                section
+                for section in reached
+                if WIFI_SCAN_TRACE_MACRO in section_text(parser, section)
+            )
+            if trace_leaking_sections:
+                errors.append(
+                    f"production environment defines WiFi scan trace macro: {environment}"
                 )
 
     for relative in RELEASE_CONFIGURATION_FILES:
@@ -715,6 +734,17 @@ def validate_static(root: Path) -> list[str]:
                 errors.append(f"BSC-10 WiFi admission wiring must contain exactly one {token}")
         if wifi_client_source.find(callback_token) >= wifi_client_source.find(attempt_callback_token):
             errors.append("BSC-10 WiFi admission callback must be installed before lifecycle mutation")
+        wifi_client_lines = wifi_client_source.splitlines()
+        for token in ('"[WiFiScanTrace]', "driver.observe = observePhysicalWifiScan;"):
+            matching_lines = [
+                index for index, line in enumerate(wifi_client_lines) if token in line
+            ]
+            if len(matching_lines) != 1:
+                errors.append(f"WiFi scan trace wiring must contain exactly one {token}")
+            elif not line_is_guarded_by_macro(
+                wifi_client_lines, matching_lines[0], WIFI_SCAN_TRACE_MACRO
+            ):
+                errors.append(f"WiFi scan trace must be compile-time opt-in: {token}")
 
     bsc14_sources: dict[str, str] = {}
     for relative in sorted(EXPECTED_BSC14_PRODUCT_HIL_FILES):

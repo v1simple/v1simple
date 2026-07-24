@@ -468,6 +468,12 @@ class RigAdapterRegistryTests(unittest.TestCase):
         cp2 = bsc16_rig.CHECKPOINTS["usb-cold-boot"]
         self.assertIn("Keep the 18650 installed", cp2.setup_instruction)
         self.assertNotIn("remove all power", cp2.setup_instruction.lower())
+        # The window must contain USB-CDC re-enumeration + the firmware's ~3 s USB
+        # debounce + a steady-state replay; 7 s anchored to operator START could not.
+        self.assertGreaterEqual(cp2.duration_seconds, 12.0)
+        # And the action must no longer demand impossible sub-second plug timing.
+        self.assertNotIn("immediately", cp2.action_instruction.lower())
+        self.assertIn("confirmation", cp2.action_instruction.lower())
 
         cp5 = bsc16_rig.CHECKPOINTS["transition-battery-to-usb"]
         self.assertIn("Press PWR once to cold-boot", cp5.setup_instruction)
@@ -513,6 +519,84 @@ class RigAdapterRegistryTests(unittest.TestCase):
             "qualified window",
         ):
             bsc16_rig.validate_stimulus_capture("usb-cold-boot", too_slow)
+
+    def test_bsc16_usb_cold_boot_evidence_complete_predicate(self) -> None:
+        # No usb line yet -> not complete (boot seed reports battery during debounce).
+        seed_only = [
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 2400,
+                "line": "[Battery] Power detection: classification=battery reported=BATTERY",
+            }
+        ]
+        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(seed_only))
+
+        # usb classification present but no confirmation measurement -> not complete.
+        no_measurement = seed_only + [
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 5200,
+                "line": "[Battery] Power source changed: usb",
+            }
+        ]
+        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(no_measurement))
+
+        # usb + in-window firmware confirmation -> complete.
+        complete = seed_only + [
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 5300,
+                "line": "[Battery] Power source stable: usb confirmation_ms=3025",
+            }
+        ]
+        self.assertTrue(bsc16_rig.usb_cold_boot_evidence_complete(complete))
+
+        # Confirmation outside the qualified window -> not complete.
+        out_of_window = seed_only + [
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 6000,
+                "line": "[Battery] Power source stable: usb confirmation_ms=4200",
+            }
+        ]
+        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(out_of_window))
+
+    def test_capture_serial_stops_early_when_predicate_satisfied(self) -> None:
+        class _FakeHandle:
+            def __init__(self, lines: list[bytes]) -> None:
+                self._lines = lines
+
+            def __enter__(self) -> "_FakeHandle":
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+            def readline(self) -> bytes:
+                return self._lines.pop(0) if self._lines else b""
+
+        lines = [
+            b"[Battery] Power detection: classification=battery reported=BATTERY\n",
+            b"[Battery] Power source stable: usb confirmation_ms=3025\n",
+            # A third line the loop must NOT reach once the predicate is satisfied.
+            b"[Battery] SHOULD-NOT-BE-CAPTURED\n",
+        ]
+        handle = _FakeHandle(lines)
+
+        with mock.patch.object(bsc16_rig, "open_serial_endpoint", return_value=handle):
+            captured = bsc16_rig.capture_serial(
+                lambda: "/dev/fake",
+                duration_seconds=14.0,
+                run_started=0.0,
+                stimulus_id="usb-cold-boot",
+                stop_when=bsc16_rig.usb_cold_boot_evidence_complete,
+            )
+
+        self.assertEqual(len(captured), 2)
+        self.assertIn("confirmation_ms=3025", str(captured[-1]["line"]))
+        self.assertTrue(
+            all("SHOULD-NOT-BE-CAPTURED" not in str(row["line"]) for row in captured)
+        )
 
     def test_bsc16_stable_replay_recovers_transition_classification(self) -> None:
         rows = [

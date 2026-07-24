@@ -116,10 +116,18 @@ CHECKPOINTS = {
             "the board unpowered. Disconnect DATA and hold FULL aligned at the USB port."
         ),
         action_instruction=(
-            "Connect FULL immediately for a USB cold boot; do not press PWR."
+            "Connect FULL for a USB cold boot; do not press PWR. A firm seat within a "
+            "second or two is fine — the adapter waits out the board's ~3 s USB "
+            "confirmation and its steady-state replay, so sub-second plug timing is not "
+            "required and silence during that wait is normal."
         ),
         observed_pass="The DUT booted from the FULL-cable connection and reached the idle screen.",
-        duration_seconds=7.0,
+        # USB cold boot must survive USB-CDC re-enumeration (~1-3 s blind) plus the
+        # firmware's deliberate usbConfirmMs=3000 debounce before any "usb" line is
+        # emitted, then at least one steady-state replay. A 7 s window anchored to the
+        # operator START keypress cannot contain that pipeline; capture stops early via
+        # stop_when once the firmware-authoritative evidence has actually arrived.
+        duration_seconds=14.0,
     ),
     "force-adc-init-failure": Checkpoint(
         target_state=(
@@ -379,6 +387,7 @@ def capture_serial(
     duration_seconds: float,
     run_started: float,
     stimulus_id: str,
+    stop_when: Callable[[Sequence[Mapping[str, object]]], bool] | None = None,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     deadline = time.monotonic() + duration_seconds
@@ -408,6 +417,12 @@ def capture_serial(
                         "line": text,
                     }
                 )
+                # Stop as soon as the required evidence is captured so the window is a
+                # bounded cap, not a forced wait, and operator plug latency inside it no
+                # longer decides pass/fail. Only positive, presence-based predicates are
+                # passed here — never absence checks, which a later line could still fail.
+                if stop_when is not None and stop_when(rows):
+                    return rows
         if time.monotonic() < deadline:
             time.sleep(0.2)
     if not opened:
@@ -570,6 +585,24 @@ def usb_confirmation_delay_ms(rows: Sequence[Mapping[str, object]]) -> int:
     raise AdapterError(
         "USB cold boot did not capture the firmware confirmation measurement"
     )
+
+
+def usb_cold_boot_evidence_complete(rows: Sequence[Mapping[str, object]]) -> bool:
+    """True once the usb classification and an in-window firmware confirmation exist.
+
+    Used as the ``capture_serial`` early-stop predicate for ``usb-cold-boot``: the
+    firmware only emits a ``usb`` line after its ~3 s debounce, over a USB-CDC link
+    that is still re-enumerating, so the window must be generous. This lets capture
+    end the instant the firmware-authoritative evidence has actually landed instead
+    of forcing the full window and betting on sub-second operator reflexes.
+    """
+    try:
+        delay_ms = usb_confirmation_delay_ms(rows)
+    except AdapterError:
+        return False
+    if not USB_CONFIRMATION_MIN_MS <= delay_ms <= USB_CONFIRMATION_MAX_MS:
+        return False
+    return any(value == "usb" for _, value in classifications(rows, "usb-cold-boot"))
 
 
 def source_flapped(rows: Sequence[Mapping[str, object]], stimulus_ids: Sequence[str]) -> bool:
@@ -766,11 +799,15 @@ def perform_stimulus(
         duration_seconds=checkpoint.duration_seconds,
     )
     started_ms = int((time.monotonic() - run_started) * 1000)
+    stop_when = (
+        usb_cold_boot_evidence_complete if stimulus_id == "usb-cold-boot" else None
+    )
     captured = capture_serial(
         resolve_serial_port,
         duration_seconds=checkpoint.duration_seconds,
         run_started=run_started,
         stimulus_id=stimulus_id,
+        stop_when=stop_when,
     )
     serial_rows.extend(captured)
     validate_stimulus_capture(stimulus_id, captured)

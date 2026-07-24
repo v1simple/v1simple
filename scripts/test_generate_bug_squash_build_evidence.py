@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -57,7 +58,12 @@ def test_missing_pinned_platformio_toolchain_reports_cleanly(tmpdir: Path) -> No
 
     stream = io.StringIO()
     assert_true(
-        main(toolchain_probe=unavailable, error_stream=stream) == 1,
+        main(
+            ["--with-live-toolchain"],
+            toolchain_probe=unavailable,
+            error_stream=stream,
+        )
+        == 1,
         "missing pinned toolchain did not fail closed",
     )
     assert_true(stream.getvalue() == PINNED_PLATFORMIO_UNAVAILABLE + "\n", stream.getvalue())
@@ -224,23 +230,59 @@ def test_real_build_tool_identity_is_content_bound(tmpdir: Path) -> None:
         assert_true(key not in environment, f"build environment retained {key}")
 
 
-def main(
+def test_default_regression_selection_does_not_require_live_toolchain(
+    tmpdir: Path,
+) -> None:
+    del tmpdir
+    deterministic = regression_tests(with_live_toolchain=False)
+    qualification_only = regression_tests(with_live_toolchain=True)
+    assert_true(
+        test_real_build_tool_identity_is_content_bound not in deterministic,
+        "development regressions selected the live qualification toolchain",
+    )
+    assert_true(
+        test_real_build_tool_identity_is_content_bound in qualification_only,
+        "qualification regressions omitted the live toolchain contract",
+    )
+
+
+def regression_tests(
     *,
-    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
-    error_stream: TextIO = sys.stderr,
-) -> int:
-    if not require_pinned_platformio_toolchain(
-        toolchain_probe,
-        stream=error_stream,
-    ):
-        return 1
-    tests = (
+    with_live_toolchain: bool,
+) -> tuple[Callable[[Path], None], ...]:
+    deterministic = (
         test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_output_must_be_below_ignored_artifact_root,
         test_contract_preflight_requires_real_exact_environments,
         test_current_profile_builds_only_active_contracts,
         test_evidence_index_entry_is_relative_and_content_bound,
-        test_real_build_tool_identity_is_content_bound,
+        test_default_regression_selection_does_not_require_live_toolchain,
+    )
+    if with_live_toolchain:
+        return (*deterministic, test_real_build_tool_identity_is_content_bound)
+    return deterministic
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
+    error_stream: TextIO = sys.stderr,
+) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--with-live-toolchain",
+        action="store_true",
+        help="also verify the qualification host's authenticated PlatformIO installation",
+    )
+    args = parser.parse_args(argv)
+    if args.with_live_toolchain and not require_pinned_platformio_toolchain(
+        toolchain_probe,
+        stream=error_stream,
+    ):
+        return 1
+    tests = regression_tests(
+        with_live_toolchain=args.with_live_toolchain,
     )
     with tempfile.TemporaryDirectory(prefix="bug_squash_build_evidence_") as tmp:
         root = Path(tmp)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -118,7 +119,12 @@ def test_missing_pinned_platformio_toolchain_reports_cleanly(tmpdir: Path) -> No
 
     stream = io.StringIO()
     assert_true(
-        main(toolchain_probe=unavailable, error_stream=stream) == 1,
+        main(
+            ["--with-live-toolchain"],
+            toolchain_probe=unavailable,
+            error_stream=stream,
+        )
+        == 1,
         "missing pinned toolchain did not fail closed",
     )
     assert_true(stream.getvalue() == PINNED_PLATFORMIO_UNAVAILABLE + "\n", stream.getvalue())
@@ -1882,24 +1888,35 @@ def test_filesystem_and_type_confusion_become_errors_not_exceptions(tmpdir: Path
     )
 
 
-def main(
+def test_default_regression_selection_does_not_require_live_toolchain(
+    tmpdir: Path,
+) -> None:
+    del tmpdir
+    deterministic = regression_tests(with_live_toolchain=False)
+    qualification_only = regression_tests(with_live_toolchain=True)
+    assert_true(
+        test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages
+        not in deterministic,
+        "development regressions selected the live qualification toolchain",
+    )
+    assert_true(
+        test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages
+        in qualification_only,
+        "qualification regressions omitted the live toolchain contract",
+    )
+
+
+def regression_tests(
     *,
-    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
-    error_stream: TextIO = sys.stderr,
-) -> int:
-    if not require_pinned_platformio_toolchain(
-        toolchain_probe,
-        stream=error_stream,
-    ):
-        return 1
-    tests = (
+    with_live_toolchain: bool,
+) -> tuple[Callable[[Path], None], ...]:
+    deterministic = (
         test_missing_pinned_platformio_toolchain_reports_cleanly,
         test_pinned_profile_has_exact_case_specific_contracts,
         test_activatable_profile_accepts_complete_synthetic_pass_pack,
         test_self_authored_build_and_unsigned_board_cannot_activate,
         test_activatable_profile_with_stale_pin_fails_closed,
         test_activation_with_named_open_blocker_fails_closed,
-        test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages,
         test_profile_ready_mutation_cannot_authenticate_forged_provenance,
         test_profile_scope_digest_and_case_set_cannot_be_overridden,
         test_target_sha_must_be_nonzero_existing_head,
@@ -1920,6 +1937,36 @@ def main(
         test_paths_lstat_every_component_and_reject_operational_shapes,
         test_hashes_duplicate_json_and_unknown_metadata_fail_closed,
         test_filesystem_and_type_confusion_become_errors_not_exceptions,
+        test_default_regression_selection_does_not_require_live_toolchain,
+    )
+    if with_live_toolchain:
+        return (
+            *deterministic,
+            test_build_tool_identity_uses_platformio_python_when_caller_lacks_packages,
+        )
+    return deterministic
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
+    error_stream: TextIO = sys.stderr,
+) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--with-live-toolchain",
+        action="store_true",
+        help="also verify the qualification host's authenticated PlatformIO installation",
+    )
+    args = parser.parse_args(argv)
+    if args.with_live_toolchain and not require_pinned_platformio_toolchain(
+        toolchain_probe,
+        stream=error_stream,
+    ):
+        return 1
+    tests = regression_tests(
+        with_live_toolchain=args.with_live_toolchain,
     )
     with tempfile.TemporaryDirectory(prefix="bug_squash_hil_qualification_") as tmp:
         root = Path(tmp)

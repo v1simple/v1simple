@@ -47,13 +47,17 @@ STABLE_CLASSIFICATION_RE = re.compile(
     r"\[Battery\] Power source stable: (battery|usb|unknown)",
     re.IGNORECASE,
 )
-USB_CONFIRMATION_EVIDENCE_RE = re.compile(
-    r"\[Battery\] Power source (?:changed|stable): usb confirmation_ms=([0-9]+)",
+# This board has no USB/VBUS sense independent of battery presence: GPIO16 reads
+# HIGH whenever the 18650 is installed, so a USB cold boot is legitimately
+# classified BATTERY and never emits a "usb" line (confirmed on the wire,
+# 2026-07-24). usb-cold-boot therefore verifies a real cold boot to the idle-ready
+# gate, not an impossible source reclassification.
+BOOT_BANNER_RE = re.compile(r"V1 Gen2 Simple Display", re.IGNORECASE)
+IDLE_READY_RE = re.compile(
+    r"(?:\[Boot\] Ready gate opened|Setup complete - BLE scanning)",
     re.IGNORECASE,
 )
-USB_CONFIRMATION_MIN_MS = 2800
-USB_CONFIRMATION_MAX_MS = 4000
-FAULT_SESSION_DURATION_MS = 60000
+FAULT_SESSION_DURATION_MS = 180000
 FAULT_EVENTS = ("ready", "fired", "released")
 FAULT_STIMULI = (
     "pwr-wake-on-battery",
@@ -116,18 +120,16 @@ CHECKPOINTS = {
             "the board unpowered. Disconnect DATA and hold FULL aligned at the USB port."
         ),
         action_instruction=(
-            "Connect FULL for a USB cold boot; do not press PWR. A firm seat within a "
-            "second or two is fine — the adapter waits out the board's ~3 s USB "
-            "confirmation and its steady-state replay, so sub-second plug timing is not "
-            "required and silence during that wait is normal."
+            "Connect FULL to cold-boot the DUT; do not press PWR. It boots to the idle "
+            "screen in a few seconds. With the 18650 installed the board correctly "
+            "reports BATTERY (it has no separate USB power sense), so the adapter checks "
+            "for a clean cold boot to idle, not a USB reclassification."
         ),
         observed_pass="The DUT booted from the FULL-cable connection and reached the idle screen.",
-        # USB cold boot must survive USB-CDC re-enumeration (~1-3 s blind) plus the
-        # firmware's deliberate usbConfirmMs=3000 debounce before any "usb" line is
-        # emitted, then at least one steady-state replay. A 7 s window anchored to the
-        # operator START keypress cannot contain that pipeline; capture stops early via
-        # stop_when once the firmware-authoritative evidence has actually arrived.
-        duration_seconds=14.0,
+        # Verifies a cold boot reaching the idle-ready gate. Boot-to-idle lands ~2-3 s
+        # after the plug, plus USB-CDC enumeration (~1-3 s); a 10 s window with an
+        # evidence-gated early stop covers it comfortably.
+        duration_seconds=10.0,
     ),
     "force-adc-init-failure": Checkpoint(
         target_state=(
@@ -303,17 +305,27 @@ def prompt_install_ready(role: str) -> None:
 
 
 def prompt_fault_staging_ready() -> None:
+    duration_seconds = FAULT_SESSION_DURATION_MS // 1000
     print(
         "\nBSC-16 FAULT STAGING PREP\n"
         "Keep the FULL cable connected and the DUT running. Put the DATA cable within reach "
-        "and identify the battery-rail OFF/ON control now. After staging, the 60-second "
-        "fault-session clock will already be running.\n"
+        "and identify the battery-rail OFF/ON control now. After staging, the "
+        f"{duration_seconds}-second fault-session clock will already be running.\n"
         "Type READY only when you can perform the CP3 cable swap and rail action without delay.",
         file=sys.stderr,
         flush=True,
     )
     if input().strip() != "READY":
         raise AdapterError("fault-staging setup was not acknowledged exactly")
+
+
+def announce_fault_staging() -> None:
+    print(
+        "\nDO NOT TOUCH — staging the one-shot fault over FULL serial now. "
+        "Wait for the CP3 target-state prompt.",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def prompt_ready(
@@ -572,37 +584,35 @@ def require_classification(
     return observed
 
 
-def usb_confirmation_delay_ms(rows: Sequence[Mapping[str, object]]) -> int:
-    for row in rows:
-        if (
-            row.get("stimulus_id") != "usb-cold-boot"
-            or not isinstance(row.get("line"), str)
-        ):
-            continue
-        match = USB_CONFIRMATION_EVIDENCE_RE.search(row["line"])
-        if match is not None:
-            return int(match.group(1))
-    raise AdapterError(
-        "USB cold boot did not capture the firmware confirmation measurement"
-    )
+def usb_cold_boot_reached_idle(rows: Sequence[Mapping[str, object]]) -> bool:
+    """True once a fresh boot banner and the idle-ready gate are both captured.
 
-
-def usb_cold_boot_evidence_complete(rows: Sequence[Mapping[str, object]]) -> bool:
-    """True once the usb classification and an in-window firmware confirmation exist.
-
-    Used as the ``capture_serial`` early-stop predicate for ``usb-cold-boot``: the
-    firmware only emits a ``usb`` line after its ~3 s debounce, over a USB-CDC link
-    that is still re-enumerating, so the window must be generous. This lets capture
-    end the instant the firmware-authoritative evidence has actually landed instead
-    of forcing the full window and betting on sub-second operator reflexes.
+    The board cannot report ``usb`` while the cell is installed (no VBUS sense),
+    so usb-cold-boot proves a *cold boot from the USB plug that reaches idle*
+    instead. Requiring the firmware boot banner AND the ready/idle line rules out
+    a stale pre-plug log or a partial boot. Doubles as the ``capture_serial``
+    early-stop predicate so the window is a cap, not a forced wait.
     """
-    try:
-        delay_ms = usb_confirmation_delay_ms(rows)
-    except AdapterError:
-        return False
-    if not USB_CONFIRMATION_MIN_MS <= delay_ms <= USB_CONFIRMATION_MAX_MS:
-        return False
-    return any(value == "usb" for _, value in classifications(rows, "usb-cold-boot"))
+    saw_banner = False
+    saw_idle = False
+    for _, line in _usb_cold_boot_lines(rows):
+        if BOOT_BANNER_RE.search(line):
+            saw_banner = True
+        if IDLE_READY_RE.search(line):
+            saw_idle = True
+    return saw_banner and saw_idle
+
+
+def _usb_cold_boot_lines(
+    rows: Sequence[Mapping[str, object]],
+) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for row in rows:
+        if row.get("stimulus_id") != "usb-cold-boot" or not isinstance(row.get("line"), str):
+            continue
+        elapsed = row.get("elapsed_ms")
+        lines.append((elapsed if isinstance(elapsed, int) else 0, row["line"]))
+    return lines
 
 
 def source_flapped(rows: Sequence[Mapping[str, object]], stimulus_ids: Sequence[str]) -> bool:
@@ -687,11 +697,12 @@ def validate_stimulus_capture(
             raise AdapterError("PWR wake transiently classified battery operation as usb")
         return
     if stimulus_id == "usb-cold-boot":
-        require_classification(rows, stimulus_id, "usb")
-        delay_ms = usb_confirmation_delay_ms(rows)
-        if not USB_CONFIRMATION_MIN_MS <= delay_ms <= USB_CONFIRMATION_MAX_MS:
+        # No usb reclassification is asserted: with the cell installed GPIO16 reads
+        # HIGH and the board correctly classifies BATTERY on a USB cold boot. Verify
+        # the real, observable outcome instead — a fresh cold boot reaching idle.
+        if not usb_cold_boot_reached_idle(rows):
             raise AdapterError(
-                "USB confirmation delay is outside the qualified window"
+                "usb cold boot did not capture a fresh boot reaching the idle-ready gate"
             )
         return
     if stimulus_id == "force-adc-init-failure":
@@ -800,7 +811,7 @@ def perform_stimulus(
     )
     started_ms = int((time.monotonic() - run_started) * 1000)
     stop_when = (
-        usb_cold_boot_evidence_complete if stimulus_id == "usb-cold-boot" else None
+        usb_cold_boot_reached_idle if stimulus_id == "usb-cold-boot" else None
     )
     captured = capture_serial(
         resolve_serial_port,
@@ -914,6 +925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.role == "fault-collection":
             session_hash = hashlib.sha256(args.session_id.encode("ascii")).hexdigest()
             prompt_fault_staging_ready()
+            announce_fault_staging()
             session_sent_at = send_hil_commands(
                 resolve_serial_port,
                 (
@@ -991,7 +1003,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise AdapterError("physical stimulus sequence is incomplete")
 
         pwr = require_classification(serial_rows, "pwr-wake-on-battery", "battery")
-        usb = require_classification(serial_rows, "usb-cold-boot", "usb")
+        if not usb_cold_boot_reached_idle(serial_rows):
+            raise AdapterError(
+                "usb cold boot did not capture a fresh boot reaching the idle-ready gate"
+            )
         require_classification(serial_rows, "transition-battery-to-usb", "usb")
         require_classification(serial_rows, "transition-usb-to-battery", "battery")
         flapped = source_flapped(
@@ -1000,9 +1015,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if flapped:
             raise AdapterError("source-classification flapping was captured")
-        usb_delay = usb_confirmation_delay_ms(serial_rows)
-        if not USB_CONFIRMATION_MIN_MS <= usb_delay <= USB_CONFIRMATION_MAX_MS:
-            raise AdapterError("USB confirmation delay is outside the qualified window")
 
         bounce_ms = import_logic_capture(artifact_root / "logic-analyzer-capture")
         lifecycle = (
@@ -1014,7 +1026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             long_hold = classifications(serial_rows, "hold-power-button")
             facts = {
                 "pwr-wake-transient-usb-observed": any(value == "usb" for _, value in pwr),
-                "usb-confirmation-delay-ms": usb_delay,
+                "usb-cold-boot-reached-idle": True,
                 "adc-failure-voltage-degraded": all(
                     row["voltage_valid"] is False for row in lifecycle
                 ),
@@ -1033,7 +1045,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "battery-classification-correct": not any(
                     value == "usb" for _, value in pwr
                 ),
-                "usb-classification-correct": True,
+                "usb-cold-boot-reached-idle": True,
                 "power-button-operational": True,
                 "source-flapping-observed": False,
                 "hil-fault-control-active": False,

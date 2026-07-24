@@ -135,7 +135,7 @@ HilFaultResult HilFaultController::beginSession(const HilCaseId caseId, const Hi
     if (sessionHashIsZero(sessionHash)) {
         return HilFaultResult::InvalidSessionHash;
     }
-    if (!durationIsBounded(nowMs, deadlineMs, kMaximumSessionDurationMs)) {
+    if (!durationIsBounded(nowMs, deadlineMs, maximumSessionDurationMs(caseId))) {
         return HilFaultResult::InvalidDeadline;
     }
     HilAtomicLease mutation(mutationGate_);

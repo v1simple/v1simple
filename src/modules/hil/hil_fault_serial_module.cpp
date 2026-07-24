@@ -134,7 +134,8 @@ HilSerialParseResult HilFaultSerialModule::parse(const char* line, HilSerialComm
     if (std::strcmp(tokens[1], "BEGIN") == 0) {
         if (tokenCount != 5 || (command.caseId = parseCase(tokens[2])) == HilCaseId::Invalid ||
             !parseHash(tokens[3], command.sessionHash) || !parseUint32(tokens[4], command.durationMs) ||
-            command.durationMs == 0 || command.durationMs > HilFaultController::kMaximumSessionDurationMs) {
+            command.durationMs == 0 ||
+            command.durationMs > HilFaultController::maximumSessionDurationMs(command.caseId)) {
             return HilSerialParseResult::InvalidArguments;
         }
         command.kind = HilSerialCommandKind::Begin;
@@ -409,7 +410,7 @@ HilFaultResult HilFaultRuntimeOwner::restoreOneShot(const HilArmedFaultIdentity&
     if (!HilFaultController::isAllowed(identity.caseId, identity.faultId) || identity.armSequence == 0) {
         return HilFaultResult::WrongFault;
     }
-    if (durationMs == 0 || durationMs > kRestoredSessionDurationMs) {
+    if (durationMs == 0 || durationMs > HilFaultController::maximumSessionDurationMs(identity.caseId)) {
         return HilFaultResult::InvalidDeadline;
     }
     HilFaultResult result = controller_.beginSession(identity.caseId, identity.sessionHash, nowMs + durationMs, nowMs);

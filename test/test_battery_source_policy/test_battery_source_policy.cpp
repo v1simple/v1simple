@@ -508,6 +508,8 @@ void test_source_names_are_stable_for_logs() {
 
 void test_source_evidence_replay_is_bounded_and_spaced() {
     constexpr EvidenceReplayConfig config{};
+    TEST_ASSERT_EQUAL_UINT32(1000, config.intervalMs);
+    TEST_ASSERT_EQUAL_UINT8(5, config.repetitions);
     EvidenceReplayState replay;
     armEvidenceReplay(replay, 1000, 3025, config);
     TEST_ASSERT_EQUAL_UINT32(3025, replay.usbConfirmationElapsedMs);

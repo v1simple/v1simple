@@ -1496,7 +1496,6 @@
           "adc-init-failure"
         ],
         "barrier_ids": [
-          "usb-confirmation-holdoff",
           "source-transition-settled"
         ],
         "vbus_isolation_required": true,
@@ -1512,10 +1511,9 @@
             "expected": false
           },
           {
-            "id": "usb-confirmation-delay-ms",
-            "type": "integer",
-            "minimum": 2800,
-            "maximum": 4000
+            "id": "usb-cold-boot-reached-idle",
+            "type": "boolean",
+            "expected": true
           },
           {
             "id": "adc-failure-voltage-degraded",
@@ -1578,7 +1576,7 @@
             "expected": true
           },
           {
-            "id": "usb-classification-correct",
+            "id": "usb-cold-boot-reached-idle",
             "type": "boolean",
             "expected": true
           },

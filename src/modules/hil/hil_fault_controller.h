@@ -181,9 +181,14 @@ class HilFaultController {
   public:
     using MonotonicClock = uint32_t (*)(void*) noexcept;
 
-    static constexpr uint32_t kMaximumSessionDurationMs = 60000;
+    static constexpr uint32_t kDefaultMaximumSessionDurationMs = 60000;
+    static constexpr uint32_t kBsc16MaximumSessionDurationMs = 180000;
     static constexpr uint32_t kMaximumAutomaticReleaseMs = 5000;
     static constexpr size_t kMaximumSessionHashesPerBoot = 32;
+
+    static constexpr uint32_t maximumSessionDurationMs(const HilCaseId caseId) noexcept {
+        return caseId == HilCaseId::Bsc16 ? kBsc16MaximumSessionDurationMs : kDefaultMaximumSessionDurationMs;
+    }
 
     explicit HilFaultController(MonotonicClock clock = nullptr, void* clockContext = nullptr) noexcept;
 

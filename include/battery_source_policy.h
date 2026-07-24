@@ -57,7 +57,7 @@ constexpr const char* sourceName(Source source) {
 // changes only observability; the source decision above remains authoritative.
 struct EvidenceReplayConfig {
     uint32_t intervalMs = 1000;
-    uint8_t repetitions = 4;
+    uint8_t repetitions = 5;
 };
 
 struct EvidenceReplayState {

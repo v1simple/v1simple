@@ -49,7 +49,7 @@ class HilNextBootFaultStore {
         if (identity.caseId != caseId_ || identity.faultId != faultId_ || identity.armSequence == 0 || remaining <= 0 ||
             persistentClockMs_ == nullptr || controllerState.state != HilFaultState::Armed ||
             controllerState.armSequence != identity.armSequence ||
-            static_cast<uint32_t>(remaining) > HilFaultController::kMaximumSessionDurationMs ||
+            static_cast<uint32_t>(remaining) > HilFaultController::maximumSessionDurationMs(caseId_) ||
             !owner_.armedIdentity(identity.faultId, armed) || armed.caseId != identity.caseId ||
             armed.faultId != identity.faultId || armed.armSequence != identity.armSequence ||
             !(armed.sessionHash == identity.sessionHash)) {
@@ -90,7 +90,7 @@ class HilNextBootFaultStore {
             candidate.caseId != static_cast<uint8_t>(caseId_) || candidate.faultId != static_cast<uint8_t>(faultId_) ||
             candidate.armSequence == 0 || candidate.targetBootSequence == 0 ||
             candidate.targetBootSequence != currentBootSequence_ || candidate.remainingSessionMs == 0 ||
-            candidate.remainingSessionMs > HilFaultController::kMaximumSessionDurationMs ||
+            candidate.remainingSessionMs > HilFaultController::maximumSessionDurationMs(caseId_) ||
             static_cast<uint32_t>(candidate.sessionDeadlineMs - candidate.stagedAtMs) != candidate.remainingSessionMs ||
             candidate.persistentDeadlineMs < candidate.persistentStagedAtMs ||
             candidate.persistentDeadlineMs - candidate.persistentStagedAtMs != candidate.remainingSessionMs ||

@@ -69,8 +69,6 @@ class HilFaultRuntimeOwner {
     using StageNextBoot = bool (*)(const HilArmedFaultIdentity&, uint32_t, uint32_t, void*) noexcept;
     using ClearNextBoot = void (*)(void*) noexcept;
 
-    static constexpr uint32_t kRestoredSessionDurationMs = 60000;
-
     void configureSerial(WriteSerial writer, void* context) noexcept;
     void configureNextBoot(StageNextBoot stage, ClearNextBoot clear, void* context) noexcept;
     void acceptSerialByte(char value, uint32_t nowMs) noexcept;

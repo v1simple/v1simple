@@ -451,7 +451,16 @@ class RigAdapterRegistryTests(unittest.TestCase):
         staged = staging.getvalue()
         self.assertIn("Keep the FULL cable connected", staged)
         self.assertIn("DATA cable within reach", staged)
-        self.assertIn("60-second fault-session clock", staged)
+        self.assertIn("180-second fault-session clock", staged)
+        self.assertEqual(bsc16_rig.FAULT_SESSION_DURATION_MS, 180000)
+
+        staging_progress = io.StringIO()
+        with mock.patch.object(bsc16_rig.sys, "stderr", staging_progress):
+            bsc16_rig.announce_fault_staging()
+        in_progress = staging_progress.getvalue()
+        self.assertIn("DO NOT TOUCH", in_progress)
+        self.assertIn("staging the one-shot fault over FULL serial", in_progress)
+        self.assertIn("Wait for the CP3 target-state prompt", in_progress)
 
     def test_bsc16_checkpoint_contract_encodes_hard_off_order_and_cp5_reboot(self) -> None:
         cp1 = bsc16_rig.CHECKPOINTS["pwr-wake-on-battery"]
@@ -468,12 +477,13 @@ class RigAdapterRegistryTests(unittest.TestCase):
         cp2 = bsc16_rig.CHECKPOINTS["usb-cold-boot"]
         self.assertIn("Keep the 18650 installed", cp2.setup_instruction)
         self.assertNotIn("remove all power", cp2.setup_instruction.lower())
-        # The window must contain USB-CDC re-enumeration + the firmware's ~3 s USB
-        # debounce + a steady-state replay; 7 s anchored to operator START could not.
-        self.assertGreaterEqual(cp2.duration_seconds, 12.0)
-        # And the action must no longer demand impossible sub-second plug timing.
+        # CP2 asserts a cold boot to idle, not a USB reclassification the board
+        # cannot produce with the cell installed. Text must not demand sub-second
+        # plug timing and must not promise a usb confirmation.
         self.assertNotIn("immediately", cp2.action_instruction.lower())
-        self.assertIn("confirmation", cp2.action_instruction.lower())
+        self.assertNotIn("confirmation", cp2.action_instruction.lower())
+        self.assertIn("cold-boot", cp2.action_instruction.lower())
+        self.assertIn("battery", cp2.action_instruction.lower())
 
         cp5 = bsc16_rig.CHECKPOINTS["transition-battery-to-usb"]
         self.assertIn("Press PWR once to cold-boot", cp5.setup_instruction)
@@ -483,85 +493,42 @@ class RigAdapterRegistryTests(unittest.TestCase):
         self.assertIn("single motion", cp6.action_instruction)
         self.assertIn("stayed running", cp6.observed_pass)
 
-    def test_bsc16_usb_delay_uses_firmware_confirmation_measurement(self) -> None:
-        rows = [
+    def test_bsc16_usb_cold_boot_asserts_boot_to_idle_not_usb_classification(self) -> None:
+        # Real board behavior: with the cell installed a USB cold boot classifies
+        # BATTERY and reaches idle. That must PASS.
+        battery_boot = [
             {
                 "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 9100,
-                "line": "[Battery] Power detection: classification=unknown reported=BATTERY",
+                "elapsed_ms": 600,
+                "line": "V1 Gen2 Simple Display",
             },
             {
                 "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 12125,
-                "line": "[Battery] Power source changed: usb confirmation_ms=3025",
-            },
-        ]
-        self.assertEqual(bsc16_rig.usb_confirmation_delay_ms(rows), 3025)
-        bsc16_rig.validate_stimulus_capture("usb-cold-boot", rows)
-
-        missing_measurement = [dict(rows[1], line="[Battery] Power source changed: usb")]
-        with self.assertRaisesRegex(
-            bsc16_rig.AdapterError,
-            "firmware confirmation measurement",
-        ):
-            bsc16_rig.usb_confirmation_delay_ms(missing_measurement)
-
-        too_slow = [
-            dict(rows[0]),
-            dict(
-                rows[1],
-                elapsed_ms=13101,
-                line="[Battery] Power source changed: usb confirmation_ms=4001",
-            ),
-        ]
-        with self.assertRaisesRegex(
-            bsc16_rig.AdapterError,
-            "qualified window",
-        ):
-            bsc16_rig.validate_stimulus_capture("usb-cold-boot", too_slow)
-
-    def test_bsc16_usb_cold_boot_evidence_complete_predicate(self) -> None:
-        # No usb line yet -> not complete (boot seed reports battery during debounce).
-        seed_only = [
-            {
-                "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 2400,
+                "elapsed_ms": 630,
                 "line": "[Battery] Power detection: classification=battery reported=BATTERY",
-            }
-        ]
-        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(seed_only))
-
-        # usb classification present but no confirmation measurement -> not complete.
-        no_measurement = seed_only + [
+            },
             {
                 "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 5200,
-                "line": "[Battery] Power source changed: usb",
-            }
+                "elapsed_ms": 2490,
+                "line": "[Boot] Ready gate opened at 2075 ms",
+            },
         ]
-        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(no_measurement))
+        self.assertTrue(bsc16_rig.usb_cold_boot_reached_idle(battery_boot))
+        bsc16_rig.validate_stimulus_capture("usb-cold-boot", battery_boot)
 
-        # usb + in-window firmware confirmation -> complete.
-        complete = seed_only + [
-            {
-                "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 5300,
-                "line": "[Battery] Power source stable: usb confirmation_ms=3025",
-            }
-        ]
-        self.assertTrue(bsc16_rig.usb_cold_boot_evidence_complete(complete))
+        # Boot banner but never reaching idle -> fail (partial/hung boot).
+        no_idle = battery_boot[:2]
+        self.assertFalse(bsc16_rig.usb_cold_boot_reached_idle(no_idle))
+        with self.assertRaisesRegex(bsc16_rig.AdapterError, "idle-ready gate"):
+            bsc16_rig.validate_stimulus_capture("usb-cold-boot", no_idle)
 
-        # Confirmation outside the qualified window -> not complete.
-        out_of_window = seed_only + [
-            {
-                "stimulus_id": "usb-cold-boot",
-                "elapsed_ms": 6000,
-                "line": "[Battery] Power source stable: usb confirmation_ms=4200",
-            }
-        ]
-        self.assertFalse(bsc16_rig.usb_cold_boot_evidence_complete(out_of_window))
+        # An idle line with no fresh boot banner -> fail (stale pre-plug log).
+        idle_without_boot = [dict(battery_boot[2])]
+        self.assertFalse(bsc16_rig.usb_cold_boot_reached_idle(idle_without_boot))
+        with self.assertRaisesRegex(bsc16_rig.AdapterError, "idle-ready gate"):
+            bsc16_rig.validate_stimulus_capture("usb-cold-boot", idle_without_boot)
 
-    def test_capture_serial_stops_early_when_predicate_satisfied(self) -> None:
+    def test_capture_serial_stops_early_when_boot_reaches_idle(self) -> None:
         class _FakeHandle:
             def __init__(self, lines: list[bytes]) -> None:
                 self._lines = lines
@@ -576,24 +543,25 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 return self._lines.pop(0) if self._lines else b""
 
         lines = [
+            b"V1 Gen2 Simple Display\n",
             b"[Battery] Power detection: classification=battery reported=BATTERY\n",
-            b"[Battery] Power source stable: usb confirmation_ms=3025\n",
-            # A third line the loop must NOT reach once the predicate is satisfied.
-            b"[Battery] SHOULD-NOT-BE-CAPTURED\n",
+            b"[Boot] Ready gate opened at 2075 ms\n",
+            # Must NOT be reached once boot-to-idle is satisfied.
+            b"SHOULD-NOT-BE-CAPTURED\n",
         ]
         handle = _FakeHandle(lines)
 
         with mock.patch.object(bsc16_rig, "open_serial_endpoint", return_value=handle):
             captured = bsc16_rig.capture_serial(
                 lambda: "/dev/fake",
-                duration_seconds=14.0,
+                duration_seconds=10.0,
                 run_started=0.0,
                 stimulus_id="usb-cold-boot",
-                stop_when=bsc16_rig.usb_cold_boot_evidence_complete,
+                stop_when=bsc16_rig.usb_cold_boot_reached_idle,
             )
 
-        self.assertEqual(len(captured), 2)
-        self.assertIn("confirmation_ms=3025", str(captured[-1]["line"]))
+        self.assertEqual(len(captured), 3)
+        self.assertIn("Ready gate opened", str(captured[-1]["line"]))
         self.assertTrue(
             all("SHOULD-NOT-BE-CAPTURED" not in str(row["line"]) for row in captured)
         )

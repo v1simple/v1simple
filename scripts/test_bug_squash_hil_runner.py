@@ -3095,7 +3095,7 @@ if os.environ.get('FAKE_BSC16_MISSING_STIMULUS') == '1':
 if is_fault:
     facts = {
         'pwr-wake-transient-usb-observed': False,
-        'usb-confirmation-delay-ms': 3000,
+        'usb-cold-boot-reached-idle': True,
         'adc-failure-voltage-degraded': True,
         'adc-failure-power-button-operational': True,
         'long-hold-classified-as-usb': False,
@@ -3128,7 +3128,7 @@ if is_fault:
 else:
     facts = {
         'battery-classification-correct': True,
-        'usb-classification-correct': True,
+        'usb-cold-boot-reached-idle': True,
         'power-button-operational': True,
         'source-flapping-observed': False,
         'hil-fault-control-active': False,

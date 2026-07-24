@@ -52,7 +52,7 @@ void feed(HilFaultRuntimeOwner& owner, const char* command, const uint32_t nowMs
 
 void beginAndArm(HilFaultRuntimeOwner& owner, const uint32_t armSequence, const uint32_t nowMs) {
     char command[224]{};
-    std::snprintf(command, sizeof(command), "V1HIL BEGIN BSC-16 %s 60000", kSessionHashText);
+    std::snprintf(command, sizeof(command), "V1HIL BEGIN BSC-16 %s 180000", kSessionHashText);
     feed(owner, command, nowMs);
     std::snprintf(command, sizeof(command), "V1HIL ARM BSC-16 battery-adc-init-fail-once %s %lu", kSessionHashText,
                   static_cast<unsigned long>(armSequence));
@@ -100,7 +100,7 @@ void test_next_boot_record_is_routed_restored_cleared_and_consumed_once() {
 
     TEST_ASSERT_EQUAL_UINT32(BatteryBsc16HilFaultModule::kNextBootMagic, record.magic);
     TEST_ASSERT_EQUAL_UINT32(41, record.targetBootSequence);
-    TEST_ASSERT_EQUAL_UINT32(59998, record.remainingSessionMs);
+    TEST_ASSERT_EQUAL_UINT32(179998, record.remainingSessionMs);
     const HilNextBootFaultRecord staged = record;
 
     HilFaultRuntimeOwner restoredOwner;

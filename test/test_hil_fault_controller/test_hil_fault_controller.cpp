@@ -451,6 +451,15 @@ void test_serial_policy_accepts_only_hashed_local_commands() {
         static_cast<uint8_t>(HilFaultSerialModule::parse(
             "V1HIL BEGIN BSC-06 " HIL_SESSION_HASH_TEXT " 60001", command)));
     TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(HilSerialParseResult::Ok),
+        static_cast<uint8_t>(HilFaultSerialModule::parse(
+            "V1HIL BEGIN BSC-16 " HIL_SESSION_HASH_TEXT " 180000", command)));
+    TEST_ASSERT_EQUAL_UINT32(180000, command.durationMs);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(HilSerialParseResult::InvalidArguments),
+        static_cast<uint8_t>(HilFaultSerialModule::parse(
+            "V1HIL BEGIN BSC-16 " HIL_SESSION_HASH_TEXT " 180001", command)));
+    TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(HilSerialParseResult::InvalidArguments),
         static_cast<uint8_t>(HilFaultSerialModule::parse(
             "V1HIL RELEASE BSC-06 obd-transport-operation-barrier-once "

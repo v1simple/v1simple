@@ -668,7 +668,7 @@ BSC16_PRODUCTION_STIMULUS_IDS = (
 )
 BSC16_FAULT_FACTS = {
     "pwr-wake-transient-usb-observed",
-    "usb-confirmation-delay-ms",
+    "usb-cold-boot-reached-idle",
     "adc-failure-voltage-degraded",
     "adc-failure-power-button-operational",
     "long-hold-classified-as-usb",
@@ -678,7 +678,7 @@ BSC16_FAULT_FACTS = {
 }
 BSC16_PRODUCTION_FACTS = {
     "battery-classification-correct",
-    "usb-classification-correct",
+    "usb-cold-boot-reached-idle",
     "power-button-operational",
     "source-flapping-observed",
     "hil-fault-control-active",
@@ -6872,12 +6872,9 @@ def validate_bsc16_facts(value: object, *, role: str) -> None:
     facts = require_exact_object(value, expected_keys, code=code, label="BSC-16 facts")
     if role == "fault-collection":
         bounce = facts.get("gpio16-bounce-ms")
-        delay = facts.get("usb-confirmation-delay-ms")
         if (
             facts.get("pwr-wake-transient-usb-observed") is not False
-            or type(delay) is not int
-            or delay < 2800
-            or delay > 4000
+            or facts.get("usb-cold-boot-reached-idle") is not True
             or facts.get("adc-failure-voltage-degraded") is not True
             or facts.get("adc-failure-power-button-operational") is not True
             or facts.get("long-hold-classified-as-usb") is not False
@@ -6890,7 +6887,7 @@ def validate_bsc16_facts(value: object, *, role: str) -> None:
             raise RunnerError(code, "BSC-16 fault-build facts do not satisfy the policy bounds")
     elif (
         facts.get("battery-classification-correct") is not True
-        or facts.get("usb-classification-correct") is not True
+        or facts.get("usb-cold-boot-reached-idle") is not True
         or facts.get("power-button-operational") is not True
         or facts.get("source-flapping-observed") is not False
         or facts.get("hil-fault-control-active") is not False

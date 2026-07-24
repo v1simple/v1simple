@@ -380,15 +380,23 @@ class RigAdapterRegistryTests(unittest.TestCase):
             side_effect=("READY", "START"),
         ), mock.patch.object(bsc16_rig.sys, "stderr", output):
             bsc16_rig.prompt_ready(
-                "Leave the DUT fully OFF.",
-                "Press PWR once now.",
+                target_state="cable: DATA | battery rail: ON | DUT: HARD OFF | analyzer: ARMED",
+                setup_instruction="Leave the DUT fully OFF.",
+                action_instruction="Press PWR once now.",
+                duration_seconds=7.0,
             )
         rendered = output.getvalue()
+        target = rendered.index(
+            "TARGET STATE: cable: DATA | battery rail: ON | DUT: HARD OFF | analyzer: ARMED"
+        )
+        window = rendered.index("CAPTURE WINDOW: 7 s")
         setup = rendered.index("BSC-16 SETUP ONLY: Leave the DUT fully OFF.")
         waiting = rendered.index("Do not perform the timed action yet.")
         preview = rendered.index("NEXT TIMED ACTION: Press PWR once now.")
         start = rendered.index("Type START")
         capture = rendered.index("CAPTURE STARTED — ACTION NOW: Press PWR once now.")
+        self.assertLess(target, window)
+        self.assertLess(window, setup)
         self.assertLess(setup, waiting)
         self.assertLess(waiting, preview)
         self.assertLess(preview, start)
@@ -411,10 +419,185 @@ class RigAdapterRegistryTests(unittest.TestCase):
             bsc16_rig.AdapterError
         ):
             bsc16_rig.prompt_ready(
-                "Leave the DUT fully OFF.",
-                "Press PWR once now.",
+                target_state="cable: DATA | battery rail: ON | DUT: HARD OFF | analyzer: ARMED",
+                setup_instruction="Leave the DUT fully OFF.",
+                action_instruction="Press PWR once now.",
+                duration_seconds=7.0,
             )
         self.assertNotIn("CAPTURE STARTED", rejected.getvalue())
+
+    def test_bsc16_install_and_fault_staging_preambles_surface_hidden_time(self) -> None:
+        install = io.StringIO()
+        with mock.patch.object(
+            builtins,
+            "input",
+            return_value="READY",
+        ), mock.patch.object(bsc16_rig.sys, "stderr", install):
+            bsc16_rig.prompt_install_ready("fault-collection")
+        rendered = install.getvalue()
+        self.assertIn("cable: FULL", rendered)
+        self.assertIn("battery rail: ON", rendered)
+        self.assertIn("DUT: ON", rendered)
+        self.assertIn("2–3 minutes", rendered)
+        self.assertIn("Touch nothing", rendered)
+
+        staging = io.StringIO()
+        with mock.patch.object(
+            builtins,
+            "input",
+            return_value="READY",
+        ), mock.patch.object(bsc16_rig.sys, "stderr", staging):
+            bsc16_rig.prompt_fault_staging_ready()
+        staged = staging.getvalue()
+        self.assertIn("Keep the FULL cable connected", staged)
+        self.assertIn("DATA cable within reach", staged)
+        self.assertIn("60-second fault-session clock", staged)
+
+    def test_bsc16_checkpoint_contract_encodes_hard_off_order_and_cp5_reboot(self) -> None:
+        cp1 = bsc16_rig.CHECKPOINTS["pwr-wake-on-battery"]
+        self.assertIn("replace FULL with DATA", cp1.setup_instruction)
+        self.assertLess(
+            cp1.setup_instruction.index("replace FULL with DATA"),
+            cp1.setup_instruction.index("hold PWR"),
+        )
+        self.assertIn("wait at least two seconds", cp1.setup_instruction)
+        self.assertIn("HARD OFF", cp1.target_state)
+        self.assertNotIn("ASLEEP", cp1.target_state)
+        self.assertIn("cold-boot", cp1.action_instruction)
+
+        cp2 = bsc16_rig.CHECKPOINTS["usb-cold-boot"]
+        self.assertIn("Keep the 18650 installed", cp2.setup_instruction)
+        self.assertNotIn("remove all power", cp2.setup_instruction.lower())
+
+        cp5 = bsc16_rig.CHECKPOINTS["transition-battery-to-usb"]
+        self.assertIn("Press PWR once to cold-boot", cp5.setup_instruction)
+        self.assertIn("wait for the idle screen", cp5.setup_instruction)
+
+        cp6 = bsc16_rig.CHECKPOINTS["transition-usb-to-battery"]
+        self.assertIn("single motion", cp6.action_instruction)
+        self.assertIn("stayed running", cp6.observed_pass)
+
+    def test_bsc16_usb_delay_uses_firmware_confirmation_measurement(self) -> None:
+        rows = [
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 9100,
+                "line": "[Battery] Power detection: classification=unknown reported=BATTERY",
+            },
+            {
+                "stimulus_id": "usb-cold-boot",
+                "elapsed_ms": 12125,
+                "line": "[Battery] Power source changed: usb confirmation_ms=3025",
+            },
+        ]
+        self.assertEqual(bsc16_rig.usb_confirmation_delay_ms(rows), 3025)
+        bsc16_rig.validate_stimulus_capture("usb-cold-boot", rows)
+
+        missing_measurement = [dict(rows[1], line="[Battery] Power source changed: usb")]
+        with self.assertRaisesRegex(
+            bsc16_rig.AdapterError,
+            "firmware confirmation measurement",
+        ):
+            bsc16_rig.usb_confirmation_delay_ms(missing_measurement)
+
+        too_slow = [
+            dict(rows[0]),
+            dict(
+                rows[1],
+                elapsed_ms=13101,
+                line="[Battery] Power source changed: usb confirmation_ms=4001",
+            ),
+        ]
+        with self.assertRaisesRegex(
+            bsc16_rig.AdapterError,
+            "qualified window",
+        ):
+            bsc16_rig.validate_stimulus_capture("usb-cold-boot", too_slow)
+
+    def test_bsc16_stable_replay_recovers_transition_classification(self) -> None:
+        rows = [
+            {
+                "stimulus_id": "transition-usb-to-battery",
+                "elapsed_ms": 20000,
+                "line": "[Battery] Power source stable: battery",
+            }
+        ]
+        self.assertEqual(
+            bsc16_rig.classifications(rows, "transition-usb-to-battery"),
+            [(20000, "battery")],
+        )
+        bsc16_rig.validate_stimulus_capture("transition-usb-to-battery", rows)
+
+        with self.assertRaisesRegex(
+            bsc16_rig.AdapterError,
+            "required battery source classification",
+        ):
+            bsc16_rig.validate_stimulus_capture("transition-usb-to-battery", [])
+
+    def test_bsc16_fault_lifecycle_fails_fast_on_invalid_behavior(self) -> None:
+        def event(event_id: str, elapsed_ms: int) -> dict[str, object]:
+            return {
+                "stimulus_id": "force-adc-init-failure",
+                "elapsed_ms": elapsed_ms,
+                "line": (
+                    '{"hil_event":"'
+                    + event_id
+                    + '","arm_sequence":7,"ready_sequence":8,"generation":9,'
+                    '"phase":1,"latch_initialized":true,"adc_handle_allocated":false,'
+                    '"voltage_valid":false,"source_classification":"battery",'
+                    '"power_button_enabled":true}'
+                ),
+            }
+
+        rows = [event("ready", 100), event("fired", 110), event("released", 120)]
+        bsc16_rig.validate_stimulus_capture("force-adc-init-failure", rows)
+
+        invalid = [dict(row) for row in rows]
+        invalid[1]["line"] = str(invalid[1]["line"]).replace(
+            '"power_button_enabled":true',
+            '"power_button_enabled":false',
+        )
+        with self.assertRaisesRegex(
+            bsc16_rig.AdapterError,
+            "did not preserve required behavior",
+        ):
+            bsc16_rig.validate_stimulus_capture(
+                "force-adc-init-failure",
+                invalid,
+            )
+
+    def test_bsc16_stimulus_validation_runs_before_operator_pass(self) -> None:
+        checkpoint = mock.Mock()
+        checkpoint.target_state = "target"
+        checkpoint.setup_instruction = "setup"
+        checkpoint.action_instruction = "action"
+        checkpoint.observed_pass = "observation"
+        checkpoint.duration_seconds = 7.0
+        with mock.patch.object(bsc16_rig, "prompt_ready"), mock.patch.object(
+            bsc16_rig,
+            "capture_serial",
+            return_value=[],
+        ), mock.patch.object(
+            bsc16_rig,
+            "validate_stimulus_capture",
+            side_effect=bsc16_rig.AdapterError("missing evidence"),
+        ) as validate, mock.patch.object(
+            bsc16_rig,
+            "prompt_pass",
+        ) as prompt_pass, self.assertRaisesRegex(
+            bsc16_rig.AdapterError,
+            "missing evidence",
+        ):
+            bsc16_rig.perform_stimulus(
+                checkpoint=checkpoint,
+                stimulus_id="pwr-wake-on-battery",
+                run_started=0.0,
+                resolve_serial_port=lambda: "/dev/null",
+                serial_rows=[],
+                stimuli=[],
+            )
+        validate.assert_called_once_with("pwr-wake-on-battery", [])
+        prompt_pass.assert_not_called()
 
     def test_bsc16_adapter_reresolves_exact_serial_after_device_renumber(self) -> None:
         endpoint_resolver = bsc16_rig.SerialEndpointResolver(
@@ -569,9 +752,19 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             destination = root / "capture"
-            with mock.patch.object(builtins, "input", return_value=str(accepted)):
+            prompt = io.StringIO()
+            with mock.patch.object(
+                builtins,
+                "input",
+                return_value=str(accepted),
+            ), mock.patch.object(bsc16_rig.sys, "stderr", prompt):
                 self.assertEqual(bsc16_rig.import_logic_capture(destination), 8)
             self.assertEqual(destination.read_bytes(), accepted.read_bytes())
+            rendered = prompt.getvalue()
+            self.assertIn("exactly gpio16", rendered)
+            self.assertIn("digital 0/1", rendered)
+            self.assertIn("32 MB", rendered)
+            self.assertIn("contains \"ms\"", rendered)
 
             rejected = root / "rejected.csv"
             rejected.write_text(
@@ -583,7 +776,15 @@ class RigAdapterRegistryTests(unittest.TestCase):
                 "1.000,1\n",
                 encoding="utf-8",
             )
-            with mock.patch.object(builtins, "input", return_value=str(rejected)), self.assertRaises(
+            with mock.patch.object(
+                builtins,
+                "input",
+                return_value=str(rejected),
+            ), mock.patch.object(
+                bsc16_rig.sys,
+                "stderr",
+                io.StringIO(),
+            ), self.assertRaises(
                 bsc16_rig.AdapterError
             ):
                 bsc16_rig.import_logic_capture(root / "must-not-exist")

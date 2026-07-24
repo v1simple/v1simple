@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -42,6 +43,17 @@ CHANGE_CLASSIFICATION_RE = re.compile(
     r"\[Battery\] Power source changed: (battery|usb|unknown)",
     re.IGNORECASE,
 )
+STABLE_CLASSIFICATION_RE = re.compile(
+    r"\[Battery\] Power source stable: (battery|usb|unknown)",
+    re.IGNORECASE,
+)
+USB_CONFIRMATION_EVIDENCE_RE = re.compile(
+    r"\[Battery\] Power source (?:changed|stable): usb confirmation_ms=([0-9]+)",
+    re.IGNORECASE,
+)
+USB_CONFIRMATION_MIN_MS = 2800
+USB_CONFIRMATION_MAX_MS = 4000
+FAULT_SESSION_DURATION_MS = 60000
 FAULT_EVENTS = ("ready", "fired", "released")
 FAULT_STIMULI = (
     "pwr-wake-on-battery",
@@ -64,6 +76,106 @@ ARTIFACT_FILENAMES = {
     "poweroff_log_sha256": "poweroff.log",
     "serial_log_sha256": "serial.log",
     "source_transitions_sha256": "source-transitions.ndjson",
+}
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    target_state: str
+    setup_instruction: str
+    action_instruction: str
+    observed_pass: str
+    duration_seconds: float
+
+
+CHECKPOINTS = {
+    "pwr-wake-on-battery": Checkpoint(
+        target_state=(
+            "cable: DATA | battery rail: ON | "
+            "DUT: HARD OFF (PWR cold-boots) | analyzer: ARMED"
+        ),
+        setup_instruction=(
+            "Begin with the uploaded DUT running on FULL. While it is still running, "
+            "replace FULL with DATA before shutdown. Keep the battery rail ON and wait at "
+            "least two seconds for battery classification, then hold PWR until the screen "
+            "goes dark and release promptly. This battery-only shutdown should hard-cut the "
+            "latch. Arm the analyzer."
+        ),
+        action_instruction="Press PWR once to cold-boot the DUT from battery.",
+        observed_pass="The screen lit and the DUT reached the idle screen within the window.",
+        duration_seconds=7.0,
+    ),
+    "usb-cold-boot": Checkpoint(
+        target_state=(
+            "cable: NONE | battery rail: ON | "
+            "DUT: HARD OFF (battery latch open) | FULL aligned at port"
+        ),
+        setup_instruction=(
+            "With the DUT running on DATA, hold PWR until the screen goes dark and release. "
+            "Keep the 18650 installed and the battery rail ON; the open latch already leaves "
+            "the board unpowered. Disconnect DATA and hold FULL aligned at the USB port."
+        ),
+        action_instruction=(
+            "Connect FULL immediately for a USB cold boot; do not press PWR."
+        ),
+        observed_pass="The DUT booted from the FULL-cable connection and reached the idle screen.",
+        duration_seconds=7.0,
+    ),
+    "force-adc-init-failure": Checkpoint(
+        target_state=(
+            "cable: DATA | battery rail: OFF | "
+            "DUT: HARD OFF | fault-session clock: RUNNING"
+        ),
+        setup_instruction=(
+            "The one-shot fault is staged and its bounded clock is running. Replace FULL with "
+            "DATA, then turn the battery rail OFF. Leave the DUT dark and do not press PWR yet."
+        ),
+        action_instruction=(
+            "Turn the battery rail ON, then immediately press PWR once to cold-boot the DUT."
+        ),
+        observed_pass=(
+            "The screen lit and the DUT remained operable; a degraded battery reading is "
+            "expected for this injected ADC failure."
+        ),
+        duration_seconds=9.0,
+    ),
+    "hold-power-button": Checkpoint(
+        target_state="cable: DATA | battery rail: ON | DUT: ON BATTERY",
+        setup_instruction=(
+            "Ensure DATA is connected and the battery rail is ON. If FULL is still attached "
+            "after the production cold boot, replace it with DATA, then wait at least two "
+            "seconds for battery classification. Confirm the DUT is running before continuing."
+        ),
+        action_instruction=(
+            "Hold PWR until the screen goes dark, then release it promptly."
+        ),
+        observed_pass="The screen went dark as a direct result of the PWR hold.",
+        duration_seconds=7.0,
+    ),
+    "transition-battery-to-usb": Checkpoint(
+        target_state="cable: DATA | battery rail: ON | DUT: ON BATTERY | FULL ready",
+        setup_instruction=(
+            "The prior checkpoint left the DUT HARD OFF. Press PWR once to cold-boot it from "
+            "battery and wait for the idle screen. Keep DATA connected and hold FULL ready."
+        ),
+        action_instruction=(
+            "Replace DATA with FULL in a single motion while keeping the battery rail ON."
+        ),
+        observed_pass="The DUT stayed running through the swap and remained on the idle screen.",
+        duration_seconds=7.0,
+    ),
+    "transition-usb-to-battery": Checkpoint(
+        target_state="cable: FULL | battery rail: ON | DUT: ON USB | DATA ready",
+        setup_instruction=(
+            "Confirm the DUT is running with FULL and the battery rail ON. Hold DATA aligned "
+            "and ready, but do not unplug FULL yet."
+        ),
+        action_instruction=(
+            "Replace FULL with DATA in a single motion while keeping the battery rail ON."
+        ),
+        observed_pass="The DUT stayed running through the swap and remained on the idle screen.",
+        duration_seconds=7.0,
+    ),
 }
 
 
@@ -166,7 +278,53 @@ def require_opaque(value: str, label: str) -> str:
     return value
 
 
-def prompt_ready(setup_instruction: str, action_instruction: str) -> None:
+def prompt_install_ready(role: str) -> None:
+    environment = "fault-instrumented" if role == "fault-collection" else "production"
+    print(
+        f"\nBSC-16 INSTALL PREP — {environment} build\n"
+        "TARGET STATE: cable: FULL | battery rail: ON | DUT: ON (screen lit)\n"
+        "The adapter will build and upload firmware. This normally takes 2–3 minutes and "
+        "may be silent because build output is captured as evidence. Touch nothing until "
+        "the first checkpoint appears.\n"
+        "Type READY only when the target state is true.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if input().strip() != "READY":
+        raise AdapterError("firmware-install setup was not acknowledged exactly")
+
+
+def prompt_fault_staging_ready() -> None:
+    print(
+        "\nBSC-16 FAULT STAGING PREP\n"
+        "Keep the FULL cable connected and the DUT running. Put the DATA cable within reach "
+        "and identify the battery-rail OFF/ON control now. After staging, the 60-second "
+        "fault-session clock will already be running.\n"
+        "Type READY only when you can perform the CP3 cable swap and rail action without delay.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if input().strip() != "READY":
+        raise AdapterError("fault-staging setup was not acknowledged exactly")
+
+
+def prompt_ready(
+    *,
+    target_state: str,
+    setup_instruction: str,
+    action_instruction: str,
+    duration_seconds: float,
+) -> None:
+    duration_text = (
+        str(int(duration_seconds))
+        if duration_seconds.is_integer()
+        else str(duration_seconds)
+    )
+    print(
+        f"\nTARGET STATE: {target_state}\nCAPTURE WINDOW: {duration_text} s",
+        file=sys.stderr,
+        flush=True,
+    )
     print(
         f"\nBSC-16 SETUP ONLY: {setup_instruction}",
         file=sys.stderr,
@@ -263,7 +421,7 @@ def send_hil_commands(
     *,
     run_started: float,
     serial_rows: list[dict[str, object]],
-) -> None:
+) -> float:
     if not commands:
         raise AdapterError("HIL serial command sequence is empty")
     content = b"".join(command.encode("ascii") + b"\n" for command in commands)
@@ -278,6 +436,7 @@ def send_hil_commands(
     with handle:
         time.sleep(1.0)
         handle.reset_input_buffer()
+        sent_at = time.monotonic()
         handle.write(content)
         handle.flush()
         deadline = time.monotonic() + 12.0
@@ -307,6 +466,7 @@ def send_hil_commands(
                 accepted += 1
     if accepted != len(commands):
         raise AdapterError("HIL serial command sequence was not positively acknowledged")
+    return sent_at
 
 
 def run_firmware_install(
@@ -371,11 +531,14 @@ def classifications(rows: Sequence[Mapping[str, object]], stimulus_id: str) -> l
             continue
         boot_match = BOOT_CLASSIFICATION_RE.search(row["line"])
         change_match = CHANGE_CLASSIFICATION_RE.search(row["line"])
+        stable_match = STABLE_CLASSIFICATION_RE.search(row["line"])
         value = (
             boot_match.group(1)
             if boot_match is not None
             else change_match.group(1)
             if change_match is not None
+            else stable_match.group(1)
+            if stable_match is not None
             else None
         )
         if value is not None and isinstance(row.get("elapsed_ms"), int):
@@ -392,6 +555,21 @@ def require_classification(
             f"required {expected} source classification was not captured for {stimulus_id}"
         )
     return observed
+
+
+def usb_confirmation_delay_ms(rows: Sequence[Mapping[str, object]]) -> int:
+    for row in rows:
+        if (
+            row.get("stimulus_id") != "usb-cold-boot"
+            or not isinstance(row.get("line"), str)
+        ):
+            continue
+        match = USB_CONFIRMATION_EVIDENCE_RE.search(row["line"])
+        if match is not None:
+            return int(match.group(1))
+    raise AdapterError(
+        "USB cold boot did not capture the firmware confirmation measurement"
+    )
 
 
 def source_flapped(rows: Sequence[Mapping[str, object]], stimulus_ids: Sequence[str]) -> bool:
@@ -436,10 +614,77 @@ def parse_fault_lifecycle(rows: Sequence[Mapping[str, object]]) -> list[dict[str
     return lifecycle
 
 
+def validate_fault_lifecycle_capture(rows: Sequence[Mapping[str, object]]) -> None:
+    lifecycle = parse_fault_lifecycle(rows)
+    identity: tuple[int, int, int, int] | None = None
+    previous_elapsed_ms = -1
+    for row in lifecycle:
+        current_identity = tuple(
+            row[field]
+            for field in ("arm_sequence", "ready_sequence", "generation", "phase")
+        )
+        elapsed_ms = row["elapsed_ms"]
+        if (
+            type(elapsed_ms) is not int
+            or elapsed_ms < previous_elapsed_ms
+            or any(type(item) is not int or item <= 0 for item in current_identity[:3])
+            or type(current_identity[3]) is not int
+            or current_identity[3] != 1
+            or row["latch_initialized"] is not True
+            or row["adc_handle_allocated"] is not False
+            or row["voltage_valid"] is not False
+            or row["source_classification"] not in {"battery", "unknown"}
+            or row["power_button_enabled"] is not True
+        ):
+            raise AdapterError("BSC-16 ADC fault lifecycle did not preserve required behavior")
+        if identity is None:
+            identity = current_identity
+        elif current_identity != identity:
+            raise AdapterError("BSC-16 ADC fault lifecycle identity changed during capture")
+        previous_elapsed_ms = elapsed_ms
+
+
+def validate_stimulus_capture(
+    stimulus_id: str,
+    rows: Sequence[Mapping[str, object]],
+) -> None:
+    if stimulus_id == "pwr-wake-on-battery":
+        observed = require_classification(rows, stimulus_id, "battery")
+        if any(value == "usb" for _, value in observed):
+            raise AdapterError("PWR wake transiently classified battery operation as usb")
+        return
+    if stimulus_id == "usb-cold-boot":
+        require_classification(rows, stimulus_id, "usb")
+        delay_ms = usb_confirmation_delay_ms(rows)
+        if not USB_CONFIRMATION_MIN_MS <= delay_ms <= USB_CONFIRMATION_MAX_MS:
+            raise AdapterError(
+                "USB confirmation delay is outside the qualified window"
+            )
+        return
+    if stimulus_id == "force-adc-init-failure":
+        validate_fault_lifecycle_capture(rows)
+        return
+    if stimulus_id == "hold-power-button":
+        if any(value == "usb" for _, value in classifications(rows, stimulus_id)):
+            raise AdapterError("PWR hold was incorrectly classified as usb")
+        return
+    if stimulus_id == "transition-battery-to-usb":
+        require_classification(rows, stimulus_id, "usb")
+    elif stimulus_id == "transition-usb-to-battery":
+        require_classification(rows, stimulus_id, "battery")
+    else:
+        raise AdapterError("unknown BSC-16 stimulus cannot be validated")
+    if source_flapped(rows, (stimulus_id,)):
+        raise AdapterError(f"source-classification flapping was captured for {stimulus_id}")
+
+
 def import_logic_capture(destination: Path) -> int:
     print(
-        "Export the representative GPIO16 digital capture as CSV with a time column "
-        "(seconds or milliseconds) and a gpio16 column, then type its local path.",
+        "Stop the analyzer and export a digital CSV no larger than 32 MB. The CSV needs "
+        "a time column whose name contains \"time\" and a channel column named exactly "
+        "gpio16 (case-insensitive). Samples must be digital 0/1. Seconds are assumed unless "
+        "the time-column name contains \"ms\". Include at least one clean press and release, "
+        "then type the local CSV path.",
         file=sys.stderr,
         flush=True,
     )
@@ -507,26 +752,29 @@ def import_logic_capture(destination: Path) -> int:
 
 def perform_stimulus(
     *,
-    setup_instruction: str,
-    action_instruction: str,
+    checkpoint: Checkpoint,
     stimulus_id: str,
-    duration_seconds: float,
     run_started: float,
     resolve_serial_port: Callable[[], str],
     serial_rows: list[dict[str, object]],
     stimuli: list[dict[str, object]],
 ) -> None:
-    prompt_ready(setup_instruction, action_instruction)
-    started_ms = int((time.monotonic() - run_started) * 1000)
-    serial_rows.extend(
-        capture_serial(
-            resolve_serial_port,
-            duration_seconds=duration_seconds,
-            run_started=run_started,
-            stimulus_id=stimulus_id,
-        )
+    prompt_ready(
+        target_state=checkpoint.target_state,
+        setup_instruction=checkpoint.setup_instruction,
+        action_instruction=checkpoint.action_instruction,
+        duration_seconds=checkpoint.duration_seconds,
     )
-    prompt_pass(f"Confirm the directly observed result for {stimulus_id}.")
+    started_ms = int((time.monotonic() - run_started) * 1000)
+    captured = capture_serial(
+        resolve_serial_port,
+        duration_seconds=checkpoint.duration_seconds,
+        run_started=run_started,
+        stimulus_id=stimulus_id,
+    )
+    serial_rows.extend(captured)
+    validate_stimulus_capture(stimulus_id, captured)
+    prompt_pass(checkpoint.observed_pass)
     stimuli.append(
         {
             "id": stimulus_id,
@@ -593,6 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        prompt_install_ready(args.role)
         binary_sha, build_evidence = run_firmware_install(
             environment, resolve_serial_port, args.target_sha
         )
@@ -609,28 +858,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         poweroff_rows: list[dict[str, object]] = []
 
         perform_stimulus(
-            setup_instruction=(
-                "Turn the DUT fully OFF. Connect the data-only USB cable (no VBUS), "
-                "connect the battery, and arm the analyzer. Leave the DUT OFF."
-            ),
-            action_instruction="Press PWR once now to wake the DUT on battery.",
+            checkpoint=CHECKPOINTS["pwr-wake-on-battery"],
             stimulus_id="pwr-wake-on-battery",
-            duration_seconds=7.0,
             run_started=run_started,
             resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
         perform_stimulus(
-            setup_instruction=(
-                "Turn the DUT fully OFF, remove all power, and disconnect the data-only "
-                "cable. Leave the powered USB cable disconnected."
-            ),
-            action_instruction=(
-                "Connect the powered USB cable now for a cold boot; do not press PWR."
-            ),
+            checkpoint=CHECKPOINTS["usb-cold-boot"],
             stimulus_id="usb-cold-boot",
-            duration_seconds=7.0,
             run_started=run_started,
             resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
@@ -639,26 +876,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.role == "fault-collection":
             session_hash = hashlib.sha256(args.session_id.encode("ascii")).hexdigest()
-            send_hil_commands(
+            prompt_fault_staging_ready()
+            session_sent_at = send_hil_commands(
                 resolve_serial_port,
                 (
-                    f"V1HIL BEGIN BSC-16 {session_hash} 60000",
+                    f"V1HIL BEGIN BSC-16 {session_hash} {FAULT_SESSION_DURATION_MS}",
                     f"V1HIL ARM BSC-16 battery-adc-init-fail-once {session_hash} 7",
                     f"V1HIL NEXT_BOOT BSC-16 battery-adc-init-fail-once {session_hash} 7",
                 ),
                 run_started=run_started,
                 serial_rows=serial_rows,
             )
+            remaining_seconds = max(
+                0,
+                int(
+                    FAULT_SESSION_DURATION_MS / 1000
+                    - (time.monotonic() - session_sent_at)
+                ),
+            )
+            print(
+                "\nFAULT STAGED — COUNTDOWN RUNNING: "
+                f"approximately {remaining_seconds} seconds remain. "
+                "Acknowledgement time has already been deducted; complete CP3 promptly.",
+                file=sys.stderr,
+                flush=True,
+            )
+            if remaining_seconds == 0:
+                raise AdapterError("fault session expired before the CP3 setup prompt")
             perform_stimulus(
-                setup_instruction=(
-                    "Replace powered USB with the data-only cable. Turn the battery rail OFF "
-                    "and leave the DUT fully OFF. The one-shot ADC fault is already staged."
-                ),
-                action_instruction=(
-                    "Turn the battery rail ON, then immediately press PWR once to wake the DUT."
-                ),
+                checkpoint=CHECKPOINTS["force-adc-init-failure"],
                 stimulus_id="force-adc-init-failure",
-                duration_seconds=9.0,
                 run_started=run_started,
                 resolve_serial_port=resolve_serial_port,
                 serial_rows=serial_rows,
@@ -666,15 +913,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         perform_stimulus(
-            setup_instruction=(
-                "Keep the data-only USB cable connected and confirm the DUT is running on "
-                "battery power. Do not touch PWR yet."
-            ),
-            action_instruction=(
-                "Press and hold PWR now for at least two seconds, then release it."
-            ),
+            checkpoint=CHECKPOINTS["hold-power-button"],
             stimulus_id="hold-power-button",
-            duration_seconds=7.0,
             run_started=run_started,
             resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
@@ -690,32 +930,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         perform_stimulus(
-            setup_instruction=(
-                "Confirm the DUT is running on battery with the data-only USB cable connected. "
-                "Have the powered USB cable ready, but do not swap cables yet."
-            ),
-            action_instruction=(
-                "Replace the data-only USB cable with the powered USB cable now; keep the "
-                "battery connected."
-            ),
+            checkpoint=CHECKPOINTS["transition-battery-to-usb"],
             stimulus_id="transition-battery-to-usb",
-            duration_seconds=7.0,
             run_started=run_started,
             resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
             stimuli=stimuli,
         )
         perform_stimulus(
-            setup_instruction=(
-                "Confirm the DUT is running with powered USB and the battery connected. Have "
-                "the data-only USB cable ready, but do not swap cables yet."
-            ),
-            action_instruction=(
-                "Replace the powered USB cable with the data-only USB cable now; keep the "
-                "battery connected."
-            ),
+            checkpoint=CHECKPOINTS["transition-usb-to-battery"],
             stimulus_id="transition-usb-to-battery",
-            duration_seconds=7.0,
             run_started=run_started,
             resolve_serial_port=resolve_serial_port,
             serial_rows=serial_rows,
@@ -739,11 +963,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if flapped:
             raise AdapterError("source-classification flapping was captured")
-        usb_start = next(
-            row["elapsed_ms"] for row in stimuli if row["id"] == "usb-cold-boot"
-        )
-        usb_delay = next(elapsed for elapsed, value in usb if value == "usb") - usb_start
-        if not 2800 <= usb_delay <= 4000:
+        usb_delay = usb_confirmation_delay_ms(serial_rows)
+        if not USB_CONFIRMATION_MIN_MS <= usb_delay <= USB_CONFIRMATION_MAX_MS:
             raise AdapterError("USB confirmation delay is outside the qualified window")
 
         bounce_ms = import_logic_capture(artifact_root / "logic-analyzer-capture")

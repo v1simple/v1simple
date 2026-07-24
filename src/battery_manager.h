@@ -122,6 +122,9 @@ class BatteryManager {
     // include/battery_source_policy.h so it can be unit tested; this class only
     // supplies pin samples and the clock. See bug #17.
     battery_source_policy::State sourceState_;
+    // Bounded serial evidence replay after a confirmed source transition.
+    // This does not influence sourceState_ or any product behavior.
+    battery_source_policy::EvidenceReplayState sourceEvidenceReplayState_;
 
     bool initADC();
     bool initTCA9554();

@@ -29,9 +29,12 @@
 
 namespace {
 
+using battery_source_policy::armEvidenceReplay;
 using battery_source_policy::ButtonGateInputs;
 using battery_source_policy::classifyRound;
 using battery_source_policy::Config;
+using battery_source_policy::EvidenceReplayConfig;
+using battery_source_policy::EvidenceReplayState;
 using battery_source_policy::Observation;
 using battery_source_policy::observe;
 using battery_source_policy::onBattery;
@@ -42,6 +45,7 @@ using battery_source_policy::Result;
 using battery_source_policy::roundDue;
 using battery_source_policy::Source;
 using battery_source_policy::sourceName;
+using battery_source_policy::takeEvidenceReplay;
 
 constexpr Config kConfig{};
 
@@ -163,6 +167,7 @@ void test_cold_start_usb_settles_only_after_the_persistence_window() {
     TEST_ASSERT_EQUAL_INT(outcomeInt(Outcome::Changed), outcomeInt(settled.outcome));
     TEST_ASSERT_EQUAL_INT(sourceInt(Source::Usb), sourceInt(s.classification));
     TEST_ASSERT_FALSE(settled.onBattery);
+    TEST_ASSERT_EQUAL_UINT32(kConfig.usbConfirmMs, settled.usbConfirmationElapsedMs);
 }
 
 void test_pwr_wake_boot_reports_battery_throughout_and_confirms_battery() {
@@ -499,6 +504,38 @@ void test_source_names_are_stable_for_logs() {
     TEST_ASSERT_EQUAL_STRING("usb", sourceName(Source::Usb));
 }
 
+// ─── Bounded source-evidence replay ───────────────────────────────────────
+
+void test_source_evidence_replay_is_bounded_and_spaced() {
+    constexpr EvidenceReplayConfig config{};
+    EvidenceReplayState replay;
+    armEvidenceReplay(replay, 1000, 3025, config);
+    TEST_ASSERT_EQUAL_UINT32(3025, replay.usbConfirmationElapsedMs);
+
+    TEST_ASSERT_FALSE(takeEvidenceReplay(replay, 1000, config));
+    TEST_ASSERT_FALSE(takeEvidenceReplay(replay, 1000 + config.intervalMs - 1, config));
+    for (uint8_t index = 0; index < config.repetitions; ++index) {
+        const uint32_t dueAt = 1000 + static_cast<uint32_t>(index + 1) * config.intervalMs;
+        TEST_ASSERT_TRUE(takeEvidenceReplay(replay, dueAt, config));
+    }
+    TEST_ASSERT_FALSE(
+        takeEvidenceReplay(replay, 1000 + static_cast<uint32_t>(config.repetitions + 1) * config.intervalMs, config));
+}
+
+void test_source_evidence_replay_is_rollover_safe_and_rearms() {
+    constexpr EvidenceReplayConfig config{};
+    EvidenceReplayState replay;
+    const uint32_t armedAt = 0xFFFFFF00u;
+    armEvidenceReplay(replay, armedAt, 3000, config);
+    TEST_ASSERT_FALSE(takeEvidenceReplay(replay, armedAt + config.intervalMs - 1, config));
+    TEST_ASSERT_TRUE(takeEvidenceReplay(replay, armedAt + config.intervalMs, config));
+
+    armEvidenceReplay(replay, 5000, 3025, config);
+    TEST_ASSERT_EQUAL_UINT32(3025, replay.usbConfirmationElapsedMs);
+    TEST_ASSERT_FALSE(takeEvidenceReplay(replay, 5000, config));
+    TEST_ASSERT_TRUE(takeEvidenceReplay(replay, 5000 + config.intervalMs, config));
+}
+
 // ─── Power-button gating (defect C) ────────────────────────────────────────
 
 void test_power_button_stays_enabled_when_the_adc_failed() {
@@ -573,6 +610,9 @@ void test_battery_manager_delegates_classification_to_the_policy() {
     TEST_ASSERT_TRUE(contains(source, "battery_source_policy::observe"));
     TEST_ASSERT_TRUE(contains(source, "battery_source_policy::roundDue"));
     TEST_ASSERT_TRUE(contains(source, "battery_source_policy::powerButtonHandlingEnabled"));
+    TEST_ASSERT_TRUE(contains(source, "battery_source_policy::armEvidenceReplay"));
+    TEST_ASSERT_TRUE(contains(source, "battery_source_policy::takeEvidenceReplay"));
+    TEST_ASSERT_TRUE(contains(source, "[Battery] Power source stable: %s confirmation_ms=%lu"));
     // The single line that keeps isOnBattery() tied to the policy's answer.
     TEST_ASSERT_TRUE_MESSAGE(contains(source, "onBattery_ = result.onBattery;"),
                              "onBattery_ must be derived from the policy result, not computed locally");
@@ -628,6 +668,8 @@ int main() {
 
     RUN_TEST(test_majority_vote_boundaries);
     RUN_TEST(test_source_names_are_stable_for_logs);
+    RUN_TEST(test_source_evidence_replay_is_bounded_and_spaced);
+    RUN_TEST(test_source_evidence_replay_is_rollover_safe_and_rearms);
 
     RUN_TEST(test_power_button_stays_enabled_when_the_adc_failed);
     RUN_TEST(test_power_button_gate_ignores_adc_and_voltage_inputs_entirely);

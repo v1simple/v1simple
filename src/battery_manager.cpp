@@ -465,7 +465,10 @@ battery_source_policy::Result BatteryManager::observeSourceRound(uint32_t nowMs)
         battery_source_policy::observe(sourceState_, nowMs, observation, kSourcePolicy);
     onBattery_ = result.onBattery;
     if (result.changed) {
-        Serial.printf("[Battery] Power source changed: %s\n", battery_source_policy::sourceName(result.classification));
+        Serial.printf("[Battery] Power source changed: %s confirmation_ms=%lu\n",
+                      battery_source_policy::sourceName(result.classification),
+                      static_cast<unsigned long>(result.usbConfirmationElapsedMs));
+        battery_source_policy::armEvidenceReplay(sourceEvidenceReplayState_, nowMs, result.usbConfirmationElapsedMs);
     }
     return result;
 }
@@ -518,6 +521,11 @@ void BatteryManager::update() {
     // battery_source_policy; this only asks whether a round is due.
     if (battery_source_policy::roundDue(sourceState_, now, kSourcePolicy)) {
         observeSourceRound(now);
+    }
+    if (battery_source_policy::takeEvidenceReplay(sourceEvidenceReplayState_, now)) {
+        Serial.printf("[Battery] Power source stable: %s confirmation_ms=%lu\n",
+                      battery_source_policy::sourceName(sourceState_.classification),
+                      static_cast<unsigned long>(sourceEvidenceReplayState_.usbConfirmationElapsedMs));
     }
 
     // Update cached voltage/percentage every 10 seconds

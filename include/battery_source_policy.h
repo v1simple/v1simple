@@ -51,6 +51,46 @@ constexpr const char* sourceName(Source source) {
     return source == Source::Battery ? "battery" : (source == Source::Usb ? "usb" : "unknown");
 }
 
+// A source transition can coincide with USB CDC re-enumeration, so the first
+// log line may be electrically correct but unavailable to the host. Schedule a
+// small, bounded set of steady-state evidence replays after each change. This
+// changes only observability; the source decision above remains authoritative.
+struct EvidenceReplayConfig {
+    uint32_t intervalMs = 1000;
+    uint8_t repetitions = 4;
+};
+
+struct EvidenceReplayState {
+    uint8_t remaining = 0;
+    bool clockSeeded = false;
+    uint32_t lastEmissionMs = 0;
+    uint32_t usbConfirmationElapsedMs = 0;
+};
+
+inline void armEvidenceReplay(EvidenceReplayState& state, uint32_t nowMs, uint32_t usbConfirmationElapsedMs,
+                              const EvidenceReplayConfig& config = EvidenceReplayConfig{}) {
+    state.remaining = config.repetitions;
+    state.clockSeeded = true;
+    state.lastEmissionMs = nowMs;
+    state.usbConfirmationElapsedMs = usbConfirmationElapsedMs;
+}
+
+constexpr bool evidenceReplayDue(const EvidenceReplayState& state, uint32_t nowMs,
+                                 const EvidenceReplayConfig& config = EvidenceReplayConfig{}) {
+    return state.clockSeeded && state.remaining > 0 &&
+           static_cast<uint32_t>(nowMs - state.lastEmissionMs) >= config.intervalMs;
+}
+
+inline bool takeEvidenceReplay(EvidenceReplayState& state, uint32_t nowMs,
+                               const EvidenceReplayConfig& config = EvidenceReplayConfig{}) {
+    if (!evidenceReplayDue(state, nowMs, config)) {
+        return false;
+    }
+    state.remaining--;
+    state.lastEmissionMs = nowMs;
+    return true;
+}
+
 struct Config {
     /// Spacing between classification cycles once the classification is settled.
     uint32_t cycleIntervalMs = 1000;
@@ -102,6 +142,9 @@ struct Result {
     Source classification = Source::Unknown;
     bool onBattery = true;
     bool changed = false;
+    // Firmware-clock duration of the LOW run that qualified a USB change.
+    // Zero for all non-USB changes and non-changing observations.
+    uint32_t usbConfirmationElapsedMs = 0;
 };
 
 /// Majority vote over one round. Returns Unknown for an empty round.
@@ -211,12 +254,15 @@ inline Result observe(State& state, uint32_t nowMs, const Observation& observati
         return result;
     }
 
+    const uint32_t usbConfirmationElapsedMs =
+        verdict == Source::Usb ? static_cast<uint32_t>(nowMs - state.usbCandidateSinceMs) : 0;
     state.classification = verdict;
     detail::clearPending(state);
     detail::clearUsbCandidate(state);
     result.classification = verdict;
     result.onBattery = resolveOnBattery(verdict);
     result.changed = true;
+    result.usbConfirmationElapsedMs = usbConfirmationElapsedMs;
     result.outcome = Outcome::Changed;
     return result;
 }

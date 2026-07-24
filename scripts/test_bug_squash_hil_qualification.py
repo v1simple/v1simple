@@ -911,9 +911,23 @@ def test_self_authored_build_and_unsigned_board_cannot_activate(tmpdir: Path) ->
 
     fake_bin = tmpdir / "fake-bin"
     fake_bin.mkdir()
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then\n'
+        "  echo 'Python 3.11.15'\n"
+        'elif [ "$1" = "-m" ] && [ "$2" = "esptool" ]'
+        ' && [ "$3" = "version" ]; then\n'
+        "  echo 'esptool v5.2.0'\n"
+        "else\n"
+        "  exit 1\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
     fake_pio = fake_bin / "pio"
     fake_pio.write_text(
-        "#!/bin/sh\necho 'PlatformIO Core, version 6.1.19'\n",
+        f"#!{fake_python}\nprint('self-authored PlatformIO')\n",
         encoding="utf-8",
     )
     fake_pio.chmod(0o755)
@@ -921,18 +935,24 @@ def test_self_authored_build_and_unsigned_board_cannot_activate(tmpdir: Path) ->
         os.environ,
         {"PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"},
         clear=False,
+    ), mock.patch.object(
+        qualification,
+        "hash_python_package",
+        return_value="00" * 32,
     ):
         qualification.current_build_tool_identity.cache_clear()
         try:
-            qualification.current_build_tool_identity()
-        except ValueError as exc:
-            assert_true(
-                "launcher" in str(exc).lower(),
-                f"fake PlatformIO failed for the wrong reason: {exc}",
-            )
-        else:
-            raise AssertionError("PATH-selected fake PlatformIO was authenticated")
-    qualification.current_build_tool_identity.cache_clear()
+            try:
+                qualification.current_build_tool_identity()
+            except ValueError as exc:
+                assert_true(
+                    str(exc) == "PlatformIO launcher body is not authenticated",
+                    f"fake PlatformIO failed for the wrong reason: {exc}",
+                )
+            else:
+                raise AssertionError("PATH-selected fake PlatformIO was authenticated")
+        finally:
+            qualification.current_build_tool_identity.cache_clear()
     fake_tools = SYNTHETIC_TOOL_IDENTITY
 
     stale_binary = tmpdir / "stale-firmware.bin"

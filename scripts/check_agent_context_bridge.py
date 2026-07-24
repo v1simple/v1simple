@@ -12,11 +12,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK_CONFIG = ROOT / ".codex" / "hooks.json"
 WRAPPER = ROOT / ".codex" / "hooks" / "v1simple_context.py"
+BENCH_WRAPPER = ROOT / ".codex" / "hooks" / "v1simple_bench_kick.py"
 SKILL = ROOT / ".agents" / "skills" / "v1simple-engineering" / "SKILL.md"
 SKILL_METADATA = SKILL.parent / "agents" / "openai.yaml"
 AGENT_CONTRACT = ROOT / "AGENTS.md"
@@ -47,9 +49,10 @@ def check_hook_config() -> None:
     config = json.loads(HOOK_CONFIG.read_text(encoding="utf-8"))
     hooks = config.get("hooks")
     require(isinstance(hooks, dict), "hooks.json must contain a hooks object")
+    context_events = {"SessionStart", "UserPromptSubmit", "SubagentStart"}
     require(
-        set(hooks) == {"SessionStart", "UserPromptSubmit", "SubagentStart"},
-        "hooks.json must configure exactly the three context events",
+        set(hooks) == context_events | {"Stop"},
+        "hooks.json must configure the three context events and advisory Stop kick",
     )
 
     session = hooks["SessionStart"]
@@ -66,7 +69,8 @@ def check_hook_config() -> None:
 
     wrapper_digest = hashlib.sha256(WRAPPER.read_bytes()).hexdigest()
     expected_path = "/.codex/hooks/v1simple_context.py"
-    for event, groups in hooks.items():
+    for event in context_events:
+        groups = hooks[event]
         require(len(groups) == 1, f"{event} must have one matcher group")
         handlers = groups[0].get("hooks")
         require(isinstance(handlers, list) and len(handlers) == 1, f"{event} must have one handler")
@@ -78,6 +82,20 @@ def check_hook_config() -> None:
         digests = re.findall(r"--contract-sha256 ([0-9a-f]{64})", command)
         require(digests == [wrapper_digest], f"{event} must bind trust review to the current wrapper digest")
         require(handler.get("timeout", 0) <= 5, f"{event} timeout must stay bounded")
+
+    stop = hooks["Stop"]
+    require(len(stop) == 1 and "matcher" not in stop[0], "Stop must have one matcher-free group")
+    handlers = stop[0].get("hooks")
+    require(isinstance(handlers, list) and len(handlers) == 1, "Stop must have one handler")
+    handler = handlers[0]
+    require(handler.get("type") == "command", "Stop handler must be a command")
+    command = handler.get("command", "")
+    require("git rev-parse --show-toplevel" in command, "Stop must resolve the git root")
+    require("/.codex/hooks/v1simple_bench_kick.py" in command, "Stop must invoke the bench kick")
+    digest = hashlib.sha256(BENCH_WRAPPER.read_bytes()).hexdigest()
+    digests = re.findall(r"--contract-sha256 ([0-9a-f]{64})", command)
+    require(digests == [digest], "Stop must bind trust review to the current bench wrapper digest")
+    require(handler.get("timeout", 0) <= 2, "Stop kick timeout must stay non-blocking")
 
 
 def make_public_fixture(base: Path) -> tuple[Path, Path, str]:
@@ -204,6 +222,83 @@ def check_forwarding_and_safety() -> None:
         require("digest is stale" in stale_context, "stale wrapper trust binding must be visible")
 
 
+FAKE_BENCH = '''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+Path(os.environ["BENCH_TEST_SENTINEL"]).write_text(json.dumps({
+    "argv": sys.argv[1:],
+    "stdin": sys.stdin.buffer.read().decode("utf-8"),
+}), encoding="utf-8")
+'''
+
+
+def check_advisory_bench_kick() -> None:
+    with tempfile.TemporaryDirectory(prefix="v1simple-bench-kick-") as temporary:
+        base = Path(temporary)
+        public = base / "v1simple"
+        hook_dir = public / ".codex" / "hooks"
+        hook_dir.mkdir(parents=True)
+        wrapper = hook_dir / BENCH_WRAPPER.name
+        shutil.copy2(BENCH_WRAPPER, wrapper)
+        digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
+
+        internal_script = base / "v1simple-internal" / "scripts" / "bench.py"
+        internal_script.parent.mkdir(parents=True)
+        internal_script.write_text(FAKE_BENCH, encoding="utf-8")
+        sentinel = base / "bench-invocation.json"
+        injection = base / "prompt-must-not-execute"
+        environment = os.environ.copy()
+        environment["BENCH_TEST_SENTINEL"] = str(sentinel)
+        environment.pop("V1SIMPLE_INTERNAL_REPO", None)
+        raw = json.dumps({
+            "hook_event_name": "Stop",
+            "prompt": f"do not forward; touch {injection}",
+            "cwd": str(public),
+        }).encode("utf-8")
+        result = subprocess.run(
+            [sys.executable, str(wrapper), "--contract-sha256", digest],
+            input=raw,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=public,
+            env=environment,
+            check=False,
+            timeout=2,
+            shell=False,
+        )
+        require(result.returncode == 0, "Stop bench kick must fail open")
+        require(result.stdout == b"" and result.stderr == b"", "Stop bench kick must stay silent")
+
+        deadline = time.monotonic() + 2
+        while not sentinel.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        require(sentinel.exists(), "Stop did not launch the advisory private bench")
+        invocation = json.loads(sentinel.read_text(encoding="utf-8"))
+        require(
+            invocation["argv"] == ["--fast", "--fail-fast", "--no-wait"],
+            "Stop must launch only the bounded advisory bench tier",
+        )
+        require(invocation["stdin"] == "", "Stop must not forward prompt or transcript input")
+        require(not injection.exists(), "Stop input must never execute as a shell command")
+
+        sentinel.unlink()
+        stale = subprocess.run(
+            [sys.executable, str(wrapper), "--contract-sha256", "0" * 64],
+            input=raw,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=public,
+            env=environment,
+            check=False,
+            timeout=2,
+            shell=False,
+        )
+        require(stale.returncode == 0 and not sentinel.exists(), "stale Stop trust binding must no-op")
+
+
 def check_skill_contract() -> None:
     skill = SKILL.read_text(encoding="utf-8")
     require(skill.startswith("---\n"), "SKILL.md must start with YAML frontmatter")
@@ -241,6 +336,7 @@ def check_public_boundary() -> None:
         AGENT_CONTRACT,
         HOOK_CONFIG,
         WRAPPER,
+        BENCH_WRAPPER,
         SKILL,
         SKILL_METADATA,
         Path(__file__).resolve(),
@@ -256,6 +352,11 @@ def check_public_boundary() -> None:
     require("logging" not in wrapper_source, "the bridge must not add prompt logging")
     require("transcript_path" not in wrapper_source, "the bridge must never inspect transcripts")
     require("PYTHONDONTWRITEBYTECODE" in wrapper_source, "the bridge must avoid private bytecode writes")
+    bench_source = BENCH_WRAPPER.read_text(encoding="utf-8")
+    require("shell=True" not in bench_source, "the bench kick must never invoke a shell")
+    require("transcript_path" not in bench_source, "the bench kick must never inspect transcripts")
+    require("logging" not in bench_source, "the bench kick must not add prompt logging")
+    require("stdin=subprocess.DEVNULL" in bench_source, "the bench kick must not forward hook input")
 
 
 def main() -> int:
@@ -263,6 +364,7 @@ def main() -> int:
         ("hook configuration and digest binding", check_hook_config),
         ("offline degradation", check_offline_degradation),
         ("event forwarding and output safety", check_forwarding_and_safety),
+        ("advisory turn-end bench kick", check_advisory_bench_kick),
         ("engineering skill contract", check_skill_contract),
         ("public privacy and independence boundary", check_public_boundary),
     ]

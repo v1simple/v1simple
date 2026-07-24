@@ -1,5 +1,5 @@
 {
-  "description": "Inject optional V1Simple engineering context without coupling the public repository to private infrastructure.",
+  "description": "Inject optional V1Simple engineering context and kick the advisory private bench without coupling public builds to private infrastructure.",
   "hooks": {
     "SessionStart": [
       {
@@ -32,6 +32,17 @@
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_context.py\" --contract-sha256 bfd8b0e989eb70ae47dadb069456050330cf03c85bedfe40b1b191c6e55b4264",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/v1simple_bench_kick.py\" --contract-sha256 af718c674e9ea728171d7a56316ed8dfa927e245d9219b460d3f807755cb2e3b",
+            "timeout": 2
           }
         ]
       }

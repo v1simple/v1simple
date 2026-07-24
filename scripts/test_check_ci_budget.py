@@ -9,6 +9,8 @@ import tempfile
 
 import check_ci_budget as checker
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def assert_raises(message: str, callback) -> None:
     try:
@@ -156,6 +158,26 @@ def test_elapsed_seconds_are_typed_and_budget_boundary_is_inclusive() -> None:
             )
 
 
+def test_fast_lane_stops_before_compilation_heavy_suites() -> None:
+    ci_test = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
+    manifest_gate = (
+        'run_step "Native linked-source manifest contract" '
+        "python3 scripts/native_test_source_manifest.py --check"
+    )
+    fast_exit = 'if [[ "$FAST" -eq 1 ]]; then\n  ELAPSED='
+    native_tests = (
+        'run_step "Native unit tests" '
+        "python3 scripts/run_native_tests_serial.py"
+    )
+    manifest_index = ci_test.find(manifest_gate)
+    fast_exit_index = ci_test.find(fast_exit)
+    native_tests_index = ci_test.find(native_tests)
+    if min(manifest_index, fast_exit_index, native_tests_index) < 0:
+        raise AssertionError("fast-lane boundary is incomplete")
+    if not manifest_index < fast_exit_index < native_tests_index:
+        raise AssertionError("fast lane does not stop at the deterministic preflight boundary")
+
+
 def main() -> int:
     tests = (
         test_repository_contract_passes,
@@ -164,6 +186,7 @@ def main() -> int:
         test_authoritative_timeout_must_be_single_positive_integer,
         test_budget_must_be_positive_integer,
         test_elapsed_seconds_are_typed_and_budget_boundary_is_inclusive,
+        test_fast_lane_stops_before_compilation_heavy_suites,
     )
     for test in tests:
         test()

@@ -14,8 +14,12 @@ NC='\033[0m'
 
 usage() {
   cat <<'EOF'
-Usage: scripts/ci-test.sh [--with-coverage] [--help]
+Usage: scripts/ci-test.sh [--fast] [--with-coverage] [--help]
 
+  --fast            Run the deterministic preflight only. This is the bounded
+                    background-development lane: toolchain contracts, semantic
+                    guards, and their regression tests, without native builds,
+                    mutation, frontend, firmware builds, or qualification work.
   --with-coverage   Also run the firmware C++ coverage lane (native-coverage
                     suites + gcovr + ratchet check). OFF by default: the lane is
                     a whole second native run (measured: 170.7s uninstrumented
@@ -29,8 +33,13 @@ EOF
 }
 
 WITH_COVERAGE=0
+FAST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --fast)
+      FAST=1
+      shift
+      ;;
     --with-coverage)
       WITH_COVERAGE=1
       shift
@@ -46,6 +55,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$FAST" -eq 1 && "$WITH_COVERAGE" -eq 1 ]]; then
+  echo -e "${RED}--fast and --with-coverage cannot be combined.${NC}" >&2
+  exit 2
+fi
 
 START_TIME=$(date +%s)
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
@@ -77,7 +91,11 @@ source "$ROOT_DIR/scripts/platformio_ca_bundle.sh"
 export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
 echo "============================================"
-echo "Authoritative Local CI Gate"
+if [[ "$FAST" -eq 1 ]]; then
+  echo "Bounded Development Preflight"
+else
+  echo "Authoritative Local CI Gate"
+fi
 echo "============================================"
 
 section "Toolchain"
@@ -112,6 +130,14 @@ run_step "Retired ALP terms regression tests" python3 scripts/test_retired_alp_t
 run_step "Trigger-term scanner regression tests" python3 scripts/test_scan_trigger_terms.py
 run_step "Stabilization manifest contract" python3 scripts/check_stabilization_manifest.py
 run_step "Native linked-source manifest contract" python3 scripts/native_test_source_manifest.py --check
+
+if [[ "$FAST" -eq 1 ]]; then
+  ELAPSED=$(($(date +%s) - START_TIME))
+  echo ""
+  echo -e "${GREEN}Fast development preflight passed in ${ELAPSED}s${NC}"
+  exit 0
+fi
+
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitized unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native_car
@@ -137,7 +163,7 @@ run_step "Bug-squash HIL adapter protocol tests" python3 scripts/test_bug_squash
 run_step "Bug-squash HIL runner regression tests" python3 scripts/test_bug_squash_hil_runner.py
 run_step "BSC-09 typed collector regression tests" python3 scripts/test_bug_squash_hil_bsc09.py
 run_step "HIL fault-control exclusion regression tests" python3 scripts/test_check_bug_squash_hil_fault_controls.py
-run_step "HIL fault-control authoritative build gate" python3 scripts/check_bug_squash_hil_fault_controls.py
+run_step "HIL fault-control static isolation gate" python3 scripts/check_bug_squash_hil_fault_controls.py --static-only
 run_step "HIL board resolver regression tests" python3 scripts/test_resolve_hil_board.py
 run_step "Bug-squash HIL qualification validator regression tests" python3 scripts/test_bug_squash_hil_qualification.py
 run_step "Bug-squash build evidence generator regression tests" python3 scripts/test_generate_bug_squash_build_evidence.py

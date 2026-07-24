@@ -371,7 +371,7 @@ def test_hil_environment_cannot_become_default_or_leak_to_production_flags() -> 
         ci_test = root / checker.CI_TEST_FILE
         ci_test.write_text(
             ci_test.read_text(encoding="utf-8").replace(
-                checker.CI_AUTHORITATIVE_GATE, "# authoritative HIL gate removed"
+                checker.CI_STATIC_GATE, "# static HIL isolation gate removed"
             ),
             encoding="utf-8",
         )
@@ -1126,6 +1126,28 @@ def test_bound_build_requires_clean_full_sha_and_exact_environment_commands() ->
         )
 
 
+def test_static_only_cli_skips_qualification_rebuild() -> None:
+    original_static = checker.validate_static
+    original_builds = checker.validate_bound_builds
+    original_binary = checker.validate_binary_absence
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("static-only validation entered the qualification rebuild")
+
+    try:
+        checker.validate_static = lambda _root: []
+        checker.validate_bound_builds = unexpected
+        checker.validate_binary_absence = unexpected
+        assert_true(
+            checker.main(["--static-only"]) == 0,
+            "static-only validation did not pass",
+        )
+    finally:
+        checker.validate_static = original_static
+        checker.validate_bound_builds = original_builds
+        checker.validate_binary_absence = original_binary
+
+
 def main(
     *,
     toolchain_probe: Callable[[], object | None] = pinned_platformio_toolchain,
@@ -1155,6 +1177,7 @@ def main(
         test_binary_absence_requires_complete_real_artifacts_and_scans_markers,
         test_binary_errors_never_echo_canonical_paths,
         test_bound_build_requires_clean_full_sha_and_exact_environment_commands,
+        test_static_only_cli_skips_qualification_rebuild,
     )
     for test in tests:
         test()

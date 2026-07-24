@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import configparser
 from dataclasses import dataclass
 import hashlib
@@ -45,9 +46,9 @@ CI_REGRESSION_GATE = (
     'run_step "HIL fault-control exclusion regression tests" '
     "python3 scripts/test_check_bug_squash_hil_fault_controls.py"
 )
-CI_AUTHORITATIVE_GATE = (
-    'run_step "HIL fault-control authoritative build gate" '
-    "python3 scripts/check_bug_squash_hil_fault_controls.py"
+CI_STATIC_GATE = (
+    'run_step "HIL fault-control static isolation gate" '
+    "python3 scripts/check_bug_squash_hil_fault_controls.py --static-only"
 )
 EXPECTED_HIL_FILES = {
     "src/modules/hil/hil_fault_controller.cpp",
@@ -398,16 +399,17 @@ def validate_static(root: Path) -> list[str]:
         regression_indices = [
             index for index, line in enumerate(ci_lines) if line.strip() == CI_REGRESSION_GATE
         ]
-        authoritative_indices = [
-            index for index, line in enumerate(ci_lines) if line.strip() == CI_AUTHORITATIVE_GATE
+        static_indices = [
+            index for index, line in enumerate(ci_lines) if line.strip() == CI_STATIC_GATE
         ]
         if (
             len(regression_indices) != 1
-            or len(authoritative_indices) != 1
-            or authoritative_indices[0] != regression_indices[0] + 1
+            or len(static_indices) != 1
+            or static_indices[0] != regression_indices[0] + 1
         ):
             errors.append(
-                "authoritative HIL checker must run exactly once immediately after its CI regressions"
+                "static HIL isolation checker must run exactly once immediately "
+                "after its CI regressions"
             )
     try:
         ci_workflow = (root / CI_WORKFLOW_FILE).read_text(encoding="utf-8")
@@ -1417,8 +1419,30 @@ def validate_bound_builds(
     return errors, manifest if not errors else None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="verify HIL fault controls remain isolated from production firmware"
+    )
+    parser.add_argument(
+        "--static-only",
+        action="store_true",
+        help=(
+            "verify deterministic source/configuration isolation without the "
+            "qualification-only authenticated rebuild"
+        ),
+    )
+    args = parser.parse_args(argv)
+
     static_errors = validate_static(ROOT)
+    if args.static_only:
+        if static_errors:
+            print("[hil-fault-controls] static isolation validation failed:")
+            for error in static_errors:
+                print(f"  - {error}")
+            return 1
+        print("[hil-fault-controls] static isolation verified")
+        return 0
+
     build_errors: list[str] = []
     manifest: BoundBuildManifest | None = None
     if not static_errors:

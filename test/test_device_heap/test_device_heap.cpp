@@ -272,6 +272,14 @@ void setup() {
     RUN_TEST(test_heap_internal_alloc_free_no_leak);
     RUN_TEST(test_heap_spiram_alloc_free_no_leak);
 
+    // Fragmentation and repeated allocation stress
+    RUN_TEST(test_heap_fragmentation_under_churn);
+    RUN_TEST(test_heap_repeated_alloc_free_no_cumulative_leak);
+
+    // OOM resilience
+    RUN_TEST(test_heap_oom_returns_null_not_crash);
+    RUN_TEST(test_heap_near_oom_alloc_and_recover);
+
     // API consistency
     RUN_TEST(test_heap_free_size_monotonic_with_alloc);
     RUN_TEST(test_heap_largest_block_lte_free_size);

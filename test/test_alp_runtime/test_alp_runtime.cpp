@@ -2802,18 +2802,18 @@ void test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval()
     AlpSdLogger logger;
     logger.begin(true, true);
 
-    logger.logHeartbeat(1000, 0xB0, 0x03, 0x00, AlpState::LISTENING, "UNKNOWN");
+    logger.logHeartbeat(3000, 0xB0, 0x03, 0x00, AlpState::LISTENING, "UNKNOWN");
     TEST_ASSERT_EQUAL_STRING(
-        "1000,HEARTBEAT,LISTENING,,B0,03,00,33,UNKNOWN,,\n",
+        "3000,,HEARTBEAT,LISTENING,,B0,03,00,33,UNKNOWN,,\n",
         logger.testGetLastLine());
 
     logger.testClearLastLine();
-    logger.logHeartbeat(2500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
+    logger.logHeartbeat(4500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
     TEST_ASSERT_EQUAL_STRING("", logger.testGetLastLine());
 
-    logger.logHeartbeat(4500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
+    logger.logHeartbeat(6500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
     TEST_ASSERT_EQUAL_STRING(
-        "4500,HEARTBEAT,LISTENING,,B0,04,00,34,UNKNOWN,,\n",
+        "6500,,HEARTBEAT,LISTENING,,B0,04,00,34,UNKNOWN,,\n",
         logger.testGetLastLine());
 }
 
@@ -3311,12 +3311,15 @@ int main(int argc, char** argv) {
     RUN_TEST(test_warm_up_flagged_when_heartbeat_mode_is_idle);
     RUN_TEST(test_display_window_stays_open_across_byte1_blip_to_idle);
     RUN_TEST(test_boot_self_test_does_not_promote_on_repeat_detect);
+    RUN_TEST(test_warmup_released_on_heartbeat_02_to_04);
     RUN_TEST(test_warmup_released_on_lid_deploy);
     RUN_TEST(test_warmup_stays_suppressed_on_heartbeat_02_to_03_without_gun);
     RUN_TEST(test_warmup_targeted_blip_inside_boot_envelope_stays_suppressed);
     RUN_TEST(test_warmup_released_on_targeted_heartbeat_from_idle_mode);
     RUN_TEST(test_warmup_stays_suppressed_on_heartbeat_06_to_03_without_gun);
     RUN_TEST(test_warmup_does_not_fallback_release_unknown_session);
+    RUN_TEST(test_direction_relatches_front_on_byte1_targeted);
+    RUN_TEST(test_direction_rear_latch_not_flipped_by_subsequent_rear);
     RUN_TEST(test_teardown_without_gun_id_does_not_display);
     RUN_TEST(test_alp5_session7_dli_without_gun_id_stays_unknown_direction);
     RUN_TEST(test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope);
@@ -3324,6 +3327,7 @@ int main(int argc, char** argv) {
     // ALP SD logger CSV format
     RUN_TEST(test_sd_logger_frame_columns_match_header);
     RUN_TEST(test_sd_logger_heartbeat_includes_checksum_and_direction);
+    RUN_TEST(test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval);
     RUN_TEST(test_sd_logger_gun_id_lid_deploy_preserves_raw_frame);
     RUN_TEST(test_sd_logger_gun_id_detect_preserves_raw_frame);
 

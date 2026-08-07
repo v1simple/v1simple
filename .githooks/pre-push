@@ -116,7 +116,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if is_zero_oid "$local_sha"; then
     fail "deleting a published ref on '$remote_name'."
     echo "    Deleting published refs is how a release gets orphaned." >&2
-    echo "    If this is deliberate, use an explicitly reviewed --no-verify deletion." >&2
+    echo "    Published refs are append-only; do not bypass this safeguard." >&2
     blocked=1
     continue
   fi

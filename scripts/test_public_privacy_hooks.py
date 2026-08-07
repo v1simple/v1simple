@@ -487,6 +487,22 @@ def test_pre_push_accepts_a_safe_existing_remote_range() -> None:
         assert completed.returncode == 0, completed.stderr
 
 
+def test_pre_push_blocks_ref_deletion_without_recommending_bypass() -> None:
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        head = git(repo, "rev-parse", "HEAD")
+        completed = invoke_pre_push(
+            repo,
+            local_ref="(delete)",
+            local_sha=ZERO,
+            remote_ref="refs/heads/main",
+            remote_sha=head,
+        )
+        assert completed.returncode != 0
+        assert "Published refs are append-only" in completed.stderr
+        assert "--no-verify" not in completed.stderr
+
+
 def test_pre_push_blocks_deleted_intermediate_content_in_existing_range() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -690,6 +706,7 @@ def main() -> int:
         test_pre_push_accepts_safe_main_history,
         test_pre_push_blocks_unapproved_remote_without_echoing_it,
         test_pre_push_accepts_a_safe_existing_remote_range,
+        test_pre_push_blocks_ref_deletion_without_recommending_bypass,
         test_pre_push_blocks_deleted_intermediate_content_in_existing_range,
         test_pre_push_allows_only_semantic_release_tags,
         test_pre_push_requires_exact_local_hooks_path,

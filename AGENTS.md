@@ -4,6 +4,9 @@ Keep V1Simple simple, in code and docs.
 
 - Use `.agents/skills/v1simple-engineering/SKILL.md` for engineering work.
 - This public repository is the complete source of engineering context.
+- Run `./scripts/check_local_privacy_setup.py` at the start of every task and
+  again before any commit or handoff. Stop if it fails; do not bypass, weaken,
+  or treat `./scripts/ci-test.sh` as a substitute for this machine-local check.
 - Ground claims first in the owning code, tests, and build output; use recorded bench and camera observations for physical and visual behavior. Mark unknowns; documentation does not override behavior.
 - Keep private context, paths, data, and excerpts out of public files, logs, commits, and artifacts.
 - Make the smallest coherent change and inspect the final diff for unrelated work or privacy leaks.

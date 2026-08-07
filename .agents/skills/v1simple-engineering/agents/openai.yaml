@@ -1,4 +1,4 @@
 interface:
   display_name: "V1Simple Engineering"
   short_description: "Apply V1Simple engineering context safely"
-  default_prompt: "Use $v1simple-engineering to plan and implement this V1Simple engineering task."
+  default_prompt: "Use $v1simple-engineering to plan and implement this V1Simple engineering task. Run the mandatory local privacy preflight before inspecting or changing repository content and again before commit or handoff."

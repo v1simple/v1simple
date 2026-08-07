@@ -2,10 +2,10 @@
 # Authoritative repo gate used locally and by GitHub workflows.
 #
 # Gate order: pinned-toolchain check -> format -> privacy gate -> BLE invariant
-# gates -> Python regression tests -> native tests -> frontend checks ->
-# production artifact build. Privacy and Tier-0 gates run their own regression
-# suites inline; a guard is only as trustworthy as the proof that it still
-# detects.
+# gates -> firmware static analysis -> Python regression tests -> native tests
+# across every host environment -> frontend checks -> production artifact build.
+# Privacy and Tier-0 gates run their own regression suites inline; a guard is
+# only as trustworthy as the proof that it still detects.
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ usage() {
 Usage: scripts/ci-test.sh [--fast] [--help]
 
   --fast   Static preflight only: toolchain pins, format, privacy, and Tier-0
-           invariant gates. No native tests, no builds.
+           invariant gates. No firmware analysis, native tests, or builds.
   --help   Show this message.
 EOF
 }
@@ -122,6 +122,9 @@ if [[ "$FAST" -eq 1 ]]; then
   exit 0
 fi
 
+section "Static Analysis"
+run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-defect=medium
+
 section "Python Regression Tests"
 # Safety-critical guard regressions already run inline above. Keep the remaining
 # script and workflow regressions in the full gate without expanding --fast.
@@ -142,7 +145,10 @@ run_step "Soak metric parser regression suite" python3 scripts/test_soak_parse_m
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
 
 section "Native Tests"
+run_step "Native linked-source manifest" python3 scripts/native_test_source_manifest.py --check
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
+run_step "Native sanitizer unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
+run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native-car
 
 section "Frontend"
 run_step "Frontend dependencies" bash -c 'cd interface && npm ci'

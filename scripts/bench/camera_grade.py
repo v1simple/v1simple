@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import hashlib
 import json
 import math
 import shutil
@@ -19,13 +20,14 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_RATE = 3
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
+MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 2.0
 REFERENCE_PATH = Path(__file__).with_name("camera_reference.json")
 
 # The calibrated camera view.  Coordinates are fractions of the full camera
@@ -120,18 +122,101 @@ def load_camera_reference(path: Path = REFERENCE_PATH) -> dict[str, Any]:
 CAMERA_REFERENCE = load_camera_reference()
 
 
-def load_frequency_references() -> dict[int, tuple[int, ...]]:
-    payload = CAMERA_REFERENCE
-    raw = payload.get("frequency_signatures")
+def load_frequency_references(payload: dict[str, Any] = CAMERA_REFERENCE) -> dict[int, tuple[int, ...]]:
+    raw = payload.get("frequency_references")
     if not isinstance(raw, dict) or not raw:
-        raise RuntimeError("camera reference has no frequency signatures")
-    references = {int(key): tuple(int(value) for value in values) for key, values in raw.items()}
+        raise RuntimeError("camera reference has no frequency references")
+    references: dict[int, tuple[int, ...]] = {}
+    for key, reference in raw.items():
+        if not isinstance(reference, dict) or not isinstance(reference.get("signature"), list):
+            raise RuntimeError("camera reference frequency entry is malformed")
+        references[int(key)] = tuple(int(value) for value in reference["signature"])
     if any(len(values) != 75 for values in references.values()):
         raise RuntimeError("camera reference frequency signatures are malformed")
     return references
 
 
 FREQUENCY_REFERENCES = load_frequency_references()
+
+
+def _decode_reference_frame(path: Path, ffmpeg: str | None = None) -> bytes:
+    executable = ffmpeg or shutil.which("ffmpeg")
+    if not executable:
+        raise RuntimeError("ffmpeg is required to validate camera reference images")
+    process = subprocess.run(
+        [
+            executable,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    if process.returncode != 0:
+        detail = process.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"camera reference image decode failed: {detail or f'exit {process.returncode}'}")
+    if len(process.stdout) != FRAME_BYTES:
+        raise RuntimeError(
+            f"camera reference image has {len(process.stdout)} decoded bytes; expected {FRAME_BYTES}"
+        )
+    return process.stdout
+
+
+def validate_camera_reference(
+    payload: dict[str, Any] = CAMERA_REFERENCE,
+    path: Path = REFERENCE_PATH,
+    ffmpeg: str | None = None,
+) -> None:
+    verified_by = payload.get("verified_by")
+    verified_utc = payload.get("verified_utc")
+    if not isinstance(verified_by, str) or not verified_by.strip():
+        raise RuntimeError("camera reference has no visual verifier")
+    if not isinstance(verified_utc, str):
+        raise RuntimeError("camera reference has no visual verification time")
+    try:
+        verification_time = datetime.fromisoformat(verified_utc.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError("camera reference visual verification time is malformed") from exc
+    if verification_time.tzinfo is None:
+        raise RuntimeError("camera reference visual verification time has no timezone")
+
+    raw = payload.get("frequency_references")
+    if not isinstance(raw, dict) or not raw:
+        raise RuntimeError("camera reference has no frequency references")
+    references = load_frequency_references(payload)
+    for frequency, signature in references.items():
+        reference = raw.get(str(frequency))
+        if not isinstance(reference, dict):
+            raise RuntimeError(f"camera reference {frequency} entry is malformed")
+        expected_text = f"{frequency // 1000}.{frequency % 1000:03d}"
+        if reference.get("display_text") != expected_text:
+            raise RuntimeError(f"camera reference {frequency} display text is malformed")
+        image_name = reference.get("image")
+        image_sha256 = reference.get("image_sha256")
+        if not isinstance(image_name, str) or Path(image_name).name != image_name:
+            raise RuntimeError(f"camera reference {frequency} image path is malformed")
+        if not isinstance(image_sha256, str) or len(image_sha256) != 64:
+            raise RuntimeError(f"camera reference {frequency} image hash is malformed")
+        image_path = path.parent / image_name
+        try:
+            image_bytes = image_path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"camera reference {frequency} image is missing") from exc
+        if hashlib.sha256(image_bytes).hexdigest() != image_sha256:
+            raise RuntimeError(f"camera reference {frequency} image hash does not match")
+        if frequency_signature(_decode_reference_frame(image_path, ffmpeg)) != signature:
+            raise RuntimeError(f"camera reference {frequency} signature does not match its image")
 
 
 def validate_camera_profile(camera_result: dict[str, Any]) -> None:
@@ -304,15 +389,15 @@ def find_replay_offset(
     encounters: list[EncounterObservation],
     hint_s: float | None,
 ) -> tuple[float, float]:
-    candidates: Iterable[float]
-    if hint_s is not None and math.isfinite(hint_s):
-        candidates = [hint_s + delta / FRAME_RATE for delta in range(-6, 7)]
-    else:
-        candidates = [step / FRAME_RATE for step in range(0, 61)]
+    if hint_s is None or not math.isfinite(hint_s):
+        raise RuntimeError("replay camera grade requires a finite emulator start time")
+    adjustment_steps = round(MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S * FRAME_RATE)
+    candidates = [hint_s + delta / FRAME_RATE for delta in range(-adjustment_steps, adjustment_steps + 1)]
     checkpoints = [float(second) for second in range(1, 252)]
-    best_offset = 0.0
+    best_offset = hint_s
     best_ratio = -1.0
     best_score = -1.0
+    best_adjustment = math.inf
     for offset in candidates:
         matches = 0
         compared = 0
@@ -343,10 +428,14 @@ def find_replay_offset(
             else 0.0
         )
         score = ratio + encounter_ratio
-        if score > best_score:
+        adjustment = abs(offset - hint_s)
+        if score > best_score or (math.isclose(score, best_score) and adjustment < best_adjustment):
             best_offset = offset
             best_ratio = ratio
             best_score = score
+            best_adjustment = adjustment
+    if best_adjustment >= MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S:
+        raise RuntimeError("replay camera alignment landed at the timing-hint search boundary")
     return round(best_offset, 3), round(best_ratio, 4)
 
 
@@ -424,6 +513,8 @@ def grade_replay(
     start_hint_s: float | None,
 ) -> dict[str, Any]:
     offset_s, state_match_ratio = find_replay_offset(observations, encounters, start_hint_s)
+    hint_value = float(start_hint_s) if start_hint_s is not None else math.nan
+    hint_adjustment_s = round(offset_s - hint_value, 3)
     direction_compared = 0
     direction_matches = 0
     frequency_compared = 0
@@ -451,6 +542,11 @@ def grade_replay(
     frequency_ratio = frequency_matches / frequency_compared if frequency_compared else 0.0
     direction_ratio = direction_matches / direction_compared if direction_compared else 0.0
     checks = {
+        "alignment_near_start_hint": {
+            "result": "PASS",
+            "adjustment_seconds": hint_adjustment_s,
+            "maximum_adjustment_seconds": MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+        },
         "timeline_matches_log": {
             "result": "PASS" if state_match_ratio >= 0.96 else "FAIL",
             "ratio": state_match_ratio,
@@ -480,6 +576,7 @@ def grade_replay(
         "alignment": {
             "video_offset_seconds": offset_s,
             "start_hint_seconds": start_hint_s,
+            "hint_adjustment_seconds": hint_adjustment_s,
         },
         "checks": checks,
         "errors": [],
@@ -508,7 +605,17 @@ def grade_camera(
     try:
         if camera_result.get("result") != "CAPTURED":
             raise RuntimeError("camera capture did not complete")
+        validate_camera_reference()
+        payload["camera_reference"] = {
+            "source_git_sha": CAMERA_REFERENCE.get("source_git_sha"),
+            "verified_by": CAMERA_REFERENCE.get("verified_by"),
+            "verified_utc": CAMERA_REFERENCE.get("verified_utc"),
+        }
         validate_camera_profile(camera_result)
+        if suite == "replay" and (
+            emulator_start_video_s is None or not math.isfinite(emulator_start_video_s)
+        ):
+            raise RuntimeError("replay camera grade requires a finite emulator start time")
         video_name = str(camera_result.get("video") or "")
         video_path = camera_dir / video_name
         if not video_name or not video_path.is_file():

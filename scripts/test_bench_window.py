@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -15,10 +16,14 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 from camera_capture import CameraCapture  # noqa: E402
 from camera_grade import (  # noqa: E402
+    CAMERA_REFERENCE,
     EncounterObservation,
     FrameObservation,
+    MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+    find_replay_offset,
     grade_idle,
     grade_replay,
+    validate_camera_reference,
 )
 from run_window import V1Emulator, encounter_csv_sd_path, wait_for_post_upload_settle  # noqa: E402
 
@@ -202,8 +207,9 @@ def camera_observation(
     )
 
 
-def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
-    offset = 2.0
+def matching_replay_fixture(
+    offset: float,
+) -> tuple[list[FrameObservation], list[EncounterObservation]]:
     observations: list[FrameObservation] = []
     for index in range(252 * 3):
         replay_time = index / 3
@@ -226,8 +232,31 @@ def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
         )
         for second in (*range(5, 57), *range(59, 245))
     ]
+    return observations, encounters
+
+
+def test_camera_reference_images_match_bound_signatures() -> None:
+    validate_camera_reference()
+    altered = json.loads(json.dumps(CAMERA_REFERENCE))
+    altered["frequency_references"]["24150"]["signature"][0] += 1
+    try:
+        validate_camera_reference(altered)
+    except RuntimeError as exc:
+        assert_true("signature does not match its image" in str(exc), f"wrong signature error: {exc}")
+    else:
+        raise AssertionError("camera reference signature drift passed validation")
+
+
+def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
+    offset = 2.0
+    observations, encounters = matching_replay_fixture(offset)
     passed = grade_replay(observations, encounters, offset)
     assert_true(passed["result"] == "PASS", f"matching camera/log evidence failed: {passed}")
+    adjustment = passed["alignment"]["hint_adjustment_seconds"]
+    assert_true(
+        abs(adjustment) < MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+        f"camera/log alignment escaped the timing hint: {passed}",
+    )
 
     wrong = [
         FrameObservation(
@@ -241,6 +270,27 @@ def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     ]
     failed = grade_replay(wrong, encounters, offset)
     assert_true(failed["result"] == "FAIL", f"camera/log disagreement passed: {failed}")
+
+
+def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
+    observations, encounters = matching_replay_fixture(2.0)
+    for invalid_hint in (None, float("nan"), float("inf")):
+        try:
+            find_replay_offset(observations, encounters, invalid_hint)
+        except RuntimeError as exc:
+            assert_true("finite emulator start time" in str(exc), f"wrong missing-hint error: {exc}")
+        else:
+            raise AssertionError(f"invalid replay timing hint passed: {invalid_hint}")
+
+    # A three-second clock error pushes the best available candidate to the
+    # positive edge of the deliberately bounded two-second search window.
+    boundary_observations, boundary_encounters = matching_replay_fixture(5.0)
+    try:
+        find_replay_offset(boundary_observations, boundary_encounters, 2.0)
+    except RuntimeError as exc:
+        assert_true("search boundary" in str(exc), f"wrong boundary error: {exc}")
+    else:
+        raise AssertionError("replay alignment at the search boundary passed")
 
 
 def test_idle_camera_grade_rejects_unlogged_alerts() -> None:
@@ -281,7 +331,9 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_razer_kiyo_default_uses_supported_full_hd_rate()
+    test_camera_reference_images_match_bound_signatures()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
+    test_replay_alignment_requires_hint_and_rejects_boundary()
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()

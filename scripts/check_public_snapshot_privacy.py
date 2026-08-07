@@ -131,7 +131,14 @@ PRIVATE_BINARY_SUFFIXES = frozenset(
     {".btsnoop", ".heic", ".jpeg", ".jpg", ".m4v", ".mov", ".mp4", ".pcap", ".pcapng", ".png"}
 )
 PUBLIC_BINARY_MEDIA_ALLOWED = frozenset(
-    {PurePosixPath("interface/static/branding/v1simple-logo-transparent.png")}
+    {
+        PurePosixPath("interface/static/branding/v1simple-logo-transparent.png"),
+        # Human-verified calibration crops; camera_reference.json binds each
+        # exact image digest to its expected visible frequency and signature.
+        PurePosixPath("scripts/bench/camera_reference_24150.png"),
+        PurePosixPath("scripts/bench/camera_reference_34700.png"),
+        PurePosixPath("scripts/bench/camera_reference_35500.png"),
+    }
 )
 
 

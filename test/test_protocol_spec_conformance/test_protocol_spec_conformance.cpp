@@ -518,6 +518,5 @@ int main() {
     RUN_TEST(test_alert_aux0_priority_bit_matches_spec_table);
     RUN_TEST(test_user_bytes_bool_rows_match_spec_table);
     RUN_TEST(test_user_bytes_field_rows_match_spec_table);
-    UNITY_END();
-    return 0;
+    return UNITY_END();
 }

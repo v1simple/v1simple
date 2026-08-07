@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Fail-closed privacy boundary for every local Git reference update.
+#
+# Unlike pre-commit, commit-msg, and pre-push, Git does not provide a
+# --no-verify bypass for the preparing phase of reference-transaction. The
+# proposed commit or annotated-tag object already exists, but a failure here
+# prevents any branch, tag, stash, or remote-tracking ref from pointing at it.
+
+set -uo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_LAZY_FETCH=1
+
+[ "${1:-}" = "preparing" ] || exit 0
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+METADATA_CHECK="$ROOT/scripts/check_public_commit_metadata.py"
+SNAPSHOT_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+PARITY_CHECK="$ROOT/scripts/test_scanner_parity.py"
+
+fail() {
+  echo "privacy reference gate blocked a Git ref update; no ref was changed" >&2
+  exit 1
+}
+
+[ -f "$METADATA_CHECK" ] || fail
+[ -f "$SNAPSHOT_CHECK" ] || fail
+[ -f "$PARITY_CHECK" ] || fail
+python3 "$PARITY_CHECK" >/dev/null 2>&1 || fail
+
+is_zero_oid() { [[ "$1" =~ ^0+$ ]]; }
+is_object_oid() { [[ "$1" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; }
+
+while read -r old_value new_value ref_name; do
+  [ -n "${ref_name:-}" ] || continue
+
+  # Symbolic-ref targets can themselves contain private text. Existing clones
+  # always have HEAD, so scan both symbolic strings against the current tree.
+  if [[ "${new_value:-}" == ref:* ]]; then
+    python3 "$SNAPSHOT_CHECK" \
+      --revision HEAD \
+      --ref-name "$ref_name" \
+      --ref-name "$new_value" >/dev/null 2>&1 || fail
+    continue
+  fi
+
+  # Deleting a local ref publishes nothing. Remote deletion remains forbidden
+  # independently by pre-push and GitHub branch protection.
+  is_zero_oid "${new_value:-}" && continue
+  is_object_oid "${new_value:-}" || fail
+
+  object_kind="$(git cat-file -t "$new_value" 2>/dev/null)" || fail
+  case "$object_kind" in
+    commit|tag)
+      ;;
+    *)
+      fail
+      ;;
+  esac
+
+  python3 "$METADATA_CHECK" --object "$new_value" >/dev/null 2>&1 || fail
+
+  history_arguments=(--history-tip "$new_value" --ref-name "$ref_name")
+  if ! is_zero_oid "${old_value:-}"; then
+    is_object_oid "${old_value:-}" || fail
+    old_kind="$(git cat-file -t "$old_value" 2>/dev/null)" || fail
+    case "$old_kind" in
+      commit|tag)
+        history_arguments+=(--history-base "$old_value")
+        ;;
+      *)
+        fail
+        ;;
+    esac
+  fi
+
+  python3 "$SNAPSHOT_CHECK" "${history_arguments[@]}" >/dev/null 2>&1 || fail
+done
+
+exit 0

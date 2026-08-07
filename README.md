@@ -78,6 +78,23 @@ alert assignments and contain no GPS or vehicle-speed data.
 
 ## Verify a change
 
+Install and verify the fail-closed privacy boundary once per clone before making
+any commit:
+
+```sh
+./scripts/setup-hooks.sh
+./scripts/check_local_privacy_setup.py
+```
+
+The setup fixes this checkout's author and committer identity to the public
+project identity, installs early and final privacy gates that remain active for
+`git commit --no-verify`, and makes `origin` fetch-only so ordinary Git pushes
+and IDE Sync cannot contact the public repository. The local checker also
+requires an owner-only private term list at
+`~/.config/v1simple/privacy_terms.txt`; keep personal names, addresses, network
+names, device identifiers, and other site-specific terms there, one per line.
+Never add that file or its values to this repository.
+
 ```sh
 ./scripts/ci-test.sh                   # complete local code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
@@ -120,9 +137,10 @@ the final diff, and say whether hardware or camera evidence was collected.
 
 ## Choose the next release
 
-Every successful push to public `main` publishes a release. Patch is the default.
+Every successful reviewed publication to public `main` publishes a release.
+Ordinary pushes are disabled by the local privacy setup. Patch is the default.
 After committing the changes to release, select a minor or major bump before
-pushing:
+the reviewed publication:
 
 ```sh
 ./scripts/release-bump          # show the selection and next version

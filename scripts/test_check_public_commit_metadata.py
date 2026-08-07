@@ -12,14 +12,15 @@ import tempfile
 import check_public_commit_metadata as checker
 
 
-def git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> None:
-    subprocess.run(
+def git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> str:
+    completed = subprocess.run(
         ["git", "-C", str(repo), *arguments],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=environment,
     )
+    return completed.stdout.decode("utf-8").strip()
 
 
 def make_repo(base: Path) -> Path:
@@ -196,6 +197,56 @@ def test_identity_cli_failure_does_not_print_personal_address() -> None:
         assert private_email not in completed.stderr
 
 
+def test_exact_unreferenced_commit_object_is_checked() -> None:
+    with tempfile.TemporaryDirectory(prefix="public-metadata-") as raw:
+        repo = make_repo(Path(raw))
+        private_email = "unreferenced-commit@personal.test"
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GIT_AUTHOR_NAME": "private author",
+                "GIT_AUTHOR_EMAIL": private_email,
+                "GIT_COMMITTER_NAME": "private committer",
+                "GIT_COMMITTER_EMAIL": private_email,
+            }
+        )
+        git(
+            repo,
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "private object",
+            environment=environment,
+        )
+        object_id = git(repo, "rev-parse", "HEAD")
+        git(repo, "reset", "--hard", "-q", "HEAD^")
+        errors = checker.object_violations(repo, [object_id])
+        assert len(errors) == 4
+        assert all(private_email not in error for error in errors)
+
+
+def test_exact_unreferenced_annotated_tag_object_is_checked() -> None:
+    with tempfile.TemporaryDirectory(prefix="public-metadata-") as raw:
+        repo = make_repo(Path(raw))
+        private_email = "unreferenced-tag@personal.test"
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GIT_COMMITTER_NAME": "private tagger",
+                "GIT_COMMITTER_EMAIL": private_email,
+            }
+        )
+        git(repo, "tag", "-a", "temporary-tag", "-m", "fixture", environment=environment)
+        object_id = git(repo, "rev-parse", "refs/tags/temporary-tag")
+        git(repo, "tag", "-d", "temporary-tag")
+        errors = checker.object_violations(repo, [object_id])
+        assert len(errors) == 2
+        assert errors[0].endswith(": annotated-tag name is not privacy-safe")
+        assert errors[1].endswith(": annotated-tag email is not privacy-safe")
+        assert all(private_email not in error for error in errors)
+
+
 def main() -> int:
     tests = (
         test_allows_project_and_github_noreply_identities,
@@ -206,6 +257,8 @@ def main() -> int:
         test_rejects_shallow_history_before_claiming_full_metadata_coverage,
         test_configured_identity_must_be_privacy_safe,
         test_identity_cli_failure_does_not_print_personal_address,
+        test_exact_unreferenced_commit_object_is_checked,
+        test_exact_unreferenced_annotated_tag_object_is_checked,
     )
     for test in tests:
         test()

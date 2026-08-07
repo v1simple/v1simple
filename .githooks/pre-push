@@ -15,9 +15,10 @@
 #   5. publishing commit or tag history with a non-public email identity
 #   6. publishing tracked private, replay, or capture content
 #
-# It is a GUARDRAIL, not enforcement: `--no-verify` bypasses it, and it does not
-# exist for anyone who clones the repo. Server-side repository settings provide
-# the independent remote control.
+# It is the final content gate for an explicitly reviewed publication. Git can
+# bypass client hooks with `--no-verify`, so setup-hooks.sh independently makes
+# origin fetch-only by assigning /dev/null as its push URL. Ordinary Git and IDE
+# Sync actions therefore cannot contact the public repository at all.
 #
 # Install:  ./scripts/setup-hooks.sh
 
@@ -45,20 +46,17 @@ fi
 # the checkout is renamed or moved, and then every hook silently stops running —
 # git reports no error for a hooksPath that does not resolve, so a push that
 # skipped every guard looks exactly like a push that passed all of them.
-hooks_path="$(git config core.hooksPath || true)"
-case "$hooks_path" in
-  /*)
-    fail "core.hooksPath is an absolute path."
-    echo "    Hooks stop running silently if this checkout is ever moved." >&2
-    echo "    Fix with:  ./scripts/setup-hooks.sh" >&2
-    exit 1
-    ;;
-esac
+hooks_path="$(git config --local --get core.hooksPath || true)"
+if [ "$hooks_path" != ".githooks" ]; then
+  fail "core.hooksPath is not the required repository-relative path."
+  echo "    Fix with:  ./scripts/setup-hooks.sh" >&2
+  exit 1
+fi
 
 # The scanner is duplicated in the internal repository and has drifted apart
 # before. Refuse to vouch for a snapshot using a copy of unknown provenance.
 PARITY_CHECK="$ROOT/scripts/test_scanner_parity.py"
-if [ -f "$PARITY_CHECK" ] && ! python3 "$PARITY_CHECK" >/dev/null 2>&1; then
+if [ ! -f "$PARITY_CHECK" ] || ! python3 "$PARITY_CHECK" >/dev/null 2>&1; then
   fail "the privacy scanner does not match its pinned canonical digest."
   echo "    Run:  python3 scripts/test_scanner_parity.py" >&2
   echo "    A scanner edited in one repository must be carried to the other." >&2

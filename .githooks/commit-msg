@@ -2,7 +2,9 @@
 # Enforce the project's commit-message contract:  <type>(<scope>): short summary
 #
 # Install:  ./scripts/setup-hooks.sh
-# Bypass:   git commit --no-verify   (only if you truly mean to)
+# `git commit --no-verify` skips this format check, but prepare-commit-msg scans
+# the initial message and the independent reference-transaction hook scans the
+# completed message before Git can move any ref to it.
 
 set -euo pipefail
 

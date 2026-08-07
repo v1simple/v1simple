@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Early fail-closed privacy boundary that `git commit --no-verify` does not skip.
+#
+# Git invokes prepare-commit-msg before opening the editor and before writing the
+# commit object. Scan the resolved identity, staged tree, and current message at
+# that point. The reference-transaction hook independently scans the completed
+# object in case an editor changes the message afterward.
+
+set -uo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_LAZY_FETCH=1
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+METADATA_CHECK="$ROOT/scripts/check_public_commit_metadata.py"
+SNAPSHOT_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+PARITY_CHECK="$ROOT/scripts/test_scanner_parity.py"
+
+fail() {
+  echo "privacy preparation gate blocked this commit; no commit was created" >&2
+  exit 1
+}
+
+[ -f "$METADATA_CHECK" ] || fail
+[ -f "$SNAPSHOT_CHECK" ] || fail
+[ -f "$PARITY_CHECK" ] || fail
+python3 "$PARITY_CHECK" >/dev/null 2>&1 || fail
+python3 "$METADATA_CHECK" --identity-only >/dev/null 2>&1 || fail
+python3 "$SNAPSHOT_CHECK" --index >/dev/null 2>&1 || fail
+python3 "$SNAPSHOT_CHECK" --message-file "$1" >/dev/null 2>&1 || fail
+
+exit 0

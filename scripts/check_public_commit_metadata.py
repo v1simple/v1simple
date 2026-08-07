@@ -28,6 +28,7 @@ ALLOWED_NAMES = frozenset(
     }
 )
 IDENTITY_PATTERN = re.compile(r"^(.*?)\s*<([^<>]+)>")
+OBJECT_ID_PATTERN = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 
 def is_public_safe_email(value: str) -> bool:
@@ -55,6 +56,20 @@ def run_git(repo: Path, *arguments: str) -> str:
     if completed.returncode != 0:
         raise RuntimeError("Git metadata inspection failed")
     return completed.stdout
+
+
+def resolve_object(repo: Path, revision: str) -> str:
+    value = run_git(repo, "rev-parse", "--verify", "--end-of-options", revision).strip()
+    if not OBJECT_ID_PATTERN.fullmatch(value):
+        raise RuntimeError("Git returned an invalid object identifier")
+    return value.lower()
+
+
+def git_object_type(repo: Path, object_id: str) -> str:
+    value = run_git(repo, "cat-file", "-t", object_id).strip()
+    if value not in {"blob", "commit", "tag", "tree"}:
+        raise RuntimeError("Git returned an invalid object type")
+    return value
 
 
 def configured_identity(repo: Path, variable: str) -> tuple[str, str]:
@@ -126,6 +141,24 @@ def annotated_tag_metadata(repo: Path) -> list[tuple[str, str, str]]:
     ]
 
 
+def annotated_tag_object_metadata(repo: Path, object_id: str) -> tuple[str, str, str]:
+    output = run_git(repo, "cat-file", "tag", object_id)
+    tagger_line = next(
+        (
+            line.removeprefix("tagger ")
+            for line in output.splitlines()
+            if line.startswith("tagger ")
+        ),
+        None,
+    )
+    if tagger_line is None:
+        raise RuntimeError("Annotated tag has no tagger identity")
+    match = IDENTITY_PATTERN.search(tagger_line)
+    if not match:
+        raise RuntimeError("Annotated tag has malformed tagger identity")
+    return object_id, match.group(1).strip(), match.group(2)
+
+
 def is_shallow_repository(repo: Path) -> bool:
     value = run_git(repo, "rev-parse", "--is-shallow-repository").strip()
     if value not in {"true", "false"}:
@@ -133,10 +166,11 @@ def is_shallow_repository(repo: Path) -> bool:
     return value == "true"
 
 
-def violations(repo: Path, revision: str = "HEAD") -> list[str]:
-    if is_shallow_repository(repo):
-        return ["repository is shallow; full commit and tag history is required"]
-    errors: list[str] = []
+def append_commit_violations(
+    errors: list[str],
+    repo: Path,
+    revision: str,
+) -> None:
     for commit, author_name, author_email, committer_name, committer_email in commit_metadata(
         repo, revision
     ):
@@ -148,11 +182,49 @@ def violations(repo: Path, revision: str = "HEAD") -> list[str]:
             errors.append(f"{commit}: committer name is not privacy-safe")
         if not is_public_safe_email(committer_email):
             errors.append(f"{commit}: committer email is not privacy-safe")
-    for tag_object, tagger_name, tagger_email in annotated_tag_metadata(repo):
-        if not is_public_safe_name(tagger_name):
-            errors.append(f"{tag_object}: annotated-tag name is not privacy-safe")
-        if not is_public_safe_email(tagger_email):
-            errors.append(f"{tag_object}: annotated-tag email is not privacy-safe")
+
+
+def append_tag_violations(
+    errors: list[str],
+    metadata: tuple[str, str, str],
+) -> None:
+    tag_object, tagger_name, tagger_email = metadata
+    if not is_public_safe_name(tagger_name):
+        errors.append(f"{tag_object}: annotated-tag name is not privacy-safe")
+    if not is_public_safe_email(tagger_email):
+        errors.append(f"{tag_object}: annotated-tag email is not privacy-safe")
+
+
+def violations(repo: Path, revision: str = "HEAD") -> list[str]:
+    if is_shallow_repository(repo):
+        return ["repository is shallow; full commit and tag history is required"]
+    errors: list[str] = []
+    append_commit_violations(errors, repo, revision)
+    for metadata in annotated_tag_metadata(repo):
+        append_tag_violations(errors, metadata)
+    return errors
+
+
+def object_violations(repo: Path, revisions: list[str]) -> list[str]:
+    """Inspect exact proposed ref targets, including not-yet-visible tag objects."""
+    if is_shallow_repository(repo):
+        return ["repository is shallow; full commit and tag history is required"]
+    errors: list[str] = []
+    seen_commits: set[str] = set()
+    seen_tags: set[str] = set()
+    for revision in revisions:
+        object_id = resolve_object(repo, revision)
+        object_kind = git_object_type(repo, object_id)
+        if object_kind == "tag" and object_id not in seen_tags:
+            append_tag_violations(errors, annotated_tag_object_metadata(repo, object_id))
+            seen_tags.add(object_id)
+        if object_kind not in {"commit", "tag"}:
+            errors.append(f"{object_id}: reference target is not a commit or annotated tag")
+            continue
+        commit_id = resolve_object(repo, f"{object_id}^{{commit}}")
+        if commit_id not in seen_commits:
+            append_commit_violations(errors, repo, commit_id)
+            seen_commits.add(commit_id)
     return errors
 
 
@@ -165,11 +237,25 @@ def main() -> int:
         action="store_true",
         help="check the resolved author and committer identity without inspecting history",
     )
+    parser.add_argument(
+        "--object",
+        action="append",
+        default=[],
+        help="check an exact proposed commit or annotated-tag object (repeatable)",
+    )
     args = parser.parse_args()
+
+    if args.identity_only and args.object:
+        parser.error("--identity-only and --object are mutually exclusive")
 
     try:
         repo = args.repo.resolve()
-        errors = identity_violations(repo) if args.identity_only else violations(repo, args.revision)
+        if args.identity_only:
+            errors = identity_violations(repo)
+        elif args.object:
+            errors = object_violations(repo, args.object)
+        else:
+            errors = violations(repo, args.revision)
     except RuntimeError as exc:
         print(f"[public-commit-metadata] ERROR: {exc}", file=sys.stderr)
         return 2
@@ -177,7 +263,13 @@ def main() -> int:
         for error in errors:
             print(f"[public-commit-metadata] ERROR: {error}", file=sys.stderr)
         return 1
-    checked = "configured identity" if args.identity_only else "public metadata"
+    checked = (
+        "configured identity"
+        if args.identity_only
+        else "proposed object metadata"
+        if args.object
+        else "public metadata"
+    )
     print(f"[public-commit-metadata] {checked} is privacy-safe")
     return 0
 

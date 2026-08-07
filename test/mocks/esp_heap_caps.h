@@ -21,6 +21,10 @@
 #define MALLOC_CAP_DEFAULT 0x00
 #endif
 
+static_assert((MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM) !=
+                  (MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+              "mock PSRAM and internal heap capabilities must differ");
+
 using MockHeapCapsFreeObserver = void (*)(void*);
 inline MockHeapCapsFreeObserver g_mock_heap_caps_free_observer = nullptr;
 

@@ -237,7 +237,7 @@ def main() -> int:
         "\n  format: <type>(<scope>): short summary\n"
         "  example: fix(ble): defer bond deletion to the main loop\n"
         f"  types:  {', '.join(sorted(TYPES))}\n"
-        "\n  (bypass with --no-verify only if you truly mean to)\n",
+        "\n  correct the message and try again; do not bypass this safeguard\n",
         file=sys.stderr,
     )
     return 1

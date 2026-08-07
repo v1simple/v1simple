@@ -232,13 +232,13 @@ inline TaskHandle_t xTaskGetCurrentTaskHandle() { return nullptr; }
 inline uint32_t esp_get_free_heap_size() { return 320000; }
 inline uint32_t heap_caps_get_free_size(int) { return g_mock_heap_caps_free_size; }
 #ifndef MALLOC_CAP_INTERNAL
-#define MALLOC_CAP_INTERNAL 0
+#define MALLOC_CAP_INTERNAL 0x02
 #endif
 #ifndef MALLOC_CAP_8BIT
-#define MALLOC_CAP_8BIT 0
+#define MALLOC_CAP_8BIT 0x04
 #endif
 #ifndef MALLOC_CAP_SPIRAM
-#define MALLOC_CAP_SPIRAM 0
+#define MALLOC_CAP_SPIRAM 0x01
 #endif
 #ifndef tskNO_AFFINITY
 #define tskNO_AFFINITY (-1)

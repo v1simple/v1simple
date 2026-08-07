@@ -130,6 +130,27 @@ void test_absent_auto_push_key_uses_authoritative_default() {
     TEST_ASSERT_TRUE(diag.healthy);
 }
 
+void test_wifi_client_enabled_setter_updates_production_mode() {
+    SettingsManager manager;
+
+    manager.setWifiClientEnabled(true);
+    TEST_ASSERT_TRUE(manager.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_INT(V1_WIFI_APSTA, manager.get().wifiMode);
+
+    manager.setWifiClientEnabled(false);
+    TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_INT(V1_WIFI_AP, manager.get().wifiMode);
+}
+
+void test_password_obfuscation_round_trip_uses_production_encoding() {
+    const String plainText = "unit-test-password";
+    const String encoded = encodeObfuscatedForStorage(plainText);
+
+    TEST_ASSERT_TRUE(encoded.startsWith(OBFUSCATION_HEX_PREFIX));
+    TEST_ASSERT_TRUE(encoded != plainText);
+    TEST_ASSERT_EQUAL_STRING(plainText.c_str(), decodeObfuscatedFromStorage(encoded).c_str());
+}
+
 void test_load_migrates_legacy_one_sided_slot_volume_to_no_change() {
     Preferences active;
     TEST_ASSERT_TRUE(active.begin(SETTINGS_NS_A, false));
@@ -1743,6 +1764,8 @@ void test_v19_backup_direct_colors_win_over_compatibility_shadow() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);
+    RUN_TEST(test_wifi_client_enabled_setter_updates_production_mode);
+    RUN_TEST(test_password_obfuscation_round_trip_uses_production_encoding);
     RUN_TEST(test_load_migrates_legacy_one_sided_slot_volume_to_no_change);
     RUN_TEST(test_save_load_and_backup_round_trip_current_shape_fields);
     RUN_TEST(test_ap_password_restored_from_backup_when_key_present);

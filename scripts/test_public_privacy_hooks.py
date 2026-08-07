@@ -128,6 +128,15 @@ def test_commit_msg_accepts_safe_conventional_message() -> None:
         assert completed.returncode == 0, completed.stderr
 
 
+def test_commit_msg_rejects_invalid_message_without_recommending_bypass() -> None:
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        completed = invoke_commit_msg(repo, "invalid message\n")
+        assert completed.returncode != 0
+        assert "do not bypass this safeguard" in completed.stderr
+        assert "--no-verify" not in completed.stderr
+
+
 def test_commit_msg_blocks_private_text_before_validator_can_echo_it() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -689,6 +698,7 @@ def test_pre_push_blocks_committed_replay_data_without_echoing_it() -> None:
 def main() -> int:
     tests = (
         test_commit_msg_accepts_safe_conventional_message,
+        test_commit_msg_rejects_invalid_message_without_recommending_bypass,
         test_commit_msg_blocks_private_text_before_validator_can_echo_it,
         test_pre_commit_accepts_public_identity,
         test_pre_commit_blocks_personal_identity_without_echoing_it,

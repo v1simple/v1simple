@@ -32,7 +32,7 @@ Usage: ./bench.sh [options]
 
 Runs the bench evidence suite in one artifact directory and emits one verdict.
 No OBD/proxy coverage and no release-qualification language. Camera artifacts
-are capture evidence and are not automatically graded for visual correctness.
+are mechanically graded against the suite's recorded display contract.
 Optional promoted baselines are local comparison aids only.
 The managed v1replay peripheral emulates the V1 for every live suite.
 
@@ -44,7 +44,7 @@ Options:
   --blink-profile PROFILE Priority-arrow stimulus for replay: scenario (default),
                           steady (negative control), or stress (always blink).
   --blink-arrow           Legacy alias for --blink-profile stress.
-  --camera                Capture calibrated video and still evidence per live window.
+  --camera                Capture and mechanically grade camera evidence per live window.
   --duration-seconds N    Window duration (default: 300).
   --replay-duration-seconds N
                           Replay metrics window duration (default: 300).
@@ -220,7 +220,7 @@ if [[ -z "$FROM_CSV" && "$UPLOAD" -eq 1 ]]; then
   echo "  post-upload: ${POST_UPLOAD_SETTLE_SECONDS}s unscored SD settle" | tee -a "$RUN_LOG"
 fi
 if [[ "$CAPTURE_CAMERA" -eq 1 ]]; then
-  echo "  camera:     required capture evidence (ungraded)" | tee -a "$RUN_LOG"
+  echo "  camera:     required mechanical visual grade" | tee -a "$RUN_LOG"
 else
   echo "  camera:     disabled" | tee -a "$RUN_LOG"
 fi

@@ -116,8 +116,14 @@ the scored session still retains the same SD-start and runtime limits. It then
 captures calibrated camera evidence for every live window and stores the logs,
 metrics, media, and `bench_result.json` under one `.artifacts/bench/.../runs/`
 directory. The replay artifacts also include that boot's encounter CSV. Its
-camera result confirms that evidence was captured; visual correctness still
-requires review of the recorded video and bright/dim still pair.
+camera grader aligns the video with that encounter log and checks alert timing,
+primary frequency, and direction. The core grade rejects unlogged alerts, while
+the display grade checks that the deterministic preview remains visible and
+cycles through its reference frequencies and all three directions. A requested
+camera suite cannot pass on capture alone: a missing or failed
+`camera_grade.json` is part of the single bench verdict. The video and
+bright/dim still pair remain archived for diagnosis, but human viewing is not
+the acceptance gate.
 
 Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in

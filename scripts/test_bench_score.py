@@ -66,6 +66,7 @@ def write_window(
     replay_publishes: int = 708,
     replay_completed: bool = True,
     camera_result: str = "",
+    camera_grade_result: str = "PASS",
 ) -> None:
     step = root / suite
     metric_payload = [
@@ -168,10 +169,29 @@ def write_window(
                 "result": camera_result,
                 **{key: value if camera_result == "CAPTURED" else "" for key, value in evidence_names.items()},
                 "video_duration_seconds": 300.0 if camera_result == "CAPTURED" else 0.0,
-                "visually_graded": False,
+                "visually_graded": camera_result == "CAPTURED",
+                "grade": "camera_grade.json" if camera_result == "CAPTURED" else "",
                 "errors": [] if camera_result == "CAPTURED" else ["camera unavailable"],
             },
         )
+        if camera_result == "CAPTURED" and camera_grade_result:
+            write_json(
+                camera_dir / "camera_grade.json",
+                {
+                    "schema_version": 1,
+                    "kind": "bench_camera_grade",
+                    "suite": suite,
+                    "video": evidence_names["video"],
+                    "result": camera_grade_result,
+                    "checks": {
+                        "display_matches_log": {
+                            "result": camera_grade_result,
+                            "ratio": 1.0 if camera_grade_result == "PASS" else 0.0,
+                        }
+                    },
+                    "errors": [],
+                },
+            )
 
 
 def run_score(
@@ -408,13 +428,23 @@ def test_managed_emulator_must_cover_every_live_window() -> None:
         assert_true("managed V1 emulator did not cover" in proc.stdout, proc.stdout)
 
 
-def test_requested_camera_capture_is_required_but_ungraded() -> None:
+def test_requested_camera_capture_requires_a_passing_mechanical_grade() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_window(root, "core", camera_result="CAPTURED")
         proc = run_score(root, "core", camera_suites=("core",))
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
-        assert_true("camera=CAPTURED (ungraded)" in proc.stdout, proc.stdout)
+        assert_true("camera=PASS" in proc.stdout, proc.stdout)
+
+        write_window(root, "core", camera_result="CAPTURED", camera_grade_result="FAIL")
+        proc = run_score(root, "core", camera_suites=("core",))
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("camera evidence does not match" in proc.stdout, proc.stdout)
+
+        (root / "core" / "camera" / "camera_grade.json").unlink()
+        proc = run_score(root, "core", camera_suites=("core",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("no mechanical grade" in proc.stdout, proc.stdout)
 
         (root / "core" / "camera" / "camera_result.json").unlink()
         proc = run_score(root, "core", camera_suites=("core",))
@@ -435,7 +465,7 @@ def main() -> int:
     test_replay_mismatch_is_actionable_failure()
     test_replay_process_failure_is_collection_failure()
     test_managed_emulator_must_cover_every_live_window()
-    test_requested_camera_capture_is_required_but_ungraded()
+    test_requested_camera_capture_requires_a_passing_mechanical_grade()
     print("bench scorer tests passed")
     return 0
 

@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 from camera_capture import CameraCapture  # noqa: E402
+from camera_grade import (  # noqa: E402
+    EncounterObservation,
+    FrameObservation,
+    grade_idle,
+    grade_replay,
+)
 from run_window import V1Emulator, encounter_csv_sd_path, wait_for_post_upload_settle  # noqa: E402
 
 
@@ -177,6 +183,74 @@ def test_razer_kiyo_default_uses_supported_full_hd_rate() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
+def camera_observation(
+    time_s: float,
+    *,
+    alert: bool,
+    frequency: int | None = None,
+    direction: str = "UNKNOWN",
+) -> FrameObservation:
+    return FrameObservation(
+        time_s=time_s,
+        visible_pixels=100,
+        frequency_pixels=100 if alert else 0,
+        frequency_mhz=frequency,
+        frequency_confidence=0.1 if frequency is not None else 0.0,
+        frequency_signature=(),
+        direction=direction,
+        direction_confidence=1.0 if direction != "UNKNOWN" else 0.0,
+    )
+
+
+def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
+    offset = 2.0
+    observations: list[FrameObservation] = []
+    for index in range(252 * 3):
+        replay_time = index / 3
+        active = (5 <= replay_time < 56) or (59 <= replay_time < 244)
+        observations.append(
+            camera_observation(
+                offset + replay_time,
+                alert=active,
+                frequency=24150 if active else None,
+                direction="FRONT" if active else "UNKNOWN",
+            )
+        )
+    encounters = [
+        EncounterObservation(
+            time_s=float(second),
+            encounter_id=1 if second <= 56 else 2,
+            frequency_mhz=24150,
+            direction="FRONT",
+            event="SAMPLE",
+        )
+        for second in (*range(5, 57), *range(59, 245))
+    ]
+    passed = grade_replay(observations, encounters, offset)
+    assert_true(passed["result"] == "PASS", f"matching camera/log evidence failed: {passed}")
+
+    wrong = [
+        FrameObservation(
+            **{
+                **item.__dict__,
+                "frequency_mhz": 35500 if item.alert_visible else None,
+                "direction": "REAR" if item.alert_visible else "UNKNOWN",
+            }
+        )
+        for item in observations
+    ]
+    failed = grade_replay(wrong, encounters, offset)
+    assert_true(failed["result"] == "FAIL", f"camera/log disagreement passed: {failed}")
+
+
+def test_idle_camera_grade_rejects_unlogged_alerts() -> None:
+    idle = [camera_observation(float(second), alert=False) for second in range(300)]
+    assert_true(grade_idle(idle, 0.0, 300.0)["result"] == "PASS", "visible idle display failed")
+    unexpected = [camera_observation(float(second), alert=second > 20) for second in range(300)]
+    result = grade_idle(unexpected, 0.0, 300.0)
+    assert_true(result["result"] == "FAIL", f"unlogged camera alerts passed: {result}")
+
+
 def test_post_upload_settle_is_interruptible_and_skippable() -> None:
     intervals: list[float] = []
     wait_for_post_upload_settle(3, sleep=intervals.append)
@@ -207,6 +281,8 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_razer_kiyo_default_uses_supported_full_hd_rate()
+    test_camera_grade_rejects_visual_state_that_disagrees_with_log()
+    test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()
     print("bench window tests passed")

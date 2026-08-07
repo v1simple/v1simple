@@ -73,6 +73,7 @@ class CameraCapture:
         self.log_path = self.out_dir / "camera.log"
         self.result_path = self.out_dir / "camera_result.json"
         self.process: subprocess.Popen[bytes] | None = None
+        self.recording_started_monotonic: float | None = None
         self.log_handle: Any = None
         self.errors: list[str] = []
 
@@ -197,6 +198,7 @@ class CameraCapture:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            self.recording_started_monotonic = time.monotonic()
             time.sleep(2)
             if self.process.poll() is not None:
                 raise RuntimeError(f"camera recorder exited early with code {self.process.returncode}")

@@ -287,6 +287,8 @@ def classify_window(
         evidence.extend(str(item) for item in replay_checks.get("evidence") or [])
 
     camera: dict[str, Any] = {}
+    camera_grade: dict[str, Any] = {}
+    camera_grade_valid = False
     if camera_required:
         camera_path = window_dir / "camera" / "camera_result.json"
         camera = load_json(camera_path) or {}
@@ -305,6 +307,45 @@ def classify_window(
                 + (f"; missing files: {', '.join(missing_camera_files)}" if missing_camera_files else "")
                 + (f": {'; '.join(str(item) for item in camera_errors)}" if camera_errors else "")
             )
+        else:
+            grade_name = str(camera.get("grade") or "camera_grade.json")
+            grade_path = camera_path.parent / grade_name
+            camera_grade = load_json(grade_path) or {}
+            if not camera_grade:
+                result = "COLLECTION_FAILED"
+                evidence.append("camera evidence was captured but has no mechanical grade")
+            elif (
+                camera_grade.get("kind") != "bench_camera_grade"
+                or camera_grade.get("suite") != suite
+                or camera_grade.get("video") != camera.get("video")
+            ):
+                result = "COLLECTION_FAILED"
+                evidence.append("camera mechanical grade does not belong to this suite video")
+            else:
+                camera_grade_valid = True
+                if camera_grade.get("result") != "PASS":
+                    grade_errors = (
+                        camera_grade.get("errors")
+                        if isinstance(camera_grade.get("errors"), list)
+                        else []
+                    )
+                    if grade_errors:
+                        result = "COLLECTION_FAILED"
+                        evidence.append(
+                            "camera evidence could not be graded: "
+                            + "; ".join(map(str, grade_errors))
+                        )
+                    else:
+                        result = worse(result, "FAIL")
+                        failed_checks = [
+                            str(name)
+                            for name, check in (camera_grade.get("checks") or {}).items()
+                            if isinstance(check, dict) and check.get("result") != "PASS"
+                        ]
+                        evidence.append(
+                            "camera evidence does not match the recorded display state"
+                            + (f"; failed checks: {', '.join(failed_checks)}" if failed_checks else "")
+                        )
     manifest = load_json(window_path(window_dir, window.get("manifest_path"), "manifest.json")) or {}
     budget = top_budget_pressures(scoring, catalog)
     return {
@@ -329,10 +370,13 @@ def classify_window(
         if emulator
         else {},
         "camera": {
-            "result": camera.get("result", ""),
+            "result": (camera_grade.get("result") if camera_grade_valid else "")
+            or ("UNGRADED" if camera.get("result") == "CAPTURED" else camera.get("result", "")),
+            "capture_result": camera.get("result", ""),
             "video": camera.get("video", ""),
             "video_duration_seconds": camera.get("video_duration_seconds"),
-            "visually_graded": camera.get("visually_graded") is True,
+            "visually_graded": camera_grade_valid,
+            "checks": camera_grade.get("checks", {}),
         }
         if camera_required
         else {},
@@ -362,7 +406,7 @@ def render_text(payload: dict[str, Any]) -> str:
         if window.get("replay_checks", {}).get("result"):
             detail += f", replay={window['replay_checks']['result']}"
         if window.get("camera", {}).get("result"):
-            detail += f", camera={window['camera']['result']} (ungraded)"
+            detail += f", camera={window['camera']['result']}"
         lines.append(detail)
     failures = [w for w in payload["windows"] if w["result"] != "PASS"]
     if failures:

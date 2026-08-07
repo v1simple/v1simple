@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from camera_capture import CameraCapture
+from camera_grade import grade_camera
 
 try:  # pyserial is needed only for live collection, not --from-csv imports.
     import serial  # type: ignore
@@ -449,6 +450,7 @@ class V1Emulator:
         self.process: subprocess.Popen[bytes] | None = None
         self.log_handle: Any = None
         self.started = False
+        self.started_monotonic: float | None = None
         self.completed = False
         self.managed_stop = False
         self.returncode: int | None = None
@@ -468,6 +470,7 @@ class V1Emulator:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        self.started_monotonic = time.monotonic()
         self.started = True
         print(f"[bench] launched V1 emulator mode={self.mode}; log: {self.log_path}", flush=True)
 
@@ -651,7 +654,32 @@ def collect_live(
             emulator_result = emulator.finish(collection_completed)
         if camera is not None:
             camera_result = camera.stop(collection_completed)
-            print(f"[bench] camera result: {camera_result.get('result')}", flush=True)
+            try:
+                camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            emulator_start_video_s: float | None = None
+            if camera.recording_started_monotonic is not None and emulator.started_monotonic is not None:
+                emulator_start_video_s = round(
+                    emulator.started_monotonic - camera.recording_started_monotonic, 3
+                )
+                camera_result["emulator_start_video_seconds"] = emulator_start_video_s
+            camera_grade = grade_camera(
+                suite=args.suite,
+                camera_dir=camera.out_dir,
+                camera_result=camera_result,
+                emulator_result=emulator_result,
+                encounter_csv_path=encounter_csv_path,
+                emulator_start_video_s=emulator_start_video_s,
+            )
+            camera_result["visually_graded"] = True
+            camera_result["grade"] = "camera_grade.json"
+            camera_result["grade_result"] = camera_grade.get("result")
+            camera.result_path.write_text(json.dumps(camera_result, indent=2) + "\n", encoding="utf-8")
+            print(
+                f"[bench] camera capture={camera_result.get('result')} grade={camera_grade.get('result')}",
+                flush=True,
+            )
     if not emulator_result.get("completed"):
         mode = str(emulator_result.get("mode") or args.suite)
         raise RuntimeError(f"V1 emulator mode={mode} did not cover the complete metrics window")

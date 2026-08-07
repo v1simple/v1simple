@@ -14,7 +14,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
-from camera_capture import CameraCapture  # noqa: E402
+import camera_capture as camera_capture_module  # noqa: E402
+from camera_capture import (  # noqa: E402
+    CALIBRATION_PATCH,
+    FRAME_BYTES,
+    FRAME_WIDTH,
+    CameraCapture,
+    evaluate_camera_profile_frames,
+)
 from camera_grade import (  # noqa: E402
     CAMERA_REFERENCE,
     EncounterObservation,
@@ -25,7 +32,12 @@ from camera_grade import (  # noqa: E402
     grade_replay,
     validate_camera_reference,
 )
-from run_window import V1Emulator, encounter_csv_sd_path, wait_for_post_upload_settle  # noqa: E402
+from run_window import (  # noqa: E402
+    V1Emulator,
+    camera_grade_required,
+    encounter_csv_sd_path,
+    wait_for_post_upload_settle,
+)
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -188,6 +200,83 @@ def test_razer_kiyo_default_uses_supported_full_hd_rate() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
+def test_camera_profile_is_reapplied_after_recorder_open() -> None:
+    events: list[str] = []
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self) -> None:
+            events.append("poll")
+            return None
+
+    class OrderingCameraCapture(CameraCapture):
+        def _require_tools(self) -> None:
+            pass
+
+        def _configure(self, exposure: int) -> None:
+            events.append(f"configure:{exposure}")
+
+        def _snapshot(self, exposure: int, path: Path) -> None:
+            events.append(f"snapshot:{exposure}")
+            path.write_bytes(b"snapshot")
+
+    original_popen = camera_capture_module.subprocess.Popen
+    original_sleep = camera_capture_module.time.sleep
+    try:
+        camera_capture_module.subprocess.Popen = lambda *args, **kwargs: (  # type: ignore[assignment]
+            events.append("recorder_open") or FakeProcess()
+        )
+        camera_capture_module.time.sleep = lambda seconds: events.append(  # type: ignore[assignment]
+            f"sleep:{seconds}"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            camera = OrderingCameraCapture(Path(tmp), 300)
+            camera.ffmpeg = "ffmpeg"
+            assert_true(camera.start(), f"camera start failed: {camera.errors}")
+            recorder_index = events.index("recorder_open")
+            configure_indices = [index for index, event in enumerate(events) if event.startswith("configure:")]
+            assert_true(len(configure_indices) == 2, f"camera profile was not applied twice: {events}")
+            assert_true(
+                configure_indices[-1] > recorder_index,
+                f"camera profile was not reapplied after recorder ownership: {events}",
+            )
+            camera.process = None
+            if camera.log_handle is not None:
+                camera.log_handle.close()
+                camera.log_handle = None
+    finally:
+        camera_capture_module.subprocess.Popen = original_popen
+        camera_capture_module.time.sleep = original_sleep
+
+
+def test_camera_profile_validation_rejects_recorder_brightness_drift() -> None:
+    preflight = bytes([3]) * FRAME_BYTES
+    stable_video = bytes([4]) * FRAME_BYTES
+    stable = evaluate_camera_profile_frames(preflight, stable_video)
+    assert_true(stable["result"] == "PASS", f"stable camera profile failed: {stable}")
+
+    drifted_video = bytearray(stable_video)
+    x0, y0, x1, y1 = CALIBRATION_PATCH
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            drifted_video[y * FRAME_WIDTH + x] = 60
+    drifted = evaluate_camera_profile_frames(preflight, bytes(drifted_video))
+    assert_true(drifted["result"] == "FAIL", f"bright recorder handoff passed: {drifted}")
+    assert_true("recorder handoff" in drifted["message"], f"wrong profile failure: {drifted}")
+
+
+def test_only_captured_replay_video_is_mechanically_graded() -> None:
+    captured = {"result": "CAPTURED"}
+    assert_true(not camera_grade_required("core", captured), "core camera became a verdict")
+    assert_true(not camera_grade_required("display", captured), "display camera became a verdict")
+    assert_true(camera_grade_required("replay", captured), "captured replay camera was not graded")
+    assert_true(
+        not camera_grade_required("replay", {"result": "CAPTURE_FAILED"}),
+        "failed replay capture was sent to the visual grader",
+    )
+
+
 def camera_observation(
     time_s: float,
     *,
@@ -331,6 +420,9 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_razer_kiyo_default_uses_supported_full_hd_rate()
+    test_camera_profile_is_reapplied_after_recorder_open()
+    test_camera_profile_validation_rejects_recorder_brightness_drift()
+    test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()

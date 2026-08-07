@@ -286,12 +286,11 @@ def classify_window(
         result = worse(result, str(replay_checks["result"]))
         evidence.extend(str(item) for item in replay_checks.get("evidence") or [])
 
-    camera: dict[str, Any] = {}
+    camera_path = window_dir / "camera" / "camera_result.json"
+    camera = load_json(camera_path) or {}
     camera_grade: dict[str, Any] = {}
     camera_grade_valid = False
     if camera_required:
-        camera_path = window_dir / "camera" / "camera_result.json"
-        camera = load_json(camera_path) or {}
         missing_camera_files: list[str] = []
         if camera.get("result") == "CAPTURED":
             for key in ("video", "session_start_still", "bright_still", "dim_still"):
@@ -378,7 +377,7 @@ def classify_window(
             "visually_graded": camera_grade_valid,
             "checks": camera_grade.get("checks", {}),
         }
-        if camera_required
+        if camera
         else {},
         "budget_pressure": budget,
         "evidence": evidence,
@@ -405,8 +404,14 @@ def render_text(payload: dict[str, Any]) -> str:
             detail += f", V1={window['v1_emulator']['mode']}"
         if window.get("replay_checks", {}).get("result"):
             detail += f", replay={window['replay_checks']['result']}"
-        if window.get("camera", {}).get("result"):
-            detail += f", camera={window['camera']['result']}"
+        camera = window.get("camera", {})
+        if camera.get("result"):
+            if camera.get("result") == "UNGRADED":
+                detail += f", camera={camera.get('capture_result')} (ungraded)"
+            elif not camera.get("visually_graded") and camera.get("capture_result"):
+                detail += f", camera={camera.get('capture_result')} (ungraded)"
+            else:
+                detail += f", camera={camera['result']}"
         lines.append(detail)
     failures = [w for w in payload["windows"] if w["result"] != "PASS"]
     if failures:

@@ -24,6 +24,15 @@ from typing import Any
 # different exposure stay comparable on every logged number.
 VIDEO_EXPOSURE = int(os.environ.get("BENCH_CAMERA_VIDEO_EXPOSURE", "156"))
 
+FRAME_WIDTH = 480
+FRAME_HEIGHT = 200
+FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
+DISPLAY_CROP = "crop=iw*0.52:ih*0.38:iw*0.18:ih*0.25"
+CALIBRATION_VIDEO_TIME_S = 3.0
+CALIBRATION_PATCH = (150, 20, 260, 45)
+CAMERA_OPEN_SETTLE_S = 0.5
+CAMERA_PROFILE_SETTLE_S = 1.5
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -49,6 +58,42 @@ def _find_uvc_util() -> Path | None:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate.resolve()
     return None
+
+
+def camera_profile_patch_stats(frame: bytes) -> dict[str, float | int]:
+    """Summarize a display-background patch that stays dark in the fixed rig."""
+    if len(frame) != FRAME_BYTES:
+        raise ValueError(f"camera calibration frame has {len(frame)} bytes; expected {FRAME_BYTES}")
+    x0, y0, x1, y1 = CALIBRATION_PATCH
+    values = sorted(frame[y * FRAME_WIDTH + x] for y in range(y0, y1) for x in range(x0, x1))
+    return {
+        "mean": round(sum(values) / len(values), 3),
+        "median": values[len(values) // 2],
+        "p90": values[int(len(values) * 0.9)],
+    }
+
+
+def evaluate_camera_profile_frames(preflight: bytes, video: bytes) -> dict[str, Any]:
+    """Reject a recorder handoff that changes the calibrated live exposure."""
+    preflight_stats = camera_profile_patch_stats(preflight)
+    video_stats = camera_profile_patch_stats(video)
+    median_limit = max(20, int(preflight_stats["median"]) * 4 + 4)
+    passed = int(video_stats["median"]) <= median_limit
+    return {
+        "result": "PASS" if passed else "FAIL",
+        "video_time_seconds": CALIBRATION_VIDEO_TIME_S,
+        "normalized_size": f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
+        "patch": list(CALIBRATION_PATCH),
+        "preflight": preflight_stats,
+        "video": video_stats,
+        "video_median_max": median_limit,
+        "message": ""
+        if passed
+        else (
+            "camera video calibration changed after recorder handoff "
+            f"(background median {video_stats['median']} > {median_limit})"
+        ),
+    }
 
 
 class CameraCapture:
@@ -158,6 +203,41 @@ class CameraCapture:
             suffix = f": {detail[-1]}" if detail else ""
             raise RuntimeError(f"camera snapshot failed{suffix}")
 
+    def _decode_profile_frame(self, path: Path, video_time_s: float | None = None) -> bytes:
+        assert self.ffmpeg is not None
+        command = [self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
+        if video_time_s is not None:
+            command.extend(["-ss", str(video_time_s)])
+        command.extend(
+            [
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-vf",
+                f"{DISPLAY_CROP},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-",
+            ]
+        )
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"camera calibration frame decode failed: {detail or f'exit {proc.returncode}'}")
+        if len(proc.stdout) != FRAME_BYTES:
+            raise RuntimeError(
+                f"camera calibration frame has {len(proc.stdout)} decoded bytes; expected {FRAME_BYTES}"
+            )
+        return proc.stdout
+
+    def _validate_recording_profile(self) -> dict[str, Any]:
+        preflight = self._decode_profile_frame(self.preflight_path)
+        video = self._decode_profile_frame(self.video_path, CALIBRATION_VIDEO_TIME_S)
+        return evaluate_camera_profile_frames(preflight, video)
+
     def start(self) -> bool:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -199,7 +279,15 @@ class CameraCapture:
                 start_new_session=True,
             )
             self.recording_started_monotonic = time.monotonic()
-            time.sleep(2)
+            # Opening a new macOS camera consumer can reset UVC controls even
+            # when the preflight still was calibrated. Reapply the complete
+            # profile after ffmpeg owns the live stream, then allow it to
+            # settle before the bench window can begin.
+            time.sleep(CAMERA_OPEN_SETTLE_S)
+            if self.process.poll() is not None:
+                raise RuntimeError(f"camera recorder exited early with code {self.process.returncode}")
+            self._configure(VIDEO_EXPOSURE)
+            time.sleep(CAMERA_PROFILE_SETTLE_S)
             if self.process.poll() is not None:
                 raise RuntimeError(f"camera recorder exited early with code {self.process.returncode}")
             self._write_result("RECORDING")
@@ -257,9 +345,13 @@ class CameraCapture:
         was_running = self.process is not None
         self._stop_process()
         duration = 0.0
+        profile_validation: dict[str, Any] = {}
         if was_running:
             try:
                 duration = self._probe_video()
+                profile_validation = self._validate_recording_profile()
+                if profile_validation.get("result") != "PASS":
+                    self.errors.append(str(profile_validation.get("message") or "camera calibration failed"))
                 self._snapshot(5, self.bright_path)
                 self._snapshot(1250, self.dim_path)
                 self._set_control("exposure-time-abs", VIDEO_EXPOSURE)
@@ -285,6 +377,7 @@ class CameraCapture:
             "bright_still": self.bright_path.name if self.bright_path.is_file() else "",
             "dim_still": self.dim_path.name if self.dim_path.is_file() else "",
             "visually_graded": False,
+            "profile_validation": profile_validation,
         }
         self._write_result(result, **payload)
         return {"result": result, **payload, "errors": list(self.errors)}

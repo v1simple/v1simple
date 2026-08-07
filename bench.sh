@@ -32,7 +32,8 @@ Usage: ./bench.sh [options]
 
 Runs the bench evidence suite in one artifact directory and emits one verdict.
 No OBD/proxy coverage and no release-qualification language. Camera artifacts
-are mechanically graded against the suite's recorded display contract.
+are retained for every selected live window; only deterministic replay is
+mechanically graded against its independently recorded display log.
 Optional promoted baselines are local comparison aids only.
 The managed v1replay peripheral emulates the V1 for every live suite.
 
@@ -44,7 +45,7 @@ Options:
   --blink-profile PROFILE Priority-arrow stimulus for replay: scenario (default),
                           steady (negative control), or stress (always blink).
   --blink-arrow           Legacy alias for --blink-profile stress.
-  --camera                Capture and mechanically grade camera evidence per live window.
+  --camera                Capture every live window and mechanically grade replay.
   --duration-seconds N    Window duration (default: 300).
   --replay-duration-seconds N
                           Replay metrics window duration (default: 300).
@@ -220,7 +221,11 @@ if [[ -z "$FROM_CSV" && "$UPLOAD" -eq 1 ]]; then
   echo "  post-upload: ${POST_UPLOAD_SETTLE_SECONDS}s unscored SD settle" | tee -a "$RUN_LOG"
 fi
 if [[ "$CAPTURE_CAMERA" -eq 1 ]]; then
-  echo "  camera:     required mechanical visual grade" | tee -a "$RUN_LOG"
+  if [[ "$RUN_REPLAY" -eq 1 ]]; then
+    echo "  camera:     captured for all windows; replay grade required" | tee -a "$RUN_LOG"
+  else
+    echo "  camera:     captured but ungraded (no replay selected)" | tee -a "$RUN_LOG"
+  fi
 else
   echo "  camera:     disabled" | tee -a "$RUN_LOG"
 fi
@@ -346,7 +351,7 @@ ln -s "runs/$(basename "$RUN_DIR")" "$ARTIFACT_ROOT/$BOARD_ID/latest"
 score_args=(python3 "$ROOT_DIR/tools/bench_score.py" --run-dir "$RUN_DIR")
 for suite in "${suites[@]}"; do
   score_args+=(--suite "$suite")
-  [[ "$CAPTURE_CAMERA" -eq 1 ]] && score_args+=(--camera-suite "$suite")
+  [[ "$CAPTURE_CAMERA" -eq 1 && "$suite" == "replay" ]] && score_args+=(--camera-suite "$suite")
 done
 "${score_args[@]}" | tee -a "$RUN_LOG"
 score_status=${PIPESTATUS[0]}

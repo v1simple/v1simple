@@ -664,26 +664,36 @@ def collect_live(
                     emulator.started_monotonic - camera.recording_started_monotonic, 3
                 )
                 camera_result["emulator_start_video_seconds"] = emulator_start_video_s
-            camera_grade = grade_camera(
-                suite=args.suite,
-                camera_dir=camera.out_dir,
-                camera_result=camera_result,
-                emulator_result=emulator_result,
-                encounter_csv_path=encounter_csv_path,
-                emulator_start_video_s=emulator_start_video_s,
-            )
-            camera_result["visually_graded"] = True
-            camera_result["grade"] = "camera_grade.json"
-            camera_result["grade_result"] = camera_grade.get("result")
+            camera_result["visually_graded"] = False
+            camera_result["grade"] = ""
+            camera_result["grade_result"] = ""
+            camera_grade: dict[str, Any] = {}
+            if camera_grade_required(args.suite, camera_result):
+                camera_grade = grade_camera(
+                    suite=args.suite,
+                    camera_dir=camera.out_dir,
+                    camera_result=camera_result,
+                    emulator_result=emulator_result,
+                    encounter_csv_path=encounter_csv_path,
+                    emulator_start_video_s=emulator_start_video_s,
+                )
+                camera_result["visually_graded"] = True
+                camera_result["grade"] = "camera_grade.json"
+                camera_result["grade_result"] = camera_grade.get("result")
             camera.result_path.write_text(json.dumps(camera_result, indent=2) + "\n", encoding="utf-8")
-            print(
-                f"[bench] camera capture={camera_result.get('result')} grade={camera_grade.get('result')}",
-                flush=True,
+            grade_result = camera_grade.get("result") or (
+                "ungraded" if camera_result.get("result") == "CAPTURED" else "unavailable"
             )
+            print(f"[bench] camera capture={camera_result.get('result')} grade={grade_result}", flush=True)
     if not emulator_result.get("completed"):
         mode = str(emulator_result.get("mode") or args.suite)
         raise RuntimeError(f"V1 emulator mode={mode} did not cover the complete metrics window")
     return csv_path, encounter_csv_path, completion, port, emulator_result, camera_result
+
+
+def camera_grade_required(suite: str, camera_result: dict[str, Any]) -> bool:
+    """Only replay has an independent log contract suitable for camera grading."""
+    return suite == "replay" and camera_result.get("result") == "CAPTURED"
 
 
 def main() -> int:

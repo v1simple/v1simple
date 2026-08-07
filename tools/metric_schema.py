@@ -475,7 +475,8 @@ def metric_unit(metric_name: str) -> str:
 def unsupported_metrics_for_perf_csv(source_schema: int, columns: Iterable[str]) -> set[str]:
     column_set = set(columns)
     unsupported = set(PERF_CSV_ALWAYS_UNSUPPORTED_METRICS)
-    if source_schema < MIN_DROP_COUNTER_SCHEMA or not {"perfDrop", "eventBusDrops"} <= column_set:
+    schema_is_legacy = source_schema != 0 and source_schema < MIN_DROP_COUNTER_SCHEMA
+    if schema_is_legacy or not {"perfDrop", "eventBusDrops"} <= column_set:
         unsupported.update(PERF_CSV_LEGACY_UNSUPPORTED_METRICS)
     return unsupported
 

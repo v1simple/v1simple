@@ -933,9 +933,13 @@ def test_peak_diagnostics_surface_named_connect_burst_root_causes(tmpdir: Path) 
 def test_leading_rows_form_implicit_segment(tmpdir: Path) -> None:
     csv_path = tmpdir / "leading_rows.csv"
     out_dir = tmpdir / "leading_rows_out"
-    leading_row = base_row(5000, connected=True, header_columns=HEADER_COLUMNS)
-    leading_row["rx"] = 150
-    leading_row["parseOK"] = 150
+    leading_rows = [
+        base_row(4000, connected=True, header_columns=HEADER_COLUMNS),
+        base_row(5000, connected=True, header_columns=HEADER_COLUMNS),
+    ]
+    leading_rows[1]["rx"] = 150
+    leading_rows[1]["parseOK"] = 150
+    leading_rows[1]["perfDrop"] = 1
     later_session = make_session(
         seq=2,
         token="LATER002",
@@ -945,11 +949,15 @@ def test_leading_rows_form_implicit_segment(tmpdir: Path) -> None:
         connected=True,
         drive_like=False,
     )
-    write_capture(csv_path, header_columns=HEADER_COLUMNS, sessions=[later_session], leading_rows=[leading_row])
+    write_capture(csv_path, header_columns=HEADER_COLUMNS, sessions=[later_session], leading_rows=leading_rows)
     result = run_import(csv_path, out_dir, "--segment", "1")
     assert_true(result.returncode != 3, f"leading-row import failed: {result.stderr}")
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    scoring = json.loads((out_dir / "scoring.json").read_text(encoding="utf-8"))
     assert_true(manifest["selected_segment"]["session_index"] == 1, f"leading rows should become segment 1: {manifest}")
+    assert_true("perf_drop_delta" not in manifest["unsupported_metrics"], f"observed drop counters must stay gated without session metadata: {manifest}")
+    perf_drop = next(metric for metric in scoring["metrics"] if metric["metric"] == "perf_drop_delta")
+    assert_true(perf_drop["absolute_state"] == "fail", f"unmarked drop counter must retain its required gate: {perf_drop}")
 
 
 def test_truncated_row_is_rejected(tmpdir: Path) -> None:

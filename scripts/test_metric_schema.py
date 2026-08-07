@@ -38,6 +38,14 @@ def main() -> int:
         f"schema13 coverage status mismatch: {schema13_unsupported}",
     )
 
+    unmarked_unsupported = metric_schema.unsupported_metrics_for_perf_csv(
+        0, {"perfDrop", "eventBusDrops", "millis"}
+    )
+    assert_true(
+        unmarked_unsupported == {"samples_to_stable", "time_to_stable_ms"},
+        f"unmarked CSV should use observed drop-counter columns: {unmarked_unsupported}",
+    )
+
     assert_true(
         metric_schema.SOAK_TREND_METRIC_UNITS["dma_fragmentation_pct_p95"] == "percent",
         "canonical fragmentation unit must stay percent",

@@ -15,10 +15,10 @@
 #   5. publishing commit or tag history with a non-public email identity
 #   6. publishing tracked private, replay, or capture content
 #
-# It is the final content gate for an explicitly reviewed publication. Git can
-# bypass client hooks with `--no-verify`, so setup-hooks.sh independently makes
-# origin fetch-only by assigning /dev/null as its push URL. Ordinary Git and IDE
-# Sync actions therefore cannot contact the public repository at all.
+# It is the final content gate for ordinary `git push` and IDE Sync. Git can
+# deliberately bypass client hooks with `--no-verify`; that option and hook or
+# remote overrides are forbidden for this public repository. GitHub's server-
+# side protections remain an independent last boundary.
 #
 # Install:  ./scripts/setup-hooks.sh
 
@@ -27,6 +27,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 export GIT_NO_LAZY_FETCH=1
 
 remote_name="$1"
+remote_url="$2"
 
 RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 fail() { printf "${RED}✗ push blocked:${NC} %s\n" "$1" >&2; }
@@ -36,6 +37,23 @@ blocked=0
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 PRIVACY_CHECK="$ROOT/scripts/check_public_commit_metadata.py"
 SNAPSHOT_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+
+# Keep a normal push convenient while failing closed if Git is pointed anywhere
+# except the one intended public repository. Do not echo a rejected URL because
+# a malformed remote itself can contain private material.
+if [ "$remote_name" != "origin" ]; then
+  fail "the destination is not the approved origin remote."
+  exit 1
+fi
+case "$remote_url" in
+  https://github.com/v1simple/v1simple.git)
+    ;;
+  *)
+    fail "origin does not resolve to the approved public repository."
+    echo "    Fix with:  ./scripts/setup-hooks.sh" >&2
+    exit 1
+    ;;
+esac
 
 if [ ! -f "$PRIVACY_CHECK" ] || [ ! -f "$SNAPSHOT_CHECK" ]; then
   fail "public privacy checks are unavailable."

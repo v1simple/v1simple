@@ -11,4 +11,6 @@ Keep V1Simple simple, in code and docs.
 - Keep private context, paths, data, and excerpts out of public files, logs, commits, and artifacts.
 - Make the smallest coherent change and inspect the final diff for unrelated work or privacy leaks.
 - Work on local `main` unless asked otherwise. Do not push.
+- Never use `--no-verify` for a real commit or push, change the tracked hook
+  path, or override the verified `origin` destination.
 - Run proportionate checks while working and the full gate before handoff. Release changes also require production-build and artifact checks.

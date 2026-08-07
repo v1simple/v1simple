@@ -88,9 +88,12 @@ any commit:
 
 The setup fixes this checkout's author and committer identity to the public
 project identity, installs early and final privacy gates that remain active for
-`git commit --no-verify`, and makes `origin` fetch-only so ordinary Git pushes
-and IDE Sync cannot contact the public repository. The local checker also
-requires an owner-only private term list at
+`git commit --no-verify`, and pins ordinary Git pushes and IDE Sync to the
+verified public `origin`. Every normal push passes through the range-aware
+history scanner, which checks all newly reachable blobs once by object hash as
+well as commit and tag metadata. Never use `--no-verify` or override the hooks
+or remote configuration. The local checker also requires an owner-only private
+term list at
 `~/.config/v1simple/privacy_terms.txt`; keep personal names, addresses, network
 names, device identifiers, and other site-specific terms there, one per line.
 Never add that file or its values to this repository.
@@ -138,7 +141,8 @@ the final diff, and say whether hardware or camera evidence was collected.
 ## Choose the next release
 
 Every successful reviewed publication to public `main` publishes a release.
-Ordinary pushes are disabled by the local privacy setup. Patch is the default.
+Ordinary pushes and IDE Sync use the same verified privacy gate. Patch is the
+default.
 After committing the changes to release, select a minor or major bump before
 the reviewed publication:
 

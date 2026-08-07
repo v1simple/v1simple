@@ -22,6 +22,7 @@ SNAPSHOT_CHECK = ROOT / "scripts" / "check_public_snapshot_privacy.py"
 SNAPSHOT_TEST = ROOT / "scripts" / "test_check_public_snapshot_privacy.py"
 PARITY_CHECK = ROOT / "scripts" / "test_scanner_parity.py"
 ZERO = "0" * 40
+PUBLIC_REMOTE_URL = "https://github.com/v1simple/v1simple.git"
 
 
 def run(
@@ -102,11 +103,13 @@ def invoke_pre_push(
     remote_ref: str,
     remote_sha: str = ZERO,
     configure_hooks: bool = True,
+    remote_name: str = "origin",
+    remote_url: str = PUBLIC_REMOTE_URL,
 ) -> subprocess.CompletedProcess[str]:
     if configure_hooks:
         git(repo, "config", "core.hooksPath", ".githooks")
     return run(
-        [str(repo / ".githooks" / "pre-push"), "origin", "unused"],
+        [str(repo / ".githooks" / "pre-push"), remote_name, remote_url],
         cwd=repo,
         input_text=f"{local_ref} {local_sha} {remote_ref} {remote_sha}\n",
     )
@@ -437,6 +440,35 @@ def test_pre_push_accepts_safe_main_history() -> None:
         assert completed.returncode == 0, completed.stderr
 
 
+def test_pre_push_blocks_unapproved_remote_without_echoing_it() -> None:
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        head = git(repo, "rev-parse", "HEAD")
+        private_remote = "https://example.invalid/private-name/repo.git"
+
+        wrong_name = invoke_pre_push(
+            repo,
+            local_ref="refs/heads/main",
+            local_sha=head,
+            remote_ref="refs/heads/main",
+            remote_name="backup",
+        )
+        assert wrong_name.returncode != 0
+        assert "approved origin remote" in wrong_name.stderr
+
+        wrong_url = invoke_pre_push(
+            repo,
+            local_ref="refs/heads/main",
+            local_sha=head,
+            remote_ref="refs/heads/main",
+            remote_url=private_remote,
+        )
+        assert wrong_url.returncode != 0
+        assert "approved public repository" in wrong_url.stderr
+        assert private_remote not in wrong_url.stdout
+        assert private_remote not in wrong_url.stderr
+
+
 def test_pre_push_accepts_a_safe_existing_remote_range() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -656,6 +688,7 @@ def main() -> int:
         test_prepare_commit_msg_fails_closed_without_scanner,
         test_reference_transaction_fails_closed_without_scanner,
         test_pre_push_accepts_safe_main_history,
+        test_pre_push_blocks_unapproved_remote_without_echoing_it,
         test_pre_push_accepts_a_safe_existing_remote_range,
         test_pre_push_blocks_deleted_intermediate_content_in_existing_range,
         test_pre_push_allows_only_semantic_release_tags,

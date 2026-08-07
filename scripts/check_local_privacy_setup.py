@@ -27,8 +27,15 @@ REQUIRED_LOCAL_CONFIG = {
     "author.email": "noreply@example.invalid",
     "committer.name": "v1simple",
     "committer.email": "noreply@example.invalid",
-    "push.default": "nothing",
-    "remote.origin.pushurl": "/dev/null",
+    "push.default": "simple",
+    "push.followTags": "false",
+    "remote.pushDefault": "origin",
+    "branch.main.remote": "origin",
+    "branch.main.pushRemote": "origin",
+    "branch.main.merge": "refs/heads/main",
+}
+PUBLIC_REMOTE_URLS = {
+    "https://github.com/v1simple/v1simple.git",
 }
 CONFIG_INJECTION_ENV = (
     "GIT_CONFIG_COUNT",
@@ -59,6 +66,15 @@ def local_config(key: str) -> str | None:
     return completed.stdout.rstrip("\n")
 
 
+def git_value(arguments: list[str]) -> str | None:
+    completed = run(["git", *arguments])
+    if completed.returncode == 1:
+        return None
+    if completed.returncode != 0:
+        raise RuntimeError("Git configuration could not be inspected")
+    return completed.stdout.rstrip("\n")
+
+
 def active_private_terms(path: Path) -> int:
     try:
         text = path.read_text(encoding="utf-8")
@@ -81,6 +97,19 @@ def main() -> int:
             actual = None
         if actual != expected:
             errors.append(f"required local Git setting is missing or unsafe: {key}")
+
+    try:
+        configured_push_url = local_config("remote.origin.pushurl")
+        fetch_url = git_value(["remote", "get-url", "origin"])
+        push_url = git_value(["remote", "get-url", "--push", "origin"])
+    except RuntimeError:
+        configured_push_url = None
+        fetch_url = None
+        push_url = None
+    if configured_push_url is not None:
+        errors.append("origin has a separate push destination")
+    if fetch_url not in PUBLIC_REMOTE_URLS or push_url != fetch_url:
+        errors.append("origin does not resolve to the approved public repository")
 
     for hook_name in REQUIRED_HOOKS:
         hook = ROOT / ".githooks" / hook_name
@@ -129,7 +158,7 @@ def main() -> int:
 
     print(
         "[local-privacy-setup] local identity, hooks, private terms, index, "
-        "history, and push lock are safe"
+        "history, and push destination are safe"
     )
     return 0
 

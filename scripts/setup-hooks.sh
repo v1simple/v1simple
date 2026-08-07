@@ -27,13 +27,28 @@ git config --local author.email noreply@example.invalid
 git config --local committer.name v1simple
 git config --local committer.email noreply@example.invalid
 
-# Fetching stays normal, but ordinary `git push`, IDE Sync, and Publish actions
-# cannot contact GitHub. A reviewed publication must name the GitHub URL
-# explicitly, which still invokes the tracked pre-push history scanner.
-git config --local push.default nothing
-if git remote get-url origin >/dev/null 2>&1; then
-  git config --local remote.origin.pushurl /dev/null
-fi
+# Keep ordinary `git push` and IDE Sync usable, but make their destination
+# deterministic. The pre-push hook independently verifies this exact public
+# repository before scanning the proposed history range.
+PUBLIC_REMOTE_HTTPS="https://github.com/v1simple/v1simple.git"
+origin_url="$(git remote get-url origin 2>/dev/null || true)"
+case "$origin_url" in
+  "$PUBLIC_REMOTE_HTTPS")
+    ;;
+  *)
+    echo "ERROR: origin is missing or is not the approved public repository." >&2
+    echo "Fix origin deliberately, then run this setup again." >&2
+    exit 1
+    ;;
+esac
+
+git config --local push.default simple
+git config --local push.followTags false
+git config --local remote.pushDefault origin
+git config --local branch.main.remote origin
+git config --local branch.main.pushRemote origin
+git config --local branch.main.merge refs/heads/main
+git config --local --unset-all remote.origin.pushurl >/dev/null 2>&1 || true
 
 echo "hooks installed (core.hooksPath = .githooks)"
 echo "  commit-msg → enforces <type>(<scope>): summary"
@@ -42,7 +57,7 @@ echo "  prepare-commit-msg → repeats privacy checks even with --no-verify"
 echo "  reference-transaction → blocks unsafe refs even when --no-verify is used"
 echo "  pre-push   → scans new history; blocks unsafe metadata, refs, force-push, and deletion"
 echo "  identity   → fixed to v1simple <noreply@example.invalid> in this checkout"
-echo "  publishing → ordinary pushes and IDE Sync are disabled"
+echo "  publishing → ordinary push and IDE Sync use the verified pre-push gate"
 echo ""
 python3 scripts/check_commit_msg.py --selftest
 python3 scripts/check_public_commit_metadata.py --identity-only
@@ -50,5 +65,5 @@ python3 scripts/check_public_commit_metadata.py --revision=--all
 python3 scripts/check_public_snapshot_privacy.py --all-history
 python3 scripts/check_local_privacy_setup.py
 echo ""
-echo "To publish after an explicit review, run the full gate and use the GitHub URL"
-echo "directly. Never change origin's push URL or use IDE Sync for this repository."
+echo "Normal git push and IDE Sync are ready after a clean full gate."
+echo "Never use --no-verify or override the verified origin configuration."

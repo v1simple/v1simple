@@ -7,8 +7,10 @@
 // Defaults represent a healthy heap unless tests override them.
 inline uint32_t g_mock_heap_caps_free_size = 320000u;
 inline uint32_t g_mock_heap_caps_largest_block = 8u * 1024u * 1024u;
+inline constexpr uint32_t MOCK_HEAP_CAPS_TRACKED_CALLS = 32u;
 inline size_t g_mock_heap_caps_last_malloc_size = 0u;
 inline uint32_t g_mock_heap_caps_last_malloc_caps = 0u;
+inline uint32_t g_mock_heap_caps_malloc_caps_history[MOCK_HEAP_CAPS_TRACKED_CALLS] = {};
 inline uint32_t g_mock_heap_caps_malloc_calls = 0u;
 inline size_t g_mock_heap_caps_last_realloc_size = 0u;
 inline uint32_t g_mock_heap_caps_last_realloc_caps = 0u;
@@ -28,6 +30,9 @@ inline void mock_set_heap_caps(uint32_t free_size, uint32_t largest_block) {
 inline void mock_reset_heap_caps_tracking() {
     g_mock_heap_caps_last_malloc_size = 0u;
     g_mock_heap_caps_last_malloc_caps = 0u;
+    for (uint32_t& caps : g_mock_heap_caps_malloc_caps_history) {
+        caps = 0u;
+    }
     g_mock_heap_caps_malloc_calls = 0u;
     g_mock_heap_caps_last_realloc_size = 0u;
     g_mock_heap_caps_last_realloc_caps = 0u;

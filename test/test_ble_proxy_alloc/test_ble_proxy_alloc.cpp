@@ -220,27 +220,34 @@ void test_ble_timing_members_and_constants_use_uint32() {
 
 void test_allocateProxyQueues_prefers_psram_for_both_buffers() {
     V1BLEClient client;
+    const uint32_t expectedCaps[] = {
+        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM,
+        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM,
+    };
 
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     TEST_ASSERT_NOT_NULL(client.proxyQueue_);
     TEST_ASSERT_NOT_NULL(client.phone2v1Queue_);
     TEST_ASSERT_TRUE(client.proxyQueuesInPsram_);
     TEST_ASSERT_EQUAL_UINT32(2, g_mock_heap_caps_malloc_calls);
-    TEST_ASSERT_EQUAL_UINT32(MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM, g_mock_heap_caps_last_malloc_caps);
+    TEST_ASSERT_EQUAL_UINT32_ARRAY(expectedCaps, g_mock_heap_caps_malloc_caps_history, 2);
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
     TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
 }
 
-void test_allocateProxyQueues_falls_back_to_internal_when_psram_misses() {
+void test_allocateProxyQueues_falls_back_to_internal_when_second_psram_allocation_misses() {
     V1BLEClient client;
+    const uint32_t psramCaps = MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM;
+    const uint32_t internalCaps = MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL;
+    const uint32_t expectedCaps[] = {psramCaps, psramCaps, internalCaps};
     g_mock_heap_caps_fail_on_call = 2u;
 
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    TEST_ASSERT_EQUAL_UINT32(3, g_mock_heap_caps_malloc_calls);
+    TEST_ASSERT_EQUAL_UINT32_ARRAY(expectedCaps, g_mock_heap_caps_malloc_caps_history, 3);
     TEST_ASSERT_NOT_NULL(client.proxyQueue_);
     TEST_ASSERT_NOT_NULL(client.phone2v1Queue_);
     TEST_ASSERT_FALSE(client.proxyQueuesInPsram_);
-    TEST_ASSERT_EQUAL_UINT32(3, g_mock_heap_caps_malloc_calls);
-    TEST_ASSERT_EQUAL_UINT32(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL, g_mock_heap_caps_last_malloc_caps);
 }
 
 void test_releaseProxyQueues_defers_when_notify_mutex_is_busy() {
@@ -849,7 +856,7 @@ int main(int argc, char** argv) {
 
     RUN_TEST(test_ble_timing_members_and_constants_use_uint32);
     RUN_TEST(test_allocateProxyQueues_prefers_psram_for_both_buffers);
-    RUN_TEST(test_allocateProxyQueues_falls_back_to_internal_when_psram_misses);
+    RUN_TEST(test_allocateProxyQueues_falls_back_to_internal_when_second_psram_allocation_misses);
     RUN_TEST(test_releaseProxyQueues_defers_when_notify_mutex_is_busy);
     RUN_TEST(test_releaseProxyQueues_defers_when_phone_mutex_is_busy);
     RUN_TEST(test_releaseProxyQueues_retry_frees_after_busy_mutex_clears);

@@ -49,6 +49,7 @@
   },
   "type": "module",
   "overrides": {
-    "cookie": "0.7.2"
+    "cookie": "0.7.2",
+    "js-yaml": "4.3.1"
   }
 }

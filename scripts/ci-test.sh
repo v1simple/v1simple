@@ -146,6 +146,7 @@ run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 
 section "Frontend"
 run_step "Frontend dependencies" bash -c 'cd interface && npm ci'
+run_step "Frontend dependency audit" bash -c 'cd interface && npm audit --audit-level=high'
 run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
 run_step "Frontend unit tests" bash -c 'cd interface && npm test'
 

@@ -81,7 +81,7 @@
       "direction": "higher_better",
       "score_level": "info",
       "required": true,
-      "absolute_min": null,
+      "absolute_min": 81920,
       "absolute_max": null,
       "regress_abs": 4096,
       "regress_pct": 0.05
@@ -95,7 +95,7 @@
       "direction": "higher_better",
       "score_level": "info",
       "required": true,
-      "absolute_min": null,
+      "absolute_min": 16384,
       "absolute_max": null,
       "regress_abs": 2048,
       "regress_pct": 0.05
@@ -165,7 +165,7 @@
       "direction": "higher_better",
       "score_level": "info",
       "required": true,
-      "absolute_min": null,
+      "absolute_min": 64,
       "absolute_max": null,
       "regress_abs": 5,
       "regress_pct": 0.05
@@ -194,7 +194,7 @@
       "score_level": "info",
       "required": true,
       "absolute_min": null,
-      "absolute_max": null,
+      "absolute_max": 5100,
       "regress_abs": 50,
       "regress_pct": 0.20
     },
@@ -292,7 +292,7 @@
       "score_level": "info",
       "required": true,
       "absolute_min": null,
-      "absolute_max": null,
+      "absolute_max": 5100,
       "regress_abs": 50,
       "regress_pct": 0.20
     },
@@ -590,7 +590,7 @@
       "score_level": "advisory",
       "required": true,
       "absolute_min": null,
-      "absolute_max": null,
+      "absolute_max": 250000,
       "regress_abs": 1000,
       "regress_pct": 0.20
     },
@@ -902,7 +902,7 @@
       "score_level": "info",
       "required": true,
       "absolute_min": null,
-      "absolute_max": null,
+      "absolute_max": 50000,
       "regress_abs": 500,
       "regress_pct": 0.20
     },
@@ -916,7 +916,7 @@
       "score_level": "hard",
       "required": true,
       "absolute_min": null,
-      "absolute_max": null,
+      "absolute_max": 50000,
       "regress_abs": 500,
       "regress_pct": 0.20
     },

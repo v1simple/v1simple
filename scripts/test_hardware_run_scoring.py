@@ -966,7 +966,7 @@ def test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir: Path) -> None
                         "direction": "higher_better",
                         "score_level": "advisory",
                         "required": False,
-                        "absolute_min": None,
+                        "absolute_min": 0,
                         "absolute_max": None,
                         "regress_abs": None,
                         "regress_pct": None,
@@ -981,6 +981,92 @@ def test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir: Path) -> None
 
     result = score_hardware_run.score_run(manifest_path, catalog_path)
     assert_true(result["result"] == "PASS_WITH_WARNINGS", "missing optional advisory metrics should warn, not become inconclusive")
+
+
+def test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir: Path) -> None:
+    policies = score_hardware_run.load_catalog(CATALOG_PATH)
+    unbounded = [
+        policy
+        for policy in policies
+        if policy.absolute_min is None and policy.absolute_max is None
+    ]
+    assert_true(unbounded, "the catalog should retain useful optional observations")
+    assert_true(
+        all(not policy.required and policy.score_level == "info" for policy in unbounded),
+        f"required or scoring policies must have an absolute contract: {unbounded}",
+    )
+
+    invalid_catalog = tmpdir / "invalid_unbounded_catalog.json"
+    invalid_catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "metrics": [
+                    {
+                        "metric": "latency_us",
+                        "run_kind": "custom_kind",
+                        "selector": {},
+                        "unit": "us",
+                        "aggregation": "last",
+                        "direction": "lower_better",
+                        "score_level": "hard",
+                        "required": True,
+                        "absolute_min": None,
+                        "absolute_max": None,
+                        "regress_abs": 10,
+                        "regress_pct": None,
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        score_hardware_run.load_catalog(invalid_catalog)
+    except RuntimeError as exc:
+        assert_true("Fully unbounded catalog entries" in str(exc), f"unexpected validation error: {exc}")
+    else:
+        raise AssertionError("unbounded required policy should be rejected")
+
+
+def test_required_soak_metrics_enforce_absolute_budgets(tmpdir: Path) -> None:
+    case_dir = tmpdir / "required_absolute_budgets"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = case_dir / "metrics.ndjson"
+    manifest_path = case_dir / "manifest.json"
+    records = standard_soak_records(disp_pipe_max_peak_us=60000, disp_pipe_p95_us=50001)
+    for record in records:
+        if record["metric"] == "wifi_max_peak_us":
+            record["value"] = 250001
+    write_metrics(metrics_path, records)
+    write_manifest(
+        manifest_path,
+        run_id="absolute-budget-run",
+        git_sha="abc1234",
+        git_ref="main",
+        run_kind="real_fw_soak",
+        board_id="release",
+        env="waveshare-349",
+        lane="real-fw-soak",
+        suite_or_profile="drive_wifi_ap",
+        stress_class="core",
+        result="PASS",
+        metrics_file="metrics.ndjson",
+        base_result="PASS",
+        tracks=["drive_wifi_ap"],
+    )
+
+    result = score_hardware_run.score_run(manifest_path, CATALOG_PATH)
+    metrics = {metric["metric"]: metric for metric in result["metrics"]}
+    wifi_peak = metrics["wifi_max_peak_us"]
+    display_p95 = metrics["disp_pipe_p95_us"]
+    assert_true(result["result"] == "FAIL", f"display p95 over budget must fail: {result}")
+    assert_true(wifi_peak["absolute_state"] == "fail", f"Wi-Fi peak should exceed its absolute budget: {wifi_peak}")
+    assert_true(wifi_peak["score_status"] == "warn", f"Wi-Fi peak remains advisory: {wifi_peak}")
+    assert_true(display_p95["absolute_state"] == "fail", f"display p95 should exceed its absolute budget: {display_p95}")
+    assert_true(display_p95["score_status"] == "fail", f"display p95 remains hard: {display_p95}")
 
 
 def test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir: Path) -> None:
@@ -1467,6 +1553,8 @@ def main() -> int:
         test_observed_spread_absorbs_noise_but_not_a_real_regression()
         test_spread_never_loosens_below_the_policy_threshold()
         test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir)
+        test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir)
+        test_required_soak_metrics_enforce_absolute_budgets(tmpdir)
         test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir)
         test_unsupported_metrics_do_not_fail_run(tmpdir)
         test_uncataloged_metric_rejected(tmpdir)

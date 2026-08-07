@@ -123,12 +123,14 @@ Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in
 [`tools/hardware_metric_catalog.json`](tools/hardware_metric_catalog.json)
 control the absolute check. When both are `null`, the scorer reports
-`absolute_state=n/a`: the current value cannot fail an absolute check by itself,
-but the metric can still fail a compatible baseline comparison through its
-`regress_abs` or `regress_pct` threshold. For example, `disp_pipe_p95_us` is a
-hard regression gate and `wifi_max_peak_us` is an advisory regression gate even
-though neither has an absolute bound. The `required` field is separate again: a
-missing required metric fails the run regardless of its value thresholds.
+`absolute_state=n/a`. Fully unbounded entries are allowed only for optional
+informational observations whose value depends on run duration or external
+activity; the catalog loader rejects an unbounded required, hard, or advisory
+policy. Required metrics have an absolute contract as well as any compatible
+`regress_abs` or `regress_pct` comparison: sustained Wi-Fi and display work use
+a 50 ms ceiling, while an individual Wi-Fi peak uses the main loop's 250 ms
+ceiling. The `required` field also enforces presence: a missing required metric
+fails the run regardless of its value thresholds.
 
 Automated tests establish code behavior. Device tests and bench runs establish
 only what happened on the connected setup. Camera evidence establishes visible

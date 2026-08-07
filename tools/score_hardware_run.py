@@ -132,6 +132,12 @@ def load_catalog(path: Path) -> list[MetricPolicy]:
                     f"Invalid {field_name} '{level}' in catalog entry {idx} "
                     f"for {policy.run_kind}/{policy.metric}"
                 )
+        if policy.absolute_min is None and policy.absolute_max is None:
+            if policy.required or policy.score_level != "info":
+                raise RuntimeError(
+                    "Fully unbounded catalog entries must be optional info observations: "
+                    f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                )
         selector_key = json.dumps(selector, sort_keys=True)
         key = (policy.run_kind, policy.metric, selector_key)
         if key in seen:

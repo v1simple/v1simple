@@ -431,11 +431,10 @@ bool PerfSdLogger::writeStaged(File& f, const uint8_t* data, size_t len) {
 
 bool PerfSdLogger::writeSessionMarker(File& f) {
     char marker[128];
-    int n =
-        snprintf(marker, sizeof(marker), "#session_start,seq=%lu,bootId_=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
-                 static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
-                 static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
-                 static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
+    int n = snprintf(marker, sizeof(marker), "#session_start,seq=%lu,bootId=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
+                     static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
+                     static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
+                     static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
     if (n <= 0 || n >= static_cast<int>(sizeof(marker))) {
         return false;
     }

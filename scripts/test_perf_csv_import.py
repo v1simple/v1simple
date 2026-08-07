@@ -103,6 +103,14 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def test_firmware_session_marker_uses_importer_boot_id_key() -> None:
+    firmware_source = (ROOT / "src" / "perf_sd_logger.cpp").read_text(encoding="utf-8")
+    assert_true(
+        '"#session_start,seq=%lu,bootId=%lu,' in firmware_source,
+        "firmware session marker must emit the bootId key consumed by the importer",
+    )
+
+
 def apply_drive_speed(row: dict[str, int], speed_mph_x10: int) -> None:
     if "speedSourceSelected" in row:
         row["speedSourceSelected"] = 3
@@ -1048,6 +1056,7 @@ def test_import_compare_to_baseline_scores_run_variance(tmpdir: Path) -> None:
 
 
 def main() -> int:
+    test_firmware_session_marker_uses_importer_boot_id_key()
     test_dma_fragmentation_uses_current_values()
     test_display_peak_metrics_are_imported_from_csv_windows()
     test_connect_burst_and_flush_metrics_are_imported_from_csv_windows()

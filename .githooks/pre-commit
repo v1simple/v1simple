@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Privacy gate.
+#
+# Blocks a commit when Git resolves its author or committer to a personal
+# email address, or when the tracked snapshot would leak private content,
+# including force-added replay and capture data.
+#
+# Install:  ./scripts/setup-hooks.sh
+# Bypass:   git commit --no-verify (deliberate emergency use only).
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$ROOT/scripts/check_public_commit_metadata.py" ] || {
+  echo "privacy check is unavailable; refusing to commit" >&2
+  exit 1
+}
+[ -f "$ROOT/scripts/check_public_snapshot_privacy.py" ] || {
+  echo "snapshot privacy check is unavailable; refusing to commit" >&2
+  exit 1
+}
+
+python3 "$ROOT/scripts/check_public_commit_metadata.py" --identity-only || exit 1
+python3 "$ROOT/scripts/check_public_snapshot_privacy.py" --index || exit 1
+
+exit 0

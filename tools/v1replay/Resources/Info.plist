@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.v1simple.v1replay</string>
+    <key>CFBundleName</key>
+    <string>v1replay</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.1.0</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>v1replay advertises a simulated Valentine One radar detector so v1simple hardware can be tested without a real V1.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>v1replay advertises a simulated Valentine One radar detector so v1simple hardware can be tested without a real V1.</string>
+</dict>
+</plist>

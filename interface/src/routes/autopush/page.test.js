@@ -1,0 +1,365 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
+import Page from './+page.svelte';
+
+function installDefaultFetch(overrides = []) {
+    return installFixtureFetchMock(
+        ['frontend_core_routes', 'autopush_routes', 'v1_profile_routes'],
+        overrides
+    );
+}
+
+describe('autopush route page', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('surfaces a non-OK slots response instead of showing a silent empty page', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/autopush/slots',
+                respond: jsonResponse({ error: 'slots unavailable' }, 503)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Failed to load slots');
+        expect(screen.queryByText('Global default')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('loads slots and opens the slot editor', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Auto-Push Profiles');
+        await screen.findByText('Highway');
+        await screen.findByText('Global default');
+
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+
+        expect(await screen.findByLabelText('Profile')).toBeInTheDocument();
+        expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('keeps the slot editor open when saving a slot fails', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/slot',
+                respond: jsonResponse({ error: 'bad save' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(await screen.findByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Failed to save');
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(screen.getByLabelText('Profile')).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('discards draft edits when Cancel is pressed', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        const nameInput = screen.getByDisplayValue('Default');
+        await fireEvent.input(nameInput, { target: { value: 'Changed Draft' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+        expect(screen.getByRole('heading', { name: 'Default' })).toBeInTheDocument();
+        expect(screen.queryByDisplayValue('Changed Draft')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('shows the atomic volume-pair control and posts both values together', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        expect(
+            screen.getByText('The V1 applies main and mute volume as one pair.')
+        ).toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await screen.findByText('Slot saved!');
+
+        const saveCall = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        );
+        expect(saveCall).toBeTruthy();
+        const body = saveCall[1].body;
+        expect(body.get('volumeConfigured')).toBe('true');
+        expect(body.get('volume')).toBe('6');
+        expect(body.get('muteVol')).toBe('2');
+
+        unmount();
+    });
+
+    it('renders legacy 255 values as a no-change pair instead of raw numbers', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/autopush/slots',
+                respond: jsonResponse({
+                    enabled: true,
+                    activeSlot: 0,
+                    slots: [
+                        {
+                            name: 'Default',
+                            profile: 'Road Trip',
+                            mode: 2,
+                            volume: 255,
+                            muteVolume: 255
+                        }
+                    ]
+                })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        expect(await screen.findByText("Don't change")).toBeInTheDocument();
+        expect(screen.queryByText(/255/)).not.toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+        expect(screen.getByLabelText('Volume (0-9)')).toBeDisabled();
+        expect(screen.getByLabelText('Mute Volume (0-9)')).toBeDisabled();
+
+        unmount();
+    });
+
+    it('keeps the previous active slot when activation fails', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/activate',
+                respond: jsonResponse({ error: 'bad activate' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+
+        await screen.findByText('Failed to activate');
+        expect(screen.getByText('Highway')).toBeInTheDocument();
+        expect(screen.getAllByText('Global default')).toHaveLength(1);
+        expect(screen.getAllByRole('button', { name: /^activate$/i })).toHaveLength(2);
+
+        unmount();
+    });
+
+    it('announces activation with the 1-based slot number', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/activate',
+                respond: jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+
+        // User-facing slot numbers are one-based.
+        await screen.findByText('Slot 1 activated');
+        expect(screen.getAllByText('Global default')).toHaveLength(1);
+
+        unmount();
+    });
+
+    it('shows an error when profiles fail to load', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse({ error: 'bad profiles' }, 500)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Failed to load profiles');
+        await screen.findByText('Highway');
+        expect(screen.getByText('Auto-Push Profiles')).toBeInTheDocument();
+        expect(screen.getByText('Global default')).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('labels the active slot as the global default and explains device overrides', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Global default');
+        expect(
+            screen.getByText(
+                'Auto-Push sends V1 settings when you connect during normal runtime. The global default slot is used unless a saved V1 device override selects another slot.'
+            )
+        ).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('disables live pushes but keeps saved slot configuration available in maintenance', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({ maintenanceBoot: true, maintenanceBootUptimeMs: 9000 })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(
+            'Live V1 pushes are unavailable in maintenance mode. You can still edit, save, and select the global default slot for normal runtime.'
+        );
+        expect(screen.getAllByRole('button', { name: /push now/i })).toHaveLength(3);
+        for (const button of screen.getAllByRole('button', { name: /push now/i })) {
+            expect(button).toBeDisabled();
+        }
+        for (const button of screen.getAllByRole('button', { name: /^activate$/i })) {
+            expect(button).toBeEnabled();
+        }
+
+        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+        await screen.findByText('Slot 1 activated');
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/autopush/activate' && init?.method === 'POST'
+            )
+        ).toBe(true);
+
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await screen.findByText('Slot saved!');
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+            )
+        ).toBe(true);
+
+        unmount();
+    });
+
+    it('defensively refuses a live push without posting in maintenance mode', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({ maintenanceBoot: true, maintenanceBootUptimeMs: 9000 })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(
+            'Live V1 pushes are unavailable in maintenance mode. You can still edit, save, and select the global default slot for normal runtime.'
+        );
+        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        expect(pushButton).toBeDisabled();
+
+        // Exercise the handler guard independently from the disabled UI state.
+        pushButton.disabled = false;
+        await fireEvent.click(pushButton);
+        await screen.findByText(
+            'Push Now is unavailable in maintenance mode; no settings were sent to the V1.'
+        );
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/autopush/push' && init?.method === 'POST'
+            )
+        ).toBe(false);
+
+        unmount();
+    });
+
+    it('fails closed when runtime mode cannot be verified', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: jsonResponse({ error: 'status unavailable' }, 503)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(
+            'Live V1 pushes are unavailable because device runtime mode could not be verified.'
+        );
+        await screen.findByText('Highway');
+        const pushButtons = screen.getAllByRole('button', { name: /push now/i });
+        for (const button of pushButtons) {
+            expect(button).toBeDisabled();
+        }
+
+        // Exercise the handler guard independently from the disabled UI state.
+        pushButtons[0].disabled = false;
+        await fireEvent.click(pushButtons[0]);
+        await screen.findByText(
+            'Push Now is unavailable until device runtime mode can be verified.'
+        );
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === '/api/autopush/push' && init?.method === 'POST'
+            )
+        ).toBe(false);
+
+        unmount();
+    });
+
+    it('prefers a backend human message when a live push fails', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/autopush/push',
+                respond: jsonResponse(
+                    {
+                        error: 'v1_not_connected',
+                        message: 'Connect the V1 before pushing settings.'
+                    },
+                    409
+                )
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        await waitFor(() => expect(pushButton).toBeEnabled());
+        await fireEvent.click(pushButton);
+
+        await screen.findByText('Connect the V1 before pushing settings.');
+        expect(screen.queryByText('v1_not_connected')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('reports a successful POST as queued rather than already applied', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        await waitFor(() => expect(pushButton).toBeEnabled());
+        await fireEvent.click(pushButton);
+
+        await screen.findByText('Push queued. The V1 has not confirmed the settings yet.');
+        expect(screen.queryByText(/Settings pushed/i)).not.toBeInTheDocument();
+
+        unmount();
+    });
+});

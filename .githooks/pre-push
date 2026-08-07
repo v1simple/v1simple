@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Pre-push guardrail for v1simple.
+#
+# main is APPEND-ONLY after 1.0.1. The single-root squash was a one-time reset,
+# not a per-release ritual. Every incident in the 1.0.0 release (stale tag at the
+# wrong commit, orphaned release, old history nearly republished) traced back to
+# rewriting already-published history. This hook makes that class of mistake
+# impossible by accident.
+#
+# It blocks:
+#   1. non-fast-forward (force) pushes to any branch
+#   2. ref deletions
+#   3. pushing local-only history branches (backup/*, pre-squash-*, refs/codex/*)
+#   4. publishing branches outside the main-only allowlist
+#   5. publishing commit or tag history with a non-public email identity
+#   6. publishing tracked private, replay, or capture content
+#
+# It is a GUARDRAIL, not enforcement: `--no-verify` bypasses it, and it does not
+# exist for anyone who clones the repo. Server-side repository settings provide
+# the independent remote control.
+#
+# Install:  ./scripts/setup-hooks.sh
+
+set -uo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_LAZY_FETCH=1
+
+remote_name="$1"
+
+RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
+fail() { printf "${RED}✗ push blocked:${NC} %s\n" "$1" >&2; }
+is_zero_oid() { [[ "$1" =~ ^0+$ ]]; }
+
+blocked=0
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+PRIVACY_CHECK="$ROOT/scripts/check_public_commit_metadata.py"
+SNAPSHOT_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+
+if [ ! -f "$PRIVACY_CHECK" ] || [ ! -f "$SNAPSHOT_CHECK" ]; then
+  fail "public privacy checks are unavailable."
+  exit 1
+fi
+
+# core.hooksPath must be relative. An absolute path keeps working right up until
+# the checkout is renamed or moved, and then every hook silently stops running —
+# git reports no error for a hooksPath that does not resolve, so a push that
+# skipped every guard looks exactly like a push that passed all of them.
+hooks_path="$(git config core.hooksPath || true)"
+case "$hooks_path" in
+  /*)
+    fail "core.hooksPath is an absolute path."
+    echo "    Hooks stop running silently if this checkout is ever moved." >&2
+    echo "    Fix with:  ./scripts/setup-hooks.sh" >&2
+    exit 1
+    ;;
+esac
+
+# The scanner is duplicated in the internal repository and has drifted apart
+# before. Refuse to vouch for a snapshot using a copy of unknown provenance.
+PARITY_CHECK="$ROOT/scripts/test_scanner_parity.py"
+if [ -f "$PARITY_CHECK" ] && ! python3 "$PARITY_CHECK" >/dev/null 2>&1; then
+  fail "the privacy scanner does not match its pinned canonical digest."
+  echo "    Run:  python3 scripts/test_scanner_parity.py" >&2
+  echo "    A scanner edited in one repository must be carried to the other." >&2
+  exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+
+  # --- 1. never push local-only history -----------------------------------
+  case "$local_ref" in
+    refs/heads/backup/*|refs/heads/pre-squash-*|refs/codex/*)
+      fail "a local-only history ref must never be published."
+      echo "    These branches hold the pre-1.0.1 development history you" >&2
+      echo "    deliberately squashed away. Push 'main' explicitly instead." >&2
+      blocked=1
+      continue
+      ;;
+  esac
+
+  # --- 2. enforce the public ref allowlist ----------------------------------
+  if [[ "$remote_ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+    :
+  else
+    case "$remote_ref" in
+      refs/heads/main|refs/heads/dependabot/github_actions/*)
+        ;;
+      *)
+        fail "a destination ref is outside the public ref allowlist."
+        echo "    Public publication is restricted to main, semantic release tags," >&2
+        echo "    and GitHub-managed Dependabot github_actions branches." >&2
+        blocked=1
+        continue
+        ;;
+    esac
+  fi
+
+  # --- 3. never delete a published ref -------------------------------------
+  if is_zero_oid "$local_sha"; then
+    fail "deleting a published ref on '$remote_name'."
+    echo "    Deleting published refs is how a release gets orphaned." >&2
+    echo "    If this is deliberate, use an explicitly reviewed --no-verify deletion." >&2
+    blocked=1
+    continue
+  fi
+
+  # --- 4. existing refs must advance; establish the exact new history range --
+  history_arguments=(--history-tip "$local_sha" --ref-name "$remote_ref")
+  if ! is_zero_oid "$remote_sha"; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      fail "non-fast-forward (force) push to a published ref."
+      echo "" >&2
+      echo "    The remote commit is not an ancestor of the local commit." >&2
+      echo "    This would REWRITE published history." >&2
+      echo "" >&2
+      echo "    main is append-only. Reconcile remote changes before pushing." >&2
+      blocked=1
+      continue
+    fi
+    history_arguments+=(--history-base "$remote_sha")
+  fi
+
+  # --- 5. reject private identity and every new reachable object -------------
+  if ! python3 "$PRIVACY_CHECK" --revision "$local_sha"; then
+    fail "the proposed history contains identity metadata that is not privacy-safe."
+    blocked=1
+    continue
+  fi
+  if ! python3 "$SNAPSHOT_CHECK" "${history_arguments[@]}"; then
+    fail "the proposed history contains content or messages that are not privacy-safe."
+    blocked=1
+    continue
+  fi
+done
+
+if [ "$blocked" -ne 0 ]; then
+  printf "\n${YEL}Nothing was pushed.${NC}\n" >&2
+  exit 1
+fi
+
+exit 0

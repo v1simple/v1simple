@@ -1,0 +1,54 @@
+{
+  "name": "v1simple-interface",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && bash ../tools/compress_web_assets.sh",
+    "preview": "vite preview",
+    "deploy": "npm run build && node scripts/deploy.js",
+    "deploy:built": "node scripts/deploy.js",
+    "prepare": "svelte-kit sync",
+    "lint": "prettier --check . && eslint . && svelte-check",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@sveltejs/adapter-static": "^3.0.0",
+    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.4.2",
+    "@types/node": "^22.20.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "daisyui": "^5.7.16",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.22.0",
+    "globals": "^17.9.0",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.25",
+    "prettier": "^3.9.6",
+    "prettier-plugin-svelte": "^4.1.1",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.7.4",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  },
+  "type": "module",
+  "overrides": {
+    "cookie": "0.7.2"
+  }
+}

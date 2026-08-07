@@ -1,0 +1,67 @@
+name: CI
+
+# One authoritative gate per public main revision. Development branches remain
+# local-only; a successful push-origin run is the only input to Release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ci-test.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 36
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: interface/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install Python toolchain
+        run: |
+          python3 -m venv --copies "$HOME/.platformio/penv"
+          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "cryptography>=41" "Pillow>=10.4,<13" "clang-format==22.1.8"
+          echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
+
+      - name: Run ci-test.sh
+        run: |
+          set -o pipefail
+          bash ./scripts/ci-test.sh 2>&1 | tee ci-test.log
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-test-log-${{ github.sha }}
+          path: ci-test.log
+          retention-days: 14

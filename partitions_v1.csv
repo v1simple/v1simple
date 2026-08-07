@@ -1,0 +1,7 @@
+# Custom partition table for V1 Simple
+# Increased NVS from 20KB to 32KB for BLE bonds + WiFi + settings
+# Name,     Type, SubType, Offset,  Size, Flags
+nvs,        data, nvs,     0x9000,  0x8000,
+app,        app,  factory, 0x20000, 0xD80000,
+storage,    data, spiffs,  0xDA0000,0x250000,
+coredump,   data, coredump,0xFF0000,0x10000,

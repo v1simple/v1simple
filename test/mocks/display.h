@@ -1,0 +1,525 @@
+// Mock display.h for native unit testing
+#pragma once
+#ifndef DISPLAY_H
+#define DISPLAY_H
+
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
+#ifdef ARDUINO
+#include <Arduino.h>
+#else
+#include "Arduino.h"
+#endif
+
+// Full definition needed — AlertData is used as a value field below.
+// packet_parser_types.h is pure data with no Arduino dependency.
+#include "../../src/packet_parser_types.h"
+#include "../../src/modules/alp/alp_laser_event.h"
+#include "../../src/modules/alp/alp_runtime_module.h"
+#include "../../include/display_ble_context.h"
+#include "../../include/render_frame.h"
+
+struct DisplayState;
+
+enum class DisplayMockPresentation : uint8_t {
+    NONE,
+    SCANNING,
+    RESTING,
+    DISCONNECTED,
+    MAINTENANCE,
+    CONTENT,
+    LOW_BATTERY,
+    SHUTDOWN,
+    CLEARED,
+};
+
+enum class DisplayMockOperation : uint8_t {
+    NONE,
+    SHOW_SCANNING,
+    SHOW_RESTING,
+    SHOW_DISCONNECTED,
+    SHOW_MAINTENANCE,
+    UPDATE_CONTENT,
+    SHOW_LOW_BATTERY,
+    SHOW_SHUTDOWN,
+    SET_BLE_CONTEXT,
+    SET_BLE_PROXY_STATUS,
+    RESET_CHANGE_TRACKING,
+    CLEAR,
+    FLUSH,
+    SET_BRIGHTNESS,
+};
+
+struct DisplayMockLifecycleState {
+    DisplayMockPresentation presentation = DisplayMockPresentation::NONE;
+    DisplayMockOperation lastOperation = DisplayMockOperation::NONE;
+    DisplayBleContext bleContext{};
+    bool bleProxyEnabled = false;
+    bool bleProxyConnected = false;
+    bool bleReceiving = true;
+    bool panelFrameBlack = false;
+    uint8_t brightness = 0;
+    uint32_t sequence = 0;
+    uint32_t presentationSequence = 0;
+    uint32_t bleContextSequence = 0;
+    uint32_t bleProxyStatusSequence = 0;
+    uint32_t resetChangeTrackingSequence = 0;
+    uint32_t clearSequence = 0;
+    uint32_t flushSequence = 0;
+    uint32_t brightnessSequence = 0;
+};
+
+// Screen dimensions (needed by some tests)
+#ifndef SCREEN_WIDTH
+#define SCREEN_WIDTH 640
+#endif
+#ifndef SCREEN_HEIGHT
+#define SCREEN_HEIGHT 172
+#endif
+
+/**
+ * Mock V1Display - tracks method calls for verification
+ */
+class V1Display {
+public:
+    // Mirrors the blink-refresh API used by DisplayOrchestrationModule. Tests
+    // can set lastBlinkToggleMs to simulate a stale or current phase.
+    unsigned long lastBlinkToggleMs = 0;
+    unsigned long getLastBlinkToggleMs() const { return lastBlinkToggleMs; }
+    static constexpr unsigned long getBlinkIntervalMs() { return 96; }
+    uint32_t renderSeq = 0;
+
+    // Call tracking
+    int showScanningCalls = 0;
+    int showRestingCalls = 0;
+    int showDisconnectedCalls = 0;
+    int setBrightnessCalls = 0;
+    uint8_t lastBrightness = 0;
+    uint32_t displayRecoverySequence = 0;
+    uint32_t showDisconnectedSequence = 0;
+    uint32_t flushSequence = 0;
+    uint32_t setBrightnessSequence = 0;
+    int showMaintenanceModeCalls = 0;
+    char lastMaintenanceIp[24] = "";
+    bool lastMaintenanceStationMode = false;
+    int updateCalls = 0;
+    int updatePersistedCalls = 0;
+    int clearCalls = 0;
+    int flushCalls = 0;
+    int forceNextRedrawCalls = 0;
+    int drawWiFiIndicatorCalls = 0;
+    int drawObdIndicatorCalls = 0;
+    int drawBatteryIndicatorCalls = 0;
+    int drawProfileIndicatorCalls = 0;
+    int lastProfileIndicatorSlot = -1;
+    int showLowBatteryCalls = 0;
+    int showShutdownCalls = 0;
+    int setSpeedVolZeroActiveCalls = 0;
+    bool lastSpeedVolZeroActiveValue = false;
+    int setBleContextCalls = 0;
+    DisplayBleContext lastBleContext{};
+    int setBLEProxyStatusCalls = 0;
+    bool lastBleProxyEnabled = false;
+    bool lastBleProxyConnected = false;
+    bool lastBleReceiving = true;
+    int setPreviewIndicatorOverridesActiveCalls = 0;
+    bool lastPreviewIndicatorOverridesActive = false;
+    int setAlpPreviewStateCalls = 0;
+    bool lastAlpPreviewEnabled = false;
+    uint8_t lastAlpPreviewState = 0;
+    uint8_t lastAlpPreviewHbByte1 = 0;
+    int setObdPreviewStateCalls = 0;
+    bool lastObdPreviewEnabled = false;
+    bool lastObdPreviewConnected = false;
+    bool lastObdPreviewScanAttention = false;
+    int setProfileIndicatorSlotCalls = 0;
+    int lastProfileIndicatorSlotValue = -1;
+    int setObdStatusCalls = 0;
+    bool lastObdEnabled = false;
+    bool lastObdConnected = false;
+    bool lastObdScanAttention = false;
+    int setObdAttentionCalls = 0;
+    bool lastObdAttention = false;
+    int syncTopIndicatorsCalls = 0;
+    uint32_t lastSyncTopIndicatorsNowMs = 0;
+    int flushRegionCalls = 0;
+    int16_t lastFlushX = 0;
+    int16_t lastFlushY = 0;
+    int16_t lastFlushW = 0;
+    int16_t lastFlushH = 0;
+    int showSettingsSlidersCalls = 0;
+    int updateSettingsSlidersCalls = 0;
+    int hideBrightnessSliderCalls = 0;
+    int lastSettingsBrightness = 0;
+    int lastSettingsVolume = 0;
+    int lastSettingsActiveSlider = -1;
+    int activeSliderFromTouch = -1;
+    int lastAlertUpdateCount = 0;
+    DisplayState lastAlertDisplayState{};
+    bool hasLastAlertDisplayState = false;
+    int renderFrameCalls = 0;
+    RenderFrame lastRenderFrame{};
+    bool hasLastRenderFrame = false;
+    DisplayMockLifecycleState lifecycleState_{};
+
+    // resetChangeTracking tracking
+    int resetChangeTrackingCalls = 0;
+
+    void reset() {
+        showScanningCalls = 0;
+        showRestingCalls = 0;
+        showDisconnectedCalls = 0;
+        setBrightnessCalls = 0;
+        lastBrightness = 0;
+        displayRecoverySequence = 0;
+        showDisconnectedSequence = 0;
+        flushSequence = 0;
+        setBrightnessSequence = 0;
+        showMaintenanceModeCalls = 0;
+        lastMaintenanceIp[0] = '\0';
+        lastMaintenanceStationMode = false;
+        updateCalls = 0;
+        updatePersistedCalls = 0;
+        clearCalls = 0;
+        flushCalls = 0;
+        forceNextRedrawCalls = 0;
+        drawWiFiIndicatorCalls = 0;
+        drawObdIndicatorCalls = 0;
+        drawBatteryIndicatorCalls = 0;
+        drawProfileIndicatorCalls = 0;
+        lastProfileIndicatorSlot = -1;
+        showLowBatteryCalls = 0;
+        showShutdownCalls = 0;
+        setSpeedVolZeroActiveCalls = 0;
+        lastSpeedVolZeroActiveValue = false;
+        setBleContextCalls = 0;
+        lastBleContext = DisplayBleContext{};
+        setBLEProxyStatusCalls = 0;
+        lastBleProxyEnabled = false;
+        lastBleProxyConnected = false;
+        lastBleReceiving = true;
+        setPreviewIndicatorOverridesActiveCalls = 0;
+        lastPreviewIndicatorOverridesActive = false;
+        setAlpPreviewStateCalls = 0;
+        lastAlpPreviewEnabled = false;
+        lastAlpPreviewState = 0;
+        lastAlpPreviewHbByte1 = 0;
+        setObdPreviewStateCalls = 0;
+        lastObdPreviewEnabled = false;
+        lastObdPreviewConnected = false;
+        lastObdPreviewScanAttention = false;
+        setProfileIndicatorSlotCalls = 0;
+        lastProfileIndicatorSlotValue = -1;
+        setObdStatusCalls = 0;
+        lastObdEnabled = false;
+        lastObdConnected = false;
+        lastObdScanAttention = false;
+        setObdAttentionCalls = 0;
+        lastObdAttention = false;
+        syncTopIndicatorsCalls = 0;
+        lastSyncTopIndicatorsNowMs = 0;
+        flushRegionCalls = 0;
+        lastFlushX = 0;
+        lastFlushY = 0;
+        lastFlushW = 0;
+        lastFlushH = 0;
+        showSettingsSlidersCalls = 0;
+        updateSettingsSlidersCalls = 0;
+        hideBrightnessSliderCalls = 0;
+        lastSettingsBrightness = 0;
+        lastSettingsVolume = 0;
+        lastSettingsActiveSlider = -1;
+        activeSliderFromTouch = -1;
+        lastAlertUpdateCount = 0;
+        lastAlertDisplayState = DisplayState{};
+        hasLastAlertDisplayState = false;
+        renderFrameCalls = 0;
+        lastRenderFrame = RenderFrame{};
+        hasLastRenderFrame = false;
+        lifecycleState_ = DisplayMockLifecycleState{};
+        lastPriorityAlert = AlertData{};
+        hasLastPriorityAlert = false;
+        setAlpFrequencyOverrideCalls = 0;
+        clearAlpFrequencyOverrideCalls = 0;
+        lastAlpFreqOverride[0] = '\0';
+        setAlpLaserEventCalls = 0;
+        resetChangeTrackingCalls = 0;
+        renderSeq = 0;
+    }
+
+    // Display methods
+    void showScanning() {
+        showScanningCalls++;
+        recordPresentation(DisplayMockPresentation::SCANNING, DisplayMockOperation::SHOW_SCANNING);
+    }
+    void showResting() {
+        showRestingCalls++;
+        recordPresentation(DisplayMockPresentation::RESTING, DisplayMockOperation::SHOW_RESTING);
+    }
+    void showDisconnected() {
+        showDisconnectedCalls++;
+        showDisconnectedSequence = ++displayRecoverySequence;
+        recordPresentation(DisplayMockPresentation::DISCONNECTED, DisplayMockOperation::SHOW_DISCONNECTED);
+    }
+    void showMaintenanceMode(const char* ip = nullptr, bool stationMode = false) {
+        showMaintenanceModeCalls++;
+        if (ip != nullptr) {
+            std::strncpy(lastMaintenanceIp, ip, sizeof(lastMaintenanceIp) - 1);
+            lastMaintenanceIp[sizeof(lastMaintenanceIp) - 1] = '\0';
+        } else {
+            lastMaintenanceIp[0] = '\0';
+        }
+        lastMaintenanceStationMode = stationMode;
+        recordPresentation(DisplayMockPresentation::MAINTENANCE, DisplayMockOperation::SHOW_MAINTENANCE);
+    }
+    
+    void update(const DisplayState& /*state*/) {
+        updateCalls++;
+        renderSeq++;
+        recordPresentation(DisplayMockPresentation::CONTENT, DisplayMockOperation::UPDATE_CONTENT);
+    }
+    void update(const AlertData& priority, const AlertData* /*alerts*/,
+                int count, const DisplayState& state) {
+        updateCalls++;
+        renderSeq++;
+        lastAlertUpdateCount = count;
+        lastPriorityAlert = priority;
+        hasLastPriorityAlert = true;
+        lastAlertDisplayState = state;
+        hasLastAlertDisplayState = true;
+        recordPresentation(DisplayMockPresentation::CONTENT, DisplayMockOperation::UPDATE_CONTENT);
+    }
+
+    AlertData lastPriorityAlert{};
+    bool hasLastPriorityAlert = false;
+    void updatePersisted(const AlertData& /*alert*/, const DisplayState& /*state*/) {
+        updatePersistedCalls++;
+        renderSeq++;
+        recordPresentation(DisplayMockPresentation::CONTENT, DisplayMockOperation::UPDATE_CONTENT);
+    }
+
+    void renderFrame(const RenderFrame& frame) {
+        renderFrameCalls++;
+        lastRenderFrame = frame;
+        hasLastRenderFrame = true;
+
+        switch (frame.primaryKind) {
+            case RenderFramePrimaryKind::NONE:
+                return;
+
+            case RenderFramePrimaryKind::IDLE:
+                update(frame.primaryState);
+                return;
+
+            case RenderFramePrimaryKind::V1_LIVE:
+                update(frame.v1Priority, nullptr, frame.cardCount, frame.primaryState);
+                return;
+
+            case RenderFramePrimaryKind::V1_PERSISTED:
+                updatePersisted(frame.v1Priority, frame.primaryState);
+                return;
+
+            case RenderFramePrimaryKind::ALP_LIVE:
+            case RenderFramePrimaryKind::ALP_PERSISTED: {
+                AlertData syntheticAlert{};
+                syntheticAlert.isValid = true;
+                syntheticAlert.band = BAND_LASER;
+                syntheticAlert.frequency = 0;
+                switch (frame.alpPrimary.direction) {
+                    case AlpLaserDirection::FRONT:
+                        syntheticAlert.direction = DIR_FRONT;
+                        break;
+
+                    case AlpLaserDirection::REAR:
+                        syntheticAlert.direction = DIR_REAR;
+                        break;
+
+                    case AlpLaserDirection::UNKNOWN:
+                    default:
+                        syntheticAlert.direction = DIR_NONE;
+                        break;
+                }
+                syntheticAlert.frontStrength = 6;
+                update(syntheticAlert, nullptr, frame.cardCount, frame.primaryState);
+                return;
+            }
+        }
+    }
+    
+    void clear() {
+        clearCalls++;
+        renderSeq++;
+        recordOperation(DisplayMockOperation::CLEAR);
+        lifecycleState_.presentation = DisplayMockPresentation::CLEARED;
+        lifecycleState_.presentationSequence = lifecycleState_.sequence;
+        lifecycleState_.panelFrameBlack = true;
+        lifecycleState_.clearSequence = lifecycleState_.sequence;
+    }
+    void flush() {
+        flushCalls++;
+        renderSeq++;
+        flushSequence = ++displayRecoverySequence;
+        recordOperation(DisplayMockOperation::FLUSH);
+        lifecycleState_.flushSequence = lifecycleState_.sequence;
+    }
+    void forceNextRedraw() { forceNextRedrawCalls++; }
+    
+    void drawWiFiIndicator() { drawWiFiIndicatorCalls++; }
+    void drawObdIndicator() { drawObdIndicatorCalls++; }
+    void drawBatteryIndicator() { drawBatteryIndicatorCalls++; }
+    void showLowBattery() {
+        showLowBatteryCalls++;
+        recordPresentation(DisplayMockPresentation::LOW_BATTERY, DisplayMockOperation::SHOW_LOW_BATTERY);
+    }
+    void showShutdown() {
+        showShutdownCalls++;
+        recordPresentation(DisplayMockPresentation::SHUTDOWN, DisplayMockOperation::SHOW_SHUTDOWN);
+    }
+    void drawProfileIndicator(int slot) {
+        drawProfileIndicatorCalls++;
+        lastProfileIndicatorSlot = slot;
+    }
+    
+    void setSpeedVolZeroActive(bool active) {
+        setSpeedVolZeroActiveCalls++;
+        lastSpeedVolZeroActiveValue = active;
+    }
+    
+    void setBleContext(const DisplayBleContext& ctx) {
+        setBleContextCalls++;
+        lastBleContext = ctx;
+        recordOperation(DisplayMockOperation::SET_BLE_CONTEXT);
+        lifecycleState_.bleContext = ctx;
+        lifecycleState_.bleContextSequence = lifecycleState_.sequence;
+    }
+
+    void setBLEProxyStatus(bool proxyEnabled, bool proxyConnected, bool receiving = true) {
+        setBLEProxyStatusCalls++;
+        lastBleProxyEnabled = proxyEnabled;
+        lastBleProxyConnected = proxyConnected;
+        lastBleReceiving = receiving;
+        recordOperation(DisplayMockOperation::SET_BLE_PROXY_STATUS);
+        lifecycleState_.bleProxyEnabled = proxyEnabled;
+        lifecycleState_.bleProxyConnected = proxyConnected;
+        lifecycleState_.bleReceiving = receiving;
+        lifecycleState_.bleProxyStatusSequence = lifecycleState_.sequence;
+    }
+
+    void setPreviewIndicatorOverridesActive(bool active) {
+        setPreviewIndicatorOverridesActiveCalls++;
+        lastPreviewIndicatorOverridesActive = active;
+    }
+
+    void setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1) {
+        setAlpPreviewStateCalls++;
+        lastAlpPreviewEnabled = enabled;
+        lastAlpPreviewState = state;
+        lastAlpPreviewHbByte1 = hbByte1;
+    }
+
+    void setObdPreviewState(bool enabled, bool connected, bool scanAttention) {
+        setObdPreviewStateCalls++;
+        lastObdPreviewEnabled = enabled;
+        lastObdPreviewConnected = connected;
+        lastObdPreviewScanAttention = scanAttention;
+    }
+
+    void setProfileIndicatorSlot(int slot) {
+        setProfileIndicatorSlotCalls++;
+        lastProfileIndicatorSlotValue = slot;
+    }
+
+    void setObdStatus(bool enabled, bool connected, bool scanAttention = false) {
+        setObdStatusCalls++;
+        lastObdEnabled = enabled;
+        lastObdConnected = connected;
+        lastObdScanAttention = scanAttention;
+    }
+
+    void setObdAttention(bool attention) {
+        setObdAttentionCalls++;
+        lastObdAttention = attention;
+    }
+
+    void refreshObdIndicator(uint32_t nowMs) {
+        syncTopIndicators(nowMs);
+        drawObdIndicator();
+    }
+
+    void syncTopIndicators(uint32_t nowMs) {
+        syncTopIndicatorsCalls++;
+        lastSyncTopIndicatorsNowMs = nowMs;
+    }
+
+    void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
+        flushRegionCalls++;
+        renderSeq++;
+        lastFlushX = x;
+        lastFlushY = y;
+        lastFlushW = w;
+        lastFlushH = h;
+    }
+
+    // ALP frequency override
+    int setAlpFrequencyOverrideCalls = 0;
+    int clearAlpFrequencyOverrideCalls = 0;
+    char lastAlpFreqOverride[16] = "";
+    void setAlpFrequencyOverride(const char* text, bool /*defenseMode*/ = true) {
+        setAlpFrequencyOverrideCalls++;
+        strncpy(lastAlpFreqOverride, text, sizeof(lastAlpFreqOverride));
+        lastAlpFreqOverride[sizeof(lastAlpFreqOverride) - 1] = '\0';
+    }
+    void clearAlpFrequencyOverride() { clearAlpFrequencyOverrideCalls++; }
+
+    // Atomic ALP laser-event projection
+    int setAlpLaserEventCalls = 0;
+    AlpLaserEvent lastAlpLaserEvent{};
+    void setAlpLaserEvent(const AlpLaserEvent& ev) {
+        ++setAlpLaserEventCalls;
+        lastAlpLaserEvent = ev;
+    }
+
+    void setBrightness(uint8_t level) {
+        setBrightnessCalls++;
+        lastBrightness = level;
+        setBrightnessSequence = ++displayRecoverySequence;
+        recordOperation(DisplayMockOperation::SET_BRIGHTNESS);
+        lifecycleState_.brightness = level;
+        lifecycleState_.brightnessSequence = lifecycleState_.sequence;
+    }
+    void showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
+        showSettingsSlidersCalls++;
+        lastSettingsBrightness = brightnessLevel;
+        lastSettingsVolume = volumeLevel;
+    }
+    void updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
+        updateSettingsSlidersCalls++;
+        lastSettingsBrightness = brightnessLevel;
+        lastSettingsVolume = volumeLevel;
+        lastSettingsActiveSlider = activeSlider;
+    }
+    void hideBrightnessSlider() { hideBrightnessSliderCalls++; }
+    int getActiveSliderFromTouch(int16_t /*touchY*/) { return activeSliderFromTouch; }
+    
+    void resetChangeTracking() {
+        resetChangeTrackingCalls++;
+        recordOperation(DisplayMockOperation::RESET_CHANGE_TRACKING);
+        lifecycleState_.resetChangeTrackingSequence = lifecycleState_.sequence;
+    }
+    const DisplayMockLifecycleState& lifecycleState() const { return lifecycleState_; }
+  private:
+    void recordOperation(DisplayMockOperation operation) {
+        lifecycleState_.lastOperation = operation;
+        ++lifecycleState_.sequence;
+    }
+
+    void recordPresentation(DisplayMockPresentation presentation, DisplayMockOperation operation) {
+        recordOperation(operation);
+        lifecycleState_.presentation = presentation;
+        lifecycleState_.presentationSequence = lifecycleState_.sequence;
+        lifecycleState_.panelFrameBlack = false;
+    }
+};
+
+#endif  // DISPLAY_H

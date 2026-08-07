@@ -1,0 +1,29 @@
+.build/
+__pycache__/
+*.pyc
+
+# v1replay is source-only. Private input, derived exports, and bench media must
+# live outside every Git checkout. Do not bypass these rules with `git add -f`.
+captures/
+encounters/
+exports/
+fixtures/
+recordings/
+*.json
+*.jsonl
+*.csv
+*.tsv
+*.log
+*.pcap
+*.pcapng
+*.btsnoop
+*.bin
+*.zip
+*.gz
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.mov
+*.mp4
+*.m4v

@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Show or select the semantic-version bump for the next automatic release."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from prepare_release import (
+    RELEASE_BUMP_FILE,
+    RELEASE_BUMPS,
+    ReleasePreparationError,
+    git,
+    read_config_version,
+    require_ancestor,
+    strict_version_tags,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def read_selected_bump(root: Path) -> str:
+    policy_path = root / RELEASE_BUMP_FILE
+    try:
+        selected = policy_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ReleasePreparationError(f"could not read {RELEASE_BUMP_FILE}: {exc}") from exc
+    if selected not in RELEASE_BUMPS:
+        allowed = ", ".join(RELEASE_BUMPS)
+        raise ReleasePreparationError(
+            f"{RELEASE_BUMP_FILE} must contain exactly one of: {allowed}"
+        )
+    return selected
+
+
+def next_release_version(root: Path, bump: str) -> str:
+    config_path = root / "include" / "config.h"
+    if not config_path.is_file():
+        raise ReleasePreparationError("release root must contain include/config.h")
+
+    _, current = read_config_version(config_path)
+    tags = strict_version_tags(root)
+    if not tags:
+        return str(current)
+
+    latest = tags[-1]
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    require_ancestor(root, latest.name, head)
+    if current != latest.version:
+        raise ReleasePreparationError(
+            f"FIRMWARE_VERSION {current} must match latest release tag {latest.name}; "
+            "the workflow owns version bumps"
+        )
+    return str(latest.version.bump(bump))
+
+
+def require_policy_only_worktree(root: Path) -> None:
+    unrelated = git(
+        root,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        ".",
+        f":(exclude){RELEASE_BUMP_FILE}",
+    ).stdout.strip()
+    if unrelated:
+        raise ReleasePreparationError(
+            "commit or stash changes outside .release-bump before selecting a release"
+        )
+
+
+def policy_is_changed(root: Path) -> bool:
+    return bool(
+        git(root, "status", "--porcelain", "--", RELEASE_BUMP_FILE).stdout.strip()
+    )
+
+
+def commit_selection(root: Path, version: str) -> str:
+    subject = f"ci(release): select v{version}"
+    git(root, "add", "--", RELEASE_BUMP_FILE)
+    git(root, "commit", "-m", subject)
+    return git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
+def select_bump(root: Path, requested: str) -> None:
+    root = root.resolve()
+    selected = read_selected_bump(root)
+    bump = selected if requested == "status" else requested
+    next_version = next_release_version(root, bump)
+
+    if requested == "status":
+        print(f"Release bump: {selected}")
+    else:
+        require_policy_only_worktree(root)
+        if selected != requested:
+            (root / RELEASE_BUMP_FILE).write_text(requested + "\n", encoding="utf-8")
+            print(f"Release bump: {selected} -> {requested}")
+        elif policy_is_changed(root):
+            print(f"Release bump: {selected} (pending commit)")
+        else:
+            print(f"Release bump: {selected} (already selected)")
+
+    print(f"Next release: v{next_version}")
+    if requested != "status":
+        if policy_is_changed(root):
+            commit = commit_selection(root, next_version)
+            print(f"Created commit {commit}: ci(release): select v{next_version}")
+            if requested != "patch":
+                print("After a successful release, the workflow resets the bump to patch.")
+        else:
+            print("No release-selection commit was needed.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "bump",
+        nargs="?",
+        choices=("status", *RELEASE_BUMPS),
+        default="status",
+        help="bump for the next release; omit to show the current selection",
+    )
+    parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        select_bump(args.root, args.bump)
+    except (OSError, ReleasePreparationError) as exc:
+        print(f"[release-bump] {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

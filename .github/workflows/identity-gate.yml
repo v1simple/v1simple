@@ -1,0 +1,33 @@
+name: Identity gate
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    name: Public commit metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Enforce public commit identity allowlist
+        run: python3 scripts/check_public_commit_metadata.py --revision=--all
+
+      - name: Scan complete publication history for privacy leaks
+        run: python3 scripts/check_public_snapshot_privacy.py --all-history
+
+      - name: Prove the scanner still detects what it claims to
+        run: python3 scripts/test_check_public_snapshot_privacy.py
+
+      - name: Enforce scanner parity with the internal repository
+        run: python3 scripts/test_scanner_parity.py

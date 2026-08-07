@@ -1,0 +1,162 @@
+#!/bin/bash
+# Authoritative repo gate used locally and by GitHub workflows.
+#
+# Gate order: pinned-toolchain check -> format -> privacy gate -> BLE invariant
+# gates -> Python regression tests -> native tests -> frontend checks ->
+# production artifact build. Privacy and Tier-0 gates run their own regression
+# suites inline; a guard is only as trustworthy as the proof that it still
+# detects.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/ci-test.sh [--fast] [--help]
+
+  --fast   Static preflight only: toolchain pins, format, privacy, and Tier-0
+           invariant gates. No native tests, no builds.
+  --help   Show this message.
+EOF
+}
+
+FAST=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fast)
+      FAST=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo -e "${RED}Unknown argument: $1${NC}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+START_TIME=$(date +%s)
+PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
+if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo -e "${RED}Invalid PLATFORMIO_RUN_JOBS: $PIO_JOBS${NC}" >&2
+  echo "Expected a positive integer." >&2
+  exit 2
+fi
+
+section() {
+  echo ""
+  echo -e "${BLUE}== $1 ==${NC}"
+}
+
+run_step() {
+  local label="$1"
+  shift
+  echo -e "${YELLOW}[run] ${label}${NC}"
+  "$@"
+  echo -e "${GREEN}[pass] ${label}${NC}"
+}
+
+PIO_CMD="${PIO_CMD:-pio}"
+if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
+  echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
+  exit 1
+fi
+source "$ROOT_DIR/scripts/platformio_ca_bundle.sh"
+export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
+
+echo "============================================"
+if [[ "$FAST" -eq 1 ]]; then
+  echo "Static Preflight"
+else
+  echo "Authoritative Local CI Gate"
+fi
+echo "============================================"
+
+section "Toolchain"
+run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
+run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
+
+section "Format"
+run_step "clang-format check" python3 scripts/check_clang_format.py
+
+section "Build Contracts"
+run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
+run_step "Release bump selector regression suite" python3 scripts/test_release_bump.py
+
+section "Privacy"
+# The guards run first, then the tests that prove the guards still work. A
+# scanner that silently stopped detecting something passes its own scan.
+run_step "Public commit metadata privacy guard" python3 scripts/check_public_commit_metadata.py --revision=--all
+run_step "Public publication-history privacy guard" python3 scripts/check_public_snapshot_privacy.py --all-history
+run_step "Snapshot scanner regression suite" python3 scripts/test_check_public_snapshot_privacy.py
+run_step "Privacy hook regression suite" python3 scripts/test_public_privacy_hooks.py
+run_step "Scanner parity with the internal repository" python3 scripts/test_scanner_parity.py
+run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
+run_step "v1replay generated protocol verification" python3 tools/v1replay/verify/verify_protocol.py
+
+section "Tier-0 Invariants"
+# Same reasoning as the privacy section, applied where the stakes are highest:
+# these two guards report success by finding nothing, so one that silently
+# stopped detecting is indistinguishable from a clean tree. The regression suite
+# plants known violations and proves each guard still catches them.
+run_step "BLE hot-path snapshot contract" python3 scripts/check_ble_hot_path_contract.py
+run_step "BLE deletion safety contract" python3 scripts/check_ble_deletion_contract.py
+run_step "Tier-0 guard regression suite" python3 scripts/test_ble_tier0_guards.py
+
+if [[ "$FAST" -eq 1 ]]; then
+  ELAPSED=$(($(date +%s) - START_TIME))
+  echo ""
+  echo -e "${GREEN}Static preflight passed in ${ELAPSED}s${NC}"
+  exit 0
+fi
+
+section "Python Regression Tests"
+# Safety-critical guard regressions already run inline above. Keep the remaining
+# script and workflow regressions in the full gate without expanding --fast.
+run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
+run_step "Bench window regression suite" python3 scripts/test_bench_window.py
+run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
+run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
+run_step "PlatformIO test-delay hook self-check" python3 scripts/test_delay.py
+run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
+run_step "Hardware run scoring regression suite" python3 scripts/test_hardware_run_scoring.py
+run_step "Identity gate workflow regression suite" python3 scripts/test_identity_gate_workflow.py
+run_step "Metric schema regression suite" python3 scripts/test_metric_schema.py
+run_step "Performance CSV import regression suite" python3 scripts/test_perf_csv_import.py
+run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
+run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
+run_step "Device test runner regression suite" python3 scripts/test_run_device_tests_script.py
+run_step "Soak metric parser regression suite" python3 scripts/test_soak_parse_metrics.py
+run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
+
+section "Native Tests"
+run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
+
+section "Frontend"
+run_step "Frontend dependencies" bash -c 'cd interface && npm ci'
+run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
+run_step "Frontend unit tests" bash -c 'cd interface && npm test'
+
+section "Production Build"
+run_step "Production artifact build" ./scripts/build_production_artifacts.sh
+
+END_TIME=$(date +%s)
+ELAPSED=$((END_TIME - START_TIME))
+
+echo ""
+echo "============================================"
+echo -e "${GREEN}All CI checks passed${NC}"
+echo "Elapsed: ${ELAPSED}s"
+echo "============================================"

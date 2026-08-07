@@ -1,0 +1,11 @@
+# Build output and generated artifacts
+build/
+.svelte-kit/
+coverage/
+node_modules/
+
+# Lockfile is machine-managed
+package-lock.json
+
+# Static captured API fixture used by the frontend mock.
+src/test/fixtures/wifi-api.json

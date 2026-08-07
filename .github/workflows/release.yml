@@ -1,0 +1,412 @@
+name: Release
+
+# Every successful push-origin CI run on public main publishes the next release
+# automatically. The reviewed .release-bump policy selects patch, minor, or
+# major and resets to patch when a larger bump is consumed. Recover interrupted
+# CI or publication by rerunning the original Actions run so the triggering run
+# and release marker stay stable.
+#
+# Steps:
+#   1. Bind the successful CI workflow run to its exact main commit
+#   2. Select that commit (or the same run's recorded release on retry)
+#   3. Calculate, validate, and commit the semantic-version bump locally
+#   4. Build the exact production artifacts once
+#   5. Atomically publish the tested commit and tag
+#   6. Create or update the GitHub Release with generated notes
+#   7. Deploy the web installer to GitHub Pages
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      deploy_pages: ${{ steps.publish.outputs.deploy_pages }}
+    permissions:
+      contents: write
+      pages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Refresh repository refs
+        env:
+          TRIGGERING_CI_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGERING_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGERING_CI_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGERING_CI_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "workflow_run" ]; then
+            echo "::error::Releases must follow the authoritative CI workflow."
+            exit 1
+          fi
+          if [ "$TRIGGERING_CI_EVENT" != "push" ] \
+            || [ "$TRIGGERING_CI_BRANCH" != "main" ] \
+            || [ "$TRIGGERING_CI_CONCLUSION" != "success" ] \
+            || [ "$TRIGGERING_CI_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Release input must be a successful same-repository push CI run on main."
+            exit 1
+          fi
+          git fetch --force origin main
+          git fetch --force --tags origin
+
+      - name: Find prior publication for this run
+        id: resume
+        env:
+          RELEASE_RUN_ID: ${{ github.run_id }}
+        run: python3 scripts/prepare_release.py --lookup-run-id "$RELEASE_RUN_ID"
+
+      - name: Select release base
+        id: base
+        env:
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          RESUME_SHA: ${{ steps.resume.outputs.resume_sha }}
+          RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
+        run: |
+          if [ -n "$RESUME_TAG" ]; then
+            if [ "$(git rev-parse "$RESUME_TAG^{commit}")" != "$RESUME_SHA" ]; then
+              echo "::error::Recorded release tag $RESUME_TAG no longer resolves to $RESUME_SHA."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$RESUME_SHA" origin/main; then
+              echo "::error::Recorded release $RESUME_TAG is no longer in main history."
+              exit 1
+            fi
+            git checkout --detach "$RESUME_SHA"
+            echo "Resuming $RESUME_TAG at $RESUME_SHA for this workflow run."
+          else
+            if ! git merge-base --is-ancestor "$EVENT_SHA" origin/main; then
+              echo "::error::Merged commit $EVENT_SHA is no longer in main history."
+              exit 1
+            fi
+            git checkout --detach "$EVENT_SHA"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release version
+        id: version
+        env:
+          # The bump is reviewed on main rather than supplied by an untrusted
+          # workflow input. prepare_release.py validates .release-bump and
+          # restores it to patch after consuming a minor or major request.
+          RELEASE_BUMP: auto
+          RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
+        run: |
+          python3 scripts/prepare_release.py \
+            --bump "$RELEASE_BUMP" \
+            --resume-tag "$RESUME_TAG"
+
+      - name: Create local release commit
+        id: release_commit
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- include/config.h CHANGELOG.md .release-bump; then
+            git add include/config.h CHANGELOG.md .release-bump
+            git diff --cached --check
+            git commit -m "chore(release): prepare $RELEASE_TAG"
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Release preparation left unexpected working-tree changes."
+            git status --short
+            exit 1
+          fi
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          if [ "$RELEASE_SHA" != "$BASE_SHA" ]; then
+            if [ "$(git rev-parse "$RELEASE_SHA^")" != "$BASE_SHA" ]; then
+              echo "::error::Release commit must be a direct child of the verified base."
+              exit 1
+            fi
+            EXPECTED_FILES="$(printf '%s\n' CHANGELOG.md include/config.h)"
+            if ! git diff --quiet "$BASE_SHA" "$RELEASE_SHA" -- .release-bump; then
+              if [ "$(cat .release-bump)" != "patch" ]; then
+                echo "::error::Consumed release bump policy must reset to patch."
+                exit 1
+              fi
+              EXPECTED_FILES="$(printf '%s\n' .release-bump CHANGELOG.md include/config.h)"
+            fi
+            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$RELEASE_SHA" | sort)"
+            if [ "$CHANGED_FILES" != "$EXPECTED_FILES" ]; then
+              echo "::error::Release commit changed files outside the version contract."
+              git diff --name-status "$BASE_SHA" "$RELEASE_SHA"
+              exit 1
+            fi
+            if [ "$(git log -1 --format=%s "$RELEASE_SHA")" != "chore(release): prepare $RELEASE_TAG" ]; then
+              echo "::error::Release commit subject does not match $RELEASE_TAG."
+              exit 1
+            fi
+          fi
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: interface/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install release toolchain
+        run: |
+          pip install "platformio>=6.1.19,<7" esptool "Pillow>=10.4,<13"
+          cd interface && npm ci
+
+      - name: Validate release artifact contract
+        run: python3 scripts/check_release_workflow_flash_contract.py
+
+      - name: Build and validate production artifacts
+        env:
+          PLATFORMIO_RUN_JOBS: '1'
+        run: ./scripts/build_production_artifacts.sh
+
+      - name: Merge firmware for ESP Web Tools
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p release
+          cp .pio/build/waveshare-349/bootloader.bin release/
+          cp .pio/build/waveshare-349/partitions.bin release/
+          cp .pio/build/waveshare-349/firmware.bin release/
+          cp .pio/build/waveshare-349/littlefs.bin release/
+
+          esptool --chip esp32s3 merge-bin \
+            -o release/merged-firmware.bin \
+            --flash-mode dio \
+            --flash-freq 80m \
+            --flash-size 16MB \
+            0x0000 release/bootloader.bin \
+            0x8000 release/partitions.bin \
+            0x20000 release/firmware.bin \
+            0xda0000 release/littlefs.bin
+
+          python3 scripts/check_release_image_info.py \
+            --image release/merged-firmware.bin \
+            --env waveshare-349
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = {
+              "name": "V1-Simple",
+              "version": os.environ["RELEASE_TAG"],
+              "home_assistant_domain": "",
+              "funding_url": "",
+              "new_install_prompt_erase": True,
+              "new_install_improv_wait_time": 0,
+              "builds": [{
+                  "chipFamily": "ESP32-S3",
+                  "parts": [{"path": "merged-firmware.bin", "offset": 0}],
+              }],
+          }
+          Path("release/manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+
+      - name: Stage GitHub Pages installer
+        run: |
+          mkdir -p release/pages
+          cp web-installer/index.html release/pages/index.html
+          cp release/manifest.json release/pages/manifest.json
+          cp release/merged-firmware.bin release/pages/merged-firmware.bin
+          python3 scripts/stage_release_licenses.py \
+            --release-dir release \
+            --pages-dir release/pages
+          python3 scripts/check_web_installer_page.py --site-dir release/pages
+
+      - name: Upload image-info report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-info-report-${{ steps.version.outputs.tag }}
+          path: release/merged-firmware-image-info.txt
+          if-no-files-found: error
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: true
+
+      - name: Upload GitHub Pages installer artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: release/pages
+
+      - name: Publish release commit and tag
+        id: publish
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_SHA: ${{ steps.release_commit.outputs.sha }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]; then
+            echo "::error::Release SHA no longer matches the tested working tree."
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Refusing to publish a dirty release working tree."
+            git status --short
+            exit 1
+          fi
+
+          git fetch --force origin main
+          git fetch --force --tags origin
+          if git rev-parse --verify "$RELEASE_TAG^{commit}" >/dev/null 2>&1; then
+            EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"
+            if [ "$EXISTING_SHA" != "$RELEASE_SHA" ]; then
+              echo "::error::Tag $RELEASE_TAG already exists at $EXISTING_SHA; it will not be moved."
+              exit 1
+            fi
+            echo "Tag $RELEASE_TAG already points at tested commit $RELEASE_SHA; reusing it."
+          else
+            REMOTE_MAIN_SHA="$(git rev-parse origin/main)"
+            if [ "$REMOTE_MAIN_SHA" != "$BASE_SHA" ]; then
+              echo "::notice::main advanced from $BASE_SHA to $REMOTE_MAIN_SHA; the newer merge has its own queued release."
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git tag -a "$RELEASE_TAG" "$RELEASE_SHA" \
+              -m "Release $RELEASE_TAG" \
+              -m "Release-Run-ID: $RELEASE_RUN_ID"
+            AUTH_VALUE="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
+            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_VALUE" \
+              push --atomic origin \
+              HEAD:refs/heads/main \
+              "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
+              git fetch --force origin main
+              git fetch --force --tags origin
+              UPDATED_MAIN_SHA="$(git rev-parse origin/main)"
+              UPDATED_TAG_SHA="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" \
+                | awk 'NR == 1 { print $1 }')"
+              if [ "$UPDATED_TAG_SHA" = "$RELEASE_SHA" ] \
+                && git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+                if ! git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" \
+                  | grep -Fxq "Release-Run-ID: $RELEASE_RUN_ID"; then
+                  echo "::error::$RELEASE_TAG reached the expected commit without this run's publication marker."
+                  exit 1
+                fi
+                echo "::notice::Recovered successful atomic publication after the client lost its response; main is at $UPDATED_MAIN_SHA."
+              elif [ "$UPDATED_MAIN_SHA" != "$BASE_SHA" ]; then
+                echo "::notice::main advanced from $BASE_SHA to $UPDATED_MAIN_SHA during publication; the newer merge has its own queued release."
+                echo "published=false" >> "$GITHUB_OUTPUT"
+                echo "deploy_pages=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                echo "::error::Atomic release publication failed while main remained at $BASE_SHA."
+                exit 1
+              fi
+            fi
+          fi
+          LATEST_RELEASE_TAG="$(python3 scripts/prepare_release.py --latest-tag)"
+          if [ "$LATEST_RELEASE_TAG" = "$RELEASE_TAG" ]; then
+            echo "deploy_pages=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Repairing $RELEASE_TAG assets without replacing the newer $LATEST_RELEASE_TAG Pages installer."
+            echo "deploy_pages=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.publish.outputs.published == 'true'
+        # v3.0.2, pinned so a mutable tag cannot change code running with contents:write.
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            release/*.bin
+            release/manifest.json
+            release/LICENSE
+            release/THIRD_PARTY_NOTICES.md
+            release/ArduinoJson-LICENSE.txt
+            release/NimBLE-Arduino-LICENSE.txt
+            release/NimBLE-Arduino-NOTICE.txt
+            release/Arduino-GFX-LICENSE.txt
+            release/OpenFontRender-LICENSE.txt
+            release/FreeType-FTL.txt
+            release/GNU-FreeFont-COPYING.txt
+            release/GNU-FreeFont-README.txt
+            release/OFL-1.1.txt
+            release/CC-BY-4.0.txt
+            release/Svelte-LICENSE.md
+            release/SvelteKit-LICENSE.txt
+            release/daisyUI-LICENSE.txt
+            release/Tailwind-CSS-LICENSE.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          {
+            echo "## Released ${{ steps.version.outputs.tag }}"
+            echo ""
+            echo "- Exact main commit passed authoritative CI before automatic semantic-version publication"
+            echo "- Firmware version and changelog prepared automatically"
+            echo "- Tested release commit: ${{ steps.publish.outputs.sha }}"
+            echo "- Release commit and tag published atomically or safely reused"
+            echo "- GitHub Release published with firmware, filesystem, merged installer binary, and ESP Web Tools manifest"
+            echo "- Third-party notices and runtime license texts published with the release and installer"
+            echo "- Image-info report uploaded with the workflow artifacts"
+            if [ "${{ steps.publish.outputs.deploy_pages }}" = "true" ]; then
+              echo "- GitHub Pages installer staged for deployment from the same manifest and merged image"
+            else
+              echo "- Newer GitHub Pages installer left unchanged while this release's assets were repaired"
+            fi
+          } >> $GITHUB_STEP_SUMMARY
+
+  deploy-pages:
+    needs: release
+    if: needs.release.outputs.deploy_pages == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages installer
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -1,0 +1,154 @@
+#include <unity.h>
+
+#include "../mocks/Arduino.h"
+#include "../mocks/WebServer.h"
+#include "../../src/modules/wifi/wifi_autopush_api_service.h"
+#include "../../src/modules/wifi/wifi_autopush_api_service.cpp"
+
+#ifndef ARDUINO
+SerialClass Serial;
+unsigned long mockMillis = 0;
+unsigned long mockMicros = 0;
+#endif
+
+namespace {
+
+struct FakeRuntime {
+    WifiAutoPushApiService::SlotUpdateRequest update;
+    int updateCalls = 0;
+    WifiAutoPushApiService::PushNowQueueResult queueResult =
+        WifiAutoPushApiService::PushNowQueueResult::QUEUED;
+};
+
+WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
+    WifiAutoPushApiService::Runtime runtime{};
+    runtime.loadSlotsSnapshot = [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void*) {
+        snapshot.slots[0].volume = 0xFF;
+        snapshot.slots[0].muteVolume = 0xFF;
+        snapshot.slots[0].volumeConfigured = false;
+        snapshot.slots[1].volume = 7;
+        snapshot.slots[1].muteVolume = 2;
+        snapshot.slots[1].volumeConfigured = true;
+    };
+    runtime.loadPushStatusJson = [](String& json, void*) {
+        json = "{\"result\":\"partial\",\"reason\":\"profile_verify_mismatch\"}";
+        return true;
+    };
+    runtime.applySlotUpdate = [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
+        auto* state = static_cast<FakeRuntime*>(ctx);
+        state->update = request;
+        state->updateCalls++;
+        return true;
+    };
+    runtime.applySlotUpdateCtx = &fake;
+    runtime.queuePushNow = [](const WifiAutoPushApiService::PushNowRequest&, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->queueResult;
+    };
+    runtime.queuePushNowCtx = &fake;
+    return runtime;
+}
+
+bool alwaysAllow(void*) {
+    return true;
+}
+
+bool contains(const String& body, const char* text) {
+    return body.indexOf(text) >= 0;
+}
+
+void setRequiredSlotArgs(WebServer& server) {
+    server.setArg("slot", "0");
+    server.setArg("profile", "ROAD");
+    server.setArg("mode", "2");
+}
+
+} // namespace
+
+void setUp() {}
+void tearDown() {}
+
+void test_slots_api_uses_explicit_volume_contract_and_never_emits_255() {
+    WebServer server(80);
+    FakeRuntime fake;
+
+    WifiAutoPushApiService::handleApiSlots(server, makeRuntime(fake));
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"volumeConfigured\":false,\"volume\":0,\"muteVolume\":0"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"volumeConfigured\":true,\"volume\":7,\"muteVolume\":2"));
+    TEST_ASSERT_FALSE(contains(server.lastBody, "255"));
+}
+
+void test_slot_save_rejects_one_sided_volume_pair() {
+    WebServer server(80);
+    FakeRuntime fake;
+    setRequiredSlotArgs(server);
+    server.setArg("volume", "7");
+
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+}
+
+void test_slot_save_can_explicitly_disable_volume_pair() {
+    WebServer server(80);
+    FakeRuntime fake;
+    setRequiredSlotArgs(server);
+    server.setArg("volumeConfigured", "false");
+
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, fake.updateCalls);
+    TEST_ASSERT_TRUE(fake.update.hasVolume);
+    TEST_ASSERT_TRUE(fake.update.hasMuteVolume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, fake.update.volume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, fake.update.muteVolume);
+}
+
+void test_push_now_returns_queued_not_applied() {
+    WebServer server(80);
+    FakeRuntime fake;
+    server.setArg("slot", "0");
+
+    WifiAutoPushApiService::handleApiPushNow(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(202, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"result\":\"queued\""));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "/api/autopush/status"));
+}
+
+void test_push_now_reports_invalid_volume_contract() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.queueResult = WifiAutoPushApiService::PushNowQueueResult::INVALID_VOLUME_PAIR;
+    server.setArg("slot", "0");
+
+    WifiAutoPushApiService::handleApiPushNow(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "configured together"));
+}
+
+void test_status_api_preserves_terminal_result() {
+    WebServer server(80);
+    FakeRuntime fake;
+
+    WifiAutoPushApiService::handleApiStatus(server, makeRuntime(fake));
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "profile_verify_mismatch"));
+}
+
+int main() {
+    UNITY_BEGIN();
+    RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
+    RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
+    RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);
+    RUN_TEST(test_push_now_returns_queued_not_applied);
+    RUN_TEST(test_push_now_reports_invalid_volume_contract);
+    RUN_TEST(test_status_api_preserves_terminal_result);
+    return UNITY_END();
+}

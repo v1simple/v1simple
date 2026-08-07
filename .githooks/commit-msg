@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Enforce the project's commit-message contract:  <type>(<scope>): short summary
+#
+# Install:  ./scripts/setup-hooks.sh
+# Bypass:   git commit --no-verify   (only if you truly mean to)
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+PRIVACY_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+[ -f "$PRIVACY_CHECK" ] || {
+  echo "commit-message privacy check is unavailable; refusing to commit" >&2
+  exit 1
+}
+
+python3 "$PRIVACY_CHECK" --message-file "$1" || exit 1
+exec python3 "$ROOT/scripts/check_commit_msg.py" "$1"

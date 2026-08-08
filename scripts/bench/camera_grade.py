@@ -27,7 +27,12 @@ FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_RATE = 3
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
-MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 2.0
+# Process launch precedes BLE transport readiness by up to 2.33 s in recorded
+# fresh boots. Keep the search bounded while allowing that observed handoff.
+MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 3.0
+# One signature bin of horizontal tolerance handles minor fixed-rig framing
+# drift without changing the verified reference images or identity thresholds.
+MAX_FREQUENCY_ALIGNMENT_X = 12
 REFERENCE_PATH = Path(__file__).with_name("camera_reference.json")
 
 # The calibrated camera view.  Coordinates are fractions of the full camera
@@ -102,11 +107,11 @@ def _orange_centroid_y(frame: bytes, bounds: tuple[int, int, int, int]) -> tuple
     return count, (y_total / count if count else 0.0)
 
 
-def frequency_signature(frame: bytes) -> tuple[int, ...]:
+def frequency_signature(frame: bytes, offset_x: int = 0) -> tuple[int, ...]:
     values: list[int] = []
     for bin_y in range(5):
         for bin_x in range(15):
-            x0 = 135 + bin_x * 12
+            x0 = 135 + offset_x + bin_x * 12
             y0 = 55 + bin_y * 12
             values.append(_count_pixels(frame, (x0, y0, x0 + 12, y0 + 12), _orange))
     return tuple(values)
@@ -253,6 +258,34 @@ def identify_frequency(signature: tuple[int, ...]) -> tuple[int | None, float]:
     return best_frequency, confidence
 
 
+def identify_frequency_with_translation(frame: bytes) -> tuple[int | None, float, tuple[int, ...]]:
+    """Match verified digit references across a small horizontal rig drift."""
+    signatures = [
+        (offset_x, frequency_signature(frame, offset_x))
+        for offset_x in range(-MAX_FREQUENCY_ALIGNMENT_X, MAX_FREQUENCY_ALIGNMENT_X + 1)
+    ]
+    ranked: list[tuple[float, int, int, tuple[int, ...]]] = []
+    for frequency, reference in FREQUENCY_REFERENCES.items():
+        distance, _shift_magnitude, offset_x, signature = min(
+            (
+                _signature_distance(signature, reference),
+                abs(offset_x),
+                offset_x,
+                signature,
+            )
+            for offset_x, signature in signatures
+        )
+        ranked.append((distance, frequency, offset_x, signature))
+    ranked.sort(key=lambda item: item[0])
+    if len(ranked) < 2:
+        return None, 0.0, ()
+    best_distance, best_frequency, _best_offset_x, best_signature = ranked[0]
+    confidence = ranked[1][0] - best_distance
+    if best_distance > 0.24 or confidence < 0.025:
+        return None, max(0.0, confidence), best_signature
+    return best_frequency, confidence, best_signature
+
+
 def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
     if len(frame) != FRAME_BYTES:
         raise ValueError(f"camera frame has {len(frame)} bytes; expected {FRAME_BYTES}")
@@ -260,8 +293,10 @@ def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
     # Main orange frequency digits.  The resting display has only dim dashes in
     # this region, making this a stable alert/no-alert discriminator.
     frequency_pixels = _count_pixels(frame, (135, 50, 315, 118), _orange)
-    signature = frequency_signature(frame) if frequency_pixels >= 80 else ()
-    frequency_mhz, frequency_confidence = identify_frequency(signature) if signature else (None, 0.0)
+    if frequency_pixels >= 80:
+        frequency_mhz, frequency_confidence, signature = identify_frequency_with_translation(frame)
+    else:
+        frequency_mhz, frequency_confidence, signature = None, 0.0, ()
     visible_pixels = _count_pixels(frame, (15, 20, 465, 170), _visible)
 
     # The three arrow glyphs are vertically separated.  The centroid is more

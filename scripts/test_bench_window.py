@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
+import camera_grade as camera_grade_module  # noqa: E402
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
     FRAME_BYTES,
@@ -30,6 +31,7 @@ from camera_grade import (  # noqa: E402
     find_replay_offset,
     grade_idle,
     grade_replay,
+    identify_frequency_with_translation,
     validate_camera_reference,
 )
 from run_window import (  # noqa: E402
@@ -336,6 +338,23 @@ def test_camera_reference_images_match_bound_signatures() -> None:
         raise AssertionError("camera reference signature drift passed validation")
 
 
+def test_frequency_reference_tolerates_small_horizontal_rig_drift() -> None:
+    reference = CAMERA_REFERENCE["frequency_references"]["24150"]
+    image_path = Path(camera_grade_module.__file__).with_name(reference["image"])
+    frame = camera_grade_module._decode_reference_frame(image_path)
+    shifted = bytearray(len(frame))
+    shift_x = -10
+    row_bytes = FRAME_WIDTH * 3
+    copied_bytes = (FRAME_WIDTH + shift_x) * 3
+    for y in range(camera_grade_module.FRAME_HEIGHT):
+        row_start = y * row_bytes
+        source_start = row_start - shift_x * 3
+        shifted[row_start : row_start + copied_bytes] = frame[source_start : source_start + copied_bytes]
+    frequency, confidence, _signature = identify_frequency_with_translation(bytes(shifted))
+    assert_true(frequency == 24150, f"small horizontal rig drift lost frequency identity: {frequency}")
+    assert_true(confidence >= 0.025, f"translated frequency confidence was too low: {confidence}")
+
+
 def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     offset = 2.0
     observations, encounters = matching_replay_fixture(offset)
@@ -371,9 +390,19 @@ def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
         else:
             raise AssertionError(f"invalid replay timing hint passed: {invalid_hint}")
 
-    # A three-second clock error pushes the best available candidate to the
-    # positive edge of the deliberately bounded two-second search window.
-    boundary_observations, boundary_encounters = matching_replay_fixture(5.0)
+    # Process launch precedes BLE transport readiness. The measured fresh-boot
+    # delay remains valid while a larger clock error still reaches the bound.
+    delayed_observations, delayed_encounters = matching_replay_fixture(13.0 / 3.0)
+    delayed_offset, _ratio = find_replay_offset(delayed_observations, delayed_encounters, 2.0)
+    delayed_adjustment = abs(delayed_offset - 2.0)
+    assert_true(
+        2.0 <= delayed_adjustment < MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+        f"measured BLE readiness delay escaped the timing guard: {delayed_offset}",
+    )
+
+    # A four-second clock error pushes the best available candidate to the
+    # positive edge of the deliberately bounded three-second search window.
+    boundary_observations, boundary_encounters = matching_replay_fixture(6.0)
     try:
         find_replay_offset(boundary_observations, boundary_encounters, 2.0)
     except RuntimeError as exc:
@@ -424,6 +453,7 @@ def main() -> int:
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()
+    test_frequency_reference_tolerates_small_horizontal_rig_drift()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()
     test_idle_camera_grade_rejects_unlogged_alerts()

@@ -427,6 +427,27 @@ def calibrate_display_crop(path: Path, ffmpeg: str | None = None) -> tuple[float
     return offset_x, offset_y, registration
 
 
+def calibrate_display_crop_from_evidence(
+    camera_dir: Path,
+    camera_result: dict[str, Any],
+) -> tuple[float, float, dict[str, Any]]:
+    """Register from low-exposure stills, with a transition-safe fallback."""
+    failures: list[str] = []
+    for field in ("session_start_still", "bright_still"):
+        name = str(camera_result.get(field) or "")
+        path = camera_dir / name
+        if not name or not path.is_file():
+            failures.append(f"{field} is missing")
+            continue
+        try:
+            offset_x, offset_y, registration = calibrate_display_crop(path)
+            registration["source_field"] = field
+            return offset_x, offset_y, registration
+        except RuntimeError as exc:
+            failures.append(f"{field}: {exc}")
+    raise RuntimeError("camera registration failed for low-exposure stills: " + "; ".join(failures))
+
+
 def _display_crop_filter(offset_x: float, offset_y: float) -> str:
     crop_x = DISPLAY_CROP_X + offset_x / FRAME_WIDTH * DISPLAY_CROP_WIDTH
     crop_y = DISPLAY_CROP_Y + offset_y / FRAME_HEIGHT * DISPLAY_CROP_HEIGHT
@@ -748,6 +769,7 @@ def grade_camera(
         "kind": "bench_camera_grade",
         "timestamp_utc": utc_now(),
         "suite": suite,
+        "video": str(camera_result.get("video") or ""),
         "result": "FAIL",
         "checks": {},
         "errors": [],
@@ -770,11 +792,10 @@ def grade_camera(
         video_path = camera_dir / video_name
         if not video_name or not video_path.is_file():
             raise RuntimeError("camera video is missing")
-        dim_still_name = str(camera_result.get("dim_still") or "")
-        dim_still_path = camera_dir / dim_still_name
-        if not dim_still_name or not dim_still_path.is_file():
-            raise RuntimeError("camera registration still is missing")
-        crop_offset_x, crop_offset_y, registration = calibrate_display_crop(dim_still_path)
+        crop_offset_x, crop_offset_y, registration = calibrate_display_crop_from_evidence(
+            camera_dir,
+            camera_result,
+        )
         payload["crop_registration"] = registration
         observations = extract_observations(
             video_path,

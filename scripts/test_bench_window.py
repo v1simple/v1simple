@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
+import camera_grade as camera_grade_module  # noqa: E402
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
     FRAME_BYTES,
@@ -386,6 +387,41 @@ def test_camera_crop_registration_tracks_bounded_rig_movement() -> None:
         raise AssertionError("unbounded camera movement passed registration")
 
 
+def test_camera_crop_registration_falls_back_to_bright_still() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        camera_dir = Path(tmp)
+        session_start = camera_dir / "session_start_exp156.jpg"
+        bright = camera_dir / "final_exp5.jpg"
+        session_start.write_bytes(b"session")
+        bright.write_bytes(b"bright")
+        original = camera_grade_module.calibrate_display_crop
+        calls: list[str] = []
+
+        def fake_calibrate(path: Path) -> tuple[float, float, dict[str, object]]:
+            calls.append(path.name)
+            if path == session_start:
+                raise RuntimeError("display transition")
+            return 4.0, 2.0, {"result": "PASS", "source_still": path.name}
+
+        camera_grade_module.calibrate_display_crop = fake_calibrate
+        try:
+            offset_x, offset_y, registration = (
+                camera_grade_module.calibrate_display_crop_from_evidence(
+                    camera_dir,
+                    {
+                        "session_start_still": session_start.name,
+                        "bright_still": bright.name,
+                    },
+                )
+            )
+        finally:
+            camera_grade_module.calibrate_display_crop = original
+
+        assert_true(calls == [session_start.name, bright.name], f"wrong fallback order: {calls}")
+        assert_true((offset_x, offset_y) == (4.0, 2.0), "bright-still registration was lost")
+        assert_true(registration["source_field"] == "bright_still", "fallback source was not recorded")
+
+
 def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     offset = 2.0
     observations, encounters = matching_replay_fixture(offset)
@@ -485,6 +521,7 @@ def main() -> int:
     test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()
     test_camera_crop_registration_tracks_bounded_rig_movement()
+    test_camera_crop_registration_falls_back_to_bright_still()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()
     test_idle_camera_grade_rejects_unlogged_alerts()

@@ -15,23 +15,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
-import camera_grade as camera_grade_module  # noqa: E402
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
     FRAME_BYTES,
+    FRAME_HEIGHT,
     FRAME_WIDTH,
     CameraCapture,
     evaluate_camera_profile_frames,
 )
 from camera_grade import (  # noqa: E402
     CAMERA_REFERENCE,
+    DISPLAY_CROP_HEIGHT,
+    DISPLAY_CROP_WIDTH,
+    DISPLAY_CROP_X,
+    DISPLAY_CROP_Y,
     EncounterObservation,
     FrameObservation,
     MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+    REFERENCE_ANCHOR_X,
+    REFERENCE_ANCHOR_Y,
+    REGISTRATION_HEIGHT,
+    REGISTRATION_WIDTH,
+    detect_display_crop_registration,
     find_replay_offset,
     grade_idle,
     grade_replay,
-    identify_frequency_with_translation,
     validate_camera_reference,
 )
 from run_window import (  # noqa: E402
@@ -338,21 +346,44 @@ def test_camera_reference_images_match_bound_signatures() -> None:
         raise AssertionError("camera reference signature drift passed validation")
 
 
-def test_frequency_reference_tolerates_small_horizontal_rig_drift() -> None:
-    reference = CAMERA_REFERENCE["frequency_references"]["24150"]
-    image_path = Path(camera_grade_module.__file__).with_name(reference["image"])
-    frame = camera_grade_module._decode_reference_frame(image_path)
-    shifted = bytearray(len(frame))
-    shift_x = -10
-    row_bytes = FRAME_WIDTH * 3
-    copied_bytes = (FRAME_WIDTH + shift_x) * 3
-    for y in range(camera_grade_module.FRAME_HEIGHT):
-        row_start = y * row_bytes
-        source_start = row_start - shift_x * 3
-        shifted[row_start : row_start + copied_bytes] = frame[source_start : source_start + copied_bytes]
-    frequency, confidence, _signature = identify_frequency_with_translation(bytes(shifted))
-    assert_true(frequency == 24150, f"small horizontal rig drift lost frequency identity: {frequency}")
-    assert_true(confidence >= 0.025, f"translated frequency confidence was too low: {confidence}")
+def registration_fixture(offset_x: float, offset_y: float) -> bytes:
+    frame = bytearray(REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3)
+    anchor_x = REGISTRATION_WIDTH * (
+        DISPLAY_CROP_X + DISPLAY_CROP_WIDTH * (REFERENCE_ANCHOR_X + offset_x) / FRAME_WIDTH
+    )
+    anchor_y = REGISTRATION_HEIGHT * (
+        DISPLAY_CROP_Y + DISPLAY_CROP_HEIGHT * (REFERENCE_ANCHOR_Y + offset_y) / FRAME_HEIGHT
+    )
+    x0 = round(anchor_x - 65)
+    x1 = round(anchor_x + 65)
+    y0 = round(anchor_y - 24)
+    y1 = round(anchor_y + 24)
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            index = (y * REGISTRATION_WIDTH + x) * 3
+            frame[index : index + 3] = bytes((255, 100, 10))
+    return bytes(frame)
+
+
+def test_camera_crop_registration_tracks_bounded_rig_movement() -> None:
+    expected_x = 64.0
+    expected_y = 8.0
+    actual_x, actual_y, registration = detect_display_crop_registration(
+        registration_fixture(expected_x, expected_y)
+    )
+    assert_true(abs(actual_x - expected_x) < 1.0, f"camera x registration drifted: {actual_x}")
+    assert_true(abs(actual_y - expected_y) < 1.0, f"camera y registration drifted: {actual_y}")
+    assert_true(registration["result"] == "PASS", "bounded camera registration did not pass")
+
+    try:
+        detect_display_crop_registration(registration_fixture(110.0, 0.0))
+    except RuntimeError as exc:
+        assert_true(
+            "exceeds bounded crop translation" in str(exc),
+            f"unexpected registration error: {exc}",
+        )
+    else:
+        raise AssertionError("unbounded camera movement passed registration")
 
 
 def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
@@ -453,7 +484,7 @@ def main() -> int:
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()
-    test_frequency_reference_tolerates_small_horizontal_rig_drift()
+    test_camera_crop_registration_tracks_bounded_rig_movement()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()
     test_idle_camera_grade_rejects_unlogged_alerts()

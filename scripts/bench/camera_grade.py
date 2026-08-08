@@ -30,14 +30,25 @@ FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
 # Process launch precedes BLE transport readiness by up to 2.33 s in recorded
 # fresh boots. Keep the search bounded while allowing that observed handoff.
 MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 3.0
-# One signature bin of horizontal tolerance handles minor fixed-rig framing
-# drift without changing the verified reference images or identity thresholds.
-MAX_FREQUENCY_ALIGNMENT_X = 12
 REFERENCE_PATH = Path(__file__).with_name("camera_reference.json")
 
 # The calibrated camera view.  Coordinates are fractions of the full camera
 # frame, then normalized by ffmpeg to FRAME_WIDTH x FRAME_HEIGHT.
-DISPLAY_CROP = "crop=iw*0.52:ih*0.38:iw*0.18:ih*0.25"
+DISPLAY_CROP_WIDTH = 0.52
+DISPLAY_CROP_HEIGHT = 0.38
+DISPLAY_CROP_X = 0.18
+DISPLAY_CROP_Y = 0.25
+
+# The final dim still shows the centered SCAN label independently of the replay
+# log. Register that stable display landmark to the verified reference layout
+# before grading. The hard limits reject a camera move too large for translation
+# alone instead of searching for a flattering replay match.
+REGISTRATION_WIDTH = 960
+REGISTRATION_HEIGHT = 540
+REFERENCE_ANCHOR_X = 224.0
+REFERENCE_ANCHOR_Y = 83.0
+MAX_DISPLAY_CROP_OFFSET_X = 96.0
+MAX_DISPLAY_CROP_OFFSET_Y = 36.0
 
 
 @dataclass(frozen=True)
@@ -107,11 +118,11 @@ def _orange_centroid_y(frame: bytes, bounds: tuple[int, int, int, int]) -> tuple
     return count, (y_total / count if count else 0.0)
 
 
-def frequency_signature(frame: bytes, offset_x: int = 0) -> tuple[int, ...]:
+def frequency_signature(frame: bytes) -> tuple[int, ...]:
     values: list[int] = []
     for bin_y in range(5):
         for bin_x in range(15):
-            x0 = 135 + offset_x + bin_x * 12
+            x0 = 135 + bin_x * 12
             y0 = 55 + bin_y * 12
             values.append(_count_pixels(frame, (x0, y0, x0 + 12, y0 + 12), _orange))
     return tuple(values)
@@ -258,34 +269,6 @@ def identify_frequency(signature: tuple[int, ...]) -> tuple[int | None, float]:
     return best_frequency, confidence
 
 
-def identify_frequency_with_translation(frame: bytes) -> tuple[int | None, float, tuple[int, ...]]:
-    """Match verified digit references across a small horizontal rig drift."""
-    signatures = [
-        (offset_x, frequency_signature(frame, offset_x))
-        for offset_x in range(-MAX_FREQUENCY_ALIGNMENT_X, MAX_FREQUENCY_ALIGNMENT_X + 1)
-    ]
-    ranked: list[tuple[float, int, int, tuple[int, ...]]] = []
-    for frequency, reference in FREQUENCY_REFERENCES.items():
-        distance, _shift_magnitude, offset_x, signature = min(
-            (
-                _signature_distance(signature, reference),
-                abs(offset_x),
-                offset_x,
-                signature,
-            )
-            for offset_x, signature in signatures
-        )
-        ranked.append((distance, frequency, offset_x, signature))
-    ranked.sort(key=lambda item: item[0])
-    if len(ranked) < 2:
-        return None, 0.0, ()
-    best_distance, best_frequency, _best_offset_x, best_signature = ranked[0]
-    confidence = ranked[1][0] - best_distance
-    if best_distance > 0.24 or confidence < 0.025:
-        return None, max(0.0, confidence), best_signature
-    return best_frequency, confidence, best_signature
-
-
 def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
     if len(frame) != FRAME_BYTES:
         raise ValueError(f"camera frame has {len(frame)} bytes; expected {FRAME_BYTES}")
@@ -293,10 +276,8 @@ def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
     # Main orange frequency digits.  The resting display has only dim dashes in
     # this region, making this a stable alert/no-alert discriminator.
     frequency_pixels = _count_pixels(frame, (135, 50, 315, 118), _orange)
-    if frequency_pixels >= 80:
-        frequency_mhz, frequency_confidence, signature = identify_frequency_with_translation(frame)
-    else:
-        frequency_mhz, frequency_confidence, signature = None, 0.0, ()
+    signature = frequency_signature(frame) if frequency_pixels >= 80 else ()
+    frequency_mhz, frequency_confidence = identify_frequency(signature) if signature else (None, 0.0)
     visible_pixels = _count_pixels(frame, (15, 20, 465, 170), _visible)
 
     # The three arrow glyphs are vertically separated.  The centroid is more
@@ -327,7 +308,140 @@ def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
     )
 
 
-def extract_observations(video_path: Path, ffmpeg: str | None = None) -> list[FrameObservation]:
+def _decode_registration_frame(path: Path, ffmpeg: str | None = None) -> bytes:
+    executable = ffmpeg or shutil.which("ffmpeg")
+    if not executable:
+        raise RuntimeError("ffmpeg is required to register camera evidence")
+    process = subprocess.run(
+        [
+            executable,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={REGISTRATION_WIDTH}:{REGISTRATION_HEIGHT}:flags=area",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    if process.returncode != 0:
+        detail = process.stderr.decode("utf-8", errors="replace").strip()
+        error = detail or f"exit {process.returncode}"
+        raise RuntimeError(f"camera registration still decode failed: {error}")
+    expected_bytes = REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3
+    if len(process.stdout) != expected_bytes:
+        raise RuntimeError(
+            f"camera registration still has {len(process.stdout)} decoded bytes; expected {expected_bytes}"
+        )
+    return process.stdout
+
+
+def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[str, Any]]:
+    """Locate the centered SCAN label and return bounded output-pixel offsets."""
+    expected_bytes = REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3
+    if len(frame) != expected_bytes:
+        raise ValueError(f"camera registration frame has {len(frame)} bytes; expected {expected_bytes}")
+
+    roi_x0 = int(REGISTRATION_WIDTH * 0.25)
+    roi_x1 = int(REGISTRATION_WIDTH * 0.72)
+    roi_y0 = int(REGISTRATION_HEIGHT * 0.25)
+    roi_y1 = int(REGISTRATION_HEIGHT * 0.62)
+    active_columns: list[tuple[int, int]] = []
+    for x in range(roi_x0, roi_x1):
+        count = 0
+        for y in range(roi_y0, roi_y1):
+            offset = (y * REGISTRATION_WIDTH + x) * 3
+            if _orange(frame[offset], frame[offset + 1], frame[offset + 2]):
+                count += 1
+        if count:
+            active_columns.append((x, count))
+
+    groups: list[list[tuple[int, int]]] = []
+    for x, count in active_columns:
+        if not groups or x - groups[-1][-1][0] > 12:
+            groups.append([])
+        groups[-1].append((x, count))
+    if not groups:
+        raise RuntimeError("camera registration still has no orange display landmark")
+    group = max(groups, key=lambda items: sum(count for _x, count in items))
+    anchor_x0 = group[0][0]
+    anchor_x1 = group[-1][0]
+    anchor_ys: list[int] = []
+    for y in range(roi_y0, roi_y1):
+        for x in range(anchor_x0, anchor_x1 + 1):
+            offset = (y * REGISTRATION_WIDTH + x) * 3
+            if _orange(frame[offset], frame[offset + 1], frame[offset + 2]):
+                anchor_ys.append(y)
+    if not anchor_ys:
+        raise RuntimeError("camera registration still has no complete display landmark")
+    anchor_y0 = min(anchor_ys)
+    anchor_y1 = max(anchor_ys)
+    anchor_width = anchor_x1 - anchor_x0 + 1
+    anchor_height = anchor_y1 - anchor_y0 + 1
+    if not (80 <= anchor_width <= 180 and 30 <= anchor_height <= 80):
+        raise RuntimeError(
+            "camera registration display landmark has unexpected geometry "
+            f"({anchor_width}x{anchor_height})"
+        )
+
+    anchor_x = (anchor_x0 + anchor_x1) / 2.0
+    anchor_y = (anchor_y0 + anchor_y1) / 2.0
+    expected_x = REGISTRATION_WIDTH * (
+        DISPLAY_CROP_X + DISPLAY_CROP_WIDTH * REFERENCE_ANCHOR_X / FRAME_WIDTH
+    )
+    expected_y = REGISTRATION_HEIGHT * (
+        DISPLAY_CROP_Y + DISPLAY_CROP_HEIGHT * REFERENCE_ANCHOR_Y / FRAME_HEIGHT
+    )
+    offset_x = (anchor_x - expected_x) / (REGISTRATION_WIDTH * DISPLAY_CROP_WIDTH) * FRAME_WIDTH
+    offset_y = (anchor_y - expected_y) / (REGISTRATION_HEIGHT * DISPLAY_CROP_HEIGHT) * FRAME_HEIGHT
+    if abs(offset_x) > MAX_DISPLAY_CROP_OFFSET_X or abs(offset_y) > MAX_DISPLAY_CROP_OFFSET_Y:
+        raise RuntimeError(
+            "camera registration exceeds bounded crop translation "
+            f"({offset_x:.1f}px, {offset_y:.1f}px)"
+        )
+    return offset_x, offset_y, {
+        "result": "PASS",
+        "normalized_still_size": f"{REGISTRATION_WIDTH}x{REGISTRATION_HEIGHT}",
+        "landmark_bounds": [anchor_x0, anchor_y0, anchor_x1, anchor_y1],
+        "reference_anchor": [REFERENCE_ANCHOR_X, REFERENCE_ANCHOR_Y],
+        "offset_pixels": [round(offset_x, 3), round(offset_y, 3)],
+        "maximum_offset_pixels": [MAX_DISPLAY_CROP_OFFSET_X, MAX_DISPLAY_CROP_OFFSET_Y],
+    }
+
+
+def calibrate_display_crop(path: Path, ffmpeg: str | None = None) -> tuple[float, float, dict[str, Any]]:
+    offset_x, offset_y, registration = detect_display_crop_registration(
+        _decode_registration_frame(path, ffmpeg)
+    )
+    registration["source_still"] = path.name
+    return offset_x, offset_y, registration
+
+
+def _display_crop_filter(offset_x: float, offset_y: float) -> str:
+    crop_x = DISPLAY_CROP_X + offset_x / FRAME_WIDTH * DISPLAY_CROP_WIDTH
+    crop_y = DISPLAY_CROP_Y + offset_y / FRAME_HEIGHT * DISPLAY_CROP_HEIGHT
+    return (
+        f"crop=iw*{DISPLAY_CROP_WIDTH}:ih*{DISPLAY_CROP_HEIGHT}:"
+        f"iw*{crop_x:.8f}:ih*{crop_y:.8f}"
+    )
+
+
+def extract_observations(
+    video_path: Path,
+    ffmpeg: str | None = None,
+    crop_offset_x: float = 0.0,
+    crop_offset_y: float = 0.0,
+) -> list[FrameObservation]:
     executable = ffmpeg or shutil.which("ffmpeg")
     if not executable:
         raise RuntimeError("ffmpeg is required to grade camera evidence")
@@ -340,7 +454,8 @@ def extract_observations(video_path: Path, ffmpeg: str | None = None) -> list[Fr
         "-i",
         str(video_path),
         "-vf",
-        f"{DISPLAY_CROP},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,fps={FRAME_RATE}",
+        f"{_display_crop_filter(crop_offset_x, crop_offset_y)},"
+        f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,fps={FRAME_RATE}",
         "-an",
         "-f",
         "rawvideo",
@@ -655,7 +770,17 @@ def grade_camera(
         video_path = camera_dir / video_name
         if not video_name or not video_path.is_file():
             raise RuntimeError("camera video is missing")
-        observations = extract_observations(video_path)
+        dim_still_name = str(camera_result.get("dim_still") or "")
+        dim_still_path = camera_dir / dim_still_name
+        if not dim_still_name or not dim_still_path.is_file():
+            raise RuntimeError("camera registration still is missing")
+        crop_offset_x, crop_offset_y, registration = calibrate_display_crop(dim_still_path)
+        payload["crop_registration"] = registration
+        observations = extract_observations(
+            video_path,
+            crop_offset_x=crop_offset_x,
+            crop_offset_y=crop_offset_y,
+        )
         payload["sample_rate_hz"] = FRAME_RATE
         payload["sample_count"] = len(observations)
         payload["video"] = video_name

@@ -262,7 +262,7 @@ struct V1Settings {
         const AutoPushSlot& config;
     };
 
-    String lastV1Address; // Last known V1 BLE address for fast reconnect
+    String lastV1Address; // Runtime/backup fallback; V1DeviceStore owns connected-device durability
 
     // Auto power-off on V1 disconnect
     uint8_t autoPowerOffMinutes; // Minutes to wait after V1 disconnect or ALP silence before power off (0=disabled)

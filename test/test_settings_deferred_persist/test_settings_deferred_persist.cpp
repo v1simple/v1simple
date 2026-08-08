@@ -189,10 +189,32 @@ void test_save_flushes_immediately_and_clears_deferred_persist() {
     TEST_ASSERT_EQUAL_UINT32(2u, manager.backupRevision());
 }
 
+void test_last_v1_address_does_not_schedule_full_settings_persist() {
+    SettingsManager manager;
+
+    manager.setLastV1Address("AA:BB:CC:DD:EE:FF");
+
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.get().lastV1Address.c_str());
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+    TEST_ASSERT_FALSE(manager.deferredBackupPending());
+    TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
+
+    // The compatibility value is still included when an explicit settings
+    // save is requested, including the graceful-shutdown path.
+    manager.save();
+
+    const String activeNs = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(activeNs.length() > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "AA:BB:CC:DD:EE:FF",
+        mock_preferences::getString(activeNs.c_str(), "lastV1Addr", "").c_str());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup);
     RUN_TEST(test_deferred_persist_retries_after_failed_nvs_write);
     RUN_TEST(test_save_flushes_immediately_and_clears_deferred_persist);
+    RUN_TEST(test_last_v1_address_does_not_schedule_full_settings_persist);
     return UNITY_END();
 }

@@ -430,8 +430,12 @@ void SettingsManager::setLastV1Address(const String& addr) {
     String safeAddr = sanitizeLastV1AddressValue(addr);
     if (safeAddr != settings_.lastV1Address) {
         settings_.lastV1Address = safeAddr;
-        requestDeferredPersist();
-        Serial.printf("Deferred persist for new V1 address: %s\n", safeAddr.c_str());
+        // The connected-device path records this address in V1DeviceStore,
+        // which owns runtime durability. A full settings transaction rewrites
+        // every NVS key and builds an SD backup, so do not schedule that work
+        // solely for this compatibility/fallback field while BLE is active.
+        // Explicit settings saves and graceful shutdown still capture it.
+        Serial.printf("Updated runtime V1 address: %s\n", safeAddr.c_str());
     }
 }
 

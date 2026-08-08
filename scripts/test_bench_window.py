@@ -73,6 +73,7 @@ def write_dummy_emulator(
             '"totalSamples":762,"cadenceHz":3}'
             "'"
         )
+        configured += "\necho 'status V1REPLAY_EVENT {\"state\":\"replay_started\",\"hostMonotonicSeconds\":12345.5}'"
     marker = 'echo \'V1REPLAY_EVENT {"state":"complete"}\'' if emit_complete else "true"
     path.write_text(
         "#!/bin/sh\n"
@@ -134,6 +135,10 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
         result = emulator.finish(window_completed=True)
         assert_true(result["completed"] is True, f"completion marker was not honored: {result}")
         assert_true(result["mode"] == "bench", f"wrong replay mode: {result}")
+        assert_true(
+            result["replay_started_monotonic_seconds"] == 12345.5,
+            f"first replay sample time was not recorded: {result}",
+        )
 
         missing_root = root / "missing"
         missing_executable = missing_root / "v1replay"
@@ -453,7 +458,7 @@ def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
         try:
             find_replay_offset(observations, encounters, invalid_hint)
         except RuntimeError as exc:
-            assert_true("finite emulator start time" in str(exc), f"wrong missing-hint error: {exc}")
+            assert_true("finite first replay sample time" in str(exc), f"wrong missing-hint error: {exc}")
         else:
             raise AssertionError(f"invalid replay timing hint passed: {invalid_hint}")
 

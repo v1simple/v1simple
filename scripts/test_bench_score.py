@@ -67,6 +67,7 @@ def write_window(
     replay_completed: bool = True,
     camera_result: str = "",
     camera_grade_result: str = "PASS",
+    camera_grade_errors: tuple[str, ...] = (),
 ) -> None:
     step = root / suite
     metric_payload = [
@@ -189,7 +190,7 @@ def write_window(
                             "ratio": 1.0 if camera_grade_result == "PASS" else 0.0,
                         }
                     },
-                    "errors": [],
+                    "errors": list(camera_grade_errors),
                 },
             )
 
@@ -221,7 +222,7 @@ def test_no_baseline_language_does_not_make_bench_fail() -> None:
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         assert_true(result["result"] == "PASS", f"unexpected result: {result}")
-        assert_true(result["schema_version"] == 2, f"unexpected schema: {result}")
+        assert_true(result["schema_version"] == 3, f"unexpected schema: {result}")
         assert_true(result["git_sha"] == FULL_SHA, f"missing full Git binding: {result}")
         assert_true(result["git_worktree_clean"] is True, f"dirty binding: {result}")
         assert_true("NO_BASELINE" not in proc.stdout, f"bench output leaked old baseline language: {proc.stdout}")
@@ -428,28 +429,58 @@ def test_managed_emulator_must_cover_every_live_window() -> None:
         assert_true("managed V1 emulator did not cover" in proc.stdout, proc.stdout)
 
 
-def test_requested_camera_capture_requires_a_passing_mechanical_grade() -> None:
+def test_requested_replay_camera_separates_product_and_evidence_failures() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_window(root, "core", camera_result="CAPTURED")
-        proc = run_score(root, "core", camera_suites=("core",))
+        write_window(root, "replay", camera_result="CAPTURED")
+        proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
-        assert_true("camera=PASS" in proc.stdout, proc.stdout)
+        assert_true("camera evidence: PASS (only replay is gated)" in proc.stdout, proc.stdout)
+        assert_true("camera=PASS (gated replay validator)" in proc.stdout, proc.stdout)
 
-        write_window(root, "core", camera_result="CAPTURED", camera_grade_result="FAIL")
-        proc = run_score(root, "core", camera_suites=("core",))
+        write_window(root, "replay", camera_result="CAPTURED", camera_grade_result="FAIL")
+        proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
-        assert_true("camera evidence does not match" in proc.stdout, proc.stdout)
+        assert_true("replay camera evidence disagrees" in proc.stdout, proc.stdout)
 
-        (root / "core" / "camera" / "camera_grade.json").unlink()
-        proc = run_score(root, "core", camera_suites=("core",))
+        write_window(
+            root,
+            "replay",
+            camera_result="CAPTURED",
+            camera_grade_result="INCONCLUSIVE",
+            camera_grade_errors=("camera registration failed",),
+        )
+        proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
-        assert_true("no mechanical grade" in proc.stdout, proc.stdout)
+        assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
+        assert_true("collection: PASS" in proc.stdout, proc.stdout)
+        assert_true("camera evidence: INCONCLUSIVE" in proc.stdout, proc.stdout)
+        assert_true("replay camera evidence is inconclusive" in proc.stdout, proc.stdout)
 
-        (root / "core" / "camera" / "camera_result.json").unlink()
-        proc = run_score(root, "core", camera_suites=("core",))
+        write_window(
+            root,
+            "replay",
+            hard=1,
+            camera_result="CAPTURED",
+            camera_grade_result="INCONCLUSIVE",
+            camera_grade_errors=("camera registration failed",),
+        )
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("bench result: FAIL" in proc.stdout, proc.stdout)
+        assert_true("camera evidence: INCONCLUSIVE" in proc.stdout, proc.stdout)
+
+        write_window(root, "replay", camera_result="CAPTURED")
+        (root / "replay" / "camera" / "camera_grade.json").unlink()
+        proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
-        assert_true("camera evidence was requested but not captured" in proc.stdout, proc.stdout)
+        assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
+        assert_true("has no mechanical grade" in proc.stdout, proc.stdout)
+
+        (root / "replay" / "camera" / "camera_result.json").unlink()
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("gated replay camera evidence was not captured" in proc.stdout, proc.stdout)
 
 
 def test_only_replay_camera_grade_is_required_by_the_full_bench() -> None:
@@ -466,9 +497,18 @@ def test_only_replay_camera_grade_is_required_by_the_full_bench() -> None:
             camera_suites=("replay",),
         )
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
-        assert_true("core: PASS" in proc.stdout and "camera=CAPTURED (ungraded)" in proc.stdout, proc.stdout)
-        assert_true("display: PASS" in proc.stdout and "camera=CAPTURED (ungraded)" in proc.stdout, proc.stdout)
-        assert_true("replay: PASS" in proc.stdout and "camera=PASS" in proc.stdout, proc.stdout)
+        assert_true(
+            "core: PASS" in proc.stdout and "camera=CAPTURED (diagnostic only)" in proc.stdout,
+            proc.stdout,
+        )
+        assert_true(
+            "display: PASS" in proc.stdout and "camera=CAPTURED (exercise only)" in proc.stdout,
+            proc.stdout,
+        )
+        assert_true(
+            "replay: PASS" in proc.stdout and "camera=PASS (gated replay validator)" in proc.stdout,
+            proc.stdout,
+        )
 
 
 def main() -> int:
@@ -484,7 +524,7 @@ def main() -> int:
     test_replay_mismatch_is_actionable_failure()
     test_replay_process_failure_is_collection_failure()
     test_managed_emulator_must_cover_every_live_window()
-    test_requested_camera_capture_requires_a_passing_mechanical_grade()
+    test_requested_replay_camera_separates_product_and_evidence_failures()
     test_only_replay_camera_grade_is_required_by_the_full_bench()
     print("bench scorer tests passed")
     return 0

@@ -68,6 +68,7 @@ final class Player {
     private var _packetsSent = 0
     private var _lastBars = 0
     private var _elapsed: Double = 0
+    private var reportedReplayStart = false
 
     private let encounter: Encounter
     private let peripheral: V1Peripheral
@@ -75,6 +76,7 @@ final class Player {
     private var thread: Thread?
 
     var onLog: ((String) -> Void)?
+    var onReplayStarted: ((Double) -> Void)?
 
     init(encounter: Encounter, peripheral: V1Peripheral, options: Options) {
         self.encounter = encounter
@@ -433,6 +435,10 @@ final class Player {
         _lastBars = sample.priorityAlert?.strength ?? 0
         _elapsed = sample.offset
         lock.unlock()
+        if !reportedReplayStart {
+            reportedReplayStart = true
+            onReplayStarted?(nowSeconds())
+        }
         return true
     }
 

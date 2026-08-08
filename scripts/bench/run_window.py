@@ -15,6 +15,7 @@ import argparse
 import binascii
 import glob
 import json
+import math
 import os
 import signal
 import shutil
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from camera_capture import CameraCapture
+from camera_contract import camera_evidence_contract, camera_grade_required as contract_grade_required
 from camera_grade import grade_camera
 
 try:  # pyserial is needed only for live collection, not --from-csv imports.
@@ -489,27 +491,37 @@ class V1Emulator:
         except OSError:
             return False
 
-    def _bench_configuration(self) -> dict[str, Any]:
+    def _bench_event(self, state: str) -> dict[str, Any]:
         try:
             lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return {}
         prefix = "V1REPLAY_EVENT "
+        decoder = json.JSONDecoder()
         for line in lines:
-            if not line.startswith(prefix):
+            marker = line.find(prefix)
+            if marker < 0:
                 continue
             try:
-                event = json.loads(line[len(prefix) :])
-            except json.JSONDecodeError:
+                event, _end = decoder.raw_decode(line[marker + len(prefix) :])
+            except (json.JSONDecodeError, TypeError):
                 continue
-            if event.get("state") == "configured":
+            if isinstance(event, dict) and event.get("state") == state:
                 return event
         return {}
+
+    def _bench_configuration(self) -> dict[str, Any]:
+        return self._bench_event("configured")
 
     def finish(self, window_completed: bool) -> dict[str, Any]:
         process_was_running = self.process is not None and self.process.poll() is None
         bench_completed = self._bench_completed() if self.mode == "bench" else True
         configuration = self._bench_configuration() if self.mode == "bench" else {}
+        replay_started = self._bench_event("replay_started") if self.mode == "bench" else {}
+        try:
+            replay_started_monotonic = float(replay_started.get("hostMonotonicSeconds"))
+        except (TypeError, ValueError):
+            replay_started_monotonic = math.nan
         try:
             total_samples = int(configuration.get("totalSamples") or 0)
             cadence_hz = int(configuration.get("cadenceHz") or 0)
@@ -546,6 +558,9 @@ class V1Emulator:
             "managed_stop": self.managed_stop,
             "returncode": self.returncode,
             "log": self.log_path.name if self.log_path.is_file() else "",
+            "replay_started_monotonic_seconds": (
+                replay_started_monotonic if math.isfinite(replay_started_monotonic) else None
+            ),
         }
 
     def _close_log(self) -> None:
@@ -658,12 +673,22 @@ def collect_live(
                 camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
-            emulator_start_video_s: float | None = None
-            if camera.recording_started_monotonic is not None and emulator.started_monotonic is not None:
-                emulator_start_video_s = round(
-                    emulator.started_monotonic - camera.recording_started_monotonic, 3
+            camera_result["evidence_contract"] = camera_evidence_contract(args.suite)
+            timeline_start_video_s: float | None = None
+            replay_started_monotonic = emulator_result.get("replay_started_monotonic_seconds")
+            if (
+                args.suite == "replay"
+                and camera.recording_started_monotonic is not None
+                and isinstance(replay_started_monotonic, (int, float))
+                and math.isfinite(replay_started_monotonic)
+            ):
+                timeline_start_video_s = round(
+                    replay_started_monotonic - camera.recording_started_monotonic, 3
                 )
-                camera_result["emulator_start_video_seconds"] = emulator_start_video_s
+                camera_result["timing_anchor"] = {
+                    "kind": "first_emitted_replay_sample",
+                    "video_seconds": timeline_start_video_s,
+                }
             camera_result["visually_graded"] = False
             camera_result["grade"] = ""
             camera_result["grade_result"] = ""
@@ -675,7 +700,7 @@ def collect_live(
                     camera_result=camera_result,
                     emulator_result=emulator_result,
                     encounter_csv_path=encounter_csv_path,
-                    emulator_start_video_s=emulator_start_video_s,
+                    timeline_start_video_s=timeline_start_video_s,
                 )
                 camera_result["visually_graded"] = True
                 camera_result["grade"] = "camera_grade.json"
@@ -693,7 +718,7 @@ def collect_live(
 
 def camera_grade_required(suite: str, camera_result: dict[str, Any]) -> bool:
     """Only replay has an independent log contract suitable for camera grading."""
-    return suite == "replay" and camera_result.get("result") == "CAPTURED"
+    return contract_grade_required(suite, str(camera_result.get("result") or ""))
 
 
 def main() -> int:

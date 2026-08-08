@@ -591,6 +591,12 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
             console.print("V1REPLAY_EVENT {\"state\":\"complete\"}")
         }
     }
+    player.onReplayStarted = { hostMonotonicSeconds in
+        if machineEvents && bench {
+            console.log("V1REPLAY_EVENT {\"state\":\"replay_started\","
+                        + "\"hostMonotonicSeconds\":\(hostMonotonicSeconds)}")
+        }
+    }
 
     let quit = Flag()
     let exitOnComplete = args.bool("exit-on-complete")

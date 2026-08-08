@@ -17,9 +17,25 @@ from typing import Any
 
 from import_perf_csv import load_sessions
 
-RESULT_ORDER = {"PASS": 0, "WARN": 1, "FAIL": 2, "COLLECTION_FAILED": 3}
-EXIT_BY_RESULT = {"PASS": 0, "WARN": 1, "FAIL": 2, "COLLECTION_FAILED": 3}
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts" / "bench"))
+
+from camera_contract import camera_evidence_contract  # noqa: E402
+
+RESULT_ORDER = {
+    "PASS": 0,
+    "WARN": 1,
+    "EVIDENCE_FAILED": 2,
+    "FAIL": 3,
+    "COLLECTION_FAILED": 4,
+}
+EXIT_BY_RESULT = {
+    "PASS": 0,
+    "WARN": 1,
+    "FAIL": 2,
+    "EVIDENCE_FAILED": 3,
+    "COLLECTION_FAILED": 3,
+}
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
 
 
@@ -30,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--camera-suite",
         action="append",
-        choices=["core", "display", "replay"],
+        choices=["replay"],
         default=[],
         help="Suite whose camera evidence is required for this verdict",
     )
@@ -288,8 +304,10 @@ def classify_window(
 
     camera_path = window_dir / "camera" / "camera_result.json"
     camera = load_json(camera_path) or {}
+    camera_contract = camera_evidence_contract(suite)
     camera_grade: dict[str, Any] = {}
     camera_grade_valid = False
+    camera_evidence_inconclusive = False
     if camera_required:
         missing_camera_files: list[str] = []
         if camera.get("result") == "CAPTURED":
@@ -299,10 +317,11 @@ def classify_window(
                 if not evidence_path.is_file() or evidence_path.stat().st_size == 0:
                     missing_camera_files.append(key)
         if camera.get("result") != "CAPTURED" or missing_camera_files:
-            result = "COLLECTION_FAILED"
+            camera_evidence_inconclusive = True
+            result = worse(result, "EVIDENCE_FAILED")
             camera_errors = camera.get("errors") if isinstance(camera.get("errors"), list) else []
             evidence.append(
-                "camera evidence was requested but not captured"
+                "gated replay camera evidence was not captured"
                 + (f"; missing files: {', '.join(missing_camera_files)}" if missing_camera_files else "")
                 + (f": {'; '.join(str(item) for item in camera_errors)}" if camera_errors else "")
             )
@@ -311,27 +330,31 @@ def classify_window(
             grade_path = camera_path.parent / grade_name
             camera_grade = load_json(grade_path) or {}
             if not camera_grade:
-                result = "COLLECTION_FAILED"
-                evidence.append("camera evidence was captured but has no mechanical grade")
+                camera_evidence_inconclusive = True
+                result = worse(result, "EVIDENCE_FAILED")
+                evidence.append("gated replay camera evidence has no mechanical grade")
             elif (
                 camera_grade.get("kind") != "bench_camera_grade"
                 or camera_grade.get("suite") != suite
                 or camera_grade.get("video") != camera.get("video")
             ):
-                result = "COLLECTION_FAILED"
-                evidence.append("camera mechanical grade does not belong to this suite video")
+                camera_evidence_inconclusive = True
+                result = worse(result, "EVIDENCE_FAILED")
+                evidence.append("camera grade ownership could not be verified for this replay video")
             else:
                 camera_grade_valid = True
-                if camera_grade.get("result") != "PASS":
+                grade_result = str(camera_grade.get("result") or "")
+                if grade_result == "FAIL":
                     grade_errors = (
                         camera_grade.get("errors")
                         if isinstance(camera_grade.get("errors"), list)
                         else []
                     )
                     if grade_errors:
-                        result = "COLLECTION_FAILED"
+                        camera_evidence_inconclusive = True
+                        result = worse(result, "EVIDENCE_FAILED")
                         evidence.append(
-                            "camera evidence could not be graded: "
+                            "replay camera evidence is inconclusive: "
                             + "; ".join(map(str, grade_errors))
                         )
                     else:
@@ -342,9 +365,21 @@ def classify_window(
                             if isinstance(check, dict) and check.get("result") != "PASS"
                         ]
                         evidence.append(
-                            "camera evidence does not match the recorded display state"
+                            "replay camera evidence disagrees with the same-window display log"
                             + (f"; failed checks: {', '.join(failed_checks)}" if failed_checks else "")
                         )
+                elif grade_result != "PASS":
+                    camera_evidence_inconclusive = True
+                    result = worse(result, "EVIDENCE_FAILED")
+                    grade_errors = (
+                        camera_grade.get("errors")
+                        if isinstance(camera_grade.get("errors"), list)
+                        else []
+                    )
+                    evidence.append(
+                        "replay camera evidence is inconclusive"
+                        + (f": {'; '.join(map(str, grade_errors))}" if grade_errors else "")
+                    )
     manifest = load_json(window_path(window_dir, window.get("manifest_path"), "manifest.json")) or {}
     budget = top_budget_pressures(scoring, catalog)
     return {
@@ -369,15 +404,29 @@ def classify_window(
         if emulator
         else {},
         "camera": {
-            "result": (camera_grade.get("result") if camera_grade_valid else "")
-            or ("UNGRADED" if camera.get("result") == "CAPTURED" else camera.get("result", "")),
+            "result": (
+                "INCONCLUSIVE"
+                if camera_evidence_inconclusive
+                else (camera_grade.get("result") if camera_grade_valid else "")
+            )
+            or (
+                "UNGRADED"
+                if camera.get("result") == "CAPTURED"
+                else camera.get("result") or ("MISSING" if camera_required else "")
+            ),
             "capture_result": camera.get("result", ""),
+            "mechanical_result": camera_grade.get("result", "") if camera_grade_valid else "",
             "video": camera.get("video", ""),
             "video_duration_seconds": camera.get("video_duration_seconds"),
             "visually_graded": camera_grade_valid,
             "checks": camera_grade.get("checks", {}),
+            "role": camera_contract["role"],
+            "purpose": camera_contract["purpose"],
+            "role_summary": camera_contract["summary"],
+            "gate_required": camera_contract["gate_required"],
+            "evidence_contract": camera_contract,
         }
-        if camera
+        if camera or camera_required
         else {},
         "budget_pressure": budget,
         "evidence": evidence,
@@ -395,7 +444,25 @@ def format_value(value: Any, unit: str = "") -> str:
 def render_text(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(f"bench result: {payload['result']}")
-    lines.append(f"collection: {'PASS' if payload['result'] != 'COLLECTION_FAILED' else 'FAIL'}")
+    collection_failed = any(
+        window.get("result") == "COLLECTION_FAILED" for window in payload["windows"]
+    )
+    lines.append(f"collection: {'FAIL' if collection_failed else 'PASS'}")
+    camera_windows = [window.get("camera", {}) for window in payload["windows"] if window.get("camera")]
+    gated_camera = [camera for camera in camera_windows if camera.get("gate_required")]
+    if gated_camera:
+        if any(
+            camera.get("result") in {"INCONCLUSIVE", "MISSING", "CAPTURE_FAILED", "UNGRADED"}
+            for camera in gated_camera
+        ):
+            camera_status = "INCONCLUSIVE"
+        elif any(camera.get("result") == "FAIL" for camera in gated_camera):
+            camera_status = "FAIL"
+        else:
+            camera_status = "PASS"
+        lines.append(f"camera evidence: {camera_status} (only replay is gated)")
+    elif camera_windows:
+        lines.append("camera evidence: NOT_GATED (diagnostic/exercise capture only)")
     for window in payload["windows"]:
         detail = f"{window['suite']}: {window['result']}"
         if window.get("rows") is not None:
@@ -407,16 +474,25 @@ def render_text(payload: dict[str, Any]) -> str:
         camera = window.get("camera", {})
         if camera.get("result"):
             if camera.get("result") == "UNGRADED":
-                detail += f", camera={camera.get('capture_result')} (ungraded)"
+                detail += (
+                    f", camera={camera.get('capture_result')} "
+                    f"({camera.get('role_summary') or 'not gated'})"
+                )
             elif not camera.get("visually_graded") and camera.get("capture_result"):
-                detail += f", camera={camera.get('capture_result')} (ungraded)"
+                detail += (
+                    f", camera={camera.get('capture_result')} "
+                    f"({camera.get('role_summary') or 'not gated'})"
+                )
             else:
-                detail += f", camera={camera['result']}"
+                detail += (
+                    f", camera={camera['result']} "
+                    f"({camera.get('role_summary') or 'not gated'})"
+                )
         lines.append(detail)
     failures = [w for w in payload["windows"] if w["result"] != "PASS"]
     if failures:
         lines.append("")
-        lines.append("failed:")
+        lines.append("evidence failure:" if payload["result"] == "EVIDENCE_FAILED" else "failed:")
         for window in failures:
             evidence = window.get("evidence") or []
             if not evidence:
@@ -464,7 +540,7 @@ def main() -> int:
     git_shas = {str(window.get("git_sha") or "").strip() for window in windows}
     git_refs = {str(window.get("git_ref") or "").strip() for window in windows}
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "bench_result",
         "run_dir": str(run_dir),
         "git_sha": next(iter(git_shas)) if len(git_shas) == 1 else "",

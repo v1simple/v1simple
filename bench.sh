@@ -31,9 +31,10 @@ usage() {
 Usage: ./bench.sh [options]
 
 Runs the bench evidence suite in one artifact directory and emits one verdict.
-No OBD/proxy coverage and no release-qualification language. Camera artifacts
-are retained for every selected live window; only deterministic replay is
-mechanically graded against its independently recorded display log.
+No OBD/proxy coverage and no release-qualification language. Core camera video
+is diagnostic evidence, display camera video is exercise evidence, and neither
+can affect the verdict. Only deterministic replay is mechanically graded
+against its independently recorded same-window display log.
 Optional promoted baselines are local comparison aids only.
 The managed v1replay peripheral emulates the V1 for every live suite.
 
@@ -45,7 +46,7 @@ Options:
   --blink-profile PROFILE Priority-arrow stimulus for replay: scenario (default),
                           steady (negative control), or stress (always blink).
   --blink-arrow           Legacy alias for --blink-profile stress.
-  --camera                Capture every live window and mechanically grade replay.
+  --camera                Capture every live window; gate only replay camera evidence.
   --duration-seconds N    Window duration (default: 300).
   --replay-duration-seconds N
                           Replay metrics window duration (default: 300).
@@ -65,7 +66,7 @@ Options:
   -h, --help              Show this help.
 
 Exit codes:
-  0 PASS, 1 WARN, 2 FAIL, 3 COLLECTION_FAILED or usage/setup failure.
+  0 PASS, 1 WARN, 2 FAIL, 3 EVIDENCE_FAILED, COLLECTION_FAILED, or usage/setup failure.
 EOF
 }
 
@@ -221,11 +222,10 @@ if [[ -z "$FROM_CSV" && "$UPLOAD" -eq 1 ]]; then
   echo "  post-upload: ${POST_UPLOAD_SETTLE_SECONDS}s unscored SD settle" | tee -a "$RUN_LOG"
 fi
 if [[ "$CAPTURE_CAMERA" -eq 1 ]]; then
-  if [[ "$RUN_REPLAY" -eq 1 ]]; then
-    echo "  camera:     captured for all windows; replay grade required" | tee -a "$RUN_LOG"
-  else
-    echo "  camera:     captured but ungraded (no replay selected)" | tee -a "$RUN_LOG"
-  fi
+  echo "  camera:     role is fixed per suite" | tee -a "$RUN_LOG"
+  [[ "$RUN_CORE" -eq 1 ]] && echo "              core = diagnostic capture (not gated)" | tee -a "$RUN_LOG"
+  [[ "$RUN_DISPLAY" -eq 1 ]] && echo "              display = preview exercise (not gated)" | tee -a "$RUN_LOG"
+  [[ "$RUN_REPLAY" -eq 1 ]] && echo "              replay = same-window log validator (gated)" | tee -a "$RUN_LOG"
 else
   echo "  camera:     disabled" | tee -a "$RUN_LOG"
 fi

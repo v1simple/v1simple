@@ -22,14 +22,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from camera_contract import (
+    MAX_DISPLAY_CROP_OFFSET_X,
+    MAX_DISPLAY_CROP_OFFSET_Y,
+    MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+    MIN_ALERT_COMPARISONS,
+    MIN_ALERT_MATCH_RATIO,
+    MIN_DIRECTION_COMPARISONS,
+    MIN_DIRECTION_MATCH_RATIO,
+    MIN_FREQUENCY_COMPARISONS,
+    MIN_FREQUENCY_MATCH_RATIO,
+    MIN_TIMELINE_MATCH_RATIO,
+    REGISTRATION_SOURCE_FIELDS,
+    camera_evidence_contract,
+)
+
 
 FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_RATE = 3
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
-# Process launch precedes BLE transport readiness by up to 2.33 s in recorded
-# fresh boots. Keep the search bounded while allowing that observed handoff.
-MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 3.0
 REFERENCE_PATH = Path(__file__).with_name("camera_reference.json")
 
 # The calibrated camera view.  Coordinates are fractions of the full camera
@@ -47,8 +59,6 @@ REGISTRATION_WIDTH = 960
 REGISTRATION_HEIGHT = 540
 REFERENCE_ANCHOR_X = 224.0
 REFERENCE_ANCHOR_Y = 83.0
-MAX_DISPLAY_CROP_OFFSET_X = 96.0
-MAX_DISPLAY_CROP_OFFSET_Y = 36.0
 
 
 @dataclass(frozen=True)
@@ -433,7 +443,7 @@ def calibrate_display_crop_from_evidence(
 ) -> tuple[float, float, dict[str, Any]]:
     """Register from low-exposure stills, with a transition-safe fallback."""
     failures: list[str] = []
-    for field in ("session_start_still", "bright_still"):
+    for field in REGISTRATION_SOURCE_FIELDS:
         name = str(camera_result.get(field) or "")
         path = camera_dir / name
         if not name or not path.is_file():
@@ -561,7 +571,7 @@ def find_replay_offset(
     hint_s: float | None,
 ) -> tuple[float, float]:
     if hint_s is None or not math.isfinite(hint_s):
-        raise RuntimeError("replay camera grade requires a finite emulator start time")
+        raise RuntimeError("replay camera grade requires a finite first replay sample time")
     adjustment_steps = round(MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S * FRAME_RATE)
     candidates = [hint_s + delta / FRAME_RATE for delta in range(-adjustment_steps, adjustment_steps + 1)]
     checkpoints = [float(second) for second in range(1, 252)]
@@ -719,23 +729,31 @@ def grade_replay(
             "maximum_adjustment_seconds": MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
         },
         "timeline_matches_log": {
-            "result": "PASS" if state_match_ratio >= 0.96 else "FAIL",
+            "result": "PASS" if state_match_ratio >= MIN_TIMELINE_MATCH_RATIO else "FAIL",
             "ratio": state_match_ratio,
         },
         "logged_alerts_visible": {
-            "result": "PASS" if alert_compared >= 20 and alert_ratio >= 0.95 else "FAIL",
+            "result": "PASS"
+            if alert_compared >= MIN_ALERT_COMPARISONS and alert_ratio >= MIN_ALERT_MATCH_RATIO
+            else "FAIL",
             "matched": alert_matches,
             "compared": alert_compared,
             "ratio": round(alert_ratio, 4),
         },
         "logged_frequencies_visible": {
-            "result": "PASS" if frequency_compared >= 20 and frequency_ratio >= 0.90 else "FAIL",
+            "result": "PASS"
+            if frequency_compared >= MIN_FREQUENCY_COMPARISONS
+            and frequency_ratio >= MIN_FREQUENCY_MATCH_RATIO
+            else "FAIL",
             "matched": frequency_matches,
             "compared": frequency_compared,
             "ratio": round(frequency_ratio, 4),
         },
         "logged_directions_visible": {
-            "result": "PASS" if direction_compared >= 12 and direction_ratio >= 0.85 else "FAIL",
+            "result": "PASS"
+            if direction_compared >= MIN_DIRECTION_COMPARISONS
+            and direction_ratio >= MIN_DIRECTION_MATCH_RATIO
+            else "FAIL",
             "matched": direction_matches,
             "compared": direction_compared,
             "ratio": round(direction_ratio, 4),
@@ -761,16 +779,18 @@ def grade_camera(
     camera_result: dict[str, Any],
     emulator_result: dict[str, Any],
     encounter_csv_path: Path | None,
-    emulator_start_video_s: float | None,
+    timeline_start_video_s: float | None,
 ) -> dict[str, Any]:
     output_path = camera_dir / "camera_grade.json"
     payload: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bench_camera_grade",
         "timestamp_utc": utc_now(),
         "suite": suite,
         "video": str(camera_result.get("video") or ""),
-        "result": "FAIL",
+        "result": "INCONCLUSIVE",
+        "evidence_contract": camera_evidence_contract(suite),
+        "timing_anchor": camera_result.get("timing_anchor") or {},
         "checks": {},
         "errors": [],
     }
@@ -785,9 +805,9 @@ def grade_camera(
         }
         validate_camera_profile(camera_result)
         if suite == "replay" and (
-            emulator_start_video_s is None or not math.isfinite(emulator_start_video_s)
+            timeline_start_video_s is None or not math.isfinite(timeline_start_video_s)
         ):
-            raise RuntimeError("replay camera grade requires a finite emulator start time")
+            raise RuntimeError("replay camera grade requires the first emitted replay sample time")
         video_name = str(camera_result.get("video") or "")
         video_path = camera_dir / video_name
         if not video_name or not video_path.is_file():
@@ -811,20 +831,20 @@ def grade_camera(
             if encounter_csv_path is None or not encounter_csv_path.is_file():
                 raise RuntimeError("replay encounter CSV is missing")
             encounters = load_encounters(encounter_csv_path)
-            payload.update(grade_replay(observations, encounters, emulator_start_video_s))
+            payload.update(grade_replay(observations, encounters, timeline_start_video_s))
             payload["encounter_csv"] = encounter_csv_path.name
             payload["encounter_observations"] = len(encounters)
         elif suite == "display":
             duration_s = float(camera_result.get("expected_duration_seconds") or 0.0)
             payload.update(
-                grade_display_preview(observations, emulator_start_video_s or 0.0, duration_s)
+                grade_display_preview(observations, timeline_start_video_s or 0.0, duration_s)
             )
         else:
             duration_s = float(camera_result.get("expected_duration_seconds") or 0.0)
-            payload.update(grade_idle(observations, emulator_start_video_s or 0.0, duration_s))
+            payload.update(grade_idle(observations, timeline_start_video_s or 0.0, duration_s))
     except Exception as exc:  # noqa: BLE001 - the grade artifact is the failure contract
         payload["errors"] = [str(exc)]
-        payload["result"] = "FAIL"
+        payload["result"] = "INCONCLUSIVE"
     camera_dir.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
@@ -835,7 +855,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suite", choices=["core", "display", "replay"], required=True)
     parser.add_argument("--camera-dir", required=True)
     parser.add_argument("--encounter-csv", default="")
-    parser.add_argument("--emulator-start-video-seconds", type=float, default=None)
+    parser.add_argument(
+        "--timeline-start-video-seconds",
+        "--emulator-start-video-seconds",
+        dest="timeline_start_video_seconds",
+        type=float,
+        default=None,
+        help="Replay/display timeline start on the camera video's clock",
+    )
     return parser.parse_args()
 
 
@@ -850,7 +877,7 @@ def main() -> int:
         camera_result=camera_result,
         emulator_result={"completed": True},
         encounter_csv_path=Path(args.encounter_csv).resolve() if args.encounter_csv else None,
-        emulator_start_video_s=args.emulator_start_video_seconds,
+        timeline_start_video_s=args.timeline_start_video_seconds,
     )
     print(json.dumps(grade, indent=2))
     return 0 if grade["result"] == "PASS" else 1

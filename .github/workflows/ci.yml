@@ -47,6 +47,11 @@ jobs:
           key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
           restore-keys: ${{ runner.os }}-pio-
 
+      - name: Install camera validation dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ffmpeg
+
       - name: Install Python toolchain
         run: |
           python3 -m venv --copies "$HOME/.platformio/penv"

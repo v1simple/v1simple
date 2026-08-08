@@ -12,6 +12,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCORER = ROOT / "tools" / "bench_score.py"
 FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
+PRODUCT_FINGERPRINT = "a" * 64
+SCENARIO_FINGERPRINT = "b" * 64
+sys.path.insert(0, str(ROOT / "scripts" / "bench"))
+
+from bench_identity import current_grader_fingerprint  # noqa: E402
+from camera_artifacts import (  # noqa: E402
+    build_capture_manifest,
+    capture_input_hashes,
+    publish_capture_manifest,
+    publish_grade,
+)
+
+
+CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -106,6 +120,8 @@ def write_window(
         "schema_version": 1,
         "result": "COLLECTED",
         "suite": suite,
+        "product_fingerprint": PRODUCT_FINGERPRINT,
+        "scenario_fingerprint": SCENARIO_FINGERPRINT,
         "git_worktree_clean": True,
         "scoring_path": str(step / "scoring.json"),
         "manifest_path": str(step / "manifest.json"),
@@ -134,6 +150,8 @@ def write_window(
             "schema_version": 1,
             "git_sha": FULL_SHA,
             "git_ref": "dev/test",
+            "product_fingerprint": PRODUCT_FINGERPRINT,
+            "scenario_fingerprint": SCENARIO_FINGERPRINT,
             "rows": 61,
             "duration_s": 300.0,
         },
@@ -154,6 +172,8 @@ def write_window(
     if camera_result:
         camera_dir = step / "camera"
         camera_dir.mkdir(parents=True, exist_ok=True)
+        (camera_dir / "capture_manifest.json").unlink(missing_ok=True)
+        (camera_dir / "grades" / f"{CURRENT_GRADER_FINGERPRINT}.json").unlink(missing_ok=True)
         evidence_names = {
             "video": "evidence_exp156.mp4",
             "session_start_still": "session_start_exp156.jpg",
@@ -163,36 +183,75 @@ def write_window(
         if camera_result == "CAPTURED":
             for name in evidence_names.values():
                 (camera_dir / name).write_bytes(b"evidence")
-        write_json(
-            camera_dir / "camera_result.json",
-            {
-                "schema_version": 1,
-                "result": camera_result,
-                **{key: value if camera_result == "CAPTURED" else "" for key, value in evidence_names.items()},
-                "video_duration_seconds": 300.0 if camera_result == "CAPTURED" else 0.0,
-                "visually_graded": camera_result == "CAPTURED",
-                "grade": "camera_grade.json" if camera_result == "CAPTURED" else "",
-                "errors": [] if camera_result == "CAPTURED" else ["camera unavailable"],
-            },
-        )
+        physical_camera = {
+            "schema_version": 1,
+            "kind": "bench_camera_evidence",
+            "result": camera_result,
+            "camera_name": "Razer Kiyo",
+            "camera_device_index": 0,
+            "profile": {"focus_abs": 208, "video_exposure_time_abs": 156},
+            "expected_duration_seconds": 300,
+            "profile_validation": {"result": "PASS"},
+            **{key: value if camera_result == "CAPTURED" else "" for key, value in evidence_names.items()},
+            "video_duration_seconds": 300.0 if camera_result == "CAPTURED" else 0.0,
+            "errors": [] if camera_result == "CAPTURED" else ["camera unavailable"],
+        }
+        write_json(camera_dir / "camera_result.json", physical_camera)
         if camera_result == "CAPTURED" and camera_grade_result:
-            write_json(
-                camera_dir / "camera_grade.json",
-                {
-                    "schema_version": 1,
-                    "kind": "bench_camera_grade",
-                    "suite": suite,
-                    "video": evidence_names["video"],
-                    "result": camera_grade_result,
-                    "checks": {
-                        "display_matches_log": {
-                            "result": camera_grade_result,
-                            "ratio": 1.0 if camera_grade_result == "PASS" else 0.0,
-                        }
-                    },
-                    "errors": list(camera_grade_errors),
-                },
+            encounter_path = step / "encounters_test.csv"
+            encounter_path.write_text("millis,event,priority\n0,SAMPLE,1\n", encoding="utf-8")
+            capture = build_capture_manifest(
+                camera_dir=camera_dir,
+                camera_result=physical_camera,
+                suite=suite,
+                product_fingerprint=PRODUCT_FINGERPRINT,
+                scenario_fingerprint=SCENARIO_FINGERPRINT,
+                encounter_csv_path=encounter_path if suite == "replay" else None,
+                timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 8.0}
+                if suite == "replay"
+                else None,
             )
+            publish_capture_manifest(camera_dir, capture)
+            diagnostics = (
+                [{"code": "fixture_inconclusive", "message": message} for message in camera_grade_errors]
+                if camera_grade_result == "INCONCLUSIVE"
+                else []
+            )
+            grade = {
+                "schema_version": 3,
+                "kind": "bench_camera_grade",
+                "capture_id": capture["capture_id"],
+                "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,
+                "grade_id": "c" * 64,
+                "input_hashes": capture_input_hashes(capture),
+                "suite": suite,
+                "video": evidence_names["video"],
+                "result": camera_grade_result,
+                "confidence": {
+                    "result": "INCONCLUSIVE" if camera_grade_result == "INCONCLUSIVE" else "PASS",
+                    "gates": {},
+                },
+                "checks": {
+                    "display_matches_log": {
+                        "result": camera_grade_result,
+                        "ratio": 1.0 if camera_grade_result == "PASS" else 0.0,
+                    }
+                },
+                "diagnostics": diagnostics,
+                "errors": list(camera_grade_errors) if camera_grade_result == "FAIL" else [],
+            }
+            grade_path, _created = publish_grade(
+                camera_dir,
+                capture,
+                CURRENT_GRADER_FINGERPRINT,
+                grade,
+            )
+            window_payload["camera"] = {
+                "capture_manifest": "capture_manifest.json",
+                "capture_id": capture["capture_id"],
+                "grade": grade_path.relative_to(camera_dir).as_posix(),
+            }
+            write_json(step / "window_result.json", window_payload)
 
 
 def run_score(
@@ -471,16 +530,97 @@ def test_requested_replay_camera_separates_product_and_evidence_failures() -> No
         assert_true("camera evidence: INCONCLUSIVE" in proc.stdout, proc.stdout)
 
         write_window(root, "replay", camera_result="CAPTURED")
-        (root / "replay" / "camera" / "camera_grade.json").unlink()
+        (root / "replay" / "camera" / "grades" / f"{CURRENT_GRADER_FINGERPRINT}.json").unlink()
         proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
         assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
-        assert_true("has no mechanical grade" in proc.stdout, proc.stdout)
+        assert_true("has no current-fingerprint mechanical grade" in proc.stdout, proc.stdout)
 
+        (root / "replay" / "camera" / "capture_manifest.json").unlink()
         (root / "replay" / "camera" / "camera_result.json").unlink()
         proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
-        assert_true("gated replay camera evidence was not captured" in proc.stdout, proc.stdout)
+        assert_true("legacy ownership" in proc.stdout, proc.stdout)
+
+
+def test_strict_camera_ownership_and_confidence_are_required() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        grade_path = root / "replay" / "camera" / "grades" / f"{CURRENT_GRADER_FINGERPRINT}.json"
+
+        write_window(root, "replay", camera_result="CAPTURED")
+        grade = json.loads(grade_path.read_text(encoding="utf-8"))
+        grade["capture_id"] = "f" * 64
+        write_json(grade_path, grade)
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("ownership could not be verified" in proc.stdout, proc.stdout)
+
+        write_window(root, "replay", camera_result="CAPTURED")
+        grade = json.loads(grade_path.read_text(encoding="utf-8"))
+        grade["grader_fingerprint"] = "e" * 64
+        write_json(grade_path, grade)
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("ownership could not be verified" in proc.stdout, proc.stdout)
+
+        write_window(root, "replay", camera_result="CAPTURED", camera_grade_result="FAIL")
+        grade = json.loads(grade_path.read_text(encoding="utf-8"))
+        grade["confidence"] = {"result": "INCONCLUSIVE", "gates": {}}
+        write_json(grade_path, grade)
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("FAIL lacks passed confidence" in proc.stdout, proc.stdout)
+
+        write_window(root, "replay", camera_result="CAPTURED")
+        (root / "replay" / "camera" / "capture_manifest.json").unlink()
+        grade_path.unlink()
+        write_json(
+            root / "replay" / "camera" / "camera_grade.json",
+            {"schema_version": 1, "kind": "bench_camera_grade", "result": "PASS"},
+        )
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("legacy ownership" in proc.stdout, proc.stdout)
+
+
+def test_strict_camera_bytes_and_window_identity_are_required() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay", camera_result="CAPTURED")
+        video = root / "replay" / "camera" / "evidence_exp156.mp4"
+        video.write_bytes(b"tampered")
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("input hash changed: video" in proc.stdout, proc.stdout)
+
+        for field, mismatch in (
+            ("product_fingerprint", "f" * 64),
+            ("scenario_fingerprint", "e" * 64),
+        ):
+            write_window(root, "replay", camera_result="CAPTURED")
+            window_path = root / "replay" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window[field] = mismatch
+            write_json(window_path, window)
+            proc = run_score(root, "replay", camera_suites=("replay",))
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(
+                f"window and performance manifest {field} identities do not agree" in proc.stdout,
+                proc.stdout,
+            )
+
+            write_window(root, "replay", camera_result="CAPTURED")
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window[field] = mismatch
+            write_json(window_path, window)
+            manifest_path = root / "replay" / "manifest.json"
+            performance_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            performance_manifest[field] = mismatch
+            write_json(manifest_path, performance_manifest)
+            proc = run_score(root, "replay", camera_suites=("replay",))
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(f"{field} does not match the current window" in proc.stdout, proc.stdout)
 
 
 def test_only_replay_camera_grade_is_required_by_the_full_bench() -> None:
@@ -511,6 +651,52 @@ def test_only_replay_camera_grade_is_required_by_the_full_bench() -> None:
         )
 
 
+def test_camera_preflight_evidence_failure_needs_no_metrics_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        replay = root / "replay"
+        preflight = {
+            "schema_version": 1,
+            "kind": "bench_camera_preflight",
+            "result": "INCONCLUSIVE",
+            "diagnostics": [
+                {
+                    "code": "screen_landmark_unreadable",
+                    "message": "camera landmark lacks readable SCAN glyph structure",
+                    "measured": {"fill_ratio": 1.0, "internal_gap_runs": 0},
+                    "thresholds": {"fill_ratio": [0.1, 0.72], "minimum_internal_gap_runs": 2},
+                }
+            ],
+        }
+        write_json(replay / "camera" / "camera_preflight.json", preflight)
+        write_json(
+            replay / "window_result.json",
+            {
+                "schema_version": 1,
+                "result": "EVIDENCE_FAILED",
+                "suite": "replay",
+                "git_sha": FULL_SHA,
+                "git_ref": "dev/test",
+                "git_worktree_clean": True,
+                "product_fingerprint": "a" * 64,
+                "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,
+                "scenario_fingerprint": "b" * 64,
+                "camera": {
+                    "result": "CAPTURE_FAILED",
+                    "preflight": "camera_preflight.json",
+                    "preflight_result": "INCONCLUSIVE",
+                    "preflight_diagnostics": preflight["diagnostics"],
+                },
+            },
+        )
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
+        assert_true("collection: PASS" in proc.stdout, proc.stdout)
+        assert_true("screen_landmark_unreadable" in proc.stdout, proc.stdout)
+        assert_true("bench result: FAIL" not in proc.stdout, proc.stdout)
+
+
 def main() -> int:
     test_no_baseline_language_does_not_make_bench_fail()
     test_baseline_only_regression_is_comparison_not_verdict()
@@ -525,7 +711,10 @@ def main() -> int:
     test_replay_process_failure_is_collection_failure()
     test_managed_emulator_must_cover_every_live_window()
     test_requested_replay_camera_separates_product_and_evidence_failures()
+    test_strict_camera_ownership_and_confidence_are_required()
+    test_strict_camera_bytes_and_window_identity_are_required()
     test_only_replay_camera_grade_is_required_by_the_full_bench()
+    test_camera_preflight_evidence_failure_needs_no_metrics_artifacts()
     print("bench scorer tests passed")
     return 0
 

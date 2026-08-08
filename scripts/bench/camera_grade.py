@@ -22,6 +22,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bench_identity import current_grader_fingerprint
+from camera_artifacts import (
+    CAPTURE_MANIFEST_NAME,
+    GRADE_SCHEMA_VERSION,
+    camera_result_view,
+    capture_input_hashes,
+    load_capture_manifest,
+    publish_grade,
+    resolve_manifest_artifact,
+)
 from camera_contract import (
     MAX_DISPLAY_CROP_OFFSET_X,
     MAX_DISPLAY_CROP_OFFSET_Y,
@@ -51,14 +61,28 @@ DISPLAY_CROP_HEIGHT = 0.38
 DISPLAY_CROP_X = 0.18
 DISPLAY_CROP_Y = 0.25
 
-# The final dim still shows the centered SCAN label independently of the replay
-# log. Register that stable display landmark to the verified reference layout
-# before grading. The hard limits reject a camera move too large for translation
-# alone instead of searching for a flattering replay match.
+# The session-start and final dim stills show the centered SCAN label
+# independently of the replay log. Register that stable display landmark to the
+# verified reference layout before collection or grading. The hard limits reject
+# unreadable framing and camera movement too large for translation alone.
 REGISTRATION_WIDTH = 960
 REGISTRATION_HEIGHT = 540
 REFERENCE_ANCHOR_X = 224.0
 REFERENCE_ANCHOR_Y = 83.0
+MIN_LANDMARK_FILL_RATIO = 0.10
+MAX_LANDMARK_FILL_RATIO = 0.72
+MIN_LANDMARK_COLUMN_TEXTURE_RATIO = 0.30
+MIN_LANDMARK_INTERNAL_GAP_RUNS = 2
+MIN_LANDMARK_WIDEST_GAP_PIXELS = 2
+MIN_LANDMARK_ROW_COVERAGE_RATIO = 0.85
+MAX_LANDMARK_BLANK_ROW_RUN_PIXELS = 2
+
+ALIGNMENT_END_SECONDS = 251.0
+MIN_ALIGNMENT_COVERAGE_RATIO = 0.95
+MIN_ALIGNMENT_UNIQUENESS_MARGIN = 0.005
+MIN_DISPLAY_VISIBLE_RATIO = 0.95
+MAX_AMBIGUOUS_ENCOUNTER_RATIO = 0.10
+CONSENSUS_MIN_RATIO = 0.60
 
 
 @dataclass(frozen=True)
@@ -84,6 +108,26 @@ class EncounterObservation:
     frequency_mhz: int
     direction: str
     event: str
+
+
+class CameraRegistrationError(RuntimeError):
+    """Registration refusal with machine-readable camera-only diagnostics."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        measured: dict[str, Any] | None = None,
+        thresholds: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic = {
+            "code": code,
+            "message": message,
+            "measured": dict(measured or {}),
+            "thresholds": dict(thresholds or {}),
+        }
 
 
 def utc_now() -> str:
@@ -382,7 +426,12 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
             groups.append([])
         groups[-1].append((x, count))
     if not groups:
-        raise RuntimeError("camera registration still has no orange display landmark")
+        raise CameraRegistrationError(
+            "screen_landmark_not_found",
+            "camera registration still has no orange display landmark",
+            measured={"active_columns": 0},
+            thresholds={"minimum_active_columns": 1},
+        )
     group = max(groups, key=lambda items: sum(count for _x, count in items))
     anchor_x0 = group[0][0]
     anchor_x1 = group[-1][0]
@@ -393,15 +442,96 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
             if _orange(frame[offset], frame[offset + 1], frame[offset + 2]):
                 anchor_ys.append(y)
     if not anchor_ys:
-        raise RuntimeError("camera registration still has no complete display landmark")
+        raise CameraRegistrationError(
+            "screen_landmark_geometry_invalid",
+            "camera registration still has no complete display landmark",
+            measured={"landmark_width_pixels": anchor_x1 - anchor_x0 + 1, "landmark_height_pixels": 0},
+            thresholds={"width_pixels": [80, 180], "height_pixels": [30, 80]},
+        )
     anchor_y0 = min(anchor_ys)
     anchor_y1 = max(anchor_ys)
     anchor_width = anchor_x1 - anchor_x0 + 1
     anchor_height = anchor_y1 - anchor_y0 + 1
     if not (80 <= anchor_width <= 180 and 30 <= anchor_height <= 80):
-        raise RuntimeError(
+        raise CameraRegistrationError(
+            "screen_landmark_geometry_invalid",
             "camera registration display landmark has unexpected geometry "
-            f"({anchor_width}x{anchor_height})"
+            f"({anchor_width}x{anchor_height})",
+            measured={"landmark_width_pixels": anchor_width, "landmark_height_pixels": anchor_height},
+            thresholds={"width_pixels": [80, 180], "height_pixels": [30, 80]},
+        )
+
+    column_counts: list[int] = []
+    for x in range(anchor_x0, anchor_x1 + 1):
+        count = 0
+        for y in range(anchor_y0, anchor_y1 + 1):
+            offset = (y * REGISTRATION_WIDTH + x) * 3
+            count += int(_orange(frame[offset], frame[offset + 1], frame[offset + 2]))
+        column_counts.append(count)
+    orange_pixels = sum(column_counts)
+    fill_ratio = orange_pixels / (anchor_width * anchor_height)
+    partial_columns = sum(0 < count < anchor_height for count in column_counts)
+    column_texture_ratio = partial_columns / anchor_width
+    gap_lengths: list[int] = []
+    current_gap = 0
+    for count in column_counts:
+        if count == 0:
+            current_gap += 1
+        elif current_gap:
+            gap_lengths.append(current_gap)
+            current_gap = 0
+    if current_gap:
+        gap_lengths.append(current_gap)
+    internal_gap_runs = len(gap_lengths)
+    widest_gap = max(gap_lengths, default=0)
+    row_counts: list[int] = []
+    for y in range(anchor_y0, anchor_y1 + 1):
+        count = 0
+        for x in range(anchor_x0, anchor_x1 + 1):
+            offset = (y * REGISTRATION_WIDTH + x) * 3
+            count += int(_orange(frame[offset], frame[offset + 1], frame[offset + 2]))
+        row_counts.append(count)
+    row_coverage_ratio = sum(count > 0 for count in row_counts) / anchor_height
+    blank_row_runs: list[int] = []
+    current_blank_rows = 0
+    for count in row_counts:
+        if count == 0:
+            current_blank_rows += 1
+        elif current_blank_rows:
+            blank_row_runs.append(current_blank_rows)
+            current_blank_rows = 0
+    if current_blank_rows:
+        blank_row_runs.append(current_blank_rows)
+    maximum_blank_row_run = max(blank_row_runs, default=0)
+    readable = (
+        MIN_LANDMARK_FILL_RATIO <= fill_ratio <= MAX_LANDMARK_FILL_RATIO
+        and column_texture_ratio >= MIN_LANDMARK_COLUMN_TEXTURE_RATIO
+        and internal_gap_runs >= MIN_LANDMARK_INTERNAL_GAP_RUNS
+        and widest_gap >= MIN_LANDMARK_WIDEST_GAP_PIXELS
+        and row_coverage_ratio >= MIN_LANDMARK_ROW_COVERAGE_RATIO
+        and maximum_blank_row_run <= MAX_LANDMARK_BLANK_ROW_RUN_PIXELS
+    )
+    if not readable:
+        raise CameraRegistrationError(
+            "screen_landmark_unreadable",
+            "camera registration landmark lacks readable SCAN glyph structure",
+            measured={
+                "orange_pixels": orange_pixels,
+                "fill_ratio": round(fill_ratio, 4),
+                "column_texture_ratio": round(column_texture_ratio, 4),
+                "internal_gap_runs": internal_gap_runs,
+                "widest_gap_pixels": widest_gap,
+                "row_coverage_ratio": round(row_coverage_ratio, 4),
+                "maximum_blank_row_run_pixels": maximum_blank_row_run,
+            },
+            thresholds={
+                "fill_ratio": [MIN_LANDMARK_FILL_RATIO, MAX_LANDMARK_FILL_RATIO],
+                "minimum_column_texture_ratio": MIN_LANDMARK_COLUMN_TEXTURE_RATIO,
+                "minimum_internal_gap_runs": MIN_LANDMARK_INTERNAL_GAP_RUNS,
+                "minimum_widest_gap_pixels": MIN_LANDMARK_WIDEST_GAP_PIXELS,
+                "minimum_row_coverage_ratio": MIN_LANDMARK_ROW_COVERAGE_RATIO,
+                "maximum_blank_row_run_pixels": MAX_LANDMARK_BLANK_ROW_RUN_PIXELS,
+            },
         )
 
     anchor_x = (anchor_x0 + anchor_x1) / 2.0
@@ -415,14 +545,32 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
     offset_x = (anchor_x - expected_x) / (REGISTRATION_WIDTH * DISPLAY_CROP_WIDTH) * FRAME_WIDTH
     offset_y = (anchor_y - expected_y) / (REGISTRATION_HEIGHT * DISPLAY_CROP_HEIGHT) * FRAME_HEIGHT
     if abs(offset_x) > MAX_DISPLAY_CROP_OFFSET_X or abs(offset_y) > MAX_DISPLAY_CROP_OFFSET_Y:
-        raise RuntimeError(
+        raise CameraRegistrationError(
+            "screen_outside_translation_bounds",
             "camera registration exceeds bounded crop translation "
-            f"({offset_x:.1f}px, {offset_y:.1f}px)"
+            f"({offset_x:.1f}px, {offset_y:.1f}px)",
+            measured={
+                "offset_x_pixels": round(offset_x, 3),
+                "offset_y_pixels": round(offset_y, 3),
+            },
+            thresholds={
+                "maximum_absolute_offset_x_pixels": MAX_DISPLAY_CROP_OFFSET_X,
+                "maximum_absolute_offset_y_pixels": MAX_DISPLAY_CROP_OFFSET_Y,
+            },
         )
     return offset_x, offset_y, {
         "result": "PASS",
         "normalized_still_size": f"{REGISTRATION_WIDTH}x{REGISTRATION_HEIGHT}",
         "landmark_bounds": [anchor_x0, anchor_y0, anchor_x1, anchor_y1],
+        "landmark_readability": {
+            "orange_pixels": orange_pixels,
+            "fill_ratio": round(fill_ratio, 4),
+            "column_texture_ratio": round(column_texture_ratio, 4),
+            "internal_gap_runs": internal_gap_runs,
+            "widest_gap_pixels": widest_gap,
+            "row_coverage_ratio": round(row_coverage_ratio, 4),
+            "maximum_blank_row_run_pixels": maximum_blank_row_run,
+        },
         "reference_anchor": [REFERENCE_ANCHOR_X, REFERENCE_ANCHOR_Y],
         "offset_pixels": [round(offset_x, 3), round(offset_y, 3)],
         "maximum_offset_pixels": [MAX_DISPLAY_CROP_OFFSET_X, MAX_DISPLAY_CROP_OFFSET_Y],
@@ -565,22 +713,30 @@ def _expected_active_at(replay_time_s: float, encounters: list[EncounterObservat
     return any(start <= replay_time_s <= end for start, end in intervals.values())
 
 
-def find_replay_offset(
+def find_replay_alignment(
     observations: list[FrameObservation],
     encounters: list[EncounterObservation],
     hint_s: float | None,
-) -> tuple[float, float]:
+) -> dict[str, Any]:
     if hint_s is None or not math.isfinite(hint_s):
-        raise RuntimeError("replay camera grade requires a finite first replay sample time")
+        return {
+            "result": "INCONCLUSIVE",
+            "selection_basis": "alert_rest_only",
+            "diagnostic": {
+                "code": "timing_anchor_missing",
+                "message": "replay camera grade requires a finite replay timing anchor",
+            },
+        }
     adjustment_steps = round(MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S * FRAME_RATE)
     candidates = [hint_s + delta / FRAME_RATE for delta in range(-adjustment_steps, adjustment_steps + 1)]
-    checkpoints = [float(second) for second in range(1, 252)]
-    best_offset = hint_s
-    best_ratio = -1.0
-    best_score = -1.0
-    best_adjustment = math.inf
+    checkpoint_count = round((ALIGNMENT_END_SECONDS - 1.0) * FRAME_RATE) + 1
+    checkpoints = [1.0 + index / FRAME_RATE for index in range(checkpoint_count)]
+    scored: list[dict[str, Any]] = []
     for offset in candidates:
-        matches = 0
+        active_matches = 0
+        active_compared = 0
+        rest_matches = 0
+        rest_compared = 0
         compared = 0
         for replay_time in checkpoints:
             nearby = _nearest(observations, offset + replay_time, 0.2)
@@ -588,36 +744,100 @@ def find_replay_offset(
                 continue
             expected = _expected_active_at(replay_time, encounters)
             actual = max(item.frequency_pixels for item in nearby) >= 80
-            matches += int(actual == expected)
+            if expected:
+                active_compared += 1
+                active_matches += int(actual)
+            else:
+                rest_compared += 1
+                rest_matches += int(not actual)
             compared += 1
-        ratio = matches / compared if compared else 0.0
-        frequency_matches = 0
-        direction_matches = 0
-        encounter_compared = 0
-        for encounter in encounters:
-            nearby = _nearest(observations, offset + encounter.time_s, 0.4)
-            if not nearby:
-                continue
-            encounter_compared += 1
-            frequency_matches += int(
-                any(item.frequency_mhz == encounter.frequency_mhz for item in nearby)
-            )
-            direction_matches += int(any(item.direction == encounter.direction for item in nearby))
-        encounter_ratio = (
-            (frequency_matches + direction_matches) / (2 * encounter_compared)
-            if encounter_compared
-            else 0.0
+        active_ratio = active_matches / active_compared if active_compared else 0.0
+        rest_ratio = rest_matches / rest_compared if rest_compared else 0.0
+        scored.append(
+            {
+                "offset": offset,
+                "score": (active_ratio + rest_ratio) / 2.0,
+                "coverage": compared / len(checkpoints),
+                "active_compared": active_compared,
+                "rest_compared": rest_compared,
+            }
         )
-        score = ratio + encounter_ratio
-        adjustment = abs(offset - hint_s)
-        if score > best_score or (math.isclose(score, best_score) and adjustment < best_adjustment):
-            best_offset = offset
-            best_ratio = ratio
-            best_score = score
-            best_adjustment = adjustment
-    if best_adjustment >= MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S:
-        raise RuntimeError("replay camera alignment landed at the timing-hint search boundary")
-    return round(best_offset, 3), round(best_ratio, 4)
+
+    best_score = max((item["score"] for item in scored), default=-1.0)
+    equivalent = [item for item in scored if math.isclose(item["score"], best_score, abs_tol=1e-12)]
+    selected = min(equivalent, key=lambda item: (abs(item["offset"] - hint_s), item["offset"]))
+    frame_seconds = 1.0 / FRAME_RATE
+    competitors = [
+        item for item in scored if abs(item["offset"] - selected["offset"]) > frame_seconds + 1e-9
+    ]
+    runner_up_score = max((item["score"] for item in competitors), default=best_score)
+    margin = best_score - runner_up_score
+    equivalent_min = min(item["offset"] for item in equivalent)
+    equivalent_max = max(item["offset"] for item in equivalent)
+    broad_plateau = equivalent_max - equivalent_min > frame_seconds + 1e-9
+    adjustment = selected["offset"] - hint_s
+    boundary = abs(adjustment) >= MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S - frame_seconds / 2.0
+    inadequate_coverage = (
+        selected["coverage"] < MIN_ALIGNMENT_COVERAGE_RATIO
+        or selected["active_compared"] == 0
+        or selected["rest_compared"] == 0
+    )
+    diagnostic: dict[str, Any] | None = None
+    if inadequate_coverage:
+        diagnostic = {
+            "code": "alignment_coverage_insufficient",
+            "message": "replay camera alignment lacks active/rest frame coverage",
+            "measured": selected["coverage"],
+            "minimum": MIN_ALIGNMENT_COVERAGE_RATIO,
+        }
+    elif boundary:
+        diagnostic = {
+            "code": "alignment_search_boundary",
+            "message": "replay camera alignment landed at the timing-hint search boundary",
+            "adjustment_seconds": round(adjustment, 3),
+        }
+    elif broad_plateau or margin < MIN_ALIGNMENT_UNIQUENESS_MARGIN:
+        diagnostic = {
+            "code": "alignment_ambiguous",
+            "message": "replay camera alignment has no unique alert/rest solution",
+            "uniqueness_margin": round(margin, 6),
+            "minimum_margin": MIN_ALIGNMENT_UNIQUENESS_MARGIN,
+        }
+
+    return {
+        "result": "PASS" if diagnostic is None else "INCONCLUSIVE",
+        "selection_basis": "alert_rest_only",
+        "start_hint_seconds": round(float(hint_s), 3),
+        "selected_video_offset_seconds": round(float(selected["offset"]), 3),
+        "hint_adjustment_seconds": round(adjustment, 3),
+        "maximum_adjustment_seconds": MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+        "candidate_step_seconds": round(frame_seconds, 6),
+        "candidate_count": len(scored),
+        "best_score": round(best_score, 6),
+        "runner_up_score": round(runner_up_score, 6),
+        "uniqueness_margin": round(margin, 6),
+        "equivalent_candidate_count": len(equivalent),
+        "equivalent_offset_range_seconds": [round(equivalent_min, 3), round(equivalent_max, 3)],
+        "coverage_ratio": round(float(selected["coverage"]), 6),
+        "boundary_hit": boundary,
+        "diagnostic": diagnostic,
+    }
+
+
+def find_replay_offset(
+    observations: list[FrameObservation],
+    encounters: list[EncounterObservation],
+    hint_s: float | None,
+) -> tuple[float, float]:
+    """Compatibility wrapper for callers that still expect the old tuple."""
+    alignment = find_replay_alignment(observations, encounters, hint_s)
+    if alignment.get("result") != "PASS":
+        diagnostic = alignment.get("diagnostic") or {}
+        raise RuntimeError(str(diagnostic.get("message") or "replay camera alignment is inconclusive"))
+    return (
+        float(alignment["selected_video_offset_seconds"]),
+        float(alignment["best_score"]),
+    )
 
 
 def grade_idle(observations: list[FrameObservation], start_s: float, duration_s: float) -> dict[str, Any]:
@@ -688,49 +908,179 @@ def grade_display_preview(
     return {"result": result, "checks": checks, "errors": []}
 
 
+def _consensus(values: list[Any]) -> tuple[Any | None, float]:
+    if not values:
+        return None, 0.0
+    counts = collections.Counter(values)
+    ranked = counts.most_common()
+    top_value, top_count = ranked[0]
+    ratio = top_count / len(values)
+    if ratio < CONSENSUS_MIN_RATIO or (len(ranked) > 1 and ranked[1][1] == top_count):
+        return None, ratio
+    return top_value, ratio
+
+
+def _encounter_consensus(
+    observations: list[FrameObservation],
+    encounter: EncounterObservation,
+    offset_s: float,
+) -> dict[str, Any]:
+    nearby = _nearest(observations, offset_s + encounter.time_s, 0.75)
+    alert, alert_ratio = _consensus([item.alert_visible for item in nearby])
+    # Unreadable samples are evidence about confidence, not samples that may be
+    # discarded. Keeping them in the denominator prevents a sparse favorable
+    # reading from becoming the consensus for an otherwise unreadable window.
+    frequencies = [item.frequency_mhz for item in nearby]
+    directions = [item.direction if item.direction != "UNKNOWN" else None for item in nearby]
+    frequency, frequency_ratio = _consensus(frequencies)
+    direction, direction_ratio = _consensus(directions)
+    return {
+        "encounter": encounter,
+        "nearby_count": len(nearby),
+        "visible_count": sum(item.visible_pixels >= 80 for item in nearby),
+        "alert": alert,
+        "alert_consensus_ratio": alert_ratio,
+        "frequency": frequency,
+        "frequency_consensus_ratio": frequency_ratio,
+        "direction": direction,
+        "direction_consensus_ratio": direction_ratio,
+    }
+
+
+def _gate(result: bool, **measurements: Any) -> dict[str, Any]:
+    return {"result": "PASS" if result else "INCONCLUSIVE", **measurements}
+
+
+def _diagnostic(code: str, message: str, **measurements: Any) -> dict[str, Any]:
+    return {"code": code, "message": message, **measurements}
+
+
 def grade_replay(
     observations: list[FrameObservation],
     encounters: list[EncounterObservation],
     start_hint_s: float | None,
 ) -> dict[str, Any]:
-    offset_s, state_match_ratio = find_replay_offset(observations, encounters, start_hint_s)
-    hint_value = float(start_hint_s) if start_hint_s is not None else math.nan
-    hint_adjustment_s = round(offset_s - hint_value, 3)
-    direction_compared = 0
-    direction_matches = 0
-    frequency_compared = 0
-    frequency_matches = 0
-    alert_compared = 0
-    alert_matches = 0
-    for encounter in encounters:
-        nearby = _nearest(observations, offset_s + encounter.time_s, 0.75)
-        if not nearby:
-            continue
-        alert_compared += 1
-        if any(item.alert_visible for item in nearby):
-            alert_matches += 1
-        recognized = [item for item in nearby if item.frequency_mhz is not None]
-        if recognized:
-            frequency_compared += 1
-            if any(item.frequency_mhz == encounter.frequency_mhz for item in recognized):
-                frequency_matches += 1
-        directional = [item for item in nearby if item.direction != "UNKNOWN"]
-        if directional:
-            direction_compared += 1
-            if any(item.direction == encounter.direction for item in directional):
-                direction_matches += 1
+    alignment = find_replay_alignment(observations, encounters, start_hint_s)
+    diagnostics: list[dict[str, Any]] = []
+    if alignment.get("result") != "PASS":
+        if isinstance(alignment.get("diagnostic"), dict):
+            diagnostics.append(dict(alignment["diagnostic"]))
+        return {
+            "result": "INCONCLUSIVE",
+            "alignment": alignment,
+            "confidence": {
+                "result": "INCONCLUSIVE",
+                "gates": {"alignment": _gate(False)},
+            },
+            "checks": {},
+            "diagnostics": diagnostics,
+            "errors": [],
+        }
+
+    offset_s = float(alignment["selected_video_offset_seconds"])
+    summaries = [_encounter_consensus(observations, encounter, offset_s) for encounter in encounters]
+    alert_summaries = [item for item in summaries if item["alert"] is not None]
+    frequency_summaries = [item for item in summaries if item["frequency"] is not None]
+    direction_summaries = [item for item in summaries if item["direction"] is not None]
+    visible_frames = sum(item.visible_pixels >= 80 for item in observations)
+    visible_ratio = visible_frames / len(observations) if observations else 0.0
+    ambiguous = sum(
+        item["alert"] is None
+        or item["frequency"] is None
+        or item["direction"] is None
+        for item in summaries
+    )
+    ambiguous_ratio = ambiguous / len(summaries) if summaries else 1.0
+    gates = {
+        "alignment": _gate(True),
+        "display_readable": _gate(
+            visible_ratio >= MIN_DISPLAY_VISIBLE_RATIO,
+            ratio=round(visible_ratio, 4),
+            minimum=MIN_DISPLAY_VISIBLE_RATIO,
+        ),
+        "alert_observations": _gate(
+            len(alert_summaries) >= MIN_ALERT_COMPARISONS,
+            compared=len(alert_summaries),
+            minimum=MIN_ALERT_COMPARISONS,
+        ),
+        "frequency_observations": _gate(
+            len(frequency_summaries) >= MIN_FREQUENCY_COMPARISONS,
+            compared=len(frequency_summaries),
+            minimum=MIN_FREQUENCY_COMPARISONS,
+        ),
+        "direction_observations": _gate(
+            len(direction_summaries) >= MIN_DIRECTION_COMPARISONS,
+            compared=len(direction_summaries),
+            minimum=MIN_DIRECTION_COMPARISONS,
+        ),
+        "encounter_consensus": _gate(
+            ambiguous_ratio <= MAX_AMBIGUOUS_ENCOUNTER_RATIO,
+            ambiguous=ambiguous,
+            total=len(summaries),
+            ratio=round(ambiguous_ratio, 4),
+            maximum=MAX_AMBIGUOUS_ENCOUNTER_RATIO,
+        ),
+    }
+    if gates["display_readable"]["result"] != "PASS":
+        diagnostics.append(
+            _diagnostic(
+                "display_unreadable",
+                "too few replay camera frames contain a readable display",
+                **gates["display_readable"],
+            )
+        )
+    for gate_name, code, message in (
+        ("alert_observations", "alert_observations_insufficient", "too few alert observations are readable"),
+        (
+            "frequency_observations",
+            "frequency_observations_insufficient",
+            "too few frequency observations are readable",
+        ),
+        (
+            "direction_observations",
+            "direction_observations_insufficient",
+            "too few direction observations are readable",
+        ),
+        (
+            "encounter_consensus",
+            "encounter_classification_ambiguous",
+            "too many encounter windows have ambiguous visual classifications",
+        ),
+    ):
+        if gates[gate_name]["result"] != "PASS":
+            diagnostics.append(_diagnostic(code, message, **gates[gate_name]))
+    if diagnostics:
+        return {
+            "result": "INCONCLUSIVE",
+            "alignment": alignment,
+            "confidence": {"result": "INCONCLUSIVE", "gates": gates},
+            "checks": {},
+            "diagnostics": diagnostics,
+            "errors": [],
+        }
+
+    alert_matches = sum(bool(item["alert"]) for item in alert_summaries)
+    alert_compared = len(alert_summaries)
+    frequency_matches = sum(
+        item["frequency"] == item["encounter"].frequency_mhz for item in frequency_summaries
+    )
+    frequency_compared = len(frequency_summaries)
+    direction_matches = sum(
+        item["direction"] == item["encounter"].direction for item in direction_summaries
+    )
+    direction_compared = len(direction_summaries)
     alert_ratio = alert_matches / alert_compared if alert_compared else 0.0
     frequency_ratio = frequency_matches / frequency_compared if frequency_compared else 0.0
     direction_ratio = direction_matches / direction_compared if direction_compared else 0.0
     checks = {
         "alignment_near_start_hint": {
             "result": "PASS",
-            "adjustment_seconds": hint_adjustment_s,
+            "adjustment_seconds": alignment["hint_adjustment_seconds"],
             "maximum_adjustment_seconds": MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
         },
         "timeline_matches_log": {
-            "result": "PASS" if state_match_ratio >= MIN_TIMELINE_MATCH_RATIO else "FAIL",
-            "ratio": state_match_ratio,
+            "result": "PASS" if alignment["best_score"] >= MIN_TIMELINE_MATCH_RATIO else "FAIL",
+            "ratio": alignment["best_score"],
         },
         "logged_alerts_visible": {
             "result": "PASS"
@@ -762,12 +1112,10 @@ def grade_replay(
     result = "PASS" if all(item["result"] == "PASS" for item in checks.values()) else "FAIL"
     return {
         "result": result,
-        "alignment": {
-            "video_offset_seconds": offset_s,
-            "start_hint_seconds": start_hint_s,
-            "hint_adjustment_seconds": hint_adjustment_s,
-        },
+        "alignment": alignment,
+        "confidence": {"result": "PASS", "gates": gates},
         "checks": checks,
+        "diagnostics": [],
         "errors": [],
     }
 
@@ -777,26 +1125,45 @@ def grade_camera(
     suite: str,
     camera_dir: Path,
     camera_result: dict[str, Any],
+    capture_manifest: dict[str, Any],
+    grader_fingerprint: str,
     emulator_result: dict[str, Any],
     encounter_csv_path: Path | None,
     timeline_start_video_s: float | None,
 ) -> dict[str, Any]:
-    output_path = camera_dir / "camera_grade.json"
+    capture_id = str(capture_manifest.get("capture_id") or "")
     payload: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": GRADE_SCHEMA_VERSION,
         "kind": "bench_camera_grade",
+        "capture_id": capture_id,
+        "grader_fingerprint": grader_fingerprint,
+        "grade_id": hashlib.sha256(f"{capture_id}:{grader_fingerprint}".encode("ascii")).hexdigest(),
+        "input_hashes": capture_input_hashes(capture_manifest),
         "timestamp_utc": utc_now(),
         "suite": suite,
         "video": str(camera_result.get("video") or ""),
         "result": "INCONCLUSIVE",
         "evidence_contract": camera_evidence_contract(suite),
+        "preflight": camera_result.get("preflight") or capture_manifest.get("preflight") or {},
         "timing_anchor": camera_result.get("timing_anchor") or {},
+        "confidence": {"result": "INCONCLUSIVE", "gates": {}},
         "checks": {},
+        "diagnostics": [],
         "errors": [],
     }
     try:
         if camera_result.get("result") != "CAPTURED":
             raise RuntimeError("camera capture did not complete")
+        if suite == "replay" and (
+            timeline_start_video_s is None or not math.isfinite(timeline_start_video_s)
+        ):
+            payload["diagnostics"] = [
+                {
+                    "code": "timing_anchor_missing",
+                    "message": "replay camera grade requires a finite replay timing anchor",
+                }
+            ]
+            return payload
         validate_camera_reference()
         payload["camera_reference"] = {
             "source_git_sha": CAMERA_REFERENCE.get("source_git_sha"),
@@ -804,10 +1171,6 @@ def grade_camera(
             "verified_utc": CAMERA_REFERENCE.get("verified_utc"),
         }
         validate_camera_profile(camera_result)
-        if suite == "replay" and (
-            timeline_start_video_s is None or not math.isfinite(timeline_start_video_s)
-        ):
-            raise RuntimeError("replay camera grade requires the first emitted replay sample time")
         video_name = str(camera_result.get("video") or "")
         video_path = camera_dir / video_name
         if not video_name or not video_path.is_file():
@@ -817,6 +1180,10 @@ def grade_camera(
             camera_result,
         )
         payload["crop_registration"] = registration
+        payload["transform"] = {
+            "kind": "translation",
+            "offset_pixels": registration.get("offset_pixels") or [crop_offset_x, crop_offset_y],
+        }
         observations = extract_observations(
             video_path,
             crop_offset_x=crop_offset_x,
@@ -844,9 +1211,14 @@ def grade_camera(
             payload.update(grade_idle(observations, timeline_start_video_s or 0.0, duration_s))
     except Exception as exc:  # noqa: BLE001 - the grade artifact is the failure contract
         payload["errors"] = [str(exc)]
+        payload["diagnostics"] = [
+            {
+                "code": "camera_processing_error",
+                "message": str(exc),
+            }
+        ]
+        payload["confidence"] = {"result": "INCONCLUSIVE", "gates": {}}
         payload["result"] = "INCONCLUSIVE"
-    camera_dir.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
 
 
@@ -869,16 +1241,33 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     camera_dir = Path(args.camera_dir).resolve()
-    result_path = camera_dir / "camera_result.json"
-    camera_result = json.loads(result_path.read_text(encoding="utf-8"))
+    capture_manifest = load_capture_manifest(camera_dir / CAPTURE_MANIFEST_NAME)
+    camera_result = camera_result_view(capture_manifest)
+    grader_fingerprint = current_grader_fingerprint()
+    encounter_path = (
+        Path(args.encounter_csv).resolve()
+        if args.encounter_csv
+        else resolve_manifest_artifact(camera_dir, capture_manifest, "encounter_csv")
+    )
+    timing_anchor = capture_manifest.get("timing_anchor")
+    timeline_start = (
+        timing_anchor.get("video_seconds") if isinstance(timing_anchor, dict) else None
+    )
     grade = grade_camera(
         suite=args.suite,
         camera_dir=camera_dir,
         camera_result=camera_result,
+        capture_manifest=capture_manifest,
+        grader_fingerprint=grader_fingerprint,
         emulator_result={"completed": True},
-        encounter_csv_path=Path(args.encounter_csv).resolve() if args.encounter_csv else None,
-        timeline_start_video_s=args.timeline_start_video_seconds,
+        encounter_csv_path=encounter_path,
+        timeline_start_video_s=(
+            args.timeline_start_video_seconds
+            if args.timeline_start_video_seconds is not None
+            else timeline_start
+        ),
     )
+    publish_grade(camera_dir, capture_manifest, grader_fingerprint, grade)
     print(json.dumps(grade, indent=2))
     return 0 if grade["result"] == "PASS" else 1
 

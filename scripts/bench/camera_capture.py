@@ -15,13 +15,10 @@ from typing import Any
 
 
 # Video exposure in UVC units of 0.1 ms; 156 == 15.6 ms is the calibrated
-# default and every archived run to date used it. Override only to answer a
-# question the default cannot: a full-canvas flush takes ~17.7 ms, so at 15.6 ms
-# exposure a frame that straddles a flush blends old and new content and is
-# indistinguishable from a frame that merely straddles a fast blink. Dropping to
-# 5 (0.5 ms) freezes the panel mid-write, at the cost of a much darker image.
-# Camera-only: firmware, metrics and the perf CSV are untouched, so runs at a
-# different exposure stay comparable on every logged number.
+# default and every archived run to date used it. The environment override is
+# retained for explicit camera development, but fixed-profile preflight refuses
+# any non-reference value before live product collection because its images are
+# not compatible with the calibrated grader.
 VIDEO_EXPOSURE = int(os.environ.get("BENCH_CAMERA_VIDEO_EXPOSURE", "156"))
 
 FRAME_WIDTH = 480
@@ -117,10 +114,21 @@ class CameraCapture:
         self.dim_path = self.out_dir / "final_exp1250.jpg"
         self.log_path = self.out_dir / "camera.log"
         self.result_path = self.out_dir / "camera_result.json"
+        self.preflight_result_path = self.out_dir / "camera_preflight.json"
         self.process: subprocess.Popen[bytes] | None = None
         self.recording_started_monotonic: float | None = None
         self.log_handle: Any = None
         self.errors: list[str] = []
+
+    def profile(self) -> dict[str, Any]:
+        return {
+            "focus_abs": self.focus,
+            "video_exposure_time_abs": VIDEO_EXPOSURE,
+            "bright_exposure_time_abs": 5,
+            "dim_exposure_time_abs": 1250,
+            "framerate": self.framerate,
+            "video_size": self.video_size,
+        }
 
     def _write_result(self, result: str, **extra: Any) -> None:
         payload: dict[str, Any] = {
@@ -130,14 +138,7 @@ class CameraCapture:
             "timestamp_utc": utc_now(),
             "camera_name": self.camera_name,
             "camera_device_index": self.camera_device_index,
-            "profile": {
-                "focus_abs": self.focus,
-                "video_exposure_time_abs": VIDEO_EXPOSURE,
-                "bright_exposure_time_abs": 5,
-                "dim_exposure_time_abs": 1250,
-                "framerate": self.framerate,
-                "video_size": self.video_size,
-            },
+            "profile": self.profile(),
             "expected_duration_seconds": self.expected_duration_s,
             "errors": self.errors,
         }
@@ -318,6 +319,24 @@ class CameraCapture:
         if self.log_handle is not None:
             self.log_handle.close()
             self.log_handle = None
+
+    def abort(self, diagnostic_code: str) -> dict[str, Any]:
+        """Stop an admitted recorder without finalizing capture evidence."""
+        message = f"camera preflight inconclusive: {diagnostic_code}"
+        if message not in self.errors:
+            self.errors.append(message)
+        self._stop_process()
+        payload = {
+            "video": self.video_path.name if self.video_path.is_file() else "",
+            "video_duration_seconds": 0.0,
+            "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
+            "bright_still": "",
+            "dim_still": "",
+            "visually_graded": False,
+            "profile_validation": {},
+        }
+        self._write_result("CAPTURE_FAILED", **payload)
+        return {"result": "CAPTURE_FAILED", **payload, "errors": list(self.errors)}
 
     def _probe_video(self) -> float:
         assert self.ffprobe is not None

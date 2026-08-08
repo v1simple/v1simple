@@ -38,6 +38,7 @@ from camera_grade import (  # noqa: E402
     REGISTRATION_HEIGHT,
     REGISTRATION_WIDTH,
     detect_display_crop_registration,
+    find_replay_alignment,
     find_replay_offset,
     grade_idle,
     grade_replay,
@@ -353,6 +354,17 @@ def test_camera_reference_images_match_bound_signatures() -> None:
 
 
 def registration_fixture(offset_x: float, offset_y: float) -> bytes:
+    glyphs = (
+        ("11111", "10000", "10000", "11111", "00001", "00001", "11111"),
+        ("11111", "10000", "10000", "10000", "10000", "10000", "11111"),
+        ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+        ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    )
+    cell_width = 5
+    cell_height = 7
+    gap_cells = 2
+    landmark_width = (4 * 5 + 3 * gap_cells) * cell_width
+    landmark_height = 7 * cell_height
     frame = bytearray(REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3)
     anchor_x = REGISTRATION_WIDTH * (
         DISPLAY_CROP_X + DISPLAY_CROP_WIDTH * (REFERENCE_ANCHOR_X + offset_x) / FRAME_WIDTH
@@ -360,14 +372,21 @@ def registration_fixture(offset_x: float, offset_y: float) -> bytes:
     anchor_y = REGISTRATION_HEIGHT * (
         DISPLAY_CROP_Y + DISPLAY_CROP_HEIGHT * (REFERENCE_ANCHOR_Y + offset_y) / FRAME_HEIGHT
     )
-    x0 = round(anchor_x - 65)
-    x1 = round(anchor_x + 65)
-    y0 = round(anchor_y - 24)
-    y1 = round(anchor_y + 24)
-    for y in range(y0, y1 + 1):
-        for x in range(x0, x1 + 1):
-            index = (y * REGISTRATION_WIDTH + x) * 3
-            frame[index : index + 3] = bytes((255, 100, 10))
+    x0 = round(anchor_x - (landmark_width - 1) / 2)
+    y0 = round(anchor_y - (landmark_height - 1) / 2)
+    cursor_cells = 0
+    for glyph in glyphs:
+        for cell_y, row in enumerate(glyph):
+            for cell_x, active in enumerate(row):
+                if active != "1":
+                    continue
+                pixel_x0 = x0 + (cursor_cells + cell_x) * cell_width
+                pixel_y0 = y0 + cell_y * cell_height
+                for y in range(pixel_y0, pixel_y0 + cell_height):
+                    for x in range(pixel_x0, pixel_x0 + cell_width):
+                        index = (y * REGISTRATION_WIDTH + x) * 3
+                        frame[index : index + 3] = bytes((255, 100, 10))
+        cursor_cells += 5 + gap_cells
     return bytes(frame)
 
 
@@ -450,17 +469,29 @@ def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     ]
     failed = grade_replay(wrong, encounters, offset)
     assert_true(failed["result"] == "FAIL", f"camera/log disagreement passed: {failed}")
+    assert_true(
+        failed["alignment"] == passed["alignment"],
+        "frequency/direction answers changed alert/rest alignment",
+    )
+
+    residual_observations, residual_encounters = matching_replay_fixture(1.0)
+    residual = grade_replay(residual_observations, residual_encounters, 2.0)
+    assert_true(residual["result"] == "PASS", f"bounded -1s residual failed: {residual}")
+    assert_true(
+        residual["alignment"]["hint_adjustment_seconds"] == -1.0,
+        f"host/video residual was not recorded: {residual}",
+    )
 
 
 def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
     observations, encounters = matching_replay_fixture(2.0)
     for invalid_hint in (None, float("nan"), float("inf")):
-        try:
-            find_replay_offset(observations, encounters, invalid_hint)
-        except RuntimeError as exc:
-            assert_true("finite first replay sample time" in str(exc), f"wrong missing-hint error: {exc}")
-        else:
-            raise AssertionError(f"invalid replay timing hint passed: {invalid_hint}")
+        alignment = find_replay_alignment(observations, encounters, invalid_hint)
+        assert_true(alignment["result"] == "INCONCLUSIVE", f"invalid hint passed: {alignment}")
+        assert_true(
+            alignment["diagnostic"]["code"] == "timing_anchor_missing",
+            f"wrong missing-hint diagnostic: {alignment}",
+        )
 
     # Process launch precedes BLE transport readiness. The measured fresh-boot
     # delay remains valid while a larger clock error still reaches the bound.
@@ -475,12 +506,122 @@ def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
     # A four-second clock error pushes the best available candidate to the
     # positive edge of the deliberately bounded three-second search window.
     boundary_observations, boundary_encounters = matching_replay_fixture(6.0)
-    try:
-        find_replay_offset(boundary_observations, boundary_encounters, 2.0)
-    except RuntimeError as exc:
-        assert_true("search boundary" in str(exc), f"wrong boundary error: {exc}")
-    else:
-        raise AssertionError("replay alignment at the search boundary passed")
+    boundary = find_replay_alignment(boundary_observations, boundary_encounters, 2.0)
+    assert_true(boundary["result"] == "INCONCLUSIVE", f"boundary alignment passed: {boundary}")
+    assert_true(
+        boundary["diagnostic"]["code"] == "alignment_search_boundary",
+        f"wrong boundary diagnostic: {boundary}",
+    )
+
+    flat = [camera_observation(index / 3, alert=False) for index in range(920)]
+    ambiguous = find_replay_alignment(flat, encounters, 2.0)
+    assert_true(ambiguous["result"] == "INCONCLUSIVE", f"flat alignment passed: {ambiguous}")
+    assert_true(
+        ambiguous["diagnostic"]["code"] == "alignment_ambiguous",
+        f"flat alignment had wrong diagnostic: {ambiguous}",
+    )
+
+
+def test_replay_camera_abstains_for_unreadable_or_ambiguous_answers() -> None:
+    observations, encounters = matching_replay_fixture(2.0)
+    unreadable = [
+        FrameObservation(
+            **{
+                **item.__dict__,
+                "frequency_mhz": None,
+                "frequency_confidence": 0.0,
+                "direction": "UNKNOWN",
+                "direction_confidence": 0.0,
+            }
+        )
+        for item in observations
+    ]
+    unreadable_grade = grade_replay(unreadable, encounters, 2.0)
+    assert_true(
+        unreadable_grade["result"] == "INCONCLUSIVE",
+        f"unreadable answers became a product failure: {unreadable_grade}",
+    )
+    unreadable_codes = {item["code"] for item in unreadable_grade["diagnostics"]}
+    assert_true(
+        {"frequency_observations_insufficient", "direction_observations_insufficient"}
+        <= unreadable_codes,
+        f"missing unreadable diagnostics: {unreadable_grade}",
+    )
+
+    frequencies = (24150, 34700, 35500)
+    directions = ("FRONT", "SIDE", "REAR")
+    contradictory = [
+        FrameObservation(
+            **{
+                **item.__dict__,
+                "frequency_mhz": frequencies[index % len(frequencies)] if item.alert_visible else None,
+                "direction": directions[index % len(directions)] if item.alert_visible else "UNKNOWN",
+            }
+        )
+        for index, item in enumerate(observations)
+    ]
+    contradictory_grade = grade_replay(contradictory, encounters, 2.0)
+    assert_true(
+        contradictory_grade["result"] == "INCONCLUSIVE",
+        f"contradictory nearby frames searched for a favorable answer: {contradictory_grade}",
+    )
+    assert_true(
+        any(item["code"] == "encounter_classification_ambiguous" for item in contradictory_grade["diagnostics"]),
+        f"contradictory consensus diagnostic missing: {contradictory_grade}",
+    )
+
+
+def test_replay_semantic_consensus_counts_unreadable_samples() -> None:
+    observations, encounters = matching_replay_fixture(2.0)
+    high_coverage = grade_replay(observations, encounters, 2.0)
+    assert_true(high_coverage["result"] == "PASS", f"high-coverage match failed: {high_coverage}")
+
+    alert_index = 0
+    sparse: list[FrameObservation] = []
+    for item in observations:
+        readable = item.alert_visible and alert_index % 5 == 0
+        if item.alert_visible:
+            alert_index += 1
+        sparse.append(
+            FrameObservation(
+                **{
+                    **item.__dict__,
+                    "frequency_mhz": item.frequency_mhz if readable else None,
+                    "frequency_confidence": item.frequency_confidence if readable else 0.0,
+                    "direction": item.direction if readable else "UNKNOWN",
+                    "direction_confidence": item.direction_confidence if readable else 0.0,
+                }
+            )
+        )
+    sparse_grade = grade_replay(sparse, encounters, 2.0)
+    assert_true(
+        sparse_grade["result"] == "INCONCLUSIVE",
+        f"sparse favorable semantic readings qualified: {sparse_grade}",
+    )
+    assert_true(
+        sparse_grade["alignment"] == high_coverage["alignment"],
+        "semantic readability changed alert/rest alignment",
+    )
+    assert_true(
+        any(
+            item["code"] == "encounter_classification_ambiguous"
+            for item in sparse_grade["diagnostics"]
+        ),
+        f"sparse semantic diagnostic missing: {sparse_grade}",
+    )
+
+    confidently_wrong = [
+        FrameObservation(
+            **{
+                **item.__dict__,
+                "frequency_mhz": 35500 if item.alert_visible else None,
+                "direction": "REAR" if item.alert_visible else "UNKNOWN",
+            }
+        )
+        for item in observations
+    ]
+    wrong_grade = grade_replay(confidently_wrong, encounters, 2.0)
+    assert_true(wrong_grade["result"] == "FAIL", f"confident semantic mismatch abstained: {wrong_grade}")
 
 
 def test_idle_camera_grade_rejects_unlogged_alerts() -> None:
@@ -529,6 +670,8 @@ def main() -> int:
     test_camera_crop_registration_falls_back_to_bright_still()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()
+    test_replay_camera_abstains_for_unreadable_or_ambiguous_answers()
+    test_replay_semantic_consensus_counts_unreadable_samples()
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()

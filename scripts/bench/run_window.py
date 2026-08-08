@@ -26,9 +26,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from bench_identity import (
+    baseline_directory,
+    build_identity_manifest,
+    load_identity_manifest,
+    write_identity_manifest,
+)
+from camera_artifacts import (
+    build_capture_manifest,
+    camera_result_view,
+    publish_capture_manifest,
+    publish_grade,
+    replay_timing_anchor,
+)
 from camera_capture import CameraCapture
-from camera_contract import camera_evidence_contract, camera_grade_required as contract_grade_required
+from camera_contract import camera_grade_required as contract_grade_required
 from camera_grade import grade_camera
+from camera_preflight import run_camera_preflight
 
 try:  # pyserial is needed only for live collection, not --from-csv imports.
     import serial  # type: ignore
@@ -39,6 +53,19 @@ ROOT = Path(__file__).resolve().parents[2]
 IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
+
+
+class CameraPreflightFailure(RuntimeError):
+    """Camera admission failed before the product collection path began."""
+
+    def __init__(self, preflight: dict[str, Any], camera_result: dict[str, Any]) -> None:
+        diagnostics = preflight.get("diagnostics") if isinstance(preflight.get("diagnostics"), list) else []
+        diagnostic = diagnostics[0] if diagnostics and isinstance(diagnostics[0], dict) else {}
+        super().__init__(
+            str(diagnostic.get("message") or diagnostic.get("code") or "camera preflight failed")
+        )
+        self.preflight = preflight
+        self.camera_result = camera_result
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +79,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-sha", default="")
     parser.add_argument("--git-ref", default="")
     parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
+    parser.add_argument("--identity-manifest", required=True)
+    parser.add_argument(
+        "--baseline-root",
+        default="",
+        help="Optional identity-keyed baseline root; legacy board/suite baselines are ignored",
+    )
     parser.add_argument("--profile", default="drive_wifi_off")
     parser.add_argument("--segment", default="last")
     parser.add_argument(
@@ -399,7 +432,12 @@ def encounter_csv_sd_path(perf_csv_sd_path: str) -> str:
     return f"/encounters/encounters_{boot_suffix}"
 
 
-def run_import(args: argparse.Namespace, csv_path: Path, out_dir: Path) -> subprocess.CompletedProcess[str]:
+def run_import(
+    args: argparse.Namespace,
+    csv_path: Path,
+    out_dir: Path,
+    identity: dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
     stress_class = "core" if args.suite in {"core", "replay"} else "display_preview"
     cmd = [
         sys.executable,
@@ -414,6 +452,12 @@ def run_import(args: argparse.Namespace, csv_path: Path, out_dir: Path) -> subpr
         args.git_sha,
         "--git-ref",
         args.git_ref,
+        "--product-fingerprint",
+        str(identity["product_fingerprint"]),
+        "--grader-fingerprint",
+        str(identity["grader_fingerprint"]),
+        "--scenario-fingerprint",
+        str(identity["scenario_fingerprint"]),
         "--profile",
         args.profile,
         "--segment",
@@ -423,7 +467,31 @@ def run_import(args: argparse.Namespace, csv_path: Path, out_dir: Path) -> subpr
         "--lane",
         f"{args.lane}-{args.suite}",
     ]
-    for baseline in args.compare_to:
+    baselines = list(args.compare_to)
+    if args.baseline_root and args.suite != "replay":
+        compatible_dir = baseline_directory(Path(args.baseline_root), args.board_id, identity)
+        compatible_manifest = compatible_dir / "manifest.json"
+        compatible_identity_path = compatible_dir / "identity.json"
+        legacy_dir = Path(args.baseline_root).resolve() / args.board_id / args.suite
+        if compatible_manifest.is_file() and compatible_identity_path.is_file():
+            baseline_identity = load_identity_manifest(compatible_identity_path)
+            matches_current = all(
+                baseline_identity.get(field) == identity.get(field)
+                for field in ("product_fingerprint", "scenario_fingerprint")
+            )
+            if matches_current:
+                baselines.append(str(compatible_manifest))
+                print(f"[bench] using compatible baseline: {compatible_manifest}", flush=True)
+            else:
+                print(f"[bench] incompatible identity-keyed baseline ignored: {compatible_dir}", flush=True)
+        elif compatible_manifest.is_file():
+            print(f"[bench] baseline without identity manifest ignored: {compatible_dir}", flush=True)
+        elif (legacy_dir / "manifest.json").is_file():
+            print(
+                f"[bench] legacy baseline ignored (explicit adoption required): {legacy_dir}",
+                flush=True,
+            )
+    for baseline in baselines:
         if baseline:
             cmd.extend(["--compare-to", baseline])
     proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False)
@@ -591,11 +659,15 @@ class V1Emulator:
 def collect_live(
     args: argparse.Namespace,
     out_dir: Path,
+    after_upload: Callable[[], None] | None = None,
+    identity_provider: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[Path, Path | None, dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     port = wait_for_port(args.port)
     if args.upload:
         print("[bench] uploading firmware/filesystem before first window", flush=True)
         run_upload(port, args.skip_web)
+        if after_upload is not None:
+            after_upload()
         port = wait_for_port(port, 30)
         time.sleep(2)
         wait_for_post_upload_settle(args.post_upload_settle_seconds)
@@ -613,10 +685,21 @@ def collect_live(
     collection_completed = False
     try:
         if camera is not None:
-            if camera.start():
-                print(f"[bench] camera recording started: {camera.video_path}", flush=True)
-            else:
-                print(f"[bench] camera capture unavailable; see {camera.result_path}", file=sys.stderr, flush=True)
+            preflight = run_camera_preflight(camera)
+            if preflight.get("result") != "PASS":
+                try:
+                    camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    camera_result = {"result": "CAPTURE_FAILED", "errors": list(camera.errors)}
+                camera_result.update(
+                    {
+                        "preflight": camera.preflight_result_path.name,
+                        "preflight_result": preflight.get("result"),
+                        "preflight_diagnostics": preflight.get("diagnostics") or [],
+                    }
+                )
+                raise CameraPreflightFailure(preflight, camera_result)
+            print(f"[bench] camera preflight passed; recording: {camera.video_path}", flush=True)
         print(f"[bench] opening serial port {port}; protocol log: {protocol_log}", flush=True)
         q = BenchSerial(port, args.baud, protocol_log)
         ready = wait_ready(q, args.ready_timeout_seconds)
@@ -673,39 +756,65 @@ def collect_live(
                 camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
-            camera_result["evidence_contract"] = camera_evidence_contract(args.suite)
-            timeline_start_video_s: float | None = None
             replay_started_monotonic = emulator_result.get("replay_started_monotonic_seconds")
-            if (
-                args.suite == "replay"
-                and camera.recording_started_monotonic is not None
-                and isinstance(replay_started_monotonic, (int, float))
-                and math.isfinite(replay_started_monotonic)
-            ):
-                timeline_start_video_s = round(
-                    replay_started_monotonic - camera.recording_started_monotonic, 3
-                )
-                camera_result["timing_anchor"] = {
-                    "kind": "first_emitted_replay_sample",
-                    "video_seconds": timeline_start_video_s,
-                }
-            camera_result["visually_graded"] = False
-            camera_result["grade"] = ""
-            camera_result["grade_result"] = ""
+            timeline_start_video_s, timing_anchor = replay_timing_anchor(
+                args.suite,
+                camera.recording_started_monotonic,
+                replay_started_monotonic,
+            )
             camera_grade: dict[str, Any] = {}
-            if camera_grade_required(args.suite, camera_result):
+            capture_inputs_complete = args.suite != "replay" or encounter_csv_path is not None
+            if camera_result.get("result") == "CAPTURED" and capture_inputs_complete:
+                current_identity = identity_provider() if identity_provider is not None else {}
+                capture_manifest = build_capture_manifest(
+                    camera_dir=camera.out_dir,
+                    camera_result=camera_result,
+                    suite=args.suite,
+                    product_fingerprint=str(current_identity.get("product_fingerprint") or ""),
+                    scenario_fingerprint=str(current_identity.get("scenario_fingerprint") or ""),
+                    encounter_csv_path=encounter_csv_path,
+                    timing_anchor=timing_anchor,
+                    traceability=(
+                        current_identity.get("traceability")
+                        if isinstance(current_identity.get("traceability"), dict)
+                        else {}
+                    ),
+                )
+                manifest_path, _created = publish_capture_manifest(camera.out_dir, capture_manifest)
+                camera_result = {
+                    **camera_result,
+                    "capture_manifest": manifest_path.name,
+                    "capture_id": capture_manifest["capture_id"],
+                    "grader_fingerprint": current_identity.get("grader_fingerprint", ""),
+                    "preflight": camera.preflight_result_path.name,
+                    "preflight_result": "PASS",
+                    "preflight_registration": capture_manifest.get("preflight", {}).get("registration", {}),
+                }
+            else:
+                capture_manifest = {}
+                current_identity = identity_provider() if identity_provider is not None else {}
+            if camera_grade_required(args.suite, camera_result) and capture_manifest:
+                grader_fingerprint = str(current_identity.get("grader_fingerprint") or "")
+                grade_camera_result = camera_result_view(capture_manifest)
                 camera_grade = grade_camera(
                     suite=args.suite,
                     camera_dir=camera.out_dir,
-                    camera_result=camera_result,
+                    camera_result=grade_camera_result,
+                    capture_manifest=capture_manifest,
+                    grader_fingerprint=grader_fingerprint,
                     emulator_result=emulator_result,
                     encounter_csv_path=encounter_csv_path,
                     timeline_start_video_s=timeline_start_video_s,
                 )
+                grade_path, _created = publish_grade(
+                    camera.out_dir,
+                    capture_manifest,
+                    grader_fingerprint,
+                    camera_grade,
+                )
                 camera_result["visually_graded"] = True
-                camera_result["grade"] = "camera_grade.json"
+                camera_result["grade"] = grade_path.relative_to(camera.out_dir).as_posix()
                 camera_result["grade_result"] = camera_grade.get("result")
-            camera.result_path.write_text(json.dumps(camera_result, indent=2) + "\n", encoding="utf-8")
             grade_result = camera_grade.get("result") or (
                 "ungraded" if camera_result.get("result") == "CAPTURED" else "unavailable"
             )
@@ -731,6 +840,36 @@ def main() -> int:
         args.blink_profile = "scenario" if args.suite == "replay" else "steady"
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    identity_path = Path(args.identity_manifest).resolve()
+    identity: dict[str, Any] = {}
+
+    def refresh_identity() -> None:
+        nonlocal identity
+        identity = build_identity_manifest(
+            ROOT,
+            suite=args.suite,
+            duration_seconds=args.duration_seconds,
+            profile=args.profile,
+            segment=args.segment,
+            blink_profile=args.blink_profile,
+            traceability={
+                "repository_sha": args.git_sha,
+                "repository_ref": args.git_ref,
+                "worktree_clean": args.git_worktree_clean == "1",
+            },
+        )
+        write_identity_manifest(identity_path, identity)
+
+    refresh_identity()
+
+    def identity_summary() -> dict[str, Any]:
+        return {
+            "identity_manifest": identity_path.name,
+            "product_fingerprint": identity["product_fingerprint"],
+            "grader_fingerprint": identity["grader_fingerprint"],
+            "scenario_fingerprint": identity["scenario_fingerprint"],
+        }
 
     if args.duration_seconds < 1:
         write_window_result(
@@ -799,9 +938,14 @@ def main() -> int:
             camera_result: dict[str, Any] = {}
             encounter_csv_path: Path | None = None
         else:
-            csv_path, encounter_csv_path, completion, port, emulator_result, camera_result = collect_live(args, out_dir)
+            csv_path, encounter_csv_path, completion, port, emulator_result, camera_result = collect_live(
+                args,
+                out_dir,
+                after_upload=refresh_identity if args.upload else None,
+                identity_provider=lambda: identity,
+            )
 
-        import_proc = run_import(args, csv_path, out_dir)
+        import_proc = run_import(args, csv_path, out_dir, identity)
         scoring_path = out_dir / "scoring.json"
         manifest_path = out_dir / "manifest.json"
         result = "COLLECTION_FAILED" if import_proc.returncode >= 3 else "COLLECTED"
@@ -814,6 +958,7 @@ def main() -> int:
                 "git_sha": args.git_sha,
                 "git_ref": args.git_ref,
                 "git_worktree_clean": args.git_worktree_clean == "1",
+                **identity_summary(),
                 "duration_seconds": args.duration_seconds,
                 "post_upload_settle_seconds": args.post_upload_settle_seconds if args.upload else 0,
                 "segment": args.segment,
@@ -830,6 +975,23 @@ def main() -> int:
             },
         )
         return 0 if import_proc.returncode < 3 else 3
+    except CameraPreflightFailure as exc:
+        write_window_result(
+            out_dir,
+            {
+                "result": "EVIDENCE_FAILED",
+                "suite": args.suite,
+                "board_id": args.board_id,
+                "git_sha": args.git_sha,
+                "git_ref": args.git_ref,
+                "git_worktree_clean": args.git_worktree_clean == "1",
+                **identity_summary(),
+                "camera": exc.camera_result,
+                "error": str(exc),
+            },
+        )
+        print(f"[bench] camera preflight inconclusive: {exc}", file=sys.stderr)
+        return 3
     except Exception as exc:  # noqa: BLE001 - top-level artifact capture
         write_window_result(
             out_dir,
@@ -840,6 +1002,7 @@ def main() -> int:
                 "git_sha": args.git_sha,
                 "git_ref": args.git_ref,
                 "git_worktree_clean": args.git_worktree_clean == "1",
+                **identity_summary(),
                 "error": str(exc),
             },
         )

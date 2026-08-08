@@ -230,7 +230,7 @@ else
   echo "  camera:     disabled" | tee -a "$RUN_LOG"
 fi
 if [[ "$USE_BASELINE" -eq 1 ]]; then
-  echo "  baseline:   $BASELINE_ROOT/$BOARD_ID (if present)" | tee -a "$RUN_LOG"
+  echo "  baseline:   board/product/suite/scenario identity (if present)" | tee -a "$RUN_LOG"
 else
   echo "  baseline:   disabled" | tee -a "$RUN_LOG"
 fi
@@ -294,6 +294,7 @@ for suite in "${suites[@]}"; do
   if [[ "$suite" == "replay" ]]; then
     suite_duration="$REPLAY_DURATION_SECONDS"
   fi
+  identity_manifest="$step_dir/identity.json"
   args=(
     python3 "$ROOT_DIR/scripts/bench/run_window.py"
     --suite "$suite"
@@ -303,6 +304,7 @@ for suite in "${suites[@]}"; do
     --git-sha "$GIT_SHA"
     --git-ref "$GIT_REF"
     --git-worktree-clean "$GIT_WORKTREE_CLEAN"
+    --identity-manifest "$identity_manifest"
     --segment "$SEGMENT"
     --post-upload-settle-seconds "$POST_UPLOAD_SETTLE_SECONDS"
   )
@@ -312,12 +314,7 @@ for suite in "${suites[@]}"; do
   [[ "$suite" == "replay" ]] && args+=(--blink-profile "$BLINK_PROFILE")
   [[ "$CAPTURE_CAMERA" -eq 1 ]] && args+=(--camera)
   [[ -n "$PORT" ]] && args+=(--port "$PORT")
-  if [[ "$suite" != "replay" ]]; then
-    baseline_manifest="$BASELINE_ROOT/$BOARD_ID/$suite/manifest.json"
-    if [[ "$USE_BASELINE" -eq 1 && -f "$baseline_manifest" ]]; then
-      args+=(--compare-to "$baseline_manifest")
-    fi
-  fi
+  [[ "$USE_BASELINE" -eq 1 && "$suite" != "replay" ]] && args+=(--baseline-root "$BASELINE_ROOT")
   if [[ -n "$FROM_CSV" ]]; then
     args+=(--from-csv "$FROM_CSV")
   elif [[ "$UPLOAD" -eq 1 && "$first_live" -eq 1 ]]; then
@@ -360,25 +357,36 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
   if [[ "$score_status" -eq 0 ]]; then
     for suite in "${suites[@]}"; do
       [[ "$suite" == "replay" ]] && continue
-      baseline_dir="$BASELINE_ROOT/$BOARD_ID/$suite"
+      identity_manifest="$RUN_DIR/$suite/identity.json"
+      baseline_dir="$(python3 "$ROOT_DIR/scripts/bench/bench_identity.py" baseline-dir \
+        --identity "$identity_manifest" \
+        --baseline-root "$BASELINE_ROOT" \
+        --board-id "$BOARD_ID")"
       mkdir -p "$baseline_dir"
+      cp "$identity_manifest" "$baseline_dir/identity.json"
       cp "$RUN_DIR/$suite/manifest.json" "$baseline_dir/manifest.json"
       cp "$RUN_DIR/$suite/metrics.ndjson" "$baseline_dir/metrics.ndjson"
       cp "$RUN_DIR/$suite/scoring.json" "$baseline_dir/scoring.json"
       cp "$RUN_DIR/$suite/import_diagnostics.json" "$baseline_dir/import_diagnostics.json"
+      product_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["product_fingerprint"])' "$identity_manifest")"
+      grader_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["grader_fingerprint"])' "$identity_manifest")"
+      scenario_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario_fingerprint"])' "$identity_manifest")"
       cat > "$baseline_dir/baseline_metadata.json" <<EOF
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "promoted_from": "$RUN_DIR/$suite",
   "promoted_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "board_id": "$BOARD_ID",
   "suite": "$suite",
+  "product_fingerprint": "$product_fingerprint",
+  "grader_fingerprint": "$grader_fingerprint",
+  "scenario_fingerprint": "$scenario_fingerprint",
   "git_sha": "$GIT_SHA",
   "git_ref": "$GIT_REF"
 }
 EOF
     done
-    echo "Promoted bench baseline: $BASELINE_ROOT/$BOARD_ID" | tee -a "$RUN_LOG"
+    echo "Promoted identity-keyed bench baselines under: $BASELINE_ROOT/$BOARD_ID" | tee -a "$RUN_LOG"
   else
     echo "Baseline promotion skipped: bench result was not PASS (exit=$score_status)" | tee -a "$RUN_LOG"
   fi

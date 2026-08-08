@@ -349,6 +349,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--board-id", default="", help="Override board_id")
     parser.add_argument("--git-sha", default="", help="Override git_sha")
     parser.add_argument("--git-ref", default="", help="Override git_ref")
+    parser.add_argument("--product-fingerprint", default="", help="Bench product behavior identity")
+    parser.add_argument("--grader-fingerprint", default="", help="Bench camera-grader identity")
+    parser.add_argument("--scenario-fingerprint", default="", help="Bench runtime scenario identity")
     parser.add_argument("--stress-class", default="core", help="Stress class (default: core)")
     parser.add_argument("--lane", default="perf-csv-import", help="Lane tag")
     parser.add_argument(
@@ -1603,6 +1606,9 @@ def main() -> int:
         "timestamp_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "git_sha": git_sha,
         "git_ref": git_ref,
+        "product_fingerprint": args.product_fingerprint,
+        "grader_fingerprint": args.grader_fingerprint,
+        "scenario_fingerprint": args.scenario_fingerprint,
         "run_kind": "real_fw_soak",
         "board_id": board_id,
         "env": "perf-csv-import",

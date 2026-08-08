@@ -20,6 +20,19 @@ from import_perf_csv import load_sessions
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
+from bench_identity import current_grader_fingerprint  # noqa: E402
+from camera_artifacts import (  # noqa: E402
+    CAPTURE_MANIFEST_NAME,
+    CameraArtifactError,
+    agreed_window_identity,
+    camera_result_view,
+    load_capture_manifest,
+    load_owned_grade,
+    resolve_manifest_artifact,
+    strict_grade_outcome,
+    validate_capture_window_identity,
+    verify_capture_files,
+)
 from camera_contract import camera_evidence_contract  # noqa: E402
 
 RESULT_ORDER = {
@@ -37,6 +50,7 @@ EXIT_BY_RESULT = {
     "COLLECTION_FAILED": 3,
 }
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
+CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
 
 
 def parse_args() -> argparse.Namespace:
@@ -245,6 +259,55 @@ def classify_window(
             "artifact_dir": str(window_dir),
             "evidence": [str(window.get("error") or "collection failed")],
         }
+    if window.get("result") == "EVIDENCE_FAILED":
+        camera_contract = camera_evidence_contract(suite)
+        window_camera = window.get("camera") if isinstance(window.get("camera"), dict) else {}
+        preflight_name = Path(str(window_camera.get("preflight") or "camera_preflight.json")).name
+        preflight = load_json(window_dir / "camera" / preflight_name) or {}
+        diagnostics = (
+            preflight.get("diagnostics")
+            if isinstance(preflight.get("diagnostics"), list)
+            else window_camera.get("preflight_diagnostics") or []
+        )
+        evidence: list[str] = []
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                evidence.append(f"camera preflight: {item}")
+                continue
+            detail = str(item.get("message") or item.get("code") or "camera evidence failed")
+            measured = item.get("measured") if isinstance(item.get("measured"), dict) else {}
+            thresholds = item.get("thresholds") if isinstance(item.get("thresholds"), dict) else {}
+            evidence.append(
+                f"camera preflight {item.get('code') or 'inconclusive'}: {detail}"
+                + (f"; measured={measured}" if measured else "")
+                + (f"; thresholds={thresholds}" if thresholds else "")
+            )
+        if not evidence:
+            evidence.append(str(window.get("error") or "camera preflight was inconclusive"))
+        return {
+            "suite": suite,
+            "result": "EVIDENCE_FAILED",
+            "git_sha": window.get("git_sha", ""),
+            "git_ref": window.get("git_ref", ""),
+            "product_fingerprint": window.get("product_fingerprint", ""),
+            "grader_fingerprint": window.get("grader_fingerprint", ""),
+            "scenario_fingerprint": window.get("scenario_fingerprint", ""),
+            "git_worktree_clean": window.get("git_worktree_clean") is True,
+            "artifact_dir": str(window_dir),
+            "camera": {
+                "result": "INCONCLUSIVE",
+                "capture_result": window_camera.get("result", "CAPTURE_FAILED"),
+                "diagnostics": diagnostics,
+                "preflight": preflight_name,
+                "role": camera_contract["role"],
+                "purpose": camera_contract["purpose"],
+                "role_summary": camera_contract["summary"],
+                "gate_required": camera_contract["gate_required"],
+                "evidence_contract": camera_contract,
+            },
+            "budget_pressure": [],
+            "evidence": evidence,
+        }
 
     scoring_path = window_path(window_dir, window.get("scoring_path"), "scoring.json")
     scoring = load_json(scoring_path)
@@ -302,21 +365,58 @@ def classify_window(
         result = worse(result, str(replay_checks["result"]))
         evidence.extend(str(item) for item in replay_checks.get("evidence") or [])
 
-    camera_path = window_dir / "camera" / "camera_result.json"
-    camera = load_json(camera_path) or {}
+    manifest = load_json(window_path(window_dir, window.get("manifest_path"), "manifest.json")) or {}
+    camera_dir = window_dir / "camera"
+    camera_path = camera_dir / "camera_result.json"
+    window_camera = window.get("camera") if isinstance(window.get("camera"), dict) else {}
+    camera = load_json(camera_path) or dict(window_camera)
     camera_contract = camera_evidence_contract(suite)
     camera_grade: dict[str, Any] = {}
     camera_grade_valid = False
     camera_evidence_inconclusive = False
+    capture_manifest: dict[str, Any] = {}
+    capture_manifest_name = str(window_camera.get("capture_manifest") or CAPTURE_MANIFEST_NAME)
+    capture_manifest_path = camera_dir / Path(capture_manifest_name).name
+    if capture_manifest_path.is_file():
+        try:
+            capture_manifest = load_capture_manifest(capture_manifest_path)
+            camera = camera_result_view(capture_manifest)
+            camera["capture_id"] = capture_manifest.get("capture_id")
+        except CameraArtifactError as exc:
+            if camera_required:
+                camera_evidence_inconclusive = True
+                result = worse(result, "EVIDENCE_FAILED")
+                evidence.append(f"camera capture ownership is invalid: {exc}")
     if camera_required:
         missing_camera_files: list[str] = []
-        if camera.get("result") == "CAPTURED":
+        if capture_manifest:
+            try:
+                accepted_identity = agreed_window_identity(window, manifest)
+                validate_capture_window_identity(
+                    capture_manifest,
+                    suite=suite,
+                    product_fingerprint=accepted_identity["product_fingerprint"],
+                    scenario_fingerprint=accepted_identity["scenario_fingerprint"],
+                )
+                verify_capture_files(camera_dir, capture_manifest)
+            except CameraArtifactError as exc:
+                camera_evidence_inconclusive = True
+                result = worse(result, "EVIDENCE_FAILED")
+                evidence.append(f"camera capture ownership could not be verified: {exc}")
+        if capture_manifest and not camera_evidence_inconclusive and camera.get("result") == "CAPTURED":
             for key in ("video", "session_start_still", "bright_still", "dim_still"):
-                name = str(camera.get(key) or "")
-                evidence_path = camera_path.parent / name if name else camera_path.parent / "__missing__"
-                if not evidence_path.is_file() or evidence_path.stat().st_size == 0:
+                evidence_path = resolve_manifest_artifact(camera_dir, capture_manifest, key)
+                if evidence_path is None or evidence_path.stat().st_size == 0:
                     missing_camera_files.append(key)
-        if camera.get("result") != "CAPTURED" or missing_camera_files:
+        if not capture_manifest:
+            camera_evidence_inconclusive = True
+            result = worse(result, "EVIDENCE_FAILED")
+            legacy_grade_name = str(window_camera.get("grade") or camera.get("grade") or "camera_grade.json")
+            camera_grade = load_json(camera_dir / Path(legacy_grade_name).name) or {}
+            evidence.append(
+                "gated replay camera evidence uses legacy ownership; regrade with the current grader"
+            )
+        elif camera.get("result") != "CAPTURED" or missing_camera_files:
             camera_evidence_inconclusive = True
             result = worse(result, "EVIDENCE_FAILED")
             camera_errors = camera.get("errors") if isinstance(camera.get("errors"), list) else []
@@ -325,37 +425,31 @@ def classify_window(
                 + (f"; missing files: {', '.join(missing_camera_files)}" if missing_camera_files else "")
                 + (f": {'; '.join(str(item) for item in camera_errors)}" if camera_errors else "")
             )
-        else:
-            grade_name = str(camera.get("grade") or "camera_grade.json")
-            grade_path = camera_path.parent / grade_name
-            camera_grade = load_json(grade_path) or {}
-            if not camera_grade:
+        elif not camera_evidence_inconclusive:
+            try:
+                camera_grade = load_owned_grade(
+                    camera_dir,
+                    capture_manifest,
+                    CURRENT_GRADER_FINGERPRINT,
+                ) or {}
+            except CameraArtifactError as exc:
                 camera_evidence_inconclusive = True
                 result = worse(result, "EVIDENCE_FAILED")
-                evidence.append("gated replay camera evidence has no mechanical grade")
-            elif (
-                camera_grade.get("kind") != "bench_camera_grade"
-                or camera_grade.get("suite") != suite
-                or camera_grade.get("video") != camera.get("video")
-            ):
+                evidence.append(f"camera grade ownership could not be verified: {exc}")
+            if not camera_grade and not camera_evidence_inconclusive:
                 camera_evidence_inconclusive = True
                 result = worse(result, "EVIDENCE_FAILED")
-                evidence.append("camera grade ownership could not be verified for this replay video")
-            else:
+                evidence.append("gated replay camera evidence has no current-fingerprint mechanical grade")
+            elif camera_grade and not camera_evidence_inconclusive:
                 camera_grade_valid = True
                 grade_result = str(camera_grade.get("result") or "")
+                strict_result, strict_messages = strict_grade_outcome(camera_grade)
                 if grade_result == "FAIL":
-                    grade_errors = (
-                        camera_grade.get("errors")
-                        if isinstance(camera_grade.get("errors"), list)
-                        else []
-                    )
-                    if grade_errors:
+                    if strict_result != "FAIL":
                         camera_evidence_inconclusive = True
                         result = worse(result, "EVIDENCE_FAILED")
                         evidence.append(
-                            "replay camera evidence is inconclusive: "
-                            + "; ".join(map(str, grade_errors))
+                            "replay camera FAIL lacks passed confidence or has camera diagnostics"
                         )
                     else:
                         result = worse(result, "FAIL")
@@ -368,25 +462,22 @@ def classify_window(
                             "replay camera evidence disagrees with the same-window display log"
                             + (f"; failed checks: {', '.join(failed_checks)}" if failed_checks else "")
                         )
-                elif grade_result != "PASS":
+                elif strict_result != "PASS":
                     camera_evidence_inconclusive = True
                     result = worse(result, "EVIDENCE_FAILED")
-                    grade_errors = (
-                        camera_grade.get("errors")
-                        if isinstance(camera_grade.get("errors"), list)
-                        else []
-                    )
                     evidence.append(
                         "replay camera evidence is inconclusive"
-                        + (f": {'; '.join(map(str, grade_errors))}" if grade_errors else "")
+                        + (f": {'; '.join(strict_messages)}" if strict_messages else "")
                     )
-    manifest = load_json(window_path(window_dir, window.get("manifest_path"), "manifest.json")) or {}
     budget = top_budget_pressures(scoring, catalog)
     return {
         "suite": suite,
         "result": result,
         "git_sha": manifest.get("git_sha", ""),
         "git_ref": manifest.get("git_ref", ""),
+        "product_fingerprint": manifest.get("product_fingerprint", ""),
+        "grader_fingerprint": manifest.get("grader_fingerprint", ""),
+        "scenario_fingerprint": manifest.get("scenario_fingerprint", ""),
         "git_worktree_clean": window.get("git_worktree_clean") is True,
         "artifact_dir": str(window_dir),
         "csv_path": window.get("csv_path", ""),
@@ -415,11 +506,17 @@ def classify_window(
                 else camera.get("result") or ("MISSING" if camera_required else "")
             ),
             "capture_result": camera.get("result", ""),
-            "mechanical_result": camera_grade.get("result", "") if camera_grade_valid else "",
+            "capture_id": capture_manifest.get("capture_id", "") if capture_manifest else "",
+            "grader_fingerprint": (
+                camera_grade.get("grader_fingerprint", "") if camera_grade_valid else ""
+            ),
+            "mechanical_result": camera_grade.get("result", ""),
             "video": camera.get("video", ""),
             "video_duration_seconds": camera.get("video_duration_seconds"),
             "visually_graded": camera_grade_valid,
             "checks": camera_grade.get("checks", {}),
+            "confidence": camera_grade.get("confidence", {}),
+            "diagnostics": camera_grade.get("diagnostics", []),
             "role": camera_contract["role"],
             "purpose": camera_contract["purpose"],
             "role_summary": camera_contract["summary"],
@@ -539,12 +636,24 @@ def main() -> int:
 
     git_shas = {str(window.get("git_sha") or "").strip() for window in windows}
     git_refs = {str(window.get("git_ref") or "").strip() for window in windows}
+    product_fingerprints = {
+        str(window.get("product_fingerprint") or "").strip() for window in windows
+    }
+    grader_fingerprints = {
+        str(window.get("grader_fingerprint") or "").strip() for window in windows
+    }
     payload = {
         "schema_version": 3,
         "kind": "bench_result",
         "run_dir": str(run_dir),
         "git_sha": next(iter(git_shas)) if len(git_shas) == 1 else "",
         "git_ref": next(iter(git_refs)) if len(git_refs) == 1 else "",
+        "product_fingerprint": (
+            next(iter(product_fingerprints)) if len(product_fingerprints) == 1 else ""
+        ),
+        "grader_fingerprint": (
+            next(iter(grader_fingerprints)) if len(grader_fingerprints) == 1 else ""
+        ),
         "git_worktree_clean": bool(windows)
         and all(window.get("git_worktree_clean") is True for window in windows),
         "result": result,

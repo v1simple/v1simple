@@ -125,18 +125,62 @@ directory. Camera evidence has one explicit role per suite:
   include that boot's encounter CSV; the grader checks alert timing, primary
   frequency, and direction against that same-window log.
 
-The artifact embeds this contract, including the bounded calibration controls
-and fixed oracle thresholds. Exposure selection, bounded crop translation, and
-bounded timeline alignment may self-calibrate. The human-verified reference
-images, artifact ownership, same-window encounter log, and match thresholds are
-fixed. Replay alignment is anchored to the first sample actually emitted after
-BLE becomes ready, not to emulator process launch.
+Before opening serial or starting the V1 emulator, every requested camera
+window applies the fixed UVC profile and exposure 156, records a session-start
+still, and admits the run only when the SCAN landmark produces a bounded
+translation. A refusal writes `camera_preflight.json` with measured camera
+diagnostics and ends as `EVIDENCE_FAILED`; it does not claim firmware failure.
+The successful preflight hash and exact translation are owned by the immutable
+capture manifest.
+
+Run the same camera-only lifecycle as a short standalone smoke, without serial,
+upload, emulator, or a long collection window:
+
+```sh
+python3 scripts/bench/camera_preflight.py --out-dir <new-output-directory>
+```
+
+The artifact embeds the camera contract, including the bounded calibration
+controls and fixed oracle thresholds. Bounded crop translation and bounded
+timeline alignment may self-calibrate. The fixed exposure, human-verified
+reference images, artifact ownership, same-window encounter log, and match
+thresholds are fixed. Replay alignment is anchored to the first sample actually
+emitted after BLE becomes ready, not to emulator process launch.
 
 A valid replay image/log disagreement is `FAIL`. Missing, unowned, unalignable,
 or otherwise ungradable camera evidence is `EVIDENCE_FAILED`: it blocks the
 unified gate without claiming that firmware behavior failed, and collection is
 still reported separately. The video and exposure stills remain archived for
 diagnosis, but human viewing is not the acceptance gate.
+
+Each window also records three content identities in `identity.json`. The
+product fingerprint covers firmware, production configuration and build hooks,
+UI/audio/branding sources and deployed uncompressed assets, dependency pins,
+and the complete `v1replay` implementation. The grader fingerprint covers the
+camera capture, evidence contract, grader, and human-verified references. A
+separate scenario fingerprint covers the suite, duration, profile, segment, and
+replay blink profile. Git SHA/ref and clean state remain traceability only.
+Promoted performance baselines live under
+`<board>/<product fingerprint>/<suite>/<scenario fingerprint>/`; an older
+board/suite baseline is never selected automatically.
+
+Ask the read-only qualification planner for the minimum evidence work before
+starting a bench run. It prints commands but never executes them:
+
+```sh
+python3 scripts/bench/bench_policy.py plan \
+  --qualification <accepted-qualification.json>
+```
+
+A product or per-suite scenario change requires the full batch. A grader-only
+change requires a complete archive regrade plus one live camera smoke. Matching
+product, scenarios, and grader reuse the accepted evidence; Git SHA/ref changes
+remain traceability only. Missing or malformed qualification records default to
+the full batch. New qualification records are immutable: `record-full` accepts
+only a clean core/display/replay PASS with strict replay camera ownership, and
+`record-grader` advances only the grader after a complete regrade report, a
+current smoke PASS, and a confident current grade for the previously accepted
+replay capture.
 
 Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in

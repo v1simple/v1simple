@@ -128,6 +128,10 @@ run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-
 section "Python Regression Tests"
 # Safety-critical guard regressions already run inline above. Keep the remaining
 # script and workflow regressions in the full gate without expanding --fast.
+run_step "Bench identity regression suite" python3 scripts/test_bench_identity.py
+run_step "Bench qualification policy regression suite" python3 scripts/test_bench_policy.py
+run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
+run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py

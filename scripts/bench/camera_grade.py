@@ -83,6 +83,7 @@ MIN_ALIGNMENT_UNIQUENESS_MARGIN = 0.005
 MIN_DISPLAY_VISIBLE_RATIO = 0.95
 MAX_AMBIGUOUS_ENCOUNTER_RATIO = 0.10
 CONSENSUS_MIN_RATIO = 0.60
+CONSENSUS_RADIUS_SECONDS = 0.75
 
 
 @dataclass(frozen=True)
@@ -925,7 +926,7 @@ def _encounter_consensus(
     encounter: EncounterObservation,
     offset_s: float,
 ) -> dict[str, Any]:
-    nearby = _nearest(observations, offset_s + encounter.time_s, 0.75)
+    nearby = _nearest(observations, offset_s + encounter.time_s, CONSENSUS_RADIUS_SECONDS)
     alert, alert_ratio = _consensus([item.alert_visible for item in nearby])
     # Unreadable samples are evidence about confidence, not samples that may be
     # discarded. Keeping them in the denominator prevents a sparse favorable
@@ -945,6 +946,44 @@ def _encounter_consensus(
         "direction": direction,
         "direction_consensus_ratio": direction_ratio,
     }
+
+
+def _stable_encounters(
+    encounters: list[EncounterObservation],
+) -> tuple[list[EncounterObservation], int]:
+    """Return log rows whose consensus window contains no planned transition.
+
+    Transition selection depends only on the encounter log. Camera answers do
+    not move, add, or remove comparison windows. This keeps semantic grading
+    independent from alignment while avoiding an unavoidable old/new tie when
+    a symmetric camera window is centered on a planned display state change.
+    """
+    boundaries: list[float] = []
+    previous_state: tuple[int, int, str] | None = None
+    for encounter in encounters:
+        state = (
+            encounter.encounter_id,
+            encounter.frequency_mhz,
+            encounter.direction,
+        )
+        if (
+            previous_state is None
+            or encounter.event in {"START", "END"}
+            or state != previous_state
+        ):
+            boundaries.append(encounter.time_s)
+        previous_state = state
+
+    stable = [
+        encounter
+        for encounter in encounters
+        if encounter.event == "SAMPLE"
+        and all(
+            abs(encounter.time_s - boundary) > CONSENSUS_RADIUS_SECONDS
+            for boundary in boundaries
+        )
+    ]
+    return stable, len(encounters) - len(stable)
 
 
 def _gate(result: bool, **measurements: Any) -> dict[str, Any]:
@@ -978,7 +1017,11 @@ def grade_replay(
         }
 
     offset_s = float(alignment["selected_video_offset_seconds"])
-    summaries = [_encounter_consensus(observations, encounter, offset_s) for encounter in encounters]
+    stable_encounters, transition_rows_excluded = _stable_encounters(encounters)
+    summaries = [
+        _encounter_consensus(observations, encounter, offset_s)
+        for encounter in stable_encounters
+    ]
     alert_summaries = [item for item in summaries if item["alert"] is not None]
     frequency_summaries = [item for item in summaries if item["frequency"] is not None]
     direction_summaries = [item for item in summaries if item["direction"] is not None]
@@ -993,6 +1036,12 @@ def grade_replay(
     ambiguous_ratio = ambiguous / len(summaries) if summaries else 1.0
     gates = {
         "alignment": _gate(True),
+        "stable_encounter_windows": _gate(
+            bool(stable_encounters),
+            compared=len(stable_encounters),
+            transition_rows_excluded=transition_rows_excluded,
+            transition_guard_seconds=CONSENSUS_RADIUS_SECONDS,
+        ),
         "display_readable": _gate(
             visible_ratio >= MIN_DISPLAY_VISIBLE_RATIO,
             ratio=round(visible_ratio, 4),
@@ -1030,6 +1079,11 @@ def grade_replay(
             )
         )
     for gate_name, code, message in (
+        (
+            "stable_encounter_windows",
+            "stable_encounter_windows_missing",
+            "replay log has no stable encounter windows outside planned transitions",
+        ),
         ("alert_observations", "alert_observations_insufficient", "too few alert observations are readable"),
         (
             "frequency_observations",

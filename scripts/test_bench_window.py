@@ -341,6 +341,57 @@ def matching_replay_fixture(
     return observations, encounters
 
 
+def transition_boundary_replay_fixture() -> tuple[
+    list[FrameObservation], list[EncounterObservation], float
+]:
+    offset = 7.215
+
+    def state_at(replay_time: float) -> tuple[int, str]:
+        if replay_time < 59:
+            phase = max(0, int((replay_time - 5) // 4))
+        else:
+            phase = max(0, int((replay_time - 59) // 25))
+        states = ((24150, "FRONT"), (34700, "SIDE"), (35500, "REAR"))
+        return states[phase % len(states)]
+
+    observations: list[FrameObservation] = []
+    for index in range(920):
+        video_time = index / 3
+        replay_time = video_time - offset
+        active = (5 <= replay_time < 56) or (59 <= replay_time < 244)
+        frequency, direction = state_at(replay_time)
+        observations.append(
+            camera_observation(
+                video_time,
+                alert=active,
+                frequency=frequency if active else None,
+                direction=direction if active else "UNKNOWN",
+            )
+        )
+
+    times = [float(second) for second in range(5, 57)]
+    times.extend(float(second) for second in range(59, 245, 5))
+    encounters: list[EncounterObservation] = []
+    for time_s in times:
+        frequency, direction = state_at(time_s)
+        if time_s in {5.0, 59.0}:
+            event = "START"
+        elif time_s in {56.0, 244.0}:
+            event = "END"
+        else:
+            event = "SAMPLE"
+        encounters.append(
+            EncounterObservation(
+                time_s=time_s,
+                encounter_id=1 if time_s <= 56 else 2,
+                frequency_mhz=frequency,
+                direction=direction,
+                event=event,
+            )
+        )
+    return observations, encounters, offset
+
+
 def test_camera_reference_images_match_bound_signatures() -> None:
     validate_camera_reference()
     altered = json.loads(json.dumps(CAMERA_REFERENCE))
@@ -624,6 +675,27 @@ def test_replay_semantic_consensus_counts_unreadable_samples() -> None:
     assert_true(wrong_grade["result"] == "FAIL", f"confident semantic mismatch abstained: {wrong_grade}")
 
 
+def test_replay_consensus_grades_stable_windows_not_planned_transitions() -> None:
+    observations, encounters, offset = transition_boundary_replay_fixture()
+    grade = grade_replay(observations, encounters, offset + 1.0)
+    assert_true(grade["result"] == "PASS", f"planned transition ties blocked stable evidence: {grade}")
+    stable_gate = grade["confidence"]["gates"]["stable_encounter_windows"]
+    assert_true(
+        stable_gate["transition_rows_excluded"] >= 10,
+        f"planned transitions were not separated from stable rows: {grade}",
+    )
+    assert_true(
+        grade["confidence"]["gates"]["encounter_consensus"]["ambiguous"] == 0,
+        f"stable windows remained ambiguous: {grade}",
+    )
+    for check in (
+        "logged_alerts_visible",
+        "logged_frequencies_visible",
+        "logged_directions_visible",
+    ):
+        assert_true(grade["checks"][check]["result"] == "PASS", f"stable check failed: {grade}")
+
+
 def test_idle_camera_grade_rejects_unlogged_alerts() -> None:
     idle = [camera_observation(float(second), alert=False) for second in range(300)]
     assert_true(grade_idle(idle, 0.0, 300.0)["result"] == "PASS", "visible idle display failed")
@@ -672,6 +744,7 @@ def main() -> int:
     test_replay_alignment_requires_hint_and_rejects_boundary()
     test_replay_camera_abstains_for_unreadable_or_ambiguous_answers()
     test_replay_semantic_consensus_counts_unreadable_samples()
+    test_replay_consensus_grades_stable_windows_not_planned_transitions()
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()

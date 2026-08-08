@@ -104,8 +104,10 @@ def test_product_inputs_change_only_product_identity(root: Path) -> None:
     for relative in (
         "src/main.cpp",
         "platformio.ini",
-        "data/index.html",
+        "interface/src/app.html",
         "interface/static/branding/logo.png",
+        "data/audio/alert.mul",
+        "data/branding/logo.png",
         "tools/v1replay/Sources/v1replay/main.swift",
     ):
         before = identity(root)
@@ -116,6 +118,22 @@ def test_product_inputs_change_only_product_identity(root: Path) -> None:
         path.write_bytes(original)
         assert_true(before["product_fingerprint"] != after["product_fingerprint"], f"missed {relative}")
         assert_true(before["grader_fingerprint"] == after["grader_fingerprint"], f"{relative} changed grader")
+
+
+def test_generated_deployed_html_does_not_change_product_identity(root: Path) -> None:
+    path = root / "data/index.html"
+    original = path.read_bytes()
+    try:
+        first = identity(root)
+        path.write_bytes(
+            b'<script>__sveltekit_new = {};</script><script src="/_app/immutable/new-entry.js"></script>\n'
+        )
+        second = identity(root)
+    finally:
+        path.write_bytes(original)
+
+    assert_true(first["product"] == second["product"], "generated web output changed product identity")
+    assert_true(first["grader_fingerprint"] == second["grader_fingerprint"], "generated web output changed grader")
 
 
 def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
@@ -215,6 +233,7 @@ def main() -> int:
         test_traceability_and_docs_do_not_change_behavior_identities(root)
         (root / "README.md").write_text("documentation\n", encoding="utf-8")
         test_product_inputs_change_only_product_identity(root)
+        test_generated_deployed_html_does_not_change_product_identity(root)
         test_grader_inputs_change_only_grader_identity(root)
         test_canonical_manifest_is_stable_and_repo_relative(root)
         test_dirty_relevant_content_digest_is_recorded(root)

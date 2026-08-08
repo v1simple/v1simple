@@ -64,7 +64,14 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Suite whose camera evidence is required for this verdict",
     )
-    parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--out",
+        default="",
+        help=(
+            "JSON result path; custom paths leave the run's canonical summary unchanged "
+            "and must not resolve to it"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -623,6 +630,14 @@ def render_text(payload: dict[str, Any]) -> str:
 def main() -> int:
     args = parse_args()
     run_dir = Path(args.run_dir).resolve()
+    canonical_result_path = (run_dir / "bench_result.json").resolve()
+    canonical_summary_path = (run_dir / "bench_summary.txt").resolve()
+    out_path = Path(args.out) if args.out else canonical_result_path
+    resolved_out_path = out_path.resolve()
+    if resolved_out_path == canonical_summary_path:
+        sys.stderr.write("error: --out must not resolve to the canonical bench_summary.txt\n")
+        return 2
+
     suites = args.suite or [name for name in ("core", "display", "replay") if (run_dir / name).exists()]
     if not suites:
         suites = ["core", "display"]
@@ -659,10 +674,10 @@ def main() -> int:
         "result": result,
         "windows": windows,
     }
-    out_path = Path(args.out) if args.out else run_dir / "bench_result.json"
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     text = render_text(payload)
-    (run_dir / "bench_summary.txt").write_text(text, encoding="utf-8")
+    if resolved_out_path == canonical_result_path:
+        canonical_summary_path.write_text(text, encoding="utf-8")
     sys.stdout.write(text)
     return EXIT_BY_RESULT[result]
 

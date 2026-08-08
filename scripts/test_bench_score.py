@@ -258,12 +258,15 @@ def run_score(
     root: Path,
     *suites: str,
     camera_suites: tuple[str, ...] = (),
+    out_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, str(SCORER), "--run-dir", str(root)]
     for suite in suites:
         cmd.extend(["--suite", suite])
     for suite in camera_suites:
         cmd.extend(["--camera-suite", suite])
+    if out_path is not None:
+        cmd.extend(["--out", str(out_path)])
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False)
 
 
@@ -368,6 +371,71 @@ def test_display_metric_failure_is_actionable_failure() -> None:
         proc = run_score(root, "core", "display")
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
         assert_true("display.queue_drops_delta" in proc.stdout, proc.stdout)
+
+
+def test_custom_output_preserves_canonical_summary_pair() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        custom_result_path = root / "bench_result_regraded.json"
+        custom = run_score(root, "core", out_path=custom_result_path)
+        assert_true(custom.returncode == 0, custom.stdout + custom.stderr)
+        assert_true(
+            not (root / "bench_summary.txt").exists(),
+            "custom output created a canonical bench summary without a canonical result",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        initial = run_score(root, "core")
+        assert_true(initial.returncode == 0, initial.stdout + initial.stderr)
+        canonical_result_path = root / "bench_result.json"
+        canonical_summary_path = root / "bench_summary.txt"
+        canonical_result = canonical_result_path.read_text(encoding="utf-8")
+        canonical_summary = canonical_summary_path.read_text(encoding="utf-8")
+
+        collision = run_score(root, "core", out_path=canonical_summary_path)
+        assert_true(collision.returncode == 2, collision.stdout + collision.stderr)
+        assert_true(
+            "must not resolve to the canonical bench_summary.txt" in collision.stderr,
+            collision.stderr,
+        )
+        assert_true(
+            canonical_result_path.read_text(encoding="utf-8") == canonical_result,
+            "summary collision rewrote the canonical bench result",
+        )
+        assert_true(
+            canonical_summary_path.read_text(encoding="utf-8") == canonical_summary,
+            "summary collision rewrote the canonical bench summary",
+        )
+
+        write_window(root, "core", hard=1, result="FAIL")
+        custom_result_path = root / "bench_result_regraded.json"
+        regraded = run_score(root, "core", out_path=custom_result_path)
+        assert_true(regraded.returncode == 2, regraded.stdout + regraded.stderr)
+        custom_result = json.loads(custom_result_path.read_text(encoding="utf-8"))
+        assert_true(custom_result["result"] == "FAIL", f"unexpected custom result: {custom_result}")
+        assert_true(
+            canonical_result_path.read_text(encoding="utf-8") == canonical_result,
+            "custom output rewrote the canonical bench result",
+        )
+        assert_true(
+            canonical_summary_path.read_text(encoding="utf-8") == canonical_summary,
+            "custom output rewrote the canonical bench summary",
+        )
+
+        canonical_result_alias = root / "canonical_result_alias.json"
+        canonical_result_alias.symlink_to(canonical_result_path)
+        explicit_canonical = run_score(root, "core", out_path=canonical_result_alias)
+        assert_true(
+            explicit_canonical.returncode == 2,
+            explicit_canonical.stdout + explicit_canonical.stderr,
+        )
+        updated_result = json.loads(canonical_result_path.read_text(encoding="utf-8"))
+        updated_summary = canonical_summary_path.read_text(encoding="utf-8")
+        assert_true(updated_result["result"] == "FAIL", f"unexpected result: {updated_result}")
+        assert_true("bench result: FAIL" in updated_summary, updated_summary)
 
 
 def test_missing_window_artifact_is_collection_failure() -> None:
@@ -704,6 +772,7 @@ def main() -> int:
     test_failed_base_result_remains_a_hard_failure()
     test_core_metric_failure_is_actionable_failure()
     test_display_metric_failure_is_actionable_failure()
+    test_custom_output_preserves_canonical_summary_pair()
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()
     test_replay_scores_complete_window_across_connection_sessions()

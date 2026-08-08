@@ -16,9 +16,10 @@ SHA256_NAME = "sha256"
 CANONICALIZATION = "json-sort-keys-compact-utf8"
 HEX_DIGEST_LENGTH = 64
 
-# Generated gzip copies and data/_app version markers are intentionally
-# represented by their checked-in sources, dependency lock, and deploy/build
-# scripts. Actual deployed HTML, audio, and branding files are hashed directly.
+# Generated web files, gzip copies, and data/_app version markers are
+# intentionally represented by their checked-in sources, dependency lock,
+# configuration, and deploy/build scripts. Actual deployed audio and branding
+# files are hashed directly.
 PRODUCT_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "firmware_sources": (
         "include/**/*",
@@ -44,7 +45,6 @@ PRODUCT_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
         "tools/freq_audio/mulaw/**/*",
     ),
     "deployed_filesystem_assets": (
-        "data/*.html",
         "data/audio/**/*",
         "data/branding/**/*",
     ),

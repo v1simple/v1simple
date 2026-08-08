@@ -155,11 +155,13 @@ diagnosis, but human viewing is not the acceptance gate.
 
 Each window also records three content identities in `identity.json`. The
 product fingerprint covers firmware, production configuration and build hooks,
-UI/audio/branding sources and deployed uncompressed assets, dependency pins,
-and the complete `v1replay` implementation. The grader fingerprint covers the
-camera capture, evidence contract, grader, and human-verified references. A
-separate scenario fingerprint covers the suite, duration, profile, segment, and
-replay blink profile. Git SHA/ref and clean state remain traceability only.
+checked-in UI/audio/branding sources, dependency pins, and UI build/deploy
+inputs, directly deployed audio/branding assets, and the complete `v1replay`
+implementation. Generated UI build output is represented by those checked-in
+inputs rather than hashed directly. The grader fingerprint covers the camera
+capture, evidence contract, grader, and human-verified references. A separate
+scenario fingerprint covers the suite, duration, profile, segment, and replay
+blink profile. Git SHA/ref and clean state remain traceability only.
 Promoted performance baselines live under
 `<board>/<product fingerprint>/<suite>/<scenario fingerprint>/`; an older
 board/suite baseline is never selected automatically.

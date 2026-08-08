@@ -145,6 +145,11 @@ def main() -> int:
         [sys.executable, "scripts/check_public_snapshot_privacy.py", "--index"],
         [sys.executable, "scripts/check_public_snapshot_privacy.py", "--all-history"],
         [sys.executable, "scripts/test_scanner_parity.py"],
+        [
+            sys.executable,
+            "scripts/test_public_privacy_hooks.py",
+            "--reference-negative-control",
+        ],
     )
     for arguments in checks:
         completed = run(arguments)

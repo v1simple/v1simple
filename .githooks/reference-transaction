@@ -2,7 +2,7 @@
 # Fail-closed privacy boundary for every local Git reference update.
 #
 # Unlike pre-commit, commit-msg, and pre-push, Git does not provide a
-# --no-verify bypass for the preparing phase of reference-transaction. The
+# --no-verify bypass for the abortable phases of reference-transaction. The
 # proposed commit or annotated-tag object already exists, but a failure here
 # prevents any branch, tag, stash, or remote-tracking ref from pointing at it.
 
@@ -10,7 +10,32 @@ set -uo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
 export GIT_NO_LAZY_FETCH=1
 
-[ "${1:-}" = "preparing" ] || exit 0
+git_emits_preparing() {
+  local version_output version major minor
+
+  version_output="$(git version 2>/dev/null)" || return 1
+  version="${version_output#git version }"
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)(\.|[[:space:]]|$) ]]; then
+    return 1
+  fi
+
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  ((major > 2 || (major == 2 && minor >= 54)))
+}
+
+case "${1:-}" in
+  preparing)
+    ;;
+  prepared)
+    # Git before 2.54 does not emit "preparing", so "prepared" is its only
+    # abortable phase. Newer Git scans before locking refs and skips this phase.
+    git_emits_preparing && exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 METADATA_CHECK="$ROOT/scripts/check_public_commit_metadata.py"

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -401,6 +402,40 @@ def test_reference_transaction_blocks_direct_ref_to_unsafe_message() -> None:
         assert private_email not in completed.stderr
 
 
+def test_reference_transaction_uses_prepared_before_git_2_54() -> None:
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        head = git(repo, "rev-parse", "HEAD")
+        (repo / "scripts" / SNAPSHOT_CHECK.name).unlink()
+        real_git = shutil.which("git")
+        assert real_git is not None
+        fake_bin = repo / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            'if [ "${1:-}" = "version" ]; then\n'
+            '  echo "git version 2.53.0"\n'
+            "  exit 0\n"
+            "fi\n"
+            'exec "$V1SIMPLE_TEST_REAL_GIT" "$@"\n',
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+        environment["V1SIMPLE_TEST_REAL_GIT"] = real_git
+
+        completed = run(
+            [str(repo / ".githooks" / "reference-transaction"), "prepared"],
+            cwd=repo,
+            input_text=f"{ZERO} {head} refs/heads/prepared-fallback\n",
+            env=environment,
+        )
+        assert completed.returncode != 0
+        assert "privacy reference gate blocked a Git ref update" in completed.stderr
+
+
 def test_prepare_commit_msg_fails_closed_without_scanner() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -696,6 +731,18 @@ def test_pre_push_blocks_committed_replay_data_without_echoing_it() -> None:
 
 
 def main() -> int:
+    if sys.argv[1:]:
+        if sys.argv[1:] != ["--reference-negative-control"]:
+            print(
+                "usage: test_public_privacy_hooks.py "
+                "[--reference-negative-control]",
+                file=sys.stderr,
+            )
+            return 2
+        test_reference_transaction_blocks_direct_ref_to_unsafe_commit()
+        print("PASS reference-transaction negative control")
+        return 0
+
     tests = (
         test_commit_msg_accepts_safe_conventional_message,
         test_commit_msg_rejects_invalid_message_without_recommending_bypass,
@@ -711,6 +758,7 @@ def main() -> int:
         test_reference_transaction_blocks_private_annotated_tag_identity,
         test_reference_transaction_blocks_direct_ref_to_unsafe_commit,
         test_reference_transaction_blocks_direct_ref_to_unsafe_message,
+        test_reference_transaction_uses_prepared_before_git_2_54,
         test_prepare_commit_msg_fails_closed_without_scanner,
         test_reference_transaction_fails_closed_without_scanner,
         test_pre_push_accepts_safe_main_history,

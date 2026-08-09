@@ -223,6 +223,10 @@ inline constexpr const char* kNvsWifiStaSlotPassword[kNvsWifiStaSlotCount] = {"s
                                                                               "sta3Pass"};
 // Namespace: v1settingsMeta (SETTINGS_NS_META)
 inline constexpr const char* kNvsMetaActive = "active";
+// Namespace: v1runtime. This single-key store preserves the last confirmed V1
+// connection only while filesystem-backed V1DeviceStore is unavailable.
+inline constexpr const char* kSettingsV1RuntimeNamespace = "v1runtime";
+inline constexpr const char* kNvsLastConnectedV1Address = "lastV1Conn";
 // Namespace: v1boot
 inline constexpr const char* kNvsBootId = "bootId";
 inline constexpr const char* kNvsCleanShutdn =

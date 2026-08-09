@@ -464,6 +464,7 @@ void SettingsManager::save() {
     }
 
     clearDeferredPersistState();
+    clearLastV1AddressFallback();
     Serial.println("Settings saved atomically");
 
     // Backup display settings to SD card (survives reflash)
@@ -491,6 +492,8 @@ uint32_t SettingsManager::deferredPersistNextAttemptAtMs() const {
 }
 
 void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
+    serviceLastV1AddressFallbackPersist(nowMs);
+
     if (!deferredPersistPending_) {
         return;
     }
@@ -507,6 +510,7 @@ void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
     }
 
     clearDeferredPersistState();
+    clearLastV1AddressFallback();
     Serial.println("Settings saved atomically");
     requestDeferredBackupFromCurrentState();
 }

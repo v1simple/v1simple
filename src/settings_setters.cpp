@@ -434,7 +434,9 @@ void SettingsManager::setLastV1Address(const String& addr) {
         // which owns runtime durability. A full settings transaction rewrites
         // every NVS key and builds an SD backup, so do not schedule that work
         // solely for this compatibility/fallback field while BLE is active.
-        // Explicit settings saves and graceful shutdown still capture it.
+        // A confirmed connection uses one dedicated NVS fallback key when the
+        // filesystem store is unavailable. Explicit settings saves and
+        // graceful shutdown still capture the compatibility field as well.
         Serial.printf("Updated runtime V1 address: %s\n", safeAddr.c_str());
     }
 }

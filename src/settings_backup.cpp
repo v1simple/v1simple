@@ -802,6 +802,7 @@ bool SettingsManager::saveDeferredBackup() {
     }
 
     clearDeferredPersistState();
+    clearLastV1AddressFallback();
     Serial.println("Settings saved atomically");
     requestDeferredBackupFromCurrentState();
     return true;

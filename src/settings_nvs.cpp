@@ -9,6 +9,8 @@
 
 namespace {
 
+constexpr uint32_t LAST_V1_FALLBACK_DEBOUNCE_MS = 750;
+constexpr uint32_t LAST_V1_FALLBACK_RETRY_MS = 1000;
 constexpr const char* WIFI_CLIENT_BACKUP_PASSWORD_KEY = "wifiClientPasswordObf";
 constexpr const char* WIFI_STA_SLOT_BACKUP_PASSWORD_KEY = "passwordObf";
 constexpr const char* WIFI_CLIENT_SD_SECRETS_KEY = "secrets";
@@ -498,6 +500,115 @@ bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotI
     const size_t written = prefs.putString(passwordKey, encodedPassword);
     prefs.end();
     return written > 0;
+}
+
+String SettingsManager::loadLastV1AddressFallback() {
+    Preferences prefs;
+    if (!prefs.begin(kSettingsV1RuntimeNamespace, true)) {
+        return "";
+    }
+    const String address = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    prefs.end();
+    return address;
+}
+
+void SettingsManager::requestLastV1AddressFallbackPersist(const String& addr) {
+    const String safeAddr = sanitizeLastV1AddressValue(addr);
+    if (safeAddr.length() == 0) {
+        return;
+    }
+
+    if (loadLastV1AddressFallback() == safeAddr) {
+        pendingLastV1AddressFallback_ = "";
+        lastV1AddressFallbackPending_ = false;
+        lastV1AddressFallbackNextAttemptAtMs_ = 0;
+        return;
+    }
+    if (lastV1AddressFallbackPending_ && pendingLastV1AddressFallback_ == safeAddr) {
+        return;
+    }
+
+    pendingLastV1AddressFallback_ = safeAddr;
+    lastV1AddressFallbackPending_ = true;
+    lastV1AddressFallbackNextAttemptAtMs_ = millis() + LAST_V1_FALLBACK_DEBOUNCE_MS;
+}
+
+bool SettingsManager::persistLastV1AddressFallbackNow(const String& addr) {
+    const String safeAddr = sanitizeLastV1AddressValue(addr);
+    if (safeAddr.length() == 0) {
+        return false;
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(kSettingsV1RuntimeNamespace, false)) {
+        Serial.println("[Settings] WARN: Failed to open degraded V1 address fallback");
+        return false;
+    }
+
+    const String existing = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    if (existing == safeAddr) {
+        prefs.end();
+        return true;
+    }
+
+    const size_t written = prefs.putString(kNvsLastConnectedV1Address, safeAddr);
+    const String verified = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    prefs.end();
+    if (written == 0 || verified != safeAddr) {
+        Serial.println("[Settings] WARN: Failed to persist degraded V1 address fallback");
+        return false;
+    }
+
+    Serial.println("[Settings] Persisted degraded V1 address fallback");
+    return true;
+}
+
+void SettingsManager::serviceLastV1AddressFallbackPersist(uint32_t nowMs) {
+    if (!lastV1AddressFallbackPending_) {
+        return;
+    }
+    if (lastV1AddressFallbackNextAttemptAtMs_ != 0 &&
+        static_cast<int32_t>(nowMs - lastV1AddressFallbackNextAttemptAtMs_) < 0) {
+        return;
+    }
+
+    if (!persistLastV1AddressFallbackNow(pendingLastV1AddressFallback_)) {
+        lastV1AddressFallbackNextAttemptAtMs_ = nowMs + LAST_V1_FALLBACK_RETRY_MS;
+        return;
+    }
+
+    pendingLastV1AddressFallback_ = "";
+    lastV1AddressFallbackPending_ = false;
+    lastV1AddressFallbackNextAttemptAtMs_ = 0;
+}
+
+bool SettingsManager::clearLastV1AddressFallback() {
+    Preferences prefs;
+    if (!prefs.begin(kSettingsV1RuntimeNamespace, false)) {
+        Serial.println("[Settings] WARN: Failed to open degraded V1 address fallback for cleanup");
+        return false;
+    }
+    if (!prefs.isKey(kNvsLastConnectedV1Address)) {
+        prefs.end();
+        pendingLastV1AddressFallback_ = "";
+        lastV1AddressFallbackPending_ = false;
+        lastV1AddressFallbackNextAttemptAtMs_ = 0;
+        return true;
+    }
+
+    const bool removed = prefs.remove(kNvsLastConnectedV1Address);
+    const bool absent = !prefs.isKey(kNvsLastConnectedV1Address);
+    prefs.end();
+    if (!removed || !absent) {
+        Serial.println("[Settings] WARN: Failed to clear degraded V1 address fallback");
+        return false;
+    }
+
+    pendingLastV1AddressFallback_ = "";
+    lastV1AddressFallbackPending_ = false;
+    lastV1AddressFallbackNextAttemptAtMs_ = 0;
+    Serial.println("[Settings] Cleared degraded V1 address fallback");
+    return true;
 }
 
 int namespaceHealthScore(const char* ns) {

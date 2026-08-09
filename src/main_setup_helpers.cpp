@@ -53,6 +53,7 @@ void feedLoopTaskWatchdogDuringShutdown() {
 struct V1ConnectedAutoPushSelection {
     int activeSlotIndex = 0;
     String connectedAddress;
+    bool connectedAddressFromLink = false;
     uint8_t deviceDefaultProfile = 0;
     int selectedSlotIndex = 0;
 };
@@ -65,6 +66,7 @@ V1ConnectedAutoPushSelection resolveV1ConnectedAutoPushSelection(const V1Setting
     NimBLEAddress connected = bleClient.getConnectedAddress();
     if (!connected.isNull()) {
         selection.connectedAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
+        selection.connectedAddressFromLink = selection.connectedAddress.length() > 0;
     }
     if (selection.connectedAddress.length() == 0) {
         selection.connectedAddress = normalizeV1DeviceAddress(settings.lastV1Address);
@@ -185,6 +187,13 @@ void onV1Connected() {
     const V1Settings& s = settingsManager.get();
     const V1ConnectedAutoPushSelection selection = resolveV1ConnectedAutoPushSelection(s);
 
+    if (selection.connectedAddressFromLink) {
+        settingsManager.setLastV1Address(selection.connectedAddress);
+        if (!v1DeviceStore.isReady()) {
+            settingsManager.requestLastV1AddressFallbackPersist(selection.connectedAddress);
+        }
+    }
+
     const AutoPushSlot& slot = settingsManager.getSlot(selection.selectedSlotIndex);
     SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u addr='%s' "
                      "profile='%s' mode=%d\n",
@@ -221,9 +230,20 @@ void initializeStorageAndProfiles() {
             display.setBrightness(settingsManager.get().brightness);
         }
 
-        const String restoredLastKnownV1 = normalizeV1DeviceAddress(settingsManager.get().lastV1Address);
-        if (restoredLastKnownV1.length() > 0 && v1DeviceStore.isReady()) {
-            v1DeviceStore.upsertDevice(restoredLastKnownV1);
+        const String storedFallback = settingsManager.loadLastV1AddressFallback();
+        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
+        if (storedFallback.length() > 0 && degradedFallback.length() == 0) {
+            settingsManager.clearLastV1AddressFallback();
+        }
+
+        const String settingsFallback = normalizeV1DeviceAddress(settingsManager.get().lastV1Address);
+        const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
+        if (restoredLastKnownV1.length() > 0) {
+            settingsManager.setLastV1Address(restoredLastKnownV1);
+            if (v1DeviceStore.isReady() && v1DeviceStore.upsertDevice(restoredLastKnownV1) &&
+                degradedFallback.length() > 0) {
+                settingsManager.clearLastV1AddressFallback();
+            }
         }
 
         // Validate profile references in auto-push slots.
@@ -231,6 +251,14 @@ void initializeStorageAndProfiles() {
         settingsManager.validateProfileReferences(v1ProfileManager);
     } else {
         SerialLog.println("[Setup] Storage unavailable - profiles will be disabled");
+        const String storedFallback = settingsManager.loadLastV1AddressFallback();
+        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
+        if (degradedFallback.length() > 0) {
+            settingsManager.setLastV1Address(degradedFallback);
+            SerialLog.println("[Setup] Restored degraded V1 address fallback from NVS");
+        } else if (storedFallback.length() > 0) {
+            settingsManager.clearLastV1AddressFallback();
+        }
     }
 }
 

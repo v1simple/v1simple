@@ -51,8 +51,8 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     // Stop scanning and queue the discovered V1 connection.
     int advAddrType = advertisedDevice->getAddressType();
 
-    // Save this address and advertised name for future fast reconnect/proxy
-    // identity (deferred to main loop).
+    // Record the discovered address as runtime/backup compatibility state and
+    // adopt the advertised name for proxy identity (deferred to main loop).
     bleClient->deferLastV1Address(addrStr.c_str(), nameLooksV1 ? name.c_str() : nullptr);
 
     // Publish only an immutable address edge from callback context. The main

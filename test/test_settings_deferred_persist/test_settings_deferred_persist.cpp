@@ -13,6 +13,7 @@
 #include "../mocks/nvs.h"
 #include "../mocks/storage_manager.h"
 #include "../../src/settings.h"
+#include "../../src/settings_keys.h"
 #include "../../src/v1_profiles.h"
 
 #ifndef ARDUINO
@@ -210,11 +211,69 @@ void test_last_v1_address_does_not_schedule_full_settings_persist() {
         mock_preferences::getString(activeNs.c_str(), "lastV1Addr", "").c_str());
 }
 
+void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
+    SettingsManager manager;
+
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_EQUAL_STRING(
+        "",
+        mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
+    manager.serviceDeferredPersist(1749u);
+    TEST_ASSERT_EQUAL_STRING(
+        "",
+        mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
+    manager.serviceDeferredPersist(1750u);
+    TEST_ASSERT_EQUAL_STRING(
+        "AA:BB:CC:DD:EE:FF",
+        mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
+    TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+    TEST_ASSERT_FALSE(manager.deferredBackupPending());
+
+    // Re-recording the same successful connection is a no-op, even when new
+    // NVS writes are unavailable. A failed update leaves the last verified
+    // fallback intact and retries outside the connection callback.
+    mock_preferences::set_fail_writes(true);
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    manager.serviceDeferredPersist(3000u);
+    manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");
+    manager.serviceDeferredPersist(1750u);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
+
+    mock_preferences::set_fail_writes(false);
+    manager.serviceDeferredPersist(2750u);
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", manager.loadLastV1AddressFallback().c_str());
+    TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback());
+    TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
+}
+
+void test_full_settings_save_supersedes_pending_degraded_fallback() {
+    SettingsManager manager;
+
+    manager.setLastV1Address("11:22:33:44:55:66");
+    manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");
+    manager.save();
+
+    const String activeNs = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(activeNs.length() > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "11:22:33:44:55:66",
+        mock_preferences::getString(activeNs.c_str(), kNvsLastV1Address, "").c_str());
+    TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
+
+    // Servicing later must not resurrect the fallback cleared by the newer
+    // atomic settings snapshot.
+    manager.serviceDeferredPersist(5000u);
+    TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup);
     RUN_TEST(test_deferred_persist_retries_after_failed_nvs_write);
     RUN_TEST(test_save_flushes_immediately_and_clears_deferred_persist);
     RUN_TEST(test_last_v1_address_does_not_schedule_full_settings_persist);
+    RUN_TEST(test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key);
+    RUN_TEST(test_full_settings_save_supersedes_pending_degraded_fallback);
     return UNITY_END();
 }

@@ -877,6 +877,11 @@ class SettingsManager {
     void setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph);
     void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setLastV1Address(const String& addr);
+    // One-key NVS safety net used only when filesystem-backed V1DeviceStore is
+    // unavailable. Writes are deferred through serviceDeferredPersist().
+    String loadLastV1AddressFallback();
+    void requestLastV1AddressFallbackPersist(const String& addr);
+    bool clearLastV1AddressFallback();
 
     // Get active slot configuration
     const AutoPushSlot& getActiveSlot() const;
@@ -984,6 +989,9 @@ class SettingsManager {
     bool deferredPersistPending_ = false;
     bool deferredPersistRetryScheduled_ = false;
     uint32_t deferredPersistNextAttemptAtMs_ = 0;
+    String pendingLastV1AddressFallback_;
+    bool lastV1AddressFallbackPending_ = false;
+    uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
     void noteNvsCommitWithoutBackupIntent();
     bool persistSettingsWithBackupIntent();
@@ -995,6 +1003,8 @@ class SettingsManager {
     void clearRestorePending();
     bool persistSettingsAtomically();
     bool writeSettingsToNamespace(const char* ns);
+    bool persistLastV1AddressFallbackNow(const String& addr);
+    void serviceLastV1AddressFallbackPersist(uint32_t nowMs);
     String getActiveNamespace();
     String getStagingNamespace(const String& activeNamespace);
     bool checkNeedsRestore(); // Returns true if NVS appears to be default/empty

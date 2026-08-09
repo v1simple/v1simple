@@ -154,10 +154,20 @@ def load_catalog(path: Path) -> list[MetricPolicy]:
                         "advisory_min must be at or above absolute_min: "
                         f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
                     )
+                if policy.absolute_max is not None and policy.advisory_min > policy.absolute_max:
+                    raise RuntimeError(
+                        "advisory_min must be at or below absolute_max: "
+                        f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                    )
             if policy.advisory_max is not None:
                 if policy.absolute_max is None or policy.advisory_max > policy.absolute_max:
                     raise RuntimeError(
                         "advisory_max must be at or below absolute_max: "
+                        f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                    )
+                if policy.absolute_min is not None and policy.advisory_max < policy.absolute_min:
+                    raise RuntimeError(
+                        "advisory_max must be at or above absolute_min: "
                         f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
                     )
             if (

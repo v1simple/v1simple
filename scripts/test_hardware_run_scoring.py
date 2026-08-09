@@ -1157,40 +1157,46 @@ def test_advisory_bound_warns_before_hard_absolute_failure(tmpdir: Path) -> None
 
 
 def test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir: Path) -> None:
-    catalog_path = tmpdir / "invalid_advisory_bound.json"
-    catalog_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "metrics": [
-                    {
-                        "metric": "latency_ms",
-                        "run_kind": "custom_kind",
-                        "selector": {},
-                        "unit": "ms",
-                        "aggregation": "last",
-                        "direction": "lower_better",
-                        "score_level": "hard",
-                        "required": True,
-                        "absolute_min": None,
-                        "absolute_max": 100,
-                        "advisory_max": 101,
-                        "regress_abs": None,
-                        "regress_pct": None,
-                    }
-                ],
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    cases = (
+        ("max_above_hard_max", {"advisory_max": 101}, "advisory_max must be at or below absolute_max"),
+        ("max_below_hard_min", {"advisory_max": -1}, "advisory_max must be at or above absolute_min"),
+        ("min_above_hard_max", {"advisory_min": 101}, "advisory_min must be at or below absolute_max"),
     )
-    try:
-        score_hardware_run.load_catalog(catalog_path)
-    except RuntimeError as exc:
-        assert_true("advisory_max must be at or below absolute_max" in str(exc), f"unexpected error: {exc}")
-    else:
-        raise AssertionError("advisory bound outside the hard limit should be rejected")
+    for name, advisory_bound, expected_message in cases:
+        catalog_path = tmpdir / f"invalid_advisory_bound_{name}.json"
+        catalog_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "metrics": [
+                        {
+                            "metric": "latency_ms",
+                            "run_kind": "custom_kind",
+                            "selector": {},
+                            "unit": "ms",
+                            "aggregation": "last",
+                            "direction": "lower_better",
+                            "score_level": "hard",
+                            "required": True,
+                            "absolute_min": 0,
+                            "absolute_max": 100,
+                            **advisory_bound,
+                            "regress_abs": None,
+                            "regress_pct": None,
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            score_hardware_run.load_catalog(catalog_path)
+        except RuntimeError as exc:
+            assert_true(expected_message in str(exc), f"unexpected error for {name}: {exc}")
+        else:
+            raise AssertionError(f"advisory bound outside the hard limit should be rejected: {name}")
 
 
 def test_catalog_contains_data_derived_metric_budgets() -> None:

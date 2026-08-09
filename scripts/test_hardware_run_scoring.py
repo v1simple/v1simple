@@ -1069,6 +1069,161 @@ def test_required_soak_metrics_enforce_absolute_budgets(tmpdir: Path) -> None:
     assert_true(display_p95["score_status"] == "fail", f"display p95 remains hard: {display_p95}")
 
 
+def test_advisory_bound_warns_before_hard_absolute_failure(tmpdir: Path) -> None:
+    case_dir = tmpdir / "advisory_absolute_bound"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = case_dir / "catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "metrics": [
+                    {
+                        "metric": "latency_ms",
+                        "run_kind": "custom_kind",
+                        "selector": {"suite_or_profile": "track-a"},
+                        "unit": "ms",
+                        "aggregation": "last",
+                        "direction": "lower_better",
+                        "score_level": "hard",
+                        "regression_score_level": "info",
+                        "required": True,
+                        "absolute_min": None,
+                        "absolute_max": 100,
+                        "advisory_max": 50,
+                        "regress_abs": None,
+                        "regress_pct": None,
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    expected = {
+        "clean": (40, "NO_BASELINE", "pass", "pass", "pass", 0, 0),
+        "warning": (75, "PASS_WITH_WARNINGS", "pass", "fail", "warn", 0, 1),
+        "failure": (120, "FAIL", "fail", "fail", "fail", 1, 0),
+    }
+    for name, (value, result, absolute_state, advisory_state, score_status, hard, advisory) in expected.items():
+        metrics_path = case_dir / f"{name}.ndjson"
+        manifest_path = case_dir / f"{name}.json"
+        write_metrics(
+            metrics_path,
+            [
+                {
+                    "schema_version": 1,
+                    "run_id": name,
+                    "git_sha": "abc1234",
+                    "run_kind": "custom_kind",
+                    "suite_or_profile": "track-a",
+                    "metric": "latency_ms",
+                    "sample": "value",
+                    "value": value,
+                    "unit": "ms",
+                    "tags": {},
+                }
+            ],
+        )
+        write_manifest(
+            manifest_path,
+            run_id=name,
+            git_sha="abc1234",
+            git_ref="main",
+            run_kind="custom_kind",
+            board_id="release",
+            env="custom",
+            lane="custom",
+            suite_or_profile="track-a",
+            stress_class="core",
+            result="PASS",
+            metrics_file=metrics_path.name,
+            base_result="PASS",
+            tracks=["track-a"],
+        )
+        scored = score_hardware_run.score_run(manifest_path, catalog_path)
+        metric = scored["metrics"][0]
+        assert_true(scored["result"] == result, f"{name} result mismatch: {scored}")
+        assert_true(metric["absolute_state"] == absolute_state, f"{name} hard state mismatch: {metric}")
+        assert_true(metric["advisory_state"] == advisory_state, f"{name} advisory state mismatch: {metric}")
+        assert_true(metric["score_status"] == score_status, f"{name} score status mismatch: {metric}")
+        assert_true(scored["summary"]["hard_failures"] == hard, f"{name} hard count mismatch: {scored}")
+        assert_true(
+            scored["summary"]["advisory_failures"] == advisory,
+            f"{name} advisory count mismatch: {scored}",
+        )
+
+
+def test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir: Path) -> None:
+    catalog_path = tmpdir / "invalid_advisory_bound.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "metrics": [
+                    {
+                        "metric": "latency_ms",
+                        "run_kind": "custom_kind",
+                        "selector": {},
+                        "unit": "ms",
+                        "aggregation": "last",
+                        "direction": "lower_better",
+                        "score_level": "hard",
+                        "required": True,
+                        "absolute_min": None,
+                        "absolute_max": 100,
+                        "advisory_max": 101,
+                        "regress_abs": None,
+                        "regress_pct": None,
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        score_hardware_run.load_catalog(catalog_path)
+    except RuntimeError as exc:
+        assert_true("advisory_max must be at or below absolute_max" in str(exc), f"unexpected error: {exc}")
+    else:
+        raise AssertionError("advisory bound outside the hard limit should be rejected")
+
+
+def test_catalog_contains_data_derived_metric_budgets() -> None:
+    policies = score_hardware_run.load_catalog(CATALOG_PATH)
+
+    notify = [policy for policy in policies if policy.metric == "notify_to_display_max_ms"]
+    assert_true(len(notify) == 2, f"expected one notify policy per drive profile: {notify}")
+    assert_true(
+        all(
+            policy.score_level == "hard"
+            and policy.absolute_max == 100
+            and policy.advisory_max == 50
+            for policy in notify
+        ),
+        f"notify budgets do not match the data-derived contract: {notify}",
+    )
+
+    by_metric = {policy.metric: policy for policy in policies if policy.run_kind == "real_fw_soak"}
+    runtime_sd = by_metric["sd_runtime_max_peak_us"]
+    assert_true(
+        runtime_sd.score_level == "hard"
+        and runtime_sd.absolute_max == 150000
+        and runtime_sd.advisory_max == 60000,
+        f"runtime SD budget does not match the data-derived contract: {runtime_sd}",
+    )
+    for metric_name in ("sd_max_peak_us", "sd_start_max_peak_us"):
+        policy = by_metric[metric_name]
+        assert_true(
+            policy.score_level == "advisory" and policy.absolute_max == 150000,
+            f"startup-inclusive SD budget does not match the data-derived contract: {policy}",
+        )
+
+
 def test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir: Path) -> None:
     case_dir = tmpdir / "regression_severity"
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -1495,6 +1650,8 @@ def _spread_policy(direction: str = "lower_better", regress_abs=None, regress_pc
         required=False,
         absolute_min=None,
         absolute_max=None,
+        advisory_min=None,
+        advisory_max=None,
         regress_abs=regress_abs,
         regress_pct=regress_pct,
     )
@@ -1555,6 +1712,9 @@ def main() -> int:
         test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir)
         test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir)
         test_required_soak_metrics_enforce_absolute_budgets(tmpdir)
+        test_advisory_bound_warns_before_hard_absolute_failure(tmpdir)
+        test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir)
+        test_catalog_contains_data_derived_metric_budgets()
         test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir)
         test_unsupported_metrics_do_not_fail_run(tmpdir)
         test_uncataloged_metric_rejected(tmpdir)

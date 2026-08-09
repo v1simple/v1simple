@@ -44,6 +44,8 @@ class MetricPolicy:
     required: bool
     absolute_min: Optional[float]
     absolute_max: Optional[float]
+    advisory_min: Optional[float]
+    advisory_max: Optional[float]
     regress_abs: Optional[float]
     regress_pct: Optional[float]
 
@@ -120,6 +122,8 @@ def load_catalog(path: Path) -> list[MetricPolicy]:
             required=bool(entry["required"]),
             absolute_min=_coerce_optional_float(entry, "absolute_min"),
             absolute_max=_coerce_optional_float(entry, "absolute_max"),
+            advisory_min=_coerce_optional_float(entry, "advisory_min"),
+            advisory_max=_coerce_optional_float(entry, "advisory_max"),
             regress_abs=_coerce_optional_float(entry, "regress_abs"),
             regress_pct=_coerce_optional_float(entry, "regress_pct"),
         )
@@ -136,6 +140,33 @@ def load_catalog(path: Path) -> list[MetricPolicy]:
             if policy.required or policy.score_level != "info":
                 raise RuntimeError(
                     "Fully unbounded catalog entries must be optional info observations: "
+                    f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                )
+        if policy.advisory_min is not None or policy.advisory_max is not None:
+            if policy.score_level != "hard":
+                raise RuntimeError(
+                    "Advisory bounds require a hard absolute policy: "
+                    f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                )
+            if policy.advisory_min is not None:
+                if policy.absolute_min is None or policy.advisory_min < policy.absolute_min:
+                    raise RuntimeError(
+                        "advisory_min must be at or above absolute_min: "
+                        f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                    )
+            if policy.advisory_max is not None:
+                if policy.absolute_max is None or policy.advisory_max > policy.absolute_max:
+                    raise RuntimeError(
+                        "advisory_max must be at or below absolute_max: "
+                        f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
+                    )
+            if (
+                policy.advisory_min is not None
+                and policy.advisory_max is not None
+                and policy.advisory_min > policy.advisory_max
+            ):
+                raise RuntimeError(
+                    "advisory_min must not exceed advisory_max: "
                     f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
                 )
         selector_key = json.dumps(selector, sort_keys=True)
@@ -337,6 +368,16 @@ def _absolute_state(policy: MetricPolicy, value: float) -> tuple[str, Optional[s
         return "fail", f"value {_format_num(value)} below min {_format_num(policy.absolute_min)}"
     if policy.absolute_max is not None and value > policy.absolute_max:
         return "fail", f"value {_format_num(value)} above max {_format_num(policy.absolute_max)}"
+    return "pass", None
+
+
+def _advisory_state(policy: MetricPolicy, value: float) -> tuple[str, Optional[str]]:
+    if policy.advisory_min is None and policy.advisory_max is None:
+        return "n/a", None
+    if policy.advisory_min is not None and value < policy.advisory_min:
+        return "fail", f"value {_format_num(value)} below advisory min {_format_num(policy.advisory_min)}"
+    if policy.advisory_max is not None and value > policy.advisory_max:
+        return "fail", f"value {_format_num(value)} above advisory max {_format_num(policy.advisory_max)}"
     return "pass", None
 
 
@@ -593,6 +634,7 @@ def score_run(
                     "sample_count": current.sample_count,
                     "classification": "coverage_observation",
                     "absolute_state": "n/a",
+                    "advisory_state": "n/a",
                     "regression_state": "n/a",
                     "score_status": "info",
                     "messages": [
@@ -603,6 +645,7 @@ def score_run(
             info_regressions += 1
             continue
         absolute_state, absolute_message = _absolute_state(policy, current.value)
+        advisory_state, advisory_message = _advisory_state(policy, current.value)
         regression_state, classification, regression_message = _regression_state(
             policy,
             current.value,
@@ -610,7 +653,7 @@ def score_run(
             baseline_spreads.get(key),
         )
         score_status = "pass"
-        messages = [msg for msg in [absolute_message, regression_message] if msg]
+        messages = [msg for msg in [absolute_message, advisory_message, regression_message] if msg]
 
         if absolute_state == "fail":
             if policy.score_level == "hard":
@@ -622,6 +665,9 @@ def score_run(
             else:
                 score_status = "info"
                 info_regressions += 1
+        elif advisory_state == "fail":
+            score_status = "warn"
+            advisory_failures += 1
         elif regression_state == "fail":
             if policy.regression_score_level == "hard":
                 score_status = "fail"
@@ -652,6 +698,7 @@ def score_run(
                 "sample_count": current.sample_count,
                 "classification": classification,
                 "absolute_state": absolute_state,
+                "advisory_state": advisory_state,
                 "regression_state": regression_state,
                 "score_status": score_status,
                 "messages": messages,
@@ -689,6 +736,7 @@ def score_run(
                     "sample_count": 0,
                     "classification": "unsupported",
                     "absolute_state": "unsupported",
+                    "advisory_state": "unsupported",
                     "regression_state": "unsupported",
                     "score_status": "unsupported",
                     "messages": [message],
@@ -727,6 +775,7 @@ def score_run(
                 "sample_count": 0,
                 "classification": "missing",
                 "absolute_state": "missing",
+                "advisory_state": "missing",
                 "regression_state": "missing",
                 "score_status": score_status,
                 "messages": [message],

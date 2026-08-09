@@ -194,8 +194,11 @@ Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in
 [`tools/hardware_metric_catalog.json`](tools/hardware_metric_catalog.json)
 control the absolute check. When both are `null`, the scorer reports
-`absolute_state=n/a`. Fully unbounded entries are allowed only for optional
-informational observations whose value depends on run duration or external
+`absolute_state=n/a`. A hard policy may also set `advisory_min` or
+`advisory_max` inside its absolute bounds; crossing that earlier line warns the
+run while crossing the absolute bound still fails it. Fully unbounded entries
+are allowed only for optional informational observations whose value depends on
+run duration or external
 activity; the catalog loader rejects an unbounded required, hard, or advisory
 policy. Required metrics have an absolute contract as well as any compatible
 `regress_abs` or `regress_pct` comparison: sustained Wi-Fi and display work use

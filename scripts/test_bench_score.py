@@ -373,6 +373,32 @@ def test_display_metric_failure_is_actionable_failure() -> None:
         assert_true("display.queue_drops_delta" in proc.stdout, proc.stdout)
 
 
+def test_advisory_absolute_bound_is_a_warning() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        scoring_path = root / "core" / "scoring.json"
+        scoring = json.loads(scoring_path.read_text(encoding="utf-8"))
+        scoring["metrics"].append(
+            {
+                "metric": "sd_runtime_max_peak_us",
+                "score_level": "hard",
+                "required": True,
+                "score_status": "warn",
+                "absolute_state": "pass",
+                "advisory_state": "fail",
+                "current_value": 75000,
+                "messages": ["value 75000 above advisory max 60000"],
+            }
+        )
+        write_json(scoring_path, scoring)
+        proc = run_score(root, "core")
+        assert_true(proc.returncode == 1, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        assert_true(result["result"] == "WARN", f"unexpected advisory result: {result}")
+        assert_true("sd_runtime_max_peak_us" in proc.stdout, proc.stdout)
+
+
 def test_custom_output_preserves_canonical_summary_pair() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -772,6 +798,7 @@ def main() -> int:
     test_failed_base_result_remains_a_hard_failure()
     test_core_metric_failure_is_actionable_failure()
     test_display_metric_failure_is_actionable_failure()
+    test_advisory_absolute_bound_is_a_warning()
     test_custom_output_preserves_canonical_summary_pair()
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()

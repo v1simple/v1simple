@@ -105,8 +105,10 @@ def metric_failures(scoring: dict[str, Any]) -> list[dict[str, Any]]:
     for metric in scoring.get("metrics") or []:
         if not isinstance(metric, dict):
             continue
-        if metric.get("absolute_state") == "fail" or (
-            metric.get("absolute_state") == "missing" and metric.get("required") is True
+        if (
+            metric.get("absolute_state") == "fail"
+            or metric.get("advisory_state") == "fail"
+            or (metric.get("absolute_state") == "missing" and metric.get("required") is True)
         ):
             failures.append(metric)
     return failures
@@ -327,9 +329,9 @@ def classify_window(
         }
     failures = metric_failures(scoring)
     summary = scoring.get("summary") if isinstance(scoring.get("summary"), dict) else {}
-    hard_failures = sum(1 for metric in failures if str(metric.get("score_level") or "hard") == "hard")
+    hard_failures = sum(1 for metric in failures if str(metric.get("score_status") or "") == "fail")
     advisory_failures = sum(
-        1 for metric in failures if str(metric.get("score_level") or "hard") == "advisory"
+        1 for metric in failures if str(metric.get("score_status") or "") == "warn"
     )
 
     result = "PASS"
@@ -355,7 +357,8 @@ def classify_window(
         ]
         evidence.append(
             f"{metric.get('metric')} current={metric.get('current_value')} "
-            f"state={metric.get('absolute_state')} messages={'; '.join(absolute_messages)}"
+            f"state={metric.get('absolute_state')} advisory={metric.get('advisory_state', 'n/a')} "
+            f"messages={'; '.join(absolute_messages)}"
         )
     replay_checks: dict[str, Any] = {}
     emulator = window.get("v1_emulator") if isinstance(window.get("v1_emulator"), dict) else {}

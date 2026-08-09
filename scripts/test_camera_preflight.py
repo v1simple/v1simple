@@ -24,6 +24,7 @@ from camera_grade import (  # noqa: E402
     DISPLAY_CROP_WIDTH,
     DISPLAY_CROP_X,
     DISPLAY_CROP_Y,
+    MAX_DISPLAY_CROP_OFFSET_Y,
     REFERENCE_ANCHOR_X,
     REFERENCE_ANCHOR_Y,
     REGISTRATION_HEIGHT,
@@ -245,6 +246,22 @@ def test_bounded_fixture_records_translation_exposure_and_hash() -> None:
         assert_true(camera.start_calls == 1 and camera.running, "passing preflight did not continue once")
 
 
+def test_reseated_dut_translation_is_applied_before_capture() -> None:
+    expected_x, expected_y = 67.0, 40.0
+
+    actual_x, actual_y, registration = detect_display_crop_registration(
+        registration_fixture(expected_x, expected_y)
+    )
+
+    assert_true(abs(actual_x - expected_x) < 1, f"wrong reseated DUT x translation: {actual_x}")
+    assert_true(abs(actual_y - expected_y) < 1, f"wrong reseated DUT y translation: {actual_y}")
+    assert_true(registration["result"] == "PASS", f"reseated DUT registration failed: {registration}")
+    assert_true(
+        registration["maximum_offset_pixels"][1] == MAX_DISPLAY_CROP_OFFSET_Y,
+        f"vertical registration bound was not recorded: {registration}",
+    )
+
+
 def expect_registration_code(frame: bytes, code: str) -> None:
     try:
         detect_display_crop_registration(frame)
@@ -261,6 +278,10 @@ def expect_registration_code(frame: bytes, code: str) -> None:
 def test_registration_refusal_codes_are_precise() -> None:
     expect_registration_code(
         registration_fixture(110.0, 0.0),
+        "screen_outside_translation_bounds",
+    )
+    expect_registration_code(
+        registration_fixture(0.0, 60.0),
         "screen_outside_translation_bounds",
     )
     expect_registration_code(
@@ -612,6 +633,7 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
 
 def main() -> int:
     test_bounded_fixture_records_translation_exposure_and_hash()
+    test_reseated_dut_translation_is_applied_before_capture()
     test_registration_refusal_codes_are_precise()
     test_decode_and_start_failures_stop_cleanly()
     test_profile_mismatch_refuses_before_camera_start()

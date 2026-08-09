@@ -15,7 +15,10 @@ CAMERA_CONTRACT_SCHEMA_VERSION = 1
 
 REGISTRATION_SOURCE_FIELDS = ("session_start_still", "bright_still")
 MAX_DISPLAY_CROP_OFFSET_X = 96.0
-MAX_DISPLAY_CROP_OFFSET_Y = 36.0
+# Permit normal DUT removal/reseating while keeping the complete SCAN landmark
+# inside the calibrated registration region with margin. Larger movement still
+# requires physically reseating the rig instead of broad crop searching.
+MAX_DISPLAY_CROP_OFFSET_Y = 48.0
 MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 3.0
 
 MIN_TIMELINE_MATCH_RATIO = 0.96

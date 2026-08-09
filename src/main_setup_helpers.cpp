@@ -38,6 +38,7 @@
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/perf/debug_macros.h"
+#include "diagnostic_log_retention.h"
 #include "modules/touch/tap_gesture_module.h"
 #include <driver/gpio.h>
 
@@ -265,10 +266,29 @@ void initializeStorageAndProfiles() {
 uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) {
     const uint32_t bootId = nextBootId();
     const uint32_t bootToken = static_cast<uint32_t>(esp_random());
-    services.perfLogger.setBootId(bootId, bootToken);
 
     // Standalone perf CSV loggers (SD only).
     const bool sdEnabled = services.storage.isReady() && services.storage.isSDCard();
+    if (sdEnabled) {
+        StorageManager::SDLockBootRetry lock(services.storage.getSDMutex());
+        fs::FS* filesystem = services.storage.getFilesystem();
+        if (lock && filesystem) {
+            const DiagnosticLogRetention::BootPruneResult pruned =
+                DiagnosticLogRetention::pruneBeforeCurrentBoot(*filesystem, bootId);
+            const size_t removed = pruned.perf.removedFiles + pruned.alp.removedFiles + pruned.encounters.removedFiles;
+            const size_t failures =
+                pruned.perf.failedRemovals + pruned.alp.failedRemovals + pruned.encounters.failedRemovals;
+            if (removed > 0 || failures > 0) {
+                SerialLog.printf("[Storage] Log retention removed=%u failed=%u cap=%u/category\n",
+                                 static_cast<unsigned>(removed), static_cast<unsigned>(failures),
+                                 static_cast<unsigned>(DiagnosticLogLimits::MANAGED_FILES_PER_CATEGORY));
+            }
+        } else {
+            SerialLog.println("[Storage] WARN: Log retention skipped; SD lock unavailable");
+        }
+    }
+
+    services.perfLogger.setBootId(bootId, bootToken);
     services.perfLogger.begin(sdEnabled);
     if (services.perfLogger.isEnabled()) {
         SerialLog.printf("[PERF] SD logger enabled (%s)\n", services.perfLogger.csvPath());

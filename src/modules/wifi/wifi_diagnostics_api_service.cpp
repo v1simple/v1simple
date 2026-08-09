@@ -314,6 +314,7 @@ void handleApiList(WebServer& server, const Runtime& runtime) {
     doc["success"] = true;
     doc["maxListedFiles"] = MAX_LISTED_FILES;
     doc["maxScannedEntries"] = MAX_SCANNED_ENTRIES;
+    doc["retentionMaxFilesPerCategory"] = DiagnosticLogLimits::MANAGED_FILES_PER_CATEGORY;
     doc["maxDownloadBytes"] = MAX_DOWNLOAD_BYTES;
     JsonArray files = doc["files"].to<JsonArray>();
     size_t fileCount = 0;

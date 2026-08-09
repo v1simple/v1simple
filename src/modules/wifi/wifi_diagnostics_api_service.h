@@ -3,12 +3,14 @@
 #include <FS.h>
 #include <WebServer.h>
 
+#include "../../diagnostic_log_limits.h"
+
 namespace WifiDiagnosticsApiService {
 
 // Listing is deliberately bounded so a card with years of CSV files cannot
 // turn one maintenance request into an unbounded heap allocation.
-inline constexpr size_t MAX_LISTED_FILES = 64;
-inline constexpr size_t MAX_SCANNED_ENTRIES = 128;
+inline constexpr size_t MAX_LISTED_FILES = DiagnosticLogLimits::MAX_LISTED_FILES;
+inline constexpr size_t MAX_SCANNED_ENTRIES = DiagnosticLogLimits::MAX_SCANNED_ENTRIES;
 inline constexpr size_t MAX_DOWNLOAD_BYTES = 16u * 1024u * 1024u;
 
 struct Runtime {

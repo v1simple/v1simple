@@ -74,7 +74,13 @@ the default `V1-Simple` network with `setupv1simple`, open
 
 With an SD card mounted, completed V1 alert tables are saved under
 `/encounters` for maintenance-mode download. They preserve the detector's own
-alert assignments and contain no GPS or vehicle-speed data.
+alert assignments and contain no GPS or vehicle-speed data. On each normal
+boot, the firmware keeps the newest 20 generated CSV files in each of `/perf`,
+`/alp`, and `/encounters`. Files with other names are never removed by this
+retention policy.
+
+The non-destructive setup and acceptance criteria for comparing a 32 KB FAT32
+allocation unit are documented in [`docs/SD_STORAGE.md`](docs/SD_STORAGE.md).
 
 ## Verify a change
 

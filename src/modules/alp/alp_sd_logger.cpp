@@ -4,7 +4,7 @@
  * CSV format (schema v2): millis,utc,event,from_state,to_state,byte0,byte1,byte2,checksum,direction,gun,extra
  *
  * Main-loop callers enqueue rows without waiting; a low-priority writer task
- * owns SD open/write/close. Drops are expected and OK — we log what we can
+ * owns SD open/write/flush/close. Drops are expected and OK — we log what we can
  * without blocking the display pipeline.
  */
 
@@ -376,6 +376,13 @@ void AlpSdLogger::writerTaskLoop() {
             taskYIELD();
         }
     }
+    {
+        StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+        if (lock && persistentFile_) {
+            persistentFile_.flush();
+            persistentFile_.close();
+        }
+    }
     writerTask_ = nullptr;
     vTaskDeleteWithCaps(nullptr);
 }
@@ -456,18 +463,26 @@ bool AlpSdLogger::writeLineBlocking(const char* line) {
         return false;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
-    if (!fs) {
-        return false;
+    if (!persistentFile_) {
+        fs::FS* fs = storageManager.getFilesystem();
+        if (!fs) {
+            return false;
+        }
+        persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);
+        if (!persistentFile_) {
+            return false;
+        }
     }
 
-    File f = fs->open(csvPathBuf_, FILE_APPEND);
-    if (!f) {
+    // Car-mode power can disappear without a shutdown callback. Keep the
+    // handle open to avoid the per-row FAT open/EOF-search/close cycle, but
+    // flush every completed row so durability does not depend on clean power.
+    const size_t lineLen = strlen(line);
+    if (persistentFile_.print(line) != lineLen) {
+        persistentFile_.close();
         return false;
     }
-
-    f.print(line);
-    f.close();
+    persistentFile_.flush();
     linesWritten_++;
     return true;
 }
@@ -476,7 +491,7 @@ bool AlpSdLogger::writeLineBlocking(const char* line) {
 bool AlpSdLogger::appendLine(const char* line) {
 #ifndef UNIT_TEST
     // Main-loop callers must never stall on SD. Enqueue a bounded copy and let
-    // the low-priority Core 0 writer do the open/write/close work. Drops are
+    // the low-priority Core 0 writer do the open/write/flush work. Drops are
     // expected for diagnostics when the queue is full or the writer is not up.
     if (!line || !enabled_ || !sdReady_) {
         dropCount_++;

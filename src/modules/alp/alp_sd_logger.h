@@ -8,7 +8,10 @@
  *
  * Design:
  *   - Main-loop callers enqueue fixed-size rows with xQueueSend(..., 0).
- *   - A low-priority Core 0 writer owns SD open/write/close work.
+ *   - A low-priority Core 0 writer owns SD open/write/flush/close work.
+ *   - The writer keeps one append handle open and flushes every completed row.
+ *     This avoids repeated FAT open/EOF-search/close work without relying on a
+ *     graceful shutdown to make the latest diagnostic evidence durable.
  *   - CSV file per boot session: /alp/alp_<bootId>-<token8>.csv
  *     (legacy format /alp/alp_<bootId>.csv used only when no bootToken
  *     is supplied, e.g. unit tests).
@@ -23,6 +26,7 @@
 #include <cstdint>
 
 #ifndef UNIT_TEST
+#include <FS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -160,6 +164,7 @@ class AlpSdLogger {
     QueueHandle_t queue_ = nullptr;
     TaskHandle_t writerTask_ = nullptr;
     PsramQueueAllocation queueAllocation_ = {};
+    File persistentFile_{};
     bool queueInPsram_ = false;
     bool writerTaskStackInPsram_ = false;
 #endif

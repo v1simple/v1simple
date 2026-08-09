@@ -12,6 +12,11 @@
 
 #include <unity.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+
 #include "../../src/modules/alp/alp_runtime_module.h"
 #include "../../src/modules/alp/alp_sd_logger.h"
 #include "../../src/modules/gps/gps_publishers.cpp"
@@ -39,6 +44,15 @@ static void inject(const uint8_t* data, size_t len) {
 
 static void processAt(uint32_t ms) {
     alpRuntimeModule.process(ms);
+}
+
+static std::string readProjectFile(const char* relativePath) {
+    const std::filesystem::path path = std::filesystem::path(PROJECT_DIR) / relativePath;
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
 }
 
 // ── Alert burst test data (6 x 4-byte frames = 24 bytes) ───────────
@@ -2841,6 +2855,29 @@ void test_sd_logger_gun_id_detect_preserves_raw_frame() {
         logger.testGetLastLine());
 }
 
+void test_sd_logger_production_writer_reuses_handle_and_flushes_each_row() {
+    // Native tests use the UNIT_TEST sink, so pin the production-only SD
+    // lifecycle textually: one persistent append handle and an explicit flush
+    // after each successful row. This preserves hard-power durability while
+    // preventing the old open/close-per-row regression.
+    const std::string header = readProjectFile("src/modules/alp/alp_sd_logger.h");
+    const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
+    TEST_ASSERT_FALSE(header.empty());
+    TEST_ASSERT_FALSE(source.empty());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("File persistentFile_{};"));
+
+    const size_t writerStart = source.find("bool AlpSdLogger::writeLineBlocking(const char* line)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writerStart);
+    const size_t writerEnd = source.find("\n#endif", writerStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writerEnd);
+    const std::string writer = source.substr(writerStart, writerEnd - writerStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          writer.find("persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("persistentFile_.print(line) != lineLen"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("persistentFile_.flush();"));
+    TEST_ASSERT_EQUAL(std::string::npos, writer.find("File f = fs->open(csvPathBuf_, FILE_APPEND);"));
+}
+
 // ── Event bus publishing tests ──────────────────────────────────────
 
 void test_transitionTo_publishes_alp_state_changed_event() {
@@ -3330,6 +3367,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval);
     RUN_TEST(test_sd_logger_gun_id_lid_deploy_preserves_raw_frame);
     RUN_TEST(test_sd_logger_gun_id_detect_preserves_raw_frame);
+    RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_flushes_each_row);
 
     // Event bus publishing
     RUN_TEST(test_transitionTo_publishes_alp_state_changed_event);

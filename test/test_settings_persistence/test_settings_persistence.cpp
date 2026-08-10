@@ -270,6 +270,29 @@ void test_fresh_nvs_load_matches_authoritative_constructor_defaults() {
     assertSettingsEqual(expected, manager.get());
 }
 
+void test_configured_wifi_slot_missing_priority_uses_slot_index() {
+    Preferences active;
+    TEST_ASSERT_TRUE(active.begin(SETTINGS_NS_A, false));
+    TEST_ASSERT_TRUE(active.clear());
+    TEST_ASSERT_GREATER_THAN(0, active.putInt(kNvsValid, SETTINGS_VERSION));
+    TEST_ASSERT_GREATER_THAN(0, active.putInt(kNvsSettingsVer, SETTINGS_VERSION));
+    TEST_ASSERT_GREATER_THAN(0, active.putString(kNvsWifiStaSlotSsid[2], "PhoneHotspot"));
+    TEST_ASSERT_FALSE(active.isKey(kNvsWifiStaSlotPriority[2]));
+    active.end();
+
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+
+    SettingsManager manager;
+    manager.load();
+
+    TEST_ASSERT_EQUAL_STRING("PhoneHotspot", manager.get().wifiStaSlots[2].ssid.c_str());
+    TEST_ASSERT_EQUAL_UINT8(2, manager.get().wifiStaSlots[2].priority);
+    TEST_ASSERT_EQUAL_INT(2, manager.get().primaryWifiStaSlotIndex());
+}
+
 void test_absent_auto_push_key_uses_authoritative_default() {
     Preferences active;
     TEST_ASSERT_TRUE(active.begin(SETTINGS_NS_A, false));
@@ -1929,6 +1952,7 @@ void test_v19_backup_direct_colors_win_over_compatibility_shadow() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
+    RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);
     RUN_TEST(test_wifi_client_enabled_setter_updates_production_mode);
     RUN_TEST(test_password_obfuscation_round_trip_uses_production_encoding);

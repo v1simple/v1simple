@@ -910,7 +910,7 @@ void loop() {
     loopTelemetryModule.process(loopStartUs);
 
     const LoopFinalizePhaseValues loopFinalizeValues =
-        processLoopFinalizePhase(now, mainRuntimeState.bootSplashHoldActive,
+        processLoopFinalizePhase(mainRuntimeState.bootSplashHoldActive,
                                  loopRuntimeSnapshotValues.displayPreviewRunning || powerPresentationOwned,
                                  bleBackpressure, overloadLateThisLoop, mainRuntimeState.activeScanScreenDwellMs,
                                  CONNECTION_STATE_PROCESS_MAX_GAP_MS, loopStartUs);

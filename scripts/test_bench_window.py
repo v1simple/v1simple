@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -330,6 +331,32 @@ def test_bench_entrypoint_forwards_explicit_baseline_window() -> None:
     assert_true(
         'Use either --no-baseline or --compare-to, not both' in entrypoint,
         "bench entrypoint does not reject contradictory baseline policy",
+    )
+
+
+def test_baseline_promotion_is_future_core_display_only() -> None:
+    entrypoint = ROOT / "bench.sh"
+    text = entrypoint.read_text(encoding="utf-8")
+    assert_true(
+        "Does not compare the current run" in text,
+        "promotion help does not explain that scoring happens before promotion",
+    )
+    assert_true(
+        "Current manifests retain the baseline comparison available when they were scored." in text,
+        "promotion result does not preserve manifest provenance",
+    )
+
+    proc = subprocess.run(
+        [str(entrypoint), "--replay", "--promote-baseline"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert_true(proc.returncode == 3, f"replay-only promotion was not rejected: {proc}")
+    assert_true(
+        "replay baselines are not promoted" in proc.stderr,
+        f"replay-only promotion failure was unclear: {proc.stderr}",
     )
 
 
@@ -803,6 +830,7 @@ def main() -> int:
     test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
     test_bench_entrypoint_forwards_explicit_baseline_window()
+    test_baseline_promotion_is_future_core_display_only()
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()

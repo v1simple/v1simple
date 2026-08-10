@@ -59,7 +59,9 @@ Options:
   --compare-to PATH       Explicit baseline manifest for regression comparison.
                           Repeat for a multi-run baseline window.
   --no-baseline           Do not compare to a promoted baseline.
-  --promote-baseline      After a PASS, promote this run as the future baseline.
+  --promote-baseline      After a PASS, promote core/display as baselines for
+                          future matching runs. Does not compare the current run;
+                          replay baselines are not promoted.
   --port PATH             USB serial port. Defaults to auto-detect.
   --no-upload             Do not build/upload before live collection.
   --skip-web              Pass --skip-web when uploading.
@@ -168,6 +170,11 @@ if [[ "$USE_BASELINE" -eq 0 && "${#COMPARE_TO[@]}" -gt 0 ]]; then
   exit 3
 fi
 
+if [[ "$PROMOTE_BASELINE" -eq 1 && "$RUN_CORE" -ne 1 && "$RUN_DISPLAY" -ne 1 ]]; then
+  echo "--promote-baseline requires core and/or display; replay baselines are not promoted" >&2
+  exit 3
+fi
+
 if ! [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] || [[ "$DURATION_SECONDS" -lt 1 ]]; then
   echo "Invalid --duration-seconds value '$DURATION_SECONDS'" >&2
   exit 3
@@ -247,7 +254,8 @@ elif [[ "$USE_BASELINE" -eq 1 ]]; then
 else
   echo "  baseline:   disabled" | tee -a "$RUN_LOG"
 fi
-[[ "$PROMOTE_BASELINE" -eq 1 ]] && echo "  promote:    on PASS" | tee -a "$RUN_LOG"
+[[ "$PROMOTE_BASELINE" -eq 1 ]] \
+  && echo "  promote:    core/display on PASS for future matching runs" | tee -a "$RUN_LOG"
 echo "  obd/proxy:  not part of bench gate" | tee -a "$RUN_LOG"
 echo "  git clean:  $GIT_WORKTREE_CLEAN" | tee -a "$RUN_LOG"
 echo "  artifacts:  $RUN_DIR" | tee -a "$RUN_LOG"
@@ -403,7 +411,8 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
 }
 EOF
     done
-    echo "Promoted identity-keyed bench baselines under: $BASELINE_ROOT/$BOARD_ID" | tee -a "$RUN_LOG"
+    echo "Promoted future-run core/display baselines under: $BASELINE_ROOT/$BOARD_ID" | tee -a "$RUN_LOG"
+    echo "Current manifests retain the baseline comparison available when they were scored." | tee -a "$RUN_LOG"
   else
     echo "Baseline promotion skipped: bench result was not PASS (exit=$score_status)" | tee -a "$RUN_LOG"
   fi

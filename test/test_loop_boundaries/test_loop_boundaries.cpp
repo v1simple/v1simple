@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../include/main_loop_settings_prep.h"
 #include "../../src/modules/system/loop_ingest_module.cpp"
 #include "../../src/modules/system/loop_tail_module.cpp"
 
@@ -15,6 +16,18 @@ struct Probe {
     uint32_t bleProcessUs = 0;
     uint32_t bleDrainUs = 0;
     uint32_t loopJitterUs = 0;
+};
+
+struct SettingsPrepProbe {
+    int calls[2] = {};
+    size_t callCount = 0;
+    uint32_t tapNowMs = 0;
+    bool enableWifi = false;
+};
+
+enum SettingsPrepCall {
+    TAP_GESTURE = 1,
+    READ_SETTINGS = 2,
 };
 
 enum Call {
@@ -124,6 +137,49 @@ LoopTailModule::Providers validTailProviders(Probe& probe) {
 
 void setUp() {}
 void tearDown() {}
+
+void test_settings_prep_suppresses_gesture_but_reads_settings() {
+    SettingsPrepProbe probe;
+
+    const bool enableWifi = prepareLoopSettingsForIngest(
+        123, true,
+        [&](unsigned long nowMs) {
+            probe.calls[probe.callCount++] = TAP_GESTURE;
+            probe.tapNowMs = static_cast<uint32_t>(nowMs);
+        },
+        [&]() {
+            probe.calls[probe.callCount++] = READ_SETTINGS;
+            return probe.enableWifi;
+        });
+
+    const int expected[] = {READ_SETTINGS};
+    TEST_ASSERT_EQUAL_UINT32(1, probe.callCount);
+    TEST_ASSERT_EQUAL_INT_ARRAY(expected, probe.calls, sizeof(expected) / sizeof(expected[0]));
+    TEST_ASSERT_EQUAL_UINT32(0, probe.tapNowMs);
+    TEST_ASSERT_FALSE(enableWifi);
+}
+
+void test_settings_prep_runs_gesture_before_reading_settings() {
+    SettingsPrepProbe probe;
+    probe.enableWifi = true;
+
+    const bool enableWifi = prepareLoopSettingsForIngest(
+        456, false,
+        [&](unsigned long nowMs) {
+            probe.calls[probe.callCount++] = TAP_GESTURE;
+            probe.tapNowMs = static_cast<uint32_t>(nowMs);
+        },
+        [&]() {
+            probe.calls[probe.callCount++] = READ_SETTINGS;
+            return probe.enableWifi;
+        });
+
+    const int expected[] = {TAP_GESTURE, READ_SETTINGS};
+    TEST_ASSERT_EQUAL_UINT32(2, probe.callCount);
+    TEST_ASSERT_EQUAL_INT_ARRAY(expected, probe.calls, sizeof(expected) / sizeof(expected[0]));
+    TEST_ASSERT_EQUAL_UINT32(456, probe.tapNowMs);
+    TEST_ASSERT_TRUE(enableWifi);
+}
 
 void test_ingest_begin_rejects_missing_operational_providers() {
     Probe probe;
@@ -245,6 +301,8 @@ void test_tail_accepts_omitted_optional_metrics() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_settings_prep_suppresses_gesture_but_reads_settings);
+    RUN_TEST(test_settings_prep_runs_gesture_before_reading_settings);
     RUN_TEST(test_ingest_begin_rejects_missing_operational_providers);
     RUN_TEST(test_ingest_begin_rejects_metrics_without_a_clock);
     RUN_TEST(test_ingest_runs_process_before_drain_and_backpressure_merge);

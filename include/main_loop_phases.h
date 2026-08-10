@@ -64,9 +64,9 @@ LoopWifiPhaseValues processLoopWifiPhase(unsigned long nowMs, unsigned long v1Co
                                          bool bleBackpressure, bool overloadLateThisLoop, bool bleConnectBurstSettling,
                                          bool bootSplashHoldActive);
 
-LoopFinalizePhaseValues processLoopFinalizePhase(unsigned long nowMs, bool bootSplashHoldActive,
-                                                 bool displayPreviewRunning, bool bleBackpressure,
-                                                 bool overloadLateThisLoop, unsigned long scanScreenDwellMs,
+LoopFinalizePhaseValues processLoopFinalizePhase(bool bootSplashHoldActive, bool displayPreviewRunning,
+                                                 bool bleBackpressure, bool overloadLateThisLoop,
+                                                 unsigned long scanScreenDwellMs,
                                                  unsigned long connectionStateProcessMaxGapMs,
                                                  unsigned long loopStartUs);
 

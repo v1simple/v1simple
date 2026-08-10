@@ -221,7 +221,8 @@ void SettingsManager::load() {
         WifiStaSlot& slot = settings_.wifiStaSlots[i];
         slot.ssid = sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiStaSlotSsid[i], ""));
         slot.label = sanitizeWifiStaSlotLabelValue(preferences_.getString(kNvsWifiStaSlotLabel[i], ""));
-        slot.priority = preferences_.getUChar(kNvsWifiStaSlotPriority[i], slot.priority);
+        const uint8_t missingPriority = slot.isConfigured() ? static_cast<uint8_t>(i) : slot.priority;
+        slot.priority = preferences_.getUChar(kNvsWifiStaSlotPriority[i], missingPriority);
         slot.lastConnectedAtSec = preferences_.getUInt(kNvsWifiStaSlotLastConnected[i], 0);
     }
 

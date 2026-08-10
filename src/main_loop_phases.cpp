@@ -12,6 +12,7 @@
 #include "modules/wifi/wifi_runtime_module.h"
 #include "config.h"
 #include "main_globals.h"
+#include "main_loop_settings_prep.h"
 #include "settings.h"
 #include "wifi_manager.h"
 
@@ -45,10 +46,9 @@ LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(const unsigned lo
 LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bool currentBootReady,
                                              const unsigned long bootReadyDeadlineMs, const bool skipNonCoreThisLoop,
                                              const bool overloadThisLoop, const bool presentationSuppressed) {
-    if (!presentationSuppressed) {
-        tapGestureModule.process(nowMs);
-    }
-    const bool enableWifi = settingsManager.get().enableWifi;
+    const bool enableWifi = prepareLoopSettingsForIngest(
+        nowMs, presentationSuppressed, [](const unsigned long gestureNowMs) { tapGestureModule.process(gestureNowMs); },
+        []() { return settingsManager.get().enableWifi; });
 
     bool bootReady = currentBootReady;
     if (!bootReady && nowMs >= bootReadyDeadlineMs) {
@@ -125,9 +125,9 @@ LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const unsign
     return values;
 }
 
-LoopFinalizePhaseValues processLoopFinalizePhase(const unsigned long nowMs, const bool bootSplashHoldActive,
-                                                 const bool displayPreviewRunning, const bool bleBackpressure,
-                                                 const bool overloadLateThisLoop, const unsigned long scanScreenDwellMs,
+LoopFinalizePhaseValues processLoopFinalizePhase(const bool bootSplashHoldActive, const bool displayPreviewRunning,
+                                                 const bool bleBackpressure, const bool overloadLateThisLoop,
+                                                 const unsigned long scanScreenDwellMs,
                                                  const unsigned long connectionStateProcessMaxGapMs,
                                                  const unsigned long loopStartUs) {
     const uint32_t dispatchNowMs = millis();

@@ -46,6 +46,11 @@
 #include "display_frequency_raster_cache.h"
 #include "display_font_manager.h"
 
+static_assert(SIGNAL_BAR_COLOR_COUNT == DisplayLayout::MAIN_SIGNAL_BAR_COUNT,
+              "Main signal-bar colors must match the physical display segments");
+static_assert(SIGNAL_BAR_COLOR_COUNT == DisplayLayout::CARD_METER_BAR_COUNT,
+              "Card meter colors must match the physical display segments");
+
 enum class PerfDisplayScreen : uint8_t;
 class ObdRuntimeModule;
 class AlpRuntimeModule;

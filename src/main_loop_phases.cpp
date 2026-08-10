@@ -2,11 +2,18 @@
 
 #include "battery_manager.h"
 #include "ble_client.h"
+#include "modules/auto_push/auto_push_module.h"
+#include "modules/ble/connection_state_dispatch_module.h"
+#include "modules/perf/debug_macros.h"
 #include "modules/system/loop_tail_module.h"
 #include "modules/system/periodic_maintenance_module.h"
+#include "modules/touch/tap_gesture_module.h"
+#include "modules/wifi/wifi_priority_policy_module.h"
 #include "modules/wifi/wifi_runtime_module.h"
 #include "config.h"
 #include "main_globals.h"
+#include "settings.h"
+#include "wifi_manager.h"
 
 LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(const unsigned long nowMs, const unsigned long nowUs,
                                                                const unsigned long lastLoopUs,
@@ -38,28 +45,29 @@ LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(const unsigned lo
 LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bool currentBootReady,
                                              const unsigned long bootReadyDeadlineMs, const bool skipNonCoreThisLoop,
                                              const bool overloadThisLoop, const bool presentationSuppressed) {
-    LoopSettingsPrepContext loopSettingsPrepCtx;
-    loopSettingsPrepCtx.nowMs = nowMs;
-    loopSettingsPrepCtx.presentationSuppressed = presentationSuppressed;
-    const LoopSettingsPrepValues loopSettingsPrepValues = loopSettingsPrepModule.process(loopSettingsPrepCtx);
+    if (!presentationSuppressed) {
+        tapGestureModule.process(nowMs);
+    }
+    const bool enableWifi = settingsManager.get().enableWifi;
 
-    LoopPreIngestContext loopPreIngestCtx;
-    loopPreIngestCtx.nowMs = nowMs;
-    loopPreIngestCtx.bootReady = currentBootReady;
-    loopPreIngestCtx.bootReadyDeadlineMs = bootReadyDeadlineMs;
-    const LoopPreIngestResult loopPreIngestResult = loopPreIngestModule.process(loopPreIngestCtx);
-    const bool runBleProcessThisLoop = loopPreIngestResult.runBleProcessThisLoop;
+    bool bootReady = currentBootReady;
+    if (!bootReady && nowMs >= bootReadyDeadlineMs) {
+        bootReady = true;
+        bleClient.setBootReady(true);
+        SerialLog.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", nowMs);
+    }
+    wifiPriorityPolicyModule.apply(nowMs, bleClient, wifiManager);
 
     LoopIngestContext loopIngestCtx;
     loopIngestCtx.nowMs = nowMs;
-    loopIngestCtx.bleProcessEnabled = runBleProcessThisLoop;
+    loopIngestCtx.bleProcessEnabled = true;
     loopIngestCtx.skipNonCoreThisLoop = skipNonCoreThisLoop;
     loopIngestCtx.overloadThisLoop = overloadThisLoop;
     const LoopIngestResult loopIngestResult = loopIngestModule.process(loopIngestCtx);
 
     LoopIngestPhaseValues values;
-    values.loopSettingsPrepValues = loopSettingsPrepValues;
-    values.bootReady = loopPreIngestResult.bootReady;
+    values.enableWifi = enableWifi;
+    values.bootReady = bootReady;
     values.bleBackpressure = loopIngestResult.bleBackpressure;
     values.skipLateNonCoreThisLoop = loopIngestResult.skipLateNonCoreThisLoop;
     values.overloadLateThisLoop = loopIngestResult.overloadLateThisLoop;
@@ -76,11 +84,9 @@ void processLoopDisplayPreWifiPhase(const unsigned long nowMs, const bool bootSp
     loopDisplayCtx.presentationSuppressed = presentationSuppressed;
     loopDisplayModule.process(loopDisplayCtx);
 
-    LoopPostDisplayContext loopPostDisplayPreWifiCtx;
-    loopPostDisplayPreWifiCtx.enableAutoPush = !presentationSuppressed;
-    loopPostDisplayPreWifiCtx.runSpeedAndDispatch = false;
-    loopPostDisplayPreWifiCtx.nowMs = nowMs;
-    loopPostDisplayModule.process(loopPostDisplayPreWifiCtx);
+    if (!presentationSuppressed) {
+        autoPushModule.process();
+    }
 }
 
 LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const unsigned long v1ConnectedAtMs,
@@ -124,26 +130,27 @@ LoopFinalizePhaseValues processLoopFinalizePhase(const unsigned long nowMs, cons
                                                  const bool overloadLateThisLoop, const unsigned long scanScreenDwellMs,
                                                  const unsigned long connectionStateProcessMaxGapMs,
                                                  const unsigned long loopStartUs) {
-    LoopPostDisplayContext loopPostDisplayPostWifiCtx;
-    loopPostDisplayPostWifiCtx.enableAutoPush = false;
-    loopPostDisplayPostWifiCtx.runSpeedAndDispatch = true;
-    loopPostDisplayPostWifiCtx.nowMs = nowMs;
-    loopPostDisplayPostWifiCtx.displayUpdateIntervalMs = DISPLAY_UPDATE_MS;
-    loopPostDisplayPostWifiCtx.scanScreenDwellMs = scanScreenDwellMs;
-    loopPostDisplayPostWifiCtx.bootSplashHoldActive = bootSplashHoldActive;
-    loopPostDisplayPostWifiCtx.displayPreviewRunning = displayPreviewRunning;
-    loopPostDisplayPostWifiCtx.maxProcessGapMs = connectionStateProcessMaxGapMs;
-    const LoopPostDisplayResult loopPostDisplayResult = loopPostDisplayModule.process(loopPostDisplayPostWifiCtx);
+    const uint32_t dispatchNowMs = millis();
+    const bool bleConnectedNow = bleClient.isConnected();
+    ConnectionStateDispatchContext dispatchCtx;
+    dispatchCtx.nowMs = dispatchNowMs;
+    dispatchCtx.displayUpdateIntervalMs = DISPLAY_UPDATE_MS;
+    dispatchCtx.scanScreenDwellMs = scanScreenDwellMs;
+    dispatchCtx.bleConnectedNow = bleConnectedNow;
+    dispatchCtx.bootSplashHoldActive = bootSplashHoldActive;
+    dispatchCtx.displayPreviewRunning = displayPreviewRunning;
+    dispatchCtx.maxProcessGapMs = connectionStateProcessMaxGapMs;
+    connectionStateDispatchModule.process(dispatchCtx);
 
     PeriodicMaintenanceModule::Context maintenanceCtx;
-    maintenanceCtx.bleConnected = loopPostDisplayResult.bleConnectedNow;
+    maintenanceCtx.bleConnected = bleConnectedNow;
     maintenanceCtx.bleBackpressure = bleBackpressure;
     maintenanceCtx.loopOverloaded = overloadLateThisLoop;
-    periodicMaintenanceModule.process(loopPostDisplayResult.dispatchNowMs, maintenanceCtx);
+    periodicMaintenanceModule.process(dispatchNowMs, maintenanceCtx);
 
     LoopFinalizePhaseValues values;
-    values.dispatchNowMs = loopPostDisplayResult.dispatchNowMs;
-    values.bleConnectedNow = loopPostDisplayResult.bleConnectedNow;
+    values.dispatchNowMs = dispatchNowMs;
+    values.bleConnectedNow = bleConnectedNow;
     values.lastLoopUs = loopTailModule.process(bleBackpressure, loopStartUs);
     return values;
 }

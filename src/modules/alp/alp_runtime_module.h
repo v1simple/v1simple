@@ -150,14 +150,13 @@ struct AlpStatus {
 //            (ALP went silent) with a session still open.
 //
 // Warm-Up flag:
-//   Set when a session opens inside the 35s boot envelope AND an
-//   F0/A8 preamble was seen within the first 5s of module uptime.
-//   Cleared automatically if the session identifies a real gun —
-//   Warm-Up sequences never produce gun IDs, so any gun-identified
-//   session is real by definition. While the flag is set, the V1-shape
-//   accessors (hasLaserEvent, isLaserDetecting) return false so the
-//   display stays clean through the ALP Warm-Up window. Per manual:
-//   Warm-Up runs ~60s at boot and after a LID Time timeout.
+//   Set when a session opens inside the 35s preamble envelope, before the
+//   first heartbeat, or while the heartbeat remains in an unconfirmed
+//   detect mode. Cleared by the operational-confirmation paths in the frame
+//   handlers below. While the flag is set, the V1-shape accessors
+//   (hasLaserEvent, isLaserDetecting) return false so the display stays clean
+//   through the ALP Warm-Up window. Per manual: Warm-Up runs ~60s at boot and
+//   after a LID Time timeout.
 
 struct AlertSession {
     bool active = false;   // session open?
@@ -232,13 +231,6 @@ class AlpRuntimeModule {
     // clears the flag because Warm-Up bursts do not identify a gun.
     static constexpr uint32_t WARM_UP_PREAMBLE_WINDOW_MS = 5000;
     static constexpr uint32_t WARM_UP_ENVELOPE_MS = 35000;
-
-    // Time-based Warm-Up fallback — if a session has been ALERT_ACTIVE
-    // for longer than this with isWarmUp still true, release it
-    // unconditionally. Real Warm-Up bursts are short (~1-2s), so a sustained
-    // multi-second engagement is operational. This also handles unknown byte1
-    // patterns conservatively.
-    static constexpr uint32_t WARM_UP_FALLBACK_RELEASE_MS = 2500;
 
     /**
      * Initialize the module.

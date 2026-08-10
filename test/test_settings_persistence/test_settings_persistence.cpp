@@ -92,6 +92,162 @@ std::string readFileToString(fs::FS& fs, const char* path) {
     return output;
 }
 
+void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
+#define ASSERT_BOOL_FIELD(field) TEST_ASSERT_EQUAL_MESSAGE(expected.field, actual.field, #field)
+#define ASSERT_INT_FIELD(field)                                                                                        \
+    TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(expected.field), static_cast<int>(actual.field), #field)
+#define ASSERT_UINT8_FIELD(field) TEST_ASSERT_EQUAL_UINT8_MESSAGE(expected.field, actual.field, #field)
+#define ASSERT_INT8_FIELD(field) TEST_ASSERT_EQUAL_INT8_MESSAGE(expected.field, actual.field, #field)
+#define ASSERT_UINT16_FIELD(field) TEST_ASSERT_EQUAL_UINT16_MESSAGE(expected.field, actual.field, #field)
+#define ASSERT_UINT32_FIELD(field) TEST_ASSERT_EQUAL_UINT32_MESSAGE(expected.field, actual.field, #field)
+#define ASSERT_STRING_FIELD(field)                                                                                     \
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.field.c_str(), actual.field.c_str(), #field)
+
+    ASSERT_BOOL_FIELD(enableWifi);
+    ASSERT_INT_FIELD(wifiMode);
+    ASSERT_STRING_FIELD(apSSID);
+    ASSERT_STRING_FIELD(apPassword);
+    ASSERT_BOOL_FIELD(wifiClientEnabled);
+    for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.wifiStaSlots[i].ssid.c_str(), actual.wifiStaSlots[i].ssid.c_str(),
+                                         "wifiStaSlots.ssid");
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.wifiStaSlots[i].label.c_str(), actual.wifiStaSlots[i].label.c_str(),
+                                         "wifiStaSlots.label");
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(expected.wifiStaSlots[i].priority, actual.wifiStaSlots[i].priority,
+                                        "wifiStaSlots.priority");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(expected.wifiStaSlots[i].lastConnectedAtSec,
+                                         actual.wifiStaSlots[i].lastConnectedAtSec, "wifiStaSlots.lastConnectedAtSec");
+    }
+    ASSERT_STRING_FIELD(wifiClientSSID);
+    ASSERT_BOOL_FIELD(proxyBLE);
+    ASSERT_STRING_FIELD(proxyName);
+    ASSERT_BOOL_FIELD(turnOffDisplay);
+    ASSERT_UINT8_FIELD(brightness);
+    ASSERT_UINT16_FIELD(colorBogey);
+    ASSERT_UINT16_FIELD(colorFrequency);
+    ASSERT_UINT16_FIELD(colorArrowFront);
+    ASSERT_UINT16_FIELD(colorArrowSide);
+    ASSERT_UINT16_FIELD(colorArrowRear);
+    ASSERT_UINT16_FIELD(colorBandL);
+    ASSERT_UINT16_FIELD(colorBandKa);
+    ASSERT_UINT16_FIELD(colorBandK);
+    ASSERT_UINT16_FIELD(colorBandX);
+    ASSERT_UINT16_FIELD(colorBandPhoto);
+    ASSERT_UINT16_FIELD(colorWiFiIcon);
+    ASSERT_UINT16_FIELD(colorWiFiConnected);
+    ASSERT_UINT16_FIELD(colorBleConnected);
+    ASSERT_UINT16_FIELD(colorBleDisconnected);
+    for (int i = 0; i < SIGNAL_BAR_COLOR_COUNT; ++i) {
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(expected.colorBars[i], actual.colorBars[i], "colorBars");
+    }
+    ASSERT_UINT16_FIELD(colorMuted);
+    ASSERT_UINT16_FIELD(colorPersisted);
+    ASSERT_UINT16_FIELD(colorVolumeMain);
+    ASSERT_UINT16_FIELD(colorVolumeMute);
+    ASSERT_UINT16_FIELD(colorRssiV1);
+    ASSERT_UINT16_FIELD(colorRssiProxy);
+    ASSERT_UINT16_FIELD(colorObd);
+    ASSERT_UINT16_FIELD(colorAlpConnected);
+    ASSERT_UINT16_FIELD(colorAlpDli);
+    ASSERT_UINT16_FIELD(colorAlpLidActive);
+    ASSERT_UINT16_FIELD(colorAlpAlert);
+    ASSERT_BOOL_FIELD(freqUseBandColor);
+    ASSERT_BOOL_FIELD(hideWifiIcon);
+    ASSERT_BOOL_FIELD(hideProfileIndicator);
+    ASSERT_BOOL_FIELD(hideBatteryIcon);
+    ASSERT_BOOL_FIELD(showBatteryPercent);
+    ASSERT_BOOL_FIELD(hideBleIcon);
+    ASSERT_BOOL_FIELD(hideVolumeIndicator);
+    ASSERT_BOOL_FIELD(hideRssiIndicator);
+    ASSERT_INT_FIELD(voiceAlertMode);
+    ASSERT_BOOL_FIELD(voiceDirectionEnabled);
+    ASSERT_BOOL_FIELD(announceBogeyCount);
+    ASSERT_BOOL_FIELD(muteVoiceIfVolZero);
+    ASSERT_UINT8_FIELD(voiceVolume);
+    ASSERT_BOOL_FIELD(announceSecondaryAlerts);
+    ASSERT_BOOL_FIELD(secondaryLaser);
+    ASSERT_BOOL_FIELD(secondaryKa);
+    ASSERT_BOOL_FIELD(secondaryK);
+    ASSERT_BOOL_FIELD(secondaryX);
+    ASSERT_BOOL_FIELD(alertVolumeFadeEnabled);
+    ASSERT_UINT8_FIELD(alertVolumeFadeDelaySec);
+    ASSERT_UINT8_FIELD(alertVolumeFadeVolume);
+    ASSERT_BOOL_FIELD(speedMuteEnabled);
+    ASSERT_UINT8_FIELD(speedMuteThresholdMph);
+    ASSERT_UINT8_FIELD(speedMuteHysteresisMph);
+    ASSERT_UINT8_FIELD(speedMuteVolume);
+    ASSERT_BOOL_FIELD(speedMuteVoice);
+    ASSERT_BOOL_FIELD(stealthEnabled);
+    ASSERT_BOOL_FIELD(autoPushEnabled);
+    ASSERT_INT_FIELD(activeSlot);
+    ASSERT_STRING_FIELD(slot0Name);
+    ASSERT_STRING_FIELD(slot1Name);
+    ASSERT_STRING_FIELD(slot2Name);
+    ASSERT_UINT16_FIELD(slot0Color);
+    ASSERT_UINT16_FIELD(slot1Color);
+    ASSERT_UINT16_FIELD(slot2Color);
+    ASSERT_UINT8_FIELD(slot0Volume);
+    ASSERT_UINT8_FIELD(slot1Volume);
+    ASSERT_UINT8_FIELD(slot2Volume);
+    ASSERT_UINT8_FIELD(slot0MuteVolume);
+    ASSERT_UINT8_FIELD(slot1MuteVolume);
+    ASSERT_UINT8_FIELD(slot2MuteVolume);
+    ASSERT_BOOL_FIELD(slot0DarkMode);
+    ASSERT_BOOL_FIELD(slot1DarkMode);
+    ASSERT_BOOL_FIELD(slot2DarkMode);
+    ASSERT_BOOL_FIELD(slot0MuteToZero);
+    ASSERT_BOOL_FIELD(slot1MuteToZero);
+    ASSERT_BOOL_FIELD(slot2MuteToZero);
+    ASSERT_UINT8_FIELD(slot0AlertPersist);
+    ASSERT_UINT8_FIELD(slot1AlertPersist);
+    ASSERT_UINT8_FIELD(slot2AlertPersist);
+    ASSERT_BOOL_FIELD(slot0PriorityArrow);
+    ASSERT_BOOL_FIELD(slot1PriorityArrow);
+    ASSERT_BOOL_FIELD(slot2PriorityArrow);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.slot0_default.profileName.c_str(),
+                                     actual.slot0_default.profileName.c_str(), "slot0_default.profileName");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(expected.slot0_default.mode, actual.slot0_default.mode, "slot0_default.mode");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.slot1_highway.profileName.c_str(),
+                                     actual.slot1_highway.profileName.c_str(), "slot1_highway.profileName");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(expected.slot1_highway.mode, actual.slot1_highway.mode, "slot1_highway.mode");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.slot2_comfort.profileName.c_str(),
+                                     actual.slot2_comfort.profileName.c_str(), "slot2_comfort.profileName");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(expected.slot2_comfort.mode, actual.slot2_comfort.mode, "slot2_comfort.mode");
+    ASSERT_STRING_FIELD(lastV1Address);
+    ASSERT_UINT8_FIELD(autoPowerOffMinutes);
+    ASSERT_UINT8_FIELD(apTimeoutMinutes);
+    ASSERT_BOOL_FIELD(obdEnabled);
+    ASSERT_STRING_FIELD(obdSavedAddress);
+    ASSERT_STRING_FIELD(obdSavedName);
+    ASSERT_UINT8_FIELD(obdSavedAddrType);
+    ASSERT_INT8_FIELD(obdMinRssi);
+    ASSERT_UINT32_FIELD(obdScanWindowMs);
+    ASSERT_UINT32_FIELD(obdRetryIntervalMs);
+    ASSERT_UINT32_FIELD(proxyOpenWindowMs);
+    ASSERT_UINT32_FIELD(wifiOpenTimeoutMs);
+    ASSERT_UINT32_FIELD(v1SettleQuietMs);
+    ASSERT_UINT32_FIELD(v1SettleFallbackMs);
+    ASSERT_UINT32_FIELD(cycleTeardownAckTimeoutMs);
+    ASSERT_BOOL_FIELD(alpEnabled);
+    ASSERT_BOOL_FIELD(alpSdLogEnabled);
+    ASSERT_UINT8_FIELD(alpAlertPersistSec);
+    ASSERT_BOOL_FIELD(alpDisableV1LaserOnPush);
+    ASSERT_BOOL_FIELD(gpsEnabled);
+    ASSERT_UINT32_FIELD(gpsBaud);
+    ASSERT_BOOL_FIELD(gpsEnablePinActiveHigh);
+    ASSERT_BOOL_FIELD(gpsLogUtcToPerf);
+    ASSERT_BOOL_FIELD(gpsLogUtcToAlp);
+    ASSERT_BOOL_FIELD(powerOffSdLog);
+
+#undef ASSERT_BOOL_FIELD
+#undef ASSERT_INT_FIELD
+#undef ASSERT_UINT8_FIELD
+#undef ASSERT_INT8_FIELD
+#undef ASSERT_UINT16_FIELD
+#undef ASSERT_UINT32_FIELD
+#undef ASSERT_STRING_FIELD
+}
+
 }  // namespace
 
 void setUp() {
@@ -103,6 +259,15 @@ void setUp() {
 
 void tearDown() {
     std::filesystem::remove_all(g_tempRoot);
+}
+
+void test_fresh_nvs_load_matches_authoritative_constructor_defaults() {
+    const V1Settings expected;
+    SettingsManager manager;
+
+    manager.load();
+
+    assertSettingsEqual(expected, manager.get());
 }
 
 void test_absent_auto_push_key_uses_authoritative_default() {
@@ -1763,6 +1928,7 @@ void test_v19_backup_direct_colors_win_over_compatibility_shadow() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);
     RUN_TEST(test_wifi_client_enabled_setter_updates_production_mode);
     RUN_TEST(test_password_obfuscation_round_trip_uses_production_encoding);

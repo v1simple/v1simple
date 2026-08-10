@@ -73,37 +73,6 @@ inline uint8_t clampApTimeoutValue(int value) {
     return clampU8(value, 5, 60);
 }
 
-#ifndef CONNECTION_CYCLE_SETTINGS_CONSTANTS_DEFINED
-#define CONNECTION_CYCLE_SETTINGS_CONSTANTS_DEFINED
-inline constexpr uint32_t kConnectionCycleObdScanWindowMsDefault = 15000;
-inline constexpr uint32_t kConnectionCycleObdScanWindowMsMin = 1000;
-inline constexpr uint32_t kConnectionCycleObdScanWindowMsMax = 60000;
-
-inline constexpr uint32_t kConnectionCycleObdRetryIntervalMsDefault = 120000;
-inline constexpr uint32_t kConnectionCycleObdRetryIntervalMsMin = 30000;
-inline constexpr uint32_t kConnectionCycleObdRetryIntervalMsMax = 600000;
-
-inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsDefault = 60000;
-inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsMin = 1000;
-inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsMax = 300000;
-
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsDefault = 30000;
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsMin = 1000;
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsMax = 120000;
-
-inline constexpr uint32_t kConnectionCycleV1SettleQuietMsDefault = 500;
-inline constexpr uint32_t kConnectionCycleV1SettleQuietMsMin = 100;
-inline constexpr uint32_t kConnectionCycleV1SettleQuietMsMax = 5000;
-
-inline constexpr uint32_t kConnectionCycleV1SettleFallbackMsDefault = 1500;
-inline constexpr uint32_t kConnectionCycleV1SettleFallbackMsMin = 500;
-inline constexpr uint32_t kConnectionCycleV1SettleFallbackMsMax = 10000;
-
-inline constexpr uint32_t kConnectionCycleTeardownAckTimeoutMsDefault = 100;
-inline constexpr uint32_t kConnectionCycleTeardownAckTimeoutMsMin = 25;
-inline constexpr uint32_t kConnectionCycleTeardownAckTimeoutMsMax = 1000;
-#endif
-
 inline uint32_t clampConnectionCycleObdScanWindowMsValue(int64_t value) {
     return clampU32(value, kConnectionCycleObdScanWindowMsMin, kConnectionCycleObdScanWindowMsMax);
 }

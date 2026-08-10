@@ -244,38 +244,6 @@ bool ObdRuntimeModule::sendNextPollingCommand(uint32_t nowMs) {
 
 namespace {
 
-#ifndef OBD_STATENAME_DEFINED
-#define OBD_STATENAME_DEFINED
-const char* obdStateName(ObdConnectionState s) {
-    switch (s) {
-    case ObdConnectionState::IDLE:
-        return "IDLE";
-    case ObdConnectionState::WAIT_BOOT:
-        return "WAIT_BOOT";
-    case ObdConnectionState::SCANNING:
-        return "SCANNING";
-    case ObdConnectionState::CONNECTING:
-        return "CONNECTING";
-    case ObdConnectionState::SECURING:
-        return "SECURING";
-    case ObdConnectionState::DISCOVERING:
-        return "DISCOVERING";
-    case ObdConnectionState::AT_INIT:
-        return "AT_INIT";
-    case ObdConnectionState::POLLING:
-        return "POLLING";
-    case ObdConnectionState::ERROR_BACKOFF:
-        return "ERROR_BACKOFF";
-    case ObdConnectionState::DISCONNECTED:
-        return "DISCONNECTED";
-    case ObdConnectionState::ECU_IDLE:
-        return "ECU_IDLE";
-    default:
-        return "?";
-    }
-}
-#endif // OBD_STATENAME_DEFINED
-
 #ifndef OBD_FAILURE_REASON_NAME_DEFINED
 #define OBD_FAILURE_REASON_NAME_DEFINED
 const char* obdFailureReasonName(ObdFailureReason reason) {

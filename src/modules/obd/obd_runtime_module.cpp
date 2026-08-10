@@ -30,20 +30,12 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
 #endif
 
 // ======================================================================
-// FILE-SCOPE HELPERS — string utilities and enum naming
+// FILE-SCOPE HELPERS — string utilities
 // ======================================================================
 
 using ObdStringUtils::commandDisplayLen;
 using ObdStringUtils::copyString;
 using ObdStringUtils::stringContainsCI;
-
-namespace {
-#ifndef OBD_RSSI_REFRESH_MS_DEFINED
-#define OBD_RSSI_REFRESH_MS_DEFINED
-constexpr uint32_t OBD_RSSI_REFRESH_MS = 2000;
-#endif
-
-} // namespace
 
 // ======================================================================
 // SINGLETON — file-scope module instance

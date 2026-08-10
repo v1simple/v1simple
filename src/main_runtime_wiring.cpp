@@ -337,10 +337,7 @@ static void configureSystemLoopPhaseModules() {
     configureLoopDisplayModule();
     configureLoopConnectionEarlyModule();
     configureLoopPowerTouchModule();
-    configureLoopPreIngestModule();
-    configureLoopSettingsPrepModule();
     configureLoopRuntimeSnapshotModule();
-    configureLoopPostDisplayModule();
 }
 
 void configureSystemLoopModules() {

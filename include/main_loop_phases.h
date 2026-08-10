@@ -10,11 +10,8 @@
 #include "modules/system/loop_connection_early_module.h"
 #include "modules/system/loop_display_module.h"
 #include "modules/system/loop_ingest_module.h"
-#include "modules/system/loop_post_display_module.h"
 #include "modules/system/loop_power_touch_module.h"
-#include "modules/system/loop_pre_ingest_module.h"
 #include "modules/system/loop_runtime_snapshot_module.h"
-#include "modules/system/loop_settings_prep_module.h"
 
 struct LoopConnectionEarlyPhaseValues {
     bool bootSplashHoldActive = false;
@@ -26,7 +23,7 @@ struct LoopConnectionEarlyPhaseValues {
 };
 
 struct LoopIngestPhaseValues {
-    LoopSettingsPrepValues loopSettingsPrepValues;
+    bool enableWifi = true;
     bool bootReady = false;
     bool bleBackpressure = false;
     bool skipLateNonCoreThisLoop = false;

@@ -24,7 +24,7 @@ class LoopTailModule {
         void* yieldContext = nullptr;
     };
 
-    void begin(const Providers& hooks);
+    bool begin(const Providers& hooks);
     uint32_t process(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain = false);
 
   private:

@@ -35,7 +35,7 @@ class LoopIngestModule {
         void* bleBackpressureContext = nullptr;
     };
 
-    void begin(const Providers& hooks);
+    bool begin(const Providers& hooks);
     LoopIngestResult process(const LoopIngestContext& ctx);
 
   private:

@@ -16,7 +16,6 @@ unsigned long mockMicros = 0;
 #include "../../src/modules/system/loop_connection_early_module.cpp"
 #include "../../src/modules/system/loop_display_module.cpp"
 #include "../../src/modules/system/loop_power_touch_module.cpp"
-#include "../../src/modules/system/loop_settings_prep_module.cpp"
 
 namespace {
 
@@ -112,23 +111,6 @@ DisplayOrchestrationRefreshResult runRefresh(void* ctx, const DisplayOrchestrati
 
 void runBlink(void* ctx, uint32_t) {
     ++static_cast<DisplayProbe*>(ctx)->blinkCalls;
-}
-
-struct SettingsPrepProbe {
-    int tapCalls = 0;
-    int settingsReads = 0;
-};
-
-void runTap(void* ctx, uint32_t) {
-    ++static_cast<SettingsPrepProbe*>(ctx)->tapCalls;
-}
-
-LoopSettingsPrepValues readSettings(void* ctx) {
-    auto* probe = static_cast<SettingsPrepProbe*>(ctx);
-    ++probe->settingsReads;
-    LoopSettingsPrepValues values;
-    values.enableWifi = false;
-    return values;
 }
 
 } // namespace
@@ -352,25 +334,6 @@ void test_display_phase_consumes_event_but_suppresses_pipeline_and_blink() {
     TEST_ASSERT_EQUAL(0, probe.blinkCalls);
 }
 
-void test_settings_prep_suppresses_gesture_but_keeps_settings_snapshot() {
-    SettingsPrepProbe probe;
-    LoopSettingsPrepModule module;
-    LoopSettingsPrepModule::Providers providers;
-    providers.runTapGesture = runTap;
-    providers.tapGestureContext = &probe;
-    providers.readSettingsValues = readSettings;
-    providers.settingsContext = &probe;
-    module.begin(providers);
-
-    LoopSettingsPrepContext ctx;
-    ctx.presentationSuppressed = true;
-    const LoopSettingsPrepValues values = module.process(ctx);
-
-    TEST_ASSERT_EQUAL(0, probe.tapCalls);
-    TEST_ASSERT_EQUAL(1, probe.settingsReads);
-    TEST_ASSERT_FALSE(values.enableWifi);
-}
-
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_critical_protection_keeps_zero_invalid_but_accepts_deep_discharge);
@@ -386,6 +349,5 @@ int main() {
     RUN_TEST(test_power_touch_phase_suppresses_touch_after_warning_acquires_owner);
     RUN_TEST(test_connection_early_keeps_runtime_live_but_suppresses_presentations);
     RUN_TEST(test_display_phase_consumes_event_but_suppresses_pipeline_and_blink);
-    RUN_TEST(test_settings_prep_suppresses_gesture_but_keeps_settings_snapshot);
     return UNITY_END();
 }

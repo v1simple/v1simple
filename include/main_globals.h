@@ -15,11 +15,8 @@
 
 // Loop phase modules (src/modules/system/)
 class LoopConnectionEarlyModule;
-class LoopSettingsPrepModule;
-class LoopPreIngestModule;
 class LoopIngestModule;
 class LoopDisplayModule;
-class LoopPostDisplayModule;
 class LoopRuntimeSnapshotModule;
 class LoopPowerTouchModule;
 class LoopTailModule;
@@ -89,11 +86,8 @@ struct PerfLatency;
 // ============================================================================
 
 extern LoopConnectionEarlyModule loopConnectionEarlyModule;
-extern LoopSettingsPrepModule loopSettingsPrepModule;
-extern LoopPreIngestModule loopPreIngestModule;
 extern LoopIngestModule loopIngestModule;
 extern LoopDisplayModule loopDisplayModule;
-extern LoopPostDisplayModule loopPostDisplayModule;
 extern LoopRuntimeSnapshotModule loopRuntimeSnapshotModule;
 extern WifiRuntimeModule wifiRuntimeModule;
 extern WifiAutoStartModule wifiAutoStartModule;

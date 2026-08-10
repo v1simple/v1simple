@@ -70,11 +70,8 @@
 #include "modules/system/loop_ingest_module.h"
 #include "modules/system/loop_display_module.h"
 #include "modules/system/loop_power_touch_module.h"
-#include "modules/system/loop_pre_ingest_module.h"
 #include "modules/system/loop_runtime_snapshot_module.h"
-#include "modules/system/loop_settings_prep_module.h"
 #include "modules/system/loop_connection_early_module.h"
-#include "modules/system/loop_post_display_module.h"
 #include "modules/system/connection_cycle_coordinator_module.h"
 #include "esp_heap_caps.h"
 #include "modules/voice/voice_module.h"
@@ -197,11 +194,8 @@ LoopTelemetryModule loopTelemetryModule;
 LoopIngestModule loopIngestModule;
 LoopDisplayModule loopDisplayModule;
 LoopPowerTouchModule loopPowerTouchModule;
-LoopPreIngestModule loopPreIngestModule;
 LoopRuntimeSnapshotModule loopRuntimeSnapshotModule;
-LoopSettingsPrepModule loopSettingsPrepModule;
 LoopConnectionEarlyModule loopConnectionEarlyModule;
-LoopPostDisplayModule loopPostDisplayModule;
 ConnectionCycleCoordinatorModule connectionCycleCoordinatorModule;
 WifiAutoStartModule wifiAutoStartModule;
 WifiPriorityPolicyModule wifiPriorityPolicyModule;
@@ -779,7 +773,7 @@ void loop() {
     const LoopIngestPhaseValues loopIngestValues =
         processLoopIngestPhase(now, mainRuntimeState.bootReady, mainRuntimeState.bootReadyDeadlineMs,
                                skipNonCoreThisLoop, overloadThisLoop, powerPresentationOwned);
-    const LoopSettingsPrepValues& loopSettingsPrepValues = loopIngestValues.loopSettingsPrepValues;
+    const bool enableWifi = loopIngestValues.enableWifi;
     mainRuntimeState.bootReady = loopIngestValues.bootReady;
     bleBackpressure = loopIngestValues.bleBackpressure;
     const bool skipLateNonCoreThisLoop = loopIngestValues.skipLateNonCoreThisLoop;
@@ -808,7 +802,7 @@ void loop() {
             bleClient.isProxyAdvertising(),
             bleClient.isProxyClientConnected(),
             bleClient.hasProxyClientConnectedThisBoot(),
-            loopSettingsPrepValues.enableWifi,
+            enableWifi,
             wifiManager.isWifiServiceActive() || wifiManager.isConnected(),
             wifiManualStartIntentLatched,
             currentSettings.obdScanWindowMs,
@@ -905,10 +899,10 @@ void loop() {
                                    powerPresentationOwned);
 
     const LoopWifiPhaseValues loopWifiValues = processLoopWifiPhase(
-        now, mainRuntimeState.v1ConnectedAtMs, loopSettingsPrepValues.enableWifi,
-        connectionCycleCoordinatorModule.wifiAutoStartAllowed(), mainRuntimeState.wifiAutoStartDone,
-        mainRuntimeState.wifiManualStartIntentLatched, skipLateNonCoreThisLoop, bleBackpressure, overloadLateThisLoop,
-        bleClient.isConnectBurstSettling(), mainRuntimeState.bootSplashHoldActive || powerPresentationOwned);
+        now, mainRuntimeState.v1ConnectedAtMs, enableWifi, connectionCycleCoordinatorModule.wifiAutoStartAllowed(),
+        mainRuntimeState.wifiAutoStartDone, mainRuntimeState.wifiManualStartIntentLatched, skipLateNonCoreThisLoop,
+        bleBackpressure, overloadLateThisLoop, bleClient.isConnectBurstSettling(),
+        mainRuntimeState.bootSplashHoldActive || powerPresentationOwned);
     const LoopRuntimeSnapshotValues& loopRuntimeSnapshotValues = loopWifiValues.loopRuntimeSnapshotValues;
     mainRuntimeState.wifiAutoStartDone = loopWifiValues.wifiAutoStartDone;
     mainRuntimeState.wifiManualStartIntentLatched = loopWifiValues.wifiManualStartIntentLatched;

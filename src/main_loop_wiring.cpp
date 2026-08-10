@@ -12,7 +12,6 @@
 #include "modules/perf/debug_macros.h"
 #include "provider_callback_bindings.h"
 
-#include "modules/auto_push/auto_push_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_runtime_module.h"
 #include "modules/ble/connection_state_cadence_module.h"
@@ -25,34 +24,14 @@
 #include "modules/power/power_module.h"
 #include "modules/system/loop_display_module.h"
 #include "modules/system/loop_ingest_module.h"
-#include "modules/system/loop_post_display_module.h"
 #include "modules/system/loop_power_touch_module.h"
-#include "modules/system/loop_pre_ingest_module.h"
 #include "modules/system/loop_runtime_snapshot_module.h"
-#include "modules/system/loop_settings_prep_module.h"
 #include "modules/system/loop_tail_module.h"
 #include "modules/system/loop_telemetry_module.h"
 #include "modules/system/periodic_maintenance_module.h"
 #include "modules/system/parsed_frame_event_module.h"
 #include "modules/system/system_event_bus.h"
-#include "modules/touch/tap_gesture_module.h"
 #include "modules/touch/touch_ui_module.h"
-#include "modules/wifi/wifi_priority_policy_module.h"
-
-void configureLoopSettingsPrepModule() {
-    LoopSettingsPrepModule::Providers loopSettingsPrepProviders;
-    loopSettingsPrepProviders.runTapGesture =
-        ProviderCallbackBindings::member<TapGestureModule, &TapGestureModule::process>;
-    loopSettingsPrepProviders.tapGestureContext = &tapGestureModule;
-    loopSettingsPrepProviders.readSettingsValues = [](void* ctx) -> LoopSettingsPrepValues {
-        const V1Settings& settings = static_cast<SettingsManager*>(ctx)->get();
-        LoopSettingsPrepValues values;
-        values.enableWifi = settings.enableWifi;
-        return values;
-    };
-    loopSettingsPrepProviders.settingsContext = &settingsManager;
-    loopSettingsPrepModule.begin(loopSettingsPrepProviders);
-}
 
 void configureLoopRuntimeSnapshotModule() {
     LoopRuntimeSnapshotModule::Providers loopRuntimeSnapshotProviders;
@@ -69,21 +48,6 @@ void configureLoopRuntimeSnapshotModule() {
         ProviderCallbackBindings::member<DisplayPreviewModule, &DisplayPreviewModule::ownsPresentation>;
     loopRuntimeSnapshotProviders.displayPreviewContext = &displayPreviewModule;
     loopRuntimeSnapshotModule.begin(loopRuntimeSnapshotProviders);
-}
-
-void configureLoopPostDisplayModule() {
-    LoopPostDisplayModule::Providers loopPostDisplayProviders;
-    loopPostDisplayProviders.runAutoPush = ProviderCallbackBindings::member<AutoPushModule, &AutoPushModule::process>;
-    loopPostDisplayProviders.autoPushContext = &autoPushModule;
-    loopPostDisplayProviders.readDispatchNowMs = [](void*) -> uint32_t { return millis(); };
-    loopPostDisplayProviders.readBleConnectedNow =
-        ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::isConnected>;
-    loopPostDisplayProviders.bleConnectedContext = &bleClient;
-    loopPostDisplayProviders.runConnectionStateDispatch =
-        ProviderCallbackBindings::memberDiscardReturn<ConnectionStateDispatchModule,
-                                                      &ConnectionStateDispatchModule::process>;
-    loopPostDisplayProviders.connectionDispatchContext = &connectionStateDispatchModule;
-    loopPostDisplayModule.begin(loopPostDisplayProviders);
 }
 
 static void refreshStorageDmaHeapCache(void*) {
@@ -132,19 +96,6 @@ void configureLoopPowerTouchModule() {
     loopPowerTouchProviders.readCachedLargestDma = readCachedLargestDmaHeap;
     loopPowerTouchProviders.recordHeapStats = recordHeapStatsSample;
     loopPowerTouchModule.begin(loopPowerTouchProviders);
-}
-
-void configureLoopPreIngestModule() {
-    LoopPreIngestModule::Providers loopPreIngestProviders;
-    loopPreIngestProviders.openBootReadyGate = [](void*, uint32_t nowMs) {
-        bleClient.setBootReady(true);
-        SerialLog.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", static_cast<unsigned long>(nowMs));
-    };
-    loopPreIngestProviders.runWifiPriorityApply = [](void* ctx, uint32_t nowMs) {
-        static_cast<WifiPriorityPolicyModule*>(ctx)->apply(nowMs, bleClient, wifiManager);
-    };
-    loopPreIngestProviders.wifiPriorityContext = &wifiPriorityPolicyModule;
-    loopPreIngestModule.begin(loopPreIngestProviders);
 }
 
 void configureConnectionRuntimeModule() {
@@ -223,7 +174,8 @@ void configureLoopTailModule() {
     loopTailProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) { perfRecordBleDrainUs(elapsedUs); };
     loopTailProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) { perfRecordLoopJitterUs(jitterUs); };
     loopTailProviders.yieldOneTick = [](void*) { vTaskDelay(pdMS_TO_TICKS(1)); };
-    loopTailModule.begin(loopTailProviders);
+    const bool loopTailConfigured = loopTailModule.begin(loopTailProviders);
+    configASSERT(loopTailConfigured);
 }
 
 void configureLoopTelemetryModule() {
@@ -254,7 +206,8 @@ void configureLoopIngestModule() {
     loopIngestProviders.readBleBackpressure =
         ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::isBackpressured>;
     loopIngestProviders.bleBackpressureContext = &bleQueueModule;
-    loopIngestModule.begin(loopIngestProviders);
+    const bool loopIngestConfigured = loopIngestModule.begin(loopIngestProviders);
+    configASSERT(loopIngestConfigured);
 }
 
 void configureLoopDisplayModule() {

@@ -296,9 +296,8 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
 
     // CRC32 integrity check (only for backups that carry the field).
     // Older backups written before this feature was added will not have _crc32
-    // and are accepted as-is.  A mismatch means media-level corruption; log
-    // a warning but does not hard-reject; continue to the partial-recovery
-    // path rather than leaving the device with factory defaults.
+    // and are accepted as-is. A mismatch rejects this candidate so the caller
+    // can try the previous backup, then use partial recovery if none is valid.
     if (doc["_crc32"].is<uint32_t>()) {
         const uint32_t stored = doc["_crc32"].as<uint32_t>();
         const uint32_t computed = BackupPayloadBuilder::computeBackupCrc32(doc);

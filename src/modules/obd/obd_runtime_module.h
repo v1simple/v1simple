@@ -22,6 +22,35 @@ enum class ObdConnectionState : uint8_t {
     ECU_IDLE = 11,
 };
 
+inline constexpr const char* obdStateName(ObdConnectionState state) {
+    switch (state) {
+    case ObdConnectionState::IDLE:
+        return "IDLE";
+    case ObdConnectionState::WAIT_BOOT:
+        return "WAIT_BOOT";
+    case ObdConnectionState::SCANNING:
+        return "SCANNING";
+    case ObdConnectionState::CONNECTING:
+        return "CONNECTING";
+    case ObdConnectionState::SECURING:
+        return "SECURING";
+    case ObdConnectionState::DISCOVERING:
+        return "DISCOVERING";
+    case ObdConnectionState::AT_INIT:
+        return "AT_INIT";
+    case ObdConnectionState::POLLING:
+        return "POLLING";
+    case ObdConnectionState::ERROR_BACKOFF:
+        return "ERROR_BACKOFF";
+    case ObdConnectionState::DISCONNECTED:
+        return "DISCONNECTED";
+    case ObdConnectionState::ECU_IDLE:
+        return "ECU_IDLE";
+    default:
+        return "?";
+    }
+}
+
 enum class ObdCommandKind : uint8_t {
     NONE = 0,
     AT_INIT = 1,

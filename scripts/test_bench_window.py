@@ -217,6 +217,51 @@ def test_razer_kiyo_default_uses_supported_full_hd_rate() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
+def test_camera_profile_is_applied_after_still_consumer_open() -> None:
+    events: list[str] = []
+
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self, command: list[str]) -> None:
+            self.path = Path(command[-1])
+
+        def poll(self) -> None:
+            events.append("still_poll")
+            return None
+
+        def communicate(self) -> tuple[str, None]:
+            events.append("still_capture")
+            self.path.write_bytes(b"snapshot")
+            self.returncode = 0
+            return "", None
+
+    class OrderingCameraCapture(CameraCapture):
+        def _configure(self, exposure: int) -> None:
+            events.append(f"configure:{exposure}")
+
+    original_popen = camera_capture_module.subprocess.Popen
+    original_sleep = camera_capture_module.time.sleep
+    try:
+        camera_capture_module.subprocess.Popen = lambda command, **_kwargs: (  # type: ignore[assignment]
+            events.append("still_open") or FakeProcess(command)
+        )
+        camera_capture_module.time.sleep = lambda seconds: events.append(  # type: ignore[assignment]
+            f"sleep:{seconds}"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            camera = OrderingCameraCapture(Path(tmp), 300)
+            camera.imagesnap = "imagesnap"
+            camera._snapshot(156, camera.preflight_path)
+            assert_true(
+                events.index("still_open") < events.index("configure:156") < events.index("still_capture"),
+                f"camera profile was not applied while the still consumer owned the camera: {events}",
+            )
+    finally:
+        camera_capture_module.subprocess.Popen = original_popen
+        camera_capture_module.time.sleep = original_sleep
+
+
 def test_camera_profile_is_reapplied_after_recorder_open() -> None:
     events: list[str] = []
 
@@ -734,6 +779,7 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_razer_kiyo_default_uses_supported_full_hd_rate()
+    test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()

@@ -191,16 +191,32 @@ class CameraCapture:
 
     def _snapshot(self, exposure: int, path: Path) -> None:
         assert self.imagesnap is not None
-        self._set_control("exposure-time-abs", exposure)
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [self.imagesnap, "-q", "-w", "2", "-d", self.camera_name, str(path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            check=False,
         )
+        output = ""
+        try:
+            # imagesnap opens a new macOS camera consumer and can reset the
+            # UVC profile. Configure only after it owns the camera, then use
+            # the remainder of its two-second wait as the profile settle.
+            time.sleep(CAMERA_OPEN_SETTLE_S)
+            if proc.poll() is None:
+                self._configure(exposure)
+            output, _ = proc.communicate()
+        except Exception:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+            raise
         if proc.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
-            detail = proc.stdout.strip().splitlines()
+            detail = output.strip().splitlines()
             suffix = f": {detail[-1]}" if detail else ""
             raise RuntimeError(f"camera snapshot failed{suffix}")
 

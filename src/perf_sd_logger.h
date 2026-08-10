@@ -55,6 +55,7 @@ class PerfSdLogger {
     void writerTaskLoop();
     bool receiveSnapshot(PerfSdSnapshot& snapshot, TickType_t timeoutTicks);
     bool ensurePerfDir(fs::FS& fs);
+    bool ensurePersistentFileLocked(fs::FS& fs);
     bool ensureCsvHeaderAndSessionMarker(File& f);
     bool writeSessionMarker(File& f);
     bool ensureCsvBuffers();

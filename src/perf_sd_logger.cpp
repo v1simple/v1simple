@@ -306,6 +306,22 @@ void PerfSdLogger::begin(bool sdAvailable) {
         }
     }
 
+    // Warm the CSV now, during setup: /perf mkdir, file create, header, and
+    // session marker are this file's first writes during boot and carry the
+    // FAT-allocation cost (10-25 ms each on a worn card). Paying it here keeps
+    // it off the first flush boundary after BLE connect, where an alert can be
+    // in flight. Failure is not fatal — the writer retries lazily per row.
+    if (storageManager.isReady() && storageManager.isSDCard()) {
+        if (fs::FS* fs = storageManager.getFilesystem()) {
+            StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+            if (lock && ensurePersistentFileLocked(*fs)) {
+                if (!ensureCsvHeaderAndSessionMarker(persistentFile_)) {
+                    persistentFile_.close();
+                }
+            }
+        }
+    }
+
     enabled_ = true;
 }
 
@@ -442,6 +458,34 @@ bool PerfSdLogger::writeSessionMarker(File& f) {
     return writeStaged(f, reinterpret_cast<const uint8_t*>(marker), markerLen);
 }
 
+bool PerfSdLogger::ensurePersistentFileLocked(fs::FS& fs) {
+    if (!ensurePerfDir(fs)) {
+        return false;
+    }
+
+    const char* csvPath = (csvPathBuf_[0] != '\0') ? csvPathBuf_ : PERF_CSV_PATH_FALLBACK;
+
+    // Persistent handle: open once, keep open across rows. Eliminates the per-row
+    // FAT EOF walk + dirent rewrite that dominates flush_max_peak_us on the slower
+    // FATFS path in IDF 5.5.1+. Data flushes are batched; metadata/session markers
+    // and shutdown drain still force a flush boundary.
+    if (!persistentFile_) {
+        persistentFile_ = fs.open(csvPath, FILE_APPEND, true);
+        if (!persistentFile_ && perfDirReady_) {
+            // Directory can be removed while running; invalidate cache and retry once.
+            perfDirReady_ = false;
+            if (ensurePerfDir(fs)) {
+                persistentFile_ = fs.open(csvPath, FILE_APPEND, true);
+            }
+        }
+        if (!persistentFile_) {
+            PERF_INC(perfSdOpenFail);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool PerfSdLogger::ensureCsvHeaderAndSessionMarker(File& f) {
     // If the file was rotated/deleted while running, size 0 means header must be rewritten.
     if (f.size() == 0) {
@@ -518,29 +562,8 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         return false;
     }
 
-    if (!ensurePerfDir(*fs)) {
+    if (!ensurePersistentFileLocked(*fs)) {
         return false;
-    }
-
-    const char* csvPath = (csvPathBuf_[0] != '\0') ? csvPathBuf_ : PERF_CSV_PATH_FALLBACK;
-
-    // Persistent handle: open once, keep open across rows. Eliminates the per-row
-    // FAT EOF walk + dirent rewrite that dominates flush_max_peak_us on the slower
-    // FATFS path in IDF 5.5.1+. Data flushes are batched; metadata/session markers
-    // and shutdown drain still force a flush boundary.
-    if (!persistentFile_) {
-        persistentFile_ = fs->open(csvPath, FILE_APPEND, true);
-        if (!persistentFile_ && perfDirReady_) {
-            // Directory can be removed while running; invalidate cache and retry once.
-            perfDirReady_ = false;
-            if (ensurePerfDir(*fs)) {
-                persistentFile_ = fs->open(csvPath, FILE_APPEND, true);
-            }
-        }
-        if (!persistentFile_) {
-            PERF_INC(perfSdOpenFail);
-            return false;
-        }
     }
 
     if (!csvLineBuffer_ || !writeStagingBuffer_) {

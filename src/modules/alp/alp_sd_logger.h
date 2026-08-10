@@ -49,7 +49,8 @@ class AlpSdLogger {
     void begin(bool enabled, bool sdReady, GpsTimePublisher* timePub = nullptr);
 
     /**
-     * Set boot ID and token for filename generation. Call after begin().
+     * Set boot ID and token for filename generation. Call before begin() so
+     * boot warm-up creates and opens the final session path.
      */
     void setBootId(uint32_t id, uint32_t bootToken = 0);
 

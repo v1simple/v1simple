@@ -4,6 +4,10 @@
 #include "../../src/modules/encounter/v1_encounter_logger.cpp"
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 namespace {
 AlertData makeAlert(uint8_t v1Index, Direction direction, uint8_t frontRaw, uint8_t rearRaw) {
@@ -19,6 +23,15 @@ AlertData makeAlert(uint8_t v1Index, Direction direction, uint8_t frontRaw, uint
     alert.isValid = true;
     alert.isPriority = true;
     return alert;
+}
+
+std::string readProjectFile(const char* relativePath) {
+    const std::filesystem::path path = std::filesystem::path(PROJECT_DIR) / relativePath;
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
 }
 } // namespace
 
@@ -103,10 +116,31 @@ void test_encounter_logger_keeps_v1_rows_separate_at_same_frequency() {
     TEST_ASSERT_NOT_NULL(std::strstr(logger.testGetLastLine(), ",2,2,Ka,34700,REAR,"));
 }
 
+void test_encounter_logger_begin_warms_storage_at_boot() {
+    // Native tests use the UNIT_TEST sink, so pin the production-only warm-up
+    // textually: begin() must pre-create the encounters file (directory +
+    // create + header via ensureFileReady) under the SD lock, during setup and
+    // before enabled_ flips true, so successful warm-up keeps the first alert
+    // from paying FAT-allocation cost on the shared SD path mid-encounter.
+    // Warm-up failure must stay non-fatal (lazy retry on first append).
+    const std::string source = readProjectFile("src/modules/encounter/v1_encounter_logger.cpp");
+    TEST_ASSERT_FALSE(source.empty());
+
+    const size_t beginStart = source.find("void V1EncounterLogger::begin(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginStart);
+    const size_t enabledTrue = source.find("enabled_ = true;", beginStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, enabledTrue);
+    const std::string beginBody = source.substr(beginStart, enabledTrue - beginStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("StorageManager::SDLockBlocking"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("ensureFileReady()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("storage warm-up deferred to first alert"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_encounter_logger_uses_compact_location_free_schema);
     RUN_TEST(test_encounter_logger_ignores_raw_jitter_and_tracks_meaningful_edges);
     RUN_TEST(test_encounter_logger_keeps_v1_rows_separate_at_same_frequency);
+    RUN_TEST(test_encounter_logger_begin_warms_storage_at_boot);
     return UNITY_END();
 }

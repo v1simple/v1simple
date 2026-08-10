@@ -5,6 +5,14 @@ newest 20 generated CSV files in each of `/perf`, `/alp`, and `/encounters`.
 Maintenance boots do not prune evidence, and files that do not exactly match a
 firmware-generated CSV name are never removed.
 
+Each enabled logger warms its file at boot: directory creation, CSV create,
+and header (plus the perf session marker) are written during setup, before BLE
+connects.
+These first writes carry the FAT-allocation cost — measured at 10–25 ms each on
+a worn card — and paying them in setup keeps them off the shared SD path while
+an alert is in flight. Warm-up failure is never fatal; every logger falls back
+to its previous lazy create-on-first-write behavior.
+
 ## 32 KB allocation-unit experiment
 
 Formatting is deliberately not a firmware feature. It destroys existing card

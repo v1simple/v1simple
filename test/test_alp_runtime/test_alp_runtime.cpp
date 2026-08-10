@@ -2878,6 +2878,34 @@ void test_sd_logger_production_writer_reuses_handle_and_flushes_each_row() {
     TEST_ASSERT_EQUAL(std::string::npos, writer.find("File f = fs->open(csvPathBuf_, FILE_APPEND);"));
 }
 
+void test_sd_logger_begin_warms_storage_at_boot() {
+    // Warm-at-boot contract: production begin() pre-creates /alp, the CSV, and
+    // its header during setup, under the SD lock, so successful warm-up keeps
+    // the first logged row from paying FAT-allocation cost on the shared SD path
+    // (observed as bimodal ~47 ms notify-to-display peaks when an alert lands
+    // inside the first-write window). Warm-up failure must stay non-fatal.
+    const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
+    TEST_ASSERT_FALSE(source.empty());
+
+    const size_t beginStart = source.find("void AlpSdLogger::begin(");
+    const size_t beginEnd = source.find("void AlpSdLogger::setBootId(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginEnd);
+    const std::string beginBody = source.substr(beginStart, beginEnd - beginStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("StorageManager::SDLockBlocking"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("ensureDirectory() && ensureHeader()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          beginBody.find("persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("storage warm-up deferred to first row"));
+
+    // A later path change must drop the warmed handle so writes cannot land in
+    // the previous boot's file (mirrors PerfSdLogger::setBootId).
+    const size_t bootIdEnd = source.find("void AlpSdLogger::setEnabled(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootIdEnd);
+    const std::string bootIdBody = source.substr(beginEnd, bootIdEnd - beginEnd);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootIdBody.find("persistentFile_.close();"));
+}
+
 // ── Event bus publishing tests ──────────────────────────────────────
 
 void test_transitionTo_publishes_alp_state_changed_event() {
@@ -3368,6 +3396,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sd_logger_gun_id_lid_deploy_preserves_raw_frame);
     RUN_TEST(test_sd_logger_gun_id_detect_preserves_raw_frame);
     RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_flushes_each_row);
+    RUN_TEST(test_sd_logger_begin_warms_storage_at_boot);
 
     // Event bus publishing
     RUN_TEST(test_transitionTo_publishes_alp_state_changed_event);

@@ -153,6 +153,17 @@ void V1EncounterLogger::begin(bool sdAvailable) {
         Serial.println("[Encounter] WARN: async SD writer unavailable");
         return;
     }
+    {
+        // Warm the encounters file now, during setup: directory + create +
+        // header are the FAT-allocation writes (10-25 ms each on a worn card)
+        // that otherwise land on the first alert of the session, where they
+        // can stall the shared SD path mid-encounter. Failure is not fatal —
+        // ensureFileReady() runs again lazily on the first append.
+        StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+        if (!lock || !ensureFileReady()) {
+            Serial.println("[Encounter] WARN: storage warm-up deferred to first alert");
+        }
+    }
 #endif
     enabled_ = true;
 }

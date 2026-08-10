@@ -120,6 +120,25 @@ void AlpSdLogger::begin(bool enabled, bool sdReady, GpsTimePublisher* timePub) {
     if (!ensureAsyncWriter()) {
         Serial.println("[ALP_SD] WARN: async writer unavailable; ALP SD rows will drop");
     }
+    if (storageManager.isReady() && storageManager.isSDCard()) {
+        // Warm the log file now, during setup: directory + create + header are
+        // the FAT-allocation writes that otherwise land on the first logged row
+        // after BLE connect. Same lock discipline as the writer task; failure
+        // is not fatal — writeLineBlocking() retries lazily per row.
+        StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+        bool warmed = false;
+        if (lock && ensureDirectory() && ensureHeader()) {
+            if (!persistentFile_) {
+                if (fs::FS* fs = storageManager.getFilesystem()) {
+                    persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);
+                }
+            }
+            warmed = static_cast<bool>(persistentFile_);
+        }
+        if (!warmed) {
+            Serial.println("[ALP_SD] WARN: storage warm-up deferred to first row");
+        }
+    }
 #endif
 }
 
@@ -136,6 +155,14 @@ void AlpSdLogger::setBootId(uint32_t id, uint32_t bootToken) {
     headerWritten_ = false;
 
 #ifndef UNIT_TEST
+    if (persistentFile_) {
+        // Path may have changed; drop the old handle so the next write or
+        // warm-up reopens at the new path (mirrors PerfSdLogger::setBootId).
+        StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+        if (lock) {
+            persistentFile_.close();
+        }
+    }
     if (enabled_ && sdReady_) {
         Serial.printf("[ALP_SD] path: %s\n", csvPathBuf_);
     }

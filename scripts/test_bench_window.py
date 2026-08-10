@@ -312,6 +312,27 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
         camera_capture_module.time.sleep = original_sleep
 
 
+def test_bench_entrypoint_forwards_explicit_baseline_window() -> None:
+    entrypoint = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    assert_true('COMPARE_TO=()' in entrypoint, "bench entrypoint does not own an explicit baseline window")
+    assert_true(
+        'COMPARE_TO+=("$2")' in entrypoint,
+        "bench entrypoint does not collect repeated --compare-to arguments",
+    )
+    assert_true(
+        'args+=(--compare-to "$compare_to")' in entrypoint,
+        "bench entrypoint does not forward explicit baselines to every selected window",
+    )
+    assert_true(
+        '"${#COMPARE_TO[@]}" -eq 0' in entrypoint,
+        "explicit baselines do not suppress automatic promoted-baseline lookup",
+    )
+    assert_true(
+        'Use either --no-baseline or --compare-to, not both' in entrypoint,
+        "bench entrypoint does not reject contradictory baseline policy",
+    )
+
+
 def test_camera_profile_validation_rejects_recorder_brightness_drift() -> None:
     preflight = bytes([3]) * FRAME_BYTES
     stable_video = bytes([4]) * FRAME_BYTES
@@ -781,6 +802,7 @@ def main() -> int:
     test_razer_kiyo_default_uses_supported_full_hd_rate()
     test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
+    test_bench_entrypoint_forwards_explicit_baseline_window()
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
     test_camera_reference_images_match_bound_signatures()

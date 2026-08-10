@@ -22,6 +22,7 @@ FROM_CSV=""
 SEGMENT="last"
 USE_BASELINE=1
 PROMOTE_BASELINE=0
+COMPARE_TO=()
 BLINK_PROFILE="scenario"
 BLINK_PROFILE_SET=0
 LEGACY_BLINK_ARROW=0
@@ -55,6 +56,8 @@ Options:
   --board-id ID           Board id label for artifacts (default: release).
   --artifact-root PATH    Artifact root (default: .artifacts/bench).
   --baseline-root PATH    Baseline root (default: .artifacts/bench_baselines).
+  --compare-to PATH       Explicit baseline manifest for regression comparison.
+                          Repeat for a multi-run baseline window.
   --no-baseline           Do not compare to a promoted baseline.
   --promote-baseline      After a PASS, promote this run as the future baseline.
   --port PATH             USB serial port. Defaults to auto-detect.
@@ -105,6 +108,9 @@ while [[ $# -gt 0 ]]; do
     --baseline-root)
       [[ $# -lt 2 ]] && { echo "Missing value for --baseline-root" >&2; exit 3; }
       BASELINE_ROOT="$2"; shift 2 ;;
+    --compare-to)
+      [[ $# -lt 2 ]] && { echo "Missing value for --compare-to" >&2; exit 3; }
+      COMPARE_TO+=("$2"); shift 2 ;;
     --no-baseline)
       USE_BASELINE=0; shift ;;
     --promote-baseline)
@@ -154,6 +160,11 @@ esac
 
 if [[ "$BLINK_PROFILE_SET" -eq 1 && "$RUN_REPLAY" -ne 1 ]]; then
   echo "--blink-profile requires a selected replay suite" >&2
+  exit 3
+fi
+
+if [[ "$USE_BASELINE" -eq 0 && "${#COMPARE_TO[@]}" -gt 0 ]]; then
+  echo "Use either --no-baseline or --compare-to, not both" >&2
   exit 3
 fi
 
@@ -229,7 +240,9 @@ if [[ "$CAPTURE_CAMERA" -eq 1 ]]; then
 else
   echo "  camera:     disabled" | tee -a "$RUN_LOG"
 fi
-if [[ "$USE_BASELINE" -eq 1 ]]; then
+if [[ "${#COMPARE_TO[@]}" -gt 0 ]]; then
+  echo "  baseline:   explicit ${#COMPARE_TO[@]}-run comparison window" | tee -a "$RUN_LOG"
+elif [[ "$USE_BASELINE" -eq 1 ]]; then
   echo "  baseline:   board/product/suite/scenario identity (if present)" | tee -a "$RUN_LOG"
 else
   echo "  baseline:   disabled" | tee -a "$RUN_LOG"
@@ -314,7 +327,11 @@ for suite in "${suites[@]}"; do
   [[ "$suite" == "replay" ]] && args+=(--blink-profile "$BLINK_PROFILE")
   [[ "$CAPTURE_CAMERA" -eq 1 ]] && args+=(--camera)
   [[ -n "$PORT" ]] && args+=(--port "$PORT")
-  [[ "$USE_BASELINE" -eq 1 && "$suite" != "replay" ]] && args+=(--baseline-root "$BASELINE_ROOT")
+  [[ "$USE_BASELINE" -eq 1 && "${#COMPARE_TO[@]}" -eq 0 && "$suite" != "replay" ]] \
+    && args+=(--baseline-root "$BASELINE_ROOT")
+  for compare_to in "${COMPARE_TO[@]}"; do
+    args+=(--compare-to "$compare_to")
+  done
   if [[ -n "$FROM_CSV" ]]; then
     args+=(--from-csv "$FROM_CSV")
   elif [[ "$UPLOAD" -eq 1 && "$first_live" -eq 1 ]]; then

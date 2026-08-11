@@ -121,9 +121,24 @@ void test_render_frame_composer_alp_live_outranks_v1_laser() {
     TEST_ASSERT_FALSE(frameHasLaserCard(frame));
 }
 
-void test_render_frame_composer_alp_persisted_outranks_v1_laser() {
+// ── Live beats persisted (screen/speaker contract, ownership rule 3) ─
+
+void test_render_frame_composer_v1_live_outranks_alp_persisted() {
+    // A persisted ALP frame is memory, not a live threat. Live V1 truth —
+    // radar or the V1's own laser — takes the screen from it.
+    const AlertData ka = makeAlert(BAND_KA);
+    const RenderFrame radar = compose(makeV1(&ka), makeAlp(true, false, true));
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, radar.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_KA, radar.v1Priority.band);
+
     const AlertData laser = makeAlert(BAND_LASER);
-    const RenderFrame frame = compose(makeV1(&laser), makeAlp(true, false, true));
+    const RenderFrame live = compose(makeV1(&laser), makeAlp(true, false, true));
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, live.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_LASER, live.v1Priority.band);
+}
+
+void test_render_frame_composer_alp_persisted_renders_when_v1_idle() {
+    const RenderFrame frame = compose(makeV1(nullptr), makeAlp(true, false, true));
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, frame.primaryKind);
     TEST_ASSERT_FALSE(frameHasLaserCard(frame));
@@ -174,7 +189,8 @@ int main(int, char**) {
     RUN_TEST(test_render_frame_composer_v1_laser_survives_silent_alp);
     RUN_TEST(test_render_frame_composer_v1_laser_renders_without_alp);
     RUN_TEST(test_render_frame_composer_alp_live_outranks_v1_laser);
-    RUN_TEST(test_render_frame_composer_alp_persisted_outranks_v1_laser);
+    RUN_TEST(test_render_frame_composer_v1_live_outranks_alp_persisted);
+    RUN_TEST(test_render_frame_composer_alp_persisted_renders_when_v1_idle);
     RUN_TEST(test_render_frame_composer_alp_does_not_suppress_v1_radar);
     RUN_TEST(test_render_frame_composer_alp_primary_is_never_muted);
     RUN_TEST(test_render_frame_composer_alp_primary_renders_full_urgency);

@@ -6,7 +6,7 @@
 // Design rules:
 //   - Fail-open: if speed source is lost, NEVER mute (safety first)
 //   - Hysteresis: unmute threshold = threshold + hysteresis to prevent cycling
-//   - Band overrides: Laser and Ka always bypass low-speed mute
+//   - User authority: every band honors the configured low-speed volume
 //   - Best-effort (Priority tier 4): never blocks BLE/display/connectivity
 //   - Pure decision function: caller owns BLE commands
 
@@ -62,9 +62,6 @@ class SpeedMuteModule {
 
     /// Evaluate muting decision.  Call once per loop iteration.
     SpeedMuteDecision update(float speedMph, bool speedValid, uint32_t nowMs);
-
-    /// Query whether a specific band is exempt from speed-mute.
-    bool isBandOverridden(uint8_t band) const;
 
     const SpeedMuteSettings& getSettings() const { return settings_; }
     const SpeedMuteState& getState() const { return state_; }

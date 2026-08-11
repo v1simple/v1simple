@@ -89,8 +89,3 @@ SpeedMuteDecision SpeedMuteModule::update(float speedMph, bool speedValid, uint3
     ctx.nowMs = nowMs;
     return evaluateSpeedMute(settings_, ctx, state_);
 }
-
-bool SpeedMuteModule::isBandOverridden(uint8_t band) const {
-    // Laser and Ka always override speed mute — never suppress these.
-    return (band == 1 || band == 2); // BAND_LASER=1, BAND_KA=2
-}

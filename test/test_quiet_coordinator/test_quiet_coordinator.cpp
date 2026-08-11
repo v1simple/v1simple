@@ -95,6 +95,26 @@ void test_speed_volume_drop_restore_and_zero_presentation() {
     TEST_ASSERT_FALSE(module.getPresentationState().speedVolZeroActive);
 }
 
+void test_speed_volume_and_voice_honor_user_setting_for_ka() {
+    parser.setMainVolume(6);
+    parser.setMuteVolume(2);
+    parser.setActiveBands(BAND_KA);
+    parser.setAlerts({AlertData::create(BAND_KA, DIR_FRONT, 6, 0, 34700, true, true)});
+    enableSpeedVol(0);
+
+    TEST_ASSERT_TRUE(module.processSpeedVolume(1000, speedMute, &volumeFade));
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
+    TEST_ASSERT_TRUE(module.getPresentationState().speedVolZeroActive);
+
+    VoiceContext ctx;
+    ctx.mainVolume = 0;
+    module.applyVoicePresentation(ctx, &speedMute, true, BAND_KA);
+
+    TEST_ASSERT_TRUE(ctx.isSuppressed);
+    TEST_ASSERT_TRUE(module.getPresentationState().voiceSuppressed);
+    TEST_ASSERT_FALSE(module.getPresentationState().voiceAllowVolZeroBypass);
+}
+
 // Speed-mute must not drop the volume until V1 has delivered real volume data.
 // Otherwise the default mainVolume=0 becomes the restore baseline and leaves
 // the device at zero volume.
@@ -194,6 +214,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_send_mute_tracks_desired_state_and_owner);
     RUN_TEST(test_speed_volume_drop_restore_and_zero_presentation);
+    RUN_TEST(test_speed_volume_and_voice_honor_user_setting_for_ka);
     RUN_TEST(test_speed_volume_drop_deferred_until_volume_data_received);
     RUN_TEST(test_voice_presentation_does_not_bypass_real_mute_for_speed_override_without_active_speed_volume);
     RUN_TEST(test_autopush_updates_speed_mute_restore_pair_without_lifting_temporary_volume);

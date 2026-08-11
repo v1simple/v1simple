@@ -15,21 +15,10 @@ void QuietCoordinatorModule::applyVoicePresentation(VoiceContext& voiceCtx, cons
         const auto& smSettings = speedMute->getSettings();
         const auto& smState = speedMute->getState();
         if (smSettings.voice && smState.muteActive && hasRenderablePriority) {
-            if (!speedMute->isBandOverridden(priorityBand)) {
-                voiceCtx.isSuppressed = true;
-                presentation_.voiceSuppressed = true;
-            }
+            voiceCtx.isSuppressed = true;
+            presentation_.voiceSuppressed = true;
         }
     }
 
-    if (speedMute && hasRenderablePriority) {
-        if (speedVolActive_ && speedMute->isBandOverridden(priorityBand)) {
-            voiceCtx.isMuted = false;
-            voiceCtx.isSoftMuted = false; // An overriding band bypasses the V1 audio-mute gate.
-            if (voiceCtx.mainVolume == 0) {
-                voiceCtx.mainVolume = 1;
-            }
-            presentation_.voiceAllowVolZeroBypass = true;
-        }
-    }
+    (void)priorityBand;
 }

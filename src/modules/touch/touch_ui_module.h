@@ -46,9 +46,18 @@ class TouchUiModule {
     // Returns false when normal runtime presentation is authoritative.
     bool restorePresentationIfOwned();
 
+    // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract):
+    // an alert owns the screen; the settings sliders may not hold it. Called by
+    // the loop when a live V1 or ALP alert arrives while adjust mode is active.
+    // Retains the in-progress adjustments, requests deferred persistence, and
+    // yields the screen so storage cannot delay the alert render. The menu is
+    // not auto-restored when the alert clears; the driver can reopen it.
+    // Returns true when adjust mode was active and has been exited.
+    bool preemptForLiveAlert();
+
   private:
     void enterAdjustMode();
-    void exitAdjustModeAndSave();
+    void exitAdjustModeAndSave(bool deferPersistence = false);
     bool handleSliderTouch(unsigned long nowMs);
     bool canArmObdPairGesture(unsigned long nowMs) const;
     void updateObdIndicatorAttention(bool attention, unsigned long nowMs);

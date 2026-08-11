@@ -123,6 +123,15 @@ void TouchUiModule::suspendForPresentationOwner() {
     }
 }
 
+bool TouchUiModule::preemptForLiveAlert() {
+    if (!brightnessAdjustMode_) {
+        return false;
+    }
+    DBG_PRINTF("[Settings] Live alert preempts adjust mode\n");
+    exitAdjustModeAndSave(/*deferPersistence=*/true);
+    return true;
+}
+
 bool TouchUiModule::restorePresentationIfOwned() {
     if (!brightnessAdjustMode_ || !display_) {
         return false;
@@ -159,12 +168,16 @@ void TouchUiModule::enterAdjustMode() {
                volumeAdjustValue_);
 }
 
-void TouchUiModule::exitAdjustModeAndSave() {
+void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
     brightnessAdjustMode_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);
-    const bool persisted = settings_->saveDeferredBackup();
-    (void)persisted;
+    if (deferPersistence) {
+        settings_->requestDeferredPersist();
+    } else {
+        const bool persisted = settings_->saveDeferredBackup();
+        (void)persisted;
+    }
     audio_set_volume(volumeAdjustValue_);
     display_->hideBrightnessSlider();
     if (callbacks_.restoreDisplay)

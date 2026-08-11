@@ -28,11 +28,12 @@ struct VolumeFadeContext {
     uint8_t currentVolume;     // Current V1 volume
     uint8_t currentMuteVolume; // Current V1 mute volume
     uint16_t currentFrequency; // Current priority frequency (MHz*10) for dedup
+    bool priorityIsLaser;      // Priority alert is laser (no frequency; its own distinct-alert class)
     unsigned long now;         // Current timestamp
 
     VolumeFadeContext()
         : hasAlert(false), alertMuted(false), alertSuppressed(false), currentVolume(0), currentMuteVolume(0),
-          currentFrequency(0), now(0) {}
+          currentFrequency(0), priorityIsLaser(false), now(0) {}
 };
 
 /**
@@ -87,6 +88,7 @@ class VolumeFadeModule {
     bool commandSent_ = false;
     bool restoreLogEmitted_ = false;
     int seenCount_ = 0;
+    bool seenLaser_ = false; // Laser has no frequency; deduped as its own class
     static constexpr int MAX_FADE_SEEN_FREQS = 12;
     uint16_t seenFreqs_[MAX_FADE_SEEN_FREQS] = {};
 

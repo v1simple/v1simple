@@ -112,26 +112,30 @@ RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot
 
     const bool hasAlpLive = alp.ownsLaserDisplay && alp.event.active;
     const bool hasAlpPersisted = alp.isPersistedLatch && alp.latchedEvent.active;
-    // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, Part II corollary): the V1's
-    // laser channel is suppressed only when an ALP branch below actually renders
-    // one. ALP is the better laser instrument and outranks the V1 whenever it has
-    // something to show, but a connected ALP with nothing on screen is not a
-    // reason to drop the V1's own detection -- that would leave a live laser
-    // rendered by neither source. Keying this to the render decision rather than
-    // to connection state makes that state unreachable by construction.
-    // Pinned by test_render_frame_composer_v1_laser_survives_silent_alp.
-    const bool suppressV1Laser = hasAlpLive || hasAlpPersisted;
+    // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract):
+    // ownership order is ALP_LIVE > V1_LIVE > ALP_PERSISTED > V1_PERSISTED >
+    // IDLE. ALP is the better laser instrument and outranks the V1 while it has
+    // a live event to show, but its authority ends there: a persisted ALP frame
+    // never outranks live V1 truth (live beats persisted). The V1's laser
+    // channel is suppressed only when an ALP branch actually renders one — a
+    // connected ALP with nothing on screen is not a reason to drop the V1's own
+    // detection; that would leave a live laser rendered by neither source.
+    // Keying this to the render decision rather than to connection state makes
+    // that state unreachable by construction.
+    // Pinned by test_render_frame_composer_v1_laser_survives_silent_alp and
+    // test_render_frame_composer_v1_live_outranks_alp_persisted.
+    const bool suppressV1Laser = hasAlpLive;
     const AlertData filteredPriority =
         (v1.hasRenderablePriority && (!suppressV1Laser || v1.priority.band != BAND_LASER))
             ? v1.priority
             : firstRenderableFilteredAlert(v1, suppressV1Laser);
     const bool hasFilteredPriority = isRenderableAlert(filteredPriority);
 
-    if (hasAlpLive || hasAlpPersisted) {
-        frame.primaryKind = hasAlpLive ? RenderFramePrimaryKind::ALP_LIVE : RenderFramePrimaryKind::ALP_PERSISTED;
-        frame.alpPrimary = hasAlpLive ? alp.event : alp.latchedEvent;
+    if (hasAlpLive) {
+        frame.primaryKind = RenderFramePrimaryKind::ALP_LIVE;
+        frame.alpPrimary = alp.event;
         frame.primaryState = synthesizeAlpPrimaryState(v1.state, frame.alpPrimary);
-        appendFilteredV1Alerts(frame, v1, suppressV1Laser, nullptr);
+        appendFilteredV1Alerts(frame, v1, /*suppressLaser=*/true, nullptr);
         return frame;
     }
 
@@ -143,7 +147,15 @@ RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot
         // them from alert-row RSSI; those per-alert strengths drive secondary
         // alert context only.
         frame.primaryState = v1.state;
-        appendFilteredV1Alerts(frame, v1, suppressV1Laser, &filteredPriority);
+        appendFilteredV1Alerts(frame, v1, /*suppressLaser=*/false, &filteredPriority);
+        return frame;
+    }
+
+    if (hasAlpPersisted) {
+        frame.primaryKind = RenderFramePrimaryKind::ALP_PERSISTED;
+        frame.alpPrimary = alp.latchedEvent;
+        frame.primaryState = synthesizeAlpPrimaryState(v1.state, frame.alpPrimary);
+        appendFilteredV1Alerts(frame, v1, /*suppressLaser=*/true, nullptr);
         return frame;
     }
 

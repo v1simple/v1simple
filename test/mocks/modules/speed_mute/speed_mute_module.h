@@ -38,10 +38,6 @@ public:
         settings_.voice = voice;
     }
 
-    bool isBandOverridden(uint8_t band) const {
-        return (band == 1 || band == 2);  // Laser and Ka always override
-    }
-
     const SpeedMuteSettings& getSettings() const { return settings_; }
     const SpeedMuteState& getState() const { return state_; }
 };

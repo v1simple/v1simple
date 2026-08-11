@@ -20,14 +20,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     const auto& smSettings = speedMute.getSettings();
     const auto& smState = speedMute.getState();
 
-    bool wantsActive = smState.muteActive;
-    if (wantsActive && parser_ && parser_->hasAlerts()) {
-        const DisplayState& ds = parser_->getDisplayState();
-        const bool laserOrKa = (ds.activeBands & 0x03) != 0;
-        if (laserOrKa) {
-            wantsActive = false;
-        }
-    }
+    const bool wantsActive = smState.muteActive;
 
     if (wantsActive && !speedVolActive_) {
         const DisplayState& ds = parser_->getDisplayState();
@@ -109,6 +102,10 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         fadeCtx.alertMuted = committed_.muted;
         fadeCtx.alertSuppressed = false;
         fadeCtx.currentFrequency = hasRenderablePriority ? static_cast<uint16_t>(priority.frequency) : 0;
+        // Laser has no frequency; flag it so a laser arriving mid-fade counts
+        // as a new distinct alert and releases the fade (screen/speaker
+        // contract: new threat, new sound).
+        fadeCtx.priorityIsLaser = hasRenderablePriority && priority.band == BAND_LASER;
     }
 
     const VolumeFadeAction fadeAction = volumeFade->process(fadeCtx);

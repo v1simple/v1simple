@@ -8,6 +8,7 @@ struct VolumeFadeContext {
     uint8_t currentVolume = 0;
     uint8_t currentMuteVolume = 0;
     uint16_t currentFrequency = 0;
+    bool priorityIsLaser = false;
     unsigned long now = 0;
 };
 

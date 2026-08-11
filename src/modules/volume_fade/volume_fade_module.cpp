@@ -147,7 +147,13 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     unsigned long now = ctx.now;
     uint16_t freq = ctx.currentFrequency;
 
-    // Determine if this is a new frequency during the same alert session
+    // Determine if this is a new distinct alert during the same session.
+    // Frequency identifies radar alerts; laser has no frequency, so it is
+    // deduped as its own distinct-alert class. Valentine's Law
+    // (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract): a newly
+    // detected, distinct alert releases any active fade mute and sounds
+    // again — and laser, the highest-urgency threat, must never be the one
+    // class a fade can silently ride through.
     bool isNewFrequency = freq != 0;
     if (isNewFrequency) {
         for (int i = 0; i < seenCount_; i++) {
@@ -157,9 +163,11 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             }
         }
     }
+    const bool isNewLaser = ctx.priorityIsLaser && !seenLaser_;
 
-    // If we're currently faded and a new frequency shows up, restore and restart timer
-    if (fadeActive_ && isNewFrequency) {
+    // If we're currently faded and a new distinct alert shows up, restore and
+    // restart the fade timer.
+    if (fadeActive_ && (isNewFrequency || isNewLaser)) {
         if (originalVolume_ != 0xFF) {
             action.type = VolumeFadeAction::Type::RESTORE;
             action.restoreVolume = originalVolume_;
@@ -177,6 +185,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         commandSent_ = false;
         if (seenCount_ < MAX_FADE_SEEN_FREQS && freq != 0) {
             seenFreqs_[seenCount_++] = freq;
+        }
+        if (isNewLaser) {
+            seenLaser_ = true;
         }
         return action;
     }
@@ -204,6 +215,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         fadeActive_ = false;
         commandSent_ = false;
         seenCount_ = 0;
+        seenLaser_ = ctx.priorityIsLaser;
         if (seenCount_ < MAX_FADE_SEEN_FREQS && freq != 0) {
             seenFreqs_[seenCount_++] = freq;
         }
@@ -242,6 +254,7 @@ void VolumeFadeModule::resetSessionState() {
     restoreLogEmitted_ = false;
     lastRestoreAttemptMs_ = 0;
     seenCount_ = 0;
+    seenLaser_ = false;
     memset(seenFreqs_, 0, sizeof(seenFreqs_));
 }
 

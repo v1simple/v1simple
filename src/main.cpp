@@ -765,9 +765,31 @@ void loop() {
     const bool settingsEarlyReturn = shouldReturnEarlyFromLoopPowerTouchPhase(now, loopStartUs);
     servicePowerDisplayOwnership(now);
     const bool powerPresentationOwned = powerModule.ownsDisplayPresentation();
+    bool alpProcessedThisLoop = false;
     if (settingsEarlyReturn) {
-        mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs, bleConnectedNow);
-        return; // Skip normal loop processing while in settings mode.
+        // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, screen/speaker
+        // contract): an alert owns the screen; the settings sliders may not
+        // hold it against a live alert. V1 alert rows stay fresh through the
+        // forced tail BLE drain on the prior loop, and ALP detection is
+        // serviced here so a laser hit is still seen while the sliders own the
+        // screen. Warm-up sessions never preempt because the named deviation
+        // withholds them from currentEvent(). When a live alert is present, the
+        // menu closes, retaining the in-progress adjustments, and this loop
+        // falls through so the alert renders immediately; the menu is not
+        // restored when the alert clears.
+        //
+        // process() is once-per-tick (same-tick heartbeat-resume suppression),
+        // so the fall-through path must not run it a second time below.
+        alpRuntimeModule.process(now);
+        alpProcessedThisLoop = true;
+        AlertData v1Priority;
+        const bool v1LiveAlert = parser.hasAlerts() && parser.getRenderablePriorityAlert(v1Priority);
+        const bool alpLiveAlert = alpRuntimeModule.ownsLaserDisplay() && alpRuntimeModule.currentEvent().active;
+        const bool preempted = (v1LiveAlert || alpLiveAlert) && touchUiModule.preemptForLiveAlert();
+        if (!preempted) {
+            mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs, bleConnectedNow);
+            return; // Skip normal loop processing while in settings mode.
+        }
     }
 
     const LoopIngestPhaseValues loopIngestValues =
@@ -869,8 +891,18 @@ void loop() {
         connectionCycleCoordinatorModule.totalWifiManualPhoneKicks(), bleClient.isProxyNoClientTimeoutLatched());
 
     // ALP UART listener — drain and parse ALP serial data.
-    // Runs every loop; process() is a no-op when disabled.
-    alpRuntimeModule.process(now);
+    // Runs every loop; process() is a no-op when disabled. Skipped only when
+    // the settings-preemption path above already processed this tick.
+    if (!alpProcessedThisLoop) {
+        alpRuntimeModule.process(now);
+    }
+    const bool alpLiveAlert = alpRuntimeModule.ownsLaserDisplay() && alpRuntimeModule.currentEvent().active;
+    if (alpLiveAlert && displayPreviewModule.isRunning()) {
+        // V1 alerts cancel previews in BleQueueModule. ALP arrives on its own
+        // UART path, so mirror that ownership handoff here before the parsed
+        // ALP event reaches the display pipeline later in this loop.
+        displayPreviewModule.cancel();
+    }
     {
         const AlpStatus alpStatus = alpRuntimeModule.snapshot();
         const bool alpSignalActiveNow =

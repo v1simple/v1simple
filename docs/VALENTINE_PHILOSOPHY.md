@@ -1,7 +1,7 @@
 # Design Philosophy — Valentine's Law
 
-The design filter for all display, mute, and alert behavior in V1Simple.
-`PROJECT_DEFINITION.md` doctrine tenet 10 points here.
+The design filter and behavior contract for all display, mute, and alert
+behavior in V1Simple.
 
 ---
 
@@ -127,21 +127,50 @@ With one operational corollary for the highest-urgency threat we render:
 > A muted or downgraded render on a live threat silently lowers urgency at the exact
 > moment the Law says we must not.
 
+One enumerated deviation exists — ALP warm-up suppression; see **Named
+deviation** at the end of this document.
+
 ### What the Law is not
 
 It is **not** a license to spam the driver. Principles #4 and #7 pull the other way:
 surface everything real, keep it legible, let the driver judge. The Law breaks ties in
 favor of *showing the threat*. It does not license noise for its own sake.
 
-### The audio/display split
+### The screen/speaker contract
 
-**Ours, and load-bearing.** The Law governs the **display** absolutely. Audio is
-allowed comfort behavior *provided the display is untouched and the audio never
-reaches zero.* The rendered frame is the driver's source of truth; volume is a
-preference. This is what makes `VolumeFadeModule` and `SpeedMuteModule` legitimate
-under principle #7 — the information never leaves the screen — and it is why any
-future feature that hides something *on the panel* is a different and much harder
-argument.
+**Ours, and load-bearing.** Two output channels, one authority each.
+
+**Screen — the Law governs normal-operation presentation absolutely, and a live
+alert owns it.** The rendered frame is the driver's source of truth. Ownership
+when outputs compete:
+
+1. A live ALP laser alert holds the primary display; concurrent V1 radar renders
+   as a card alongside it, while the duplicate V1 laser row is suppressed.
+2. Absent a live ALP alert, the display follows the V1.
+3. Live beats persisted — a live V1 alert takes the screen from a persisted ALP
+   display.
+4. A live alert preempts normal-runtime interactive presentation owners: the
+   local settings sliders close and a display preview is cancelled. Neither may
+   hold the screen against a live alert.
+5. When alerts clear, the display returns to the normal view. The sliders are
+   never auto-restored; the driver can reopen them.
+
+**Speaker — the user's authority is absolute.** The internal speaker is a
+convenience, not the contract; a driver is never required to have it on. User-
+and profile-set volumes are honored exactly as configured, **zero included** —
+the firmware does not decide what someone else's volume should be. Comfort
+behavior (`VolumeFadeModule`, `SpeedMuteModule`) operates *within* those
+configured levels: speed mute is a standing user choice, so below the threshold
+alerts suppress to the configured level with no exceptions, and volume fade
+settles to its configured level after its delay. Within whatever volume the
+user allows, a **newly detected, distinct V1 priority alert releases any active
+fade mute and sounds again** — new threat, new sound. (An opt-in laser/Ka
+breakthrough of speed mute is a possible future feature; it is not part of this
+contract.)
+
+This split is what makes audio comfort features legitimate under principle #7 —
+the information never leaves the screen — and it is why any future feature that
+hides something *on the panel* is a different and much harder argument.
 
 ---
 
@@ -165,8 +194,8 @@ Law` note explaining why the slower or safer path is intentional.
 
 ## Part IV — The priority stack
 
-`PROJECT_DEFINITION.md` §3's tier system is the Law applied to a real-time system.
-Higher tiers may never be blocked or starved by lower ones.
+The tier system is the Law applied to a real-time system. Higher tiers may
+never be blocked or starved by lower ones.
 
 1. **V1 connectivity** — you cannot warn about a threat you never received.
 2. **BLE ingest/drain** — latency here is a missed Instant-On alert (#6).
@@ -186,7 +215,8 @@ Higher tiers may never be blocked or starved by lower ones.
    Justify it with a measurement.
 3. **Does it downgrade urgency** — mute, dim, defer, suppress — on a live-threat path?
    Only if the threat is genuinely gone. Never as a side effect of a rendering or
-   performance shortcut. If it is audio-only and floors above zero, say so explicitly.
+   performance shortcut. If it is audio-only and stays within the user's configured
+   volumes, say so explicitly — the speaker is the user's channel, the screen is not.
 4. **Is the driver still deciding?** Surface the information; don't make the "probably
    nothing" call for them.
 5. **Can you measure the claim?** "If measurements aren't repeatable, they aren't
@@ -196,18 +226,27 @@ When in doubt, favor **showing the threat**. That is the whole point of the inst
 
 ---
 
-## Known open item
+## Named deviation
 
-**ALP warm-up display suppression.** `src/modules/alp/alp_runtime_module.cpp` flags
-some laser sessions as `WARM_UP` and withholds them from the display, on heuristics
-(boot envelope, preamble window, heartbeat mode bytes). It has unmarking paths — an
-observed LID deploy or a DLI/LID engage promotes the session to real — but it is
-still the one place in the firmware where something decides a *live laser event* is
-not worth showing, which is exactly what the Part II corollary forbids.
+**Ours.** **ALP warm-up display suppression — deliberate.**
+`src/modules/alp/alp_runtime_module.cpp` flags some laser sessions as `WARM_UP`
+and withholds them from the display, on heuristics (boot envelope, preamble
+window, heartbeat mode bytes). It is the one place the firmware decides a live
+laser event is not worth showing, so it is enumerated here rather than quietly
+kept.
 
-It is recorded here rather than quietly kept. Resolving it means either an enumerated
-product deviation under `PROJECT_DEFINITION.md` §10 — what it does, why, and a
-conformance test pinning it — or removing the suppression.
+**Why it stands:** bench reads of the wire show false laser signals during ALP
+start-up, and the window is short. Principle #5 obliges us to report the RF
+environment — but a signal the accessory emits at itself while booting is not
+the environment. The unmarking paths keep it honest: an observed LID deploy or
+a DLI/LID engage promotes the session to real immediately.
+
+**Pinned:** `test/test_alp_runtime` holds the conformance suite — the flag
+conditions (no-heartbeat boot, warm-up heartbeat mode, idle-mode trigger,
+preamble window), every promotion path (gun ID, LID deploy, 02→04 engage,
+targeted heartbeat), the 35 s envelope expiry, and the display suppression
+itself (`hasLaserEvent()` stays false while flagged). A refactor cannot widen
+the window without failing those tests.
 
 ---
 

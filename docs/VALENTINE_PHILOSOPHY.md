@@ -3,6 +3,13 @@
 The design filter and behavior contract for all display, mute, and alert
 behavior in V1Simple.
 
+**This document is the maintainer's interpretation.** Part I quotes Mike
+Valentine's published principles, with sources. Parts II–V and the named
+deviation — "Valentine's Law" included — are how this project chooses to read
+and apply those principles: our name, our rules, our trade-offs. The name
+credits the source material; it does not claim his endorsement, and where this
+document goes beyond what he published, the error is ours.
+
 ---
 
 ## Attribution and scope

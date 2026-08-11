@@ -17,8 +17,7 @@ from typing import Any
 # Video exposure in UVC units of 0.1 ms; 156 == 15.6 ms is the calibrated
 # default and every archived run to date used it. The environment override is
 # retained for explicit camera development, but fixed-profile preflight refuses
-# any non-reference value before live product collection because its images are
-# not compatible with the calibrated grader.
+# any non-profile value before live product collection.
 VIDEO_EXPOSURE = int(os.environ.get("BENCH_CAMERA_VIDEO_EXPOSURE", "156"))
 
 FRAME_WIDTH = 480
@@ -103,7 +102,8 @@ class CameraCapture:
         self.camera_device_index = int(os.environ.get("BENCH_CAMERA_DEVICE_INDEX", "0"))
         self.focus = int(os.environ.get("BENCH_CAMERA_FOCUS", "208"))
         self.framerate = int(os.environ.get("BENCH_CAMERA_FRAMERATE", "30"))
-        self.video_size = os.environ.get("BENCH_CAMERA_VIDEO_SIZE", "1920x1080")
+        self.input_pixel_format = os.environ.get("BENCH_CAMERA_PIXEL_FORMAT", "nv12")
+        self.video_size = os.environ.get("BENCH_CAMERA_VIDEO_SIZE", "1280x720")
         self.uvc_util = _find_uvc_util()
         self.ffmpeg = shutil.which("ffmpeg")
         self.ffprobe = shutil.which("ffprobe")
@@ -122,17 +122,19 @@ class CameraCapture:
 
     def profile(self) -> dict[str, Any]:
         return {
+            "auto_exposure_priority": 0,
             "focus_abs": self.focus,
             "video_exposure_time_abs": VIDEO_EXPOSURE,
             "bright_exposure_time_abs": 5,
             "dim_exposure_time_abs": 1250,
             "framerate": self.framerate,
+            "input_pixel_format": self.input_pixel_format,
             "video_size": self.video_size,
         }
 
     def _write_result(self, result: str, **extra: Any) -> None:
         payload: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "bench_camera_evidence",
             "result": result,
             "timestamp_utc": utc_now(),
@@ -178,6 +180,7 @@ class CameraCapture:
             ("auto-focus", 0),
             ("focus-abs", self.focus),
             ("auto-exposure-mode", 1),
+            ("auto-exposure-priority", 0),
             ("auto-white-balance-temp", 0),
             ("white-balance-temp", 4000),
             ("backlight-compensation", 0),
@@ -276,6 +279,8 @@ class CameraCapture:
                 str(self.framerate),
                 "-video_size",
                 self.video_size,
+                "-pixel_format",
+                self.input_pixel_format,
                 "-i",
                 f"{self.camera_name}:none",
                 "-an",
@@ -354,7 +359,7 @@ class CameraCapture:
         self._write_result("CAPTURE_FAILED", **payload)
         return {"result": "CAPTURE_FAILED", **payload, "errors": list(self.errors)}
 
-    def _probe_video(self) -> float:
+    def _probe_video(self) -> dict[str, float | int]:
         assert self.ffprobe is not None
         proc = subprocess.run(
             [
@@ -362,9 +367,9 @@ class CameraCapture:
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration",
+                "format=duration:stream=width,height,avg_frame_rate",
                 "-of",
-                "default=noprint_wrappers=1:nokey=1",
+                "json",
                 str(self.video_path),
             ],
             stdout=subprocess.PIPE,
@@ -374,16 +379,42 @@ class CameraCapture:
         )
         if proc.returncode != 0:
             raise RuntimeError("camera video could not be verified")
-        return float(proc.stdout.strip())
+        try:
+            payload = json.loads(proc.stdout)
+            stream = payload["streams"][0]
+            numerator, denominator = str(stream["avg_frame_rate"]).split("/", 1)
+            frame_rate = float(numerator) / float(denominator)
+            result = {
+                "duration_seconds": round(float(payload["format"]["duration"]), 3),
+                "width": int(stream["width"]),
+                "height": int(stream["height"]),
+                "average_frame_rate": round(frame_rate, 3),
+            }
+        except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
+            raise RuntimeError("camera video probe is malformed") from exc
+        expected_width, expected_height = (int(value) for value in self.video_size.split("x", 1))
+        if (result["width"], result["height"]) != (expected_width, expected_height):
+            raise RuntimeError(
+                "camera video size does not match the requested profile "
+                f"({result['width']}x{result['height']} != {self.video_size})"
+            )
+        if result["average_frame_rate"] < self.framerate - 1.0:
+            raise RuntimeError(
+                "camera video frame rate is below the requested profile "
+                f"({result['average_frame_rate']:.3f} < {self.framerate - 1.0:.1f})"
+            )
+        return result
 
     def stop(self, collection_completed: bool) -> dict[str, Any]:
         was_running = self.process is not None
         self._stop_process()
         duration = 0.0
+        video_probe: dict[str, float | int] = {}
         profile_validation: dict[str, Any] = {}
         if was_running:
             try:
-                duration = self._probe_video()
+                video_probe = self._probe_video()
+                duration = float(video_probe["duration_seconds"])
                 profile_validation = self._validate_recording_profile()
                 if profile_validation.get("result") != "PASS":
                     self.errors.append(str(profile_validation.get("message") or "camera calibration failed"))
@@ -408,6 +439,7 @@ class CameraCapture:
         payload = {
             "video": self.video_path.name if self.video_path.is_file() else "",
             "video_duration_seconds": round(duration, 3),
+            "video_probe": video_probe,
             "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
             "bright_still": self.bright_path.name if self.bright_path.is_file() else "",
             "dim_still": self.dim_path.name if self.dim_path.is_file() else "",

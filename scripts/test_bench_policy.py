@@ -75,7 +75,7 @@ def policy_identity(*, product: str = PRODUCT, grader: str = GRADER) -> dict:
 
 def grade_fixture(capture: dict, grader: str) -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "bench_camera_grade",
         "capture_id": capture["capture_id"],
         "grader_fingerprint": grader,
@@ -102,12 +102,14 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
     smoke_dir = root / "smoke"
     smoke_dir.mkdir()
     profile = {
+        "auto_exposure_priority": 0,
         "focus_abs": 208,
         "video_exposure_time_abs": 156,
         "bright_exposure_time_abs": 5,
         "dim_exposure_time_abs": 1250,
         "framerate": 30,
-        "video_size": "1920x1080",
+        "input_pixel_format": "nv12",
+        "video_size": "1280x720",
     }
     camera = {"name": "Razer Kiyo", "device_index": 0, "profile": profile}
     source_still_path = smoke_dir / "session_start_exp156.jpg"
@@ -117,7 +119,7 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
     write_json(
         preflight_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "bench_camera_preflight",
             "result": "PASS",
             "camera": camera,
@@ -126,7 +128,13 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
                 "size_bytes": source_still["size_bytes"],
                 "sha256": source_still["sha256"],
             },
-            "registration": {"transform": {"kind": "translation", "offset_pixels": [0, 0]}},
+            "registration": {
+                "transform": {
+                    "kind": "dynamic_similarity",
+                    "scale": 1.0,
+                    "crop_fractions": [0.18, 0.25, 0.52, 0.38],
+                }
+            },
             "diagnostics": [],
         },
     )
@@ -136,7 +144,7 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
     write_json(
         result_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "bench_camera_evidence",
             "result": "CAPTURED",
             "camera_name": camera["name"],
@@ -146,6 +154,12 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
             "video": video_path.name,
             "session_start_still": source_still_path.name,
             "video_duration_seconds": 3.5,
+            "video_probe": {
+                "duration_seconds": 3.5,
+                "width": 1280,
+                "height": 720,
+                "average_frame_rate": 30.0,
+            },
             "profile_validation": {"result": "PASS"},
             "errors": [],
         },
@@ -194,10 +208,16 @@ def full_batch_fixture(
     write_json(
         camera_dir / "camera_preflight.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "bench_camera_preflight",
             "result": "PASS",
-            "registration": {"transform": {"kind": "translation", "offset_pixels": [0, 0]}},
+            "registration": {
+                "transform": {
+                    "kind": "dynamic_similarity",
+                    "scale": 1.0,
+                    "crop_fractions": [0.18, 0.25, 0.52, 0.38],
+                }
+            },
             "diagnostics": [],
         },
     )

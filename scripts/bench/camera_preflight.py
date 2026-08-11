@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Admit the fixed camera rig before a live bench window or smoke test."""
+"""Admit the fixed-profile camera before a live bench window or smoke test."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from typing import Any, Callable
 from bench_identity import current_grader_fingerprint
 from camera_artifacts import CameraArtifactConflict, sha256_file
 from camera_capture import CALIBRATION_VIDEO_TIME_S, CameraCapture, utc_now
+from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
 from camera_grade import (
-    CAMERA_REFERENCE,
     REGISTRATION_HEIGHT,
     REGISTRATION_WIDTH,
     CameraRegistrationError,
@@ -23,7 +23,7 @@ from camera_grade import (
 )
 
 
-PREFLIGHT_SCHEMA_VERSION = 1
+PREFLIGHT_SCHEMA_VERSION = 2
 PREFLIGHT_NAME = "camera_preflight.json"
 SMOKE_NAME = "camera_smoke.json"
 
@@ -109,28 +109,25 @@ def _failure_payload(camera: CameraCapture, diagnostic: dict[str, Any]) -> dict[
 
 
 def _profile_diagnostic(camera: CameraCapture) -> dict[str, Any] | None:
-    expected_name = str(CAMERA_REFERENCE.get("camera_name") or "")
-    expected_profile = CAMERA_REFERENCE.get("profile")
-    expected_profile = dict(expected_profile) if isinstance(expected_profile, dict) else {}
     actual_profile = camera.profile()
     mismatched_fields = {
         field: {"measured": actual_profile.get(field), "expected": expected}
-        for field, expected in expected_profile.items()
+        for field, expected in EXPECTED_CAMERA_PROFILE.items()
         if actual_profile.get(field) != expected
     }
-    if camera.camera_name == expected_name and not mismatched_fields:
+    if camera.camera_name == EXPECTED_CAMERA_NAME and not mismatched_fields:
         return None
     return {
         "code": "camera_profile_mismatch",
-        "message": "configured camera does not match the immutable calibrated reference profile",
+        "message": "configured camera does not match the fixed capture profile",
         "measured": {
             "camera_name": camera.camera_name,
             "profile": actual_profile,
             "mismatched_fields": mismatched_fields,
         },
         "thresholds": {
-            "expected_camera_name": expected_name,
-            "expected_profile": expected_profile,
+            "expected_camera_name": EXPECTED_CAMERA_NAME,
+            "expected_profile": EXPECTED_CAMERA_PROFILE,
         },
     }
 
@@ -181,13 +178,6 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
             "result": "PASS",
             "registration": {
                 **registration,
-                "transform": {
-                    "kind": "translation",
-                    "offset_pixels": [round(offset_x, 3), round(offset_y, 3)],
-                },
-                "bounds": {
-                    "maximum_absolute_offset_pixels": registration["maximum_offset_pixels"],
-                },
             },
             "diagnostics": [],
         }

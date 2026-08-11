@@ -70,8 +70,6 @@ def write_fixture(root: Path) -> None:
         "scripts/bench/bench_policy.py": b"qualification policy\n",
         "tools/bench_score.py": b"camera scoring integration\n",
         "bench.sh": b"camera gate entrypoint\n",
-        "scripts/bench/camera_reference.json": b"{}\n",
-        "scripts/bench/camera_reference_24150.png": b"reference image\n",
     }
     for relative, content in files.items():
         path = root / relative
@@ -149,8 +147,6 @@ def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
         "scripts/bench/bench_policy.py",
         "tools/bench_score.py",
         "bench.sh",
-        "scripts/bench/camera_reference.json",
-        "scripts/bench/camera_reference_24150.png",
     ):
         before = identity(root)
         path = root / relative

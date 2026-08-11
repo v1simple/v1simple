@@ -11,14 +11,22 @@ from copy import deepcopy
 from typing import Any
 
 
-CAMERA_CONTRACT_SCHEMA_VERSION = 1
+CAMERA_CONTRACT_SCHEMA_VERSION = 2
+
+EXPECTED_CAMERA_NAME = "Razer Kiyo"
+EXPECTED_CAMERA_PROFILE = {
+    "auto_exposure_priority": 0,
+    "focus_abs": 208,
+    "video_exposure_time_abs": 156,
+    "framerate": 30,
+    "input_pixel_format": "nv12",
+    "video_size": "1280x720",
+}
+SUPPORTED_GRADER_VIDEO_SIZES = ("1280x720", "1920x1080")
 
 REGISTRATION_SOURCE_FIELDS = ("session_start_still", "bright_still")
-MAX_DISPLAY_CROP_OFFSET_X = 96.0
-# Permit normal DUT removal/reseating while keeping the complete SCAN landmark
-# inside the calibrated registration region with margin. Larger movement still
-# requires physically reseating the rig instead of broad crop searching.
-MAX_DISPLAY_CROP_OFFSET_Y = 48.0
+MIN_DISPLAY_SCALE = 0.55
+MAX_DISPLAY_SCALE = 1.60
 MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S = 3.0
 
 MIN_TIMELINE_MATCH_RATIO = 0.96
@@ -61,11 +69,9 @@ _SUITE_CONTRACTS: dict[str, dict[str, Any]] = {
         "calibration_policy": {
             "registration_sources": list(REGISTRATION_SOURCE_FIELDS),
             "display_crop": {
-                "transform": "translation_only",
-                "maximum_offset_pixels": [
-                    MAX_DISPLAY_CROP_OFFSET_X,
-                    MAX_DISPLAY_CROP_OFFSET_Y,
-                ],
+                "transform": "dynamic_similarity",
+                "scale_bounds": [MIN_DISPLAY_SCALE, MAX_DISPLAY_SCALE],
+                "containment": "full_camera_frame",
             },
             "timeline_alignment": {
                 "anchor": "first_emitted_replay_sample",
@@ -74,7 +80,9 @@ _SUITE_CONTRACTS: dict[str, dict[str, Any]] = {
             },
         },
         "oracle_policy": {
-            "camera_reference": "human_verified_committed_images",
+            "display_recognition": "seven_segment_topology",
+            "reference_images": "none",
+            "ambiguous_reading_policy": "abstain",
             "encounter_log": "same_window",
             "artifact_ownership_required": True,
             "minimum_match_ratios": {

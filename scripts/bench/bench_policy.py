@@ -27,7 +27,7 @@ from camera_artifacts import (
     strict_grade_outcome,
     verify_capture_files,
 )
-from camera_grade import CAMERA_REFERENCE
+from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -551,14 +551,12 @@ def _validate_camera_smoke(
         raise QualificationError("camera smoke is not an unambiguous current-grader PASS")
     camera = smoke.get("camera") if isinstance(smoke.get("camera"), dict) else {}
     profile = camera.get("profile") if isinstance(camera.get("profile"), dict) else {}
-    expected_profile = CAMERA_REFERENCE.get("profile")
-    expected_profile = expected_profile if isinstance(expected_profile, dict) else {}
     if (
-        camera.get("name") != CAMERA_REFERENCE.get("camera_name")
+        camera.get("name") != EXPECTED_CAMERA_NAME
         or not isinstance(camera.get("device_index"), int)
         or isinstance(camera.get("device_index"), bool)
         or not profile
-        or any(profile.get(field) != value for field, value in expected_profile.items())
+        or any(profile.get(field) != value for field, value in EXPECTED_CAMERA_PROFILE.items())
     ):
         raise QualificationError("camera smoke does not own its fixed camera profile")
 
@@ -587,7 +585,7 @@ def _validate_camera_smoke(
     )
     preflight_summary = smoke.get("preflight")
     if (
-        preflight.get("schema_version") != 1
+        preflight.get("schema_version") != 2
         or preflight.get("kind") != "bench_camera_preflight"
         or preflight.get("result") != "PASS"
         or preflight.get("diagnostics") != []
@@ -615,8 +613,16 @@ def _validate_camera_smoke(
         if isinstance(camera_result.get("profile_validation"), dict)
         else {}
     )
+    video_probe = (
+        camera_result.get("video_probe")
+        if isinstance(camera_result.get("video_probe"), dict)
+        else {}
+    )
+    expected_width, expected_height = (
+        int(value) for value in str(profile.get("video_size") or "0x0").split("x", 1)
+    )
     if (
-        camera_result.get("schema_version") != 1
+        camera_result.get("schema_version") != 2
         or camera_result.get("kind") != "bench_camera_evidence"
         or camera_result.get("result") != "CAPTURED"
         or camera_result.get("errors") != []
@@ -631,6 +637,11 @@ def _validate_camera_smoke(
         or not isinstance(duration, (int, float))
         or isinstance(duration, bool)
         or duration < 1.0
+        or video_probe.get("width") != expected_width
+        or video_probe.get("height") != expected_height
+        or not isinstance(video_probe.get("average_frame_rate"), (int, float))
+        or isinstance(video_probe.get("average_frame_rate"), bool)
+        or float(video_probe["average_frame_rate"]) < float(profile.get("framerate") or 0) - 1.0
     ):
         raise QualificationError("camera smoke result does not own a completed short video lifecycle")
 

@@ -24,7 +24,6 @@ from camera_grade import (  # noqa: E402
     DISPLAY_CROP_WIDTH,
     DISPLAY_CROP_X,
     DISPLAY_CROP_Y,
-    MAX_DISPLAY_CROP_OFFSET_Y,
     REFERENCE_ANCHOR_X,
     REFERENCE_ANCHOR_Y,
     REGISTRATION_HEIGHT,
@@ -64,19 +63,27 @@ def landmark_origin(offset_x: float, offset_y: float, width: int, height: int) -
     return round(anchor_x - (width - 1) / 2), round(anchor_y - (height - 1) / 2)
 
 
-def registration_fixture(offset_x: float, offset_y: float) -> bytes:
+def registration_fixture(
+    offset_x: float,
+    offset_y: float,
+    *,
+    cell_width: int = GLYPH_CELL_WIDTH,
+    cell_height: int = GLYPH_CELL_HEIGHT,
+) -> bytes:
     frame = bytearray(REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3)
-    x0, y0 = landmark_origin(offset_x, offset_y, LANDMARK_WIDTH, LANDMARK_HEIGHT)
+    landmark_width = (4 * 5 + 3 * GLYPH_GAP_CELLS) * cell_width
+    landmark_height = 7 * cell_height
+    x0, y0 = landmark_origin(offset_x, offset_y, landmark_width, landmark_height)
     cursor_cells = 0
     for glyph in SCAN_GLYPHS:
         for cell_y, row in enumerate(glyph):
             for cell_x, active in enumerate(row):
                 if active != "1":
                     continue
-                pixel_x0 = x0 + (cursor_cells + cell_x) * GLYPH_CELL_WIDTH
-                pixel_y0 = y0 + cell_y * GLYPH_CELL_HEIGHT
-                for y in range(pixel_y0, pixel_y0 + GLYPH_CELL_HEIGHT):
-                    for x in range(pixel_x0, pixel_x0 + GLYPH_CELL_WIDTH):
+                pixel_x0 = x0 + (cursor_cells + cell_x) * cell_width
+                pixel_y0 = y0 + cell_y * cell_height
+                for y in range(pixel_y0, pixel_y0 + cell_height):
+                    for x in range(pixel_x0, pixel_x0 + cell_width):
                         index = (y * REGISTRATION_WIDTH + x) * 3
                         frame[index : index + 3] = bytes((255, 100, 10))
         cursor_cells += 5 + GLYPH_GAP_CELLS
@@ -157,12 +164,14 @@ class FakeCamera:
 
     def profile(self) -> dict[str, Any]:
         return {
+            "auto_exposure_priority": 0,
             "focus_abs": 208,
             "video_exposure_time_abs": 156,
             "bright_exposure_time_abs": 5,
             "dim_exposure_time_abs": 1250,
             "framerate": 30,
-            "video_size": "1920x1080",
+            "input_pixel_format": "nv12",
+            "video_size": "1280x720",
             **self.profile_updates,
         }
 
@@ -183,7 +192,7 @@ class FakeCamera:
         self.result_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "kind": "bench_camera_evidence",
                     "result": result,
                     "camera_name": self.camera_name,
@@ -192,6 +201,14 @@ class FakeCamera:
                     "expected_duration_seconds": self.expected_duration_s,
                     "video": self.video_path.name if self.video_path.is_file() else "",
                     "video_duration_seconds": 3.5 if result == "CAPTURED" else 0.0,
+                    "video_probe": {
+                        "duration_seconds": 3.5,
+                        "width": 1280,
+                        "height": 720,
+                        "average_frame_rate": 30.0,
+                    }
+                    if result == "CAPTURED"
+                    else {},
                     "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
                     "bright_still": "",
                     "dim_still": "",
@@ -227,7 +244,7 @@ def with_calibrator(fake: Any, callback: Any) -> Any:
         preflight_module.calibrate_display_crop = original
 
 
-def test_bounded_fixture_records_translation_exposure_and_hash() -> None:
+def test_dynamic_fixture_records_crop_exposure_and_hash() -> None:
     expected_x, expected_y = 24.0, -6.0
 
     def calibrate(_path: Path, _ffmpeg: str) -> tuple[float, float, dict[str, Any]]:
@@ -237,28 +254,33 @@ def test_bounded_fixture_records_translation_exposure_and_hash() -> None:
         camera = FakeCamera(Path(tmp), 300)
         result = with_calibrator(calibrate, lambda: run_camera_preflight(camera))
         assert_true(result["result"] == "PASS", f"bounded preflight failed: {result}")
-        offsets = result["registration"]["transform"]["offset_pixels"]
-        assert_true(abs(offsets[0] - expected_x) < 1, f"wrong x translation: {offsets}")
-        assert_true(abs(offsets[1] - expected_y) < 1, f"wrong y translation: {offsets}")
+        transform = result["registration"]["transform"]
+        assert_true(transform["kind"] == "dynamic_similarity", f"wrong transform: {transform}")
+        assert_true(
+            all(0.0 <= value <= 1.0 for value in transform["crop_fractions"]),
+            f"dynamic crop escaped the frame: {transform}",
+        )
         assert_true(result["camera"]["exposure_time_abs"] == 156, f"wrong exposure: {result}")
         expected_hash = hashlib.sha256(camera.preflight_path.read_bytes()).hexdigest()
         assert_true(result["source_still"]["sha256"] == expected_hash, "source still hash was lost")
         assert_true(camera.start_calls == 1 and camera.running, "passing preflight did not continue once")
 
 
-def test_reseated_dut_translation_is_applied_before_capture() -> None:
+def test_reseated_dut_position_and_scale_are_applied_before_capture() -> None:
     expected_x, expected_y = 67.0, 40.0
 
-    actual_x, actual_y, registration = detect_display_crop_registration(
-        registration_fixture(expected_x, expected_y)
+    _actual_x, _actual_y, registration = detect_display_crop_registration(
+        registration_fixture(expected_x, expected_y, cell_width=6, cell_height=8)
     )
 
-    assert_true(abs(actual_x - expected_x) < 1, f"wrong reseated DUT x translation: {actual_x}")
-    assert_true(abs(actual_y - expected_y) < 1, f"wrong reseated DUT y translation: {actual_y}")
     assert_true(registration["result"] == "PASS", f"reseated DUT registration failed: {registration}")
     assert_true(
-        registration["maximum_offset_pixels"][1] == MAX_DISPLAY_CROP_OFFSET_Y,
-        f"vertical registration bound was not recorded: {registration}",
+        registration["transform"]["scale"] > 1.05,
+        f"closer DUT scale was not measured: {registration}",
+    )
+    assert_true(
+        registration["transform"]["kind"] == "dynamic_similarity",
+        f"dynamic transform was not recorded: {registration}",
     )
 
 
@@ -277,12 +299,12 @@ def expect_registration_code(frame: bytes, code: str) -> None:
 
 def test_registration_refusal_codes_are_precise() -> None:
     expect_registration_code(
-        registration_fixture(110.0, 0.0),
-        "screen_outside_translation_bounds",
+        registration_fixture(350.0, 0.0),
+        "screen_crop_outside_frame",
     )
     expect_registration_code(
-        registration_fixture(0.0, 60.0),
-        "screen_outside_translation_bounds",
+        registration_fixture(0.0, 220.0),
+        "screen_crop_outside_frame",
     )
     expect_registration_code(
         bytes(REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3),
@@ -525,10 +547,16 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         preflight_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "kind": "bench_camera_preflight",
                     "result": "PASS",
-                    "registration": {"transform": {"kind": "translation", "offset_pixels": [1, 2]}},
+                    "registration": {
+                        "transform": {
+                            "kind": "dynamic_similarity",
+                            "scale": 1.1,
+                            "crop_fractions": [0.2, 0.3, 0.57, 0.42],
+                        }
+                    },
                 }
             ),
             encoding="utf-8",
@@ -561,11 +589,12 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             "manifest lost preflight hash",
         )
         assert_true(
-            first["preflight"]["registration"]["transform"]["offset_pixels"] == [1, 2],
+            first["preflight"]["registration"]["transform"]["crop_fractions"]
+            == [0.2, 0.3, 0.57, 0.42],
             "manifest lost transform",
         )
         payload = json.loads(preflight_path.read_text(encoding="utf-8"))
-        payload["registration"]["transform"]["offset_pixels"] = [2, 2]
+        payload["registration"]["transform"]["crop_fractions"][0] = 0.21
         preflight_path.write_text(json.dumps(payload), encoding="utf-8")
         second = build_capture_manifest(
             camera_dir=camera_dir,
@@ -632,8 +661,8 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
 
 
 def main() -> int:
-    test_bounded_fixture_records_translation_exposure_and_hash()
-    test_reseated_dut_translation_is_applied_before_capture()
+    test_dynamic_fixture_records_crop_exposure_and_hash()
+    test_reseated_dut_position_and_scale_are_applied_before_capture()
     test_registration_refusal_codes_are_precise()
     test_decode_and_start_failures_stop_cleanly()
     test_profile_mismatch_refuses_before_camera_start()

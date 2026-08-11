@@ -16,7 +16,7 @@ from camera_contract import camera_evidence_contract
 
 
 CAPTURE_MANIFEST_SCHEMA_VERSION = 2
-GRADE_SCHEMA_VERSION = 3
+GRADE_SCHEMA_VERSION = 4
 CAPTURE_MANIFEST_NAME = "capture_manifest.json"
 PREFLIGHT_NAME = "camera_preflight.json"
 GRADES_DIRECTORY_NAME = "grades"

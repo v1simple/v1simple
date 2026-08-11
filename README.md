@@ -132,12 +132,14 @@ directory. Camera evidence has one explicit role per suite:
   frequency, and direction against that same-window log.
 
 Before opening serial or starting the V1 emulator, every requested camera
-window applies the fixed UVC profile and exposure 156, records a session-start
-still, and admits the run only when the SCAN landmark produces a bounded
-translation. A refusal writes `camera_preflight.json` with measured camera
-diagnostics and ends as `EVIDENCE_FAILED`; it does not claim firmware failure.
-The successful preflight hash and exact translation are owned by the immutable
-capture manifest.
+window applies the fixed 1280x720, 30 fps UVC profile and exposure 156, records
+a session-start still, and admits the run only when the SCAN landmark produces
+a fully contained, bounded dynamic scale/position crop. A refusal writes
+`camera_preflight.json` with measured camera diagnostics and ends as
+`EVIDENCE_FAILED`; it does not claim firmware failure. The successful preflight
+hash and exact normalized crop are owned by the immutable capture manifest.
+The completed video is probed for its real dimensions and average frame rate;
+an apparent 30 fps request that actually records below 29 fps is rejected.
 
 Run the same camera-only lifecycle as a short standalone smoke, without serial,
 upload, emulator, or a long collection window:
@@ -147,11 +149,13 @@ python3 scripts/bench/camera_preflight.py --out-dir <new-output-directory>
 ```
 
 The artifact embeds the camera contract, including the bounded calibration
-controls and fixed oracle thresholds. Bounded crop translation and bounded
-timeline alignment may self-calibrate. The fixed exposure, human-verified
-reference images, artifact ownership, same-window encounter log, and match
-thresholds are fixed. Replay alignment is anchored to the first sample actually
-emitted after BLE becomes ready, not to emulator process launch.
+controls and fixed oracle thresholds. Bounded crop scale/position and bounded
+timeline alignment may self-calibrate. Frequency recognition decodes the five
+seven-segment digits directly from the normalized close crop; it has no stored
+reference pictures and abstains when segment occupancy is ambiguous. The fixed
+exposure, artifact ownership, same-window encounter log, and match thresholds
+remain fixed. Replay alignment is anchored to the first sample actually emitted
+after BLE becomes ready, not to emulator process launch.
 
 A valid replay image/log disagreement is `FAIL`. Missing, unowned, unalignable,
 or otherwise ungradable camera evidence is `EVIDENCE_FAILED`: it blocks the
@@ -165,8 +169,9 @@ checked-in UI/audio/branding sources, dependency pins, and UI build/deploy
 inputs, directly deployed audio/branding assets, and the complete `v1replay`
 implementation. Generated UI build output is represented by those checked-in
 inputs rather than hashed directly. The grader fingerprint covers the camera
-capture, evidence contract, grader, and human-verified references. A separate
-scenario fingerprint covers the suite, duration, profile, segment, and replay
+capture, evidence contract, dynamic registration, and reference-free
+seven-segment grader. A separate scenario fingerprint covers the suite,
+duration, profile, segment, and replay
 blink profile. Git SHA/ref and clean state remain traceability only.
 Promoted performance baselines live under
 `<board>/<product fingerprint>/<suite>/<scenario fingerprint>/`; an older

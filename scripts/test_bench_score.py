@@ -218,7 +218,7 @@ def write_window(
                 else []
             )
             grade = {
-                "schema_version": 3,
+                "schema_version": 4,
                 "kind": "bench_camera_grade",
                 "capture_id": capture["capture_id"],
                 "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,

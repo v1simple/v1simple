@@ -96,7 +96,7 @@ def manifest_fixture(root: Path, *, timing: float = 8.0, trace_sha: str = "1" * 
 
 def grade_fixture(manifest: dict, grader_fingerprint: str, result: str = "PASS") -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "bench_camera_grade",
         "capture_id": manifest["capture_id"],
         "grader_fingerprint": grader_fingerprint,

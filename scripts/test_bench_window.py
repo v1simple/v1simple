@@ -26,7 +26,6 @@ from camera_capture import (  # noqa: E402
     evaluate_camera_profile_frames,
 )
 from camera_grade import (  # noqa: E402
-    CAMERA_REFERENCE,
     DISPLAY_CROP_HEIGHT,
     DISPLAY_CROP_WIDTH,
     DISPLAY_CROP_X,
@@ -41,9 +40,10 @@ from camera_grade import (  # noqa: E402
     detect_display_crop_registration,
     find_replay_alignment,
     find_replay_offset,
+    frequency_signature,
     grade_idle,
     grade_replay,
-    validate_camera_reference,
+    identify_frequency,
 )
 from run_window import (  # noqa: E402
     V1Emulator,
@@ -207,12 +207,17 @@ def test_replay_blink_profile_argv_and_result() -> None:
             )
 
 
-def test_razer_kiyo_default_uses_supported_full_hd_rate() -> None:
+def test_razer_kiyo_default_uses_real_720p30_profile() -> None:
     previous = os.environ.pop("BENCH_CAMERA_FRAMERATE", None)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             camera = CameraCapture(Path(tmp), 300)
             assert_true(camera.framerate == 30, f"unsupported default camera rate: {camera.framerate}")
+            assert_true(camera.video_size == "1280x720", f"wrong camera size: {camera.video_size}")
+            assert_true(
+                camera.input_pixel_format == "nv12",
+                f"wrong camera input pixel format: {camera.input_pixel_format}",
+            )
     finally:
         if previous is not None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
@@ -485,16 +490,34 @@ def transition_boundary_replay_fixture() -> tuple[
     return observations, encounters, offset
 
 
-def test_camera_reference_images_match_bound_signatures() -> None:
-    validate_camera_reference()
-    altered = json.loads(json.dumps(CAMERA_REFERENCE))
-    altered["frequency_references"]["24150"]["signature"][0] += 1
-    try:
-        validate_camera_reference(altered)
-    except RuntimeError as exc:
-        assert_true("signature does not match its image" in str(exc), f"wrong signature error: {exc}")
-    else:
-        raise AssertionError("camera reference signature drift passed validation")
+def frequency_signature_fixture(frequency: int) -> tuple[int, ...]:
+    patterns_by_digit = {
+        digit: pattern for pattern, digit in camera_grade_module.SEGMENT_PATTERNS.items()
+    }
+    return tuple(
+        value
+        for digit in f"{frequency:05d}"
+        for value in (1000 if active else 0 for active in patterns_by_digit[int(digit)])
+    )
+
+
+def test_reference_free_segment_decoder_abstains_when_ambiguous() -> None:
+    for expected in (24150, 34700, 35500):
+        signature = frequency_signature_fixture(expected)
+        actual, confidence = identify_frequency(signature)
+        assert_true(actual == expected, f"segment decoder read {actual} instead of {expected}")
+        assert_true(confidence > 0.0, f"segment decoder had no confidence for {expected}")
+
+    blank_signature = frequency_signature(bytes(camera_grade_module.FRAME_BYTES))
+    assert_true(not any(blank_signature), "blank frame produced active frequency segments")
+
+    ambiguous = list(frequency_signature_fixture(24150))
+    ambiguous[0] = (
+        camera_grade_module.SEGMENT_OFF_THRESHOLD
+        + camera_grade_module.SEGMENT_ON_THRESHOLD
+    ) // 2
+    actual, confidence = identify_frequency(tuple(ambiguous))
+    assert_true(actual is None and confidence == 0.0, "ambiguous segment was guessed")
 
 
 def registration_fixture(offset_x: float, offset_y: float) -> bytes:
@@ -534,25 +557,31 @@ def registration_fixture(offset_x: float, offset_y: float) -> bytes:
     return bytes(frame)
 
 
-def test_camera_crop_registration_tracks_bounded_rig_movement() -> None:
-    expected_x = 64.0
-    expected_y = 8.0
-    actual_x, actual_y, registration = detect_display_crop_registration(
-        registration_fixture(expected_x, expected_y)
+def test_camera_crop_registration_tracks_dynamic_rig_movement() -> None:
+    _offset_x, _offset_y, registration = detect_display_crop_registration(
+        registration_fixture(64.0, 8.0)
     )
-    assert_true(abs(actual_x - expected_x) < 1.0, f"camera x registration drifted: {actual_x}")
-    assert_true(abs(actual_y - expected_y) < 1.0, f"camera y registration drifted: {actual_y}")
     assert_true(registration["result"] == "PASS", "bounded camera registration did not pass")
+    assert_true(
+        registration["transform"]["kind"] == "dynamic_similarity",
+        f"camera did not record a dynamic transform: {registration}",
+    )
+    first_crop = registration["transform"]["crop_fractions"]
+    _x, _y, moved = detect_display_crop_registration(registration_fixture(-60.0, 30.0))
+    assert_true(
+        moved["transform"]["crop_fractions"] != first_crop,
+        "moving the DUT did not move the normalized crop",
+    )
 
     try:
-        detect_display_crop_registration(registration_fixture(110.0, 0.0))
-    except RuntimeError as exc:
+        detect_display_crop_registration(registration_fixture(350.0, 0.0))
+    except camera_grade_module.CameraRegistrationError as exc:
         assert_true(
-            "exceeds bounded crop translation" in str(exc),
+            exc.diagnostic["code"] == "screen_crop_outside_frame",
             f"unexpected registration error: {exc}",
         )
     else:
-        raise AssertionError("unbounded camera movement passed registration")
+        raise AssertionError("out-of-frame dynamic crop passed registration")
 
 
 def test_camera_crop_registration_falls_back_to_bright_still() -> None:
@@ -826,15 +855,15 @@ def main() -> int:
     test_failed_window_still_stops_emulator()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
-    test_razer_kiyo_default_uses_supported_full_hd_rate()
+    test_razer_kiyo_default_uses_real_720p30_profile()
     test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
     test_bench_entrypoint_forwards_explicit_baseline_window()
     test_baseline_promotion_is_future_core_display_only()
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
-    test_camera_reference_images_match_bound_signatures()
-    test_camera_crop_registration_tracks_bounded_rig_movement()
+    test_reference_free_segment_decoder_abstains_when_ambiguous()
+    test_camera_crop_registration_tracks_dynamic_rig_movement()
     test_camera_crop_registration_falls_back_to_bright_still()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
     test_replay_alignment_requires_hint_and_rejects_boundary()

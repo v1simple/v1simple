@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mechanically compare bench camera frames with the recorded display state.
+"""Mechanically compare dynamically registered display video with replay state.
 
-The camera rig is deliberately fixed and calibrated.  This grader samples the
-known display viewport through ffmpeg, reduces each frame to a few UI features,
-and compares replay frames with the independently recorded encounter CSV.  It
-does not add performance metrics or attempt general-purpose computer vision.
+The camera uses a fixed capture profile, but the DUT may move or change apparent
+size.  A stable SCAN landmark selects and normalizes a close display crop before
+the grader decodes seven-segment topology and compares it with the independently
+recorded encounter CSV.  Ambiguous digits are evidence failures, never guesses.
 """
 
 from __future__ import annotations
@@ -33,9 +33,11 @@ from camera_artifacts import (
     resolve_manifest_artifact,
 )
 from camera_contract import (
-    MAX_DISPLAY_CROP_OFFSET_X,
-    MAX_DISPLAY_CROP_OFFSET_Y,
+    EXPECTED_CAMERA_NAME,
+    EXPECTED_CAMERA_PROFILE,
+    MAX_DISPLAY_SCALE,
     MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
+    MIN_DISPLAY_SCALE,
     MIN_ALERT_COMPARISONS,
     MIN_ALERT_MATCH_RATIO,
     MIN_DIRECTION_COMPARISONS,
@@ -44,6 +46,7 @@ from camera_contract import (
     MIN_FREQUENCY_MATCH_RATIO,
     MIN_TIMELINE_MATCH_RATIO,
     REGISTRATION_SOURCE_FIELDS,
+    SUPPORTED_GRADER_VIDEO_SIZES,
     camera_evidence_contract,
 )
 
@@ -52,10 +55,8 @@ FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_RATE = 3
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
-REFERENCE_PATH = Path(__file__).with_name("camera_reference.json")
-
-# The calibrated camera view.  Coordinates are fractions of the full camera
-# frame, then normalized by ffmpeg to FRAME_WIDTH x FRAME_HEIGHT.
+# The canonical close display view. Registration derives a new crop with this
+# composition at the measured DUT scale, then normalizes it to the same output.
 DISPLAY_CROP_WIDTH = 0.52
 DISPLAY_CROP_HEIGHT = 0.38
 DISPLAY_CROP_X = 0.18
@@ -63,12 +64,14 @@ DISPLAY_CROP_Y = 0.25
 
 # The session-start and final dim stills show the centered SCAN label
 # independently of the replay log. Register that stable display landmark to the
-# verified reference layout before collection or grading. The hard limits reject
-# unreadable framing and camera movement too large for translation alone.
+# canonical close-crop composition before collection or grading. The hard limits
+# reject unreadable framing, extreme scale/aspect, and incomplete framing.
 REGISTRATION_WIDTH = 960
 REGISTRATION_HEIGHT = 540
 REFERENCE_ANCHOR_X = 224.0
 REFERENCE_ANCHOR_Y = 83.0
+REFERENCE_LANDMARK_WIDTH = 138.0
+REFERENCE_LANDMARK_HEIGHT = 51.0
 MIN_LANDMARK_FILL_RATIO = 0.10
 MAX_LANDMARK_FILL_RATIO = 0.72
 MIN_LANDMARK_COLUMN_TEXTURE_RATIO = 0.30
@@ -76,6 +79,26 @@ MIN_LANDMARK_INTERNAL_GAP_RUNS = 2
 MIN_LANDMARK_WIDEST_GAP_PIXELS = 2
 MIN_LANDMARK_ROW_COVERAGE_RATIO = 0.85
 MAX_LANDMARK_BLANK_ROW_RUN_PIXELS = 2
+
+# Five digits in the normalized "##.###" V1 frequency readout.  Each signature
+# is seven orange occupancy values in a,b,c,d,e,f,g order, expressed per mille.
+# The regions deliberately sit inside the segment strokes so minor compression,
+# perspective, and antialiasing do not turn neighboring pixels into a vote.
+FREQUENCY_DIGIT_X_BOUNDS = ((135, 164), (166, 195), (210, 239), (242, 271), (276, 307))
+SEGMENT_ON_THRESHOLD = 240
+SEGMENT_OFF_THRESHOLD = 180
+SEGMENT_PATTERNS = {
+    (1, 1, 1, 1, 1, 1, 0): 0,
+    (0, 1, 1, 0, 0, 0, 0): 1,
+    (1, 1, 0, 1, 1, 0, 1): 2,
+    (1, 1, 1, 1, 0, 0, 1): 3,
+    (0, 1, 1, 0, 0, 1, 1): 4,
+    (1, 0, 1, 1, 0, 1, 1): 5,
+    (1, 0, 1, 1, 1, 1, 1): 6,
+    (1, 1, 1, 0, 0, 0, 0): 7,
+    (1, 1, 1, 1, 1, 1, 1): 8,
+    (1, 1, 1, 1, 0, 1, 1): 9,
+}
 
 ALIGNMENT_END_SECONDS = 251.0
 MIN_ALIGNMENT_COVERAGE_RATIO = 0.95
@@ -173,155 +196,65 @@ def _orange_centroid_y(frame: bytes, bounds: tuple[int, int, int, int]) -> tuple
     return count, (y_total / count if count else 0.0)
 
 
+def validate_camera_profile(camera_result: dict[str, Any]) -> None:
+    if camera_result.get("camera_name") != EXPECTED_CAMERA_NAME:
+        raise RuntimeError("camera does not match the fixed capture profile")
+    actual = camera_result.get("profile") if isinstance(camera_result.get("profile"), dict) else {}
+    common_expected = {
+        key: value
+        for key, value in EXPECTED_CAMERA_PROFILE.items()
+        if key not in {"auto_exposure_priority", "input_pixel_format", "video_size"}
+    }
+    if (
+        any(actual.get(key) != value for key, value in common_expected.items())
+        or actual.get("video_size") not in SUPPORTED_GRADER_VIDEO_SIZES
+    ):
+        raise RuntimeError("camera evidence is not compatible with the dynamic grader")
+
+
+def _segment_bounds(x0: int, x1: int) -> tuple[tuple[int, int, int, int], ...]:
+    return (
+        (x0 + 5, 60, x1 - 2, 68),
+        (x1 - 8, 64, x1, 84),
+        (x1 - 8, 85, x1, 104),
+        (x0 + 5, 101, x1 - 4, 108),
+        (x0, 85, x0 + 8, 104),
+        (x0, 64, x0 + 8, 84),
+        (x0 + 5, 82, x1 - 4, 90),
+    )
+
+
 def frequency_signature(frame: bytes) -> tuple[int, ...]:
+    """Return reference-free seven-segment occupancy for all five digits."""
     values: list[int] = []
-    for bin_y in range(5):
-        for bin_x in range(15):
-            x0 = 135 + bin_x * 12
-            y0 = 55 + bin_y * 12
-            values.append(_count_pixels(frame, (x0, y0, x0 + 12, y0 + 12), _orange))
+    for x0, x1 in FREQUENCY_DIGIT_X_BOUNDS:
+        for bounds in _segment_bounds(x0, x1):
+            area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+            values.append(round(_count_pixels(frame, bounds, _orange) / area * 1000))
     return tuple(values)
 
 
-def load_camera_reference(path: Path = REFERENCE_PATH) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise RuntimeError("camera reference is malformed")
-    return payload
-
-
-CAMERA_REFERENCE = load_camera_reference()
-
-
-def load_frequency_references(payload: dict[str, Any] = CAMERA_REFERENCE) -> dict[int, tuple[int, ...]]:
-    raw = payload.get("frequency_references")
-    if not isinstance(raw, dict) or not raw:
-        raise RuntimeError("camera reference has no frequency references")
-    references: dict[int, tuple[int, ...]] = {}
-    for key, reference in raw.items():
-        if not isinstance(reference, dict) or not isinstance(reference.get("signature"), list):
-            raise RuntimeError("camera reference frequency entry is malformed")
-        references[int(key)] = tuple(int(value) for value in reference["signature"])
-    if any(len(values) != 75 for values in references.values()):
-        raise RuntimeError("camera reference frequency signatures are malformed")
-    return references
-
-
-FREQUENCY_REFERENCES = load_frequency_references()
-
-
-def _decode_reference_frame(path: Path, ffmpeg: str | None = None) -> bytes:
-    executable = ffmpeg or shutil.which("ffmpeg")
-    if not executable:
-        raise RuntimeError("ffmpeg is required to validate camera reference images")
-    process = subprocess.run(
-        [
-            executable,
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-frames:v",
-            "1",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-",
-        ],
-        check=False,
-        capture_output=True,
-    )
-    if process.returncode != 0:
-        detail = process.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"camera reference image decode failed: {detail or f'exit {process.returncode}'}")
-    if len(process.stdout) != FRAME_BYTES:
-        raise RuntimeError(
-            f"camera reference image has {len(process.stdout)} decoded bytes; expected {FRAME_BYTES}"
-        )
-    return process.stdout
-
-
-def validate_camera_reference(
-    payload: dict[str, Any] = CAMERA_REFERENCE,
-    path: Path = REFERENCE_PATH,
-    ffmpeg: str | None = None,
-) -> None:
-    verified_by = payload.get("verified_by")
-    verified_utc = payload.get("verified_utc")
-    if not isinstance(verified_by, str) or not verified_by.strip():
-        raise RuntimeError("camera reference has no visual verifier")
-    if not isinstance(verified_utc, str):
-        raise RuntimeError("camera reference has no visual verification time")
-    try:
-        verification_time = datetime.fromisoformat(verified_utc.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise RuntimeError("camera reference visual verification time is malformed") from exc
-    if verification_time.tzinfo is None:
-        raise RuntimeError("camera reference visual verification time has no timezone")
-
-    raw = payload.get("frequency_references")
-    if not isinstance(raw, dict) or not raw:
-        raise RuntimeError("camera reference has no frequency references")
-    references = load_frequency_references(payload)
-    for frequency, signature in references.items():
-        reference = raw.get(str(frequency))
-        if not isinstance(reference, dict):
-            raise RuntimeError(f"camera reference {frequency} entry is malformed")
-        expected_text = f"{frequency // 1000}.{frequency % 1000:03d}"
-        if reference.get("display_text") != expected_text:
-            raise RuntimeError(f"camera reference {frequency} display text is malformed")
-        image_name = reference.get("image")
-        image_sha256 = reference.get("image_sha256")
-        if not isinstance(image_name, str) or Path(image_name).name != image_name:
-            raise RuntimeError(f"camera reference {frequency} image path is malformed")
-        if not isinstance(image_sha256, str) or len(image_sha256) != 64:
-            raise RuntimeError(f"camera reference {frequency} image hash is malformed")
-        image_path = path.parent / image_name
-        try:
-            image_bytes = image_path.read_bytes()
-        except OSError as exc:
-            raise RuntimeError(f"camera reference {frequency} image is missing") from exc
-        if hashlib.sha256(image_bytes).hexdigest() != image_sha256:
-            raise RuntimeError(f"camera reference {frequency} image hash does not match")
-        if frequency_signature(_decode_reference_frame(image_path, ffmpeg)) != signature:
-            raise RuntimeError(f"camera reference {frequency} signature does not match its image")
-
-
-def validate_camera_profile(camera_result: dict[str, Any]) -> None:
-    if camera_result.get("camera_name") != CAMERA_REFERENCE.get("camera_name"):
-        raise RuntimeError("camera does not match the calibrated visual reference")
-    actual = camera_result.get("profile") if isinstance(camera_result.get("profile"), dict) else {}
-    expected = CAMERA_REFERENCE.get("profile")
-    if not isinstance(expected, dict) or any(actual.get(key) != value for key, value in expected.items()):
-        raise RuntimeError("camera profile does not match the calibrated visual reference")
-
-
-def _signature_distance(left: tuple[int, ...], right: tuple[int, ...]) -> float:
-    left_total = sum(left)
-    right_total = sum(right)
-    if left_total <= 0 or right_total <= 0 or len(left) != len(right):
-        return 1.0
-    return 0.5 * sum(
-        abs(left_value / left_total - right_value / right_total)
-        for left_value, right_value in zip(left, right)
-    )
-
-
 def identify_frequency(signature: tuple[int, ...]) -> tuple[int | None, float]:
-    ranked = sorted(
-        (_signature_distance(signature, reference), frequency)
-        for frequency, reference in FREQUENCY_REFERENCES.items()
-    )
-    if len(ranked) < 2:
+    if len(signature) != len(FREQUENCY_DIGIT_X_BOUNDS) * 7:
         return None, 0.0
-    best_distance, best_frequency = ranked[0]
-    confidence = ranked[1][0] - best_distance
-    if best_distance > 0.24 or confidence < 0.025:
-        return None, max(0.0, confidence)
-    return best_frequency, confidence
+    digits: list[int] = []
+    margins: list[int] = []
+    for index in range(0, len(signature), 7):
+        values = signature[index : index + 7]
+        if any(SEGMENT_OFF_THRESHOLD < value < SEGMENT_ON_THRESHOLD for value in values):
+            return None, 0.0
+        pattern = tuple(int(value >= SEGMENT_ON_THRESHOLD) for value in values)
+        digit = SEGMENT_PATTERNS.get(pattern)
+        if digit is None:
+            return None, 0.0
+        digits.append(digit)
+        margins.extend(
+            value - SEGMENT_ON_THRESHOLD if active else SEGMENT_OFF_THRESHOLD - value
+            for value, active in zip(values, pattern)
+        )
+    frequency = int("".join(str(digit) for digit in digits))
+    confidence = min(margins, default=0) / 1000.0
+    return frequency, max(0.0, confidence)
 
 
 def observe_frame(frame: bytes, time_s: float) -> FrameObservation:
@@ -402,15 +335,15 @@ def _decode_registration_frame(path: Path, ffmpeg: str | None = None) -> bytes:
 
 
 def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[str, Any]]:
-    """Locate the centered SCAN label and return bounded output-pixel offsets."""
+    """Locate SCAN and return a bounded dynamic close-crop registration."""
     expected_bytes = REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3
     if len(frame) != expected_bytes:
         raise ValueError(f"camera registration frame has {len(frame)} bytes; expected {expected_bytes}")
 
-    roi_x0 = int(REGISTRATION_WIDTH * 0.25)
-    roi_x1 = int(REGISTRATION_WIDTH * 0.72)
-    roi_y0 = int(REGISTRATION_HEIGHT * 0.25)
-    roi_y1 = int(REGISTRATION_HEIGHT * 0.62)
+    roi_x0 = int(REGISTRATION_WIDTH * 0.08)
+    roi_x1 = int(REGISTRATION_WIDTH * 0.92)
+    roi_y0 = int(REGISTRATION_HEIGHT * 0.08)
+    roi_y1 = int(REGISTRATION_HEIGHT * 0.92)
     active_columns: list[tuple[int, int]] = []
     for x in range(roi_x0, roi_x1):
         count = 0
@@ -423,7 +356,7 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
 
     groups: list[list[tuple[int, int]]] = []
     for x, count in active_columns:
-        if not groups or x - groups[-1][-1][0] > 12:
+        if not groups or x - groups[-1][-1][0] > 20:
             groups.append([])
         groups[-1].append((x, count))
     if not groups:
@@ -447,19 +380,19 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
             "screen_landmark_geometry_invalid",
             "camera registration still has no complete display landmark",
             measured={"landmark_width_pixels": anchor_x1 - anchor_x0 + 1, "landmark_height_pixels": 0},
-            thresholds={"width_pixels": [80, 180], "height_pixels": [30, 80]},
+            thresholds={"width_pixels": [65, 225], "height_pixels": [24, 90]},
         )
     anchor_y0 = min(anchor_ys)
     anchor_y1 = max(anchor_ys)
     anchor_width = anchor_x1 - anchor_x0 + 1
     anchor_height = anchor_y1 - anchor_y0 + 1
-    if not (80 <= anchor_width <= 180 and 30 <= anchor_height <= 80):
+    if not (65 <= anchor_width <= 225 and 24 <= anchor_height <= 90):
         raise CameraRegistrationError(
             "screen_landmark_geometry_invalid",
             "camera registration display landmark has unexpected geometry "
             f"({anchor_width}x{anchor_height})",
             measured={"landmark_width_pixels": anchor_width, "landmark_height_pixels": anchor_height},
-            thresholds={"width_pixels": [80, 180], "height_pixels": [30, 80]},
+            thresholds={"width_pixels": [65, 225], "height_pixels": [24, 90]},
         )
 
     column_counts: list[int] = []
@@ -537,28 +470,52 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
 
     anchor_x = (anchor_x0 + anchor_x1) / 2.0
     anchor_y = (anchor_y0 + anchor_y1) / 2.0
-    expected_x = REGISTRATION_WIDTH * (
-        DISPLAY_CROP_X + DISPLAY_CROP_WIDTH * REFERENCE_ANCHOR_X / FRAME_WIDTH
-    )
-    expected_y = REGISTRATION_HEIGHT * (
-        DISPLAY_CROP_Y + DISPLAY_CROP_HEIGHT * REFERENCE_ANCHOR_Y / FRAME_HEIGHT
-    )
-    offset_x = (anchor_x - expected_x) / (REGISTRATION_WIDTH * DISPLAY_CROP_WIDTH) * FRAME_WIDTH
-    offset_y = (anchor_y - expected_y) / (REGISTRATION_HEIGHT * DISPLAY_CROP_HEIGHT) * FRAME_HEIGHT
-    if abs(offset_x) > MAX_DISPLAY_CROP_OFFSET_X or abs(offset_y) > MAX_DISPLAY_CROP_OFFSET_Y:
+    scale_x = anchor_width / REFERENCE_LANDMARK_WIDTH
+    scale_y = anchor_height / REFERENCE_LANDMARK_HEIGHT
+    scale = math.sqrt(scale_x * scale_y)
+    aspect_scale_ratio = scale_x / scale_y
+    if not (
+        MIN_DISPLAY_SCALE <= scale <= MAX_DISPLAY_SCALE
+        and 0.75 <= aspect_scale_ratio <= 1.35
+    ):
         raise CameraRegistrationError(
-            "screen_outside_translation_bounds",
-            "camera registration exceeds bounded crop translation "
-            f"({offset_x:.1f}px, {offset_y:.1f}px)",
+            "screen_scale_outside_bounds",
+            "camera registration display scale or aspect is outside dynamic bounds",
             measured={
-                "offset_x_pixels": round(offset_x, 3),
-                "offset_y_pixels": round(offset_y, 3),
+                "scale": round(scale, 4),
+                "scale_x": round(scale_x, 4),
+                "scale_y": round(scale_y, 4),
+                "aspect_scale_ratio": round(aspect_scale_ratio, 4),
             },
             thresholds={
-                "maximum_absolute_offset_x_pixels": MAX_DISPLAY_CROP_OFFSET_X,
-                "maximum_absolute_offset_y_pixels": MAX_DISPLAY_CROP_OFFSET_Y,
+                "scale": [MIN_DISPLAY_SCALE, MAX_DISPLAY_SCALE],
+                "aspect_scale_ratio": [0.75, 1.35],
             },
         )
+
+    crop_width = DISPLAY_CROP_WIDTH * scale
+    crop_height = DISPLAY_CROP_HEIGHT * scale
+    crop_x = anchor_x / REGISTRATION_WIDTH - crop_width * REFERENCE_ANCHOR_X / FRAME_WIDTH
+    crop_y = anchor_y / REGISTRATION_HEIGHT - crop_height * REFERENCE_ANCHOR_Y / FRAME_HEIGHT
+    if crop_x < 0.0 or crop_y < 0.0 or crop_x + crop_width > 1.0 or crop_y + crop_height > 1.0:
+        raise CameraRegistrationError(
+            "screen_crop_outside_frame",
+            "dynamic display crop is not fully contained by the camera frame",
+            measured={
+                "crop_fractions": [
+                    round(crop_x, 6),
+                    round(crop_y, 6),
+                    round(crop_width, 6),
+                    round(crop_height, 6),
+                ],
+            },
+            thresholds={"minimum": 0.0, "maximum": 1.0, "full_crop_required": True},
+        )
+
+    # Preserve the legacy return shape for callers while the owned transform
+    # carries the exact scale-aware crop used by extraction.
+    offset_x = (crop_x - DISPLAY_CROP_X) / DISPLAY_CROP_WIDTH * FRAME_WIDTH
+    offset_y = (crop_y - DISPLAY_CROP_Y) / DISPLAY_CROP_HEIGHT * FRAME_HEIGHT
     return offset_x, offset_y, {
         "result": "PASS",
         "normalized_still_size": f"{REGISTRATION_WIDTH}x{REGISTRATION_HEIGHT}",
@@ -574,7 +531,22 @@ def detect_display_crop_registration(frame: bytes) -> tuple[float, float, dict[s
         },
         "reference_anchor": [REFERENCE_ANCHOR_X, REFERENCE_ANCHOR_Y],
         "offset_pixels": [round(offset_x, 3), round(offset_y, 3)],
-        "maximum_offset_pixels": [MAX_DISPLAY_CROP_OFFSET_X, MAX_DISPLAY_CROP_OFFSET_Y],
+        "transform": {
+            "kind": "dynamic_similarity",
+            "scale": round(scale, 6),
+            "scale_xy": [round(scale_x, 6), round(scale_y, 6)],
+            "crop_fractions": [
+                round(crop_x, 8),
+                round(crop_y, 8),
+                round(crop_width, 8),
+                round(crop_height, 8),
+            ],
+        },
+        "bounds": {
+            "scale": [MIN_DISPLAY_SCALE, MAX_DISPLAY_SCALE],
+            "aspect_scale_ratio": [0.75, 1.35],
+            "full_crop_required": True,
+        },
     }
 
 
@@ -607,11 +579,22 @@ def calibrate_display_crop_from_evidence(
     raise RuntimeError("camera registration failed for low-exposure stills: " + "; ".join(failures))
 
 
-def _display_crop_filter(offset_x: float, offset_y: float) -> str:
-    crop_x = DISPLAY_CROP_X + offset_x / FRAME_WIDTH * DISPLAY_CROP_WIDTH
-    crop_y = DISPLAY_CROP_Y + offset_y / FRAME_HEIGHT * DISPLAY_CROP_HEIGHT
+def _display_crop_filter(
+    offset_x: float,
+    offset_y: float,
+    registration: dict[str, Any] | None = None,
+) -> str:
+    transform = registration.get("transform") if isinstance(registration, dict) else None
+    crop = transform.get("crop_fractions") if isinstance(transform, dict) else None
+    if isinstance(crop, list) and len(crop) == 4:
+        crop_x, crop_y, crop_width, crop_height = (float(value) for value in crop)
+    else:
+        crop_width = DISPLAY_CROP_WIDTH
+        crop_height = DISPLAY_CROP_HEIGHT
+        crop_x = DISPLAY_CROP_X + offset_x / FRAME_WIDTH * DISPLAY_CROP_WIDTH
+        crop_y = DISPLAY_CROP_Y + offset_y / FRAME_HEIGHT * DISPLAY_CROP_HEIGHT
     return (
-        f"crop=iw*{DISPLAY_CROP_WIDTH}:ih*{DISPLAY_CROP_HEIGHT}:"
+        f"crop=iw*{crop_width}:ih*{crop_height}:"
         f"iw*{crop_x:.8f}:ih*{crop_y:.8f}"
     )
 
@@ -621,6 +604,7 @@ def extract_observations(
     ffmpeg: str | None = None,
     crop_offset_x: float = 0.0,
     crop_offset_y: float = 0.0,
+    crop_registration: dict[str, Any] | None = None,
 ) -> list[FrameObservation]:
     executable = ffmpeg or shutil.which("ffmpeg")
     if not executable:
@@ -634,7 +618,7 @@ def extract_observations(
         "-i",
         str(video_path),
         "-vf",
-        f"{_display_crop_filter(crop_offset_x, crop_offset_y)},"
+        f"{_display_crop_filter(crop_offset_x, crop_offset_y, crop_registration)},"
         f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,fps={FRAME_RATE}",
         "-an",
         "-f",
@@ -1218,11 +1202,14 @@ def grade_camera(
                 }
             ]
             return payload
-        validate_camera_reference()
-        payload["camera_reference"] = {
-            "source_git_sha": CAMERA_REFERENCE.get("source_git_sha"),
-            "verified_by": CAMERA_REFERENCE.get("verified_by"),
-            "verified_utc": CAMERA_REFERENCE.get("verified_utc"),
+        payload["recognizer"] = {
+            "kind": "seven_segment_topology",
+            "reference_images": False,
+            "ambiguous_reading_policy": "abstain",
+            "segment_thresholds_per_mille": {
+                "off_maximum": SEGMENT_OFF_THRESHOLD,
+                "on_minimum": SEGMENT_ON_THRESHOLD,
+            },
         }
         validate_camera_profile(camera_result)
         video_name = str(camera_result.get("video") or "")
@@ -1234,14 +1221,12 @@ def grade_camera(
             camera_result,
         )
         payload["crop_registration"] = registration
-        payload["transform"] = {
-            "kind": "translation",
-            "offset_pixels": registration.get("offset_pixels") or [crop_offset_x, crop_offset_y],
-        }
+        payload["transform"] = registration["transform"]
         observations = extract_observations(
             video_path,
             crop_offset_x=crop_offset_x,
             crop_offset_y=crop_offset_y,
+            crop_registration=registration,
         )
         payload["sample_rate_hz"] = FRAME_RATE
         payload["sample_count"] = len(observations)

@@ -94,10 +94,6 @@ GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "qualification_policy": ("scripts/bench/bench_policy.py",),
     # The top-level bench entry point owns whether camera gating is invoked.
     "camera_gate_entrypoint": ("bench.sh",),
-    "camera_references": (
-        "scripts/bench/camera_reference.json",
-        "scripts/bench/camera_reference_*.png",
-    ),
     "grader_dependencies": (
         "scripts/bench/requirements*.txt",
         "scripts/bench/pyproject.toml",

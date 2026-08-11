@@ -318,6 +318,53 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
         camera_capture_module.time.sleep = original_sleep
 
 
+def test_failed_frame_rate_probe_retains_measurements_and_diagnostics() -> None:
+    class FinishedProcess:
+        returncode = 0
+
+        def poll(self) -> int:
+            return 0
+
+    class LowRateCameraCapture(CameraCapture):
+        def _probe_video(self) -> dict[str, float | int]:
+            return {
+                "duration_seconds": 300.0,
+                "width": 1280,
+                "height": 720,
+                "average_frame_rate": 14.917,
+            }
+
+        def _validate_recording_profile(self) -> dict[str, object]:
+            return {"result": "PASS"}
+
+        def _snapshot(self, _exposure: int, path: Path) -> None:
+            path.write_bytes(b"snapshot")
+
+        def _set_control(self, _name: str, _value: int) -> None:
+            pass
+
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = LowRateCameraCapture(Path(tmp), 300)
+        camera.process = FinishedProcess()  # type: ignore[assignment]
+        camera.video_path.write_bytes(b"video")
+        camera.preflight_path.write_bytes(b"snapshot")
+
+        result = camera.stop(collection_completed=True)
+
+        assert_true(result["result"] == "CAPTURE_FAILED", f"low-rate capture passed: {result}")
+        assert_true(
+            result["video_probe"]["average_frame_rate"] == 14.917,
+            f"measured frame rate was discarded: {result}",
+        )
+        assert_true(result["video_duration_seconds"] == 300.0, f"duration was discarded: {result}")
+        assert_true(camera.bright_path.is_file(), f"bright diagnostic still is missing: {result}")
+        assert_true(camera.dim_path.is_file(), f"dim diagnostic still is missing: {result}")
+        assert_true(
+            any("frame rate is below" in error for error in result["errors"]),
+            f"frame-rate failure was not retained: {result}",
+        )
+
+
 def test_bench_entrypoint_forwards_explicit_baseline_window() -> None:
     entrypoint = (ROOT / "bench.sh").read_text(encoding="utf-8")
     assert_true('COMPARE_TO=()' in entrypoint, "bench entrypoint does not own an explicit baseline window")
@@ -858,6 +905,7 @@ def main() -> int:
     test_razer_kiyo_default_uses_real_720p30_profile()
     test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
+    test_failed_frame_rate_probe_retains_measurements_and_diagnostics()
     test_bench_entrypoint_forwards_explicit_baseline_window()
     test_baseline_promotion_is_future_core_display_only()
     test_camera_profile_validation_rejects_recorder_brightness_drift()

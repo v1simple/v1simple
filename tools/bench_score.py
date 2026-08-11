@@ -421,11 +421,20 @@ def classify_window(
         if not capture_manifest:
             camera_evidence_inconclusive = True
             result = worse(result, "EVIDENCE_FAILED")
-            legacy_grade_name = str(window_camera.get("grade") or camera.get("grade") or "camera_grade.json")
-            camera_grade = load_json(camera_dir / Path(legacy_grade_name).name) or {}
-            evidence.append(
-                "gated replay camera evidence uses legacy ownership; regrade with the current grader"
-            )
+            if camera.get("result") == "CAPTURE_FAILED":
+                camera_errors = camera.get("errors") if isinstance(camera.get("errors"), list) else []
+                evidence.append(
+                    "gated replay camera evidence was not captured"
+                    + (f": {'; '.join(str(item) for item in camera_errors)}" if camera_errors else "")
+                )
+            else:
+                legacy_grade_name = str(
+                    window_camera.get("grade") or camera.get("grade") or "camera_grade.json"
+                )
+                camera_grade = load_json(camera_dir / Path(legacy_grade_name).name) or {}
+                evidence.append(
+                    "gated replay camera evidence uses legacy ownership; regrade with the current grader"
+                )
         elif camera.get("result") != "CAPTURED" or missing_camera_files:
             camera_evidence_inconclusive = True
             result = worse(result, "EVIDENCE_FAILED")
@@ -523,6 +532,8 @@ def classify_window(
             "mechanical_result": camera_grade.get("result", ""),
             "video": camera.get("video", ""),
             "video_duration_seconds": camera.get("video_duration_seconds"),
+            "video_probe": camera.get("video_probe", {}),
+            "errors": camera.get("errors", []),
             "visually_graded": camera_grade_valid,
             "checks": camera_grade.get("checks", {}),
             "confidence": camera_grade.get("confidence", {}),

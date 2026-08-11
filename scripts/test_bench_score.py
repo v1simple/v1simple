@@ -630,11 +630,18 @@ def test_requested_replay_camera_separates_product_and_evidence_failures() -> No
         assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
         assert_true("has no current-fingerprint mechanical grade" in proc.stdout, proc.stdout)
 
+        write_window(root, "replay", camera_result="CAPTURED")
         (root / "replay" / "camera" / "capture_manifest.json").unlink()
         (root / "replay" / "camera" / "camera_result.json").unlink()
         proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
         assert_true("legacy ownership" in proc.stdout, proc.stdout)
+
+        write_window(root, "replay", camera_result="CAPTURE_FAILED")
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("was not captured: camera unavailable" in proc.stdout, proc.stdout)
+        assert_true("legacy ownership" not in proc.stdout, proc.stdout)
 
 
 def test_strict_camera_ownership_and_confidence_are_required() -> None:

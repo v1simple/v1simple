@@ -392,6 +392,11 @@ class CameraCapture:
             }
         except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
             raise RuntimeError("camera video probe is malformed") from exc
+
+        return result
+
+    def _validate_video_probe(self, result: dict[str, float | int]) -> None:
+        """Require the recorded stream to match the requested source profile."""
         expected_width, expected_height = (int(value) for value in self.video_size.split("x", 1))
         if (result["width"], result["height"]) != (expected_width, expected_height):
             raise RuntimeError(
@@ -403,7 +408,6 @@ class CameraCapture:
                 "camera video frame rate is below the requested profile "
                 f"({result['average_frame_rate']:.3f} < {self.framerate - 1.0:.1f})"
             )
-        return result
 
     def stop(self, collection_completed: bool) -> dict[str, Any]:
         was_running = self.process is not None
@@ -415,6 +419,12 @@ class CameraCapture:
             try:
                 video_probe = self._probe_video()
                 duration = float(video_probe["duration_seconds"])
+                try:
+                    self._validate_video_probe(video_probe)
+                except RuntimeError as exc:
+                    # Retain the measured probe and finish collecting the
+                    # diagnostic stills even though this capture cannot pass.
+                    self.errors.append(str(exc))
                 profile_validation = self._validate_recording_profile()
                 if profile_validation.get("result") != "PASS":
                     self.errors.append(str(profile_validation.get("message") or "camera calibration failed"))
@@ -423,7 +433,9 @@ class CameraCapture:
                 self._set_control("exposure-time-abs", VIDEO_EXPOSURE)
                 minimum = max(1.0, float(self.expected_duration_s) - 5.0) if collection_completed else 1.0
                 if duration < minimum:
-                    raise RuntimeError(f"camera video is too short ({duration:.1f}s; need {minimum:.1f}s)")
+                    self.errors.append(
+                        f"camera video is too short ({duration:.1f}s; need {minimum:.1f}s)"
+                    )
             except Exception as exc:  # noqa: BLE001 - result artifact is the contract
                 self.errors.append(str(exc))
 

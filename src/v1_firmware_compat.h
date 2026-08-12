@@ -12,7 +12,8 @@ inline constexpr uint8_t kLegacyGen2UserByteCount = 4;
 
 inline uint8_t supportedUserByteCount(uint32_t firmwareVersion) {
     if (firmwareVersion != 0 && firmwareVersion < kInitialGen2Version) {
-        // Gen1 supports all six ESP user bytes.
+        // Gen1 supports all six ESP user bytes (iOSESPLibrary @ d04f665,
+        // ESPV1UserBytes.m getNumberOfSupportedBytesForV1Version).
         return kUserByteCount;
     }
     if (firmwareVersion >= kFullUserBytesVersion) {

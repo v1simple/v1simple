@@ -60,6 +60,7 @@ void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
 #include "../../src/v1_firmware_compat.h"
 
 #include "../fixtures/protocol_spec_tables.h"
+#include "../fixtures/vendor_esp_library_tables.h"
 
 namespace {
 
@@ -503,6 +504,32 @@ void test_user_byte_write_shape_is_firmware_compatible() {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(input, output, 6);
 }
 
+void test_user_byte_version_gates_match_vendor_library() {
+    TEST_ASSERT_EQUAL_UINT32(vendor_esp::kInitialV1Gen2Version, V1FirmwareCompat::kInitialGen2Version);
+    TEST_ASSERT_EQUAL_UINT32(vendor_esp::kAllowGatsoRT4StartVersion, V1FirmwareCompat::kFullUserBytesVersion);
+    TEST_ASSERT_EQUAL_UINT32(vendor_esp::kAllowPhotoIntersectionFilterStartVersion,
+                             V1FirmwareCompat::kFullUserBytesVersion);
+
+    for (const auto& row : vendor_esp::kSupportedUserByteCounts) {
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(row.count, V1FirmwareCompat::supportedUserByteCount(row.version), row.note);
+    }
+
+    // The fill value for unsupported bytes matches the vendor library's
+    // defaultUnusedBytesForV1Version.
+    const uint8_t input[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    uint8_t output[6] = {};
+    V1FirmwareCompat::prepareUserBytesForWrite(input, output, vendor_esp::kInitialV1Gen2Version);
+    TEST_ASSERT_EQUAL_UINT8(vendor_esp::kUnusedUserByteFill, output[4]);
+    TEST_ASSERT_EQUAL_UINT8(vendor_esp::kUnusedUserByteFill, output[5]);
+
+    // Deliberate divergence, pinned: with no version received yet, the vendor
+    // library assumes DEFAULT_V1_VERSION (41039 -> six bytes); we stay
+    // legacy-safe (four bytes) until the connected V1 reports its version.
+    TEST_ASSERT_EQUAL_UINT8(V1FirmwareCompat::kLegacyGen2UserByteCount, V1FirmwareCompat::supportedUserByteCount(0));
+    TEST_ASSERT_EQUAL_UINT8(V1FirmwareCompat::kUserByteCount,
+                            V1FirmwareCompat::supportedUserByteCount(vendor_esp::kDefaultV1Version));
+}
+
 void test_laser_strength_is_full_scale_regardless_of_raw() {
     const uint8_t raws[] = {0x00, 0x01, 0x7F, 0xFF};
     for (uint8_t raw : raws) {
@@ -541,5 +568,6 @@ int main() {
     RUN_TEST(test_user_bytes_bool_rows_match_spec_table);
     RUN_TEST(test_user_bytes_field_rows_match_spec_table);
     RUN_TEST(test_user_byte_write_shape_is_firmware_compatible);
+    RUN_TEST(test_user_byte_version_gates_match_vendor_library);
     return UNITY_END();
 }

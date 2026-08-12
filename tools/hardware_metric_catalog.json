@@ -520,7 +520,6 @@
       "required": false,
       "absolute_min": null,
       "absolute_max": 100,
-      "advisory_max": 50,
       "regress_abs": 10,
       "regress_pct": 0.20
     },
@@ -536,7 +535,6 @@
       "required": false,
       "absolute_min": null,
       "absolute_max": 100,
-      "advisory_max": 50,
       "regress_abs": 10,
       "regress_pct": 0.20
     },
@@ -766,6 +764,7 @@
       "required": false,
       "absolute_min": null,
       "absolute_max": 80000,
+      "advisory_max": 60000,
       "regress_abs": 20000,
       "regress_pct": null
     },

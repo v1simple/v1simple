@@ -155,11 +155,6 @@ def standard_soak_records(
         soak_metric(track, "wifi_p95_us", 1800),
         soak_metric(track, "disp_pipe_p95_us", disp_pipe_p95_us),
         soak_metric(track, "dma_fragmentation_pct_p95", 18),
-        # notify_to_display_max_ms is advisory on the drive_wifi_ap track.
-        # Without it every consumer of standard_soak_records() trips
-        # advisory_failures=1 and downgrades to PASS_WITH_WARNINGS. 25 ms
-        # sits comfortably under the catalog's absolute_max=50 and produces
-        # no regression when copied to baseline.
         soak_metric(track, "notify_to_display_max_ms", 25),
     ]
     if display_drive_activity_delta is not None:
@@ -643,14 +638,6 @@ def test_drive_wifi_ap_loop_peak_is_informational(tmpdir: Path) -> None:
         soak_metric("drive_wifi_ap", "wifi_p95_us", 1800),
         soak_metric("drive_wifi_ap", "disp_pipe_p95_us", 21000),
         soak_metric("drive_wifi_ap", "dma_fragmentation_pct_p95", 18),
-        # notify_to_display_max_ms is advisory on drive_wifi_ap. Without it
-        # the score reports advisory_failures=1 (missing required-at-advisory
-        # metric) and the run becomes PASS_WITH_WARNINGS, which violates the
-        # test's "loop peak alone is informational" invariant. 25 ms is
-        # comfortably under the catalog's absolute_max=50 and identical
-        # between current/baseline, so it scores pass and the test focuses
-        # on the loop peak regression as
-        # designed.
         soak_metric("drive_wifi_ap", "notify_to_display_max_ms", 25),
     ]
     baseline_records = [dict(item) for item in current_records]
@@ -1208,10 +1195,22 @@ def test_catalog_contains_data_derived_metric_budgets() -> None:
         all(
             policy.score_level == "hard"
             and policy.absolute_max == 100
-            and policy.advisory_max == 50
+            and policy.advisory_max is None
             for policy in notify
         ),
         f"notify budgets do not match the data-derived contract: {notify}",
+    )
+
+    core_display_peak = next(
+        policy
+        for policy in policies
+        if policy.metric == "disp_pipe_max_peak_us" and policy.selector == {"stress_class": "core"}
+    )
+    assert_true(
+        core_display_peak.score_level == "hard"
+        and core_display_peak.absolute_max == 80000
+        and core_display_peak.advisory_max == 60000,
+        f"core display peak budgets do not match the data-derived contract: {core_display_peak}",
     )
 
     by_metric = {policy.metric: policy for policy in policies if policy.run_kind == "real_fw_soak"}

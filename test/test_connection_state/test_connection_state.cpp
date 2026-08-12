@@ -383,6 +383,20 @@ void test_real_module_data_stale_boundary_is_exclusive() {
     TEST_ASSERT_EQUAL(1, bleClient.requestAlertDataCalls);
 }
 
+void test_real_module_session_open_invalidates_detector_version() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+
+    parser.state.v1FirmwareVersion = 41039;
+    parser.state.hasV1Version = true;
+    real.handleSessionOpened(7);
+
+    TEST_ASSERT_EQUAL(1, parser.resetV1VersionCalls);
+    TEST_ASSERT_FALSE(parser.state.hasV1Version);
+    TEST_ASSERT_EQUAL_UINT32(0, parser.state.v1FirmwareVersion);
+    TEST_ASSERT_EQUAL(1, bleQueueModule.openSessionCalls);
+}
+
 void test_real_module_disconnect_clears_ble_display_state() {
     ConnectionStateModule real;
     real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
@@ -660,6 +674,7 @@ void runAllTests() {
 
     // Real-module mutation pins
     RUN_TEST(test_real_module_data_stale_boundary_is_exclusive);
+    RUN_TEST(test_real_module_session_open_invalidates_detector_version);
     RUN_TEST(test_real_module_disconnect_clears_ble_display_state);
     RUN_TEST(test_real_module_immediate_connect_defers_display_but_commits_state);
     RUN_TEST(test_real_module_disconnect_discards_pending_connected_presentation);

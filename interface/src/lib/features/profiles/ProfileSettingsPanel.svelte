@@ -379,6 +379,24 @@
                                     disabled={!editingSettings}
                                 />
                             </label>
+                            <label class="flex items-center justify-between">
+                                <span>Gatso RT4</span>
+                                <input
+                                    type="checkbox"
+                                    class="toggle toggle-primary toggle-sm"
+                                    bind:checked={settings.gatsoRT4}
+                                    disabled={!editingSettings}
+                                />
+                            </label>
+                            <label class="flex items-center justify-between">
+                                <span>Intersection Management Filter</span>
+                                <input
+                                    type="checkbox"
+                                    class="toggle toggle-primary toggle-sm"
+                                    bind:checked={settings.photoIntersectionFilter}
+                                    disabled={!editingSettings}
+                                />
+                            </label>
                         </div>
                     </div>
                 </details>

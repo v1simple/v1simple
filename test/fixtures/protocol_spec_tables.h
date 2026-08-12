@@ -112,7 +112,7 @@ inline constexpr uint8_t kAlertAux0PriorityMask = 0x80;
 inline constexpr uint8_t kAlertAux0JunkMask = 0x40;
 inline constexpr uint8_t kAlertAux0PhotoTypeMask = 0x0F;
 
-// V1 user-settings bytes bit map. UNSOURCED.
+// ESP Specification 3.016, Appendix 12.1, V4.1039 and higher (p.48).
 // kind: 0=direct (bit set == ON), 1=inverted (bit clear == ON), 2=multi-bit field.
 struct UserByteField { uint8_t byteIndex; uint8_t mask; uint8_t kind; const char* name; };
 inline constexpr UserByteField kUserBytesBitMap[] = {
@@ -144,6 +144,8 @@ inline constexpr UserByteField kUserBytesBitMap[] = {
     {3, 0x20, 1, "REDFLEX_NK7"},
     {3, 0x40, 1, "EKIN"},
     {3, 0x80, 1, "PHOTO_VERIFIER"},
+    {4, 0x01, 1, "GATSO_RT4"},
+    {4, 0x02, 1, "PHOTO_INTERSECTION_FILTER"},
 };
 
 }  // namespace protocol_spec

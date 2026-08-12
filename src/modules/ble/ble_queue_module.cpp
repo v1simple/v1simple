@@ -395,6 +395,13 @@ void BleQueueModule::process() {
         uint8_t packetId = packetPtr[3];
         bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs);
 
+        if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
+            const DisplayState& state = parser_->getDisplayState();
+            if (state.hasV1Version) {
+                ble_->onV1FirmwareVersionReceived(state.v1FirmwareVersion);
+            }
+        }
+
         if (packetId == PACKET_ID_DISPLAY_DATA || packetId == PACKET_ID_ALERT_DATA) {
             if (parseOk) {
                 PERF_INC(parseSuccesses);

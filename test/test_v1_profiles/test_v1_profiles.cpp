@@ -237,6 +237,23 @@ void test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output() {
     }
 }
 
+void test_v41039_photo_settings_round_trip_through_json() {
+    V1ProfileManager manager;
+    V1UserSettings settings;
+
+    TEST_ASSERT_TRUE(manager.jsonToSettings(
+        String("{\"gatsoRT4\":true,\"photoIntersectionFilter\":true}"), settings));
+    TEST_ASSERT_TRUE(settings.gatsoRT4());
+    TEST_ASSERT_TRUE(settings.photoIntersectionFilter());
+    TEST_ASSERT_EQUAL_UINT8(0xFC, settings.bytes[4]);
+
+    const String json = manager.settingsToJson(settings);
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, json));
+    TEST_ASSERT_TRUE(doc["gatsoRT4"].as<bool>());
+    TEST_ASSERT_TRUE(doc["photoIntersectionFilter"].as<bool>());
+}
+
 void test_rename_same_name_is_successful_noop() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
@@ -324,6 +341,7 @@ int main() {
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
+    RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
     RUN_TEST(test_rename_same_name_is_successful_noop);
     RUN_TEST(test_rename_sanitized_collision_updates_name_in_place);
     RUN_TEST(test_rename_existing_distinct_destination_fails_without_mutation);

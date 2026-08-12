@@ -29,7 +29,9 @@ const DEFAULT_PROFILE_SETTINGS = Object.freeze({
     redflexHalo: false,
     redflexNK7: false,
     ekin: false,
-    photoVerifier: false
+    photoVerifier: false,
+    gatsoRT4: false,
+    photoIntersectionFilter: false
 });
 
 export function createDefaultProfileSettings() {
@@ -65,7 +67,9 @@ export function fromApiSettings(api = {}) {
         redflexHalo: api.redflexHalo ?? false,
         redflexNK7: api.redflexNK7 ?? false,
         ekin: api.ekin ?? false,
-        photoVerifier: api.photoVerifier ?? false
+        photoVerifier: api.photoVerifier ?? false,
+        gatsoRT4: api.gatsoRT4 ?? false,
+        photoIntersectionFilter: api.photoIntersectionFilter ?? false
     };
 }
 
@@ -98,6 +102,8 @@ export function toApiSettings(ui = {}) {
         redflexHalo: ui.redflexHalo ?? false,
         redflexNK7: ui.redflexNK7 ?? false,
         ekin: ui.ekin ?? false,
-        photoVerifier: ui.photoVerifier ?? false
+        photoVerifier: ui.photoVerifier ?? false,
+        gatsoRT4: ui.gatsoRT4 ?? false,
+        photoIntersectionFilter: ui.photoIntersectionFilter ?? false
     };
 }

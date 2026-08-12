@@ -135,6 +135,9 @@ describe('profiles route page', () => {
         const xBand = screen.getByLabelText('X Band');
         expect(xBand).toBeChecked();
         await fireEvent.click(xBand);
+        await fireEvent.click(screen.getByText('Photo Radar'));
+        await fireEvent.click(screen.getByLabelText('Gatso RT4'));
+        await fireEvent.click(screen.getByLabelText('Intersection Management Filter'));
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
 
         const dialogTitle = await screen.findByText('Save Profile');
@@ -154,6 +157,8 @@ describe('profiles route page', () => {
         expect(savedPayload.settings.xBand).toBe(false);
         expect(savedPayload.settings.kBand).toBe(true);
         expect(savedPayload.settings.kaSensitivity).toBe(3);
+        expect(savedPayload.settings.gatsoRT4).toBe(true);
+        expect(savedPayload.settings.photoIntersectionFilter).toBe(true);
         unmount();
     });
 

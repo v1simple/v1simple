@@ -75,9 +75,24 @@ void V1BLEClient::processConnectedFollowup() {
             logNonCriticalFollowupFailure(followupRequestAllVolumeFailLog_,
                                           "[BLE] Failed to request all-volume (non-critical)");
         }
+        versionRequestStartedMs_ = static_cast<uint32_t>(millis());
     }
+        connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
+        return;
+    case ConnectedFollowupStep::WAIT_VERSION: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        const bool timedOut =
+            static_cast<int32_t>(nowMs - (versionRequestStartedMs_ + VERSION_RESPONSE_TIMEOUT_MS)) >= 0;
+        if (!hasV1FirmwareVersion() && !timedOut) {
+            return;
+        }
+        if (timedOut && !hasV1FirmwareVersion()) {
+            logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
+                                          "[BLE] V1 version response timed out; using legacy-safe user bytes");
+        }
         connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
         return;
+    }
     case ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK:
         if (connectStableCallback_) {
             const uint32_t startUs = micros();

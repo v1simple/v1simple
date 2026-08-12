@@ -219,6 +219,11 @@ class V1BLEClient {
     // Request V1 version information (triggers data on B4E0)
     bool requestVersion();
 
+    // Session-scoped V1 firmware version, populated from RESP_VERSION.
+    void onV1FirmwareVersionReceived(uint32_t version);
+    uint32_t v1FirmwareVersion() const { return v1FirmwareVersion_.load(std::memory_order_acquire); }
+    bool hasV1FirmwareVersion() const { return v1FirmwareVersion() != 0; }
+
     // Request the V1's authoritative volume settings
     // (RESPALLVOLUME 0x3D will be received with [main, muted, savedMain, savedMuted]).
     bool requestAllVolume();
@@ -575,6 +580,7 @@ class V1BLEClient {
         REQUEST_ALERT_DATA,
         WAIT_CONNECT_BURST_SETTLE,
         REQUEST_VERSION,
+        WAIT_VERSION,
         NOTIFY_STABLE_CALLBACK,
         BACKUP_BONDS,
     };
@@ -589,11 +595,14 @@ class V1BLEClient {
     static constexpr uint8_t CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS = 3;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_FIRST_RX_MS = 1500;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_CONNECTED_MS = 2500;
+    static constexpr uint32_t VERSION_RESPONSE_TIMEOUT_MS = 1500;
     std::atomic<uint32_t> lastV1ConnectionEventMs_{0};
     std::atomic<uint32_t> connectCompletedAtMs_{0};
     std::atomic<uint32_t> firstRxAfterConnectMs_{0};
     std::atomic<uint32_t> lastBleProcessDurationUs_{0};
     std::atomic<uint32_t> lastDisplayPipelineDurationUs_{0};
+    std::atomic<uint32_t> v1FirmwareVersion_{0};
+    uint32_t versionRequestStartedMs_ = 0;
     uint8_t connectBurstStableLoopCount_ = 0;
     BleLogRateLimitState followupRequestAlertFailLog_;
     BleLogRateLimitState followupRequestVersionFailLog_;

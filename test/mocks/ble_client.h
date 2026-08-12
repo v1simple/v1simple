@@ -32,6 +32,7 @@ public:
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
     bool connectBurstSettling = false;
     uint32_t sessionGenerationValue = 1;
+    uint32_t firmwareVersion = 0;
     int connectionRssi = -70;
     int proxyRssi = -80;
     bool writeUserBytesResult = true;
@@ -71,6 +72,7 @@ public:
         bootReadyFlag = true;
         connectBurstSettling = false;
         sessionGenerationValue = 1;
+        firmwareVersion = 0;
         connectionRssi = -70;
         proxyRssi = -80;
         writeUserBytesResult = true;
@@ -149,6 +151,10 @@ public:
         }
         verificationStatus = UserBytesVerificationStatus::PENDING;
     }
+
+    void onV1FirmwareVersionReceived(uint32_t version) { firmwareVersion = version; }
+    uint32_t v1FirmwareVersion() const { return firmwareVersion; }
+    bool hasV1FirmwareVersion() const { return firmwareVersion != 0; }
 
     bool requestUserBytes() {
         requestUserBytesCalls++;

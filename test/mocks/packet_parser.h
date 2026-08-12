@@ -37,6 +37,7 @@ public:
         parseReturnValue = true;
         resetAlertAssemblyCalls = 0;
         resetAlertStateCalls = 0;
+        resetV1VersionCalls = 0;
     }
 
     // Test helpers — set state
@@ -95,6 +96,12 @@ public:
         state.hasJunkAlert = false;
         state.hasPhotoAlert = false;
         state.hasKuAlert = false;
+    }
+    int resetV1VersionCalls = 0;
+    void resetV1Version() {
+        resetV1VersionCalls++;
+        state.v1FirmwareVersion = 0;
+        state.hasV1Version = false;
     }
 };
 

@@ -474,6 +474,8 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
     doc["redflexNK7"] = s.redflexNK7();
     doc["ekin"] = s.ekin();
     doc["photoVerifier"] = s.photoVerifier();
+    doc["gatsoRT4"] = s.gatsoRT4();
+    doc["photoIntersectionFilter"] = s.photoIntersectionFilter();
 
     // Calculate and store CRC32 of the settings bytes for integrity checking
     uint32_t crc = calculateCRC32(s.bytes, 6);
@@ -677,6 +679,8 @@ String V1ProfileManager::settingsToJson(const V1UserSettings& s) const {
     doc["redflexNK7"] = s.redflexNK7();
     doc["ekin"] = s.ekin();
     doc["photoVerifier"] = s.photoVerifier();
+    doc["gatsoRT4"] = s.gatsoRT4();
+    doc["photoIntersectionFilter"] = s.photoIntersectionFilter();
 
     String output;
     serializeJson(doc, output);
@@ -727,6 +731,8 @@ String V1ProfileManager::profileToJson(const V1Profile& profile) const {
     settings["redflexNK7"] = s.redflexNK7();
     settings["ekin"] = s.ekin();
     settings["photoVerifier"] = s.photoVerifier();
+    settings["gatsoRT4"] = s.gatsoRT4();
+    settings["photoIntersectionFilter"] = s.photoIntersectionFilter();
 
     String output;
     serializeJson(doc, output);
@@ -883,6 +889,14 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
     }
     if (!settingsObj["photoVerifier"].isNull()) {
         settings.setPhotoVerifier(settingsObj["photoVerifier"]);
+        anyField = true;
+    }
+    if (!settingsObj["gatsoRT4"].isNull()) {
+        settings.setGatsoRT4(settingsObj["gatsoRT4"]);
+        anyField = true;
+    }
+    if (!settingsObj["photoIntersectionFilter"].isNull()) {
+        settings.setPhotoIntersectionFilter(settingsObj["photoIntersectionFilter"]);
         anyField = true;
     }
 

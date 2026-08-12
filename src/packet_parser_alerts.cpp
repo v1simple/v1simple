@@ -41,6 +41,11 @@ void PacketParser::resetAlertState() {
     resetAlertStateAt(static_cast<uint32_t>(millis()));
 }
 
+void PacketParser::resetV1Version() {
+    displayState_.v1FirmwareVersion = 0;
+    displayState_.hasV1Version = false;
+}
+
 void PacketParser::resetAlertStateAt(uint32_t nowMs) {
     const bool hadPublishedAlerts = alertCount_ > 0;
     clearAlertCache();

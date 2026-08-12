@@ -6,6 +6,7 @@
 #include "ble_internals.h"
 #include "config.h"
 #include "perf_metrics.h"
+#include "v1_firmware_compat.h"
 #include <atomic>
 #include <cstring>
 
@@ -106,6 +107,12 @@ bool V1BLEClient::requestVersion() {
     packet[5] = calcV1Checksum(packet, 5);
 
     return sendCommand(packet, sizeof(packet));
+}
+
+void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {
+    if (version != 0) {
+        v1FirmwareVersion_.store(version, std::memory_order_release);
+    }
 }
 
 bool V1BLEClient::requestAllVolume() {
@@ -290,6 +297,10 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
         return false;
     }
 
+    const uint32_t firmwareVersion = v1FirmwareVersion();
+    uint8_t preparedBytes[V1FirmwareCompat::kUserByteCount];
+    V1FirmwareCompat::prepareUserBytesForWrite(bytes, preparedBytes, firmwareVersion);
+
     // Build packet: AA D0+dest E0+src 13 07 [6 bytes] [checksum] AB
     uint8_t packet[13];
     packet[0] = ESP_PACKET_START;
@@ -297,13 +308,14 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
     packet[2] = static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE);
     packet[3] = PACKET_ID_WRITE_USER_BYTES;
     packet[4] = 0x07; // length = 6 bytes + 1
-    memcpy(&packet[5], bytes, 6);
+    memcpy(&packet[5], preparedBytes, 6);
 
     packet[11] = calcV1Checksum(packet, 11);
     packet[12] = ESP_PACKET_END;
 
-    Serial.printf("Writing V1 user bytes: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1], bytes[2], bytes[3],
-                  bytes[4], bytes[5]);
+    Serial.printf("Writing V1 user bytes for v%lu: %02X %02X %02X %02X %02X %02X\n",
+                  static_cast<unsigned long>(firmwareVersion), preparedBytes[0], preparedBytes[1], preparedBytes[2],
+                  preparedBytes[3], preparedBytes[4], preparedBytes[5]);
     return sendCommand(packet, sizeof(packet));
 }
 
@@ -338,7 +350,7 @@ void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {
     if (!expected) {
         return;
     }
-    memcpy(verifyExpected_, expected, 6);
+    V1FirmwareCompat::prepareUserBytesForWrite(expected, verifyExpected_, v1FirmwareVersion());
     verifyPending_ = true;
     verifyComplete_ = false;
     verifyMatch_ = false;

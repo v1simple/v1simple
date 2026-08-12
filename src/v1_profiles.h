@@ -53,6 +53,10 @@ struct V1UserSettings {
     bool ekin() const { return !(bytes[3] & 0x40); }          // Inverted
     bool photoVerifier() const { return !(bytes[3] & 0x80); } // Inverted
 
+    // Byte 4 bits (V4.1039+)
+    bool gatsoRT4() const { return !(bytes[4] & 0x01); }                // Inverted
+    bool photoIntersectionFilter() const { return !(bytes[4] & 0x02); } // Inverted
+
     // Setters
     void setXBandEnabled(bool v) {
         if (v)
@@ -204,6 +208,18 @@ struct V1UserSettings {
             bytes[3] &= ~0x80;
         else
             bytes[3] |= 0x80;
+    } // Inverted
+    void setGatsoRT4(bool v) {
+        if (v)
+            bytes[4] &= ~0x01;
+        else
+            bytes[4] |= 0x01;
+    } // Inverted
+    void setPhotoIntersectionFilter(bool v) {
+        if (v)
+            bytes[4] &= ~0x02;
+        else
+            bytes[4] |= 0x02;
     } // Inverted
 
     // Initialize to factory defaults (all 0xFF)

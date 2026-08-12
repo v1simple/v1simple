@@ -30,6 +30,10 @@ void V1BLEClient::process() {
             const bool edgeStillAccepted = edgeGeneration == sessionGeneration_.load(std::memory_order_acquire) &&
                                            acceptClientCallbacks_.load(std::memory_order_acquire) &&
                                            sessionPublicationGate_.accepts(edgeGeneration);
+            if (edgeStillAccepted) {
+                v1FirmwareVersion_.store(0, std::memory_order_release);
+                versionRequestStartedMs_ = 0;
+            }
             connected_.store(edgeStillAccepted, std::memory_order_release);
             if (edgeStillAccepted && sessionOpenedCallback_) {
                 sessionOpenedCallback_(edgeGeneration);
@@ -49,6 +53,8 @@ void V1BLEClient::process() {
             connectInProgress_ = false;
             connectStartMs_ = 0;
             connectedFollowupStep_ = ConnectedFollowupStep::NONE;
+            v1FirmwareVersion_.store(0, std::memory_order_release);
+            versionRequestStartedMs_ = 0;
             connectCompletedAtMs_.store(0, std::memory_order_relaxed);
             firstRxAfterConnectMs_.store(0, std::memory_order_relaxed);
             lastBleProcessDurationUs_.store(0, std::memory_order_relaxed);

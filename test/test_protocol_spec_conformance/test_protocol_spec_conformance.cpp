@@ -57,6 +57,7 @@ void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
 #include <vector>
 
 #include "../../src/v1_profiles.h"
+#include "../../src/v1_firmware_compat.h"
 
 #include "../fixtures/protocol_spec_tables.h"
 
@@ -399,6 +400,8 @@ const UserBoolAccess kUserBoolAccess[] = {
     {"REDFLEX_NK7", [](const V1UserSettings& s){ return s.redflexNK7(); }, [](V1UserSettings& s, bool v){ s.setRedflexNK7(v); }},
     {"EKIN", [](const V1UserSettings& s){ return s.ekin(); }, [](V1UserSettings& s, bool v){ s.setEkin(v); }},
     {"PHOTO_VERIFIER", [](const V1UserSettings& s){ return s.photoVerifier(); }, [](V1UserSettings& s, bool v){ s.setPhotoVerifier(v); }},
+    {"GATSO_RT4", [](const V1UserSettings& s){ return s.gatsoRT4(); }, [](V1UserSettings& s, bool v){ s.setGatsoRT4(v); }},
+    {"PHOTO_INTERSECTION_FILTER", [](const V1UserSettings& s){ return s.photoIntersectionFilter(); }, [](V1UserSettings& s, bool v){ s.setPhotoIntersectionFilter(v); }},
 };
 
 struct UserFieldAccess {
@@ -481,6 +484,25 @@ void test_user_bytes_field_rows_match_spec_table() {
     TEST_ASSERT_EQUAL_UINT(sizeof(kUserFieldAccess) / sizeof(kUserFieldAccess[0]), fieldRows);
 }
 
+void test_user_byte_write_shape_is_firmware_compatible() {
+    const uint8_t input[6] = {0x10, 0x20, 0x30, 0x40, 0xFC, 0x50};
+    uint8_t output[6] = {};
+
+    V1FirmwareCompat::prepareUserBytesForWrite(input, output, 0);
+    const uint8_t unknownExpected[6] = {0x10, 0x20, 0x30, 0x40, 0xFF, 0xFF};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(unknownExpected, output, 6);
+
+    V1FirmwareCompat::prepareUserBytesForWrite(input, output, 41038);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(unknownExpected, output, 6);
+
+    V1FirmwareCompat::prepareUserBytesForWrite(input, output, 41039);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(input, output, 6);
+
+    // Gen1 predates the Gen2 four-byte limitation and supports all six bytes.
+    V1FirmwareCompat::prepareUserBytesForWrite(input, output, 38920);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(input, output, 6);
+}
+
 void test_laser_strength_is_full_scale_regardless_of_raw() {
     const uint8_t raws[] = {0x00, 0x01, 0x7F, 0xFF};
     for (uint8_t raw : raws) {
@@ -518,5 +540,6 @@ int main() {
     RUN_TEST(test_alert_aux0_priority_bit_matches_spec_table);
     RUN_TEST(test_user_bytes_bool_rows_match_spec_table);
     RUN_TEST(test_user_bytes_field_rows_match_spec_table);
+    RUN_TEST(test_user_byte_write_shape_is_firmware_compatible);
     return UNITY_END();
 }

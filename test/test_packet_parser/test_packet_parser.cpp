@@ -289,6 +289,22 @@ void test_parse_version_packet_records_supported_volume_version() {
     TEST_ASSERT_EQUAL_UINT32(41028, g_lastRecordedV1FwVersion);
 }
 
+void test_reset_v1_version_requires_a_fresh_session_response() {
+    PacketParser parser;
+    const auto packet = makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '3', '9'));
+
+    TEST_ASSERT_TRUE(parsePacket(parser, packet));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasV1Version);
+
+    parser.resetV1Version();
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasV1Version);
+    TEST_ASSERT_EQUAL_UINT32(0, parser.getDisplayState().v1FirmwareVersion);
+
+    TEST_ASSERT_TRUE(parsePacket(parser, packet));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasV1Version);
+    TEST_ASSERT_EQUAL_UINT32(41039, parser.getDisplayState().v1FirmwareVersion);
+}
+
 void test_parse_version_packet_ignores_non_digit_payload() {
     PacketParser parser;
     // Spec-compliant letter and dot, but rev1 byte is a non-digit (0xFF).
@@ -665,6 +681,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_packet_rejects_seven_byte_frame);
     RUN_TEST(test_parse_packet_rejects_bad_framing);
     RUN_TEST(test_parse_version_packet_records_supported_volume_version);
+    RUN_TEST(test_reset_v1_version_requires_a_fresh_session_response);
     RUN_TEST(test_parse_version_packet_ignores_non_digit_payload);
     RUN_TEST(test_parse_version_packet_ignores_short_payload);
     RUN_TEST(test_parse_version_packet_preserves_prior_valid_version_on_malformed_followup);

@@ -59,6 +59,9 @@ class PacketParser {
     // Clear partial and published alert state at a V1 session boundary.
     void resetAlertState();
 
+    // Invalidate detector-version knowledge at a V1 session boundary.
+    void resetV1Version();
+
     // Observe complete V1 alert tables. The callback runs on the parser path,
     // so it must remain non-blocking and allocation-free.
     void setAlertTableObserver(AlertTableObserver observer, void* context = nullptr) {

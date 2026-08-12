@@ -226,6 +226,8 @@ void V1BLEClient::cleanupConnection() {
 
     connectInProgress_ = false;
     connectedFollowupStep_ = ConnectedFollowupStep::NONE;
+    v1FirmwareVersion_.store(0, std::memory_order_release);
+    versionRequestStartedMs_ = 0;
 }
 
 // Request a hard reset after repeated failures. Teardown is intentionally

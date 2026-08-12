@@ -44,6 +44,9 @@ void ConnectionStateModule::setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCa
 }
 
 void ConnectionStateModule::handleSessionOpened(uint32_t sessionGeneration) {
+    if (parser_) {
+        parser_->resetV1Version();
+    }
     if (bleQueue_) {
         bleQueue_->openSession(sessionGeneration);
     }

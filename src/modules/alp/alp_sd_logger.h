@@ -9,9 +9,9 @@
  * Design:
  *   - Main-loop callers enqueue fixed-size rows with xQueueSend(..., 0).
  *   - A low-priority Core 0 writer owns SD open/write/flush/close work.
- *   - The writer keeps one append handle open and flushes every completed row.
- *     This avoids repeated FAT open/EOF-search/close work without relying on a
- *     graceful shutdown to make the latest diagnostic evidence durable.
+ *   - The writer keeps one append handle open and batches flushes by row count
+ *     or time, with additional queue-idle and shutdown flush boundaries.
+ *     Abrupt power loss can discard the final unflushed batch.
  *   - CSV file per boot session: /alp/alp_<bootId>-<token8>.csv
  *     (legacy format /alp/alp_<bootId>.csv used only when no bootToken
  *     is supplied, e.g. unit tests).
@@ -140,6 +140,8 @@ class AlpSdLogger {
         char line[240];
     };
     bool ensureAsyncWriter();
+    void flushPersistentFileLocked();
+    void flushPersistentFileIfDueLocked();
     bool writeLineBlocking(const char* line);
     static void writerTaskEntry(void* param);
     void writerTaskLoop();
@@ -166,6 +168,8 @@ class AlpSdLogger {
     TaskHandle_t writerTask_ = nullptr;
     PsramQueueAllocation queueAllocation_ = {};
     File persistentFile_{};
+    uint16_t rowsSinceFlush_ = 0;
+    uint32_t lastFlushMs_ = 0;
     bool queueInPsram_ = false;
     bool writerTaskStackInPsram_ = false;
 #endif

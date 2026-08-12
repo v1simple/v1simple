@@ -2855,16 +2855,26 @@ void test_sd_logger_gun_id_detect_preserves_raw_frame() {
         logger.testGetLastLine());
 }
 
-void test_sd_logger_production_writer_reuses_handle_and_flushes_each_row() {
+void test_sd_logger_production_writer_reuses_handle_and_batches_flushes() {
     // Native tests use the UNIT_TEST sink, so pin the production-only SD
-    // lifecycle textually: one persistent append handle and an explicit flush
-    // after each successful row. This preserves hard-power durability while
-    // preventing the old open/close-per-row regression.
+    // lifecycle textually: one persistent append handle, bounded batching, and
+    // a queue-idle flush instead of an alert-time flush after every row.
     const std::string header = readProjectFile("src/modules/alp/alp_sd_logger.h");
     const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
     TEST_ASSERT_FALSE(header.empty());
     TEST_ASSERT_FALSE(source.empty());
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("File persistentFile_{};"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("uint16_t rowsSinceFlush_ = 0;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("ALP_SD_FLUSH_EVERY_ROWS = 16"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("ALP_SD_FLUSH_INTERVAL_MS = 15000"));
+
+    const size_t loopStart = source.find("void AlpSdLogger::writerTaskLoop()");
+    const size_t loopEnd = source.find("bool AlpSdLogger::ensureDirectory()", loopStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopEnd);
+    const std::string loop = source.substr(loopStart, loopEnd - loopStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loop.find("ALP_SD_QUEUE_RECEIVE_TIMEOUT_TICKS"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loop.find("flushPersistentFileLocked();"));
 
     const size_t writerStart = source.find("bool AlpSdLogger::writeLineBlocking(const char* line)");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, writerStart);
@@ -2874,7 +2884,9 @@ void test_sd_logger_production_writer_reuses_handle_and_flushes_each_row() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           writer.find("persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("persistentFile_.print(line) != lineLen"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("persistentFile_.flush();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("rowsSinceFlush_++;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("flushPersistentFileIfDueLocked();"));
+    TEST_ASSERT_EQUAL(std::string::npos, writer.find("persistentFile_.flush();"));
     TEST_ASSERT_EQUAL(std::string::npos, writer.find("File f = fs->open(csvPathBuf_, FILE_APPEND);"));
 }
 
@@ -3395,7 +3407,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval);
     RUN_TEST(test_sd_logger_gun_id_lid_deploy_preserves_raw_frame);
     RUN_TEST(test_sd_logger_gun_id_detect_preserves_raw_frame);
-    RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_flushes_each_row);
+    RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_batches_flushes);
     RUN_TEST(test_sd_logger_begin_warms_storage_at_boot);
 
     // Event bus publishing

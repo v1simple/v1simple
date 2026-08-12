@@ -37,6 +37,9 @@ static constexpr const char* ALP_CSV_HEADER =
 static constexpr UBaseType_t ALP_SD_QUEUE_DEPTH = 32;
 static constexpr uint32_t ALP_SD_WRITER_STACK_SIZE = 8192;
 static constexpr UBaseType_t ALP_SD_WRITER_PRIORITY = 1;
+static constexpr TickType_t ALP_SD_QUEUE_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(1000);
+static constexpr uint16_t ALP_SD_FLUSH_EVERY_ROWS = 16;
+static constexpr uint32_t ALP_SD_FLUSH_INTERVAL_MS = 15000;
 #endif
 
 namespace {
@@ -110,6 +113,10 @@ void AlpSdLogger::begin(bool enabled, bool sdReady, GpsTimePublisher* timePub) {
     headerWritten_ = false;
     linesWritten_ = 0;
     dropCount_ = 0;
+#ifndef UNIT_TEST
+    rowsSinceFlush_ = 0;
+    lastFlushMs_ = 0;
+#endif
 
     if (!enabled || !sdReady) {
         return;
@@ -160,7 +167,9 @@ void AlpSdLogger::setBootId(uint32_t id, uint32_t bootToken) {
         // warm-up reopens at the new path (mirrors PerfSdLogger::setBootId).
         StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
         if (lock) {
+            flushPersistentFileLocked();
             persistentFile_.close();
+            lastFlushMs_ = 0;
         }
     }
     if (enabled_ && sdReady_) {
@@ -393,20 +402,27 @@ void AlpSdLogger::writerTaskEntry(void* param) {
 void AlpSdLogger::writerTaskLoop() {
     while (true) {
         LogItem item{};
-        if (xQueueReceive(queue_, &item, portMAX_DELAY) == pdTRUE) {
-            if (item.shutdown) {
-                break;
+        if (xQueueReceive(queue_, &item, ALP_SD_QUEUE_RECEIVE_TIMEOUT_TICKS) != pdTRUE) {
+            if (rowsSinceFlush_ > 0) {
+                StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
+                if (lock) {
+                    flushPersistentFileLocked();
+                }
             }
-            if (!writeLineBlocking(item.line)) {
-                dropCount_++;
-            }
-            taskYIELD();
+            continue;
         }
+        if (item.shutdown) {
+            break;
+        }
+        if (!writeLineBlocking(item.line)) {
+            dropCount_++;
+        }
+        taskYIELD();
     }
     {
         StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
         if (lock && persistentFile_) {
-            persistentFile_.flush();
+            flushPersistentFileLocked();
             persistentFile_.close();
         }
     }
@@ -476,6 +492,29 @@ bool AlpSdLogger::ensureHeader() {
 }
 
 #ifndef UNIT_TEST
+void AlpSdLogger::flushPersistentFileLocked() {
+    if (!persistentFile_ || rowsSinceFlush_ == 0) {
+        return;
+    }
+    persistentFile_.flush();
+    rowsSinceFlush_ = 0;
+    lastFlushMs_ = millis();
+}
+
+void AlpSdLogger::flushPersistentFileIfDueLocked() {
+    if (rowsSinceFlush_ == 0) {
+        return;
+    }
+    const uint32_t nowMs = millis();
+    if (lastFlushMs_ == 0) {
+        lastFlushMs_ = nowMs;
+    }
+    if (rowsSinceFlush_ >= ALP_SD_FLUSH_EVERY_ROWS ||
+        static_cast<uint32_t>(nowMs - lastFlushMs_) >= ALP_SD_FLUSH_INTERVAL_MS) {
+        flushPersistentFileLocked();
+    }
+}
+
 bool AlpSdLogger::writeLineBlocking(const char* line) {
     if (!storageManager.isReady() || !storageManager.isSDCard()) {
         return false;
@@ -501,15 +540,15 @@ bool AlpSdLogger::writeLineBlocking(const char* line) {
         }
     }
 
-    // Car-mode power can disappear without a shutdown callback. Keep the
-    // handle open to avoid the per-row FAT open/EOF-search/close cycle, but
-    // flush every completed row so durability does not depend on clean power.
     const size_t lineLen = strlen(line);
     if (persistentFile_.print(line) != lineLen) {
         persistentFile_.close();
+        rowsSinceFlush_ = 0;
+        lastFlushMs_ = 0;
         return false;
     }
-    persistentFile_.flush();
+    rowsSinceFlush_++;
+    flushPersistentFileIfDueLocked();
     linesWritten_++;
     return true;
 }

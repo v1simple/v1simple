@@ -78,6 +78,7 @@ struct PerfCounters {
     std::atomic<uint32_t> parseSuccesses{0};         // Successfully parsed packets
     std::atomic<uint32_t> parseFailures{0};          // Parse failures (resync)
     std::atomic<uint32_t> parseResyncs{0};           // Framing-level resyncs (bad length/size/end marker)
+    std::atomic<uint32_t> v1AllVolumeParsed{0};      // Canonical RESPALLVOLUME packets parsed since boot/reset
     std::atomic<uint32_t> perfDrop{0};               // Perf SD snapshot drops (queue full)
     std::atomic<uint32_t> perfSdLockFail{0};         // Perf SD writer lock failures
     std::atomic<uint32_t> perfSdDirFail{0};          // Perf SD dir ensure failures
@@ -211,6 +212,7 @@ struct PerfCounters {
         parseSuccesses.store(0, std::memory_order_relaxed);
         parseFailures.store(0, std::memory_order_relaxed);
         parseResyncs.store(0, std::memory_order_relaxed);
+        v1AllVolumeParsed.store(0, std::memory_order_relaxed);
         perfDrop.store(0, std::memory_order_relaxed);
         perfSdLockFail.store(0, std::memory_order_relaxed);
         perfSdDirFail.store(0, std::memory_order_relaxed);
@@ -938,6 +940,17 @@ struct PerfLatency {
 // Global instances
 // ============================================================================
 extern PerfCounters perfCounters;
+
+// Record one canonical RESPALLVOLUME packet after its four fields have been
+// committed to parser state. Native parser tests replace this hook so they can
+// verify call count and commit ordering without linking the metrics runtime.
+#if defined(UNIT_TEST) && !defined(ARDUINO)
+void perfRecordV1AllVolumeParsed();
+#else
+inline void perfRecordV1AllVolumeParsed() {
+    perfCounters.v1AllVolumeParsed.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
 
 #include "perf_snapshot_types.h"
 

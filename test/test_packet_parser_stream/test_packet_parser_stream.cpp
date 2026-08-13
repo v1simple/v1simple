@@ -43,6 +43,7 @@ void perfRecordV1FirmwareVersion(uint32_t version) {
     g_lastRecordedV1FwVersion = version;
 }
 void perfRecordV1LedBitmapAnomaly() {}
+void perfRecordV1AllVolumeParsed() {}
 #endif
 
 #include <algorithm>

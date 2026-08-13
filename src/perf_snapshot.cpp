@@ -237,6 +237,7 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.parseOk = perfCounters.parseSuccesses.load(std::memory_order_relaxed);
     flat.parseFail = perfCounters.parseFailures.load(std::memory_order_relaxed);
     flat.parseResync = perfCounters.parseResyncs.load(std::memory_order_relaxed);
+    flat.v1AllVolumeParsed = perfCounters.v1AllVolumeParsed.load(std::memory_order_relaxed);
     flat.disc = perfCounters.disconnects.load(std::memory_order_relaxed);
     flat.reconn = perfCounters.reconnects.load(std::memory_order_relaxed);
 

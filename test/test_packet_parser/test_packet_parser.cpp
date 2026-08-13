@@ -37,10 +37,22 @@ unsigned long mockMicros = 0;
 #ifndef ARDUINO
 namespace {
 uint32_t g_lastRecordedV1FwVersion = 0;
+PacketParser* g_allVolumeHookParser = nullptr;
+uint32_t g_allVolumeHookCalls = 0;
+bool g_allVolumeHookSawCommittedState = false;
 }
 void perfRecordV1FirmwareVersion(uint32_t version) { g_lastRecordedV1FwVersion = version; }
 namespace { uint32_t g_ledBitmapAnomalies = 0; }
 void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
+void perfRecordV1AllVolumeParsed() {
+    ++g_allVolumeHookCalls;
+    if (g_allVolumeHookParser) {
+        const DisplayState& state = g_allVolumeHookParser->getDisplayState();
+        g_allVolumeHookSawCommittedState = state.mainVolume == 7 && state.muteVolume == 2 &&
+                                             state.savedMainVolume == 4 && state.savedMuteVolume == 0 &&
+                                             state.hasVolumeData && state.hasSavedVolume;
+    }
+}
 #endif
 
 #include <vector>
@@ -112,6 +124,9 @@ void setUp() {
 #ifndef ARDUINO
     mockMillis = 0;
     mockMicros = 0;
+    g_allVolumeHookParser = nullptr;
+    g_allVolumeHookCalls = 0;
+    g_allVolumeHookSawCommittedState = false;
 #endif
 }
 
@@ -610,6 +625,90 @@ void test_parse_resp_all_volume_rejects_short_payload() {
     TEST_ASSERT_EQUAL_UINT8(0, s.savedMuteVolume);
 }
 
+void test_canonical_resp_all_volume_increments_parse_counter_once() {
+#ifndef ARDUINO
+    PacketParser parser;
+    const uint8_t packet[] = {
+        0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x04, 0x00, 0xB9, 0xAB,
+    };
+
+    g_allVolumeHookParser = &parser;
+    TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
+    TEST_ASSERT_EQUAL_UINT32(1, g_allVolumeHookCalls);
+    TEST_ASSERT_TRUE(g_allVolumeHookSawCommittedState);
+    const DisplayState& state = parser.getDisplayState();
+    TEST_ASSERT_EQUAL_UINT8(7, state.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, state.muteVolume);
+    TEST_ASSERT_EQUAL_UINT8(4, state.savedMainVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, state.savedMuteVolume);
+#endif
+}
+
+void test_noncanonical_resp_all_volume_shapes_update_state_without_counting() {
+#ifndef ARDUINO
+    PacketParser parser;
+    const uint8_t shortPacket[] = {
+        0xAA, 0xD6, 0xEA, 0x3D, 0x04, 0x01, 0x02, 0x03, 0x04, 0xAB,
+    };
+    const uint8_t overlongPacket[] = {
+        0xAA, 0xD6, 0xEA, 0x3D, 0x06, 0x02, 0x03, 0x04, 0x05, 0x00, 0xBB, 0xAB,
+    };
+    const uint8_t declaredShortPacket[] = {
+        0xAA, 0xD6, 0xEA, 0x3D, 0x04, 0x03, 0x04, 0x05, 0x06, 0xBD, 0xAB,
+    };
+    const uint8_t declaredLongPacket[] = {
+        0xAA, 0xD6, 0xEA, 0x3D, 0x06, 0x04, 0x05, 0x06, 0x07, 0xC3, 0xAB,
+    };
+
+    TEST_ASSERT_TRUE(parser.parse(shortPacket, sizeof(shortPacket), kDefaultParseNowMs));
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+
+    TEST_ASSERT_TRUE(parser.parse(overlongPacket, sizeof(overlongPacket), kDefaultParseNowMs));
+    TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+
+    TEST_ASSERT_TRUE(parser.parse(declaredShortPacket, sizeof(declaredShortPacket), kDefaultParseNowMs));
+    TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+
+    TEST_ASSERT_TRUE(parser.parse(declaredLongPacket, sizeof(declaredLongPacket), kDefaultParseNowMs));
+    TEST_ASSERT_EQUAL_UINT8(4, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+#endif
+}
+
+void test_resp_all_volume_any_out_of_range_field_updates_state_without_counting() {
+#ifndef ARDUINO
+    PacketParser parser;
+    const uint8_t packets[][11] = {
+        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x0A, 0x02, 0x04, 0x00, 0xBC, 0xAB},
+        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x0A, 0x04, 0x00, 0xC1, 0xAB},
+        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x0A, 0x00, 0xBF, 0xAB},
+        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x04, 0x0A, 0xC3, 0xAB},
+    };
+
+    for (const auto& packet : packets) {
+        TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
+        TEST_ASSERT_TRUE(parser.getDisplayState().hasSavedVolume);
+        TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+    }
+#endif
+}
+
+void test_canonical_width_wrong_id_does_not_increment_all_volume_counter() {
+#ifndef ARDUINO
+    PacketParser parser;
+    const uint8_t packet[] = {
+        0xAA, 0xD6, 0xEA, 0x3C, 0x05, 0x07, 0x02, 0x04, 0x00, 0xB8, 0xAB,
+    };
+
+    TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasSavedVolume);
+    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
+#endif
+}
+
 // The bar graph byte decodes per ESP Specification 3.015 Table 9.1 (p.34),
 // which defines nine values for LED counts 0..8 and is generation-neutral.
 // Fidelity for what the V1 says; fail-loud for what it cannot have said.
@@ -699,6 +798,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_resp_all_volume_populates_volume_fields);
     RUN_TEST(test_resp_all_volume_overrides_display_aux2_inference);
     RUN_TEST(test_parse_resp_all_volume_rejects_short_payload);
+    RUN_TEST(test_canonical_resp_all_volume_increments_parse_counter_once);
+    RUN_TEST(test_noncanonical_resp_all_volume_shapes_update_state_without_counting);
+    RUN_TEST(test_resp_all_volume_any_out_of_range_field_updates_state_without_counting);
+    RUN_TEST(test_canonical_width_wrong_id_does_not_increment_all_volume_counter);
     RUN_TEST(test_decode_signal_bars_renders_valid_bitmaps_literally_and_fails_loud);
     RUN_TEST(test_all_v1_bitmaps_are_bounded_by_eight_protocol_leds);
     return UNITY_END();

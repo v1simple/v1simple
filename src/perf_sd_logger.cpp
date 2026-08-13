@@ -20,7 +20,7 @@ namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
 static constexpr uint32_t PERF_CSV_SCHEMA_VERSION =
-    45; // drops unused priority-display-index and proxy-latency telemetry
+    46; // adds canonical V1 all-volume parse evidence
 static constexpr const char* PERF_CSV_HEADER =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
@@ -83,7 +83,7 @@ static constexpr const char* PERF_CSV_HEADER =
     "cycleWifiManualPhoneKicksTotal,cycleProxyNoClientLatched,gpsSentencesOk,gpsSentencesChecksumFail,"
     "gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,gpsStableFixAgeMs,"
     "gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,notifyToDisplayMax_ms,"
-    "notifyToDisplayTotalCount\n";
+    "notifyToDisplayTotalCount,v1AllVolumeParsed\n";
 static constexpr UBaseType_t PERF_SD_QUEUE_DEPTH = 16;      // Halved from 32 to reclaim ~7 KiB internal SRAM
 static constexpr uint32_t PERF_SD_WRITER_STACK_SIZE = 8192; // Bench high-water leaves ~4 KiB free
 static constexpr UBaseType_t PERF_SD_WRITER_PRIORITY = 1;
@@ -845,7 +845,9 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.gpsEnableTransitions) &&
         // Notify-to-display latency histogram (schema v38)
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.notifyToDisplayMaxMs) &&
-        appendCsvUInt32Last(line, lineBufferLen, offset, snapshot.notifyToDisplayTotalCount);
+        appendCsvUInt32(line, lineBufferLen, offset, snapshot.notifyToDisplayTotalCount) &&
+        // V1 connected-readback evidence (schema v46)
+        appendCsvUInt32Last(line, lineBufferLen, offset, snapshot.v1AllVolumeParsed);
 
     if (!ok) {
         persistentFile_.close();

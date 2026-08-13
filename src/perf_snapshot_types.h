@@ -277,6 +277,9 @@ struct PerfSdSnapshot {
     // Notify-to-display end-to-end latency histogram (schema v38 — appended)
     uint32_t notifyToDisplayMaxMs;      // Window max notify→display latency in ms
     uint32_t notifyToDisplayTotalCount; // Window total samples recorded
+
+    // V1 connected-readback evidence (schema v46 — appended)
+    uint32_t v1AllVolumeParsed; // Canonical RESPALLVOLUME packets parsed since boot/reset
 };
 
 enum class PerfRuntimeSnapshotMode : uint8_t {

@@ -52,6 +52,7 @@ uint32_t g_lastRecordedV1FwVersion = 0;
 void perfRecordV1FirmwareVersion(uint32_t version) { g_lastRecordedV1FwVersion = version; }
 namespace { uint32_t g_ledBitmapAnomalies = 0; }
 void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
+void perfRecordV1AllVolumeParsed() {}
 #endif
 
 #include <vector>

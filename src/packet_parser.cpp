@@ -250,6 +250,16 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             displayState_.savedMuteVolume = payload[3] & 0x0F;
             displayState_.hasVolumeData = true;
             displayState_.hasSavedVolume = true;
+
+            // Keep the existing tolerant state update above for compatibility,
+            // but count only the canonical checked-width response used as
+            // connection readback evidence. payloadLen includes the checksum.
+            const bool canonicalShape = length == 11 && declaredPayloadLen == 5 && payloadLen == 5;
+            const bool canonicalValues =
+                payload[0] <= 9 && payload[1] <= 9 && payload[2] <= 9 && payload[3] <= 9;
+            if (canonicalShape && canonicalValues) {
+                perfRecordV1AllVolumeParsed();
+            }
         }
         return true;
     }

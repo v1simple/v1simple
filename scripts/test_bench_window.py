@@ -61,6 +61,7 @@ from run_window import (  # noqa: E402
     _preflight_ledger_is_complete,
     camera_grade_required,
     encounter_csv_sd_path,
+    establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
     wait_for_post_upload_settle,
@@ -404,6 +405,71 @@ def test_reconnect_serial_fence_requires_safe_status_shape() -> None:
             raise AssertionError(f"unsafe serial fence passed: {response}")
 
 
+def test_reconnect_readiness_uses_unique_fifo_barrier_before_status_fence() -> None:
+    nonce = "0123456789abcdef0123456789abcdef"
+
+    class FakeSerial:
+        def __init__(self, lines: list[object], status: str = "idle") -> None:
+            self.lines = list(lines)
+            self.status = status
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_line(self, _timeout: float) -> str:
+            if not self.lines:
+                raise TimeoutError("no barrier response")
+            item = self.lines.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            assert isinstance(item, str)
+            return item
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return (
+                'QRESP {"ok":true,"state":"'
+                + self.status
+                + '","suite":"core","mode":"current"}'
+            )
+
+    for status in ("ready", "busy"):
+        delayed = [
+            'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}',
+            'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}',
+            f'QBSC08 {{"schema":1,"nonce":"{nonce}","status":"{status}"}}',
+        ]
+        serial = FakeSerial(delayed)
+        result = establish_reconnect_readiness(serial, 1, nonce=nonce)
+        assert_true(result["state"] == "idle", f"{status} barrier failed: {result}")
+        assert_true(
+            serial.commands == [f"QBSC08 {nonce}", "QSTATUS"],
+            f"{status} barrier did not order the final fence: {serial.commands}",
+        )
+
+    invalid_lines = (
+        (f'QBSC08 {{"schema":1,"nonce":"{"f" * 32}","status":"ready"}}', "wrong nonce"),
+        ('QBSC08 {"schema":1,"status":"ready"}', "wrong nonce"),
+        ("QBSC08 {bad", "malformed"),
+        ('QRESP {bad', "malformed delayed QRESP"),
+        ('QERR {"ok":false,"error":"bsc08_provider_missing"}', "received QERR"),
+    )
+    for line, expected in invalid_lines:
+        try:
+            establish_reconnect_readiness(FakeSerial([line]), 0.05, nonce=nonce)
+        except RuntimeError as exc:
+            assert_true(expected in str(exc), f"wrong barrier error for {line!r}: {exc}")
+        else:
+            raise AssertionError(f"invalid readiness barrier passed: {line}")
+
+    try:
+        establish_reconnect_readiness(FakeSerial([]), 0.01, nonce=nonce)
+    except RuntimeError as exc:
+        assert_true("timed out" in str(exc), f"wrong missing-barrier error: {exc}")
+    else:
+        raise AssertionError("missing readiness barrier passed")
+
+
 def test_reconnect_preflight_failure_retains_terminal_result() -> None:
     class FakeSerial:
         boot_marker_count = 0
@@ -612,6 +678,19 @@ def test_handshake_ledger_runner_and_delivery_wiring_are_pinned() -> None:
         '"handshake_ledger_path": (' in runner
         and 'str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""' in runner,
         "replay window_result does not retain the same-window handshake ledger",
+    )
+    initial_ready = runner.index("ready = wait_ready(q, args.ready_timeout_seconds)")
+    barrier = runner.index(
+        "ready = establish_reconnect_readiness(q, args.ready_timeout_seconds)",
+        initial_ready,
+    )
+    preflight_start = runner.index(
+        "reconnect_preflight_result = run_reconnect_preflight(",
+        barrier,
+    )
+    assert_true(
+        initial_ready < barrier < preflight_start,
+        "reconnect evidence starts before delayed readiness replies cross the nonce barrier",
     )
 
     update = peripheral.index("guard manager.updateValue(")
@@ -1472,6 +1551,7 @@ def main() -> int:
     test_reconnect_preflight_waits_for_separate_ready_machine_event()
     test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence()
     test_reconnect_serial_fence_requires_safe_status_shape()
+    test_reconnect_readiness_uses_unique_fifo_barrier_before_status_fence()
     test_reconnect_preflight_failure_retains_terminal_result()
     test_reconnect_preflight_distinguishes_behavior_from_broken_evidence()
     test_reconnect_preflight_process_uses_separate_quiet_artifacts()

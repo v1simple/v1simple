@@ -82,6 +82,12 @@ RECONNECT_PREFLIGHT_RESULT = {
 FENCE_RESPONSE = (
     'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
 )
+READINESS_NONCE = "0123456789abcdef0123456789abcdef"
+READINESS_RESPONSE = (
+    'QBSC08 {"schema":1,"nonce":"'
+    + READINESS_NONCE
+    + '","status":"ready"}'
+)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -184,7 +190,17 @@ def write_reconnect_logs(
         encoding="utf-8",
     )
 
-    serial_lines: list[str] = ["HOST_BOUNDARY reconnect_preflight_start"]
+    serial_lines: list[str] = [
+        # Generic readiness traffic is deliberately outside the final nonce
+        # transaction and may contain retries in a real boot sequence.
+        ">>> QSTATUS",
+        FENCE_RESPONSE,
+        f">>> QBSC08 {READINESS_NONCE}",
+        READINESS_RESPONSE,
+        ">>> QSTATUS",
+        FENCE_RESPONSE,
+        "HOST_BOUNDARY reconnect_preflight_start",
+    ]
     if failure_kind not in {"handshake_timeout", "handshake_invalid"}:
         serial_lines.extend(
             [
@@ -1148,6 +1164,47 @@ def test_pre_qstart_reconnect_failure_taxonomy_is_preserved() -> None:
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
         assert_true("cleanup_marker_count=0 expected=1" in proc.stdout, proc.stdout)
 
+    for mutation, expected_text in (
+        ("delayed_before_command", "requires one QSTATUS and one response"),
+        ("duplicate_after_response", "requires one QSTATUS and one response"),
+        ("malformed_response", "malformed QRESP evidence"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            window_path = replay / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update(
+                {
+                    "result": "RECONNECT_FAILED",
+                    "duration_seconds": 300,
+                    "reconnect_failure_kind": "cleanup_missing",
+                    "error": "board did not report V1 disconnect cleanup after emulator exit",
+                    "reconnect_preflight": {
+                        **RECONNECT_PREFLIGHT_RESULT,
+                        "cleanup_marker_count": 0,
+                    },
+                }
+            )
+            write_reconnect_logs(replay, failure_kind="cleanup_missing")
+            serial_path = replay / "bench_serial.log"
+            lines = serial_path.read_text(encoding="utf-8").splitlines()
+            boundary = lines.index("HOST_BOUNDARY reconnect_preflight_process_exited")
+            command = lines.index(">>> QSTATUS", boundary + 1)
+            response = lines.index(FENCE_RESPONSE, command + 1)
+            if mutation == "delayed_before_command":
+                lines.insert(command, FENCE_RESPONSE)
+            elif mutation == "duplicate_after_response":
+                lines.insert(response + 1, FENCE_RESPONSE)
+            else:
+                lines[response] = "QRESP {bad"
+            serial_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, f"{mutation}: {proc.stdout}{proc.stderr}")
+            assert_true(expected_text in proc.stdout, f"{mutation}: {proc.stdout}")
+
     for failure_kind, cleanup_count in (
         ("active_session_lost", 1),
         ("cleanup_before_stop", 1),
@@ -1456,6 +1513,11 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         result.remove(exact)
         return result
 
+    def insert_after(lines: list[str], anchor: str, value: str) -> list[str]:
+        result = list(lines)
+        result.insert(result.index(anchor) + 1, value)
+        return result
+
     exercise(
         lambda replay: mutate_serial_lines(
             replay,
@@ -1464,6 +1526,138 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         3,
         "missing one preflight-start",
     )
+
+    def remove_barrier_command(lines: list[str]) -> list[str]:
+        return [line for line in lines if line != f">>> QBSC08 {READINESS_NONCE}"]
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, remove_barrier_command),
+        3,
+        "exactly one QBSC08 nonce command",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                f">>> QBSC08 {READINESS_NONCE}",
+                f">>> QBSC08 {READINESS_NONCE}",
+            ),
+        ),
+        3,
+        "exactly one QBSC08 nonce command",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: [
+                ">>> QBSC08 uppercase-is-not-a-valid-nonce"
+                if line == f">>> QBSC08 {READINESS_NONCE}"
+                else line
+                for line in lines
+            ],
+        ),
+        3,
+        "invalid nonce",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: [line for line in lines if line != READINESS_RESPONSE],
+        ),
+        3,
+        "exactly one QBSC08 nonce response",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(lines, READINESS_RESPONSE, READINESS_RESPONSE),
+        ),
+        3,
+        "exactly one QBSC08 nonce response",
+    )
+    for invalid_response, expected in (
+        ("QBSC08 {bad", "response is malformed"),
+        (
+            'QBSC08 {"schema":1,"nonce":"ffffffffffffffffffffffffffffffff","status":"ready"}',
+            "does not match its command",
+        ),
+        (
+            f'QBSC08 {{"schema":true,"nonce":"{READINESS_NONCE}","status":"ready"}}',
+            "does not match its command",
+        ),
+        (
+            f'QBSC08 {{"schema":1,"nonce":"{READINESS_NONCE}","status":"unknown"}}',
+            "does not match its command",
+        ),
+    ):
+        exercise(
+            lambda replay, response=invalid_response: mutate_serial_lines(
+                replay,
+                lambda lines, response=response: [
+                    response if line == READINESS_RESPONSE else line for line in lines
+                ],
+            ),
+            3,
+            expected,
+        )
+
+    def reorder_barrier_response(lines: list[str]) -> list[str]:
+        result = list(lines)
+        result.remove(READINESS_RESPONSE)
+        result.insert(result.index(f">>> QBSC08 {READINESS_NONCE}"), READINESS_RESPONSE)
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, reorder_barrier_response),
+        3,
+        "response precedes its command",
+    )
+
+    for stray, expected in (
+        ('QERR {"ok":false,"error":"stale"}', "transaction contains QERR"),
+        (">>> QSTATUS", "transaction contains an unexpected command"),
+    ):
+        exercise(
+            lambda replay, stray=stray: mutate_serial_lines(
+                replay,
+                lambda lines, stray=stray: insert_after(
+                    lines,
+                    f">>> QBSC08 {READINESS_NONCE}",
+                    stray,
+                ),
+            ),
+            3,
+            expected,
+        )
+
+    def replace_final_readiness_response_with_stale(lines: list[str]) -> list[str]:
+        result = list(lines)
+        barrier = result.index(READINESS_RESPONSE)
+        boundary = result.index("HOST_BOUNDARY reconnect_preflight_start")
+        response = result.index(FENCE_RESPONSE, barrier + 1, boundary)
+        result[response] = 'QRESP {"ok":true,"state":"running","suite":"core","mode":"current"}'
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay, replace_final_readiness_response_with_stale
+        ),
+        3,
+        "readiness replay reconnect serial fence returned a non-ready QRESP",
+    )
+
+    def insert_delayed_readiness_response(lines: list[str]) -> list[str]:
+        result = list(lines)
+        barrier_command = result.index(f">>> QBSC08 {READINESS_NONCE}")
+        result.insert(barrier_command + 1, FENCE_RESPONSE)
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, insert_delayed_readiness_response),
+        0,
+        "bench result: PASS",
+    )
     exercise(
         lambda replay: mutate_serial_lines(
             replay,
@@ -1471,6 +1665,36 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         ),
         3,
         "missing its pre-stop fence boundaries",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                "HOST_BOUNDARY reconnect_preflight_start",
+                FENCE_RESPONSE,
+            ),
+        ),
+        3,
+        "unbounded pre-stop protocol exchange",
+    )
+
+    def insert_unbounded_pre_stop_exchange(lines: list[str]) -> list[str]:
+        result = list(lines)
+        anchor = result.index("HOST_BOUNDARY reconnect_preflight_start") + 1
+        result[anchor:anchor] = [">>> QSTATUS", FENCE_RESPONSE]
+        return result
+
+    def remove_pre_stop_fence_response(lines: list[str]) -> list[str]:
+        result = list(lines)
+        begin = result.index("HOST_BOUNDARY reconnect_preflight_fence_begin")
+        result.pop(result.index(FENCE_RESPONSE, begin + 1))
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, insert_unbounded_pre_stop_exchange),
+        3,
+        "unbounded pre-stop protocol exchange",
     )
     for boundary in (
         "HOST_BOUNDARY reconnect_post_cleanup_fence_begin",
@@ -1485,11 +1709,6 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
             3,
             "missing its two bounded post-cleanup fences",
         )
-
-    def insert_after(lines: list[str], anchor: str, value: str) -> list[str]:
-        result = list(lines)
-        result.insert(result.index(anchor) + 1, value)
-        return result
 
     exercise(
         lambda replay: mutate_serial_lines(
@@ -1516,7 +1735,7 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
     exercise(
         lambda replay: mutate_serial_lines(
             replay,
-            lambda lines: remove_line(lines, FENCE_RESPONSE),
+            remove_pre_stop_fence_response,
         ),
         3,
         "requires one QSTATUS and one response",

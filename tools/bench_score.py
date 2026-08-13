@@ -969,6 +969,101 @@ def score_reconnect_raw_evidence(
             return False, "replay reconnect serial fence returned a non-ready QRESP"
         return True, ""
 
+    barrier_commands = [
+        index
+        for index in range(preflight_start)
+        if lines[index].startswith(">>> QBSC08")
+    ]
+    if len(barrier_commands) != 1:
+        return handshake_collection_failure(
+            "replay reconnect readiness requires exactly one QBSC08 nonce command"
+        )
+    barrier_command = barrier_commands[0]
+    barrier_fields = lines[barrier_command].split()
+    if (
+        len(barrier_fields) != 3
+        or barrier_fields[:2] != [">>>", "QBSC08"]
+        or len(barrier_fields[2]) != 32
+        or any(character not in "0123456789abcdef" for character in barrier_fields[2])
+    ):
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 command has an invalid nonce"
+        )
+    barrier_nonce = barrier_fields[2]
+    barrier_responses = [
+        index
+        for index in range(preflight_start)
+        if lines[index].startswith("QBSC08 ")
+    ]
+    if len(barrier_responses) != 1:
+        return handshake_collection_failure(
+            "replay reconnect readiness requires exactly one QBSC08 nonce response"
+        )
+    barrier_response = barrier_responses[0]
+    if barrier_response <= barrier_command:
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 response precedes its command"
+        )
+    try:
+        barrier_payload = json.loads(lines[barrier_response][len("QBSC08 ") :])
+    except json.JSONDecodeError:
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 response is malformed"
+        )
+    if not isinstance(barrier_payload, dict):
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 response is malformed"
+        )
+    barrier_schema = barrier_payload.get("schema")
+    if (
+        not isinstance(barrier_schema, int)
+        or isinstance(barrier_schema, bool)
+        or barrier_schema != 1
+        or barrier_payload.get("nonce") != barrier_nonce
+        or barrier_payload.get("status") not in {"ready", "busy"}
+    ):
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 response does not match its command"
+        )
+    if any(
+        lines[index].startswith(">>> ")
+        for index in range(barrier_command + 1, barrier_response)
+    ):
+        return handshake_collection_failure(
+            "replay reconnect readiness QBSC08 transaction contains an unexpected command"
+        )
+    for index in range(barrier_command + 1, barrier_response):
+        line = lines[index]
+        if line.startswith("QERR "):
+            return handshake_collection_failure(
+                "replay reconnect readiness QBSC08 transaction contains QERR"
+            )
+        if not line.startswith("QRESP "):
+            continue
+        try:
+            delayed_response = json.loads(line[len("QRESP ") :])
+        except json.JSONDecodeError:
+            return handshake_collection_failure(
+                "replay reconnect readiness contains malformed delayed QRESP evidence"
+            )
+        if not isinstance(delayed_response, dict):
+            return handshake_collection_failure(
+                "replay reconnect readiness contains malformed delayed QRESP evidence"
+            )
+
+    readiness_fence, readiness_fence_error = status_fence_result(
+        barrier_response + 1,
+        preflight_start,
+    )
+    if readiness_fence_error:
+        return handshake_collection_failure(
+            f"replay reconnect readiness {readiness_fence_error}"
+        )
+    if not readiness_fence:
+        return handshake_collection_failure(
+            "replay reconnect readiness is missing its final QSTATUS/QRESP fence"
+        )
+
     if ready and failure_kind not in {"handshake_timeout", "handshake_invalid"}:
         if len(fence_begins) != 1 or len(fence_completes) != 1:
             return handshake_collection_failure(
@@ -987,6 +1082,41 @@ def score_reconnect_raw_evidence(
             return handshake_collection_failure(
                 "replay reconnect serial log is missing its pre-stop QSTATUS/QRESP fence"
             )
+
+    expected_pre_stop_commands: list[int] = []
+    expected_pre_stop_responses: list[int] = []
+    if (
+        len(fence_begins) == 1
+        and len(fence_completes) == 1
+        and preflight_start < fence_begins[0] < fence_completes[0] < boundary
+    ):
+        expected_pre_stop_commands = [
+            index
+            for index in range(fence_begins[0] + 1, fence_completes[0])
+            if lines[index] == ">>> QSTATUS"
+        ]
+        expected_pre_stop_responses = [
+            index
+            for index in range(fence_begins[0] + 1, fence_completes[0])
+            if lines[index].startswith(("QRESP ", "QERR "))
+        ]
+    scoped_pre_stop_commands = [
+        index
+        for index in range(preflight_start + 1, boundary)
+        if lines[index].startswith(">>> ")
+    ]
+    scoped_pre_stop_responses = [
+        index
+        for index in range(preflight_start + 1, boundary)
+        if lines[index].startswith(("QRESP ", "QERR "))
+    ]
+    if (
+        scoped_pre_stop_commands != expected_pre_stop_commands
+        or scoped_pre_stop_responses != expected_pre_stop_responses
+    ):
+        return handshake_collection_failure(
+            "replay reconnect serial log contains an unbounded pre-stop protocol exchange"
+        )
 
     if any(line.startswith(BOOT_PREFIX) for line in lines[preflight_start : end + 1]):
         return handshake_collection_failure(

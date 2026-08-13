@@ -17,6 +17,7 @@ import glob
 import json
 import math
 import os
+import secrets
 import signal
 import shutil
 import subprocess
@@ -369,6 +370,68 @@ def establish_serial_fence(q: BenchSerial, timeout_s: float = 5.0) -> dict[str, 
     ):
         raise RuntimeError(f"reconnect serial fence was not ready: {payload}")
     return payload
+
+
+def establish_reconnect_readiness(
+    q: BenchSerial,
+    timeout_s: float,
+    *,
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    """Order startup replies behind a unique FIFO barrier, then fence QSTATUS."""
+    barrier_nonce = nonce if nonce is not None else secrets.token_hex(16)
+    if len(barrier_nonce) != 32 or any(
+        character not in "0123456789abcdef" for character in barrier_nonce
+    ):
+        raise RuntimeError("reconnect readiness barrier generated an invalid nonce")
+
+    deadline = time.monotonic() + timeout_s
+    q.write_command(f"QBSC08 {barrier_nonce}")
+    while time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            line = q.read_line(min(0.5, remaining))
+        except TimeoutError:
+            continue
+        if line.startswith("QRESP "):
+            # A readiness response delayed by boot crossed before the nonce;
+            # consuming it here prevents it from satisfying the final fence.
+            try:
+                delayed_response = json.loads(line[len("QRESP ") :])
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "reconnect readiness barrier encountered malformed delayed QRESP"
+                ) from exc
+            if not isinstance(delayed_response, dict):
+                raise RuntimeError(
+                    "reconnect readiness barrier encountered malformed delayed QRESP"
+                )
+            continue
+        if line.startswith("QERR "):
+            raise RuntimeError("reconnect readiness barrier received QERR")
+        if not line.startswith("QBSC08 "):
+            continue
+        try:
+            response = json.loads(line[len("QBSC08 ") :])
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("reconnect readiness barrier response is malformed") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError("reconnect readiness barrier response is malformed")
+        schema = response.get("schema")
+        if (
+            not isinstance(schema, int)
+            or isinstance(schema, bool)
+            or schema != 1
+            or response.get("nonce") != barrier_nonce
+        ):
+            raise RuntimeError("reconnect readiness barrier response has the wrong nonce")
+        if response.get("status") not in {"ready", "busy"}:
+            raise RuntimeError("reconnect readiness barrier response has an invalid status")
+        return establish_serial_fence(
+            q,
+            timeout_s=max(0.1, deadline - time.monotonic()),
+        )
+    raise RuntimeError("reconnect readiness barrier timed out")
 
 
 def _preflight_ledger_is_complete(path: Path) -> bool:
@@ -1155,6 +1218,8 @@ def collect_live(
         print(f"[bench] opening serial port {port}; protocol log: {protocol_log}", flush=True)
         q = BenchSerial(port, args.baud, protocol_log)
         ready = wait_ready(q, args.ready_timeout_seconds)
+        if args.suite == "replay":
+            ready = establish_reconnect_readiness(q, args.ready_timeout_seconds)
         print(f"[bench] protocol ready: {ready}", flush=True)
         boot_count_before_reconnect: int | None = None
         cleanup_count_before_reconnect: int | None = None

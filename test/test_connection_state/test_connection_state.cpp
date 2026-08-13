@@ -15,6 +15,10 @@
  */
 #include <unity.h>
 
+#include <cstdarg>
+#include <cstdio>
+#include <string>
+
 // Test-controllable time
 static unsigned long mockMillis = 0;
 
@@ -75,13 +79,40 @@ static bool restoreAuthoritativeOwner(void* context, uint32_t nowMs) {
     return harness->restored;
 }
 
+// Capture only the real module's Serial output. Other mocks keep using the
+// ordinary no-op SerialClass so this regression remains local to this target.
+class ConnectionStateSerialCapture {
+  public:
+    void reset() {
+        output.clear();
+        presentationSequenceAtLastPrintf = 0;
+    }
+
+    void printf(const char* format, ...) {
+        char buffer[160];
+        va_list args;
+        va_start(args, format);
+        std::vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+        output += buffer;
+        presentationSequenceAtLastPrintf = display.lifecycleState().presentationSequence;
+    }
+
+    std::string output;
+    uint32_t presentationSequenceAtLastPrintf = 0;
+};
+
+static ConnectionStateSerialCapture connectionStateSerialCapture;
+
 // Compile the REAL module too: the replica below pins the logic pattern, but
 // only the real translation unit exercises the actual
 // src/modules/ble/connection_state_module.cpp (a 2026-07-09 review found this
 // suite exercised the copy only). The event bus has no mock; the real header
 // is native-safe.
 #include "../../src/modules/system/system_event_bus.h"
+#define Serial connectionStateSerialCapture
 #include "../../src/modules/ble/connection_state_module.cpp"
+#undef Serial
 
 // Replicate the ConnectionStateModule logic for testing
 // These constants match the real module
@@ -446,6 +477,14 @@ void test_real_module_disconnect_clears_ble_display_state() {
     TEST_ASSERT_FALSE(alertPersistenceModule.persistedAlert.isValid);
     TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
     TEST_ASSERT_FALSE(powerModule.lastConnectionState);
+    TEST_ASSERT_EQUAL_STRING("[BLE] V1 disconnected; cleared LCD BLE state at 1100 ms\n",
+                             connectionStateSerialCapture.output.c_str());
+    TEST_ASSERT_EQUAL_UINT32(lifecycle.presentationSequence,
+                             connectionStateSerialCapture.presentationSequenceAtLastPrintf);
+
+    TEST_ASSERT_FALSE(real.process(1150));
+    TEST_ASSERT_EQUAL_STRING("[BLE] V1 disconnected; cleared LCD BLE state at 1100 ms\n",
+                             connectionStateSerialCapture.output.c_str());
 }
 
 void test_real_module_immediate_connect_defers_display_but_commits_state() {
@@ -573,6 +612,41 @@ void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scannin
     TEST_ASSERT_FALSE(lifecycle.bleProxyEnabled);
     TEST_ASSERT_FALSE(lifecycle.bleProxyConnected);
     TEST_ASSERT_TRUE(lifecycle.resetChangeTrackingSequence < lifecycle.presentationSequence);
+    TEST_ASSERT_EQUAL_STRING("[BLE] V1 disconnected; cleared LCD BLE state at 1100 ms\n",
+                             connectionStateSerialCapture.output.c_str());
+    TEST_ASSERT_EQUAL_UINT32(lifecycle.presentationSequence,
+                             connectionStateSerialCapture.presentationSequenceAtLastPrintf);
+
+    TEST_ASSERT_FALSE(real.process(1150));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_EQUAL_STRING("[BLE] V1 disconnected; cleared LCD BLE state at 1100 ms\n",
+                             connectionStateSerialCapture.output.c_str());
+}
+
+void test_stale_disconnect_owner_render_emits_no_cleanup_marker() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+
+    bleClient.setConnected(true);
+    bleClient.setSessionGeneration(7);
+    real.process(1000);
+
+    OwnerPresenterHarness presenter{&display, &parser, &bleClient};
+    presenter.mutateAfterRender = true;
+    presenter.mutationConnected = false;
+    presenter.mutationSessionGeneration = 9;
+    real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
+
+    bleClient.setConnected(false);
+    bleClient.setSessionGeneration(8);
+    real.handleSessionClosed(1050, 8);
+
+    TEST_ASSERT_FALSE(real.process(1100));
+    TEST_ASSERT_EQUAL(1, presenter.calls);
+    TEST_ASSERT_FALSE(presenter.lastConnected);
+    TEST_ASSERT_EQUAL_UINT32(8, presenter.lastSessionGeneration);
+    TEST_ASSERT_TRUE(connectionStateSerialCapture.output.empty());
+    TEST_ASSERT_EQUAL_UINT32(0, connectionStateSerialCapture.presentationSequenceAtLastPrintf);
 }
 
 void test_owner_presenter_state_change_does_not_clear_new_pending() {
@@ -647,6 +721,7 @@ void test_real_module_generation_change_forces_session_reset() {
 
 void setUp() {
     mockMillis = 0;
+    connectionStateSerialCapture.reset();
     bleClient.reset();
     display.reset();
     parser.reset();
@@ -680,6 +755,7 @@ void runAllTests() {
     RUN_TEST(test_real_module_disconnect_discards_pending_connected_presentation);
     RUN_TEST(test_pending_connect_uses_authoritative_owner_presenter_not_show_resting);
     RUN_TEST(test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scanning);
+    RUN_TEST(test_stale_disconnect_owner_render_emits_no_cleanup_marker);
     RUN_TEST(test_owner_presenter_state_change_does_not_clear_new_pending);
     RUN_TEST(test_declined_owner_presenter_state_change_skips_obsolete_fallback);
     RUN_TEST(test_real_module_generation_change_forces_session_reset);

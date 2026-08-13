@@ -68,6 +68,6 @@ class ConnectionStateModule {
     static constexpr unsigned long DATA_REQUEST_INTERVAL_MS = 1000; // Re-request every 1s when stale
 
     void presentConnected();
-    void presentDisconnected(unsigned long nowMs);
+    void presentDisconnected();
     void presentPendingOwner(unsigned long nowMs, bool v1Connected, uint32_t sessionGeneration);
 };

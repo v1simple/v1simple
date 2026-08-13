@@ -98,9 +98,8 @@ void ConnectionStateModule::presentConnected() {
     CONN_LOG("[BLE] V1 connected");
 }
 
-void ConnectionStateModule::presentDisconnected(unsigned long nowMs) {
+void ConnectionStateModule::presentDisconnected() {
     display_->showScanning();
-    Serial.printf("[BLE] V1 disconnected; cleared LCD BLE state at %lu ms\n", nowMs);
     CONN_LOG("[BLE] V1 disconnected - scanning");
 }
 
@@ -150,7 +149,7 @@ void ConnectionStateModule::presentPendingOwner(unsigned long nowMs, bool v1Conn
         if (v1Connected) {
             presentConnected();
         } else {
-            presentDisconnected(nowMs);
+            presentDisconnected();
         }
         restored = true;
     }
@@ -166,6 +165,7 @@ void ConnectionStateModule::presentPendingOwner(unsigned long nowMs, bool v1Conn
         connectedPresentationPending_ = false;
     } else if (!v1Connected && !wasConnected_ && observedSessionGeneration_ == sessionGeneration &&
                !disconnectDisplayCleanupPending_) {
+        Serial.printf("[BLE] V1 disconnected; cleared LCD BLE state at %lu ms\n", nowMs);
         disconnectPresentationPending_ = false;
     }
 }

@@ -13,14 +13,17 @@ from typing import Any
 
 CAMERA_CONTRACT_SCHEMA_VERSION = 2
 
-EXPECTED_CAMERA_NAME = "Razer Kiyo"
+EXPECTED_CAMERA_NAME = "Global Shutter Camera"
 EXPECTED_CAMERA_PROFILE = {
+    "auto_exposure_mode": 8,
     "auto_exposure_priority": 0,
-    "focus_abs": 208,
-    "video_exposure_time_abs": 156,
-    "framerate": 30,
+    "focus_abs": 306,
+    "video_exposure_time_abs": 50,
+    "gain": 0,
+    "framerate": 200,
     "input_pixel_format": "nv12",
     "video_size": "1280x720",
+    "capture_backend": "avfoundation_native",
 }
 SUPPORTED_GRADER_VIDEO_SIZES = ("1280x720", "1920x1080")
 

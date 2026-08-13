@@ -22,6 +22,7 @@ from camera_capture import (  # noqa: E402
     FRAME_BYTES,
     FRAME_HEIGHT,
     FRAME_WIDTH,
+    VIDEO_EXPOSURE,
     CameraCapture,
     evaluate_camera_profile_frames,
 )
@@ -207,16 +208,22 @@ def test_replay_blink_profile_argv_and_result() -> None:
             )
 
 
-def test_razer_kiyo_default_uses_real_720p30_profile() -> None:
+def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
     previous = os.environ.pop("BENCH_CAMERA_FRAMERATE", None)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             camera = CameraCapture(Path(tmp), 300)
-            assert_true(camera.framerate == 30, f"unsupported default camera rate: {camera.framerate}")
+            assert_true(camera.camera_name == "Global Shutter Camera", f"wrong camera: {camera.camera_name}")
+            assert_true(camera.framerate == 200, f"unsupported default camera rate: {camera.framerate}")
             assert_true(camera.video_size == "1280x720", f"wrong camera size: {camera.video_size}")
             assert_true(
                 camera.input_pixel_format == "nv12",
                 f"wrong camera input pixel format: {camera.input_pixel_format}",
+            )
+            assert_true(camera.focus == 306, f"wrong fixed focus: {camera.focus}")
+            assert_true(
+                camera.capture_backend == "avfoundation_native",
+                f"wrong capture backend: {camera.capture_backend}",
             )
     finally:
         if previous is not None:
@@ -258,9 +265,11 @@ def test_camera_profile_is_applied_after_still_consumer_open() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             camera = OrderingCameraCapture(Path(tmp), 300)
             camera.imagesnap = "imagesnap"
-            camera._snapshot(156, camera.preflight_path)
+            camera._snapshot(VIDEO_EXPOSURE, camera.preflight_path)
             assert_true(
-                events.index("still_open") < events.index("configure:156") < events.index("still_capture"),
+                events.index("still_open")
+                < events.index(f"configure:{VIDEO_EXPOSURE}")
+                < events.index("still_capture"),
                 f"camera profile was not applied while the still consumer owned the camera: {events}",
             )
     finally:
@@ -289,6 +298,18 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
             events.append(f"snapshot:{exposure}")
             path.write_bytes(b"snapshot")
 
+        def _extract_video_still(self, _video: Path, path: Path, _time_s: float) -> None:
+            events.append("extract_preflight")
+            path.write_bytes(b"snapshot")
+
+        def _wait_for_marker(self, _path: Path, _timeout_s: float, label: str) -> dict[str, object]:
+            events.append(f"ready:{label}")
+            return {"result": "READY"}
+
+        def _validate_live_profile(self) -> dict[str, int | bool]:
+            events.append("validate_profile")
+            return {}
+
     original_popen = camera_capture_module.subprocess.Popen
     original_sleep = camera_capture_module.time.sleep
     try:
@@ -300,13 +321,13 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
         )
         with tempfile.TemporaryDirectory() as tmp:
             camera = OrderingCameraCapture(Path(tmp), 300)
-            camera.ffmpeg = "ffmpeg"
+            camera.swift = "swift"
             assert_true(camera.start(), f"camera start failed: {camera.errors}")
             recorder_index = events.index("recorder_open")
             configure_indices = [index for index, event in enumerate(events) if event.startswith("configure:")]
-            assert_true(len(configure_indices) == 2, f"camera profile was not applied twice: {events}")
+            assert_true(len(configure_indices) == 1, f"camera profile was not applied once: {events}")
             assert_true(
-                configure_indices[-1] > recorder_index,
+                recorder_index < configure_indices[0] < events.index("validate_profile"),
                 f"camera profile was not reapplied after recorder ownership: {events}",
             )
             camera.process = None
@@ -316,6 +337,31 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
     finally:
         camera_capture_module.subprocess.Popen = original_popen
         camera_capture_module.time.sleep = original_sleep
+
+
+def test_camera_video_and_manual_diagnostic_profiles_are_distinct() -> None:
+    class ControlCapture(CameraCapture):
+        def __init__(self, out_dir: Path) -> None:
+            super().__init__(out_dir, 300)
+            self.controls: list[tuple[str, int]] = []
+
+        def _set_control(self, name: str, value: int) -> None:
+            self.controls.append((name, value))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = ControlCapture(Path(tmp))
+        camera._configure(VIDEO_EXPOSURE)
+        video = dict(camera.controls)
+        assert_true(video["auto-exposure-mode"] == 8, f"video profile is not aperture priority: {video}")
+        assert_true(video["gain"] == 0, f"video profile changed qualified gain: {video}")
+        assert_true("exposure-time-abs" not in video, f"video profile forced manual exposure: {video}")
+
+        camera.controls.clear()
+        camera._configure(1000)
+        manual = dict(camera.controls)
+        assert_true(manual["auto-exposure-mode"] == 1, f"diagnostic profile is not manual: {manual}")
+        assert_true(manual["gain"] == 190, f"diagnostic profile lacks usable gain: {manual}")
+        assert_true(manual["exposure-time-abs"] == 1000, f"diagnostic exposure was lost: {manual}")
 
 
 def test_failed_frame_rate_probe_retains_measurements_and_diagnostics() -> None:
@@ -338,6 +384,9 @@ def test_failed_frame_rate_probe_retains_measurements_and_diagnostics() -> None:
             return {"result": "PASS"}
 
         def _snapshot(self, _exposure: int, path: Path) -> None:
+            path.write_bytes(b"snapshot")
+
+        def _extract_video_still(self, _video: Path, path: Path, _time_s: float) -> None:
             path.write_bytes(b"snapshot")
 
         def _set_control(self, _name: str, _value: int) -> None:
@@ -634,8 +683,8 @@ def test_camera_crop_registration_tracks_dynamic_rig_movement() -> None:
 def test_camera_crop_registration_falls_back_to_bright_still() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         camera_dir = Path(tmp)
-        session_start = camera_dir / "session_start_exp156.jpg"
-        bright = camera_dir / "final_exp5.jpg"
+        session_start = camera_dir / "session_start_exp50.jpg"
+        bright = camera_dir / "final_auto.jpg"
         session_start.write_bytes(b"session")
         bright.write_bytes(b"bright")
         original = camera_grade_module.calibrate_display_crop
@@ -902,9 +951,10 @@ def main() -> int:
     test_failed_window_still_stops_emulator()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
-    test_razer_kiyo_default_uses_real_720p30_profile()
+    test_global_shutter_default_uses_qualified_720p200_profile()
     test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
+    test_camera_video_and_manual_diagnostic_profiles_are_distinct()
     test_failed_frame_rate_probe_retains_measurements_and_diagnostics()
     test_bench_entrypoint_forwards_explicit_baseline_window()
     test_baseline_promotion_is_future_core_display_only()

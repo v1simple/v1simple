@@ -60,6 +60,7 @@ def write_fixture(root: Path) -> None:
         "tools/v1replay/Resources/Info.plist": b"plist\n",
         "tools/v1replay/scripts/build.sh": b"swift build\n",
         "scripts/bench/camera_capture.py": b"capture\n",
+        "scripts/bench/camera_recorder.swift": b"native recorder\n",
         "scripts/bench/camera_preflight.py": b"preflight\n",
         "scripts/bench/bench_identity.py": b"identity contract\n",
         "scripts/bench/camera_contract.py": b"contract\n",
@@ -137,6 +138,7 @@ def test_generated_deployed_html_does_not_change_product_identity(root: Path) ->
 def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
     for relative in (
         "scripts/bench/camera_capture.py",
+        "scripts/bench/camera_recorder.swift",
         "scripts/bench/camera_preflight.py",
         "scripts/bench/bench_identity.py",
         "scripts/bench/camera_contract.py",

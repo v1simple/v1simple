@@ -14,11 +14,10 @@ from pathlib import Path
 from typing import Any
 
 
-# Video exposure in UVC units of 0.1 ms; 156 == 15.6 ms is the calibrated
-# default and every archived run to date used it. The environment override is
-# retained for explicit camera development, but fixed-profile preflight refuses
-# any non-profile value before live product collection.
-VIDEO_EXPOSURE = int(os.environ.get("BENCH_CAMERA_VIDEO_EXPOSURE", "156"))
+# The open-aperture AR0234 profile converges to 5 ms in aperture-priority mode.
+# Keep the value in the contract and verify the live readback before recording;
+# setting 5 ms in manual mode disables the camera's internal gain and is dark.
+VIDEO_EXPOSURE = int(os.environ.get("BENCH_CAMERA_VIDEO_EXPOSURE", "50"))
 
 FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
@@ -27,7 +26,10 @@ DISPLAY_CROP = "crop=iw*0.52:ih*0.38:iw*0.18:ih*0.25"
 CALIBRATION_VIDEO_TIME_S = 3.0
 CALIBRATION_PATCH = (150, 20, 260, 45)
 CAMERA_OPEN_SETTLE_S = 0.5
-CAMERA_PROFILE_SETTLE_S = 1.5
+CAMERA_PROFILE_SETTLE_S = 5.0
+CAMERA_SESSION_READY_TIMEOUT_S = 15.0
+CAMERA_RECORDING_READY_TIMEOUT_S = 15.0
+CAMERA_PREFLIGHT_RECORD_SECONDS = 0.75
 
 
 def utc_now() -> str:
@@ -93,43 +95,57 @@ def evaluate_camera_profile_frames(preflight: bytes, video: bytes) -> dict[str, 
 
 
 class CameraCapture:
-    """Own the ffmpeg process and evidence files for a single suite."""
+    """Own the native recorder process and evidence files for a single suite."""
 
     def __init__(self, out_dir: Path, expected_duration_s: int):
         self.out_dir = out_dir.resolve()
         self.expected_duration_s = expected_duration_s
-        self.camera_name = os.environ.get("BENCH_CAMERA_NAME", "Razer Kiyo")
+        self.camera_name = os.environ.get("BENCH_CAMERA_NAME", "Global Shutter Camera")
         self.camera_device_index = int(os.environ.get("BENCH_CAMERA_DEVICE_INDEX", "0"))
-        self.focus = int(os.environ.get("BENCH_CAMERA_FOCUS", "208"))
-        self.framerate = int(os.environ.get("BENCH_CAMERA_FRAMERATE", "30"))
+        self.focus = int(os.environ.get("BENCH_CAMERA_FOCUS", "306"))
+        self.framerate = int(os.environ.get("BENCH_CAMERA_FRAMERATE", "200"))
         self.input_pixel_format = os.environ.get("BENCH_CAMERA_PIXEL_FORMAT", "nv12")
         self.video_size = os.environ.get("BENCH_CAMERA_VIDEO_SIZE", "1280x720")
+        self.capture_backend = "avfoundation_native"
         self.uvc_util = _find_uvc_util()
         self.ffmpeg = shutil.which("ffmpeg")
         self.ffprobe = shutil.which("ffprobe")
         self.imagesnap = shutil.which("imagesnap")
-        self.video_path = self.out_dir / f"evidence_exp{VIDEO_EXPOSURE}.mp4"
+        self.swift = shutil.which("swift")
+        self.native_recorder = Path(__file__).with_name("camera_recorder.swift").resolve()
+        self.video_path = self.out_dir / f"evidence_exp{VIDEO_EXPOSURE}.mov"
+        self.native_preflight_path = self.out_dir / ".camera_preflight.mov"
         self.preflight_path = self.out_dir / f"session_start_exp{VIDEO_EXPOSURE}.jpg"
-        self.bright_path = self.out_dir / "final_exp5.jpg"
-        self.dim_path = self.out_dir / "final_exp1250.jpg"
+        self.bright_path = self.out_dir / "final_auto.jpg"
+        self.dim_path = self.out_dir / "final_manual_exp1000.jpg"
         self.log_path = self.out_dir / "camera.log"
         self.result_path = self.out_dir / "camera_result.json"
         self.preflight_result_path = self.out_dir / "camera_preflight.json"
+        self.session_ready_path = self.out_dir / ".camera_session_ready.json"
+        self.start_marker_path = self.out_dir / ".camera_start"
+        self.preflight_ready_path = self.out_dir / ".camera_preflight_ready.json"
+        self.preflight_stop_path = self.out_dir / ".camera_preflight_stop"
+        self.preflight_finished_path = self.out_dir / ".camera_preflight_finished.json"
+        self.recording_ready_path = self.out_dir / ".camera_recording_ready.json"
         self.process: subprocess.Popen[bytes] | None = None
         self.recording_started_monotonic: float | None = None
         self.log_handle: Any = None
         self.errors: list[str] = []
+        self.recorder_session: dict[str, Any] = {}
+        self.profile_readback: dict[str, Any] = {}
 
     def profile(self) -> dict[str, Any]:
         return {
+            "auto_exposure_mode": 8,
             "auto_exposure_priority": 0,
             "focus_abs": self.focus,
             "video_exposure_time_abs": VIDEO_EXPOSURE,
-            "bright_exposure_time_abs": 5,
-            "dim_exposure_time_abs": 1250,
+            "gain": 0,
+            "diagnostic_exposure_time_abs": 1000,
             "framerate": self.framerate,
             "input_pixel_format": self.input_pixel_format,
             "video_size": self.video_size,
+            "capture_backend": self.capture_backend,
         }
 
     def _write_result(self, result: str, **extra: Any) -> None:
@@ -141,6 +157,8 @@ class CameraCapture:
             "camera_name": self.camera_name,
             "camera_device_index": self.camera_device_index,
             "profile": self.profile(),
+            "profile_readback": self.profile_readback,
+            "recorder_session": self.recorder_session,
             "expected_duration_seconds": self.expected_duration_s,
             "errors": self.errors,
         }
@@ -158,13 +176,17 @@ class CameraCapture:
             missing.append("ffprobe")
         if not self.imagesnap:
             missing.append("imagesnap")
+        if not self.swift:
+            missing.append("swift")
+        if not self.native_recorder.is_file():
+            missing.append("scripts/bench/camera_recorder.swift")
         if missing:
             raise RuntimeError("missing camera tools: " + ", ".join(missing))
 
     def _set_control(self, name: str, value: int) -> None:
         assert self.uvc_util is not None
         proc = subprocess.run(
-            [str(self.uvc_util), "-I", str(self.camera_device_index), "-s", f"{name}={value}"],
+            [str(self.uvc_util), "-N", self.camera_name, "-s", f"{name}={value}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -175,27 +197,79 @@ class CameraCapture:
             suffix = f": {detail[-1]}" if detail else ""
             raise RuntimeError(f"camera control {name} failed{suffix}")
 
+    def _get_control_value(self, name: str) -> int | bool:
+        assert self.uvc_util is not None
+        proc = subprocess.run(
+            [str(self.uvc_util), "-N", self.camera_name, "-o", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        value = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+        if proc.returncode != 0 or not value:
+            raise RuntimeError(f"camera control {name} could not be read")
+        if value.lower() in {"true", "false"}:
+            return value.lower() == "true"
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise RuntimeError(f"camera control {name} returned an invalid value: {value}") from exc
+
     def _configure(self, exposure: int) -> None:
+        video_profile = exposure == VIDEO_EXPOSURE
         controls = [
             ("auto-focus", 0),
             ("focus-abs", self.focus),
-            ("auto-exposure-mode", 1),
+            ("auto-exposure-mode", 8 if video_profile else 1),
             ("auto-exposure-priority", 0),
             ("auto-white-balance-temp", 0),
-            ("white-balance-temp", 4000),
-            ("backlight-compensation", 0),
-            ("power-line-frequency", 2),
-            ("gain", 0),
+            ("white-balance-temp", 4650),
+            ("backlight-compensation", 72),
+            ("power-line-frequency", 1),
+            ("brightness", 128),
+            ("gamma", 128),
+            ("contrast", 64),
+            ("saturation", 78),
+            ("gain", 0 if video_profile else 190),
             ("sharpness", 128),
-            ("exposure-time-abs", exposure),
         ]
+        if not video_profile:
+            controls.append(("exposure-time-abs", exposure))
         for name, value in controls:
             self._set_control(name, value)
 
+    def _validate_live_profile(self) -> dict[str, int | bool]:
+        expected: dict[str, int | bool] = {
+            "auto-focus": False,
+            "focus-abs": self.focus,
+            "auto-exposure-mode": 8,
+            "auto-exposure-priority": 0,
+            "exposure-time-abs": VIDEO_EXPOSURE,
+            "gain": 0,
+            "auto-white-balance-temp": False,
+            "white-balance-temp": 4650,
+        }
+        measured = {name: self._get_control_value(name) for name in expected}
+        mismatches = {
+            name: {"expected": expected[name], "measured": value}
+            for name, value in measured.items()
+            if value != expected[name]
+        }
+        self.profile_readback = measured
+        if mismatches:
+            detail = ", ".join(
+                f"{name}={values['measured']} (expected {values['expected']})"
+                for name, values in mismatches.items()
+            )
+            raise RuntimeError(f"camera live profile mismatch: {detail}")
+        return measured
+
     def _snapshot(self, exposure: int, path: Path) -> None:
         assert self.imagesnap is not None
+        wait_seconds = 5 if exposure == VIDEO_EXPOSURE else 2
         proc = subprocess.Popen(
-            [self.imagesnap, "-q", "-w", "2", "-d", self.camera_name, str(path)],
+            [self.imagesnap, "-q", "-w", str(wait_seconds), "-d", self.camera_name, str(path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -204,7 +278,7 @@ class CameraCapture:
         try:
             # imagesnap opens a new macOS camera consumer and can reset the
             # UVC profile. Configure only after it owns the camera, then use
-            # the remainder of its two-second wait as the profile settle.
+            # the remainder of its wait as the profile settle.
             time.sleep(CAMERA_OPEN_SETTLE_S)
             if proc.poll() is None:
                 self._configure(exposure)
@@ -258,41 +332,78 @@ class CameraCapture:
         video = self._decode_profile_frame(self.video_path, CALIBRATION_VIDEO_TIME_S)
         return evaluate_camera_profile_frames(preflight, video)
 
-    def start(self) -> bool:
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            self._require_tools()
-            self._configure(VIDEO_EXPOSURE)
-            self._snapshot(VIDEO_EXPOSURE, self.preflight_path)
-            assert self.ffmpeg is not None
-            self.log_handle = self.log_path.open("wb")
-            command = [
+    def _extract_video_still(self, video_path: Path, still_path: Path, video_time_s: float) -> None:
+        assert self.ffmpeg is not None
+        proc = subprocess.run(
+            [
                 self.ffmpeg,
                 "-nostdin",
                 "-hide_banner",
                 "-loglevel",
-                "warning",
-                "-y",
-                "-f",
-                "avfoundation",
-                "-framerate",
-                str(self.framerate),
-                "-video_size",
-                self.video_size,
-                "-pixel_format",
-                self.input_pixel_format,
+                "error",
+                "-ss",
+                str(video_time_s),
                 "-i",
-                f"{self.camera_name}:none",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "20",
-                "-pix_fmt",
-                "yuv420p",
+                str(video_path),
+                "-frames:v",
+                "1",
+                "-y",
+                str(still_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if proc.returncode != 0 or not still_path.is_file() or still_path.stat().st_size == 0:
+            detail = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"native camera still extraction failed: {detail or f'exit {proc.returncode}'}")
+
+    def _wait_for_marker(self, path: Path, timeout_s: float, label: str) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if path.is_file():
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    pass
+            if self.process is not None and self.process.poll() is not None:
+                raise RuntimeError(f"camera recorder exited before {label} (code {self.process.returncode})")
+            time.sleep(0.05)
+        raise RuntimeError(f"camera recorder timed out waiting for {label}")
+
+    def start(self) -> bool:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._require_tools()
+            assert self.swift is not None
+            self.log_handle = self.log_path.open("wb")
+            command = [
+                self.swift,
+                str(self.native_recorder),
+                "--device-name",
+                self.camera_name,
+                "--video-size",
+                self.video_size,
+                "--framerate",
+                str(self.framerate),
+                "--pixel-format",
+                self.input_pixel_format,
+                "--output",
                 str(self.video_path),
+                "--preflight-output",
+                str(self.native_preflight_path),
+                "--session-ready",
+                str(self.session_ready_path),
+                "--start-marker",
+                str(self.start_marker_path),
+                "--preflight-ready",
+                str(self.preflight_ready_path),
+                "--preflight-stop",
+                str(self.preflight_stop_path),
+                "--preflight-finished",
+                str(self.preflight_finished_path),
+                "--recording-ready",
+                str(self.recording_ready_path),
             ]
             self.process = subprocess.Popen(
                 command,
@@ -300,18 +411,37 @@ class CameraCapture:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            self.recording_started_monotonic = time.monotonic()
-            # Opening a new macOS camera consumer can reset UVC controls even
-            # when the preflight still was calibrated. Reapply the complete
-            # profile after ffmpeg owns the live stream, then allow it to
-            # settle before the bench window can begin.
-            time.sleep(CAMERA_OPEN_SETTLE_S)
-            if self.process.poll() is not None:
-                raise RuntimeError(f"camera recorder exited early with code {self.process.returncode}")
+            self.recorder_session = self._wait_for_marker(
+                self.session_ready_path,
+                CAMERA_SESSION_READY_TIMEOUT_S,
+                "native session readiness",
+            )
+            # Starting the AVFoundation session selects the exact 720p/200
+            # format but may reset UVC controls. Apply and verify the profile
+            # while that session owns the camera, before admitting the bench.
             self._configure(VIDEO_EXPOSURE)
             time.sleep(CAMERA_PROFILE_SETTLE_S)
-            if self.process.poll() is not None:
-                raise RuntimeError(f"camera recorder exited early with code {self.process.returncode}")
+            self._validate_live_profile()
+            self.start_marker_path.write_text("start\n", encoding="utf-8")
+            self._wait_for_marker(
+                self.preflight_ready_path,
+                CAMERA_RECORDING_READY_TIMEOUT_S,
+                "native preflight recording readiness",
+            )
+            time.sleep(CAMERA_PREFLIGHT_RECORD_SECONDS)
+            self.preflight_stop_path.write_text("stop\n", encoding="utf-8")
+            self._wait_for_marker(
+                self.preflight_finished_path,
+                CAMERA_RECORDING_READY_TIMEOUT_S,
+                "native preflight recording finalization",
+            )
+            self._wait_for_marker(
+                self.recording_ready_path,
+                CAMERA_RECORDING_READY_TIMEOUT_S,
+                "recording readiness",
+            )
+            self.recording_started_monotonic = time.monotonic()
+            self._extract_video_still(self.native_preflight_path, self.preflight_path, 0.5)
             self._write_result("RECORDING")
             return True
         except Exception as exc:  # noqa: BLE001 - retain evidence and keep the metrics run going
@@ -325,7 +455,7 @@ class CameraCapture:
         if process is not None and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGINT)
-                process.wait(timeout=3)
+                process.wait(timeout=20)
             except (OSError, subprocess.TimeoutExpired):
                 if process.poll() is None:
                     try:
@@ -359,7 +489,7 @@ class CameraCapture:
         self._write_result("CAPTURE_FAILED", **payload)
         return {"result": "CAPTURE_FAILED", **payload, "errors": list(self.errors)}
 
-    def _probe_video(self) -> dict[str, float | int]:
+    def _probe_video(self) -> dict[str, Any]:
         assert self.ffprobe is not None
         proc = subprocess.run(
             [
@@ -367,7 +497,7 @@ class CameraCapture:
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration:stream=width,height,avg_frame_rate",
+                "format=duration:stream=width,height,avg_frame_rate,nb_frames,codec_name",
                 "-of",
                 "json",
                 str(self.video_path),
@@ -389,13 +519,16 @@ class CameraCapture:
                 "width": int(stream["width"]),
                 "height": int(stream["height"]),
                 "average_frame_rate": round(frame_rate, 3),
+                "codec": str(stream.get("codec_name", "")),
             }
+            if str(stream.get("nb_frames", "")).isdigit():
+                result["frame_count"] = int(stream["nb_frames"])
         except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
             raise RuntimeError("camera video probe is malformed") from exc
 
         return result
 
-    def _validate_video_probe(self, result: dict[str, float | int]) -> None:
+    def _validate_video_probe(self, result: dict[str, Any]) -> None:
         """Require the recorded stream to match the requested source profile."""
         expected_width, expected_height = (int(value) for value in self.video_size.split("x", 1))
         if (result["width"], result["height"]) != (expected_width, expected_height):
@@ -413,7 +546,7 @@ class CameraCapture:
         was_running = self.process is not None
         self._stop_process()
         duration = 0.0
-        video_probe: dict[str, float | int] = {}
+        video_probe: dict[str, Any] = {}
         profile_validation: dict[str, Any] = {}
         if was_running:
             try:
@@ -428,9 +561,13 @@ class CameraCapture:
                 profile_validation = self._validate_recording_profile()
                 if profile_validation.get("result") != "PASS":
                     self.errors.append(str(profile_validation.get("message") or "camera calibration failed"))
-                self._snapshot(5, self.bright_path)
-                self._snapshot(1250, self.dim_path)
-                self._set_control("exposure-time-abs", VIDEO_EXPOSURE)
+                self._extract_video_still(
+                    self.video_path,
+                    self.bright_path,
+                    max(0.0, duration - 0.5),
+                )
+                self._snapshot(1000, self.dim_path)
+                self._configure(VIDEO_EXPOSURE)
                 minimum = max(1.0, float(self.expected_duration_s) - 5.0) if collection_completed else 1.0
                 if duration < minimum:
                     self.errors.append(

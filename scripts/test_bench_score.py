@@ -175,10 +175,10 @@ def write_window(
         (camera_dir / "capture_manifest.json").unlink(missing_ok=True)
         (camera_dir / "grades" / f"{CURRENT_GRADER_FINGERPRINT}.json").unlink(missing_ok=True)
         evidence_names = {
-            "video": "evidence_exp156.mp4",
-            "session_start_still": "session_start_exp156.jpg",
-            "bright_still": "final_exp5.jpg",
-            "dim_still": "final_exp1250.jpg",
+            "video": "evidence_exp50.mov",
+            "session_start_still": "session_start_exp50.jpg",
+            "bright_still": "final_auto.jpg",
+            "dim_still": "final_manual_exp1000.jpg",
         }
         if camera_result == "CAPTURED":
             for name in evidence_names.values():
@@ -187,9 +187,9 @@ def write_window(
             "schema_version": 1,
             "kind": "bench_camera_evidence",
             "result": camera_result,
-            "camera_name": "Razer Kiyo",
+            "camera_name": "Global Shutter Camera",
             "camera_device_index": 0,
-            "profile": {"focus_abs": 208, "video_exposure_time_abs": 156},
+            "profile": {"focus_abs": 306, "video_exposure_time_abs": 50},
             "expected_duration_seconds": 300,
             "profile_validation": {"result": "PASS"},
             **{key: value if camera_result == "CAPTURED" else "" for key, value in evidence_names.items()},
@@ -689,7 +689,7 @@ def test_strict_camera_bytes_and_window_identity_are_required() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_window(root, "replay", camera_result="CAPTURED")
-        video = root / "replay" / "camera" / "evidence_exp156.mp4"
+        video = root / "replay" / "camera" / "evidence_exp50.mov"
         video.write_bytes(b"tampered")
         proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)

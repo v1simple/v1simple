@@ -76,7 +76,10 @@ PRODUCT_EXCLUDE_PATTERNS = (
 
 GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "identity_contract": ("scripts/bench/bench_identity.py",),
-    "camera_capture": ("scripts/bench/camera_capture.py",),
+    "camera_capture": (
+        "scripts/bench/camera_capture.py",
+        "scripts/bench/camera_recorder.swift",
+    ),
     "camera_preflight": ("scripts/bench/camera_preflight.py",),
     "camera_contract": ("scripts/bench/camera_contract.py",),
     "camera_artifacts": ("scripts/bench/camera_artifacts.py",),

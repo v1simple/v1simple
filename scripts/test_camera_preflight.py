@@ -145,13 +145,13 @@ class FakeCamera:
     ) -> None:
         self.out_dir = out_dir
         self.expected_duration_s = expected_duration_s
-        self.camera_name = "Razer Kiyo"
+        self.camera_name = "Global Shutter Camera"
         self.camera_device_index = 0
         self.ffmpeg = "ffmpeg"
-        self.preflight_path = out_dir / "session_start_exp156.jpg"
+        self.preflight_path = out_dir / "session_start_exp50.jpg"
         self.preflight_result_path = out_dir / "camera_preflight.json"
         self.result_path = out_dir / "camera_result.json"
-        self.video_path = out_dir / "evidence_exp156.mp4"
+        self.video_path = out_dir / "evidence_exp50.mov"
         self.recording_started_monotonic = None
         self.errors: list[str] = []
         self.start_ok = start_ok
@@ -164,14 +164,16 @@ class FakeCamera:
 
     def profile(self) -> dict[str, Any]:
         return {
+            "auto_exposure_mode": 8,
             "auto_exposure_priority": 0,
-            "focus_abs": 208,
-            "video_exposure_time_abs": 156,
-            "bright_exposure_time_abs": 5,
-            "dim_exposure_time_abs": 1250,
-            "framerate": 30,
+            "focus_abs": 306,
+            "video_exposure_time_abs": 50,
+            "gain": 0,
+            "diagnostic_exposure_time_abs": 1000,
+            "framerate": 200,
             "input_pixel_format": "nv12",
             "video_size": "1280x720",
+            "capture_backend": "avfoundation_native",
             **self.profile_updates,
         }
 
@@ -205,7 +207,7 @@ class FakeCamera:
                         "duration_seconds": 3.5,
                         "width": 1280,
                         "height": 720,
-                        "average_frame_rate": 30.0,
+                        "average_frame_rate": 199.5,
                     }
                     if result == "CAPTURED"
                     else {},
@@ -260,7 +262,7 @@ def test_dynamic_fixture_records_crop_exposure_and_hash() -> None:
             all(0.0 <= value <= 1.0 for value in transform["crop_fractions"]),
             f"dynamic crop escaped the frame: {transform}",
         )
-        assert_true(result["camera"]["exposure_time_abs"] == 156, f"wrong exposure: {result}")
+        assert_true(result["camera"]["exposure_time_abs"] == 50, f"wrong exposure: {result}")
         expected_hash = hashlib.sha256(camera.preflight_path.read_bytes()).hexdigest()
         assert_true(result["source_still"]["sha256"] == expected_hash, "source still hash was lost")
         assert_true(camera.start_calls == 1 and camera.running, "passing preflight did not continue once")
@@ -361,14 +363,14 @@ def test_profile_mismatch_refuses_before_camera_start() -> None:
         camera = FakeCamera(
             Path(tmp) / "exposure",
             300,
-            profile_updates={"video_exposure_time_abs": 5},
+            profile_updates={"video_exposure_time_abs": 156},
         )
         result = run_camera_preflight(camera)
         diagnostic = result["diagnostics"][0]
         assert_true(result["result"] == "INCONCLUSIVE", f"profile mismatch passed: {result}")
         assert_true(diagnostic["code"] == "camera_profile_mismatch", f"wrong profile diagnostic: {result}")
         mismatch = diagnostic["measured"]["mismatched_fields"]["video_exposure_time_abs"]
-        assert_true(mismatch == {"measured": 5, "expected": 156}, f"wrong exposure evidence: {result}")
+        assert_true(mismatch == {"measured": 156, "expected": 50}, f"wrong exposure evidence: {result}")
         assert_true(camera.start_calls == 0 and not camera.running, "profile mismatch opened camera")
 
         wrong_camera = FakeCamera(Path(tmp) / "name", 300)
@@ -381,7 +383,7 @@ def test_profile_mismatch_refuses_before_camera_start() -> None:
         )
         assert_true(
             wrong_diagnostic["measured"]["camera_name"] == "Uncalibrated Camera"
-            and wrong_diagnostic["thresholds"]["expected_camera_name"] == "Razer Kiyo",
+            and wrong_diagnostic["thresholds"]["expected_camera_name"] == "Global Shutter Camera",
             f"camera name diagnostic was imprecise: {wrong_result}",
         )
         assert_true(wrong_camera.start_calls == 0, "uncalibrated camera name opened camera")
@@ -473,7 +475,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            pending_profile_updates.append({"video_exposure_time_abs": 5})
+            pending_profile_updates.append({"video_exposure_time_abs": 156})
             try:
                 collect_live(make_live_args(), root / "profile-mismatch")
             except CameraPreflightFailure as exc:
@@ -536,10 +538,10 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         camera_dir = root / "replay" / "camera"
         camera_dir.mkdir(parents=True)
         names = {
-            "video": "evidence_exp156.mp4",
-            "session_start_still": "session_start_exp156.jpg",
-            "bright_still": "final_exp5.jpg",
-            "dim_still": "final_exp1250.jpg",
+            "video": "evidence_exp50.mov",
+            "session_start_still": "session_start_exp50.jpg",
+            "bright_still": "final_auto.jpg",
+            "dim_still": "final_manual_exp1000.jpg",
         }
         for name in names.values():
             (camera_dir / name).write_bytes(name.encode("ascii"))
@@ -565,9 +567,9 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         encounter.write_text("millis,event,priority\n0,SAMPLE,1\n", encoding="utf-8")
         camera_result = {
             "result": "CAPTURED",
-            "camera_name": "Razer Kiyo",
+            "camera_name": "Global Shutter Camera",
             "camera_device_index": 0,
-            "profile": {"video_exposure_time_abs": 156},
+            "profile": {"video_exposure_time_abs": 50},
             "expected_duration_seconds": 300,
             "video_duration_seconds": 300.0,
             "profile_validation": {"result": "PASS"},
@@ -628,7 +630,7 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         assert_true(
             smoke["camera"]
             == {
-                "name": "Razer Kiyo",
+                "name": "Global Shutter Camera",
                 "device_index": 0,
                 "profile": made[0].profile(),
             },

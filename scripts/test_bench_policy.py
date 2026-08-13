@@ -102,17 +102,19 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
     smoke_dir = root / "smoke"
     smoke_dir.mkdir()
     profile = {
+        "auto_exposure_mode": 8,
         "auto_exposure_priority": 0,
-        "focus_abs": 208,
-        "video_exposure_time_abs": 156,
-        "bright_exposure_time_abs": 5,
-        "dim_exposure_time_abs": 1250,
-        "framerate": 30,
+        "focus_abs": 306,
+        "video_exposure_time_abs": 50,
+        "gain": 0,
+        "diagnostic_exposure_time_abs": 1000,
+        "framerate": 200,
         "input_pixel_format": "nv12",
         "video_size": "1280x720",
+        "capture_backend": "avfoundation_native",
     }
-    camera = {"name": "Razer Kiyo", "device_index": 0, "profile": profile}
-    source_still_path = smoke_dir / "session_start_exp156.jpg"
+    camera = {"name": "Global Shutter Camera", "device_index": 0, "profile": profile}
+    source_still_path = smoke_dir / "session_start_exp50.jpg"
     source_still_path.write_bytes(b"owned-session-start-still")
     source_still = owned_file(source_still_path)
     preflight_path = smoke_dir / "camera_preflight.json"
@@ -138,7 +140,7 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
             "diagnostics": [],
         },
     )
-    video_path = smoke_dir / "evidence_exp156.mp4"
+    video_path = smoke_dir / "evidence_exp50.mov"
     video_path.write_bytes(b"short-owned-video")
     result_path = smoke_dir / "camera_result.json"
     write_json(
@@ -158,7 +160,7 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
                 "duration_seconds": 3.5,
                 "width": 1280,
                 "height": 720,
-                "average_frame_rate": 30.0,
+                "average_frame_rate": 199.5,
             },
             "profile_validation": {"result": "PASS"},
             "errors": [],
@@ -228,7 +230,7 @@ def full_batch_fixture(
         "result": "CAPTURED",
         "camera_name": "fixture",
         "camera_device_index": 0,
-        "profile": {"video_exposure_time_abs": 156},
+        "profile": {"video_exposure_time_abs": 50},
         "expected_duration_seconds": 300,
         "video_duration_seconds": 300.0,
         **evidence_names,

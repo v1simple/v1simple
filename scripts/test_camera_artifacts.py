@@ -43,10 +43,10 @@ def camera_fixture(replay_dir: Path) -> tuple[Path, dict, Path]:
     camera_dir = replay_dir / "camera"
     camera_dir.mkdir(parents=True)
     names = {
-        "video": "evidence_exp156.mp4",
-        "session_start_still": "session_start_exp156.jpg",
-        "bright_still": "final_exp5.jpg",
-        "dim_still": "final_exp1250.jpg",
+        "video": "evidence_exp50.mov",
+        "session_start_still": "session_start_exp50.jpg",
+        "bright_still": "final_auto.jpg",
+        "dim_still": "final_manual_exp1000.jpg",
     }
     for index, name in enumerate(names.values(), start=1):
         (camera_dir / name).write_bytes(bytes([index]) * (10 + index))
@@ -66,9 +66,9 @@ def camera_fixture(replay_dir: Path) -> tuple[Path, dict, Path]:
         "kind": "bench_camera_evidence",
         "result": "CAPTURED",
         "timestamp_utc": "2026-08-08T00:00:00Z",
-        "camera_name": "Razer Kiyo",
+        "camera_name": "Global Shutter Camera",
         "camera_device_index": 0,
-        "profile": {"focus_abs": 208, "video_exposure_time_abs": 156},
+        "profile": {"focus_abs": 306, "video_exposure_time_abs": 50},
         "expected_duration_seconds": 300,
         "video_duration_seconds": 306.5,
         "profile_validation": {"result": "PASS"},
@@ -120,8 +120,8 @@ def test_capture_id_stability_and_sensitivity() -> None:
         assert_true(first["capture_id"] == second["capture_id"], "traceability or root changed capture_id")
 
         for relative in (
-            "camera/evidence_exp156.mp4",
-            "camera/session_start_exp156.jpg",
+            "camera/evidence_exp50.mov",
+            "camera/session_start_exp50.jpg",
             "encounters_1-token.csv",
         ):
             change_root = Path(second_tmp) / relative.replace("/", "_")
@@ -197,7 +197,7 @@ def test_resumable_skip_does_not_extract_frames() -> None:
 
 def test_owned_bytes_are_verified_before_resume() -> None:
     for artifact, relative in (
-        ("video", Path("camera/evidence_exp156.mp4")),
+        ("video", Path("camera/evidence_exp50.mov")),
         ("encounter_csv", Path("encounters_1-token.csv")),
         ("preflight", Path("camera/camera_preflight.json")),
     ):
@@ -387,7 +387,7 @@ def test_regrade_completion_report_is_owned_and_immutable() -> None:
         else:
             raise AssertionError("immutable regrade report was overwritten")
 
-        (camera_dir / "evidence_exp156.mp4").write_bytes(b"changed")
+        (camera_dir / "evidence_exp50.mov").write_bytes(b"changed")
         dry_report, dry_returncode = camera_regrade_module.build_regrade_report(corpus, dry_run=True)
         assert_true(dry_returncode == 0, f"dry-run inventory failed: {dry_report}")
         assert_true(

@@ -327,10 +327,14 @@ extension V1 {
                 }
                 controlState.mainVolume = main
                 controlState.mutedVolume = muted
-                // Aux bit 2 saves the current pair. Feedback and disconnect
-                // policy encoded by other bits do not alter within-session
-                // state and remain outside this slice's timing/lifecycle gate.
-                if packet.payload[2] & 0x04 != 0 {
+                // V1Simple sends aux0=00. Documented V1 versions 4.1037+ assign
+                // bit 2 to saving the current pair; that compatibility branch
+                // is host-modeled but not physically confirmed here. Earlier
+                // versions leave saved state unchanged because their handling
+                // of the then-reserved bit is unknown. Feedback and disconnect
+                // policy remain outside this timing/lifecycle gate.
+                if packet.payload[2] & 0x04 != 0,
+                   Session.supportsVolumeSave(version: config.version) {
                     controlState.savedMainVolume = main
                     controlState.savedMutedVolume = muted
                 }
@@ -370,6 +374,20 @@ extension V1 {
         /// 0xFF values in the final two wire positions. Other modeled versions
         /// retain all six bytes.
         private static func supportsSixUserBytes(version: String) -> Bool {
+            guard let build = gen2Build(version: version) else {
+                return true
+            }
+            return build >= 1039
+        }
+
+        private static func supportsVolumeSave(version: String) -> Bool {
+            guard let build = gen2Build(version: version) else {
+                return false
+            }
+            return build >= 1037
+        }
+
+        private static func gen2Build(version: String) -> Int? {
             let components = version
                 .filter { $0.isNumber || $0 == "." }
                 .split(separator: ".", maxSplits: 1)
@@ -377,9 +395,9 @@ extension V1 {
                   let major = Int(components[0]),
                   let build = Int(components[1]),
                   major == 4 else {
-                return true
+                return nil
             }
-            return build >= 1039
+            return build
         }
     }
 }

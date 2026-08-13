@@ -466,7 +466,7 @@ def check_framing():
             state = parse_display(payload)
             check(state["signalBars"] == 4, "round-trip bars")
             check(state["volumeByte"] == 0x40 if checksum else True,
-                  "auxData2 carries volume when the frame is spec-length",
+                  "V4.1028+ full ID31 Aux2 carries current, not saved, volume",
                   "got 0x%02X" % state["volumeByte"])
 
             if checksum:
@@ -474,14 +474,14 @@ def check_framing():
                 check(display[-2] == sum(body) & 0xFF,
                       "checksum is the byte sum of everything before it")
 
-    # A spec-framed display packet is 15 bytes; the draft form is 14 and pays for
-    # it by losing auxData2 to the checksum slot.
+    # A full V4.1028+ checksummed display packet is 15 bytes; the draft form is
+    # 14 and pays for it by losing auxData2 to the checksum slot.
     spec = frame(HEADER_BROADCAST_INFORMATION, 0x31,
                  display_payload_alerting(1, BANDS["ka"], DIRECTIONS["F"], 1,
                                           False, 0x40, True), checksum=True)
     check(len(spec) == 15, "spec display packet is 15 bytes", "got %d" % len(spec))
     check(parse_display(parser_payload(spec))["volumeByte"] == 0x40,
-          "spec display packet reports volume 4/0")
+          "V4.1028+ full ID31 reports current, not saved, volume 4/0")
 
 
 def check_strength_round_trip():

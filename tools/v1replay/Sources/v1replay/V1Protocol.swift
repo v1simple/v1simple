@@ -298,7 +298,9 @@ enum V1 {
         var image2: UInt8 = 0x00
         var aux0: UInt8 = V1.aux0SystemStatus | V1.aux0DisplayOn
         var aux1: UInt8 = ModeGlyph.advancedLogic.aux1ModeBits
-        var aux2: UInt8 = 0x40   // upper nibble = main volume, lower = muted volume
+        /// V4.1028+ full eight-byte ID31 payload: current main in the high
+        /// nibble and current muted in the low; saved values are not carried.
+        var aux2: UInt8 = 0x40
 
         var payload: [UInt8] {
             return [bogeyImage1, bogeyImage2, ledBitmap, image1, image2, aux0, aux1, aux2]

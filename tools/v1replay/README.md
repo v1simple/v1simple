@@ -176,11 +176,15 @@ The public contract inventory uses these stable behavior IDs:
   display information carries the matching mode glyph and Aux1 mode bits; active
   display information retains those mode bits while its glyph shows the alert
   count.
-- `V1-CONTROL-VOLUME-001` pins exact three-byte volume writes with current and
-  muted values in `0...9`. The V1Simple `aux0=00` form updates the current pair
-  while leaving the saved pair unchanged; `aux0` bit `04` also saves the pair.
-  Neither form creates a semantic reply. Later display and all-volume packets
-  expose the updated state.
+- `V1-CONTROL-VOLUME-001` pins V1Simple's exact three-byte `aux0=00` volume
+  write: main and muted values are `0...9`; it updates the current pair, leaves
+  the saved pair unchanged, and produces no semantic reply. For V4.1028+, a
+  full eight-byte ID31 payload carries current main/muted volume in Aux2's
+  high/low nibbles; saved values are not carried. Vendor documentation assigns
+  `aux0` bit `04` to saving on V4.1037+, but that branch is host-modeled
+  compatibility, not emitted by V1Simple or physically confirmed. Before
+  V4.1037, the emulator leaves saved state unchanged because reserved-bit
+  handling is unknown. A later all-volume reply carries both pairs.
 - `V1-ALERT-STREAM-CONTROL-001` pins start and stop as state transitions with no
   invented immediate reply. Delivery already queued around a stop and the
   timing of the first or last alert row remain provisional and non-gating.
@@ -195,12 +199,14 @@ The public contract inventory uses these stable behavior IDs:
   emulator's explicit all-zero count-zero clear fixture. The chosen inverse
   raw-strength bytes and row transmission order are deterministic emulator
   choices, not claims that every physical V1 emits those exact bytes or cadence.
-- `V1-DISPLAY-FRAME-001` pins the full eight-byte B2CE display payload after the
-  table, with its count, meter, band, direction, and mute state derived from the
-  flagged priority row. Aux1 carries the current default-US mode even during an
-  active alert. Generated display and alert information use the `D8 EA`
-  broadcast header; targeted request replies remain `D6 EA`. Identical steady
-  image planes are a deterministic fixture choice.
+- `V1-DISPLAY-FRAME-001` pins the default-v4.1038 full eight-byte B2CE display
+  payload after the table, with its count, meter, band, direction, and mute
+  state derived from the flagged priority row. Aux1 carries the current
+  default-US mode even during an active alert; Aux2 carries current main and
+  muted volume in its high and low nibbles, never saved values. Generated
+  display and alert information use the `D8 EA` broadcast header; targeted
+  request replies remain `D6 EA`. Identical steady image planes are a
+  deterministic fixture choice.
 
 These tests cover pure session decisions and the pure playback packet plan.
 Actual notification delivery, subscription mechanics, and characteristic
@@ -208,9 +214,9 @@ permissions remain integration or bench evidence. Mute on/off and display-on
 accept empty payloads; display-off accepts empty, `00`, or `01`. These state
 commands do not invent same-ID replies. Mode and volume writes accept their
 validated one- and three-byte payloads without an immediate packet reply.
-Feedback rendering and timing, reserved volume-control bits, disconnect restore,
-power-cycle persistence, and non-US mode variants remain outside this host-state
-gate.
+Feedback rendering and timing, other reserved volume-control bits, disconnect
+restore, power-cycle persistence, and non-US mode variants remain outside this
+host-state gate.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect

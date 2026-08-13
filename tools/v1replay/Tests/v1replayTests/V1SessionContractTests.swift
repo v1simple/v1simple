@@ -484,9 +484,12 @@ final class V1SessionContractTests: XCTestCase {
         }.count, 2)
     }
 
-    /// Public behavior ID: `V1-CONTROL-VOLUME-001`.
+    /// Documented V4.1037+ host compatibility outside V1Simple's `aux0=00`
+    /// behavior; no physical-device confirmation is claimed.
     func testVolumeSaveBitUpdatesCurrentAndSavedWithoutReply() {
-        var session = V1.Session()
+        var config = V1.Session.Config()
+        config.version = "4.1037"
+        var session = V1.Session(config: config)
         let saveSevenTwo: [UInt8] = [
             0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x04, 0xB4, 0xAB,
         ]
@@ -510,6 +513,71 @@ final class V1SessionContractTests: XCTestCase {
                 0x07, 0x02, 0x07, 0x02, 0xBE, 0xAB,
             ]
         ))])
+    }
+
+    /// Pre-4.1037 host policy for the then-reserved `aux0=04` bit; physical
+    /// handling is unknown.
+    func testVolumeAux04Before41037UpdatesCurrentAndKeepsSavedWithoutReply() {
+        var config = V1.Session.Config()
+        config.version = "4.1036"
+        var session = V1.Session(config: config)
+        let reservedAuxSevenTwo: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x04, 0xB4, 0xAB,
+        ]
+
+        let outcomes = session.receive(reservedAuxSevenTwo)
+
+        XCTAssertEqual(outcomes.count, 1)
+        XCTAssertEqual(outcomes[0].effects, [.volumeChanged(V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))])
+        XCTAssertEqual(session.controlState, V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))
+        XCTAssertFalse(outcomes.flatMap(\.effects).contains { effect in
+            if case .reply = effect { return true }
+            return false
+        })
+    }
+
+    /// Host compatibility outside V1Simple's `aux0=00` stable behavior.
+    func testNonzeroVolumeAuxWithSaveBitClearKeepsSavedWithoutReply() {
+        var config = V1.Session.Config()
+        config.version = "4.1037"
+        var session = V1.Session(config: config)
+        let feedbackSevenTwo: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x01, 0xB1, 0xAB,
+        ]
+
+        let outcomes = session.receive(feedbackSevenTwo)
+
+        XCTAssertEqual(outcomes.count, 1)
+        XCTAssertEqual(outcomes[0].effects, [.volumeChanged(V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))])
+        XCTAssertEqual(session.controlState, V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))
+        XCTAssertFalse(outcomes.flatMap(\.effects).contains { effect in
+            if case .reply = effect { return true }
+            return false
+        })
     }
 
     /// Public behavior IDs: `V1-CONTROL-MODE-001` and

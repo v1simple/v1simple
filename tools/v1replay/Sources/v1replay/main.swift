@@ -344,8 +344,9 @@ func runCrib() {
     leaves paint slaved to parse, which makes packet-to-paint tests deterministic.
     --blink-bogey sends 06 00 if you want fixture parity instead.
 
-    `v1replay play` also adds a checksum byte and a full eight-byte display
-    payload (so auxData2 carries volume) — the same 9-byte payload region
+    `v1replay play` also adds a checksum byte and the V4.1028+ full eight-byte
+    display payload (so auxData2 carries current main/muted volume in its
+    high/low nibbles, never saved values) — the same 9-byte payload region
     test_protocol_spec_conformance builds. Use --no-checksum for the 14-byte
     draft form. Normal v4.1038 playback also carries the current mode in
     auxData1; the explicit draft header retains its historical zero. Both parse;

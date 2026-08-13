@@ -71,7 +71,9 @@ not a universal device default.
 ## Packets — fixture-compatible checksummed form
 
 These examples retain the `DA E4` fixture-compatibility header while adding a
-checksum byte and a full eight-byte display payload so auxData2 carries volume.
+checksum byte and the V4.1028+ full eight-byte display payload so auxData2
+carries current main/muted volume in its high/low nibbles; saved values are not
+carried.
 This is the same 9-byte payload region
 `test_protocol_spec_conformance.cpp` builds — a 15-byte display packet is
 already the house style, the 14-byte form above is the outlier.
@@ -127,7 +129,7 @@ and nothing in the repo needs to change either way. If you want fixture parity,
 AA  D8  EA  31  09  06 06 3F 22 22 0C 0C 40  8D  AB
 │   │   │   │   │   │  │  │  │  │  │  │  │   │   └ end
 │   │   │   │   │   │  │  │  │  │  │  │  │   └ checksum (byte sum)
-│   │   │   │   │   │  │  │  │  │  │  │  └ auxData2: volume, main high nibble
+│   │   │   │   │   │  │  │  │  │  │  │  └ auxData2: V4.1028+ current only, main high / muted low
 │   │   │   │   │   │  │  │  │  │  │  └ auxData1: 0C advanced-logic mode
 │   │   │   │   │   │  │  │  │  │  └ auxData0: 04 system status + 08 display on
 │   │   │   │   │   │  │  │  │  └ image2 — steady bits

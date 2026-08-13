@@ -229,6 +229,7 @@ func runHelp() {
       --paused             start paused (step through with 'n')
       --exit-on-complete   stop after one complete replay (for bench automation)
       --machine-events     emit stable completion events for an external runner
+      --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
       --no-wait            start without waiting for a central to subscribe
       --idle-lead <sec>    idle frames before the encounter (default 3)
       --idle-tail <sec>    idle frames after the encounter (default 3)
@@ -526,6 +527,12 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     peripheralConfig.mainVolume = mainVolume
     peripheralConfig.mutedVolume = mutedVolume
     peripheralConfig.logPackets = args.bool("log-packets")
+    if let ledgerPath = args.optionalString("handshake-ledger") {
+        guard bench else {
+            throw ReplayError.message("--handshake-ledger is available only in bench mode")
+        }
+        peripheralConfig.handshakeLedger = try HandshakeLedger(path: ledgerPath)
+    }
 
     var playerOptions = Player.Options()
     playerOptions.speed = args.double("speed", 1.0)

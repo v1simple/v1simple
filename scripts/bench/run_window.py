@@ -53,6 +53,7 @@ ROOT = Path(__file__).resolve().parents[2]
 IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
+HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"
 
 
 class CameraPreflightFailure(RuntimeError):
@@ -517,6 +518,7 @@ class V1Emulator:
         self.mode = "bench" if suite == "replay" else "idle"
         self.blink_profile = blink_profile or ("scenario" if suite == "replay" else "steady")
         self.log_path = out_dir / "v1replay.log"
+        self.handshake_ledger_path = out_dir / HANDSHAKE_LEDGER_NAME if self.mode == "bench" else None
         self.process: subprocess.Popen[bytes] | None = None
         self.log_handle: Any = None
         self.started = False
@@ -528,11 +530,18 @@ class V1Emulator:
     def start(self) -> None:
         if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
             raise RuntimeError("v1replay executable is missing or not executable")
+        if self.mode == "bench":
+            if self.handshake_ledger_path is None:
+                raise RuntimeError("replay handshake ledger path is unavailable")
+            if self.handshake_ledger_path.exists():
+                raise RuntimeError("refusing to reuse an existing replay handshake ledger")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_handle = self.log_path.open("wb")
         command = [str(self.executable), self.mode]
         if self.mode == "bench":
             command.extend(["--machine-events", "--blink-profile", self.blink_profile])
+            assert self.handshake_ledger_path is not None
+            command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])
         self.process = subprocess.Popen(
             command,
             cwd=self.executable.parent.parent,
@@ -626,6 +635,9 @@ class V1Emulator:
             "managed_stop": self.managed_stop,
             "returncode": self.returncode,
             "log": self.log_path.name if self.log_path.is_file() else "",
+            "handshake_ledger": (
+                self.handshake_ledger_path.name if self.handshake_ledger_path is not None else ""
+            ),
             "replay_started_monotonic_seconds": (
                 replay_started_monotonic if math.isfinite(replay_started_monotonic) else None
             ),
@@ -965,6 +977,9 @@ def main() -> int:
                 "port": port,
                 "csv_path": str(csv_path),
                 "encounter_csv_path": str(encounter_csv_path) if encounter_csv_path else "",
+                "handshake_ledger_path": (
+                    str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""
+                ),
                 "completion": completion,
                 "v1_emulator": emulator_result,
                 "replay": emulator_result if args.suite == "replay" else {},

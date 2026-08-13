@@ -216,7 +216,8 @@ class V1BLEClient {
     // Request V1 to start sending alert data
     bool requestAlertData();
 
-    // Request V1 version information (triggers data on B4E0)
+    // Request V1 version information through the selected short command
+    // characteristic; the short reply is expected on B2CE.
     bool requestVersion();
 
     // Session-scoped V1 firmware version, populated from RESP_VERSION.
@@ -580,6 +581,7 @@ class V1BLEClient {
         REQUEST_ALERT_DATA,
         WAIT_CONNECT_BURST_SETTLE,
         REQUEST_VERSION,
+        REQUEST_ALL_VOLUME,
         WAIT_VERSION,
         NOTIFY_STABLE_CALLBACK,
         BACKUP_BONDS,
@@ -595,6 +597,8 @@ class V1BLEClient {
     static constexpr uint8_t CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS = 3;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_FIRST_RX_MS = 1500;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_CONNECTED_MS = 2500;
+    static constexpr uint32_t CONNECTED_FOLLOWUP_RETRY_MS = 5;
+    static constexpr uint32_t CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS = 1500;
     static constexpr uint32_t VERSION_RESPONSE_TIMEOUT_MS = 1500;
     std::atomic<uint32_t> lastV1ConnectionEventMs_{0};
     std::atomic<uint32_t> connectCompletedAtMs_{0};
@@ -603,6 +607,8 @@ class V1BLEClient {
     std::atomic<uint32_t> lastDisplayPipelineDurationUs_{0};
     std::atomic<uint32_t> v1FirmwareVersion_{0};
     uint32_t versionRequestStartedMs_ = 0;
+    uint32_t connectedFollowupNextAttemptMs_ = 0;
+    uint32_t connectedFollowupSendDeadlineMs_ = 0;
     uint8_t connectBurstStableLoopCount_ = 0;
     BleLogRateLimitState followupRequestAlertFailLog_;
     BleLogRateLimitState followupRequestVersionFailLog_;

@@ -32,6 +32,8 @@ final class V1Peripheral: NSObject {
         var savedMutedVolume: UInt8?
         var userBytes: [UInt8] = Array(repeating: 0, count: 6)
         var logPackets: Bool = false
+        /// Optional bounded, anonymous startup-handshake evidence.
+        var handshakeLedger: HandshakeLedger?
         /// Proxy mode publishes the service but holds off advertising until the
         /// real V1 is connected, so v1simple cannot win the race to it.
         var deferAdvertising: Bool = false
@@ -99,13 +101,25 @@ final class V1Peripheral: NSObject {
     private var commandLongChar: CBMutableCharacteristic! // B8D2
     private var commandAltChar: CBMutableCharacteristic!  // BAD4
 
-    private var pending: [(Data, CBMutableCharacteristic)] = []
+    private struct PendingNotification {
+        let data: Data
+        let characteristic: CBMutableCharacteristic
+        let handshakeEpoch: Int?
+    }
+
+    private var pending: [PendingNotification] = []
     private static let pendingCap = 96
     private var lastValues: [CBUUID: Data] = [:]
+    /// In-memory only. Bench evidence models one logical short-notify session;
+    /// central identifiers are never written to the ledger.
+    private var shortSubscriberIDs: Set<UUID> = []
+    private var handshakeSubscriberID: UUID?
     private var serviceAdded = false
+    private let handshakeLedger: HandshakeLedger?
 
     init(config: Config) {
         self.config = config
+        self.handshakeLedger = config.handshakeLedger
         var sessionConfig = V1.Session.Config()
         sessionConfig.header = config.header
         sessionConfig.outboundChecksum = config.checksum
@@ -153,7 +167,11 @@ final class V1Peripheral: NSObject {
                 self.pending.removeFirst()
                 self.withState { $0.notifiesDropped += 1 }
             }
-            self.pending.append((data, characteristic))
+            self.pending.append(PendingNotification(
+                data: data,
+                characteristic: characteristic,
+                handshakeEpoch: self.handshakeLedger?.activeEpoch
+            ))
             self.flush()
             if self.config.logPackets {
                 self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
@@ -174,9 +192,18 @@ final class V1Peripheral: NSObject {
     /// `peripheralManagerIsReady(toUpdateSubscribers:)`.
     private func flush() {
         while let item = pending.first {
-            guard manager.updateValue(item.0, for: item.1, onSubscribedCentrals: nil) else { return }
+            guard manager.updateValue(
+                item.data,
+                for: item.characteristic,
+                onSubscribedCentrals: nil
+            ) else { return }
             pending.removeFirst()
             withState { $0.notifiesSent += 1 }
+            handshakeLedger?.recordDelivered(
+                bytes: [UInt8](item.data),
+                channel: Self.shortName(item.characteristic.uuid),
+                epoch: item.handshakeEpoch
+            )
         }
     }
 
@@ -244,17 +271,35 @@ final class V1Peripheral: NSObject {
         queue.sync {
             if manager.isAdvertising { manager.stopAdvertising() }
             manager.removeAllServices()
+            shortSubscriberIDs.removeAll()
+            handshakeSubscriberID = nil
+            handshakeLedger?.endEpoch()
         }
     }
 
     // MARK: - Command handling
 
-    private func handle(_ outcome: V1.Session.CommandOutcome) {
+    private func handle(_ outcome: V1.Session.CommandOutcome,
+                        inboundCharacteristic: CBUUID,
+                        belongsToHandshakeSubscriber: Bool) {
         withState { $0.commandsReceived += 1 }
         let packet = outcome.packet
         let commandName = V1.name(forPacketID: packet.id)
         if config.logPackets {
             onLog?("RX \(commandName) \(packet.raw.hexString)")
+        }
+
+        let accepted = !outcome.effects.contains { effect in
+            if case .rejected = effect { return true }
+            if case .unhandled = effect { return true }
+            return false
+        }
+        if accepted {
+            handshakeLedger?.recordAcceptedRequest(
+                bytes: packet.raw,
+                channel: Self.shortName(inboundCharacteristic),
+                belongsToEpochSubscriber: belongsToHandshakeSubscriber
+            )
         }
 
         for effect in outcome.effects {
@@ -311,6 +356,13 @@ final class V1Peripheral: NSObject {
         return text
     }
 
+    /// Pure ownership check for anonymous handshake evidence. The identifier
+    /// remains process-local and is never passed to the ledger or serialized.
+    static func handshakeEvidenceOwnerMatches(subscriber: UUID?, writer: UUID) -> Bool {
+        guard let subscriber else { return false }
+        return subscriber == writer
+    }
+
     private static func sessionChannel(
         for uuid: CBUUID
     ) -> V1.Session.SubscriptionChannel? {
@@ -335,13 +387,22 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             }
         case .poweredOff:
             withState { $0.isPoweredOn = false }
+            shortSubscriberIDs.removeAll()
+            handshakeSubscriberID = nil
+            handshakeLedger?.endEpoch()
             onLog?("Bluetooth is off — turn it on to advertise")
         case .unauthorized:
             withState { $0.isPoweredOn = false }
+            shortSubscriberIDs.removeAll()
+            handshakeSubscriberID = nil
+            handshakeLedger?.endEpoch()
             onLog?("Bluetooth permission denied. System Settings → Privacy & Security → Bluetooth, "
                    + "and enable the terminal application that launched v1replay.")
         case .unsupported:
             withState { $0.isPoweredOn = false }
+            shortSubscriberIDs.removeAll()
+            handshakeSubscriberID = nil
+            handshakeLedger?.endEpoch()
             onLog?("This Mac reports no BLE peripheral support")
         default:
             withState { $0.isPoweredOn = false }
@@ -378,8 +439,26 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
+        var beganShortSession = false
+        var addedSecondShortSubscriber = false
         if let channel = V1Peripheral.sessionChannel(for: characteristic.uuid) {
-            withState { $0.session.subscribe(central: central.identifier, channel: channel) }
+            withState {
+                $0.session.subscribe(central: central.identifier, channel: channel)
+            }
+            if channel == .displayShort {
+                let inserted = shortSubscriberIDs.insert(central.identifier).inserted
+                beganShortSession = inserted && shortSubscriberIDs.count == 1
+                addedSecondShortSubscriber = inserted && shortSubscriberIDs.count > 1
+            }
+        }
+        if beganShortSession {
+            handshakeSubscriberID = central.identifier
+            handshakeLedger?.beginEpoch()
+        } else if addedSecondShortSubscriber {
+            // Notification delivery is broadcast, so attribution becomes
+            // ambiguous until every short subscriber leaves.
+            handshakeSubscriberID = nil
+            handshakeLedger?.endEpoch()
         }
         onLog?("Central subscribed to \(name) (MTU \(central.maximumUpdateValueLength))")
         onStateChange?()
@@ -390,9 +469,21 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
         let remaining: Int
+        var endedShortSession = false
         if let channel = V1Peripheral.sessionChannel(for: characteristic.uuid) {
             remaining = withState {
-                $0.session.unsubscribe(central: central.identifier, channel: channel)
+                let count = $0.session.unsubscribe(
+                    central: central.identifier,
+                    channel: channel
+                )
+                return count
+            }
+            if channel == .displayShort {
+                let removed = shortSubscriberIDs.remove(central.identifier) != nil
+                endedShortSession = removed && shortSubscriberIDs.isEmpty
+                if endedShortSession {
+                    handshakeSubscriberID = nil
+                }
             }
         } else {
             remaining = subscriberCount
@@ -400,6 +491,13 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         onLog?("Central unsubscribed from \(name)")
         if remaining == 0 {
             pending.removeAll()
+        } else if endedShortSession {
+            pending.removeAll {
+                $0.characteristic.uuid == CBUUID(string: V1.displayShortUUID)
+            }
+        }
+        if endedShortSession || remaining == 0 {
+            handshakeLedger?.endEpoch()
         }
         onStateChange?()
     }
@@ -441,9 +539,23 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
 
         for request in requests {
             guard let value = request.value else { continue }
+            let belongsToHandshakeSubscriber = Self.handshakeEvidenceOwnerMatches(
+                subscriber: handshakeSubscriberID,
+                writer: request.central.identifier
+            )
+            if !belongsToHandshakeSubscriber {
+                // Fail closed before appending bytes: otherwise fragments from
+                // two centrals could be reassembled into one credited request.
+                handshakeSubscriberID = nil
+                handshakeLedger?.endEpoch()
+            }
             withState { $0.session.append([UInt8](value)) }
             while let outcome = withState({ $0.session.nextOutcome() }) {
-                handle(outcome)
+                handle(
+                    outcome,
+                    inboundCharacteristic: request.characteristic.uuid,
+                    belongsToHandshakeSubscriber: belongsToHandshakeSubscriber
+                )
             }
         }
         onStateChange?()

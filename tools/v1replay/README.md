@@ -166,6 +166,12 @@ The public contract inventory uses these stable behavior IDs:
   when generated checksums are disabled. The strict `DA E6` request header is
   the V1Simple-host policy; `E6` is not claimed as every possible client's
   universal origin.
+- `V1-CONNECT-READBACK-001` pins V1Simple's automatic connected readback: after
+  short-notification setup and its alert-stream request, the accepted version
+  query precedes the accepted all-volume query on the selected short command
+  characteristic. A transient local pacing or transport deferral retains the
+  unsent query for a later loop instead of skipping it. Exact retry count,
+  delay, and reply arrival order are not gated.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
@@ -217,6 +223,16 @@ validated one- and three-byte payloads without an immediate packet reply.
 Feedback rendering and timing, other reserved volume-control bits, disconnect
 restore, power-cycle persistence, and non-US mode variants remain outside this
 host-state gate.
+
+Managed replay also writes a bounded anonymous startup-handshake ledger. It
+contains no central identifier or timestamp and is not a general packet
+transcript. The grader independently decodes its raw frames and requires one
+connection epoch with B2CE subscription, accepted start/version/all-volume
+requests, CoreBluetooth-accepted short replies, and alert-stream start. This
+proves the emulator-side transaction and delivery handoff; a board-side
+packet-specific marker is still required to claim that all-volume was parsed.
+The ledger models one logical short-notify session; concurrent short subscribers
+end the active evidence epoch instead of being merged.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect

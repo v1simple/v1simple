@@ -129,7 +129,11 @@ directory. Camera evidence has one explicit role per suite:
   change the verdict.
 - Replay video is the gated end-to-end display validator. Replay artifacts also
   include that boot's encounter CSV; the grader checks alert timing, primary
-  frequency, and direction against that same-window log.
+  frequency, and direction against that same-window log. A separate bounded,
+  anonymous handshake ledger records only the automatic startup transaction;
+  the grader independently checks its framing, checksums, same-session order,
+  short characteristics, and CoreBluetooth-accepted replies. It is not a
+  general packet trace and contains no central identifier or timestamp.
 
 Before opening serial or starting the V1 emulator, every requested camera
 window applies the fixed 1280x720, 30 fps UVC profile and exposure 156, records

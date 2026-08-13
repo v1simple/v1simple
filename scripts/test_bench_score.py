@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import json
 import subprocess
 import sys
@@ -48,10 +49,87 @@ ENCOUNTER_COLUMNS = (
     "dropped_snapshots",
 )
 
+START_ALERT_REQUEST = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
+VERSION_REQUEST = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
+VERSION_RESPONSE = [
+    0xAA, 0xD6, 0xEA, 0x02, 0x08,
+    0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+    0x18, 0xAB,
+]
+ALL_VOLUME_REQUEST = [0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB]
+ALL_VOLUME_RESPONSE = [
+    0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+    0x04, 0x00, 0x04, 0x00,
+    0xB4, 0xAB,
+]
+FIRST_ALERT_ROW = [
+    0xAA, 0xD8, 0xEA, 0x43, 0x08,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xB7, 0xAB,
+]
+
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def canonical_handshake_events(
+    *,
+    all_volume_before_version_response: bool = False,
+    request_channel: str = "B6D4",
+) -> list[dict[str, object]]:
+    subscribe = {"event": "subscribe", "epoch": 1, "channel": "B2CE"}
+    start = {
+        "event": "request", "epoch": 1, "channel": request_channel, "bytes": START_ALERT_REQUEST,
+    }
+    stream = {
+        "event": "stream_started", "epoch": 1, "channel": "B2CE",
+        "bytes": FIRST_ALERT_ROW, "delivery": "delivered",
+    }
+    version_request = {
+        "event": "request", "epoch": 1, "channel": request_channel, "bytes": VERSION_REQUEST,
+    }
+    version_response = {
+        "event": "response", "epoch": 1, "channel": "B2CE",
+        "bytes": VERSION_RESPONSE, "delivery": "delivered",
+    }
+    all_volume_request = {
+        "event": "request", "epoch": 1, "channel": request_channel, "bytes": ALL_VOLUME_REQUEST,
+    }
+    all_volume_response = {
+        "event": "response", "epoch": 1, "channel": "B2CE",
+        "bytes": ALL_VOLUME_RESPONSE, "delivery": "delivered",
+    }
+    if all_volume_before_version_response:
+        return [
+            subscribe, start, stream, version_request, all_volume_request,
+            all_volume_response, version_response,
+        ]
+    return [
+        subscribe, start, stream, version_request, version_response,
+        all_volume_request, all_volume_response,
+    ]
+
+
+def write_handshake_ledger(
+    path: Path,
+    events: list[dict[str, object]] | None = None,
+) -> None:
+    records: list[dict[str, object]] = [
+        {"schema_version": 1, "kind": "v1replay_handshake_ledger"},
+        *(events if events is not None else canonical_handshake_events()),
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def framed_bytes(destination: int, origin: int, packet_id: int, payload: list[int]) -> list[int]:
+    prefix = [0xAA, destination, origin, packet_id, len(payload) + 1, *payload]
+    return [*prefix, sum(prefix) & 0xFF, 0xAB]
 
 
 def canonical_encounter_rows() -> list[dict[str, object]]:
@@ -227,12 +305,15 @@ def write_window(
     if suite == "replay":
         csv_path = step / "perf.csv"
         encounter_path = step / "encounters_test.csv"
+        handshake_path = step / "handshake_ledger.jsonl"
         write_replay_csv(csv_path, publishes=replay_publishes)
         write_encounter_csv(encounter_path)
+        write_handshake_ledger(handshake_path)
         window_payload.update(
             {
                 "csv_path": str(csv_path),
                 "encounter_csv_path": str(encounter_path),
+                "handshake_ledger_path": str(handshake_path),
                 "segment": "last",
                 "replay": {
                     "started": True,
@@ -587,6 +668,223 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
         assert_true(encounter["result"] == "PASS", f"unexpected encounter checks: {encounter}")
         assert_true(encounter["matched_checkpoints"] == 4, f"missing checkpoints: {encounter}")
         assert_true(encounter["closure_found"] is True, f"missing END closure: {encounter}")
+        handshake = checks["handshake_checks"]
+        assert_true(handshake["result"] == "PASS", f"unexpected handshake checks: {handshake}")
+        assert_true(handshake["complete_epoch"] == 1, f"missing complete epoch: {handshake}")
+
+
+def test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch() -> None:
+    for request_channel in ("B6D4", "BAD4"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            write_handshake_ledger(
+                root / "replay" / "handshake_ledger.jsonl",
+                canonical_handshake_events(
+                    all_volume_before_version_response=True,
+                    request_channel=request_channel,
+                ),
+            )
+            proc = run_score(root, "replay")
+            assert_true(
+                proc.returncode == 0,
+                f"{request_channel}: {proc.stdout}{proc.stderr}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        events = canonical_handshake_events()
+        stream = events.pop(2)
+        events.append(stream)
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        incomplete = canonical_handshake_events()[:2]
+        complete = copy.deepcopy(canonical_handshake_events())
+        for event in complete:
+            event["epoch"] = 2
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", incomplete + complete)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        handshake = result["windows"][0]["replay_checks"]["handshake_checks"]
+        assert_true(handshake["complete_epoch"] == 2, f"reconnect epoch was not accepted: {handshake}")
+
+
+def test_replay_requires_a_readable_bounded_same_window_handshake_ledger() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.pop("handshake_ledger_path")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("missing required handshake ledger path" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        ledger_path = root / "replay" / "handshake_ledger.jsonl"
+        ledger_path.write_bytes(b"\xff\xfe\xfd")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("handshake ledger could not be read" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        outside = root / "other_window" / "handshake_ledger.jsonl"
+        write_handshake_ledger(outside)
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["handshake_ledger_path"] = str(outside)
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("must resolve inside its replay window" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        ledger_path = root / "replay" / "handshake_ledger.jsonl"
+        ledger_path.write_text("not-json\n", encoding="utf-8")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("line 1 is not valid JSON" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        events = canonical_handshake_events()
+        events[0]["timestamp"] = "private-or-wall-clock-data"
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("invalid event schema" in proc.stdout, proc.stdout)
+
+    for invalid_event in ([], {}):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            events = canonical_handshake_events()
+            events[0]["event"] = invalid_event
+            write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true("invalid event schema" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        repeated = [copy.deepcopy(canonical_handshake_events()[0]) for _ in range(13)]
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", repeated)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("epoch has too many events" in proc.stdout, proc.stdout)
+
+
+def test_replay_handshake_semantic_mutants_are_actionable_failures() -> None:
+    mutants: list[tuple[str, list[dict[str, object]], str]] = []
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events.pop(6)
+    mutants.append(("omitted all-volume response", events, "no single epoch"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events.pop(0)
+    mutants.append(("omitted B2CE subscription", events, "start request occurred before B2CE subscription"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[6]["bytes"] = framed_bytes(0xD6, 0xEA, 0x3E, [0x04, 0x00, 0x04, 0x00])
+    mutants.append(("wrong response ID", events, "wrong header, ID, length, or payload"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[4]["bytes"] = framed_bytes(0xD6, 0xEA, 0x02, list(b"v4.1039"))
+    mutants.append(("wrong version payload", events, "wrong header, ID, length, or payload"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    wrong_length = list(ALL_VOLUME_RESPONSE)
+    wrong_length[4] = 0x04
+    wrong_length[-2] = sum(wrong_length[:-2]) & 0xFF
+    events[6]["bytes"] = wrong_length
+    mutants.append(("wrong response length", events, "invalid declared length"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[6]["bytes"] = framed_bytes(0xD6, 0xEA, 0x3D, [0x04, 0x04, 0x00, 0x00])
+    mutants.append(("wrong volume field order", events, "wrong header, ID, length, or payload"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[6]["bytes"] = framed_bytes(0xD8, 0xEA, 0x3D, [0x04, 0x00, 0x04, 0x00])
+    mutants.append(("wrong response header", events, "wrong header, ID, length, or payload"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[6]["channel"] = "B4E0"
+    mutants.append(("wrong response route", events, "wrong response channel"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[3]["channel"] = "BAD4"
+    mutants.append(("switched command channel", events, "switches its selected command channel"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    response = events.pop(6)
+    events.insert(5, response)
+    mutants.append(("response before request", events, "all-volume response occurred before its request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    response = events.pop(4)
+    events.insert(3, response)
+    mutants.append(("version response before request", events, "version response occurred before its request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    response = events.pop(6)
+    events.append({"event": "subscribe", "epoch": 2, "channel": "B2CE"})
+    response["epoch"] = 2
+    events.append(response)
+    mutants.append(("cross-epoch response", events, "all-volume response occurred before its request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    events[6]["delivery"] = "enqueued"
+    mutants.append(("enqueue only", events, "response was not delivered"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    stream = events.pop(2)
+    events.insert(1, stream)
+    mutants.append(("stream before start", events, "stream began before the accepted start request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    version_request = events.pop(3)
+    events.insert(1, version_request)
+    mutants.append(("version request before start", events, "version request occurred before the accepted start request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    all_volume_request = events.pop(5)
+    events.insert(3, all_volume_request)
+    mutants.append(("all-volume request before version request", events, "before version request"))
+
+    events = copy.deepcopy(canonical_handshake_events())
+    corrupt_checksum = list(ALL_VOLUME_RESPONSE)
+    corrupt_checksum[-2] ^= 0x01
+    events[6]["bytes"] = corrupt_checksum
+    mutants.append(("wrong response checksum", events, "invalid checksum"))
+
+    for label, events, expected_message in mutants:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, f"{label}: {proc.stdout}{proc.stderr}")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            handshake = result["windows"][0]["replay_checks"]["handshake_checks"]
+            assert_true(handshake["result"] == "FAIL", f"{label}: {handshake}")
+            assert_true(expected_message in proc.stdout, f"{label}: {proc.stdout}")
 
 
 def test_replay_requires_a_readable_same_window_encounter_csv() -> None:
@@ -1168,6 +1466,9 @@ def main() -> int:
     test_custom_output_preserves_canonical_summary_pair()
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()
+    test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch()
+    test_replay_requires_a_readable_bounded_same_window_handshake_ledger()
+    test_replay_handshake_semantic_mutants_are_actionable_failures()
     test_replay_requires_a_readable_same_window_encounter_csv()
     test_replay_encounter_artifact_and_logical_failures_are_classified()
     test_replay_encounter_semantic_mutants_are_actionable_failures()

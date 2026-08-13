@@ -109,6 +109,20 @@ EXPECTED_REPLAY_CHECKPOINTS = (
     ),
 )
 
+HANDSHAKE_LEDGER_KIND = "v1replay_handshake_ledger"
+HANDSHAKE_LEDGER_SCHEMA = 1
+MAX_HANDSHAKE_LEDGER_BYTES = 8 * 1024
+MAX_HANDSHAKE_EPOCHS = 4
+MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
+MAX_HANDSHAKE_EVENTS = MAX_HANDSHAKE_EPOCHS * MAX_HANDSHAKE_EVENTS_PER_EPOCH
+HANDSHAKE_REQUEST_CHANNELS = {"B6D4", "BAD4"}
+
+START_ALERT_REQUEST = (0xDA, 0xE6, 0x41, ())
+VERSION_REQUEST = (0xDA, 0xE6, 0x01, ())
+VERSION_RESPONSE = (0xD6, 0xEA, 0x02, tuple(b"v4.1038"))
+ALL_VOLUME_REQUEST = (0xDA, 0xE6, 0x3C, ())
+ALL_VOLUME_RESPONSE = (0xD6, 0xEA, 0x3D, (0x04, 0x00, 0x04, 0x00))
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -250,6 +264,278 @@ def same_window_artifact(window_dir: Path, raw: Any, label: str) -> tuple[Path |
     if not resolved.is_file():
         return None, f"replay {label} is missing or is not a file: {resolved.name}"
     return resolved, ""
+
+
+def handshake_collection_failure(message: str) -> dict[str, Any]:
+    return {"result": "COLLECTION_FAILED", "evidence": [message]}
+
+
+def decode_handshake_frame(raw: list[int]) -> tuple[tuple[int, int, int, tuple[int, ...]] | None, str]:
+    """Decode a ledger frame without using the emulator's protocol helpers."""
+    if len(raw) < 7:
+        return None, "is shorter than a complete frame"
+    if raw[0] != 0xAA or raw[-1] != 0xAB:
+        return None, "has invalid frame boundaries"
+    declared_length = raw[4]
+    if declared_length < 1 or len(raw) != 6 + declared_length:
+        return None, "has an invalid declared length"
+    checksum_index = len(raw) - 2
+    if raw[checksum_index] != sum(raw[:checksum_index]) & 0xFF:
+        return None, "has an invalid checksum"
+    return (raw[1], raw[2], raw[3], tuple(raw[5:checksum_index])), ""
+
+
+def score_replay_handshake_ledger(path: Path) -> dict[str, Any]:
+    try:
+        if path.stat().st_size > MAX_HANDSHAKE_LEDGER_BYTES:
+            return handshake_collection_failure("replay handshake ledger exceeds its bounded size")
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return handshake_collection_failure(f"replay handshake ledger could not be read: {exc}")
+
+    lines = text.splitlines()
+    if not lines:
+        return handshake_collection_failure("replay handshake ledger is empty")
+    if any(not line.strip() for line in lines):
+        return handshake_collection_failure("replay handshake ledger contains an empty record")
+
+    records: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            return handshake_collection_failure(
+                f"replay handshake ledger line {line_number} is not valid JSON"
+            )
+        if not isinstance(record, dict):
+            return handshake_collection_failure(
+                f"replay handshake ledger line {line_number} is not an object"
+            )
+        records.append(record)
+
+    expected_header = {
+        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+        "kind": HANDSHAKE_LEDGER_KIND,
+    }
+    if records[0] != expected_header:
+        return handshake_collection_failure("replay handshake ledger has an invalid header")
+
+    raw_events = records[1:]
+    if len(raw_events) > MAX_HANDSHAKE_EVENTS:
+        return handshake_collection_failure("replay handshake ledger has too many events")
+
+    events: list[dict[str, Any]] = []
+    epoch_ids: set[int] = set()
+    event_keys = {
+        "subscribe": {"event", "epoch", "channel"},
+        "request": {"event", "epoch", "channel", "bytes"},
+        "response": {"event", "epoch", "channel", "bytes", "delivery"},
+        "stream_started": {"event", "epoch", "channel", "bytes", "delivery"},
+    }
+    for line_number, raw_event in enumerate(raw_events, start=2):
+        event_name = raw_event.get("event")
+        if (
+            not isinstance(event_name, str)
+            or event_name not in event_keys
+            or set(raw_event) != event_keys[event_name]
+        ):
+            return handshake_collection_failure(
+                f"replay handshake ledger line {line_number} has an invalid event schema"
+            )
+        epoch = raw_event.get("epoch")
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or not 1 <= epoch <= MAX_HANDSHAKE_EPOCHS:
+            return handshake_collection_failure(
+                f"replay handshake ledger line {line_number} has an invalid anonymous epoch"
+            )
+        channel = raw_event.get("channel")
+        if not isinstance(channel, str):
+            return handshake_collection_failure(
+                f"replay handshake ledger line {line_number} has an invalid channel field"
+            )
+        event = {"event": event_name, "epoch": epoch, "channel": channel}
+        if event_name != "subscribe":
+            raw_bytes = raw_event.get("bytes")
+            if (
+                not isinstance(raw_bytes, list)
+                or len(raw_bytes) > 64
+                or any(
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 <= value <= 0xFF
+                    for value in raw_bytes
+                )
+            ):
+                return handshake_collection_failure(
+                    f"replay handshake ledger line {line_number} has an invalid byte array"
+                )
+            event["bytes"] = raw_bytes
+        if event_name in {"response", "stream_started"}:
+            delivery = raw_event.get("delivery")
+            if not isinstance(delivery, str):
+                return handshake_collection_failure(
+                    f"replay handshake ledger line {line_number} has an invalid delivery field"
+                )
+            event["delivery"] = delivery
+        events.append(event)
+        epoch_ids.add(epoch)
+
+    if len(epoch_ids) > MAX_HANDSHAKE_EPOCHS:
+        return handshake_collection_failure("replay handshake ledger has too many anonymous epochs")
+    events_per_epoch = {
+        epoch: sum(event["epoch"] == epoch for event in events) for epoch in epoch_ids
+    }
+    if any(count > MAX_HANDSHAKE_EVENTS_PER_EPOCH for count in events_per_epoch.values()):
+        return handshake_collection_failure("replay handshake epoch has too many events")
+
+    failures: list[str] = []
+    expected_epoch = 1
+    current_epoch = 0
+    for event in events:
+        epoch = event["epoch"]
+        if epoch != current_epoch:
+            if epoch != expected_epoch:
+                failures.append("replay handshake epochs are not contiguous and ordered")
+                break
+            current_epoch = epoch
+            expected_epoch += 1
+
+    decoded_events: list[dict[str, Any]] = []
+    for event in events:
+        event_name = event["event"]
+        channel = event["channel"]
+        if event_name == "subscribe":
+            if channel != "B2CE":
+                failures.append("replay handshake subscribed on the wrong short-response channel")
+            decoded_events.append({**event, "kind": "subscribe"})
+            continue
+
+        decoded, error = decode_handshake_frame(event["bytes"])
+        if decoded is None:
+            failures.append(f"replay handshake {event_name} frame {error}")
+            continue
+        destination, origin, packet_id, payload = decoded
+
+        if event_name == "request":
+            if channel not in HANDSHAKE_REQUEST_CHANNELS:
+                failures.append("replay handshake request used an unsupported command channel")
+            frame = (destination, origin, packet_id, payload)
+            request_kind = {
+                START_ALERT_REQUEST: "start_request",
+                VERSION_REQUEST: "version_request",
+                ALL_VOLUME_REQUEST: "all_volume_request",
+            }.get(frame)
+            if request_kind is None:
+                failures.append("replay handshake request has the wrong header, ID, length, or payload")
+                continue
+            decoded_events.append({**event, "kind": request_kind})
+            continue
+
+        if event.get("delivery") != "delivered":
+            failures.append(f"replay handshake {event_name} was not delivered")
+        if channel != "B2CE":
+            failures.append(f"replay handshake {event_name} used the wrong response channel")
+
+        frame = (destination, origin, packet_id, payload)
+        if event_name == "response":
+            response_kind = {
+                VERSION_RESPONSE: "version_response",
+                ALL_VOLUME_RESPONSE: "all_volume_response",
+            }.get(frame)
+            if response_kind is None:
+                failures.append("replay handshake response has the wrong header, ID, length, or payload")
+                continue
+            decoded_events.append({**event, "kind": response_kind})
+            continue
+
+        descriptor = payload[0] if len(payload) == 7 else -1
+        row_index = descriptor >> 4 if descriptor >= 0 else -1
+        row_count = descriptor & 0x0F if descriptor >= 0 else -1
+        valid_descriptor = (row_index == 0 and row_count == 0) or (
+            1 <= row_index <= row_count
+        )
+        if (
+            destination != 0xD8
+            or origin != 0xEA
+            or packet_id != 0x43
+            or len(payload) != 7
+            or not valid_descriptor
+        ):
+            failures.append("replay handshake first stream frame is not a valid broadcast alert row")
+            continue
+        decoded_events.append({**event, "kind": "stream_started"})
+
+    events_by_epoch: dict[int, list[dict[str, Any]]] = {}
+    for event in decoded_events:
+        events_by_epoch.setdefault(event["epoch"], []).append(event)
+
+    complete_epoch: int | None = None
+    for epoch in sorted(epoch_ids):
+        request_channel: str | None = None
+        state = {
+            "subscribe": False,
+            "start_request": False,
+            "stream_started": False,
+            "version_request": False,
+            "version_response": False,
+            "all_volume_request": False,
+            "all_volume_response": False,
+        }
+        for event in events_by_epoch.get(epoch, []):
+            kind = event["kind"]
+            if state[kind]:
+                failures.append(f"replay handshake epoch repeats {kind.replace('_', ' ')}")
+                continue
+            if kind in {"start_request", "version_request", "all_volume_request"}:
+                if request_channel is None:
+                    request_channel = event["channel"]
+                elif event["channel"] != request_channel:
+                    failures.append(
+                        "replay handshake epoch switches its selected command channel"
+                    )
+            if kind == "subscribe":
+                state[kind] = True
+            elif kind == "start_request":
+                if not state["subscribe"]:
+                    failures.append("replay handshake start request occurred before B2CE subscription")
+                state[kind] = True
+            elif kind == "stream_started":
+                if not state["start_request"]:
+                    failures.append("replay handshake stream began before the accepted start request")
+                state[kind] = True
+            elif kind == "version_request":
+                if not state["start_request"]:
+                    failures.append("replay handshake version request occurred before the accepted start request")
+                state[kind] = True
+            elif kind == "version_response":
+                if not state["version_request"]:
+                    failures.append("replay handshake version response occurred before its request")
+                state[kind] = True
+            elif kind == "all_volume_request":
+                if not state["version_request"]:
+                    failures.append("replay handshake all-volume request occurred before version request")
+                state[kind] = True
+            elif kind == "all_volume_response":
+                if not state["all_volume_request"]:
+                    failures.append("replay handshake all-volume response occurred before its request")
+                state[kind] = True
+
+        if all(state.values()):
+            complete_epoch = epoch
+
+    if complete_epoch is None:
+        failures.append(
+            "replay handshake has no single epoch containing subscribe, start, stream, version, and all-volume delivery"
+        )
+
+    failures = list(dict.fromkeys(failures))
+    return {
+        "result": "FAIL" if failures else "PASS",
+        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+        "event_count": len(events),
+        "epoch_count": len(epoch_ids),
+        "complete_epoch": complete_epoch,
+        "evidence": failures,
+    }
 
 
 def encounter_collection_failure(message: str) -> dict[str, Any]:
@@ -718,14 +1004,29 @@ def classify_window(
             if encounter_path is not None
             else encounter_collection_failure(encounter_path_error)
         )
+        handshake_path, handshake_path_error = same_window_artifact(
+            window_dir,
+            window.get("handshake_ledger_path"),
+            "handshake ledger",
+        )
+        handshake_checks = (
+            score_replay_handshake_ledger(handshake_path)
+            if handshake_path is not None
+            else handshake_collection_failure(handshake_path_error)
+        )
         replay_checks = {
             **metric_checks,
-            "result": worse(str(metric_checks["result"]), str(encounter_checks["result"])),
+            "result": worse(
+                worse(str(metric_checks["result"]), str(encounter_checks["result"])),
+                str(handshake_checks["result"]),
+            ),
             "metrics_result": metric_checks["result"],
             "encounter_checks": encounter_checks,
+            "handshake_checks": handshake_checks,
             "evidence": [
                 *(str(item) for item in metric_checks.get("evidence") or []),
                 *(str(item) for item in encounter_checks.get("evidence") or []),
+                *(str(item) for item in handshake_checks.get("evidence") or []),
             ],
         }
         result = worse(result, str(replay_checks["result"]))

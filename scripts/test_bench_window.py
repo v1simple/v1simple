@@ -195,8 +195,16 @@ def test_replay_blink_profile_argv_and_result() -> None:
                 time.sleep(0.02)
             result = emulator.finish(window_completed=True)
             log = (out_dir / "v1replay.log").read_text(encoding="utf-8")
-            expected_argv = f"argv=bench --machine-events --blink-profile {blink_profile}"
+            expected_ledger = out_dir / "handshake_ledger.jsonl"
+            expected_argv = (
+                f"argv=bench --machine-events --blink-profile {blink_profile} "
+                f"--handshake-ledger {expected_ledger}"
+            )
             assert_true(expected_argv in log, f"unexpected replay argv: {log!r}")
+            assert_true(
+                result["handshake_ledger"] == expected_ledger.name,
+                f"handshake ledger provenance was not recorded: {result}",
+            )
             assert_true(
                 result["blink_profile"] == blink_profile,
                 f"blink profile provenance was not recorded: {result}",
@@ -206,6 +214,60 @@ def test_replay_blink_profile_argv_and_result() -> None:
                 result["blink_nominal_seconds"] == blink_samples / 3,
                 f"wrong nominal blink duration: {result}",
             )
+
+
+def test_handshake_ledger_runner_and_delivery_wiring_are_pinned() -> None:
+    runner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
+    peripheral = (
+        ROOT / "tools" / "v1replay" / "Sources" / "v1replay" / "Peripheral.swift"
+    ).read_text(encoding="utf-8")
+    ledger = (
+        ROOT / "tools" / "v1replay" / "Sources" / "v1replay" / "HandshakeLedger.swift"
+    ).read_text(encoding="utf-8")
+
+    assert_true(
+        'HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"' in runner,
+        "runner does not own the bounded handshake-ledger artifact name",
+    )
+    assert_true(
+        'command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])' in runner,
+        "managed replay does not pass its same-window handshake-ledger path",
+    )
+    assert_true(
+        '"handshake_ledger_path": (' in runner
+        and 'str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""' in runner,
+        "replay window_result does not retain the same-window handshake ledger",
+    )
+
+    update = peripheral.index("guard manager.updateValue(")
+    dequeue = peripheral.index("pending.removeFirst()", update)
+    delivery = peripheral.index("handshakeLedger?.recordDelivered(", update)
+    assert_true(
+        update < dequeue < delivery,
+        "peripheral credits notification evidence before CoreBluetooth accepts delivery",
+    )
+
+    assert_true(
+        "static let maximumEpochs = 4" in ledger
+        and "static let maximumEventsPerEpoch = 12" in ledger,
+        "handshake evidence is not bounded to four anonymous twelve-event epochs",
+    )
+    assert_true(
+        "guard !streamRecordedEpochs.contains(queuedEpoch) else { return }" in ledger
+        and "streamRecordedEpochs.insert(queuedEpoch)" in ledger,
+        "ledger does not retain only the first delivered alert row per epoch",
+    )
+    assert_true(
+        "addedSecondShortSubscriber = inserted && shortSubscriberIDs.count > 1" in peripheral
+        and "else if addedSecondShortSubscriber" in peripheral,
+        "a second short-channel central can be spliced into the active anonymous epoch",
+    )
+    assert_true(
+        "endedShortSession = removed && shortSubscriberIDs.isEmpty" in peripheral
+        and "if endedShortSession || remaining == 0" in peripheral,
+        "loss of the required B2CE subscription does not end its anonymous epoch",
+    )
+    assert_true("UUID" not in ledger and "timestamp" not in ledger, "ledger stores private identity or time")
 
 
 def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
@@ -970,7 +1032,7 @@ def test_v1replay_tracks_each_subscription_independently() -> None:
         "CoreBluetooth subscribe does not update the session",
     )
     assert_true(
-        "session.unsubscribe(central: central.identifier, channel: channel)" in peripheral,
+        "$0.session.unsubscribe(\n                    central: central.identifier,\n                    channel: channel\n                )" in peripheral,
         "CoreBluetooth unsubscribe does not update the session",
     )
 
@@ -997,6 +1059,7 @@ def main() -> int:
     test_failed_window_still_stops_emulator()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
+    test_handshake_ledger_runner_and_delivery_wiring_are_pinned()
     test_global_shutter_default_uses_qualified_720p200_profile()
     test_camera_grader_integrates_high_speed_frames_before_sampling()
     test_camera_profile_is_reapplied_after_recorder_open()

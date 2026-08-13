@@ -6,6 +6,22 @@
 
 namespace {
 
+SendResult sendEmptyPayloadFollowupRequest(V1BLEClient& client, uint8_t packetId) {
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        packetId,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
+    uint8_t checksum = 0;
+    for (size_t i = 0; i < 5; ++i) {
+        checksum = static_cast<uint8_t>(checksum + packet[i]);
+    }
+    packet[5] = checksum;
+    return client.sendCommandWithResult(packet, sizeof(packet));
+}
+
 void logNonCriticalFollowupFailure(BleLogRateLimitState& state, const char* message) {
     const uint32_t nowMs = static_cast<uint32_t>(millis());
     if (shouldLogBleConnectionEvent(state, nowMs)) {
@@ -57,28 +73,72 @@ void V1BLEClient::processConnectedFollowup() {
 
         if (connectBurstStableLoopCount_ >= CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS || timedOut) {
             connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_VERSION;
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         }
         return;
     }
     case ConnectedFollowupStep::REQUEST_VERSION: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
+            return;
+        }
         const uint32_t startUs = micros();
-        const bool ok = requestVersion();
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_VERSION);
         perfRecordBleFollowupRequestVersionUs(micros() - startUs);
-        if (!ok) {
-            logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
-                                          "[BLE] Failed to request version (non-critical)");
+        if (result != SendResult::SENT) {
+            const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
+            if (result == SendResult::NOT_YET && !retryTimedOut) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            if (result == SendResult::FAILED) {
+                logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
+                                              "[BLE] Failed to request version (non-critical)");
+            } else {
+                logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
+                                              "[BLE] Version request retry timed out (non-critical)");
+            }
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = 0;
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            return;
         }
-        // Also request authoritative volume
-        // settings (RESPALLVOLUME 0x3D).  Best-effort; the existing
-        // aux2-nibble inference in display packets remains as fallback.
-        if (!requestAllVolume()) {
-            logNonCriticalFollowupFailure(followupRequestAllVolumeFailLog_,
-                                          "[BLE] Failed to request all-volume (non-critical)");
-        }
-        versionRequestStartedMs_ = static_cast<uint32_t>(millis());
+        versionRequestStartedMs_ = nowMs;
+        connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+        connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_VOLUME;
+        return;
     }
+    case ConnectedFollowupStep::REQUEST_ALL_VOLUME: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
+            return;
+        }
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_ALL_VOLUME);
+        if (result != SendResult::SENT) {
+            const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
+            if (result == SendResult::NOT_YET && !retryTimedOut) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            if (result == SendResult::FAILED) {
+                logNonCriticalFollowupFailure(followupRequestAllVolumeFailLog_,
+                                              "[BLE] Failed to request all-volume (non-critical)");
+            } else {
+                logNonCriticalFollowupFailure(followupRequestAllVolumeFailLog_,
+                                              "[BLE] All-volume request retry timed out (non-critical)");
+            }
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = 0;
+            connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
+            return;
+        }
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = 0;
         connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
         return;
+    }
     case ConnectedFollowupStep::WAIT_VERSION: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
         const bool timedOut =

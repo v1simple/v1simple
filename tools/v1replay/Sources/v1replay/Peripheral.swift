@@ -19,7 +19,7 @@ final class V1Peripheral: NSObject {
 
     struct Config {
         var localName: String = "V1G-REPLAY"
-        var header: V1.Header = .repoConvention
+        var header: V1.Header = .v1ToApp
         var checksum: Bool = true
         var version: String = "4.1038"
         var mainVolume: UInt8 = 4
@@ -150,6 +150,15 @@ final class V1Peripheral: NSObject {
         }
     }
 
+    private func send(_ decision: V1.ReplyDecision) {
+        switch decision.channel {
+        case .displayShort:
+            send(decision.bytes, to: displayChar)
+        case .displayLong:
+            send(decision.bytes, to: alertChar)
+        }
+    }
+
     /// Drain the notify queue until CoreBluetooth pushes back, then wait for
     /// `peripheralManagerIsReady(toUpdateSubscribers:)`.
     private func flush() {
@@ -238,9 +247,15 @@ final class V1Peripheral: NSObject {
 
         switch packet.id {
         case V1.PacketID.reqVersion.rawValue:
-            let reply = V1.versionPacket(header: config.header, version: config.version, checksum: config.checksum)
+            guard let decision = V1.replyDecision(for: packet,
+                                                  version: config.version,
+                                                  header: config.header,
+                                                  checksum: config.checksum) else {
+                onLog?("← rejected malformed reqVersion")
+                return
+            }
             onLog?("→ respVersion v\(config.version)")
-            send(reply, to: alertChar)
+            send(decision)
 
         case V1.PacketID.reqAllVolume.rawValue:
             let reply = V1.allVolumePacket(header: config.header,

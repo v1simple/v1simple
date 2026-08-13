@@ -394,8 +394,8 @@ def check_repo_fixture_parity():
     pushes 0xDA, 0xE4, then a 9-byte display payload
     {0x06, 0x00, bars, 0x24, 0x24, 0x04, 0x00, 0x00, 0x00} with
     len = payload.size(). That is eight payload bytes plus the checksum slot —
-    structurally identical to what this tool emits by default. The 14-byte form
-    in the hand-written crib is the outlier, not the house style.
+    structurally identical to the tool's fixture-compatible framing. The
+    14-byte form in the hand-written crib is the outlier, not the house style.
     """
     fixture = [0xAA, 0xDA, 0xE4, 0x31, 0x09,
                0x06, 0x00, 0x3F, 0x24, 0x24, 0x04, 0x00, 0x00, 0x00, 0xAB]
@@ -414,19 +414,19 @@ def check_repo_fixture_parity():
                                            False, 0x00, False, blink_plane=True),
                   checksum=True)
     check(len(built) == len(fixture),
-          "tool's default display packet is the same length as the repo fixture",
+          "fixture-compatible display packet is the same length as the repo fixture",
           "%d vs %d" % (len(built), len(fixture)))
     check(built[4] == fixture[4],
-          "tool's default length byte matches the repo fixture",
+          "fixture-compatible length byte matches the repo fixture",
           "0x%02X vs 0x%02X" % (built[4], fixture[4]))
     check(built[:5] == fixture[:5],
-          "tool's default header and framing match the repo fixture",
+          "fixture-compatible header and framing match the repo fixture",
           "%s vs %s" % (hexs(built[:5]), hexs(fixture[:5])))
     # Only the checksum slot should differ: the fixture parks 0x00 there, the
     # tool computes the real sum. Both are ignored by validatePacket.
     differing = [i for i in range(len(fixture)) if built[i] != fixture[i]]
     check(differing == [13],
-          "tool differs from the repo fixture in the checksum slot only",
+          "fixture-compatible packet differs in the checksum slot only",
           "differs at %s" % differing)
 
 

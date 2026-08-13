@@ -53,7 +53,10 @@ def is_allowed(relative: Path) -> bool:
         return True
     return (
         len(relative.parts) == 3
-        and relative.parts[:2] == ("Sources", "v1replay")
+        and relative.parts[:2] in {
+            ("Sources", "v1replay"),
+            ("Tests", "v1replayTests"),
+        }
         and relative.suffix == ".swift"
     )
 

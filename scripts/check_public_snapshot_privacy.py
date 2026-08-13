@@ -530,7 +530,10 @@ def replay_source_path_allowed(path: PurePosixPath) -> bool:
         return True
     return (
         len(path.parts) == 5
-        and path.parts[:4] == ("tools", "v1replay", "Sources", "v1replay")
+        and path.parts[:4] in {
+            ("tools", "v1replay", "Sources", "v1replay"),
+            ("tools", "v1replay", "Tests", "v1replayTests"),
+        }
         and path.suffix == ".swift"
     )
 

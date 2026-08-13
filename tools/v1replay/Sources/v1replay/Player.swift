@@ -24,7 +24,7 @@ final class Player {
         var idleTail: TimeInterval = 3.0
         var idleHz: Double = 3.0
         var mode: V1.ModeGlyph = .advancedLogic
-        var header: V1.Header = .repoConvention
+        var header: V1.Header = .v1ToApp
         var checksum: Bool = true
         var volume: UInt8 = 0x40
         var blinkBogey: Bool = false

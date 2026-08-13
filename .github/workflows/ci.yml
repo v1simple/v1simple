@@ -16,6 +16,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  v1replay-swift-oracle:
+    name: v1replay Swift oracle
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run direct v1replay Swift tests
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+          CLANG_MODULE_CACHE_PATH: ${{ github.workspace }}/tools/v1replay/.build/module-cache
+          SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/tools/v1replay/.build/module-cache
+        run: swift test --package-path tools/v1replay
+
   test:
     name: ci-test.sh
     runs-on: ubuntu-latest

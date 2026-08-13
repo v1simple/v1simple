@@ -93,9 +93,9 @@ let console = Console()
 // MARK: - Shared option construction
 
 func makeHeader() throws -> V1.Header {
-    // Default to the repo's own convention (DA E4), not the directionally
-    // correct D6 EA. The parser ignores both bytes; the test fixtures do not.
-    let raw = args.string("header", "draft")
+    // Emulation uses the V1→app direction. Repository fixture parity
+    // remains available as an explicit compatibility option.
+    let raw = args.string("header", "v1")
     guard let header = V1.Header.named(raw) else {
         throw ReplayError.message("unknown --header '\(raw)' (use v1 or draft)")
     }
@@ -231,7 +231,7 @@ func runHelp() {
 
     \(Ansi.bold)PROTOCOL\(Ansi.reset)
       --name <string>      advertised local name (default V1G-REPLAY)
-      --header <draft|v1>  dest/src bytes: DA E4 (repo convention, default) or D6 EA
+      --header <v1|draft>  dest/src bytes: D6 EA (V1-to-app default) or DA E4 (fixture compatibility)
       --blink-bogey        bogey image2 = 00, matching test_protocol_spec_conformance.
                            Off by default: image1 != image2 switches on the firmware's
                            blink-refresh repaint, the one paint path not driven by parse
@@ -296,8 +296,8 @@ func runCrib() {
     \(Ansi.bold)LightBlue manual test — V1G-REPLAY\(Ansi.reset)
 
     Service   \(V1.serviceUUID)
-      B2CE  Read, Notify              display packets
-      B4E0  Read, Notify              alert packets + command responses
+      B2CE  Read, Notify              short V1 packets: display + version reply
+      B4E0  Read, Notify              long V1 packets: alert data
       B6D4  Write Without Response    commands from v1simple
       B8D2  Write Without Response    long commands
       BCE0  Read, Notify              compatibility stub
@@ -312,14 +312,17 @@ func runCrib() {
     \(Ansi.bold)Notify on B2CE — six bars\(Ansi.reset)
       \(sixBarHex)
 
-    \(Ansi.bold)Notify on B4E0 — replies the firmware asks for after connecting\(Ansi.reset)
+    \(Ansi.bold)Notify on B2CE — short version reply after reqVersion\(Ansi.reset)
       respVersion    \(versionHex)
-      respAllVolume  \(volumeHex)
 
-    \(Ansi.bold)Framing follows the repo\(Ansi.reset)
-    DA E4 is the convention every packet builder in test/ uses, and the parser
-    ignores bytes 1 and 2 anyway, so the tool defaults to it. --header v1 sends
-    D6 EA (V1→app) for directionally correct framing.
+    \(Ansi.bold)Notify on B4E0 — current emulator reply after reqAllVolume\(Ansi.reset)
+      respAllVolume  \(volumeHex)
+      (This B4E0 routing is current emulator behavior, not independently confirmed.)
+
+    \(Ansi.bold)Framing choices\(Ansi.reset)
+    These crib vectors use the repository's DA E4 compatibility convention.
+    Playback defaults to directionally correct D6 EA (V1→app); use
+    --header draft only when exact fixture parity is required.
 
     \(Ansi.bold)One deliberate difference from the draft: bogey image2\(Ansi.reset)
     The draft and test_protocol_spec_conformance both send 06 00. The tool sends

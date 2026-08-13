@@ -18,14 +18,15 @@ enum V1 {
 
     static let serviceUUID = "92A0AFF4-9E05-11E2-AA59-F23C91AEC05E"
 
-    /// The six characteristics the firmware (and companion apps) expect.
+    /// Four core characteristics plus two compatibility additions exposed by
+    /// the emulator.
     /// Suffix is shared: -9E05-11E2-AA59-F23C91AEC05E
     static func characteristicUUID(_ short: String) -> String {
         return "92A0" + short + "-9E05-11E2-AA59-F23C91AEC05E"
     }
 
-    static let displayShortUUID = characteristicUUID("B2CE")  // notify: infDisplayData
-    static let displayLongUUID = characteristicUUID("B4E0")   // notify: alert table, responses
+    static let displayShortUUID = characteristicUUID("B2CE")  // notify: short packets, including display/version
+    static let displayLongUUID = characteristicUUID("B4E0")   // notify: long packets, including alert tables
     static let notifyAltUUID = characteristicUUID("BCE0")     // notify: compatibility stub
     static let commandUUID = characteristicUUID("B6D4")       // write-no-response: commands
     static let commandLongUUID = characteristicUUID("B8D2")   // write-no-response: long commands
@@ -44,11 +45,11 @@ enum V1 {
         let src: UInt8
 
         /// V1 → remote app. dest = 0xD0 + ESP_PACKET_REMOTE(0x06), src = 0xE0 + ESP_PACKET_ORIGIN_V1(0x0A).
-        /// Directionally correct but not the repository default. Opt in with --header v1.
+        /// This is the V1-to-app directional default.
         static let v1ToApp = Header(dest: 0xD6, src: 0xEA)
 
-        /// The repository default used by the test packet builders. The parser
-        /// ignores bytes 1 and 2, so replay fixtures retain the same convention.
+        /// Compatibility convention used by repository packet fixtures. Select
+        /// it explicitly with `--header draft` when fixture parity is required.
         static let repoConvention = Header(dest: 0xDA, src: 0xE4)
 
         /// Historical alias.
@@ -463,6 +464,36 @@ enum V1 {
         let id: UInt8
         let payload: [UInt8]
         let raw: [UInt8]
+    }
+
+    enum ReplyChannel: Equatable {
+        case displayShort
+        case displayLong
+    }
+
+    struct ReplyDecision: Equatable {
+        let channel: ReplyChannel
+        let bytes: [UInt8]
+    }
+
+    /// Pure request-to-reply policy used by the CoreBluetooth peripheral.
+    /// Physical notification delivery remains the peripheral's responsibility.
+    static func replyDecision(for request: InboundPacket,
+                              version: String,
+                              header: Header = .v1ToApp,
+                              checksum: Bool = true) -> ReplyDecision? {
+        guard request.id == PacketID.reqVersion.rawValue,
+              request.payload.isEmpty,
+              request.raw.count >= 7,
+              request.raw[1] == 0xDA,
+              request.raw[2] == 0xE6 else {
+            return nil
+        }
+
+        return ReplyDecision(
+            channel: .displayShort,
+            bytes: versionPacket(header: header, version: version, checksum: checksum)
+        )
     }
 
     /// Pull complete AA…AB frames out of a rolling buffer. Leaves any partial

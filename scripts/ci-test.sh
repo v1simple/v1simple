@@ -2,8 +2,9 @@
 # Authoritative repo gate used locally and by GitHub workflows.
 #
 # Gate order: pinned-toolchain check -> format -> privacy gate -> BLE invariant
-# gates -> firmware static analysis -> Python regression tests -> native tests
-# across every host environment -> frontend checks -> production artifact build.
+# gates -> firmware static analysis -> Python regression tests -> host-tool tests
+# -> native tests across every host environment -> frontend checks -> production
+# artifact build.
 # Privacy and Tier-0 gates run their own regression suites inline; a guard is
 # only as trustworthy as the proof that it still detects.
 
@@ -68,6 +69,21 @@ run_step() {
   echo -e "${GREEN}[pass] ${label}${NC}"
 }
 
+run_v1replay_swift_tests() {
+  local swift_driver=(xcrun swift)
+  local module_cache="$ROOT_DIR/tools/v1replay/.build/module-cache"
+
+  if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+    swift_driver=(env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift)
+  fi
+
+  mkdir -p "$module_cache"
+  CLANG_MODULE_CACHE_PATH="$module_cache" \
+    SWIFTPM_MODULECACHE_OVERRIDE="$module_cache" \
+    "${swift_driver[@]}" test \
+    --package-path "$ROOT_DIR/tools/v1replay"
+}
+
 PIO_CMD="${PIO_CMD:-pio}"
 if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
@@ -104,6 +120,7 @@ run_step "Snapshot scanner regression suite" python3 scripts/test_check_public_s
 run_step "Privacy hook regression suite" python3 scripts/test_public_privacy_hooks.py
 run_step "Scanner parity with the internal repository" python3 scripts/test_scanner_parity.py
 run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
+run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
 run_step "v1replay generated protocol verification" python3 tools/v1replay/verify/verify_protocol.py
 
 section "Tier-0 Invariants"
@@ -147,6 +164,13 @@ run_step "Release workflow flash contract regression suite" python3 scripts/test
 run_step "Device test runner regression suite" python3 scripts/test_run_device_tests_script.py
 run_step "Soak metric parser regression suite" python3 scripts/test_soak_parse_metrics.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
+
+section "Host Tools"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  run_step "v1replay Swift package tests" run_v1replay_swift_tests
+else
+  echo -e "${YELLOW}[skip] v1replay Swift package tests require macOS CoreBluetooth${NC}"
+fi
 
 section "Native Tests"
 run_step "Native linked-source manifest" python3 scripts/native_test_source_manifest.py --check

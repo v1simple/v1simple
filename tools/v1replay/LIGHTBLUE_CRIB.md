@@ -14,8 +14,8 @@ Service `92A0AFF4-9E05-11E2-AA59-F23C91AEC05E`
 
 | Ending | Properties | Purpose | Required by v1simple? |
 |---|---|---|---|
-| B2CE | Read, Notify | display packets | **yes** — connection fails without it |
-| B4E0 | Read, Notify | alert packets, command replies | optional but used |
+| B2CE | Read, Notify | short V1 packets, including display and version replies | **yes** — connection fails without it |
+| B4E0 | Read, Notify | long V1 packets, including alert data | optional but used |
 | B6D4 | Write Without Response | commands from v1simple | **yes** (or BAD4) |
 | B8D2 | Write Without Response | long commands | optional |
 | BCE0 | Read, Notify | compatibility stub | no — companion apps only |
@@ -53,17 +53,26 @@ AA DA E4 31 08 06 06 01 22 22 04 00 00 AB
 AA DA E4 31 08 06 06 3F 22 22 04 00 00 AB
 ```
 
-**Replies v1simple will ask for** (send on B4E0 when you see a write arrive):
+**Version reply on B2CE** (after a `reqVersion` write):
 
 ```
 respVersion    AA DA E4 02 07 76 34 2E 31 30 33 38 AB
+```
+
+**Current emulator all-volume reply on B4E0** (after a `reqAllVolume` write):
+
+```
 respAllVolume  AA DA E4 3D 04 04 00 04 00 AB
 ```
 
-## Packets — what the tool sends
+The B4E0 routing of `respAllVolume` documents current emulator behavior; it is
+not independently confirmed here.
 
-Same `DA E4` header, plus a checksum byte and a full eight-byte display payload
-so auxData2 carries volume. This is the same 9-byte payload region
+## Packets — fixture-compatible checksummed form
+
+These examples retain the `DA E4` fixture-compatibility header while adding a
+checksum byte and a full eight-byte display payload so auxData2 carries volume.
+This is the same 9-byte payload region
 `test_protocol_spec_conformance.cpp` builds — a 15-byte display packet is
 already the house style, the 14-byte form above is the outlier.
 
@@ -75,12 +84,23 @@ idle           AA DA E4 31 09 38 38 00 00 00 0C 00 40 5E AB
 alert 1 bar    AA DA E4 43 08 11 87 8C 80 00 22 80 F9 AB
 alert 6 bars   AA DA E4 43 08 11 87 8C AF 00 22 80 28 AB
 alert cleared  AA DA E4 43 08 00 00 00 00 00 00 00 B3 AB
+```
+
+Short version reply on B2CE:
+
+```
 respVersion    AA DA E4 02 08 76 34 2E 31 30 33 38 16 AB
+```
+
+Current emulator all-volume reply on B4E0 (routing not independently confirmed):
+
+```
 respAllVolume  AA DA E4 3D 05 04 00 04 00 B2 AB
 ```
 
-`--blink-bogey --no-checksum` reproduces the draft packets byte-for-byte;
-`--header v1` swaps in `D6 EA` for directionally correct framing.
+`--header draft` selects the listed compatibility header. Playback defaults to
+directionally correct `D6 EA`; `--blink-bogey --no-checksum --header draft`
+reproduces the draft packets byte-for-byte.
 
 ## The one byte that differs, and why
 

@@ -150,9 +150,19 @@ camera-reviewed during Phase 0.
 
 ## Protocol behavior
 
-The tool advertises the V1 service and its six characteristics, answers the
-handshake v1simple performs on connect, and emits display and alert-table rows.
-Alert rows wait for `reqStartAlertData` unless `--always-alerts` is used.
+The first public contract slice has two stable behavior IDs:
+
+- `V1-BLE-IDENTITY-001` pins the service UUID, four core characteristic UUIDs,
+  and the separate two-characteristic compatibility surface. It covers literal
+  identity only; CoreBluetooth behavior remains integration or bench evidence.
+- `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
+  V1-to-app reply, and selection of the B2CE short-display channel. Actual
+  notification delivery remains integration or bench evidence.
+
+The tool advertises the V1 service, four core characteristics, and two
+compatibility additions. It answers the handshake v1simple performs on connect
+and emits display and alert-table rows. Alert rows wait for
+`reqStartAlertData` unless `--always-alerts` is used.
 
 Every active bench step sends a complete one-, two-, or three-row B4E0 table
 with exactly one priority flag. The K alert remains row 1 when Ka becomes the
@@ -161,11 +171,11 @@ on row order. Empty steps send an explicit count-zero table. The B2CE bogey
 count matches the active-row count, and its meter, band, and direction come from
 the priority alert.
 
-Display framing follows the convention used by the firmware tests. The default
-bogey planes are identical so playback remains parse-driven; `--blink-bogey`
-enables the alternate blink plane when that repaint source is part of the test.
-Priority-arrow blink profiles clear only the selected direction bit from image2;
-the firmware continues to own the 96 ms visual cadence.
+Playback uses the V1-to-app header by default. Its steady bogey planes remain a
+deterministic stimulus choice; `--header draft` and `--blink-bogey` select
+fixture-compatible alternatives. Priority-arrow blink profiles clear only the
+selected direction bit from image2; the firmware continues to own the 96 ms
+visual cadence.
 
 The tool is a stimulus source, not an oracle. Assertions still belong in the
 firmware tests or on the attached device.

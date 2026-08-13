@@ -113,12 +113,29 @@ def test_high_confidence_secret_and_binary_metadata_are_reported() -> None:
 
 
 def test_replay_tree_is_source_only() -> None:
-    safe = checker.scan_blob(
+    for path in (
         "tools/v1replay/Sources/v1replay/main.swift",
-        b"import Foundation\n",
+        "tools/v1replay/Tests/v1replayTests/V1ProtocolContractTests.swift",
+    ):
+        assert checker.scan_blob(path, b"import Foundation\n", local_terms=[]) == []
+
+    for path in (
+        "tools/v1replay/Tests/v1replayTests/Nested/ContractTests.swift",
+        "tools/v1replay/Tests/v1replayTests/ContractTests.txt",
+        "tools/v1replay/Tests/v1replayTests/ContractTests.json",
+    ):
+        findings = checker.scan_blob(path, b"safe fixture\n", local_terms=[])
+        assert [finding.rule for finding in findings] == ["replay-source-only-boundary"]
+
+    private_directory_findings = checker.scan_blob(
+        "tools/v1replay/Tests/v1replayTests/captures/ContractTests.swift",
+        b"safe fixture\n",
         local_terms=[],
     )
-    assert safe == []
+    assert [finding.rule for finding in private_directory_findings] == [
+        "tracked-private-data-path",
+        "replay-source-only-boundary",
+    ]
 
     findings = checker.scan_blob(
         "tools/v1replay/private-input.json",

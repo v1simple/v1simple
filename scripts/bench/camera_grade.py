@@ -215,12 +215,12 @@ def validate_camera_profile(camera_result: dict[str, Any]) -> None:
 def _segment_bounds(x0: int, x1: int) -> tuple[tuple[int, int, int, int], ...]:
     return (
         (x0 + 5, 60, x1 - 2, 68),
-        (x1 - 8, 64, x1, 84),
+        (x1 - 8, 68, x1, 81),
         (x1 - 8, 85, x1, 104),
         (x0 + 5, 101, x1 - 4, 108),
         (x0, 85, x0 + 8, 104),
         (x0, 64, x0 + 8, 84),
-        (x0 + 5, 82, x1 - 4, 90),
+        (x0 + 7, 82, x1 - 6, 90),
     )
 
 

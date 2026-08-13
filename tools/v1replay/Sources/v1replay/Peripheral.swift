@@ -46,12 +46,15 @@ final class V1Peripheral: NSObject {
     /// Everything the console and player threads poll. CoreBluetooth callbacks
     /// land on `queue`; the status line reads from the main thread; the player
     /// polls `displaySubscribed` — so all of it lives behind one lock.
+    private struct Subscription: Hashable {
+        let central: UUID
+        let characteristic: String
+    }
+
     private struct State {
         var isPoweredOn = false
         var isAdvertising = false
-        var subscriberCount = 0
-        var displaySubscribed = false
-        var alertSubscribed = false
+        var subscriptions: Set<Subscription> = []
         var notifiesSent = 0
         var notifiesDropped = 0
         var commandsReceived = 0
@@ -70,9 +73,13 @@ final class V1Peripheral: NSObject {
 
     var isPoweredOn: Bool { return withState { $0.isPoweredOn } }
     var isAdvertising: Bool { return withState { $0.isAdvertising } }
-    var subscriberCount: Int { return withState { $0.subscriberCount } }
-    var displaySubscribed: Bool { return withState { $0.displaySubscribed } }
-    var alertSubscribed: Bool { return withState { $0.alertSubscribed } }
+    var subscriberCount: Int { return withState { Set($0.subscriptions.map(\.central)).count } }
+    var displaySubscribed: Bool {
+        return withState { $0.subscriptions.contains { $0.characteristic == V1.displayShortUUID } }
+    }
+    var alertSubscribed: Bool {
+        return withState { $0.subscriptions.contains { $0.characteristic == V1.displayLongUUID } }
+    }
     var notifiesSent: Int { return withState { $0.notifiesSent } }
     var notifiesDropped: Int { return withState { $0.notifiesDropped } }
     var commandsReceived: Int { return withState { $0.commandsReceived } }
@@ -367,13 +374,11 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
-        let isDisplay = characteristic.uuid == displayChar.uuid
-        let isAlert = characteristic.uuid == alertChar.uuid
-        withState { current in
-            current.subscriberCount += 1
-            if isDisplay { current.displaySubscribed = true }
-            if isAlert { current.alertSubscribed = true }
-        }
+        let subscription = Subscription(
+            central: central.identifier,
+            characteristic: characteristic.uuid.uuidString
+        )
+        _ = withState { $0.subscriptions.insert(subscription) }
         onLog?("Central subscribed to \(name) (MTU \(central.maximumUpdateValueLength))")
         onStateChange?()
     }
@@ -382,14 +387,15 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            central: CBCentral,
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
-        let isDisplay = characteristic.uuid == displayChar.uuid
-        let isAlert = characteristic.uuid == alertChar.uuid
+        let subscription = Subscription(
+            central: central.identifier,
+            characteristic: characteristic.uuid.uuidString
+        )
         let remaining = withState { current -> Int in
-            current.subscriberCount = max(0, current.subscriberCount - 1)
-            if isDisplay { current.displaySubscribed = false }
-            if isAlert { current.alertSubscribed = false }
-            if current.subscriberCount == 0 { current.alertDataRequested = false }
-            return current.subscriberCount
+            current.subscriptions.remove(subscription)
+            let count = Set(current.subscriptions.map(\.central)).count
+            if count == 0 { current.alertDataRequested = false }
+            return count
         }
         onLog?("Central unsubscribed from \(name)")
         if remaining == 0 {

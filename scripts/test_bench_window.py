@@ -563,6 +563,30 @@ def test_reference_free_segment_decoder_abstains_when_ambiguous() -> None:
     assert_true(actual is None and confidence == 0.0, "ambiguous segment was guessed")
 
 
+def test_frequency_sampling_ignores_neighboring_stroke_bleed() -> None:
+    frame = bytearray(camera_grade_module.FRAME_BYTES)
+
+    def fill(bounds: tuple[int, int, int, int]) -> None:
+        for y in range(bounds[1], bounds[3]):
+            for x in range(bounds[0], bounds[2]):
+                offset = (y * camera_grade_module.FRAME_WIDTH + x) * 3
+                frame[offset : offset + 3] = bytes((255, 100, 0))
+
+    # Bleed immediately outside the fifth digit's upper-right and middle
+    # segment interiors must not turn an inactive segment into a vote.
+    for bounds in ((299, 64, 307, 68), (299, 81, 307, 84), (281, 82, 283, 90), (301, 82, 303, 90)):
+        fill(bounds)
+    signature = frequency_signature(bytes(frame))
+    assert_true(
+        signature[29] <= camera_grade_module.SEGMENT_OFF_THRESHOLD,
+        f"upper-right segment sampled neighboring bleed: {signature[29]}",
+    )
+    assert_true(
+        signature[34] <= camera_grade_module.SEGMENT_OFF_THRESHOLD,
+        f"middle segment sampled neighboring bleed: {signature[34]}",
+    )
+
+
 def registration_fixture(offset_x: float, offset_y: float) -> bytes:
     glyphs = (
         ("11111", "10000", "10000", "11111", "00001", "00001", "11111"),
@@ -893,6 +917,21 @@ def test_encounter_csv_path_uses_perf_boot_identity() -> None:
         assert_true(encounter_csv_sd_path(invalid) == "", f"invalid perf path was accepted: {invalid}")
 
 
+def test_v1replay_tracks_each_subscription_independently() -> None:
+    source = (ROOT / "tools" / "v1replay" / "Sources" / "v1replay" / "Peripheral.swift").read_text()
+    assert_true("private struct Subscription: Hashable" in source, "subscription identity is missing")
+    assert_true("let central: UUID" in source, "subscription does not identify its central")
+    assert_true("let characteristic: String" in source, "subscription does not identify its characteristic")
+    assert_true(
+        "var subscriptions: Set<Subscription> = []" in source,
+        "replay peripheral does not retain independent subscriptions",
+    )
+    assert_true(
+        "current.subscriptions.remove(subscription)" in source,
+        "unsubscribe does not remove only the matching subscription",
+    )
+
+
 def main() -> int:
     test_idle_emulator_covers_and_stops_with_window()
     test_failed_window_still_stops_emulator()
@@ -907,6 +946,7 @@ def main() -> int:
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()
     test_reference_free_segment_decoder_abstains_when_ambiguous()
+    test_frequency_sampling_ignores_neighboring_stroke_bleed()
     test_camera_crop_registration_tracks_dynamic_rig_movement()
     test_camera_crop_registration_falls_back_to_bright_still()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()
@@ -917,6 +957,7 @@ def main() -> int:
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()
+    test_v1replay_tracks_each_subscription_independently()
     print("bench window tests passed")
     return 0
 

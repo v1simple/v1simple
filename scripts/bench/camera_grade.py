@@ -55,6 +55,9 @@ FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_RATE = 3
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
+# Average 100 ms of the fixed 200 fps source to cover a complete display refresh.
+# Scored encounter rows already exclude transitions within a 750 ms guard window.
+TEMPORAL_INTEGRATION_FRAMES = 20
 # The canonical close display view. Registration derives a new crop with this
 # composition at the measured DUT scale, then normalizes it to the same output.
 DISPLAY_CROP_WIDTH = 0.52
@@ -619,6 +622,7 @@ def extract_observations(
         str(video_path),
         "-vf",
         f"{_display_crop_filter(crop_offset_x, crop_offset_y, crop_registration)},"
+        f"tmix=frames={TEMPORAL_INTEGRATION_FRAMES},"
         f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,fps={FRAME_RATE}",
         "-an",
         "-f",
@@ -1206,6 +1210,7 @@ def grade_camera(
             "kind": "seven_segment_topology",
             "reference_images": False,
             "ambiguous_reading_policy": "abstain",
+            "temporal_integration_frames": TEMPORAL_INTEGRATION_FRAMES,
             "segment_thresholds_per_mille": {
                 "off_maximum": SEGMENT_OFF_THRESHOLD,
                 "on_minimum": SEGMENT_ON_THRESHOLD,

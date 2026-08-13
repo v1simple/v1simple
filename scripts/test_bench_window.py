@@ -230,6 +230,39 @@ def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
+def test_camera_grader_integrates_high_speed_frames_before_sampling() -> None:
+    commands: list[list[str]] = []
+
+    class FakeStream:
+        def __init__(self, chunks: list[bytes]) -> None:
+            self.chunks = chunks
+
+        def read(self, _size: int = -1) -> bytes:
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class FakeProcess:
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            commands.append(command)
+            self.stdout = FakeStream([bytes(camera_grade_module.FRAME_BYTES), b""])
+            self.stderr = FakeStream([b""])
+
+        def wait(self) -> int:
+            return 0
+
+    original_popen = camera_grade_module.subprocess.Popen
+    try:
+        camera_grade_module.subprocess.Popen = FakeProcess  # type: ignore[assignment]
+        observations = camera_grade_module.extract_observations(Path("evidence.mov"), ffmpeg="ffmpeg")
+    finally:
+        camera_grade_module.subprocess.Popen = original_popen
+    assert_true(len(observations) == 1, f"fake camera frame was not graded: {observations}")
+    video_filter = commands[0][commands[0].index("-vf") + 1]
+    assert_true(
+        f"tmix=frames={camera_grade_module.TEMPORAL_INTEGRATION_FRAMES}" in video_filter,
+        f"high-speed frames are not integrated before grading: {video_filter}",
+    )
+
+
 def test_camera_profile_is_reapplied_after_recorder_open() -> None:
     events: list[str] = []
 
@@ -938,6 +971,7 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_global_shutter_default_uses_qualified_720p200_profile()
+    test_camera_grader_integrates_high_speed_frames_before_sampling()
     test_camera_profile_is_reapplied_after_recorder_open()
     test_camera_video_profile_seeds_exposure_before_aperture_priority()
     test_failed_frame_rate_probe_retains_measurements_and_diagnostics()

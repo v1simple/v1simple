@@ -1879,19 +1879,150 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
     if not nonempty_sessions:
         return {"result": "COLLECTION_FAILED", "evidence": ["replay CSV contains no metric rows"]}
 
-    # A BLE reconnect starts a new perf session marker without resetting the
-    # boot-lifetime counters. Deterministic replay owns the complete QSTART
-    # window, so scoring only the final connection fragment discards earlier
-    # phases (including the three-bogey block).
-    rows = [row for _index, _meta, session_rows in nonempty_sessions for row in session_rows]
-    session_indices = [index for index, _meta, _rows in nonempty_sessions]
+    # The reconnect replay has two owned metric sessions after preflight: QSTART
+    # captures a baseline, then the replacement V1 connection opens the final
+    # session. Boot/preflight sessions contain the deliberately induced removal
+    # and must not contribute to replacement-session deltas.
+    if len(nonempty_sessions) < 2:
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": [
+                "replay CSV requires nonempty QSTART and replacement-connection sessions"
+            ],
+        }
+    selected_sessions = nonempty_sessions[-2:]
+    selected_meta = [meta for _index, meta, _rows in selected_sessions]
+    if any(meta is None for meta in selected_meta):
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": ["replay CSV replacement window is missing session markers"],
+        }
+    qstart_meta, replacement_meta = selected_meta
+    assert qstart_meta is not None and replacement_meta is not None
+    if (
+        qstart_meta.bootId <= 0
+        or replacement_meta.bootId != qstart_meta.bootId
+        or qstart_meta.schema <= 0
+        or replacement_meta.schema != qstart_meta.schema
+        or qstart_meta.seq <= 0
+        or replacement_meta.seq != qstart_meta.seq + 1
+        or replacement_meta.uptime_ms <= qstart_meta.uptime_ms
+        or not qstart_meta.token
+        or not replacement_meta.token
+        or replacement_meta.token == qstart_meta.token
+    ):
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": [
+                "replay CSV QSTART and replacement sessions have invalid or discontinuous metadata"
+            ],
+        }
+    if any("millis" not in row for _index, _meta, session_rows in selected_sessions for row in session_rows):
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": ["replay CSV replacement window is missing a millis anchor"],
+        }
+    for (_index, meta, session_rows) in selected_sessions:
+        assert meta is not None
+        millis_values = [int(row["millis"]) for row in session_rows]
+        if any(value < meta.uptime_ms for value in millis_values) or any(
+            later < earlier for earlier, later in zip(millis_values, millis_values[1:])
+        ):
+            return {
+                "result": "COLLECTION_FAILED",
+                "evidence": [
+                    "replay CSV replacement window has invalid or regressed row timing"
+                ],
+            }
+    qstart_rows = selected_sessions[0][2]
+    if max(int(row["millis"]) for row in qstart_rows) >= replacement_meta.uptime_ms:
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": [
+                "replay CSV replacement marker does not follow the QSTART baseline session"
+            ],
+        }
+    try:
+        csv_lines = csv_path.read_text(encoding="utf-8").splitlines()
+        marker_indices = [
+            index
+            for index, line in enumerate(csv_lines)
+            if line.startswith("#session_start")
+        ]
+        selected_marker_indices = marker_indices[-2:]
+        if len(selected_marker_indices) != 2:
+            raise ValueError("selected session markers are missing")
+        selected_marker_seqs = []
+        for marker_index in selected_marker_indices:
+            if marker_index == 0 or not csv_lines[marker_index - 1].startswith("millis,"):
+                raise ValueError("session marker does not follow its CSV header")
+            marker_values = {
+                key.strip(): value.strip()
+                for field in csv_lines[marker_index].split(",")
+                if "=" in field
+                for key, value in [field.split("=", 1)]
+            }
+            selected_marker_seqs.append(int(marker_values.get("seq", "0")))
+        if selected_marker_seqs != [qstart_meta.seq, replacement_meta.seq]:
+            raise ValueError("selected session markers do not match parsed sessions")
+        final_marker_index = selected_marker_indices[-1]
+        final_marker = csv_lines[final_marker_index]
+        final_marker_fields = {
+            key.strip(): value.strip()
+            for field in final_marker.split(",")
+            if "=" in field
+            for key, value in [field.split("=", 1)]
+        }
+        final_marker_seq = int(final_marker_fields.get("seq", "0"))
+    except (OSError, StopIteration, ValueError):
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": ["replay CSV final replacement session marker is missing or invalid"],
+        }
+    final_marker_has_rows = any(
+        line.strip()
+        and not line.startswith("#")
+        and not line.startswith("millis,")
+        for line in csv_lines[final_marker_index + 1 :]
+    )
+    if final_marker_seq != replacement_meta.seq or not final_marker_has_rows:
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": ["replay CSV final replacement session is missing or empty"],
+        }
+    rows = [row for _index, _meta, session_rows in selected_sessions for row in session_rows]
+    session_indices = [index for index, _meta, _rows in selected_sessions]
 
     required = set(exact) | set(zero)
-    missing = sorted(required - set(rows[0]))
+    missing = sorted(
+        {
+            column
+            for row in rows
+            for column in required
+            if column not in row
+        }
+    )
     if missing:
         return {
             "result": "COLLECTION_FAILED",
             "evidence": ["replay CSV is missing required columns: " + ", ".join(missing)],
+        }
+
+    regressed = sorted(
+        column
+        for column in required
+        if any(
+            int(later[column]) < int(earlier[column])
+            for earlier, later in zip(rows, rows[1:])
+        )
+    )
+    if regressed:
+        return {
+            "result": "COLLECTION_FAILED",
+            "evidence": [
+                "replay CSV cumulative counters regress inside the replacement window: "
+                + ", ".join(regressed)
+            ],
         }
 
     observed = {column: counter_delta(rows, column) for column in required}
@@ -1904,8 +2035,9 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
             failures.append(f"{column} delta={observed[column]} expected=0")
     return {
         "result": "FAIL" if failures else "PASS",
-        "segment_scope": "complete_window",
-        "session_count": len(nonempty_sessions),
+        "segment_scope": "replacement_window",
+        "session_count": len(selected_sessions),
+        "total_nonempty_session_count": len(nonempty_sessions),
         "session_indices": session_indices,
         "session_index": session_indices[-1],
         "row_count": len(rows),

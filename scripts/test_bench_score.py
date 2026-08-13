@@ -354,12 +354,18 @@ def write_replay_csv(path: Path, *, publishes: int = 708) -> None:
         "parseFail",
     ]
     columns = ["millis", *exact, *zero]
-    start = {column: 0 for column in columns}
-    end = {**start, "millis": 300_000, **exact}
+    qstart = {column: 0 for column in columns}
+    qstart["millis"] = 10
+    replacement = {**qstart, "millis": 20}
+    end = {**qstart, "millis": 300_000, **exact}
     path.write_text(
         ",".join(columns)
+        + "\n#session_start,seq=1,bootId=1,uptime_ms=10,token=QSTART,schema=45\n"
+        + ",".join(str(qstart[column]) for column in columns)
         + "\n"
-        + ",".join(str(start[column]) for column in columns)
+        + ",".join(columns)
+        + "\n#session_start,seq=2,bootId=1,uptime_ms=20,token=REPLACEMENT,schema=45\n"
+        + ",".join(str(replacement[column]) for column in columns)
         + "\n"
         + ",".join(str(end[column]) for column in columns)
         + "\n",
@@ -2394,7 +2400,7 @@ def test_replay_encounter_semantic_mutants_are_actionable_failures() -> None:
     assert_semantic_failure(missing_end, "no END after the authored active sequence")
 
 
-def test_replay_scores_complete_window_across_connection_sessions() -> None:
+def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_window(root, "replay")
@@ -2420,7 +2426,14 @@ def test_replay_scores_complete_window_across_connection_sessions() -> None:
             "parseFail",
         ]
 
-        def row(millis: int, publishes: int, three: int) -> str:
+        def row(
+            millis: int,
+            publishes: int,
+            three: int,
+            disc: int = 1,
+            q_drop: int = 0,
+            parse_fail: int = 0,
+        ) -> str:
             values = {column: 0 for column in columns}
             values.update(
                 {
@@ -2428,31 +2441,259 @@ def test_replay_scores_complete_window_across_connection_sessions() -> None:
                     "prioritySelectRowFlag": publishes,
                     "alertTablePublishes": publishes,
                     "alertTablePublishes3Bogey": three,
+                    "disc": disc,
+                    "qDrop": q_drop,
+                    "parseFail": parse_fail,
                 }
             )
             return ",".join(str(values[column]) for column in columns)
 
-        csv_path.write_text(
-            ",".join(columns)
-            + "\n#session_start,seq=1,uptime_ms=0,token=FIRST,schema=45\n"
-            + row(0, 0, 0)
-            + "\n"
-            + row(80_000, 200, 30)
-            + "\n"
-            + ",".join(columns)
-            + "\n#session_start,seq=2,uptime_ms=85000,token=SECOND,schema=45\n"
-            + row(85_000, 200, 30)
-            + "\n"
-            + row(300_000, 708, 30)
-            + "\n",
-            encoding="utf-8",
+        def write_sessions(
+            sessions: list[list[str]],
+            *,
+            seqs: list[int] | None = None,
+            boot_ids: list[int] | None = None,
+            schemas: list[int] | None = None,
+            uptimes: list[int] | None = None,
+            tokens: list[str] | None = None,
+        ) -> None:
+            chunks: list[str] = []
+            for seq, rows in enumerate(sessions, start=1):
+                marker_seq = seqs[seq - 1] if seqs is not None else seq
+                boot_id = boot_ids[seq - 1] if boot_ids is not None else 1
+                schema = schemas[seq - 1] if schemas is not None else 45
+                uptime = (
+                    uptimes[seq - 1]
+                    if uptimes is not None
+                    else (int(rows[0].split(",", 1)[0]) if rows else seq)
+                )
+                token = tokens[seq - 1] if tokens is not None else f"S{seq}"
+                chunks.extend(
+                    [
+                        ",".join(columns),
+                        f"#session_start,seq={marker_seq},bootId={boot_id},uptime_ms={uptime},token={token},schema={schema}",
+                        *rows,
+                    ]
+                )
+            csv_path.write_text("\n".join(chunks) + "\n", encoding="utf-8")
+
+        # Preflight owns the inherited disconnect. Exact authored counters may
+        # span QSTART and the replacement connection, but the disconnect may not
+        # change anywhere inside that selected two-session window.
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 0, 0, 1, 1, 1)],
+                [row(35_000, 0, 0, 1, 1, 1), row(40_000, 200, 30, 1, 1, 1)],
+                [row(45_000, 200, 30, 1, 1, 1), row(300_000, 708, 30, 1, 1, 1)],
+            ]
         )
         proc = run_score(root, "replay")
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         checks = result["windows"][0]["replay_checks"]
         assert_true(checks["session_count"] == 2, f"wrong session scope: {checks}")
+        assert_true(checks["total_nonempty_session_count"] == 3, f"wrong session scope: {checks}")
+        assert_true(checks["session_indices"] == [2, 3], f"wrong session scope: {checks}")
+        assert_true(checks["segment_scope"] == "replacement_window", f"wrong scope: {checks}")
+        assert_true(checks["observed_deltas"]["disc"] == 0, f"wrong deltas: {checks}")
+        assert_true(checks["observed_deltas"]["qDrop"] == 0, f"wrong deltas: {checks}")
+        assert_true(checks["observed_deltas"]["parseFail"] == 0, f"wrong deltas: {checks}")
         assert_true(checks["observed_deltas"]["alertTablePublishes3Bogey"] == 30, f"wrong deltas: {checks}")
+
+        for missing_column in ("disc", "alertTablePublishes"):
+            replacement_columns = [
+                column for column in columns if column != missing_column
+            ]
+
+            def without_missing_column(raw: str) -> str:
+                return ",".join(
+                    value
+                    for column, value in zip(columns, raw.split(","))
+                    if column != missing_column
+                )
+
+            csv_path.write_text(
+                "\n".join(
+                    [
+                        ",".join(columns),
+                        "#session_start,seq=1,bootId=1,uptime_ms=35000,token=QSTART,schema=45",
+                        row(35_000, 0, 0),
+                        row(40_000, 200, 30),
+                        ",".join(replacement_columns),
+                        "#session_start,seq=2,bootId=1,uptime_ms=45000,token=REPLACEMENT,schema=45",
+                        without_missing_column(row(45_000, 200, 30)),
+                        without_missing_column(row(300_000, 708, 30)),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(
+                f"replay CSV is missing required columns: {missing_column}" in proc.stdout,
+                proc.stdout,
+            )
+
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 0, 0, 1)],
+                [row(35_000, 0, 0), row(40_000, 200, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30, 2)],
+            ]
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("disc delta=1 expected=0" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(0, 0, 0, 0)],
+                [row(35_000, 0, 0), row(40_000, 200, 30, 1, 1)],
+                [row(45_000, 200, 30, 1, 1), row(300_000, 708, 30, 1, 1, 2)],
+            ]
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("parseFail delta=2 expected=0" in proc.stdout, proc.stdout)
+
+        # Counters earned by preflight cannot make a deficient replacement pass.
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 708, 30, 1)],
+                [row(35_000, 708, 30), row(40_000, 708, 30)],
+                [row(45_000, 708, 30), row(300_000, 708, 30)],
+            ]
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("alertTablePublishes delta=0 expected=708" in proc.stdout, proc.stdout)
+
+        write_sessions([[row(35_000, 0, 0), row(300_000, 708, 30)]])
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("requires nonempty QSTART and replacement-connection sessions" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(35_000, 0, 0), row(40_000, 200, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30)],
+            ],
+            seqs=[3, 5],
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("invalid or discontinuous metadata" in proc.stdout, proc.stdout)
+
+        for metadata in (
+            {"boot_ids": [1, 2]},
+            {"schemas": [45, 0]},
+            {"schemas": [45, 46]},
+            {"uptimes": [10, 10]},
+            {"tokens": ["SAME", "SAME"]},
+            {"tokens": ["S1", ""]},
+            {"seqs": [4, 3]},
+        ):
+            write_sessions(
+                [
+                    [row(35_000, 0, 0), row(40_000, 200, 30)],
+                    [row(45_000, 200, 30), row(300_000, 708, 30)],
+                ],
+                **metadata,
+            )
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true("invalid or discontinuous metadata" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(35_000, 0, 0), row(40_000, 200, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30)],
+            ],
+            uptimes=[35_000, 40_000],
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("replacement marker does not follow the QSTART baseline" in proc.stdout, proc.stdout)
+
+        for replacement_rows, uptimes in (
+            ([row(45_000, 200, 30), row(300_000, 708, 30)], [35_000, 46_000]),
+            (
+                [row(45_000, 200, 30), row(44_000, 200, 30), row(300_000, 708, 30)],
+                [35_000, 45_000],
+            ),
+        ):
+            write_sessions(
+                [
+                    [row(35_000, 0, 0), row(40_000, 200, 30)],
+                    replacement_rows,
+                ],
+                uptimes=uptimes,
+            )
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true("invalid or regressed row timing" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 0, 0, 1)],
+                [row(35_000, 0, 0), row(40_000, 400, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30)],
+            ]
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("cumulative counters regress" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 0, 0, 1)],
+                [row(35_000, 0, 0), row(40_000, 200, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30)],
+            ]
+        )
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        replacement_first = lines.index(row(45_000, 200, 30))
+        lines.insert(
+            replacement_first + 1,
+            "#session_start,seq=3,bootId=1,uptime_ms=45000,token=INJECTED,schema=45",
+        )
+        csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("final replacement session marker is missing or invalid" in proc.stdout, proc.stdout)
+
+        # An empty replacement marker is not usable evidence; load_sessions
+        # intentionally omits it, leaving only one nonempty session.
+        write_sessions([[row(35_000, 0, 0), row(300_000, 708, 30)], []])
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("requires nonempty QSTART and replacement-connection sessions" in proc.stdout, proc.stdout)
+
+        # Even with two earlier nonempty sessions, a trailing empty B marker
+        # cannot be silently dropped and replaced by preflight evidence.
+        write_sessions(
+            [
+                [row(0, 0, 0, 0), row(30_000, 0, 0, 1)],
+                [row(35_000, 0, 0), row(300_000, 708, 30)],
+                [],
+            ]
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("final replacement session marker is missing or invalid" in proc.stdout, proc.stdout)
+
+        write_sessions(
+            [
+                [row(35_000, 0, 0), row(40_000, 200, 30)],
+                [row(45_000, 200, 30), row(300_000, 708, 30)],
+                [],
+            ],
+            seqs=[1, 2, 2],
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("final replacement session marker is missing or invalid" in proc.stdout, proc.stdout)
 
 
 def test_replay_mismatch_is_actionable_failure() -> None:
@@ -2729,7 +2970,7 @@ def main() -> int:
     test_replay_requires_a_readable_same_window_encounter_csv()
     test_replay_encounter_artifact_and_logical_failures_are_classified()
     test_replay_encounter_semantic_mutants_are_actionable_failures()
-    test_replay_scores_complete_window_across_connection_sessions()
+    test_replay_scores_only_qstart_and_replacement_connection_sessions()
     test_replay_mismatch_is_actionable_failure()
     test_replay_process_failure_is_collection_failure()
     test_managed_emulator_must_cover_every_live_window()

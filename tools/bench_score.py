@@ -116,12 +116,50 @@ MAX_HANDSHAKE_EPOCHS = 4
 MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 MAX_HANDSHAKE_EVENTS = MAX_HANDSHAKE_EPOCHS * MAX_HANDSHAKE_EVENTS_PER_EPOCH
 HANDSHAKE_REQUEST_CHANNELS = {"B6D4", "BAD4"}
+MAX_RECONNECT_PREFLIGHT_LOG_BYTES = 256 * 1024
+MAX_BENCH_SERIAL_LOG_BYTES = 8 * 1024 * 1024
+RECONNECT_PROCESS_EXIT_BOUNDARY = "HOST_BOUNDARY reconnect_preflight_process_exited"
+RECONNECT_PREFLIGHT_START_BOUNDARY = "HOST_BOUNDARY reconnect_preflight_start"
+RECONNECT_FENCE_BEGIN = "HOST_BOUNDARY reconnect_preflight_fence_begin"
+RECONNECT_FENCE_COMPLETE = "HOST_BOUNDARY reconnect_preflight_fence_complete"
+RECONNECT_POST_CLEANUP_FENCE_BEGIN = "HOST_BOUNDARY reconnect_post_cleanup_fence_begin"
+RECONNECT_POST_CLEANUP_FENCE_COMPLETE = "HOST_BOUNDARY reconnect_post_cleanup_fence_complete"
+RECONNECT_PRE_QSTART_FENCE_BEGIN = "HOST_BOUNDARY reconnect_pre_qstart_fence_begin"
+RECONNECT_PRE_QSTART_FENCE_COMPLETE = "HOST_BOUNDARY reconnect_pre_qstart_fence_complete"
+V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
+BOOT_PREFIX = "BOOT bootId="
 
 START_ALERT_REQUEST = (0xDA, 0xE6, 0x41, ())
 VERSION_REQUEST = (0xDA, 0xE6, 0x01, ())
 VERSION_RESPONSE = (0xD6, 0xEA, 0x02, tuple(b"v4.1038"))
 ALL_VOLUME_REQUEST = (0xDA, 0xE6, 0x3C, ())
 ALL_VOLUME_RESPONSE = (0xD6, 0xEA, 0x3D, (0x04, 0x00, 0x04, 0x00))
+RECONNECT_PREFLIGHT_CLEAR_FRAME = (
+    0xAA,
+    0xD8,
+    0xEA,
+    0x43,
+    0x08,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0xB7,
+    0xAB,
+)
+RECONNECT_VERSION_REPLY_FRAME = (
+    0xAA, 0xD6, 0xEA, 0x02, 0x08,
+    0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+    0x18, 0xAB,
+)
+RECONNECT_ALL_VOLUME_REPLY_FRAME = (
+    0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+    0x04, 0x00, 0x04, 0x00,
+    0xB4, 0xAB,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -285,7 +323,11 @@ def decode_handshake_frame(raw: list[int]) -> tuple[tuple[int, int, int, tuple[i
     return (raw[1], raw[2], raw[3], tuple(raw[5:checksum_index])), ""
 
 
-def score_replay_handshake_ledger(path: Path) -> dict[str, Any]:
+def score_replay_handshake_ledger(
+    path: Path,
+    *,
+    expected_stream_frame: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
     try:
         if path.stat().st_size > MAX_HANDSHAKE_LEDGER_BYTES:
             return handshake_collection_failure("replay handshake ledger exceeds its bounded size")
@@ -447,6 +489,11 @@ def score_replay_handshake_ledger(path: Path) -> dict[str, Any]:
             decoded_events.append({**event, "kind": response_kind})
             continue
 
+        if expected_stream_frame is not None and tuple(event["bytes"]) != expected_stream_frame:
+            failures.append(
+                "replay reconnect preflight stream frame is not the canonical clear row"
+            )
+
         descriptor = payload[0] if len(payload) == 7 else -1
         row_index = descriptor >> 4 if descriptor >= 0 else -1
         row_count = descriptor & 0x0F if descriptor >= 0 else -1
@@ -535,6 +582,876 @@ def score_replay_handshake_ledger(path: Path) -> dict[str, Any]:
         "epoch_count": len(epoch_ids),
         "complete_epoch": complete_epoch,
         "evidence": failures,
+    }
+
+
+def score_reconnect_epoch(label: str, checks: dict[str, Any]) -> dict[str, Any]:
+    """Apply the strict one-epoch reconnect shape without changing the base scorer."""
+    if checks.get("result") == "COLLECTION_FAILED":
+        return dict(checks)
+
+    failures = [str(item) for item in checks.get("evidence") or []]
+    expected = {
+        "epoch_count": 1,
+        "complete_epoch": 1,
+        "event_count": 7,
+    }
+    for field, value in expected.items():
+        if checks.get(field) != value:
+            failures.append(
+                f"replay reconnect {label} {field}={checks.get(field)!r} expected={value}"
+            )
+    failures = list(dict.fromkeys(failures))
+    return {
+        **checks,
+        "result": "FAIL" if failures else "PASS",
+        "evidence": failures,
+    }
+
+
+def score_reconnect_lifecycle(raw: Any) -> dict[str, Any]:
+    """Score bounded disappearance evidence recorded by the live runner."""
+    if raw is None:
+        return handshake_collection_failure(
+            "replay reconnect preflight terminal result is missing"
+        )
+    if not isinstance(raw, dict):
+        return handshake_collection_failure(
+            "replay reconnect preflight terminal result is not an object"
+        )
+
+    boolean_expectations = {
+        "handshake_ready_while_alive": True,
+        "serial_fence_observed": True,
+        "managed_stop": True,
+        "confirmed_exit": True,
+        "serial_session_continuous": True,
+        "boot_observed_before_second_complete": False,
+    }
+    missing = [field for field in boolean_expectations if field not in raw]
+    if "cleanup_marker_count" not in raw:
+        missing.append("cleanup_marker_count")
+    if missing:
+        return handshake_collection_failure(
+            "replay reconnect preflight terminal result is missing fields: "
+            + ", ".join(sorted(missing))
+        )
+
+    malformed = [
+        field
+        for field in boolean_expectations
+        if field in raw and not isinstance(raw[field], bool)
+    ]
+    cleanup_count = raw.get("cleanup_marker_count")
+    if "cleanup_marker_count" in raw and (
+        not isinstance(cleanup_count, int)
+        or isinstance(cleanup_count, bool)
+        or cleanup_count < 0
+    ):
+        malformed.append("cleanup_marker_count")
+    if malformed:
+        return handshake_collection_failure(
+            "replay reconnect preflight terminal result has invalid fields: "
+            + ", ".join(sorted(malformed))
+        )
+
+    failures: list[str] = []
+    for field, expected in boolean_expectations.items():
+        if raw[field] is not expected:
+            failures.append(
+                f"replay reconnect preflight {field}={raw[field]!r} expected={expected!r}"
+            )
+    if cleanup_count != 1:
+        failures.append(
+            f"replay reconnect preflight cleanup_marker_count={cleanup_count!r} expected=1"
+        )
+
+    return {
+        "result": "FAIL" if failures else "PASS",
+        "evidence": failures,
+    }
+
+
+def read_bounded_reconnect_log(
+    path: Path,
+    label: str,
+    maximum_bytes: int,
+    *,
+    require_final_newline: bool = True,
+) -> tuple[str | None, dict[str, Any] | None]:
+    try:
+        if path.stat().st_size > maximum_bytes:
+            return None, handshake_collection_failure(
+                f"replay reconnect {label} exceeds its bounded size"
+            )
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return None, handshake_collection_failure(
+            f"replay reconnect {label} could not be read: {exc}"
+        )
+    if not text or (require_final_newline and not text.endswith("\n")):
+        return None, handshake_collection_failure(
+            f"replay reconnect {label} is empty or has an incomplete final line"
+        )
+    return text, None
+
+
+def parse_reconnect_machine_events(text: str) -> tuple[list[tuple[int, dict[str, Any]]], str]:
+    events: list[tuple[int, dict[str, Any]]] = []
+    decoder = json.JSONDecoder()
+    marker = "V1REPLAY_EVENT "
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        offset = line.find(marker)
+        if offset < 0:
+            continue
+        try:
+            raw_event = line[offset + len(marker) :]
+            event, end = decoder.raw_decode(raw_event)
+        except (json.JSONDecodeError, TypeError):
+            return [], f"preflight log line {line_number} has an invalid machine event"
+        if raw_event[end:].strip():
+            return [], f"preflight log line {line_number} has trailing machine-event data"
+        if not isinstance(event, dict) or not isinstance(event.get("state"), str):
+            return [], f"preflight log line {line_number} has an invalid machine event"
+        events.append((line_number, event))
+    return events, ""
+
+
+def score_reconnect_raw_evidence(
+    preflight_log_path: Path | None,
+    preflight_log_error: str,
+    serial_log_path: Path | None,
+    serial_log_error: str,
+    *,
+    failure_kind: str = "",
+    expected_duration_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Independently reconstruct the managed-disappearance lifecycle from logs."""
+    if preflight_log_path is None:
+        return handshake_collection_failure(preflight_log_error)
+    if serial_log_path is None:
+        return handshake_collection_failure(serial_log_error)
+    if preflight_log_path.name != "v1replay_reconnect_preflight.log":
+        return handshake_collection_failure(
+            "replay reconnect preflight log does not use its owned artifact name"
+        )
+    if serial_log_path.name != "bench_serial.log":
+        return handshake_collection_failure(
+            "replay reconnect serial log does not use its owned artifact name"
+        )
+    try:
+        if preflight_log_path.samefile(serial_log_path):
+            return handshake_collection_failure(
+                "replay reconnect preflight and serial logs are not distinct artifacts"
+            )
+    except OSError as exc:
+        return handshake_collection_failure(
+            f"replay reconnect raw artifact identity could not be verified: {exc}"
+        )
+    preflight_text, read_error = read_bounded_reconnect_log(
+        preflight_log_path,
+        "preflight log",
+        MAX_RECONNECT_PREFLIGHT_LOG_BYTES,
+        require_final_newline=False,
+    )
+    if read_error is not None:
+        return read_error
+    serial_text, read_error = read_bounded_reconnect_log(
+        serial_log_path,
+        "serial log",
+        MAX_BENCH_SERIAL_LOG_BYTES,
+    )
+    if read_error is not None:
+        return read_error
+    assert preflight_text is not None and serial_text is not None
+
+    if not preflight_text.endswith("\n"):
+        trailing_line = preflight_text.rsplit("\n", 1)[-1]
+        if "V1REPLAY_EVENT " in trailing_line:
+            return handshake_collection_failure(
+                "replay reconnect preflight log has a truncated machine event"
+            )
+    machine_events, machine_error = parse_reconnect_machine_events(preflight_text)
+    if machine_error:
+        return handshake_collection_failure(f"replay reconnect {machine_error}")
+    configured = [item for item in machine_events if item[1].get("state") == "configured"]
+    transport = [item for item in machine_events if item[1].get("state") == "handshake_transport"]
+    ready = [item for item in machine_events if item[1].get("state") == "handshake_ready"]
+    if len(configured) != 1:
+        return handshake_collection_failure(
+            "replay reconnect preflight log is missing one configured machine event"
+        )
+    configured_line = configured[0][0]
+    if any(
+        line_number < configured_line
+        for line_number, event in machine_events
+        if event.get("state") in {"handshake_transport", "handshake_ready"}
+    ):
+        return handshake_collection_failure(
+            "replay reconnect preflight configured event follows readiness evidence"
+        )
+    if any(not isinstance(item[1].get("active"), bool) for item in transport):
+        return handshake_collection_failure(
+            "replay reconnect preflight log has a malformed transport event"
+        )
+    if len(ready) > 1:
+        return handshake_collection_failure(
+            "replay reconnect preflight log repeats its ready event"
+        )
+    if any(item[1].get("state") in {"replay_started", "complete"} for item in machine_events):
+        return {
+            "result": "FAIL",
+            "evidence": ["replay reconnect preflight entered the scored scenario"],
+        }
+
+    # The runner validates the completed ledger before it waits for the
+    # separate handshake_ready log event. A structurally valid but
+    # noncanonical ledger can therefore stop the preflight before either the
+    # ready event or the pre-stop fence exists.
+    expected_ready = failure_kind not in {
+        "handshake_timeout",
+        "handshake_invalid",
+        "active_session_lost",
+    }
+    if expected_ready and not ready:
+        return handshake_collection_failure(
+            "replay reconnect preflight log is missing its ready event"
+        )
+    transport_lost = False
+    if ready:
+        ready_line = ready[0][0]
+        transport_before = [item for item in transport if item[0] <= ready_line]
+        if not transport_before or transport_before[-1][1]["active"] is not True:
+            return handshake_collection_failure(
+                "replay reconnect preflight ready event lacks active transport evidence"
+            )
+        later_transport = [item for item in transport if item[0] > ready_line]
+        transport_lost = any(item[1]["active"] is not True for item in later_transport)
+    elif failure_kind == "active_session_lost":
+        if not transport or transport[-1][1]["active"] is not False:
+            return handshake_collection_failure(
+                "replay reconnect active-session failure lacks a negative transport event"
+            )
+
+    transmission_failures: list[str] = []
+    if failure_kind != "handshake_timeout":
+        transmitted: list[tuple[str, tuple[int, ...]]] = []
+        for line_number, line in enumerate(preflight_text.splitlines(), start=1):
+            marker = line.find("TX ")
+            if marker < 0:
+                continue
+            fields = line[marker + 3 :].strip().split()
+            if len(fields) < 2:
+                return handshake_collection_failure(
+                    f"replay reconnect preflight log line {line_number} has malformed TX evidence"
+                )
+            channel = fields[0]
+            try:
+                raw = tuple(int(field, 16) for field in fields[1:])
+            except ValueError:
+                return handshake_collection_failure(
+                    f"replay reconnect preflight log line {line_number} has malformed TX bytes"
+                )
+            if any(len(field) != 2 for field in fields[1:]):
+                return handshake_collection_failure(
+                    f"replay reconnect preflight log line {line_number} has malformed TX bytes"
+                )
+            transmitted.append((channel, raw))
+        expected_transmissions = [
+            ("B2CE", RECONNECT_VERSION_REPLY_FRAME),
+            ("B2CE", RECONNECT_ALL_VOLUME_REPLY_FRAME),
+            ("B2CE", RECONNECT_PREFLIGHT_CLEAR_FRAME),
+        ]
+        if sorted(transmitted) != sorted(expected_transmissions):
+            transmission_failures.append(
+                "replay reconnect preflight did not stay quiet after its three bounded transmissions"
+            )
+
+    lines = serial_text.splitlines()
+    starts = [
+        index for index, line in enumerate(lines)
+        if line == RECONNECT_PREFLIGHT_START_BOUNDARY
+    ]
+    fence_begins = [index for index, line in enumerate(lines) if line == RECONNECT_FENCE_BEGIN]
+    fence_completes = [
+        index for index, line in enumerate(lines) if line == RECONNECT_FENCE_COMPLETE
+    ]
+    boundaries = [
+        index for index, line in enumerate(lines) if line == RECONNECT_PROCESS_EXIT_BOUNDARY
+    ]
+    if len(starts) != 1 or len(boundaries) != 1:
+        return handshake_collection_failure(
+            "replay reconnect serial log is missing one preflight-start or process-exited boundary"
+        )
+    preflight_start = starts[0]
+    boundary = boundaries[0]
+    if boundary <= preflight_start:
+        return handshake_collection_failure(
+            "replay reconnect process-exited boundary precedes preflight start"
+        )
+    cleanup_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(V1_DISCONNECT_CLEANUP_PREFIX)
+    ]
+    qstart_indexes = [
+        index for index, line in enumerate(lines)
+        if index > preflight_start and line.startswith(">>> QSTART ")
+    ]
+    done_indexes: list[int] = []
+    for index, line in enumerate(lines):
+        if index <= preflight_start:
+            continue
+        if not line.startswith("QEVENT "):
+            continue
+        try:
+            payload = json.loads(line[len("QEVENT ") :])
+        except json.JSONDecodeError:
+            return handshake_collection_failure(
+                "replay reconnect serial log contains malformed QEVENT evidence"
+            )
+        if not isinstance(payload, dict):
+            return handshake_collection_failure(
+                "replay reconnect serial log contains malformed QEVENT evidence"
+            )
+        if payload.get("ok") is not True or payload.get("state") == "error":
+            return handshake_collection_failure(
+                "replay reconnect serial log contains a failed replacement QEVENT"
+            )
+        if payload.get("state") == "done":
+            if not (
+                payload.get("ok") is True
+                and payload.get("suite") == "core"
+                and payload.get("finalized") is True
+            ):
+                return handshake_collection_failure(
+                    "replay reconnect serial log contains a mismatched replacement completion"
+                )
+            done_indexes.append(index)
+
+    end = done_indexes[-1] if done_indexes else len(lines)
+    def status_fence_result(start: int, stop: int) -> tuple[bool, str]:
+        command_indexes = [
+            index for index in range(start, stop) if lines[index] == ">>> QSTATUS"
+        ]
+        protocol_indexes = [
+            index
+            for index in range(start, stop)
+            if lines[index].startswith(("QRESP ", "QERR "))
+        ]
+        if len(command_indexes) != 1 or len(protocol_indexes) != 1:
+            return False, "replay reconnect serial fence requires one QSTATUS and one response"
+        command_index = command_indexes[0]
+        response_index = protocol_indexes[0]
+        if response_index <= command_index:
+            return False, "replay reconnect serial fence response precedes QSTATUS"
+        if any(lines[index].startswith(">>> ") for index in range(start, stop) if index != command_index):
+            return False, "replay reconnect serial fence contains an unexpected host command"
+        line = lines[response_index]
+        if line.startswith("QERR "):
+            try:
+                error = json.loads(line[len("QERR ") :])
+            except json.JSONDecodeError:
+                return False, "replay reconnect serial log contains malformed QERR evidence"
+            if not isinstance(error, dict):
+                return False, "replay reconnect serial log contains malformed QERR evidence"
+            return False, "replay reconnect serial fence returned QERR"
+        try:
+            response = json.loads(line[len("QRESP ") :])
+        except json.JSONDecodeError:
+            return False, "replay reconnect serial log contains malformed QRESP evidence"
+        if not isinstance(response, dict):
+            return False, "replay reconnect serial log contains malformed QRESP evidence"
+        if not (
+            response.get("ok") is True
+            and response.get("state") in {"idle", "done"}
+            and response.get("suite") in {"core", "display"}
+            and response.get("mode") in {"current", "proxy", "obd", "v1"}
+        ):
+            return False, "replay reconnect serial fence returned a non-ready QRESP"
+        return True, ""
+
+    if ready and failure_kind not in {"handshake_timeout", "handshake_invalid"}:
+        if len(fence_begins) != 1 or len(fence_completes) != 1:
+            return handshake_collection_failure(
+                "replay reconnect serial log is missing its pre-stop fence boundaries"
+            )
+        fence_begin = fence_begins[0]
+        fence_complete = fence_completes[0]
+        if not preflight_start < fence_begin < fence_complete < boundary:
+            return handshake_collection_failure(
+                "replay reconnect pre-stop fence does not precede managed process exit"
+            )
+        pre_stop_fence, fence_error = status_fence_result(fence_begin + 1, fence_complete)
+        if fence_error:
+            return handshake_collection_failure(fence_error)
+        if not pre_stop_fence:
+            return handshake_collection_failure(
+                "replay reconnect serial log is missing its pre-stop QSTATUS/QRESP fence"
+            )
+
+    if any(line.startswith(BOOT_PREFIX) for line in lines[preflight_start : end + 1]):
+        return handshake_collection_failure(
+            "replay reconnect observed a board boot before replacement completion"
+        )
+
+    before_boundary = [
+        index for index in cleanup_indexes if preflight_start < index < boundary
+    ]
+    after_boundary = [index for index in cleanup_indexes if index > boundary]
+
+    if failure_kind:
+        if qstart_indexes:
+            return handshake_collection_failure(
+                "replacement emulator window started after a failed reconnect preflight"
+            )
+        post_exit_fence, fence_error = status_fence_result(boundary + 1, len(lines))
+        if fence_error:
+            return handshake_collection_failure(fence_error)
+        if not post_exit_fence:
+            return handshake_collection_failure(
+                "replay reconnect failure lacks a post-exit serial health fence"
+            )
+        observed_failure = {
+            "handshake_timeout": True,
+            "handshake_invalid": True,
+            "active_session_lost": transport_lost,
+            "cleanup_before_stop": bool(before_boundary),
+            "cleanup_missing": not after_boundary,
+            "cleanup_count": len(after_boundary) != 1,
+        }.get(failure_kind, False)
+        if not observed_failure:
+            return handshake_collection_failure(
+                "replay reconnect failure terminal disagrees with its raw lifecycle logs"
+            )
+        return {
+            "result": "FAIL",
+            "evidence": [
+                f"replay reconnect raw lifecycle confirms {failure_kind}",
+                *transmission_failures,
+            ],
+        }
+
+    if before_boundary:
+        return {
+            "result": "FAIL",
+            "evidence": ["replay reconnect cleanup marker occurred before managed process exit"],
+        }
+
+    if not qstart_indexes or len(done_indexes) != 1:
+        return handshake_collection_failure(
+            "replay reconnect serial log requires QSTART and exactly one replacement completion"
+        )
+    done = done_indexes[0]
+    if any(index >= done for index in qstart_indexes):
+        return handshake_collection_failure(
+            "replay reconnect serial log has QSTART outside its replacement window"
+        )
+    unexpected_commands = [
+        lines[index]
+        for index in range(qstart_indexes[0], done)
+        if lines[index].startswith(">>> ") and not lines[index].startswith(">>> QSTART ")
+    ]
+    if unexpected_commands:
+        return handshake_collection_failure(
+            "replay reconnect replacement window contains an unexpected host command"
+        )
+    if expected_duration_seconds is None:
+        return handshake_collection_failure(
+            "replay reconnect window is missing its expected duration"
+        )
+    for qstart in qstart_indexes:
+        parts = lines[qstart].split()
+        if (
+            len(parts) != 4
+            or parts[:3] != [">>>", "QSTART", "core"]
+            or not parts[3].isdigit()
+            or int(parts[3]) != expected_duration_seconds
+        ):
+            return handshake_collection_failure(
+                "replay reconnect serial log has the wrong replacement QSTART command"
+            )
+
+    running_ack_indexes: list[int] = []
+    retry_error_indexes: list[int] = []
+    unexpected_error_indexes: list[int] = []
+    for index in range(qstart_indexes[0] + 1, done):
+        prefix = ""
+        if lines[index].startswith("QRESP "):
+            prefix = "QRESP "
+        elif lines[index].startswith("QERR "):
+            prefix = "QERR "
+        if not prefix:
+            continue
+        try:
+            response = json.loads(lines[index][len(prefix) :])
+        except json.JSONDecodeError:
+            return handshake_collection_failure(
+                "replay reconnect serial log contains malformed QSTART response evidence"
+            )
+        if not isinstance(response, dict):
+            return handshake_collection_failure(
+                "replay reconnect serial log contains malformed QSTART response evidence"
+            )
+        if prefix == "QRESP " and (
+            response.get("ok") is True
+            and response.get("state") == "running"
+            and response.get("suite") == "core"
+        ):
+            running_ack_indexes.append(index)
+        if prefix == "QERR ":
+            if str(response.get("error") or response.get("message") or "") == "perf_sd_busy_retry":
+                retry_error_indexes.append(index)
+            else:
+                unexpected_error_indexes.append(index)
+
+    if unexpected_error_indexes:
+        return handshake_collection_failure(
+            "replay reconnect QSTART sequence contains an unexpected QERR"
+        )
+
+    if len(running_ack_indexes) != 1:
+        return handshake_collection_failure(
+            "replay reconnect serial log requires exactly one replacement running acknowledgement"
+        )
+    running_ack = running_ack_indexes[0]
+    final_qstart = qstart_indexes[-1]
+    if not final_qstart < running_ack < done:
+        return handshake_collection_failure(
+            "replay reconnect running acknowledgement does not follow the final QSTART"
+        )
+    for attempt, next_attempt in zip(qstart_indexes, qstart_indexes[1:]):
+        retries = [index for index in retry_error_indexes if attempt < index < next_attempt]
+        successes = [index for index in running_ack_indexes if attempt < index < next_attempt]
+        if len(retries) != 1 or successes:
+            return handshake_collection_failure(
+                "replay reconnect repeated QSTART without one perf_sd_busy_retry response"
+            )
+    if any(index > final_qstart for index in retry_error_indexes):
+        return handshake_collection_failure(
+            "replay reconnect final QSTART retained a retry error"
+        )
+    qstart = qstart_indexes[0]
+    cleanups_between = [index for index in after_boundary if index < qstart]
+    cleanups_during = [index for index in after_boundary if qstart <= index <= done]
+    failures: list[str] = list(transmission_failures)
+    if transport_lost:
+        failures.append("replay reconnect preflight lost active transport before removal")
+    if len(cleanups_between) != 1:
+        failures.append(
+            "replay reconnect requires exactly one cleanup marker between process exit and QSTART"
+        )
+    if cleanups_during:
+        failures.append("replacement V1 session disconnected before completion")
+    post_cleanup_begins = [
+        index for index, line in enumerate(lines) if line == RECONNECT_POST_CLEANUP_FENCE_BEGIN
+    ]
+    post_cleanup_completes = [
+        index
+        for index, line in enumerate(lines)
+        if line == RECONNECT_POST_CLEANUP_FENCE_COMPLETE
+    ]
+    pre_qstart_begins = [
+        index for index, line in enumerate(lines) if line == RECONNECT_PRE_QSTART_FENCE_BEGIN
+    ]
+    pre_qstart_completes = [
+        index
+        for index, line in enumerate(lines)
+        if line == RECONNECT_PRE_QSTART_FENCE_COMPLETE
+    ]
+    if not all(
+        len(items) == 1
+        for items in (
+            post_cleanup_begins,
+            post_cleanup_completes,
+            pre_qstart_begins,
+            pre_qstart_completes,
+        )
+    ):
+        return handshake_collection_failure(
+            "replay reconnect serial log is missing its two bounded post-cleanup fences"
+        )
+    post_cleanup_begin = post_cleanup_begins[0]
+    post_cleanup_complete = post_cleanup_completes[0]
+    pre_qstart_begin = pre_qstart_begins[0]
+    pre_qstart_complete = pre_qstart_completes[0]
+    if not (
+        boundary
+        < post_cleanup_begin
+        < post_cleanup_complete
+        < pre_qstart_begin
+        < pre_qstart_complete
+        < qstart
+    ):
+        return handshake_collection_failure(
+            "replay reconnect post-cleanup fences do not bracket camera admission and QSTART"
+        )
+    if len(cleanups_between) == 1 and cleanups_between[0] >= post_cleanup_begin:
+        failures.append(
+            "replay reconnect cleanup marker did not precede its post-cleanup fence"
+        )
+    for fence_begin, fence_complete in (
+        (post_cleanup_begin, post_cleanup_complete),
+        (pre_qstart_begin, pre_qstart_complete),
+    ):
+        fence_ok, fence_error = status_fence_result(fence_begin + 1, fence_complete)
+        if fence_error:
+            return handshake_collection_failure(fence_error)
+        if not fence_ok:
+            return handshake_collection_failure(
+                "replay reconnect serial log is missing a bounded post-cleanup QSTATUS/QRESP fence"
+            )
+    scoped_commands = [
+        index
+        for index in range(boundary + 1, qstart)
+        if lines[index].startswith(">>> ")
+    ]
+    scoped_responses = [
+        index
+        for index in range(boundary + 1, qstart)
+        if lines[index].startswith(("QRESP ", "QERR "))
+    ]
+    expected_commands = [
+        index
+        for begin, complete in (
+            (post_cleanup_begin, post_cleanup_complete),
+            (pre_qstart_begin, pre_qstart_complete),
+        )
+        for index in range(begin + 1, complete)
+        if lines[index] == ">>> QSTATUS"
+    ]
+    expected_responses = [
+        index
+        for begin, complete in (
+            (post_cleanup_begin, post_cleanup_complete),
+            (pre_qstart_begin, pre_qstart_complete),
+        )
+        for index in range(begin + 1, complete)
+        if lines[index].startswith("QRESP ")
+    ]
+    if scoped_commands != expected_commands or scoped_responses != expected_responses:
+        return handshake_collection_failure(
+            "replay reconnect serial log contains an unbounded pre-QSTART protocol exchange"
+        )
+    return {
+        "result": "FAIL" if failures else "PASS",
+        "preflight_ready": bool(ready),
+        "cleanup_marker_count": len(after_boundary),
+        "evidence": failures,
+    }
+
+
+def score_replay_reconnect(
+    primary_path: Path | None,
+    primary_path_error: str,
+    preflight_path: Path | None,
+    preflight_path_error: str,
+    raw_lifecycle: Any,
+    primary_handshake_checks: dict[str, Any],
+    raw_evidence_checks: dict[str, Any],
+) -> dict[str, Any]:
+    """Score two handshake ledgers independently; never combine their events."""
+    if preflight_path is None:
+        preflight_checks = handshake_collection_failure(preflight_path_error)
+    else:
+        preflight_checks = score_replay_handshake_ledger(
+            preflight_path,
+            expected_stream_frame=RECONNECT_PREFLIGHT_CLEAR_FRAME,
+        )
+
+    if primary_path is None:
+        primary_checks = handshake_collection_failure(primary_path_error)
+    else:
+        primary_checks = primary_handshake_checks
+
+    path_checks: dict[str, Any] = {"result": "PASS", "evidence": []}
+    if primary_path is not None and preflight_path is not None:
+        try:
+            shared_artifact = primary_path == preflight_path or primary_path.samefile(
+                preflight_path
+            )
+        except OSError:
+            path_checks = handshake_collection_failure(
+                "replay reconnect ledger identity could not be verified"
+            )
+        else:
+            if shared_artifact:
+                path_checks = handshake_collection_failure(
+                    "replay reconnect primary and preflight handshake ledgers are not distinct"
+                )
+
+    preflight_epoch_checks = score_reconnect_epoch("preflight", preflight_checks)
+    primary_epoch_checks = score_reconnect_epoch("primary", primary_checks)
+    lifecycle_checks = score_reconnect_lifecycle(raw_lifecycle)
+    result = "PASS"
+    evidence: list[str] = []
+    for checks in (
+        path_checks,
+        preflight_epoch_checks,
+        primary_epoch_checks,
+        lifecycle_checks,
+        raw_evidence_checks,
+    ):
+        result = worse(result, str(checks["result"]))
+        evidence.extend(str(item) for item in checks.get("evidence") or [])
+
+    return {
+        "result": result,
+        "artifact_checks": path_checks,
+        "preflight_handshake_checks": preflight_epoch_checks,
+        "primary_handshake_checks": primary_epoch_checks,
+        "lifecycle_checks": lifecycle_checks,
+        "raw_evidence_checks": raw_evidence_checks,
+        "evidence": list(dict.fromkeys(evidence)),
+    }
+
+
+def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, Any]) -> dict[str, Any]:
+    """Grade a bounded pre-QSTART reconnect failure without requiring metrics."""
+    failure_kind = window.get("reconnect_failure_kind")
+    allowed_failure_kinds = {
+        "handshake_timeout",
+        "handshake_invalid",
+        "active_session_lost",
+        "cleanup_before_stop",
+        "cleanup_missing",
+        "cleanup_count",
+    }
+    if suite != "replay" or failure_kind not in allowed_failure_kinds:
+        return {
+            "suite": suite,
+            "result": "COLLECTION_FAILED",
+            "artifact_dir": str(window_dir),
+            "evidence": ["reconnect failure terminal has an invalid behavioral classification"],
+        }
+
+    raw_path = str(window.get("reconnect_preflight_handshake_ledger_path") or "").strip()
+    preflight_checks: dict[str, Any]
+    if not raw_path:
+        preflight_checks = handshake_collection_failure(
+            "reconnect failure terminal is missing its preflight handshake ledger path"
+        )
+    else:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = window_dir / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(window_dir.resolve())
+        except (OSError, RuntimeError, ValueError):
+            preflight_checks = handshake_collection_failure(
+                "reconnect failure preflight handshake ledger must resolve inside its replay window"
+            )
+        else:
+            if resolved.is_file():
+                preflight_checks = score_reconnect_epoch(
+                    "preflight",
+                    score_replay_handshake_ledger(
+                        resolved,
+                        expected_stream_frame=RECONNECT_PREFLIGHT_CLEAR_FRAME,
+                    ),
+                )
+            else:
+                preflight_checks = handshake_collection_failure(
+                    "reconnect failure preflight handshake ledger is missing"
+                )
+
+    if preflight_checks.get("result") != "COLLECTION_FAILED":
+        if failure_kind == "handshake_timeout":
+            structurally_incomplete = (
+                preflight_checks.get("complete_epoch") is None
+                and preflight_checks.get("epoch_count") in {0, 1}
+                and isinstance(preflight_checks.get("event_count"), int)
+                and preflight_checks.get("event_count") < 7
+            )
+            if not structurally_incomplete:
+                preflight_checks = handshake_collection_failure(
+                    "reconnect handshake-timeout terminal contradicts its preflight ledger"
+                )
+        elif failure_kind == "handshake_invalid":
+            structurally_complete = (
+                preflight_checks.get("result") == "FAIL"
+                and preflight_checks.get("epoch_count") == 1
+                and preflight_checks.get("event_count") == 7
+            )
+            if not structurally_complete:
+                preflight_checks = handshake_collection_failure(
+                    "reconnect invalid-handshake terminal contradicts its preflight ledger"
+                )
+        elif preflight_checks.get("result") != "PASS":
+            preflight_checks = handshake_collection_failure(
+                "reconnect failure terminal requires a complete preflight handshake ledger"
+            )
+
+    lifecycle_checks = score_reconnect_lifecycle(window.get("reconnect_preflight"))
+    preflight_log_path, preflight_log_error = same_window_artifact(
+        window_dir,
+        window.get("reconnect_preflight_log_path"),
+        "reconnect preflight log",
+    )
+    serial_log_path, serial_log_error = same_window_artifact(
+        window_dir,
+        window.get("bench_serial_log_path"),
+        "bench serial log",
+    )
+    raw_evidence_checks = score_reconnect_raw_evidence(
+        preflight_log_path,
+        preflight_log_error,
+        serial_log_path,
+        serial_log_error,
+        failure_kind=str(failure_kind),
+        expected_duration_seconds=(
+            int(window["duration_seconds"])
+            if isinstance(window.get("duration_seconds"), int)
+            and not isinstance(window.get("duration_seconds"), bool)
+            else None
+        ),
+    )
+    terminal_checks = {
+        "result": "FAIL",
+        "failure_kind": failure_kind,
+        "evidence": [str(window.get("error") or f"reconnect failed: {failure_kind}")],
+    }
+    reconnect_result = "FAIL"
+    for checks in (preflight_checks, lifecycle_checks, raw_evidence_checks):
+        reconnect_result = worse(reconnect_result, str(checks["result"]))
+    reconnect_checks = {
+        "result": reconnect_result,
+        "preflight_handshake_checks": preflight_checks,
+        "primary_handshake_checks": {
+            "result": "NOT_RUN",
+            "evidence": ["replacement emulator was not launched after reconnect preflight failure"],
+        },
+        "lifecycle_checks": lifecycle_checks,
+        "raw_evidence_checks": raw_evidence_checks,
+        "terminal_checks": terminal_checks,
+        "evidence": list(
+            dict.fromkeys(
+                [
+                    *(str(item) for item in preflight_checks.get("evidence") or []),
+                    *(str(item) for item in lifecycle_checks.get("evidence") or []),
+                    *(str(item) for item in raw_evidence_checks.get("evidence") or []),
+                    *(str(item) for item in terminal_checks.get("evidence") or []),
+                ]
+            )
+        ),
+    }
+    return {
+        "suite": suite,
+        "result": reconnect_result,
+        "git_sha": window.get("git_sha", ""),
+        "git_ref": window.get("git_ref", ""),
+        "product_fingerprint": window.get("product_fingerprint", ""),
+        "grader_fingerprint": window.get("grader_fingerprint", ""),
+        "scenario_fingerprint": window.get("scenario_fingerprint", ""),
+        "git_worktree_clean": window.get("git_worktree_clean") is True,
+        "artifact_dir": str(window_dir),
+        "replay_checks": {
+            "result": reconnect_result,
+            "reconnect_checks": reconnect_checks,
+            "evidence": reconnect_checks["evidence"],
+        },
+        "camera": {},
+        "budget_pressure": [],
+        "evidence": reconnect_checks["evidence"],
     }
 
 
@@ -883,6 +1800,8 @@ def classify_window(
             "artifact_dir": str(window_dir),
             "evidence": [f"missing or invalid {result_path}"],
         }
+    if window.get("result") == "RECONNECT_FAILED":
+        return classify_reconnect_failure(window_dir, suite, window)
     if window.get("result") == "COLLECTION_FAILED":
         return {
             "suite": suite,
@@ -1014,19 +1933,60 @@ def classify_window(
             if handshake_path is not None
             else handshake_collection_failure(handshake_path_error)
         )
+        reconnect_preflight_log_path, reconnect_preflight_log_error = same_window_artifact(
+            window_dir,
+            window.get("reconnect_preflight_log_path"),
+            "reconnect preflight log",
+        )
+        serial_log_path, serial_log_error = same_window_artifact(
+            window_dir,
+            window.get("bench_serial_log_path"),
+            "bench serial log",
+        )
+        reconnect_raw_checks = score_reconnect_raw_evidence(
+            reconnect_preflight_log_path,
+            reconnect_preflight_log_error,
+            serial_log_path,
+            serial_log_error,
+            expected_duration_seconds=(
+                int(window["duration_seconds"])
+                if isinstance(window.get("duration_seconds"), int)
+                and not isinstance(window.get("duration_seconds"), bool)
+                else None
+            ),
+        )
+        reconnect_preflight_path, reconnect_preflight_path_error = same_window_artifact(
+            window_dir,
+            window.get("reconnect_preflight_handshake_ledger_path"),
+            "reconnect preflight handshake ledger",
+        )
+        reconnect_checks = score_replay_reconnect(
+            handshake_path,
+            handshake_path_error,
+            reconnect_preflight_path,
+            reconnect_preflight_path_error,
+            window.get("reconnect_preflight"),
+            handshake_checks,
+            reconnect_raw_checks,
+        )
         replay_checks = {
             **metric_checks,
             "result": worse(
-                worse(str(metric_checks["result"]), str(encounter_checks["result"])),
-                str(handshake_checks["result"]),
+                worse(
+                    worse(str(metric_checks["result"]), str(encounter_checks["result"])),
+                    str(handshake_checks["result"]),
+                ),
+                str(reconnect_checks["result"]),
             ),
             "metrics_result": metric_checks["result"],
             "encounter_checks": encounter_checks,
             "handshake_checks": handshake_checks,
+            "reconnect_checks": reconnect_checks,
             "evidence": [
                 *(str(item) for item in metric_checks.get("evidence") or []),
                 *(str(item) for item in encounter_checks.get("evidence") or []),
                 *(str(item) for item in handshake_checks.get("evidence") or []),
+                *(str(item) for item in reconnect_checks.get("evidence") or []),
             ],
         }
         result = worse(result, str(replay_checks["result"]))

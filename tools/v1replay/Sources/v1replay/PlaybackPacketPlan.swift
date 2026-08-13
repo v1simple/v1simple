@@ -115,5 +115,19 @@ extension V1 {
                                      checksum: Bool = true) -> [UInt8] {
             return AlertRow.empty().packet(header: header, checksum: checksum)
         }
+
+        /// The reconnect preflight has one deliberately bounded stimulus: a
+        /// count-zero alert row on the short notification channel. The player
+        /// sends this plan once after startup readiness, then stays quiet.
+        static func handshakeOnlyEmissions(
+            header: Header = .broadcastInformation,
+            checksum: Bool = true
+        ) -> [Emission] {
+            return [Emission(
+                kind: .alertRow(index: 0, count: 0),
+                channel: .displayShort,
+                bytes: clearAlertPacket(header: header, checksum: checksum)
+            )]
+        }
     }
 }

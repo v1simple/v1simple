@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import copy
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,20 @@ FIRST_ALERT_ROW = [
     0xB7, 0xAB,
 ]
 
+RECONNECT_PREFLIGHT_RESULT = {
+    "handshake_ready_while_alive": True,
+    "serial_fence_observed": True,
+    "managed_stop": True,
+    "confirmed_exit": True,
+    "cleanup_marker_count": 1,
+    "serial_session_continuous": True,
+    "boot_observed_before_second_complete": False,
+}
+
+FENCE_RESPONSE = (
+    'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+)
+
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +138,97 @@ def write_handshake_ledger(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def write_reconnect_logs(
+    directory: Path,
+    *,
+    failure_kind: str = "",
+) -> None:
+    preflight_events = [
+        {
+            "state": "configured",
+            "blinkProfile": "scenario",
+            "blinkSource": "generated_multi_alert_assumption",
+            "blinkSamples": 57,
+            "totalSamples": 762,
+            "cadenceHz": 3,
+        }
+    ]
+    preflight_events.append({"state": "handshake_transport", "active": True})
+    if failure_kind not in {"handshake_timeout", "handshake_invalid"}:
+        preflight_events.append({"state": "handshake_ready"})
+    if failure_kind == "active_session_lost":
+        preflight_events.append({"state": "handshake_transport", "active": False})
+    event_text = "".join(
+        "V1REPLAY_EVENT " + json.dumps(event, separators=(",", ":")) + "\n"
+        for event in preflight_events
+    )
+    if failure_kind != "handshake_timeout":
+        transmissions = [
+            ("B2CE", VERSION_RESPONSE),
+            (
+                "B4E0" if failure_kind == "handshake_invalid" else "B2CE",
+                ALL_VOLUME_RESPONSE,
+            ),
+            ("B2CE", FIRST_ALERT_ROW),
+        ]
+        event_text += "".join(
+            f"TX {channel} " + " ".join(f"{byte:02X}" for byte in frame) + "\n"
+            for channel, frame in transmissions
+        )
+    (directory / "v1replay_reconnect_preflight.log").write_text(
+        event_text,
+        encoding="utf-8",
+    )
+
+    serial_lines: list[str] = ["HOST_BOUNDARY reconnect_preflight_start"]
+    if failure_kind not in {"handshake_timeout", "handshake_invalid"}:
+        serial_lines.extend(
+            [
+                "HOST_BOUNDARY reconnect_preflight_fence_begin",
+                ">>> QSTATUS",
+                FENCE_RESPONSE,
+                "HOST_BOUNDARY reconnect_preflight_fence_complete",
+            ]
+        )
+    if failure_kind == "cleanup_before_stop":
+        serial_lines.append("[BLE] V1 disconnected; cleared LCD BLE state at 100 ms")
+    serial_lines.append("HOST_BOUNDARY reconnect_preflight_process_exited")
+    if failure_kind not in {"handshake_timeout", "cleanup_missing", "cleanup_before_stop"}:
+        serial_lines.append("[BLE] V1 disconnected; cleared LCD BLE state at 101 ms")
+    if failure_kind == "cleanup_count":
+        serial_lines.extend(
+            [
+                "HOST_BOUNDARY reconnect_post_cleanup_fence_begin",
+                ">>> QSTATUS",
+                "[BLE] V1 disconnected; cleared LCD BLE state at 102 ms",
+                FENCE_RESPONSE,
+                "HOST_BOUNDARY reconnect_post_cleanup_fence_complete",
+            ]
+        )
+    elif failure_kind:
+        serial_lines.extend([">>> QSTATUS", FENCE_RESPONSE])
+    else:
+        serial_lines.extend(
+            [
+                "HOST_BOUNDARY reconnect_post_cleanup_fence_begin",
+                ">>> QSTATUS",
+                FENCE_RESPONSE,
+                "HOST_BOUNDARY reconnect_post_cleanup_fence_complete",
+                "HOST_BOUNDARY reconnect_pre_qstart_fence_begin",
+                ">>> QSTATUS",
+                FENCE_RESPONSE,
+                "HOST_BOUNDARY reconnect_pre_qstart_fence_complete",
+                ">>> QSTART core 300",
+                'QRESP {"ok":true,"state":"running","suite":"core"}',
+                'QEVENT {"ok":true,"state":"done","suite":"core","finalized":true}',
+            ]
+        )
+    (directory / "bench_serial.log").write_text(
+        "\n".join(serial_lines) + "\n",
         encoding="utf-8",
     )
 
@@ -306,14 +412,26 @@ def write_window(
         csv_path = step / "perf.csv"
         encounter_path = step / "encounters_test.csv"
         handshake_path = step / "handshake_ledger.jsonl"
+        reconnect_preflight_handshake_path = step / "handshake_ledger_preflight.jsonl"
         write_replay_csv(csv_path, publishes=replay_publishes)
         write_encounter_csv(encounter_path)
         write_handshake_ledger(handshake_path)
+        write_handshake_ledger(reconnect_preflight_handshake_path)
+        write_reconnect_logs(step)
         window_payload.update(
             {
                 "csv_path": str(csv_path),
                 "encounter_csv_path": str(encounter_path),
                 "handshake_ledger_path": str(handshake_path),
+                "reconnect_preflight_handshake_ledger_path": str(
+                    reconnect_preflight_handshake_path
+                ),
+                "reconnect_preflight": dict(RECONNECT_PREFLIGHT_RESULT),
+                "reconnect_preflight_log_path": str(
+                    step / "v1replay_reconnect_preflight.log"
+                ),
+                "bench_serial_log_path": str(step / "bench_serial.log"),
+                "duration_seconds": 300,
                 "segment": "last",
                 "replay": {
                     "started": True,
@@ -671,6 +789,20 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
         handshake = checks["handshake_checks"]
         assert_true(handshake["result"] == "PASS", f"unexpected handshake checks: {handshake}")
         assert_true(handshake["complete_epoch"] == 1, f"missing complete epoch: {handshake}")
+        reconnect = checks["reconnect_checks"]
+        assert_true(reconnect["result"] == "PASS", f"unexpected reconnect checks: {reconnect}")
+        assert_true(
+            reconnect["preflight_handshake_checks"]["event_count"] == 7,
+            f"unexpected reconnect preflight: {reconnect}",
+        )
+        assert_true(
+            reconnect["primary_handshake_checks"]["event_count"] == 7,
+            f"unexpected reconnect primary: {reconnect}",
+        )
+        assert_true(
+            reconnect["lifecycle_checks"]["result"] == "PASS",
+            f"unexpected reconnect lifecycle: {reconnect}",
+        )
 
 
 def test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch() -> None:
@@ -710,10 +842,910 @@ def test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect
             event["epoch"] = 2
         write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", incomplete + complete)
         proc = run_score(root, "replay")
-        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         handshake = result["windows"][0]["replay_checks"]["handshake_checks"]
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        assert_true(handshake["result"] == "PASS", f"base handshake behavior changed: {handshake}")
         assert_true(handshake["complete_epoch"] == 2, f"reconnect epoch was not accepted: {handshake}")
+        assert_true(reconnect["result"] == "FAIL", f"strict reconnect shape passed: {reconnect}")
+        assert_true("epoch_count=2 expected=1" in proc.stdout, proc.stdout)
+
+
+def test_replay_reconnect_scores_two_ledgers_without_cross_credit() -> None:
+    """Public behavior ID: V1-RECONNECT-SESSION-001."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        write_handshake_ledger(
+            root / "replay" / "handshake_ledger_preflight.jsonl",
+            canonical_handshake_events(request_channel="BAD4"),
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        assert_true(reconnect["result"] == "PASS", f"independent channels failed: {reconnect}")
+
+    for ledger_name, checks_name in (
+        ("handshake_ledger_preflight.jsonl", "preflight_handshake_checks"),
+        ("handshake_ledger.jsonl", "primary_handshake_checks"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            incomplete = canonical_handshake_events()
+            incomplete.pop(6)
+            write_handshake_ledger(root / "replay" / ledger_name, incomplete)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, f"{ledger_name}: {proc.stdout}{proc.stderr}")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+            assert_true(
+                reconnect[checks_name]["result"] == "FAIL",
+                f"incomplete {ledger_name} passed: {reconnect}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        preflight = canonical_handshake_events()
+        preflight.pop(6)
+        primary = canonical_handshake_events()
+        primary.pop(4)
+        write_handshake_ledger(
+            root / "replay" / "handshake_ledger_preflight.jsonl",
+            preflight,
+        )
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", primary)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        assert_true(
+            reconnect["preflight_handshake_checks"]["result"] == "FAIL",
+            f"preflight received cross-ledger credit: {reconnect}",
+        )
+        assert_true(
+            reconnect["primary_handshake_checks"]["result"] == "FAIL",
+            f"primary received cross-ledger credit: {reconnect}",
+        )
+
+
+def test_replay_reconnect_rejects_extra_epochs_and_shared_artifacts() -> None:
+    for ledger_name, checks_name in (
+        ("handshake_ledger_preflight.jsonl", "preflight_handshake_checks"),
+        ("handshake_ledger.jsonl", "primary_handshake_checks"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            events = canonical_handshake_events()
+            events.append({"event": "subscribe", "epoch": 2, "channel": "B2CE"})
+            write_handshake_ledger(root / "replay" / ledger_name, events)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, f"{ledger_name}: {proc.stdout}{proc.stderr}")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+            checks = reconnect[checks_name]
+            assert_true(checks["epoch_count"] == 2, f"extra epoch was not observed: {checks}")
+            assert_true(checks["result"] == "FAIL", f"extra epoch passed: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["reconnect_preflight_handshake_ledger_path"] = "./handshake_ledger.jsonl"
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("handshake ledgers are not distinct" in proc.stdout, proc.stdout)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        assert_true(
+            reconnect["artifact_checks"]["result"] == "COLLECTION_FAILED",
+            f"shared artifact was not classified as collection failure: {reconnect}",
+        )
+
+
+def test_replay_reconnect_requires_preflight_artifact_and_exact_clear() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.pop("reconnect_preflight_handshake_ledger_path")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("missing required reconnect preflight handshake ledger path" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        ledger_path = root / "replay" / "handshake_ledger_preflight.jsonl"
+        ledger_path.write_text("not-json\n", encoding="utf-8")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("line 1 is not valid JSON" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        events = canonical_handshake_events()
+        active_row = framed_bytes(
+            0xD8,
+            0xEA,
+            0x43,
+            [0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
+        events[2]["bytes"] = active_row
+        write_handshake_ledger(
+            root / "replay" / "handshake_ledger_preflight.jsonl",
+            events,
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("not the canonical clear row" in proc.stdout, proc.stdout)
+
+        write_handshake_ledger(root / "replay" / "handshake_ledger_preflight.jsonl")
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+        proc = run_score(root, "replay")
+        assert_true(
+            proc.returncode == 0,
+            "primary handshake alert-row behavior changed: " + proc.stdout + proc.stderr,
+        )
+
+
+def test_replay_reconnect_requires_actionable_lifecycle_evidence() -> None:
+    mutants = (
+        ("handshake_ready_while_alive", False, "handshake_ready_while_alive=False expected=True"),
+        ("serial_fence_observed", False, "serial_fence_observed=False expected=True"),
+        ("managed_stop", False, "managed_stop=False expected=True"),
+        ("confirmed_exit", False, "confirmed_exit=False expected=True"),
+        ("serial_session_continuous", False, "serial_session_continuous=False expected=True"),
+        (
+            "boot_observed_before_second_complete",
+            True,
+            "boot_observed_before_second_complete=True expected=False",
+        ),
+        ("cleanup_marker_count", 0, "cleanup_marker_count=0 expected=1"),
+        ("cleanup_marker_count", 2, "cleanup_marker_count=2 expected=1"),
+    )
+    for field, value, expected_message in mutants:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            window_path = root / "replay" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            if value is None:
+                window["reconnect_preflight"].pop(field)
+            else:
+                window["reconnect_preflight"][field] = value
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, f"{field}: {proc.stdout}{proc.stderr}")
+            assert_true(expected_message in proc.stdout, f"{field}: {proc.stdout}")
+
+    for missing_field in ("serial_fence_observed", "cleanup_marker_count"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            window_path = root / "replay" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window["reconnect_preflight"].pop(missing_field)
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, f"{missing_field}: {proc.stdout}{proc.stderr}")
+            assert_true("terminal result is missing fields" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.pop("reconnect_preflight")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("terminal result is missing" in proc.stdout, proc.stdout)
+
+    for field, value in (
+        ("confirmed_exit", "yes"),
+        ("cleanup_marker_count", True),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            window_path = root / "replay" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window["reconnect_preflight"][field] = value
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, f"{field}: {proc.stdout}{proc.stderr}")
+            assert_true("terminal result has invalid fields" in proc.stdout, proc.stdout)
+
+
+def test_pre_qstart_reconnect_failure_taxonomy_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "handshake_timeout",
+                "error": "reconnect preflight timed out before one complete active handshake epoch",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "handshake_ready_while_alive": False,
+                    "cleanup_marker_count": 0,
+                },
+            }
+        )
+        write_handshake_ledger(
+            root / "replay" / "handshake_ledger_preflight.jsonl",
+            canonical_handshake_events()[:5],
+        )
+        write_reconnect_logs(root / "replay", failure_kind="handshake_timeout")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("handshake_timeout" in proc.stdout, proc.stdout)
+
+    for ledger_state in ("missing", "complete"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            window_path = replay / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update(
+                {
+                    "result": "RECONNECT_FAILED",
+                    "duration_seconds": 300,
+                    "reconnect_failure_kind": "handshake_timeout",
+                    "error": "timeout terminal",
+                    "reconnect_preflight": {
+                        **RECONNECT_PREFLIGHT_RESULT,
+                        "handshake_ready_while_alive": False,
+                        "cleanup_marker_count": 0,
+                    },
+                }
+            )
+            if ledger_state == "missing":
+                (replay / "handshake_ledger_preflight.jsonl").unlink()
+            write_reconnect_logs(replay, failure_kind="handshake_timeout")
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            expected = "ledger is missing" if ledger_state == "missing" else "contradicts"
+            assert_true(expected in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "cleanup_missing",
+                "error": "board did not report V1 disconnect cleanup after emulator exit",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "cleanup_marker_count": 0,
+                },
+            }
+        )
+        write_json(window_path, window)
+        write_reconnect_logs(root / "replay", failure_kind="cleanup_missing")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("cleanup_marker_count=0 expected=1" in proc.stdout, proc.stdout)
+
+    for failure_kind, cleanup_count in (
+        ("active_session_lost", 1),
+        ("cleanup_before_stop", 1),
+        ("cleanup_count", 2),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            window_path = replay / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update(
+                {
+                    "result": "RECONNECT_FAILED",
+                    "duration_seconds": 300,
+                    "reconnect_failure_kind": failure_kind,
+                    "error": failure_kind,
+                    "reconnect_preflight": {
+                        **RECONNECT_PREFLIGHT_RESULT,
+                        "cleanup_marker_count": cleanup_count,
+                    },
+                }
+            )
+            write_reconnect_logs(replay, failure_kind=failure_kind)
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+            assert_true(failure_kind in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        replay = root / "replay"
+        window_path = replay / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "handshake_invalid",
+                "error": "wrong all-volume route",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "handshake_ready_while_alive": False,
+                },
+            }
+        )
+        events = canonical_handshake_events()
+        events[-1]["channel"] = "B4E0"
+        write_handshake_ledger(replay / "handshake_ledger_preflight.jsonl", events)
+        # This mirrors the runner: semantic ledger validation fails before
+        # handshake_ready and before the pre-stop fence, then process exit is
+        # followed by a same-serial health fence.
+        write_reconnect_logs(replay, failure_kind="handshake_invalid")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("wrong all-volume route" in proc.stdout, proc.stdout)
+
+    for event_count in (0, 5, 6):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            window_path = replay / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update(
+                {
+                    "result": "RECONNECT_FAILED",
+                    "duration_seconds": 300,
+                    "reconnect_failure_kind": "handshake_invalid",
+                    "error": "invalid terminal with incomplete ledger",
+                    "reconnect_preflight": {
+                        **RECONNECT_PREFLIGHT_RESULT,
+                        "handshake_ready_while_alive": False,
+                    },
+                }
+            )
+            write_handshake_ledger(
+                replay / "handshake_ledger_preflight.jsonl",
+                canonical_handshake_events()[:event_count],
+            )
+            write_reconnect_logs(replay, failure_kind="handshake_invalid")
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(
+                "invalid-handshake terminal contradicts" in proc.stdout,
+                proc.stdout,
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        replay = root / "replay"
+        window_path = replay / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "cleanup_missing",
+                "error": "incomplete-ledger contradiction",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "cleanup_marker_count": 0,
+                },
+            }
+        )
+        write_handshake_ledger(
+            replay / "handshake_ledger_preflight.jsonl",
+            canonical_handshake_events()[:5],
+        )
+        write_reconnect_logs(replay, failure_kind="cleanup_missing")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("requires a complete preflight handshake ledger" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        replay = root / "replay"
+        window_path = replay / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "cleanup_missing",
+                "error": "failed preflight launched B",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "cleanup_marker_count": 0,
+                },
+            }
+        )
+        write_reconnect_logs(replay, failure_kind="cleanup_missing")
+        serial = replay / "bench_serial.log"
+        serial.write_text(
+            serial.read_text(encoding="utf-8") + ">>> QSTART core 300\n",
+            encoding="utf-8",
+        )
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("started after a failed reconnect preflight" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "cleanup_missing",
+                "error": "behavioral terminal with malformed ledger",
+            }
+        )
+        write_json(window_path, window)
+        (root / "replay" / "handshake_ledger_preflight.jsonl").write_text(
+            "not-json\n", encoding="utf-8"
+        )
+        write_reconnect_logs(root / "replay", failure_kind="cleanup_missing")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("line 1 is not valid JSON" in proc.stdout, proc.stdout)
+
+    for message in ("V1 emulator exited early", "serial health confirmation failed"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            window_path = root / "replay" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update({"result": "COLLECTION_FAILED", "error": message})
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(message in proc.stdout, proc.stdout)
+
+
+def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
+    """Public behavior ID: V1-RECONNECT-SESSION-001."""
+
+    def exercise(
+        mutate: object,
+        expected_exit: int,
+        expected_text: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            assert callable(mutate)
+            mutate(replay)
+            proc = run_score(root, "replay")
+            assert_true(
+                proc.returncode == expected_exit,
+                f"expected {expected_exit}: {proc.stdout}{proc.stderr}",
+            )
+            assert_true(expected_text in proc.stdout, proc.stdout)
+
+    def mutate_preflight_text(replay: Path, transform: object) -> None:
+        path = replay / "v1replay_reconnect_preflight.log"
+        assert callable(transform)
+        path.write_text(transform(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+    def mutate_serial_lines(replay: Path, transform: object) -> None:
+        path = replay / "bench_serial.log"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert callable(transform)
+        path.write_text("\n".join(transform(lines)) + "\n", encoding="utf-8")
+
+    exercise(
+        lambda replay: (replay / "v1replay_reconnect_preflight.log").unlink(),
+        3,
+        "reconnect preflight log is missing",
+    )
+
+    def wrong_owned_name(replay: Path) -> None:
+        source = replay / "v1replay_reconnect_preflight.log"
+        target = replay / "renamed_preflight.log"
+        source.rename(target)
+        window_path = replay / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["reconnect_preflight_log_path"] = str(target)
+        write_json(window_path, window)
+
+    exercise(wrong_owned_name, 3, "does not use its owned artifact name")
+
+    def alias_raw_logs(replay: Path) -> None:
+        preflight = replay / "v1replay_reconnect_preflight.log"
+        preflight.unlink()
+        os.link(replay / "bench_serial.log", preflight)
+
+    exercise(alias_raw_logs, 3, "are not distinct artifacts")
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay, lambda text: text + 'V1REPLAY_EVENT {"state":'
+        ),
+        3,
+        "truncated machine event",
+    )
+
+    def transport_falls_before_ready(text: str) -> str:
+        ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
+        return text.replace(
+            ready,
+            'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n' + ready,
+            1,
+        )
+
+    exercise(
+        lambda replay: mutate_preflight_text(replay, transport_falls_before_ready),
+        3,
+        "lacks active transport evidence",
+    )
+
+    def configured_after_ready(text: str) -> str:
+        lines = text.splitlines()
+        configured = lines.pop(0)
+        ready_index = next(i for i, line in enumerate(lines) if '"handshake_ready"' in line)
+        lines.insert(ready_index + 1, configured)
+        return "\n".join(lines) + "\n"
+
+    exercise(
+        lambda replay: mutate_preflight_text(replay, configured_after_ready),
+        3,
+        "configured event follows readiness evidence",
+    )
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text
+            + 'V1REPLAY_EVENT {"state":"replay_started"}\n',
+        ),
+        2,
+        "entered the scored scenario",
+    )
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text
+            + "TX B2CE AA D8 EA 31 09 38 38 00 00 00 0C 0C 40 6E AB\n",
+        ),
+        2,
+        "did not stay quiet",
+    )
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                "TX B2CE " + " ".join(f"{byte:02X}" for byte in FIRST_ALERT_ROW) + "\n",
+                "",
+                1,
+            ),
+        ),
+        2,
+        "did not stay quiet",
+    )
+
+    def remove_line(lines: list[str], exact: str) -> list[str]:
+        result = list(lines)
+        result.remove(exact)
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: remove_line(lines, "HOST_BOUNDARY reconnect_preflight_start"),
+        ),
+        3,
+        "missing one preflight-start",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: remove_line(lines, "HOST_BOUNDARY reconnect_preflight_fence_begin"),
+        ),
+        3,
+        "missing its pre-stop fence boundaries",
+    )
+    for boundary in (
+        "HOST_BOUNDARY reconnect_post_cleanup_fence_begin",
+        "HOST_BOUNDARY reconnect_post_cleanup_fence_complete",
+        "HOST_BOUNDARY reconnect_pre_qstart_fence_begin",
+        "HOST_BOUNDARY reconnect_pre_qstart_fence_complete",
+    ):
+        exercise(
+            lambda replay, boundary=boundary: mutate_serial_lines(
+                replay, lambda lines, boundary=boundary: remove_line(lines, boundary)
+            ),
+            3,
+            "missing its two bounded post-cleanup fences",
+        )
+
+    def insert_after(lines: list[str], anchor: str, value: str) -> list[str]:
+        result = list(lines)
+        result.insert(result.index(anchor) + 1, value)
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                "HOST_BOUNDARY reconnect_preflight_start",
+                "[BLE] V1 disconnected; cleared LCD BLE state at 99 ms",
+            ),
+        ),
+        2,
+        "cleanup marker occurred before managed process exit",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines, "HOST_BOUNDARY reconnect_preflight_start", "BOOT bootId=2"
+            ),
+        ),
+        3,
+        "observed a board boot",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: remove_line(lines, FENCE_RESPONSE),
+        ),
+        3,
+        "requires one QSTATUS and one response",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: [
+                "QRESP {bad" if line == FENCE_RESPONSE else line
+                for line in lines
+            ],
+        ),
+        3,
+        "malformed QRESP evidence",
+    )
+    for invalid_response in (
+        'QRESP {"ok":true}',
+        'QRESP {"ok":true,"state":"running","suite":"display","mode":"current"}',
+    ):
+        exercise(
+            lambda replay, response=invalid_response: mutate_serial_lines(
+                replay,
+                lambda lines, response=response: [
+                    response if line == FENCE_RESPONSE else line for line in lines
+                ],
+            ),
+            3,
+            "serial fence returned a non-ready QRESP",
+        )
+    for anchor in (
+        "HOST_BOUNDARY reconnect_preflight_fence_begin",
+        "[BLE] V1 disconnected; cleared LCD BLE state at 101 ms",
+        "HOST_BOUNDARY reconnect_pre_qstart_fence_begin",
+    ):
+        def insert_fence_error(lines: list[str], anchor: str = anchor) -> list[str]:
+            result = list(lines)
+            command = result.index(">>> QSTATUS", result.index(anchor) + 1)
+            result.insert(command + 1, 'QERR {"ok":false,"error":"not_ready"}')
+            return result
+
+        exercise(
+            lambda replay, mutate=insert_fence_error: mutate_serial_lines(replay, mutate),
+            3,
+            "requires one QSTATUS and one response",
+        )
+
+        def insert_trailing_fence_error(lines: list[str], anchor: str = anchor) -> list[str]:
+            result = list(lines)
+            command = result.index(">>> QSTATUS", result.index(anchor) + 1)
+            response = result.index(FENCE_RESPONSE, command + 1)
+            result.insert(response + 1, 'QERR {"ok":false,"error":"stale"}')
+            return result
+
+        exercise(
+            lambda replay, mutate=insert_trailing_fence_error: mutate_serial_lines(
+                replay, mutate
+            ),
+            3,
+            "requires one QSTATUS and one response",
+        )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                "HOST_BOUNDARY reconnect_post_cleanup_fence_complete",
+                'QERR {"ok":false,"error":"stale"}',
+            ),
+        ),
+        3,
+        "unbounded pre-QSTART protocol exchange",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: [
+                ">>> QSTART display 1" if line == ">>> QSTART core 300" else line
+                for line in lines
+            ],
+        ),
+        3,
+        "wrong replacement QSTART command",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: [
+                line.replace('"suite":"core"', '"suite":"display"')
+                if line.startswith("QRESP ") and '"state":"running"' in line
+                else line
+                for line in lines
+            ],
+        ),
+        3,
+        "exactly one replacement running acknowledgement",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(lines, ">>> QSTART core 300", ">>> QSTART core 300"),
+        ),
+        3,
+        "repeated QSTART without one perf_sd_busy_retry",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                ">>> QSTART core 300",
+                'QERR {"ok":false,"error":"fatal_ble"}',
+            ),
+        ),
+        3,
+        "unexpected QERR",
+    )
+
+    def duplicate_running_ack(lines: list[str]) -> list[str]:
+        result = list(lines)
+        ack = next(line for line in result if line.startswith("QRESP ") and '"running"' in line)
+        result.insert(result.index(ack) + 1, ack)
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, duplicate_running_ack),
+        3,
+        "exactly one replacement running acknowledgement",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: lines
+            + ['QEVENT {"ok":true,"state":"done","suite":"core","finalized":true}'],
+        ),
+        3,
+        "exactly one replacement completion",
+    )
+
+    cleanup = "[BLE] V1 disconnected; cleared LCD BLE state at 101 ms"
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay, lambda lines: remove_line(lines, cleanup)
+        ),
+        2,
+        "exactly one cleanup marker",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay, lambda lines: insert_after(lines, cleanup, cleanup)
+        ),
+        2,
+        "exactly one cleanup marker",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                ">>> QSTART core 300",
+                "[BLE] V1 disconnected; cleared LCD BLE state at 102 ms",
+            ),
+        ),
+        2,
+        "disconnected before completion",
+    )
+
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace("TX B2CE AA D6", "TX B2CE GG D6", 1),
+        ),
+        3,
+        "malformed TX bytes",
+    )
+
+    def add_valid_retry(lines: list[str]) -> list[str]:
+        result = list(lines)
+        qstart = result.index(">>> QSTART core 300")
+        result[qstart:qstart] = [
+            ">>> QSTART core 300",
+            'QERR {"ok":false,"message":"perf_sd_busy_retry"}',
+        ]
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, add_valid_retry),
+        0,
+        "bench result: PASS",
+    )
+
+    def retry_with_conflicting_error(lines: list[str]) -> list[str]:
+        result = add_valid_retry(lines)
+        retry = result.index('QERR {"ok":false,"message":"perf_sd_busy_retry"}')
+        result.insert(retry + 1, 'QERR {"ok":false,"error":"fatal_ble"}')
+        return result
+
+    exercise(
+        lambda replay: mutate_serial_lines(replay, retry_with_conflicting_error),
+        3,
+        "unexpected QERR",
+    )
+    exercise(
+        lambda replay: mutate_serial_lines(
+            replay,
+            lambda lines: insert_after(
+                lines,
+                'QRESP {"ok":true,"state":"running","suite":"core"}',
+                'QEVENT {"ok":false,"state":"error","suite":"core"}',
+            ),
+        ),
+        3,
+        "failed replacement QEVENT",
+    )
+    for command in (">>> QABORT", ">>> QSTATUS", ">>> QGETCSV"):
+        exercise(
+            lambda replay, command=command: mutate_serial_lines(
+                replay,
+                lambda lines: insert_after(lines, ">>> QSTART core 300", command),
+            ),
+            3,
+            "unexpected host command",
+        )
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay, lambda text: text + "\u001b[2K\rquiet status"
+        ),
+        0,
+        "bench result: PASS",
+    )
 
 
 def test_replay_requires_a_readable_bounded_same_window_handshake_ledger() -> None:
@@ -1467,6 +2499,12 @@ def main() -> int:
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()
     test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch()
+    test_replay_reconnect_scores_two_ledgers_without_cross_credit()
+    test_replay_reconnect_rejects_extra_epochs_and_shared_artifacts()
+    test_replay_reconnect_requires_preflight_artifact_and_exact_clear()
+    test_replay_reconnect_requires_actionable_lifecycle_evidence()
+    test_pre_qstart_reconnect_failure_taxonomy_is_preserved()
+    test_reconnect_raw_lifecycle_mutants_cannot_false_green()
     test_replay_requires_a_readable_bounded_same_window_handshake_ledger()
     test_replay_handshake_semantic_mutants_are_actionable_failures()
     test_replay_requires_a_readable_same_window_encounter_csv()

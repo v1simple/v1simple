@@ -3,6 +3,27 @@ import XCTest
 
 final class V1DisplayAlertContractTests: XCTestCase {
 
+    /// Public behavior ID: `V1-RECONNECT-SESSION-001`.
+    func testHandshakeOnlyPlanIsExactlyOneLiteralShortClearRow() throws {
+        let emissions = V1.PlaybackPacketPlan.handshakeOnlyEmissions()
+        let clear: [UInt8] = [
+            0xAA, 0xD8, 0xEA, 0x43, 0x08,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xB7, 0xAB,
+        ]
+
+        XCTAssertEqual(emissions, [V1.PlaybackPacketPlan.Emission(
+            kind: .alertRow(index: 0, count: 0),
+            channel: .displayShort,
+            bytes: clear
+        )])
+        let decoded = try IndependentFrame.decode(emissions[0].bytes)
+        XCTAssertEqual(decoded.destination, 0xD8)
+        XCTAssertEqual(decoded.origin, 0xEA)
+        XCTAssertEqual(decoded.packetID, 0x43)
+        XCTAssertEqual(decoded.payload, Array(repeating: 0, count: 7))
+    }
+
     /// Public behavior IDs: `V1-ALERT-TABLE-001` and `V1-DISPLAY-FRAME-001`.
     func testTwoRowPlanUsesLiteralBroadcastPacketsAndPriorityDisplay() throws {
         let sample = TimedSample(

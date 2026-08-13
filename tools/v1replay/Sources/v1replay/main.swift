@@ -24,7 +24,7 @@ struct Arguments {
     static let booleanFlags: Set<String> = [
         "loop", "paused", "no-alerts", "always-alerts", "no-wait",
         "no-checksum", "log-packets", "blink-bogey", "blink-arrow", "synthetic", "bench",
-        "exit-on-complete", "machine-events", "help", "h", "version"
+        "exit-on-complete", "machine-events", "handshake-only", "help", "h", "version"
     ]
 
     init(_ argv: [String]) {
@@ -230,6 +230,7 @@ func runHelp() {
       --exit-on-complete   stop after one complete replay (for bench automation)
       --machine-events     emit stable completion events for an external runner
       --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
+      --handshake-only     runner preflight: one clear alert row, then stay quiet
       --no-wait            start without waiting for a central to subscribe
       --idle-lead <sec>    idle frames before the encounter (default 3)
       --idle-tail <sec>    idle frames after the encounter (default 3)
@@ -500,6 +501,9 @@ func runExport() throws {
 }
 
 func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throws {
+    if args.bool("handshake-only") && !bench {
+        throw ReplayError.message("--handshake-only is available only in bench mode")
+    }
     if bench { try validateBenchOptions() }
     let replyHeader = try makeHeader()
     let informationHeader = try makeInformationHeader()
@@ -549,6 +553,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     playerOptions.checksum = checksum
     playerOptions.blinkBogey = args.bool("blink-bogey")
     playerOptions.arrowBlinkProfile = try makeArrowBlinkProfile(benchDefault: bench)
+    playerOptions.handshakeOnly = args.bool("handshake-only")
 
     // Banner
     console.print("")
@@ -593,6 +598,15 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
         console.log("\(Ansi.cyan)ble\(Ansi.reset)  v1simple asked for display \(on ? "ON" : "OFF")")
     }
     let machineEvents = args.bool("machine-events")
+    if machineEvents && playerOptions.handshakeOnly {
+        peripheral.onStateChange = {
+            let active = peripheral.displaySubscribed
+                && peripheral.alertDataRequested
+                && peripheralConfig.handshakeLedger?.activeEpoch != nil
+            console.print("V1REPLAY_EVENT {\"state\":\"handshake_transport\","
+                          + "\"active\":\(active ? "true" : "false")}")
+        }
+    }
     if machineEvents && bench {
         console.print("V1REPLAY_EVENT {\"state\":\"configured\","
                       + "\"blinkProfile\":\"\(playerOptions.arrowBlinkProfile.rawValue)\","
@@ -605,6 +619,8 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
         console.log("\(Ansi.blue)play\(Ansi.reset) \(message)")
         if machineEvents && message.hasPrefix("Replay complete —") {
             console.print("V1REPLAY_EVENT {\"state\":\"complete\"}")
+        } else if machineEvents && message.hasPrefix("Handshake-only ready —") {
+            console.print("V1REPLAY_EVENT {\"state\":\"handshake_ready\"}")
         }
     }
     player.onReplayStarted = { hostMonotonicSeconds in

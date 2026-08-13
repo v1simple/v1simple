@@ -27,6 +27,7 @@ final class Player {
         var checksum: Bool = true
         var blinkBogey: Bool = false
         var arrowBlinkProfile: ArrowBlinkProfile = .steady
+        var handshakeOnly: Bool = false
     }
 
     enum Phase: String {
@@ -215,6 +216,11 @@ final class Player {
             waitForCentral()
             if isStopped { return }
 
+            if options.handshakeOnly {
+                runHandshakeOnly()
+                return
+            }
+
             switch emitIdle(seconds: options.idleLead, phase: .idleLead) {
             case .aborted: return
             case .restart: continue
@@ -275,6 +281,22 @@ final class Player {
             || !options.sendAlerts
             || (peripheral.displaySubscribed && peripheral.alertDataRequested)
         return displayReady && alertDataReady
+    }
+
+    private func runHandshakeOnly() {
+        let emissions = V1.PlaybackPacketPlan.handshakeOnlyEmissions(
+            header: options.header,
+            checksum: options.checksum
+        )
+        for emission in emissions {
+            send(emission)
+        }
+        lock.lock(); _packetsSent += emissions.count; lock.unlock()
+        setPhase(.finished)
+        onLog?("Handshake-only ready — one clear alert row queued; holding quiet.")
+        while !isStopped {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
     }
 
     /// Stream idle display frames (meter dark, no alert) for a while.

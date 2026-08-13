@@ -47,9 +47,22 @@ from camera_grade import (  # noqa: E402
     identify_frequency,
 )
 from run_window import (  # noqa: E402
+    ALL_VOLUME_REQUEST,
+    ALL_VOLUME_RESPONSE,
+    EMPTY_ALERT_ROW,
+    RECONNECT_LEDGER_NAME,
+    RECONNECT_LOG_NAME,
+    ReconnectBehaviorError,
+    ReconnectPreflightFailure,
+    START_ALERT_REQUEST,
+    VERSION_REQUEST,
+    VERSION_RESPONSE,
     V1Emulator,
+    _preflight_ledger_is_complete,
     camera_grade_required,
     encounter_csv_sd_path,
+    establish_serial_fence,
+    run_reconnect_preflight,
     wait_for_post_upload_settle,
 )
 
@@ -88,6 +101,36 @@ def write_dummy_emulator(
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def write_handshake_ledger(path: Path) -> None:
+    events = [
+        {"event": "subscribe", "epoch": 1, "channel": "B2CE"},
+        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": START_ALERT_REQUEST},
+        {
+            "event": "stream_started", "epoch": 1, "channel": "B2CE",
+            "bytes": EMPTY_ALERT_ROW, "delivery": "delivered",
+        },
+        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": VERSION_REQUEST},
+        {
+            "event": "response", "epoch": 1, "channel": "B2CE",
+            "bytes": VERSION_RESPONSE, "delivery": "delivered",
+        },
+        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": ALL_VOLUME_REQUEST},
+        {
+            "event": "response", "epoch": 1, "channel": "B2CE",
+            "bytes": ALL_VOLUME_RESPONSE, "delivery": "delivered",
+        },
+    ]
+    records = [
+        {"schema_version": 1, "kind": "v1replay_handshake_ledger"},
+        *events,
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+        encoding="utf-8",
+    )
 
 
 def test_idle_emulator_covers_and_stops_with_window() -> None:
@@ -214,6 +257,338 @@ def test_replay_blink_profile_argv_and_result() -> None:
                 result["blink_nominal_seconds"] == blink_samples / 3,
                 f"wrong nominal blink duration: {result}",
             )
+
+
+def test_reconnect_preflight_ledger_requires_one_exact_epoch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / RECONNECT_LEDGER_NAME
+        write_handshake_ledger(path)
+        assert_true(_preflight_ledger_is_complete(path), "canonical preflight ledger was not ready")
+
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        records[-1]["epoch"] = 2
+        path.write_text(
+            "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except ReconnectBehaviorError as exc:
+            assert_true(
+                exc.kind == "handshake_invalid" and "seven-event epoch" in str(exc),
+                f"wrong extra-epoch failure: {exc}",
+            )
+        else:
+            raise AssertionError("cross-epoch preflight evidence passed")
+
+        write_handshake_ledger(path)
+        complete = path.read_text(encoding="utf-8")
+        path.write_text(complete[:-1], encoding="utf-8")
+        assert_true(
+            not _preflight_ledger_is_complete(path),
+            "concurrently written partial final line was treated as malformed or complete",
+        )
+
+
+def test_reconnect_preflight_waits_for_separate_ready_machine_event() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        emulator = V1Emulator(root / "unused", root, "replay", handshake_only=True)
+        assert emulator.handshake_ledger_path is not None
+        write_handshake_ledger(emulator.handshake_ledger_path)
+        emulator.health_problem = lambda: ""  # type: ignore[method-assign]
+        events: dict[str, dict[str, object]] = {
+            "handshake_transport": {"state": "handshake_transport", "active": True}
+        }
+        emulator._bench_event = lambda state: events.get(state, {})  # type: ignore[method-assign]
+        try:
+            emulator.wait_for_handshake_ready(0.02)
+        except ReconnectBehaviorError as exc:
+            assert_true(exc.kind == "handshake_timeout", f"wrong delayed-ready result: {exc}")
+        else:
+            raise AssertionError("ledger completion raced ahead of the ready machine event")
+
+        events["handshake_ready"] = {"state": "handshake_ready"}
+        emulator.wait_for_handshake_ready(0.1)
+
+
+def test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence() -> None:
+    """Public behavior ID: V1-RECONNECT-SESSION-001."""
+    events: list[str] = []
+
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def write_command(self, command: str) -> None:
+            events.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            events.append("QRESP")
+            return 'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+
+        def read_line(self, _timeout: float) -> str:
+            events.append("cleanup")
+            self.disconnect_cleanup_count += 1
+            return "[BLE] V1 disconnected; cleared LCD BLE state at 123 ms"
+
+        def record_host_boundary(self, label: str) -> None:
+            events.append(label)
+
+    class FakeEmulator:
+        process = object()
+
+        def start(self) -> None:
+            events.append("start-a")
+
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            events.append("ready-a")
+
+        def health_problem(self) -> str:
+            return ""
+
+        def _bench_event(self, state: str) -> dict[str, object]:
+            return {"state": state, "active": True}
+
+        def finish_preflight(self, handshake_ready_while_alive: bool) -> dict[str, object]:
+            events.append("stop-a")
+            return {
+                "handshake_ready_while_alive": handshake_ready_while_alive,
+                "managed_stop": True,
+                "confirmed_exit": True,
+            }
+
+    result = run_reconnect_preflight(FakeSerial(), FakeEmulator(), 1)
+    assert_true(result["cleanup_marker_count"] == 1, f"wrong reconnect result: {result}")
+    assert_true(
+        events == [
+            "reconnect_preflight_start", "start-a", "ready-a",
+            "reconnect_preflight_fence_begin",
+            "QSTATUS", "QRESP", "reconnect_preflight_fence_complete", "stop-a",
+            "reconnect_preflight_process_exited", "cleanup",
+            "reconnect_post_cleanup_fence_begin", "QSTATUS", "QRESP",
+            "reconnect_post_cleanup_fence_complete",
+        ],
+        f"reconnect lifecycle reordered: {events}",
+    )
+
+
+def test_reconnect_serial_fence_requires_safe_status_shape() -> None:
+    class FakeSerial:
+        def __init__(self, response: str):
+            self.response = response
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return self.response
+
+    valid = FakeSerial(
+        'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+    )
+    result = establish_serial_fence(valid)
+    assert_true(result["state"] == "idle", f"safe status fence failed: {result}")
+    assert_true(valid.commands == ["QSTATUS"], f"wrong fence command: {valid.commands}")
+
+    for response in (
+        'QRESP {"ok":true}',
+        'QRESP {"ok":true,"state":"running","suite":"display","mode":"current"}',
+    ):
+        try:
+            establish_serial_fence(FakeSerial(response))
+        except RuntimeError as exc:
+            assert_true("was not ready" in str(exc), f"wrong fence error: {exc}")
+        else:
+            raise AssertionError(f"unsafe serial fence passed: {response}")
+
+
+def test_reconnect_preflight_failure_retains_terminal_result() -> None:
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def write_command(self, _command: str) -> None:
+            pass
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return 'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+
+        def read_line(self, _timeout: float) -> str:
+            raise TimeoutError("no cleanup")
+
+        def record_host_boundary(self, _label: str) -> None:
+            pass
+
+    class FakeEmulator:
+        process = object()
+
+        def start(self) -> None:
+            pass
+
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            pass
+
+        def health_problem(self) -> str:
+            return ""
+
+        def _bench_event(self, _state: str) -> dict[str, object]:
+            return {"active": True}
+
+        def finish_preflight(self, handshake_ready_while_alive: bool) -> dict[str, object]:
+            return {
+                "handshake_ready_while_alive": handshake_ready_while_alive,
+                "managed_stop": True,
+                "confirmed_exit": True,
+            }
+
+    try:
+        run_reconnect_preflight(FakeSerial(), FakeEmulator(), 0.01)
+    except ReconnectPreflightFailure as exc:
+        assert_true(exc.classification == "FAIL", f"wrong no-cleanup taxonomy: {exc.classification}")
+        assert_true(exc.failure_kind == "cleanup_missing", f"wrong failure kind: {exc.failure_kind}")
+        assert_true(exc.result["handshake_ready_while_alive"] is True, f"lost readiness: {exc.result}")
+        assert_true(exc.result["managed_stop"] is True, f"lost managed stop: {exc.result}")
+        assert_true(exc.result["confirmed_exit"] is True, f"lost exit result: {exc.result}")
+        assert_true(exc.result["cleanup_marker_count"] == 0, f"invented cleanup: {exc.result}")
+    else:
+        raise AssertionError("missing cleanup marker passed reconnect preflight")
+
+
+def test_reconnect_preflight_distinguishes_behavior_from_broken_evidence() -> None:
+    class HealthySerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def write_command(self, _command: str) -> None:
+            pass
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return 'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+
+        def read_line(self, _timeout: float) -> str:
+            raise TimeoutError("no line")
+
+        def record_host_boundary(self, _label: str) -> None:
+            pass
+
+    class BaseEmulator:
+        process = object()
+
+        def start(self) -> None:
+            pass
+
+        def health_problem(self) -> str:
+            return ""
+
+        def finish_preflight(self, handshake_ready_while_alive: bool) -> dict[str, object]:
+            return {
+                "handshake_ready_while_alive": handshake_ready_while_alive,
+                "managed_stop": True,
+                "confirmed_exit": True,
+            }
+
+    class TimeoutEmulator(BaseEmulator):
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            raise ReconnectBehaviorError("handshake_timeout", "incomplete handshake")
+
+    class InvalidHandshakeEmulator(BaseEmulator):
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            raise ReconnectBehaviorError("handshake_invalid", "wrong literal or route")
+
+    try:
+        run_reconnect_preflight(HealthySerial(), TimeoutEmulator(), 0.01)
+    except ReconnectPreflightFailure as exc:
+        assert_true(exc.classification == "FAIL", f"healthy timeout was inconclusive: {exc.result}")
+        assert_true(exc.failure_kind == "handshake_timeout", f"wrong timeout kind: {exc.failure_kind}")
+    else:
+        raise AssertionError("incomplete handshake passed")
+
+    try:
+        run_reconnect_preflight(HealthySerial(), InvalidHandshakeEmulator(), 0.01)
+    except ReconnectPreflightFailure as exc:
+        assert_true(
+            exc.classification == "FAIL" and exc.failure_kind == "handshake_invalid",
+            f"valid-but-wrong handshake was not actionable: {exc.result}",
+        )
+    else:
+        raise AssertionError("valid-but-wrong handshake passed")
+
+    for label, message in (
+        ("malformed ledger", "invalid preflight ledger"),
+        ("early process death", "V1 emulator exited early"),
+    ):
+        class BrokenEmulator(BaseEmulator):
+            def wait_for_handshake_ready(self, _timeout: float) -> None:
+                raise RuntimeError(message)
+
+        try:
+            run_reconnect_preflight(HealthySerial(), BrokenEmulator(), 0.01)
+        except ReconnectPreflightFailure as exc:
+            assert_true(
+                exc.classification == "COLLECTION_FAILED",
+                f"{label} was treated as a product failure: {exc.result}",
+            )
+        else:
+            raise AssertionError(f"{label} passed")
+
+    class SerialFailure(HealthySerial):
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            raise OSError("serial disconnected")
+
+    class ReadyEmulator(BaseEmulator):
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            pass
+
+        def _bench_event(self, _state: str) -> dict[str, object]:
+            return {"active": True}
+
+    try:
+        run_reconnect_preflight(SerialFailure(), ReadyEmulator(), 0.01)
+    except ReconnectPreflightFailure as exc:
+        assert_true(
+            exc.classification == "COLLECTION_FAILED",
+            f"serial failure was treated as product behavior: {exc.result}",
+        )
+    else:
+        raise AssertionError("serial failure passed")
+
+
+def test_reconnect_preflight_process_uses_separate_quiet_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            blink_profile="scenario",
+            blink_samples=57,
+        )
+        emulator = V1Emulator(
+            executable,
+            root / "replay",
+            "replay",
+            "scenario",
+            handshake_only=True,
+        )
+        try:
+            emulator.start()
+            expected = (
+                "argv=bench --machine-events --blink-profile scenario --handshake-only "
+                "--log-packets "
+                f"--handshake-ledger {root / 'replay' / RECONNECT_LEDGER_NAME}"
+            )
+            deadline = time.monotonic() + 1
+            log = ""
+            while time.monotonic() < deadline:
+                log = (root / "replay" / RECONNECT_LOG_NAME).read_text(encoding="utf-8")
+                if expected in log:
+                    break
+                time.sleep(0.02)
+            assert_true(expected in log, f"preflight argv was not isolated: {log!r}")
+        finally:
+            emulator.stop()
 
 
 def test_handshake_ledger_runner_and_delivery_wiring_are_pinned() -> None:
@@ -1054,11 +1429,52 @@ def test_v1replay_player_uses_live_control_snapshot() -> None:
     )
 
 
+def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
+    """Public behavior ID: V1-RECONNECT-SESSION-001."""
+    source_dir = ROOT / "tools" / "v1replay" / "Sources" / "v1replay"
+    player = (source_dir / "Player.swift").read_text(encoding="utf-8")
+    main_source = (source_dir / "main.swift").read_text(encoding="utf-8")
+    method = player.split("private func runHandshakeOnly()", 1)[1].split(
+        "private func emitIdle", 1
+    )[0]
+
+    assert_true(
+        "PlaybackPacketPlan.handshakeOnlyEmissions" in method
+        and method.count("send(emission)") == 1,
+        "handshake-only does not use its one-emission pure plan",
+    )
+    assert_true(
+        "sendIdleFrame" not in method and "playTimeline" not in method,
+        "handshake-only enters an idle or encounter stream",
+    )
+    assert_true(
+        'V1REPLAY_EVENT {\\"state\\":\\"handshake_transport\\"' in main_source
+        and "peripheralConfig.handshakeLedger?.activeEpoch != nil" in main_source,
+        "preflight readiness does not expose the current active ledger session",
+    )
+
+    runner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
+    preflight = runner.index("reconnect_preflight_result = run_reconnect_preflight(")
+    camera = runner.index("admit_camera()", preflight)
+    qstart = runner.index("completion = start_and_wait(", camera)
+    assert_true(
+        preflight < camera < qstart,
+        "replay camera recording does not start after reconnect cleanup and before QSTART",
+    )
+
+
 def main() -> int:
     test_idle_emulator_covers_and_stops_with_window()
     test_failed_window_still_stops_emulator()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
+    test_reconnect_preflight_ledger_requires_one_exact_epoch()
+    test_reconnect_preflight_waits_for_separate_ready_machine_event()
+    test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence()
+    test_reconnect_serial_fence_requires_safe_status_shape()
+    test_reconnect_preflight_failure_retains_terminal_result()
+    test_reconnect_preflight_distinguishes_behavior_from_broken_evidence()
+    test_reconnect_preflight_process_uses_separate_quiet_artifacts()
     test_handshake_ledger_runner_and_delivery_wiring_are_pinned()
     test_global_shutter_default_uses_qualified_720p200_profile()
     test_camera_grader_integrates_high_speed_frames_before_sampling()
@@ -1083,6 +1499,7 @@ def main() -> int:
     test_encounter_csv_path_uses_perf_boot_identity()
     test_v1replay_tracks_each_subscription_independently()
     test_v1replay_player_uses_live_control_snapshot()
+    test_v1replay_handshake_only_path_sends_once_then_holds_quiet()
     print("bench window tests passed")
     return 0
 

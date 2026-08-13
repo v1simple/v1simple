@@ -112,7 +112,13 @@ Never add that file or its values to this repository.
 
 The unified bench command builds and manages `v1replay` as its V1 detector: an
 idle LightBlue-compatible V1 for the core and display windows, then the fixed
-multi-alert scenario for replay. The replay uses its provisional scenario blink
+multi-alert scenario for replay. Before the scored replay window, it launches a
+quiet handshake-only peripheral, requires one complete startup epoch in a
+separate ledger, fences the still-open serial session, stops that exact process,
+and waits for the board's V1-disconnect cleanup marker. Only then does it start
+camera recording, QSTART, and the replacement replay peripheral on the same
+board boot. The two ledgers are graded independently, so events cannot cross the
+managed disappearance boundary. The replay uses its provisional scenario blink
 profile by default: the priority arrow blinks during the authored multi-alert
 interval and stays steady during single-alert periods. Use
 `--blink-profile steady` or `--blink-profile stress` for explicit controls. A
@@ -129,16 +135,21 @@ directory. Camera evidence has one explicit role per suite:
   change the verdict.
 - Replay video is the gated end-to-end display validator. Replay artifacts also
   include that boot's encounter CSV; the grader checks alert timing, primary
-  frequency, and direction against that same-window log. A separate bounded,
-  anonymous handshake ledger records only the automatic startup transaction;
-  the grader independently checks its framing, checksums, same-session order,
-  short characteristics, and CoreBluetooth-accepted replies. It is not a
-  general packet trace and contains no central identifier or timestamp.
+  frequency, and direction against that same-window log. Two separate bounded,
+  anonymous handshake ledgers record only the automatic startup transactions;
+  the grader independently checks framing, checksums, same-session order, short
+  characteristics, CoreBluetooth-accepted replies, and the fresh post-cleanup
+  epoch. They are not general packet traces and contain no central identifier or
+  timestamp. The grader also reconstructs the managed exit, board cleanup,
+  serial fences, same-boot replacement, and bounded three-packet preflight from
+  the fixed same-window logs instead of trusting collector summary flags.
 
-Before opening serial or starting the V1 emulator, every requested camera
-window applies the fixed 1280x720, 30 fps UVC profile and exposure 156, records
-a session-start still, and admits the run only when the SCAN landmark produces
-a fully contained, bounded dynamic scale/position crop. A refusal writes
+Every requested camera window applies the fixed 1280x720, 30 fps UVC profile
+and exposure 156, records a session-start still, and admits the run only when
+the SCAN landmark produces a fully contained, bounded dynamic scale/position
+crop. Core and display do this before opening serial or starting their emulator.
+Replay does it after the unscored reconnect cleanup fence and immediately before
+QSTART, so process A cannot consume the duration-bounded recording. A refusal writes
 `camera_preflight.json` with measured camera diagnostics and ends as
 `EVIDENCE_FAILED`; it does not claim firmware failure. The successful preflight
 hash and exact normalized crop are owned by the immutable capture manifest.

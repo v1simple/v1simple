@@ -76,6 +76,13 @@ through the end of the firmware metrics window, and then stops its process group
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
+The unified runner alone uses `bench --handshake-only` before the scored replay.
+That mode waits for B2CE subscription and the start-alert request, sends exactly
+one canonical count-zero alert row, and then stays quiet and alive until the
+runner removes the peripheral. Its bounded packet log must contain only the two
+targeted startup replies and that clear row; it does not enter the scenario or
+idle stream.
+
 Bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
 multi-alert interval (57 samples) and leaves all single-alert periods steady.
@@ -172,6 +179,15 @@ The public contract inventory uses these stable behavior IDs:
   characteristic. A transient local pacing or transport deferral retains the
   unsent query for a later loop instead of skipping it. Exact retry count,
   delay, and reply arrival order are not gated.
+- `V1-RECONNECT-SESSION-001` pins a managed same-boot reconnect boundary. A
+  handshake-only process must independently complete one active startup epoch,
+  then disappear; after the still-open serial session observes the board's V1
+  cleanup, a replacement process must independently complete a fresh epoch.
+  The two bounded ledgers are distinct and each contains exactly one seven-event
+  epoch, so neither can borrow readiness or replies from the other. This is host
+  emulator and board-cleanup integration evidence, not proof of physical-V1
+  reconnect timing, cache or bond behavior, control persistence, or board-side
+  parsing of the all-volume reply.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
@@ -224,15 +240,17 @@ Feedback rendering and timing, other reserved volume-control bits, disconnect
 restore, power-cycle persistence, and non-US mode variants remain outside this
 host-state gate.
 
-Managed replay also writes a bounded anonymous startup-handshake ledger. It
-contains no central identifier or timestamp and is not a general packet
-transcript. The grader independently decodes its raw frames and requires one
-connection epoch with B2CE subscription, accepted start/version/all-volume
-requests, CoreBluetooth-accepted short replies, and alert-stream start. This
-proves the emulator-side transaction and delivery handoff; a board-side
-packet-specific marker is still required to claim that all-volume was parsed.
-The ledger models one logical short-notify session; concurrent short subscribers
-end the active evidence epoch instead of being merged.
+Managed replay writes two bounded anonymous startup-handshake ledgers: one for
+the quiet preflight process and one for the scored replacement. Neither contains
+a central identifier or timestamp, and neither is a general packet transcript.
+The grader decodes them separately and requires exactly one connection epoch in
+each with B2CE subscription, accepted start/version/all-volume requests,
+CoreBluetooth-accepted short replies, and alert-stream start. The preflight's
+only stream packet must be the canonical count-zero clear row. This proves the
+emulator-side transactions, managed disappearance, and observed board cleanup;
+a board-side packet-specific marker is still required to claim that all-volume
+was parsed. Each ledger models one logical short-notify session; concurrent
+short subscribers end the active evidence epoch instead of being merged.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect

@@ -54,6 +54,36 @@ IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
 HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"
+RECONNECT_LEDGER_NAME = "handshake_ledger_preflight.jsonl"
+RECONNECT_LOG_NAME = "v1replay_reconnect_preflight.log"
+V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
+BOOT_PREFIX = "BOOT bootId="
+RECONNECT_PREFLIGHT_START = "reconnect_preflight_start"
+RECONNECT_FENCE_BEGIN = "reconnect_preflight_fence_begin"
+RECONNECT_FENCE_COMPLETE = "reconnect_preflight_fence_complete"
+RECONNECT_POST_CLEANUP_FENCE_BEGIN = "reconnect_post_cleanup_fence_begin"
+RECONNECT_POST_CLEANUP_FENCE_COMPLETE = "reconnect_post_cleanup_fence_complete"
+RECONNECT_PRE_QSTART_FENCE_BEGIN = "reconnect_pre_qstart_fence_begin"
+RECONNECT_PRE_QSTART_FENCE_COMPLETE = "reconnect_pre_qstart_fence_complete"
+
+START_ALERT_REQUEST = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
+VERSION_REQUEST = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
+VERSION_RESPONSE = [
+    0xAA, 0xD6, 0xEA, 0x02, 0x08,
+    0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+    0x18, 0xAB,
+]
+ALL_VOLUME_REQUEST = [0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB]
+ALL_VOLUME_RESPONSE = [
+    0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+    0x04, 0x00, 0x04, 0x00,
+    0xB4, 0xAB,
+]
+EMPTY_ALERT_ROW = [
+    0xAA, 0xD8, 0xEA, 0x43, 0x08,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xB7, 0xAB,
+]
 
 
 class CameraPreflightFailure(RuntimeError):
@@ -67,6 +97,32 @@ class CameraPreflightFailure(RuntimeError):
         )
         self.preflight = preflight
         self.camera_result = camera_result
+        self.reconnect_preflight: dict[str, Any] = {}
+
+
+class ReconnectPreflightFailure(RuntimeError):
+    """Managed reconnect could not establish a safe boundary before QSTART."""
+
+    def __init__(
+        self,
+        message: str,
+        result: dict[str, Any],
+        *,
+        classification: str,
+        failure_kind: str,
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+        self.classification = classification
+        self.failure_kind = failure_kind
+
+
+class ReconnectBehaviorError(RuntimeError):
+    """Healthy evidence shows that the required reconnect transition failed."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def parse_args() -> argparse.Namespace:
@@ -224,6 +280,8 @@ class BenchSerial:
         self.ser.rts = False
         self.ser.open()
         self.ser.reset_input_buffer()
+        self.boot_marker_count = 0
+        self.disconnect_cleanup_count = 0
 
     def close(self) -> None:
         try:
@@ -248,8 +306,16 @@ class BenchSerial:
             text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             self.log.write(text + "\n")
             self.log.flush()
+            if text.startswith(BOOT_PREFIX):
+                self.boot_marker_count += 1
+            if text.startswith(V1_DISCONNECT_CLEANUP_PREFIX):
+                self.disconnect_cleanup_count += 1
             return text
         raise TimeoutError("serial read timed out")
+
+    def record_host_boundary(self, label: str) -> None:
+        self.log.write(f"HOST_BOUNDARY {label}\n")
+        self.log.flush()
 
     def read_protocol_line(self, prefixes: tuple[str, ...], timeout_s: float) -> str:
         deadline = time.monotonic() + timeout_s
@@ -286,6 +352,161 @@ def wait_ready(q: BenchSerial, timeout_s: int) -> dict[str, Any]:
         last_error = str(parse_json_line(line, "QERR "))
         time.sleep(1)
     raise RuntimeError(f"bench serial protocol did not become ready: {last_error}")
+
+
+def establish_serial_fence(q: BenchSerial, timeout_s: float = 5.0) -> dict[str, Any]:
+    """Round-trip QSTATUS so every earlier serial line has crossed the host boundary."""
+    q.write_command("QSTATUS")
+    line = q.read_protocol_line(("QRESP ", "QERR "), timeout_s)
+    if not line.startswith("QRESP "):
+        raise RuntimeError(f"reconnect serial fence failed: {parse_json_line(line, 'QERR ')}")
+    payload = parse_json_line(line, "QRESP ")
+    if not (
+        payload.get("ok") is True
+        and payload.get("state") in {"idle", "done"}
+        and payload.get("suite") in {"core", "display"}
+        and payload.get("mode") in {"current", "proxy", "obd", "v1"}
+    ):
+        raise RuntimeError(f"reconnect serial fence was not ready: {payload}")
+    return payload
+
+
+def _preflight_ledger_is_complete(path: Path) -> bool:
+    """Small collection-side readiness check; the grader decodes both ledgers again."""
+    try:
+        if path.stat().st_size > 8 * 1024:
+            raise RuntimeError("reconnect preflight ledger exceeds its bounded size")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"reconnect preflight ledger could not be read: {exc}") from exc
+    if text and not text.endswith("\n"):
+        return False
+    lines = text.splitlines()
+    if len(lines) < 8:
+        return False
+    if len(lines) > 13:
+        raise RuntimeError("reconnect preflight ledger exceeds its bounded event count")
+    try:
+        records = [json.loads(line) for line in lines]
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("reconnect preflight ledger contains invalid JSON") from exc
+    if records[0] != {"schema_version": 1, "kind": "v1replay_handshake_ledger"}:
+        raise RuntimeError("reconnect preflight ledger has an invalid header")
+    events = records[1:]
+    event_keys = {
+        "subscribe": {"event", "epoch", "channel"},
+        "request": {"event", "epoch", "channel", "bytes"},
+        "response": {"event", "epoch", "channel", "bytes", "delivery"},
+        "stream_started": {"event", "epoch", "channel", "bytes", "delivery"},
+    }
+    for event in events:
+        if not isinstance(event, dict):
+            raise RuntimeError("reconnect preflight ledger event is not an object")
+        event_name = event.get("event")
+        if (
+            not isinstance(event_name, str)
+            or event_name not in event_keys
+            or set(event) != event_keys[event_name]
+        ):
+            raise RuntimeError("reconnect preflight ledger has an invalid event schema")
+        epoch = event.get("epoch")
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or not 1 <= epoch <= 4:
+            raise RuntimeError("reconnect preflight ledger has an invalid anonymous epoch")
+        if not isinstance(event.get("channel"), str):
+            raise RuntimeError("reconnect preflight ledger has an invalid channel")
+        if event_name != "subscribe":
+            raw = event.get("bytes")
+            if (
+                not isinstance(raw, list)
+                or len(raw) > 64
+                or any(
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 <= value <= 0xFF
+                    for value in raw
+                )
+            ):
+                raise RuntimeError("reconnect preflight ledger has invalid packet bytes")
+        if event_name in {"response", "stream_started"} and not isinstance(
+            event.get("delivery"), str
+        ):
+            raise RuntimeError("reconnect preflight ledger has invalid delivery evidence")
+
+    if len(lines) != 8 or any(event["epoch"] != 1 for event in events):
+        raise ReconnectBehaviorError(
+            "handshake_invalid",
+            "reconnect preflight ledger does not contain exactly one seven-event epoch",
+        )
+
+    expected_frames = {
+        "start": START_ALERT_REQUEST,
+        "version_request": VERSION_REQUEST,
+        "version_response": VERSION_RESPONSE,
+        "all_volume_request": ALL_VOLUME_REQUEST,
+        "all_volume_response": ALL_VOLUME_RESPONSE,
+        "stream": EMPTY_ALERT_ROW,
+    }
+    matches: dict[str, int] = {}
+    request_channels: set[str] = set()
+    for index, event in enumerate(events):
+        event_name = event.get("event")
+        channel = event.get("channel")
+        raw = event.get("bytes")
+        key = ""
+        if event_name == "subscribe" and channel == "B2CE" and set(event) == {
+            "event", "epoch", "channel"
+        }:
+            key = "subscribe"
+        elif event_name == "request" and channel in {"B6D4", "BAD4"}:
+            request_channels.add(str(channel))
+            if raw == START_ALERT_REQUEST:
+                key = "start"
+            elif raw == VERSION_REQUEST:
+                key = "version_request"
+            elif raw == ALL_VOLUME_REQUEST:
+                key = "all_volume_request"
+        elif (
+            event_name == "response"
+            and channel == "B2CE"
+            and event.get("delivery") == "delivered"
+        ):
+            if raw == VERSION_RESPONSE:
+                key = "version_response"
+            elif raw == ALL_VOLUME_RESPONSE:
+                key = "all_volume_response"
+        elif (
+            event_name == "stream_started"
+            and channel == "B2CE"
+            and event.get("delivery") == "delivered"
+            and raw == EMPTY_ALERT_ROW
+        ):
+            key = "stream"
+        if not key or key in matches:
+            raise ReconnectBehaviorError(
+                "handshake_invalid",
+                "reconnect preflight ledger does not contain one canonical startup exchange",
+            )
+        matches[key] = index
+
+    if set(matches) != {"subscribe", *expected_frames} or len(request_channels) != 1:
+        raise ReconnectBehaviorError(
+            "handshake_invalid",
+            "reconnect preflight ledger is incomplete or switches command channel",
+        )
+    if not (
+        matches["subscribe"] < matches["start"]
+        and matches["start"] < matches["stream"]
+        and matches["start"] < matches["version_request"] < matches["all_volume_request"]
+        and matches["version_request"] < matches["version_response"]
+        and matches["all_volume_request"] < matches["all_volume_response"]
+    ):
+        raise ReconnectBehaviorError(
+            "handshake_invalid",
+            "reconnect preflight ledger has invalid startup ordering",
+        )
+    return True
 
 
 def start_and_wait(
@@ -512,13 +733,16 @@ class V1Emulator:
         out_dir: Path,
         suite: str,
         blink_profile: str | None = None,
+        handshake_only: bool = False,
     ):
         self.executable = executable
         self.suite = suite
         self.mode = "bench" if suite == "replay" else "idle"
+        self.handshake_only = handshake_only
         self.blink_profile = blink_profile or ("scenario" if suite == "replay" else "steady")
-        self.log_path = out_dir / "v1replay.log"
-        self.handshake_ledger_path = out_dir / HANDSHAKE_LEDGER_NAME if self.mode == "bench" else None
+        self.log_path = out_dir / (RECONNECT_LOG_NAME if handshake_only else "v1replay.log")
+        ledger_name = RECONNECT_LEDGER_NAME if handshake_only else HANDSHAKE_LEDGER_NAME
+        self.handshake_ledger_path = out_dir / ledger_name if self.mode == "bench" else None
         self.process: subprocess.Popen[bytes] | None = None
         self.log_handle: Any = None
         self.started = False
@@ -535,11 +759,15 @@ class V1Emulator:
                 raise RuntimeError("replay handshake ledger path is unavailable")
             if self.handshake_ledger_path.exists():
                 raise RuntimeError("refusing to reuse an existing replay handshake ledger")
+        if self.log_path.exists():
+            raise RuntimeError("refusing to overwrite an existing V1 emulator log")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_handle = self.log_path.open("wb")
         command = [str(self.executable), self.mode]
         if self.mode == "bench":
             command.extend(["--machine-events", "--blink-profile", self.blink_profile])
+            if self.handshake_only:
+                command.extend(["--handshake-only", "--log-packets"])
             assert self.handshake_ledger_path is not None
             command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])
         self.process = subprocess.Popen(
@@ -552,6 +780,45 @@ class V1Emulator:
         self.started_monotonic = time.monotonic()
         self.started = True
         print(f"[bench] launched V1 emulator mode={self.mode}; log: {self.log_path}", flush=True)
+
+    def wait_for_handshake_ready(self, timeout_s: float) -> None:
+        if self.handshake_ledger_path is None:
+            raise RuntimeError("reconnect preflight handshake ledger path is unavailable")
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            problem = self.health_problem()
+            if problem:
+                raise RuntimeError(problem)
+            if _preflight_ledger_is_complete(self.handshake_ledger_path):
+                if self._bench_event("handshake_transport").get("active") is not True:
+                    time.sleep(0.05)
+                    continue
+                if not self._bench_event("handshake_ready"):
+                    time.sleep(0.05)
+                    continue
+                if self.health_problem():
+                    raise RuntimeError("reconnect preflight exited as its handshake became ready")
+                return
+            time.sleep(0.05)
+        raise ReconnectBehaviorError(
+            "handshake_timeout",
+            "reconnect preflight timed out before one complete active handshake epoch",
+        )
+
+    def finish_preflight(self, handshake_ready_while_alive: bool) -> dict[str, Any]:
+        process_was_running = self.process is not None and self.process.poll() is None
+        self.managed_stop = process_was_running
+        self.stop()
+        confirmed_exit = self.process is not None and self.process.poll() is not None
+        return {
+            "handshake_ready_while_alive": bool(handshake_ready_while_alive and process_was_running),
+            "managed_stop": self.managed_stop,
+            "confirmed_exit": confirmed_exit,
+            "log": self.log_path.name if self.log_path.is_file() else "",
+            "handshake_ledger": (
+                self.handshake_ledger_path.name if self.handshake_ledger_path is not None else ""
+            ),
+        }
 
     def health_problem(self) -> str:
         if self.process is None:
@@ -575,7 +842,7 @@ class V1Emulator:
             return {}
         prefix = "V1REPLAY_EVENT "
         decoder = json.JSONDecoder()
-        for line in lines:
+        for line in reversed(lines):
             marker = line.find(prefix)
             if marker < 0:
                 continue
@@ -668,12 +935,175 @@ class V1Emulator:
         self._close_log()
 
 
+def run_reconnect_preflight(
+    q: BenchSerial,
+    emulator: V1Emulator,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Prove managed disappearance and board cleanup before the scored window."""
+    initial_boot_count = q.boot_marker_count
+    initial_cleanup_count = q.disconnect_cleanup_count
+    handshake_ready = False
+    serial_fence_observed = False
+    post_exit_fence_observed = False
+    process_exit_boundary_recorded = False
+    result: dict[str, Any] = {}
+    try:
+        # Anchor every reconnect artifact to this already-ready serial session.
+        # The scorer rejects cleanup or reboot evidence from here through B.
+        q.record_host_boundary(RECONNECT_PREFLIGHT_START)
+        emulator.start()
+        emulator.wait_for_handshake_ready(timeout_s)
+        handshake_ready = True
+
+        # A response received while process A is still healthy drains every
+        # earlier serial line, so stale cleanup cannot satisfy the later gate.
+        q.record_host_boundary(RECONNECT_FENCE_BEGIN)
+        establish_serial_fence(q)
+        q.record_host_boundary(RECONNECT_FENCE_COMPLETE)
+        serial_fence_observed = True
+        if emulator.health_problem():
+            raise RuntimeError("reconnect preflight exited before its serial fence")
+        if emulator._bench_event("handshake_transport").get("active") is not True:
+            raise ReconnectBehaviorError(
+                "active_session_lost",
+                "reconnect preflight lost its active short-notify session",
+            )
+        if q.boot_marker_count != initial_boot_count:
+            raise RuntimeError("board rebooted during reconnect preflight")
+        if q.disconnect_cleanup_count != initial_cleanup_count:
+            raise ReconnectBehaviorError(
+                "cleanup_before_stop",
+                "V1 disconnect cleanup occurred before managed emulator stop",
+            )
+
+        result = emulator.finish_preflight(handshake_ready_while_alive=True)
+        if result.get("confirmed_exit") is not True:
+            raise RuntimeError("reconnect preflight process did not exit after managed stop")
+
+        q.record_host_boundary("reconnect_preflight_process_exited")
+        process_exit_boundary_recorded = True
+        cleanup_deadline = time.monotonic() + timeout_s
+        while time.monotonic() < cleanup_deadline:
+            try:
+                line = q.read_line(min(0.5, max(0.1, cleanup_deadline - time.monotonic())))
+            except TimeoutError:
+                continue
+            if line.startswith(BOOT_PREFIX):
+                raise RuntimeError("board rebooted while waiting for V1 disconnect cleanup")
+            if line.startswith(V1_DISCONNECT_CLEANUP_PREFIX):
+                break
+        else:
+            raise ReconnectBehaviorError(
+                "cleanup_missing",
+                "board did not report V1 disconnect cleanup after emulator exit",
+            )
+
+        # Drain through one more protocol response before QSTART so duplicate
+        # cleanup lines cannot hide in the serial buffer and satisfy the gate.
+        q.record_host_boundary(RECONNECT_POST_CLEANUP_FENCE_BEGIN)
+        establish_serial_fence(q)
+        q.record_host_boundary(RECONNECT_POST_CLEANUP_FENCE_COMPLETE)
+        post_exit_fence_observed = True
+        cleanup_markers = q.disconnect_cleanup_count - initial_cleanup_count
+        if cleanup_markers != 1:
+            raise ReconnectBehaviorError(
+                "cleanup_count",
+                "reconnect preflight requires exactly one new V1 disconnect cleanup marker"
+            )
+        if q.boot_marker_count != initial_boot_count:
+            raise RuntimeError("board rebooted before the replacement emulator launch")
+
+        result.update(
+            {
+                "serial_fence_observed": True,
+                "cleanup_marker_count": cleanup_markers,
+                "serial_session_continuous": True,
+                "boot_observed_before_second_complete": False,
+            }
+        )
+        return result
+    except Exception as exc:
+        behavioral = isinstance(exc, ReconnectBehaviorError)
+        failure_kind = exc.kind if behavioral else "evidence_or_transport"
+        if not result:
+            result = emulator.finish_preflight(handshake_ready_while_alive=handshake_ready)
+        if result.get("confirmed_exit") is True and not process_exit_boundary_recorded:
+            q.record_host_boundary("reconnect_preflight_process_exited")
+            process_exit_boundary_recorded = True
+        if behavioral:
+            # A negative result is a product FAIL only if the same serial
+            # session still answers after process A has exited.
+            if result.get("confirmed_exit") is not True or not process_exit_boundary_recorded:
+                behavioral = False
+                failure_kind = "process_exit_unconfirmed"
+            try:
+                if behavioral and not post_exit_fence_observed:
+                    establish_serial_fence(q)
+                    serial_fence_observed = True
+            except Exception as serial_exc:
+                behavioral = False
+                failure_kind = "serial_failure"
+                exc = RuntimeError(f"{exc}; serial health confirmation failed: {serial_exc}")
+            if q.boot_marker_count != initial_boot_count:
+                behavioral = False
+                failure_kind = "board_reboot"
+        result.update(
+            {
+                "serial_fence_observed": serial_fence_observed,
+                "cleanup_marker_count": q.disconnect_cleanup_count - initial_cleanup_count,
+                "serial_session_continuous": behavioral,
+                "boot_observed_before_second_complete": q.boot_marker_count != initial_boot_count,
+            }
+        )
+        raise ReconnectPreflightFailure(
+            str(exc),
+            result,
+            classification="FAIL" if behavioral else "COLLECTION_FAILED",
+            failure_kind=failure_kind,
+        ) from exc
+
+
 def collect_live(
     args: argparse.Namespace,
     out_dir: Path,
     after_upload: Callable[[], None] | None = None,
     identity_provider: Callable[[], dict[str, Any]] | None = None,
-) -> tuple[Path, Path | None, dict[str, Any], str, dict[str, Any], dict[str, Any]]:
+) -> tuple[
+    Path,
+    Path | None,
+    dict[str, Any],
+    str,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    protocol_log = out_dir / "bench_serial.log"
+    reserved_evidence = [
+        protocol_log,
+        out_dir / "window_result.json",
+        out_dir / "v1replay.log",
+        out_dir / "import_stdout.log",
+        out_dir / "import_stderr.log",
+        out_dir / "scoring.json",
+        out_dir / "manifest.json",
+    ]
+    if args.suite == "replay":
+        reserved_evidence.extend(
+            [
+                out_dir / HANDSHAKE_LEDGER_NAME,
+                out_dir / RECONNECT_LOG_NAME,
+                out_dir / RECONNECT_LEDGER_NAME,
+            ]
+        )
+    if args.camera:
+        reserved_evidence.append(out_dir / "camera")
+    existing_evidence = [path.name for path in reserved_evidence if path.exists()]
+    if existing_evidence:
+        raise RuntimeError(
+            "refusing to reuse existing live evidence: " + ", ".join(existing_evidence)
+        )
+
     port = wait_for_port(args.port)
     if args.upload:
         print("[bench] uploading firmware/filesystem before first window", flush=True)
@@ -684,46 +1114,120 @@ def collect_live(
         time.sleep(2)
         wait_for_post_upload_settle(args.post_upload_settle_seconds)
 
-    protocol_log = out_dir / "bench_serial.log"
     q: BenchSerial | None = None
     completion: dict[str, Any] = {}
     emulator = V1Emulator(
         Path(args.replay_executable).resolve(), out_dir, args.suite, args.blink_profile
     )
     emulator_result: dict[str, Any] = {}
+    reconnect_preflight_result: dict[str, Any] = {}
+    reconnect_preflight: V1Emulator | None = None
     camera = CameraCapture(out_dir / "camera", args.duration_seconds) if args.camera else None
     camera_result: dict[str, Any] = {}
     encounter_csv_path: Path | None = None
     collection_completed = False
+
+    def admit_camera() -> None:
+        nonlocal camera_result
+        if camera is None:
+            return
+        preflight = run_camera_preflight(camera)
+        if preflight.get("result") != "PASS":
+            try:
+                camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                camera_result = {"result": "CAPTURE_FAILED", "errors": list(camera.errors)}
+            camera_result.update(
+                {
+                    "preflight": camera.preflight_result_path.name,
+                    "preflight_result": preflight.get("result"),
+                    "preflight_diagnostics": preflight.get("diagnostics") or [],
+                }
+            )
+            failure = CameraPreflightFailure(preflight, camera_result)
+            failure.reconnect_preflight = dict(reconnect_preflight_result)
+            raise failure
+        print(f"[bench] camera preflight passed; recording: {camera.video_path}", flush=True)
+
     try:
-        if camera is not None:
-            preflight = run_camera_preflight(camera)
-            if preflight.get("result") != "PASS":
-                try:
-                    camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    camera_result = {"result": "CAPTURE_FAILED", "errors": list(camera.errors)}
-                camera_result.update(
-                    {
-                        "preflight": camera.preflight_result_path.name,
-                        "preflight_result": preflight.get("result"),
-                        "preflight_diagnostics": preflight.get("diagnostics") or [],
-                    }
-                )
-                raise CameraPreflightFailure(preflight, camera_result)
-            print(f"[bench] camera preflight passed; recording: {camera.video_path}", flush=True)
+        if args.suite != "replay":
+            admit_camera()
         print(f"[bench] opening serial port {port}; protocol log: {protocol_log}", flush=True)
         q = BenchSerial(port, args.baud, protocol_log)
         ready = wait_ready(q, args.ready_timeout_seconds)
         print(f"[bench] protocol ready: {ready}", flush=True)
+        boot_count_before_reconnect: int | None = None
+        cleanup_count_before_reconnect: int | None = None
+        expected_cleanup_count: int | None = None
+        if args.suite == "replay":
+            boot_count_before_reconnect = q.boot_marker_count
+            cleanup_count_before_reconnect = q.disconnect_cleanup_count
+            reconnect_preflight = V1Emulator(
+                Path(args.replay_executable).resolve(),
+                out_dir,
+                args.suite,
+                args.blink_profile,
+                handshake_only=True,
+            )
+            reconnect_preflight_result = run_reconnect_preflight(
+                q,
+                reconnect_preflight,
+                args.ready_timeout_seconds,
+            )
+            print(
+                "[bench] reconnect preflight passed; prior V1 session cleaned up",
+                flush=True,
+            )
+            # The duration-bounded recording belongs only to process B and its
+            # scored QSTART window, never to the unscored reconnect preflight.
+            admit_camera()
+            q.record_host_boundary(RECONNECT_PRE_QSTART_FENCE_BEGIN)
+            establish_serial_fence(q)
+            q.record_host_boundary(RECONNECT_PRE_QSTART_FENCE_COMPLETE)
+            if q.boot_marker_count != boot_count_before_reconnect:
+                raise RuntimeError("board rebooted before the replacement emulator launch")
+            if q.disconnect_cleanup_count != cleanup_count_before_reconnect + 1:
+                raise RuntimeError(
+                    "unexpected V1 disconnect cleanup before the replacement emulator launch"
+                )
+            expected_cleanup_count = q.disconnect_cleanup_count
         completion = start_and_wait(
             q,
             args.suite,
             args.duration_seconds,
             args.completion_grace_seconds,
             after_started=emulator.start,
-            health_check=emulator.health_problem,
+            health_check=lambda: (
+                emulator.health_problem()
+                or (
+                    "board rebooted before the replacement V1 session completed"
+                    if args.suite == "replay"
+                    and q is not None
+                    and boot_count_before_reconnect is not None
+                    and q.boot_marker_count != boot_count_before_reconnect
+                    else (
+                        "an extra V1 disconnect cleanup occurred during the replacement session"
+                        if args.suite == "replay"
+                        and q is not None
+                        and expected_cleanup_count is not None
+                        and q.disconnect_cleanup_count != expected_cleanup_count
+                        else ""
+                    )
+                )
+            ),
         )
+        if (
+            args.suite == "replay"
+            and boot_count_before_reconnect is not None
+            and q.boot_marker_count != boot_count_before_reconnect
+        ):
+            raise RuntimeError("board rebooted before the replacement V1 session completed")
+        if (
+            args.suite == "replay"
+            and expected_cleanup_count is not None
+            and q.disconnect_cleanup_count != expected_cleanup_count
+        ):
+            raise RuntimeError("replacement V1 session disconnected before completion")
         try:
             csv_path = download_csv(q, out_dir, args.export_idle_timeout_seconds)
         except TimeoutError as exc:
@@ -762,6 +1266,9 @@ def collect_live(
             q.close()
         if not emulator_result:
             emulator_result = emulator.finish(collection_completed)
+        if reconnect_preflight is not None and reconnect_preflight.process is not None:
+            if reconnect_preflight.process.poll() is None:
+                reconnect_preflight.stop()
         if camera is not None:
             camera_result = camera.stop(collection_completed)
             try:
@@ -834,7 +1341,15 @@ def collect_live(
     if not emulator_result.get("completed"):
         mode = str(emulator_result.get("mode") or args.suite)
         raise RuntimeError(f"V1 emulator mode={mode} did not cover the complete metrics window")
-    return csv_path, encounter_csv_path, completion, port, emulator_result, camera_result
+    return (
+        csv_path,
+        encounter_csv_path,
+        completion,
+        port,
+        emulator_result,
+        camera_result,
+        reconnect_preflight_result,
+    )
 
 
 def camera_grade_required(suite: str, camera_result: dict[str, Any]) -> bool:
@@ -947,10 +1462,19 @@ def main() -> int:
             completion: dict[str, Any] = {"source": "from_csv"}
             port = ""
             emulator_result: dict[str, Any] = {}
+            reconnect_preflight_result: dict[str, Any] = {}
             camera_result: dict[str, Any] = {}
             encounter_csv_path: Path | None = None
         else:
-            csv_path, encounter_csv_path, completion, port, emulator_result, camera_result = collect_live(
+            (
+                csv_path,
+                encounter_csv_path,
+                completion,
+                port,
+                emulator_result,
+                camera_result,
+                reconnect_preflight_result,
+            ) = collect_live(
                 args,
                 out_dir,
                 after_upload=refresh_identity if args.upload else None,
@@ -980,6 +1504,16 @@ def main() -> int:
                 "handshake_ledger_path": (
                     str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""
                 ),
+                "reconnect_preflight_handshake_ledger_path": (
+                    str(out_dir / RECONNECT_LEDGER_NAME) if args.suite == "replay" else ""
+                ),
+                "reconnect_preflight_log_path": (
+                    str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
+                ),
+                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "reconnect_preflight": (
+                    reconnect_preflight_result if args.suite == "replay" else {}
+                ),
                 "completion": completion,
                 "v1_emulator": emulator_result,
                 "replay": emulator_result if args.suite == "replay" else {},
@@ -1002,10 +1536,46 @@ def main() -> int:
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
                 "camera": exc.camera_result,
+                "reconnect_preflight_handshake_ledger_path": (
+                    str(out_dir / RECONNECT_LEDGER_NAME) if args.suite == "replay" else ""
+                ),
+                "reconnect_preflight_log_path": (
+                    str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
+                ),
+                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "reconnect_preflight": exc.reconnect_preflight,
                 "error": str(exc),
             },
         )
         print(f"[bench] camera preflight inconclusive: {exc}", file=sys.stderr)
+        return 3
+    except ReconnectPreflightFailure as exc:
+        write_window_result(
+            out_dir,
+            {
+                "result": (
+                    "RECONNECT_FAILED"
+                    if exc.classification == "FAIL"
+                    else "COLLECTION_FAILED"
+                ),
+                "suite": args.suite,
+                "duration_seconds": args.duration_seconds,
+                "board_id": args.board_id,
+                "git_sha": args.git_sha,
+                "git_ref": args.git_ref,
+                "git_worktree_clean": args.git_worktree_clean == "1",
+                **identity_summary(),
+                "reconnect_preflight_handshake_ledger_path": str(
+                    out_dir / RECONNECT_LEDGER_NAME
+                ),
+                "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
+                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "reconnect_preflight": exc.result,
+                "reconnect_failure_kind": exc.failure_kind,
+                "error": str(exc),
+            },
+        )
+        print(f"[bench] reconnect preflight failed: {exc}", file=sys.stderr)
         return 3
     except Exception as exc:  # noqa: BLE001 - top-level artifact capture
         write_window_result(

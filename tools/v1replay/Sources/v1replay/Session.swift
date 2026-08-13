@@ -12,12 +12,38 @@ extension V1 {
             /// requests always require their checksum byte to validate.
             var outboundChecksum = true
             var version = "4.1038"
+            var mode: ModeGlyph = .advancedLogic
             var mainVolume: UInt8 = 4
             var mutedVolume: UInt8 = 0
-            /// Nil preserves the existing behavior: saved mirrors current.
+            /// Nil means saved initially mirrors current. Session initialization
+            /// resolves it once so later non-saving writes cannot move saved.
             var savedMainVolume: UInt8?
             var savedMutedVolume: UInt8?
             var userBytes: [UInt8] = Array(repeating: 0, count: 6)
+        }
+
+        struct ControlState: Equatable {
+            fileprivate(set) var mode: ModeGlyph
+            fileprivate(set) var mainVolume: UInt8
+            fileprivate(set) var mutedVolume: UInt8
+            fileprivate(set) var savedMainVolume: UInt8
+            fileprivate(set) var savedMutedVolume: UInt8
+
+            init(mode: ModeGlyph,
+                 mainVolume: UInt8,
+                 mutedVolume: UInt8,
+                 savedMainVolume: UInt8,
+                 savedMutedVolume: UInt8) {
+                self.mode = mode
+                self.mainVolume = mainVolume
+                self.mutedVolume = mutedVolume
+                self.savedMainVolume = savedMainVolume
+                self.savedMutedVolume = savedMutedVolume
+            }
+
+            var displayVolume: UInt8 {
+                return (mainVolume << 4) | mutedVolume
+            }
         }
 
         enum SubscriptionChannel: Hashable {
@@ -46,6 +72,8 @@ extension V1 {
             case invalidChecksum
             case unexpectedPayload(packetID: UInt8, count: Int)
             case invalidUserBytesLength(Int)
+            case invalidModeValue(UInt8)
+            case invalidVolume(main: UInt8, muted: UInt8)
         }
 
         enum Effect: Equatable {
@@ -54,7 +82,8 @@ extension V1 {
             case muteChanged(Bool)
             case displayPowerChanged(Bool)
             case userBytesStored([UInt8])
-            case acceptedWithoutReply
+            case modeChanged(ModeGlyph)
+            case volumeChanged(ControlState)
             case rejected(Rejection)
             case unhandled
         }
@@ -75,10 +104,20 @@ extension V1 {
         private var pendingPackets: [InboundPacket] = []
         private static let maximumResidualByteCount = 64
         private(set) var alertDataRequested = false
+        private(set) var controlState: ControlState
         private var userBytes: UserBytesStore
 
         init(config: Config = Config()) {
             self.config = config
+            // Resolve nil saved values once. They mean "initially mirror current",
+            // not "keep following current after a non-saving volume write".
+            self.controlState = ControlState(
+                mode: config.mode,
+                mainVolume: config.mainVolume,
+                mutedVolume: config.mutedVolume,
+                savedMainVolume: config.savedMainVolume ?? config.mainVolume,
+                savedMutedVolume: config.savedMutedVolume ?? config.mutedVolume
+            )
             self.userBytes = UserBytesStore(
                 Session.normalizedUserBytes(config.userBytes, version: config.version)
             )
@@ -189,10 +228,10 @@ extension V1 {
                     channel: .displayShort,
                     bytes: V1.allVolumePacket(
                         header: config.header,
-                        main: config.mainVolume,
-                        muted: config.mutedVolume,
-                        savedMain: config.savedMainVolume,
-                        savedMuted: config.savedMutedVolume,
+                        main: controlState.mainVolume,
+                        muted: controlState.mutedVolume,
+                        savedMain: controlState.savedMainVolume,
+                        savedMuted: controlState.savedMutedVolume,
                         checksum: config.outboundChecksum
                     )
                 ))]
@@ -267,13 +306,35 @@ extension V1 {
                 guard packet.payload.count == 1 else {
                     return rejectUnexpectedPayload(packet)
                 }
-                effects = [.acceptedWithoutReply]
+                guard let mode = ModeGlyph.commandValue(packet.payload[0]) else {
+                    return CommandOutcome(packet: packet, effects: [
+                        .rejected(.invalidModeValue(packet.payload[0]))
+                    ])
+                }
+                controlState.mode = mode
+                effects = [.modeChanged(mode)]
 
             case PacketID.reqWriteVolume.rawValue:
                 guard packet.payload.count == 3 else {
                     return rejectUnexpectedPayload(packet)
                 }
-                effects = [.acceptedWithoutReply]
+                let main = packet.payload[0]
+                let muted = packet.payload[1]
+                guard main <= 9 && muted <= 9 else {
+                    return CommandOutcome(packet: packet, effects: [
+                        .rejected(.invalidVolume(main: main, muted: muted))
+                    ])
+                }
+                controlState.mainVolume = main
+                controlState.mutedVolume = muted
+                // Aux bit 2 saves the current pair. Feedback and disconnect
+                // policy encoded by other bits do not alter within-session
+                // state and remain outside this slice's timing/lifecycle gate.
+                if packet.payload[2] & 0x04 != 0 {
+                    controlState.savedMainVolume = main
+                    controlState.savedMutedVolume = muted
+                }
+                effects = [.volumeChanged(controlState)]
 
             default:
                 effects = [.unhandled]

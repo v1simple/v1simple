@@ -44,6 +44,7 @@ BOGEY_GLYPHS = {0: 0x3F, 1: 0x06, 2: 0x5B, 3: 0x4F, 4: 0x66,
                 5: 0x6D, 6: 0x7D, 7: 0x07, 8: 0x7F, 9: 0x6F}
 
 MODE_ADVANCED_LOGIC = 0x38
+MODE_BITS_ADVANCED_LOGIC = 0x0C
 
 RAW_STRENGTH = {
     0x02: [0x00, 0x80, 0x93, 0x9A, 0xA1, 0xA8, 0xAF, 0xB6, 0xBD],  # ka
@@ -79,7 +80,8 @@ def frame(header, packet_id, payload, checksum=True):
 
 def display_payload_alerting(bars, band_mask, direction_mask, bogey_count,
                              muted, volume, display_on, blink_plane=False,
-                             blink_arrow=False):
+                             blink_arrow=False,
+                             aux1_mode_bits=MODE_BITS_ADVANCED_LOGIC):
     glyph = BOGEY_GLYPHS[min(9, max(0, bogey_count))]
     image = band_mask | direction_mask
     if muted:
@@ -91,16 +93,18 @@ def display_payload_alerting(bars, band_mask, direction_mask, bogey_count,
         aux0 |= AUX0_SOFT_MUTE
     image2 = image & ~direction_mask if blink_arrow else image
     return [glyph, 0x00 if blink_plane else glyph,
-            led_bitmap(bars), image, image2, aux0, 0x00, volume]
+            led_bitmap(bars), image, image2, aux0, aux1_mode_bits, volume]
 
 
-def display_payload_idle(mode_glyph, volume, display_on, soft_muted):
+def display_payload_idle(mode_glyph, volume, display_on, soft_muted,
+                         aux1_mode_bits=MODE_BITS_ADVANCED_LOGIC):
     aux0 = AUX0_SYSTEM_STATUS
     if display_on:
         aux0 |= AUX0_DISPLAY_ON
     if soft_muted:
         aux0 |= AUX0_SOFT_MUTE
-    return [mode_glyph, mode_glyph, 0x00, 0x00, 0x00, aux0, 0x00, volume]
+    return [mode_glyph, mode_glyph, 0x00, 0x00, 0x00,
+            aux0, aux1_mode_bits, volume]
 
 
 def alert_row_payload(index, count, bars, band_mask, direction_mask,
@@ -345,7 +349,8 @@ def check_crib_packets():
     for bars, expected in ((1, draft_one), (6, draft_six)):
         built = frame(HEADER_DRAFT, 0x31,
                       display_payload_alerting(bars, BANDS["ka"], DIRECTIONS["F"], 1,
-                                               False, 0x00, False, blink_plane=True),
+                                               False, 0x00, False, blink_plane=True,
+                                               aux1_mode_bits=0x00),
                       checksum=False)
         check(built == expected,
               "--blink-bogey reproduces the draft %d-bar packet exactly" % bars,
@@ -355,7 +360,8 @@ def check_crib_packets():
     for bars, expected in ((1, draft_one), (6, draft_six)):
         built = frame(HEADER_DRAFT, 0x31,
                       display_payload_alerting(bars, BANDS["ka"], DIRECTIONS["F"], 1,
-                                               False, 0x00, False),
+                                               False, 0x00, False,
+                                               aux1_mode_bits=0x00),
                       checksum=False)
         differing = [i for i in range(len(expected)) if built[i] != expected[i]]
         check(differing == [6],
@@ -412,7 +418,8 @@ def check_repo_fixture_parity():
 
     built = frame(HEADER_DRAFT, 0x31,
                   display_payload_alerting(6, BANDS["k"], DIRECTIONS["F"], 1,
-                                           False, 0x00, False, blink_plane=True),
+                                           False, 0x00, False, blink_plane=True,
+                                           aux1_mode_bits=0x00),
                   checksum=True)
     check(len(built) == len(fixture),
           "fixture-compatible display packet is the same length as the repo fixture",
@@ -437,7 +444,11 @@ def check_framing():
         for header in (HEADER_BROADCAST_INFORMATION, HEADER_DRAFT):
             display = frame(header, 0x31,
                             display_payload_alerting(4, BANDS["ka"], DIRECTIONS["F"],
-                                                     1, False, 0x40, True),
+                                                     1, False, 0x40, True,
+                                                     aux1_mode_bits=(
+                                                         0x00 if header == HEADER_DRAFT
+                                                         else MODE_BITS_ADVANCED_LOGIC
+                                                     )),
                             checksum=checksum)
             expected_len = 8 + (1 if checksum else 0)
             check(display[4] == expected_len,
@@ -498,6 +509,8 @@ def check_idle_frame():
     check(state["systemStatus"], "idle frame keeps isSystemStatus set")
     check(state["bogeyByte"] == MODE_ADVANCED_LOGIC,
           "idle frame carries the Advanced Logic mode glyph")
+    check(payload[6] == MODE_BITS_ADVANCED_LOGIC,
+          "idle frame carries Advanced Logic mode bits in auxData1")
 
 
 def check_system_status_guard():
@@ -519,7 +532,7 @@ def check_arrow_blink_planes():
     default_payload = display_payload_alerting(
         1, BANDS["ka"], DIRECTIONS["F"], 1, False, 0x40, True
     )
-    check(default_payload == [0x06, 0x06, 0x01, 0x22, 0x22, 0x0C, 0x00, 0x40],
+    check(default_payload == [0x06, 0x06, 0x01, 0x22, 0x22, 0x0C, 0x0C, 0x40],
           "default alerting payload remains byte-identical",
           hexs(default_payload))
 
@@ -941,7 +954,7 @@ struct BenchVerifier {
             bars: 1, band: .ka, direction: .front, bogeyCount: 1,
             muted: false, volume: 0x40, displayOn: true
         )
-        check(steadyFront.payload == [0x06, 0x06, 0x01, 0x22, 0x22, 0x0C, 0x00, 0x40],
+        check(steadyFront.payload == [0x06, 0x06, 0x01, 0x22, 0x22, 0x0C, 0x0C, 0x40],
               "default Swift alerting payload remains byte-identical")
 
         let directionCases: [(V1.Direction, UInt8)] = [

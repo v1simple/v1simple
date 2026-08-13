@@ -24,9 +24,10 @@ final class V1Peripheral: NSObject {
         /// Controls generated targeted responses; inbound checksums stay required.
         var checksum: Bool = true
         var version: String = "4.1038"
+        var mode: V1.ModeGlyph = .advancedLogic
         var mainVolume: UInt8 = 4
         var mutedVolume: UInt8 = 0
-        /// Nil preserves the existing behavior: saved mirrors current.
+        /// Nil means saved initially mirrors current.
         var savedMainVolume: UInt8?
         var savedMutedVolume: UInt8?
         var userBytes: [UInt8] = Array(repeating: 0, count: 6)
@@ -82,6 +83,9 @@ final class V1Peripheral: NSObject {
     var notifiesDropped: Int { return withState { $0.notifiesDropped } }
     var commandsReceived: Int { return withState { $0.commandsReceived } }
     var alertDataRequested: Bool { return withState { $0.session.alertDataRequested } }
+    var controlState: V1.Session.ControlState {
+        return withState { $0.session.controlState }
+    }
 
     let queue = DispatchQueue(label: "com.v1simple.v1replay.ble")
 
@@ -106,6 +110,7 @@ final class V1Peripheral: NSObject {
         sessionConfig.header = config.header
         sessionConfig.outboundChecksum = config.checksum
         sessionConfig.version = config.version
+        sessionConfig.mode = config.mode
         sessionConfig.mainVolume = config.mainVolume
         sessionConfig.mutedVolume = config.mutedVolume
         sessionConfig.savedMainVolume = config.savedMainVolume
@@ -279,8 +284,13 @@ final class V1Peripheral: NSObject {
             case .userBytesStored(let bytes):
                 onLog?("← stored user bytes \(bytes.hexString)")
 
-            case .acceptedWithoutReply:
-                onLog?("← accepted \(commandName) — no immediate reply")
+            case .modeChanged(let mode):
+                onLog?("← mode changed to \(mode)")
+                onStateChange?()
+
+            case .volumeChanged(let control):
+                onLog?("← volume changed to \(control.mainVolume)/\(control.mutedVolume)")
+                onStateChange?()
 
             case .rejected(let reason):
                 onLog?("← rejected \(commandName): \(reason)")

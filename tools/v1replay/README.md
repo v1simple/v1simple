@@ -171,6 +171,16 @@ The public contract inventory uses these stable behavior IDs:
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
   B2CE short-packet route. Equal current and saved values are emulator fixture
   configuration, not a universal device default.
+- `V1-CONTROL-MODE-001` pins the default-US one-byte mode commands `01`, `02`,
+  and `03`. They update the current mode without a semantic reply. Later idle
+  display information carries the matching mode glyph and Aux1 mode bits; active
+  display information retains those mode bits while its glyph shows the alert
+  count.
+- `V1-CONTROL-VOLUME-001` pins exact three-byte volume writes with current and
+  muted values in `0...9`. The V1Simple `aux0=00` form updates the current pair
+  while leaving the saved pair unchanged; `aux0` bit `04` also saves the pair.
+  Neither form creates a semantic reply. Later display and all-volume packets
+  expose the updated state.
 - `V1-ALERT-STREAM-CONTROL-001` pins start and stop as state transitions with no
   invented immediate reply. Delivery already queued around a stop and the
   timing of the first or last alert row remain provisional and non-gating.
@@ -187,7 +197,8 @@ The public contract inventory uses these stable behavior IDs:
   choices, not claims that every physical V1 emits those exact bytes or cadence.
 - `V1-DISPLAY-FRAME-001` pins the full eight-byte B2CE display payload after the
   table, with its count, meter, band, direction, and mute state derived from the
-  flagged priority row. Generated display and alert information use the `D8 EA`
+  flagged priority row. Aux1 carries the current default-US mode even during an
+  active alert. Generated display and alert information use the `D8 EA`
   broadcast header; targeted request replies remain `D6 EA`. Identical steady
   image planes are a deterministic fixture choice.
 
@@ -196,7 +207,10 @@ Actual notification delivery, subscription mechanics, and characteristic
 permissions remain integration or bench evidence. Mute on/off and display-on
 accept empty payloads; display-off accepts empty, `00`, or `01`. These state
 commands do not invent same-ID replies. Mode and volume writes accept their
-one- and three-byte payloads without an immediate packet reply.
+validated one- and three-byte payloads without an immediate packet reply.
+Feedback rendering and timing, reserved volume-control bits, disconnect restore,
+power-cycle persistence, and non-US mode variants remain outside this host-state
+gate.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect

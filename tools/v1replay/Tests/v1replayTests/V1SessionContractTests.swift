@@ -399,7 +399,14 @@ final class V1SessionContractTests: XCTestCase {
         ]
         let accepted = session.receive(mode + volume)
         XCTAssertEqual(accepted.map(\.effects), [
-            [.acceptedWithoutReply], [.acceptedWithoutReply],
+            [.modeChanged(.advancedLogic)],
+            [.volumeChanged(V1.Session.ControlState(
+                mode: .advancedLogic,
+                mainVolume: 4,
+                mutedVolume: 0,
+                savedMainVolume: 4,
+                savedMutedVolume: 0
+            ))],
         ])
         XCTAssertFalse(accepted.flatMap(\.effects).contains { effect in
             if case .reply = effect { return true }
@@ -426,5 +433,123 @@ final class V1SessionContractTests: XCTestCase {
             [.rejected(.unexpectedPayload(packetID: 0x39, count: 2))],
             [.rejected(.unexpectedPayload(packetID: 0x39, count: 4))],
         ])
+    }
+
+    /// Public behavior ID: `V1-CONTROL-VOLUME-001`.
+    func testCoalescedVolumeWriteMutatesCurrentInOrderAndKeepsSavedPair() {
+        var session = V1.Session()
+        let allVolume: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB,
+        ]
+        let writeSevenTwo: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x00, 0xB0, 0xAB,
+        ]
+
+        let outcomes = session.receive(allVolume + writeSevenTwo + allVolume)
+
+        XCTAssertEqual(outcomes.map(\.packet.id), [0x3C, 0x39, 0x3C])
+        XCTAssertEqual(outcomes.map(\.effects), [
+            [.reply(V1.ReplyDecision(
+                channel: .displayShort,
+                bytes: [
+                    0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+                    0x04, 0x00, 0x04, 0x00, 0xB4, 0xAB,
+                ]
+            ))],
+            [.volumeChanged(V1.Session.ControlState(
+                mode: .advancedLogic,
+                mainVolume: 7,
+                mutedVolume: 2,
+                savedMainVolume: 4,
+                savedMutedVolume: 0
+            ))],
+            [.reply(V1.ReplyDecision(
+                channel: .displayShort,
+                bytes: [
+                    0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+                    0x07, 0x02, 0x04, 0x00, 0xB9, 0xAB,
+                ]
+            ))],
+        ])
+        XCTAssertEqual(session.controlState, V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))
+        XCTAssertEqual(outcomes.flatMap(\.effects).filter { effect in
+            if case .reply = effect { return true }
+            return false
+        }.count, 2)
+    }
+
+    /// Public behavior ID: `V1-CONTROL-VOLUME-001`.
+    func testVolumeSaveBitUpdatesCurrentAndSavedWithoutReply() {
+        var session = V1.Session()
+        let saveSevenTwo: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x04, 0xB4, 0xAB,
+        ]
+        let allVolume: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB,
+        ]
+
+        let outcomes = session.receive(saveSevenTwo + allVolume)
+
+        XCTAssertEqual(outcomes[0].effects, [.volumeChanged(V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 7,
+            mutedVolume: 2,
+            savedMainVolume: 7,
+            savedMutedVolume: 2
+        ))])
+        XCTAssertEqual(outcomes[1].effects, [.reply(V1.ReplyDecision(
+            channel: .displayShort,
+            bytes: [
+                0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+                0x07, 0x02, 0x07, 0x02, 0xBE, 0xAB,
+            ]
+        ))])
+    }
+
+    /// Public behavior IDs: `V1-CONTROL-MODE-001` and
+    /// `V1-CONTROL-VOLUME-001`.
+    func testInvalidControlValuesAndChecksumCannotMutateState() {
+        var session = V1.Session()
+        let invalidModeZero: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x00, 0xA2, 0xAB,
+        ]
+        let invalidModeFour: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x04, 0xA6, 0xAB,
+        ]
+        let invalidMain: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x0A, 0x02, 0x00, 0xB3, 0xAB,
+        ]
+        let invalidMuted: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x0A, 0x00, 0xB8, 0xAB,
+        ]
+        let badChecksumModeOne: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x01, 0xA2, 0xAB,
+        ]
+
+        let outcomes = session.receive(
+            invalidModeZero + invalidModeFour + invalidMain
+                + invalidMuted + badChecksumModeOne
+        )
+
+        XCTAssertEqual(outcomes.map(\.effects), [
+            [.rejected(.invalidModeValue(0x00))],
+            [.rejected(.invalidModeValue(0x04))],
+            [.rejected(.invalidVolume(main: 0x0A, muted: 0x02))],
+            [.rejected(.invalidVolume(main: 0x07, muted: 0x0A))],
+            [.rejected(.invalidChecksum)],
+        ])
+        XCTAssertEqual(session.controlState, V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 4,
+            mutedVolume: 0,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        ))
     }
 }

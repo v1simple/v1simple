@@ -975,6 +975,23 @@ def test_v1replay_tracks_each_subscription_independently() -> None:
     )
 
 
+def test_v1replay_player_uses_live_control_snapshot() -> None:
+    source_dir = ROOT / "tools" / "v1replay" / "Sources" / "v1replay"
+    player = (source_dir / "Player.swift").read_text()
+    options = player.split("struct Options {", 1)[1].split("\n    }", 1)[0]
+
+    assert_true("var mode:" not in options, "Player.Options duplicates session mode")
+    assert_true("var volume:" not in options, "Player.Options duplicates session volume")
+    assert_true(
+        player.count("let control = peripheral.controlState") == 2,
+        "idle and active Player paths do not each read live session control state",
+    )
+    assert_true(
+        player.count("controlState: control") == 2,
+        "idle and active Player paths do not pass their live control snapshot",
+    )
+
+
 def main() -> int:
     test_idle_emulator_covers_and_stops_with_window()
     test_failed_window_still_stops_emulator()
@@ -1002,6 +1019,7 @@ def main() -> int:
     test_post_upload_settle_is_interruptible_and_skippable()
     test_encounter_csv_path_uses_perf_boot_identity()
     test_v1replay_tracks_each_subscription_independently()
+    test_v1replay_player_uses_live_control_snapshot()
     print("bench window tests passed")
     return 0
 

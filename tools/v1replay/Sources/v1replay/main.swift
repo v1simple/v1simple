@@ -251,8 +251,8 @@ func runHelp() {
       --no-checksum        omit outbound checksums; inbound commands stay validated
       --no-alerts          display packets only, no alert table
       --always-alerts      send alert rows without waiting for reqStartAlertData
-      --mode <glyph>       idle mode glyph: all, logic, advanced, custom, euro
-      --volume <main,mute> reported volume (default 4,0)
+      --mode <glyph>       initial display mode: all, logic, advanced, custom, euro
+      --volume <main,mute> initial current/muted volume (default 4,0)
       --v1-version <ver>   version reported to reqVersion (default 4.1038)
       --muted-when <val>   input muteState value that means muted (default 2)
       --band <ka|k|x|ku|laser>   override the input's band
@@ -290,12 +290,14 @@ func runCrib() {
         .hexString
     let oneBarHex = V1.DisplayFrame
         .alerting(bars: 1, band: .ka, direction: .front, bogeyCount: 1,
-                  muted: false, volume: 0x00, displayOn: false)
+                  muted: false, volume: 0x00, displayOn: false,
+                  includeModeBits: false)
         .packet(header: header, checksum: false)
         .hexString
     let sixBarHex = V1.DisplayFrame
         .alerting(bars: 6, band: .ka, direction: .front, bogeyCount: 1,
-                  muted: false, volume: 0x00, displayOn: false)
+                  muted: false, volume: 0x00, displayOn: false,
+                  includeModeBits: false)
         .packet(header: header, checksum: false)
         .hexString
     let versionHex = V1.versionPacket(header: header, version: "4.1038", checksum: false).hexString
@@ -345,15 +347,16 @@ func runCrib() {
     `v1replay play` also adds a checksum byte and a full eight-byte display
     payload (so auxData2 carries volume) — the same 9-byte payload region
     test_protocol_spec_conformance builds. Use --no-checksum for the 14-byte
-    draft form. Both parse; the firmware never verifies the checksum.
+    draft form. Normal v4.1038 playback also carries the current mode in
+    auxData1; the explicit draft header retains its historical zero. Both parse;
+    the firmware never verifies the checksum.
 
     Use `v1replay export --synthetic --format lightblue` for generated packets.
     """)
 }
 
 func playbackPacketPlan(for sample: TimedSample,
-                        mode: V1.ModeGlyph,
-                        volume: UInt8,
+                        controlState: V1.Session.ControlState,
                         blinkBogey: Bool,
                         arrowBlinkProfile: ArrowBlinkProfile,
                         header: V1.Header,
@@ -361,8 +364,7 @@ func playbackPacketPlan(for sample: TimedSample,
                         includeAlertTable: Bool) -> V1.PlaybackPacketPlan {
     return V1.PlaybackPacketPlan(
         sample: sample,
-        mode: mode,
-        volume: volume,
+        controlState: controlState,
         displayOn: true,
         muted: sample.muted,
         blinkBogey: blinkBogey,
@@ -415,7 +417,14 @@ func runExport() throws {
     let header = try makeInformationHeader()
     let checksum = !args.bool("no-checksum")
     let mode = try makeMode()
-    let volume = makeVolumeByte()
+    let (mainVolume, mutedVolume) = makeVolumePair()
+    let controlState = V1.Session.ControlState(
+        mode: mode,
+        mainVolume: mainVolume,
+        mutedVolume: mutedVolume,
+        savedMainVolume: mainVolume,
+        savedMutedVolume: mutedVolume
+    )
     let sendAlerts = !args.bool("no-alerts")
     let blinkBogey = args.bool("blink-bogey")
     let arrowBlinkProfile = try makeArrowBlinkProfile(benchDefault: false)
@@ -430,7 +439,7 @@ func runExport() throws {
             let bars = primary?.strength ?? 0
             let direction = primary?.direction.label ?? "NONE"
             let plan = playbackPacketPlan(
-                for: sample, mode: mode, volume: volume,
+                for: sample, controlState: controlState,
                 blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
                 header: header, checksum: checksum, includeAlertTable: sendAlerts
             )
@@ -453,7 +462,7 @@ func runExport() throws {
             previous = sample.offset
             let primary = sample.priorityAlert
             let plan = playbackPacketPlan(
-                for: sample, mode: mode, volume: volume,
+                for: sample, controlState: controlState,
                 blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
                 header: header, checksum: checksum, includeAlertTable: sendAlerts
             )
@@ -472,7 +481,7 @@ func runExport() throws {
     default:
         for sample in encounter.samples {
             let plan = playbackPacketPlan(
-                for: sample, mode: mode, volume: volume,
+                for: sample, controlState: controlState,
                 blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
                 header: header, checksum: checksum, includeAlertTable: sendAlerts
             )
@@ -512,6 +521,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     peripheralConfig.header = replyHeader
     peripheralConfig.checksum = checksum
     peripheralConfig.version = args.string("v1-version", "4.1038")
+    peripheralConfig.mode = mode
     peripheralConfig.mainVolume = mainVolume
     peripheralConfig.mutedVolume = mutedVolume
     peripheralConfig.logPackets = args.bool("log-packets")
@@ -527,10 +537,8 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     playerOptions.idleLead = (idleOnly || bench) ? 0 : args.double("idle-lead", 3.0)
     playerOptions.idleTail = (idleOnly || bench) ? 0 : args.double("idle-tail", 3.0)
     playerOptions.idleHz = args.double("idle-hz", 3.0)
-    playerOptions.mode = mode
     playerOptions.header = informationHeader
     playerOptions.checksum = checksum
-    playerOptions.volume = makeVolumeByte()
     playerOptions.blinkBogey = args.bool("blink-bogey")
     playerOptions.arrowBlinkProfile = try makeArrowBlinkProfile(benchDefault: bench)
 

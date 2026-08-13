@@ -24,8 +24,13 @@ final class V1DisplayAlertContractTests: XCTestCase {
 
         let plan = V1.PlaybackPacketPlan(
             sample: sample,
-            mode: .advancedLogic,
-            volume: 0x40,
+            controlState: V1.Session.ControlState(
+                mode: .advancedLogic,
+                mainVolume: 4,
+                mutedVolume: 0,
+                savedMainVolume: 4,
+                savedMutedVolume: 0
+            ),
             displayOn: true,
             muted: false,
             blinkBogey: false,
@@ -45,8 +50,8 @@ final class V1DisplayAlertContractTests: XCTestCase {
         ]
         let expectedDisplay: [UInt8] = [
             0xAA, 0xD8, 0xEA, 0x31, 0x09,
-            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x00, 0x40,
-            0xEB, 0xAB,
+            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x0C, 0x40,
+            0xF7, 0xAB,
         ]
 
         XCTAssertEqual(plan.alertTablePackets, expectedRows)
@@ -75,7 +80,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertEqual(decodedDisplay.destination, 0xD8)
         XCTAssertEqual(decodedDisplay.packetID, 0x31)
         XCTAssertEqual(decodedDisplay.payload, [
-            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x00, 0x40,
+            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x0C, 0x40,
         ])
     }
 
@@ -87,8 +92,13 @@ final class V1DisplayAlertContractTests: XCTestCase {
         )
         let plan = V1.PlaybackPacketPlan(
             sample: sample,
-            mode: .advancedLogic,
-            volume: 0x40,
+            controlState: V1.Session.ControlState(
+                mode: .advancedLogic,
+                mainVolume: 4,
+                mutedVolume: 0,
+                savedMainVolume: 4,
+                savedMutedVolume: 0
+            ),
             displayOn: true,
             muted: false,
             blinkBogey: false,
@@ -101,8 +111,8 @@ final class V1DisplayAlertContractTests: XCTestCase {
         ]
         let idle: [UInt8] = [
             0xAA, 0xD8, 0xEA, 0x31, 0x09,
-            0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x40,
-            0x62, 0xAB,
+            0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x40,
+            0x6E, 0xAB,
         ]
 
         XCTAssertEqual(plan.alertTablePackets, [clear])
@@ -111,7 +121,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertEqual(plan.emissions.map(\.channel), [.displayShort, .displayShort])
         XCTAssertEqual(try IndependentFrame.decode(clear).payload, Array(repeating: 0, count: 7))
         XCTAssertEqual(try IndependentFrame.decode(idle).payload, [
-            0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x40,
+            0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x40,
         ])
     }
 
@@ -132,8 +142,13 @@ final class V1DisplayAlertContractTests: XCTestCase {
             )
             let plan = V1.PlaybackPacketPlan(
                 sample: sample,
-                mode: .advancedLogic,
-                volume: 0x40,
+                controlState: V1.Session.ControlState(
+                    mode: .advancedLogic,
+                    mainVolume: 4,
+                    mutedVolume: 0,
+                    savedMainVolume: 4,
+                    savedMutedVolume: 0
+                ),
                 displayOn: true,
                 muted: false,
                 blinkBogey: false,
@@ -146,6 +161,152 @@ final class V1DisplayAlertContractTests: XCTestCase {
             XCTAssertEqual(rows.map { Int($0.payload[0] & 0x0F) }, Array(repeating: count, count: count))
             XCTAssertEqual(rows.filter { ($0.payload[6] & 0x80) != 0 }.count, 1)
         }
+    }
+
+    /// Public behavior IDs: `V1-CONTROL-MODE-001` and
+    /// `V1-CONTROL-VOLUME-001`.
+    func testControlCommandsFlowIntoLiteralIdleAndActiveDisplayFrames() {
+        let volumeWrite: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x02, 0x00, 0xB0, 0xAB,
+        ]
+        let modeCases: [([UInt8], V1.ModeGlyph, [UInt8])] = [
+            (
+                [0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x01, 0xA3, 0xAB],
+                .allBogeys,
+                [
+                    0xAA, 0xD8, 0xEA, 0x31, 0x09,
+                    0x77, 0x77, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x72,
+                    0x16, 0xAB,
+                ]
+            ),
+            (
+                [0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x02, 0xA4, 0xAB],
+                .logic,
+                [
+                    0xAA, 0xD8, 0xEA, 0x31, 0x09,
+                    0x18, 0x18, 0x00, 0x00, 0x00, 0x0C, 0x08, 0x72,
+                    0x5C, 0xAB,
+                ]
+            ),
+            (
+                [0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x03, 0xA5, 0xAB],
+                .advancedLogic,
+                [
+                    0xAA, 0xD8, 0xEA, 0x31, 0x09,
+                    0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x72,
+                    0xA0, 0xAB,
+                ]
+            ),
+        ]
+
+        for (modeRequest, expectedMode, expectedIdle) in modeCases {
+            var session = V1.Session()
+            let outcomes = session.receive(volumeWrite + modeRequest)
+            XCTAssertEqual(outcomes[0].effects, [.volumeChanged(V1.Session.ControlState(
+                mode: .advancedLogic,
+                mainVolume: 7,
+                mutedVolume: 2,
+                savedMainVolume: 4,
+                savedMutedVolume: 0
+            ))])
+            XCTAssertEqual(outcomes[1].effects, [.modeChanged(expectedMode)])
+            XCTAssertFalse(outcomes.flatMap(\.effects).contains { effect in
+                if case .reply = effect { return true }
+                return false
+            })
+            XCTAssertEqual(V1.PlaybackPacketPlan.idleDisplayPacket(
+                controlState: session.controlState,
+                displayOn: true,
+                muted: false
+            ), expectedIdle)
+        }
+
+        var activeSession = V1.Session()
+        let modeOne = modeCases[0].0
+        _ = activeSession.receive(volumeWrite + modeOne)
+        let sample = TimedSample(
+            offset: 0,
+            phase: "control-active",
+            muted: false,
+            alerts: [
+                ReplayAlert(
+                    band: .k, frequencyMHz: 24_150, strength: 5,
+                    direction: .front, isPriority: false
+                ),
+                ReplayAlert(
+                    band: .ka, frequencyMHz: 34_700, strength: 6,
+                    direction: .rear, isPriority: true
+                ),
+            ],
+            sourceIndex: 0
+        )
+        let active = V1.PlaybackPacketPlan(
+            sample: sample,
+            controlState: activeSession.controlState,
+            displayOn: true,
+            muted: false,
+            blinkBogey: false,
+            blinkArrow: false,
+            includeAlertTable: false
+        )
+        XCTAssertEqual(active.emissions.map(\.channel), [.displayShort])
+        XCTAssertEqual(active.displayPacket, [
+            0xAA, 0xD8, 0xEA, 0x31, 0x09,
+            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x04, 0x72,
+            0x21, 0xAB,
+        ])
+    }
+
+    func testExplicitDraftHeaderPreservesFixtureAux1() {
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic,
+            mainVolume: 4,
+            mutedVolume: 0,
+            savedMainVolume: 4,
+            savedMutedVolume: 0
+        )
+        XCTAssertEqual(V1.PlaybackPacketPlan.idleDisplayPacket(
+            controlState: control,
+            displayOn: true,
+            muted: false,
+            header: .repoConvention
+        ), [
+            0xAA, 0xDA, 0xE4, 0x31, 0x09,
+            0x38, 0x38, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x40,
+            0x5E, 0xAB,
+        ])
+
+        let activeSample = TimedSample(
+            offset: 0,
+            phase: "draft-active",
+            muted: false,
+            alerts: [
+                ReplayAlert(
+                    band: .k, frequencyMHz: 24_150, strength: 5,
+                    direction: .front, isPriority: false
+                ),
+                ReplayAlert(
+                    band: .ka, frequencyMHz: 34_700, strength: 6,
+                    direction: .rear, isPriority: true
+                ),
+            ],
+            sourceIndex: 0
+        )
+        let active = V1.PlaybackPacketPlan(
+            sample: activeSample,
+            controlState: control,
+            displayOn: true,
+            muted: false,
+            blinkBogey: false,
+            blinkArrow: false,
+            header: .repoConvention,
+            includeAlertTable: false
+        )
+        XCTAssertEqual(active.displayPacket, [
+            0xAA, 0xDA, 0xE4, 0x31, 0x09,
+            0x5B, 0x5B, 0x3F, 0x82, 0x82, 0x0C, 0x00, 0x40,
+            0xE7, 0xAB,
+        ])
     }
 }
 

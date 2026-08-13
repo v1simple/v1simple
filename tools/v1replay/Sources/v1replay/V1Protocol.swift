@@ -44,6 +44,12 @@ enum V1 {
         let dest: UInt8
         let src: UInt8
 
+        /// The explicit repository-fixture mode preserves its historical
+        /// display payload, including a zero Aux1 byte.
+        var usesFixtureCompatibility: Bool {
+            return dest == 0xDA && src == 0xE4
+        }
+
         /// V1 → remote app. dest = 0xD0 + ESP_PACKET_REMOTE(0x06), src = 0xE0 + ESP_PACKET_ORIGIN_V1(0x0A).
         /// This is the V1-to-app directional default.
         static let v1ToApp = Header(dest: 0xD6, src: 0xEA)
@@ -195,6 +201,26 @@ enum V1 {
             default: return nil
             }
         }
+
+        /// US/default mode values carried by reqChangeMode (0x36).
+        static func commandValue(_ raw: UInt8) -> ModeGlyph? {
+            switch raw {
+            case 0x01: return .allBogeys
+            case 0x02: return .logic
+            case 0x03: return .advancedLogic
+            default: return nil
+            }
+        }
+
+        /// infDisplayData aux1 bits 2...3 carry the current mode even while an
+        /// active alert replaces the idle-mode glyph with a bogey count.
+        var aux1ModeBits: UInt8 {
+            switch self {
+            case .allBogeys, .customSweeps, .euroKaPhoto: return 0x04
+            case .logic, .euroKaOnly: return 0x08
+            case .advancedLogic: return 0x0C
+            }
+        }
     }
 
     // MARK: - Signal strength
@@ -271,7 +297,7 @@ enum V1 {
         var image1: UInt8 = 0x00
         var image2: UInt8 = 0x00
         var aux0: UInt8 = V1.aux0SystemStatus | V1.aux0DisplayOn
-        var aux1: UInt8 = 0x00
+        var aux1: UInt8 = ModeGlyph.advancedLogic.aux1ModeBits
         var aux2: UInt8 = 0x40   // upper nibble = main volume, lower = muted volume
 
         var payload: [UInt8] {
@@ -286,7 +312,11 @@ enum V1 {
         }
 
         /// Idle: no alert, mode glyph in the bogey window, meter dark.
-        static func idle(mode: ModeGlyph, volume: UInt8, displayOn: Bool, softMuted: Bool) -> DisplayFrame {
+        static func idle(mode: ModeGlyph,
+                         volume: UInt8,
+                         displayOn: Bool,
+                         softMuted: Bool,
+                         includeModeBits: Bool = true) -> DisplayFrame {
             var f = DisplayFrame()
             f.bogeyImage1 = mode.rawValue
             f.bogeyImage2 = mode.rawValue
@@ -296,6 +326,7 @@ enum V1 {
             f.aux0 = V1.aux0SystemStatus
                 | (displayOn ? V1.aux0DisplayOn : 0)
                 | (softMuted ? V1.aux0SoftMute : 0)
+            f.aux1 = includeModeBits ? mode.aux1ModeBits : 0x00
             f.aux2 = volume
             return f
         }
@@ -311,11 +342,13 @@ enum V1 {
                              band: Band,
                              direction: Direction,
                              bogeyCount: Int,
+                             mode: ModeGlyph = .advancedLogic,
                              muted: Bool,
                              volume: UInt8,
                              displayOn: Bool,
                              blinkPlane: Bool = false,
-                             blinkArrow: Bool = false) -> DisplayFrame {
+                             blinkArrow: Bool = false,
+                             includeModeBits: Bool = true) -> DisplayFrame {
             var f = DisplayFrame()
             f.bogeyImage1 = V1.bogeyGlyph(forCount: bogeyCount)
             f.bogeyImage2 = blinkPlane ? 0x00 : f.bogeyImage1
@@ -327,6 +360,7 @@ enum V1 {
             f.aux0 = V1.aux0SystemStatus
                 | (displayOn ? V1.aux0DisplayOn : 0)
                 | (muted ? V1.aux0SoftMute : 0)
+            f.aux1 = includeModeBits ? mode.aux1ModeBits : 0x00
             f.aux2 = volume
             return f
         }

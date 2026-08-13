@@ -22,8 +22,7 @@ extension V1 {
         let emissions: [Emission]
 
         init(sample: TimedSample,
-             mode: ModeGlyph,
-             volume: UInt8,
+             controlState: Session.ControlState,
              displayOn: Bool,
              muted: Bool,
              blinkBogey: Bool,
@@ -31,6 +30,7 @@ extension V1 {
              header: Header = .broadcastInformation,
              checksum: Bool = true,
              includeAlertTable: Bool = true) {
+            let includeModeBits = !header.usesFixtureCompatibility
             let rows: [(Kind, [UInt8])]
             if sample.alerts.isEmpty {
                 rows = [(
@@ -62,18 +62,21 @@ extension V1 {
                     band: priority.band,
                     direction: priority.direction,
                     bogeyCount: sample.alerts.count,
+                    mode: controlState.mode,
                     muted: muted,
-                    volume: volume,
+                    volume: controlState.displayVolume,
                     displayOn: displayOn,
                     blinkPlane: blinkBogey,
-                    blinkArrow: blinkArrow
+                    blinkArrow: blinkArrow,
+                    includeModeBits: includeModeBits
                 )
             } else {
                 frame = .idle(
-                    mode: mode,
-                    volume: volume,
+                    mode: controlState.mode,
+                    volume: controlState.displayVolume,
                     displayOn: displayOn,
-                    softMuted: muted
+                    softMuted: muted,
+                    includeModeBits: includeModeBits
                 )
             }
 
@@ -94,17 +97,17 @@ extension V1 {
             emissions = ordered
         }
 
-        static func idleDisplayPacket(mode: ModeGlyph,
-                                      volume: UInt8,
+        static func idleDisplayPacket(controlState: Session.ControlState,
                                       displayOn: Bool,
                                       muted: Bool,
                                       header: Header = .broadcastInformation,
                                       checksum: Bool = true) -> [UInt8] {
             return DisplayFrame.idle(
-                mode: mode,
-                volume: volume,
+                mode: controlState.mode,
+                volume: controlState.displayVolume,
                 displayOn: displayOn,
-                softMuted: muted
+                softMuted: muted,
+                includeModeBits: !header.usesFixtureCompatibility
             ).packet(header: header, checksum: checksum)
         }
 

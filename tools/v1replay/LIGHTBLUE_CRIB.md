@@ -75,6 +75,8 @@ checksum byte and a full eight-byte display payload so auxData2 carries volume.
 This is the same 9-byte payload region
 `test_protocol_spec_conformance.cpp` builds — a 15-byte display packet is
 already the house style, the 14-byte form above is the outlier.
+These explicit fixture packets retain Aux1 `00`; normal v4.1038 playback carries
+the current mode in Aux1 instead.
 
 ```
 1 bar          AA DA E4 31 09 06 06 01 22 22 0C 00 40 3F AB
@@ -122,11 +124,11 @@ and nothing in the repo needs to change either way. If you want fixture parity,
 ## Reading the display packet
 
 ```
-AA  D8  EA  31  09  06 06 3F 22 22 0C 00 40  81  AB
+AA  D8  EA  31  09  06 06 3F 22 22 0C 0C 40  8D  AB
 │   │   │   │   │   │  │  │  │  │  │  │  │   │   └ end
 │   │   │   │   │   │  │  │  │  │  │  │  │   └ checksum (byte sum)
 │   │   │   │   │   │  │  │  │  │  │  │  └ auxData2: volume, main high nibble
-│   │   │   │   │   │  │  │  │  │  │  └ auxData1
+│   │   │   │   │   │  │  │  │  │  │  └ auxData1: 0C advanced-logic mode
 │   │   │   │   │   │  │  │  │  │  └ auxData0: 04 system status + 08 display on
 │   │   │   │   │   │  │  │  │  └ image2 — steady bits
 │   │   │   │   │   │  │  │  └ image1 — 02 Ka + 20 front

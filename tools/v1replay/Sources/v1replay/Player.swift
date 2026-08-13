@@ -23,10 +23,8 @@ final class Player {
         var idleLead: TimeInterval = 3.0
         var idleTail: TimeInterval = 3.0
         var idleHz: Double = 3.0
-        var mode: V1.ModeGlyph = .advancedLogic
         var header: V1.Header = .broadcastInformation
         var checksum: Bool = true
-        var volume: UInt8 = 0x40
         var blinkBogey: Bool = false
         var arrowBlinkProfile: ArrowBlinkProfile = .steady
     }
@@ -311,10 +309,10 @@ final class Player {
         let muted = _muteOverride ?? false
         let displayOn = _displayOn
         lock.unlock()
+        let control = peripheral.controlState
 
         let packet = V1.PlaybackPacketPlan.idleDisplayPacket(
-            mode: options.mode,
-            volume: options.volume,
+            controlState: control,
             displayOn: displayOn,
             muted: muted,
             header: options.header,
@@ -404,13 +402,16 @@ final class Player {
         let muted = _muteOverride ?? sample.muted
         let displayOn = _displayOn
         lock.unlock()
+        // Read one atomic protocol-state snapshot for the complete generated
+        // table/display emission. A coalesced command cannot mix old mode with
+        // new volume (or vice versa) inside one display frame.
+        let control = peripheral.controlState
 
         let includeAlertTable = options.sendAlerts
             && (!options.requireStartAlertData || peripheral.alertDataRequested)
         let plan = V1.PlaybackPacketPlan(
             sample: sample,
-            mode: options.mode,
-            volume: options.volume,
+            controlState: control,
             displayOn: displayOn,
             muted: muted,
             blinkBogey: options.blinkBogey,

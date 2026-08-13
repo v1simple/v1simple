@@ -107,7 +107,6 @@ def smoke_fixture(root: Path, grader: str) -> tuple[Path, dict]:
         "focus_abs": 306,
         "video_exposure_time_abs": 50,
         "gain": 0,
-        "diagnostic_exposure_time_abs": 1000,
         "framerate": 200,
         "input_pixel_format": "nv12",
         "video_size": "1280x720",

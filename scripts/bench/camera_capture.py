@@ -25,7 +25,6 @@ FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
 DISPLAY_CROP = "crop=iw*0.52:ih*0.38:iw*0.18:ih*0.25"
 CALIBRATION_VIDEO_TIME_S = 3.0
 CALIBRATION_PATCH = (150, 20, 260, 45)
-CAMERA_OPEN_SETTLE_S = 0.5
 CAMERA_PROFILE_SETTLE_S = 5.0
 CAMERA_SESSION_READY_TIMEOUT_S = 15.0
 CAMERA_RECORDING_READY_TIMEOUT_S = 15.0
@@ -110,14 +109,13 @@ class CameraCapture:
         self.uvc_util = _find_uvc_util()
         self.ffmpeg = shutil.which("ffmpeg")
         self.ffprobe = shutil.which("ffprobe")
-        self.imagesnap = shutil.which("imagesnap")
         self.swift = shutil.which("swift")
         self.native_recorder = Path(__file__).with_name("camera_recorder.swift").resolve()
         self.video_path = self.out_dir / f"evidence_exp{VIDEO_EXPOSURE}.mov"
         self.native_preflight_path = self.out_dir / ".camera_preflight.mov"
         self.preflight_path = self.out_dir / f"session_start_exp{VIDEO_EXPOSURE}.jpg"
         self.bright_path = self.out_dir / "final_auto.jpg"
-        self.dim_path = self.out_dir / "final_manual_exp1000.jpg"
+        self.dim_path = self.out_dir / "final_profile.jpg"
         self.log_path = self.out_dir / "camera.log"
         self.result_path = self.out_dir / "camera_result.json"
         self.preflight_result_path = self.out_dir / "camera_preflight.json"
@@ -141,7 +139,6 @@ class CameraCapture:
             "focus_abs": self.focus,
             "video_exposure_time_abs": VIDEO_EXPOSURE,
             "gain": 0,
-            "diagnostic_exposure_time_abs": 1000,
             "framerate": self.framerate,
             "input_pixel_format": self.input_pixel_format,
             "video_size": self.video_size,
@@ -174,8 +171,6 @@ class CameraCapture:
             missing.append("ffmpeg")
         if not self.ffprobe:
             missing.append("ffprobe")
-        if not self.imagesnap:
-            missing.append("imagesnap")
         if not self.swift:
             missing.append("swift")
         if not self.native_recorder.is_file():
@@ -221,7 +216,7 @@ class CameraCapture:
         controls = [
             ("auto-focus", 0),
             ("focus-abs", self.focus),
-            ("auto-exposure-mode", 8 if video_profile else 1),
+            ("auto-exposure-mode", 1),
             ("auto-exposure-priority", 0),
             ("auto-white-balance-temp", 0),
             ("white-balance-temp", 4650),
@@ -234,7 +229,13 @@ class CameraCapture:
             ("gain", 0 if video_profile else 190),
             ("sharpness", 128),
         ]
-        if not video_profile:
+        if video_profile:
+            # Exposure is read-only in aperture-priority mode on this camera.
+            # Seed the fixed 5 ms value manually, then restore mode 8 before
+            # any evidence is recorded.
+            controls.insert(3, ("exposure-time-abs", VIDEO_EXPOSURE))
+            controls.append(("auto-exposure-mode", 8))
+        else:
             controls.append(("exposure-time-abs", exposure))
         for name, value in controls:
             self._set_control(name, value)
@@ -264,38 +265,6 @@ class CameraCapture:
             )
             raise RuntimeError(f"camera live profile mismatch: {detail}")
         return measured
-
-    def _snapshot(self, exposure: int, path: Path) -> None:
-        assert self.imagesnap is not None
-        wait_seconds = 5 if exposure == VIDEO_EXPOSURE else 2
-        proc = subprocess.Popen(
-            [self.imagesnap, "-q", "-w", str(wait_seconds), "-d", self.camera_name, str(path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        output = ""
-        try:
-            # imagesnap opens a new macOS camera consumer and can reset the
-            # UVC profile. Configure only after it owns the camera, then use
-            # the remainder of its wait as the profile settle.
-            time.sleep(CAMERA_OPEN_SETTLE_S)
-            if proc.poll() is None:
-                self._configure(exposure)
-            output, _ = proc.communicate()
-        except Exception:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
-            raise
-        if proc.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
-            detail = output.strip().splitlines()
-            suffix = f": {detail[-1]}" if detail else ""
-            raise RuntimeError(f"camera snapshot failed{suffix}")
 
     def _decode_profile_frame(self, path: Path, video_time_s: float | None = None) -> bytes:
         assert self.ffmpeg is not None
@@ -566,8 +535,12 @@ class CameraCapture:
                     self.bright_path,
                     max(0.0, duration - 0.5),
                 )
-                self._snapshot(1000, self.dim_path)
-                self._configure(VIDEO_EXPOSURE)
+                self._extract_video_still(
+                    self.video_path,
+                    self.dim_path,
+                    max(0.0, duration - 1.0),
+                )
+                self._validate_live_profile()
                 minimum = max(1.0, float(self.expected_duration_s) - 5.0) if collection_completed else 1.0
                 if duration < minimum:
                     self.errors.append(

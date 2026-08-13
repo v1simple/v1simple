@@ -230,53 +230,6 @@ def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
-def test_camera_profile_is_applied_after_still_consumer_open() -> None:
-    events: list[str] = []
-
-    class FakeProcess:
-        returncode = None
-
-        def __init__(self, command: list[str]) -> None:
-            self.path = Path(command[-1])
-
-        def poll(self) -> None:
-            events.append("still_poll")
-            return None
-
-        def communicate(self) -> tuple[str, None]:
-            events.append("still_capture")
-            self.path.write_bytes(b"snapshot")
-            self.returncode = 0
-            return "", None
-
-    class OrderingCameraCapture(CameraCapture):
-        def _configure(self, exposure: int) -> None:
-            events.append(f"configure:{exposure}")
-
-    original_popen = camera_capture_module.subprocess.Popen
-    original_sleep = camera_capture_module.time.sleep
-    try:
-        camera_capture_module.subprocess.Popen = lambda command, **_kwargs: (  # type: ignore[assignment]
-            events.append("still_open") or FakeProcess(command)
-        )
-        camera_capture_module.time.sleep = lambda seconds: events.append(  # type: ignore[assignment]
-            f"sleep:{seconds}"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            camera = OrderingCameraCapture(Path(tmp), 300)
-            camera.imagesnap = "imagesnap"
-            camera._snapshot(VIDEO_EXPOSURE, camera.preflight_path)
-            assert_true(
-                events.index("still_open")
-                < events.index(f"configure:{VIDEO_EXPOSURE}")
-                < events.index("still_capture"),
-                f"camera profile was not applied while the still consumer owned the camera: {events}",
-            )
-    finally:
-        camera_capture_module.subprocess.Popen = original_popen
-        camera_capture_module.time.sleep = original_sleep
-
-
 def test_camera_profile_is_reapplied_after_recorder_open() -> None:
     events: list[str] = []
 
@@ -293,10 +246,6 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
 
         def _configure(self, exposure: int) -> None:
             events.append(f"configure:{exposure}")
-
-        def _snapshot(self, exposure: int, path: Path) -> None:
-            events.append(f"snapshot:{exposure}")
-            path.write_bytes(b"snapshot")
 
         def _extract_video_still(self, _video: Path, path: Path, _time_s: float) -> None:
             events.append("extract_preflight")
@@ -339,7 +288,7 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
         camera_capture_module.time.sleep = original_sleep
 
 
-def test_camera_video_and_manual_diagnostic_profiles_are_distinct() -> None:
+def test_camera_video_profile_seeds_exposure_before_aperture_priority() -> None:
     class ControlCapture(CameraCapture):
         def __init__(self, out_dir: Path) -> None:
             super().__init__(out_dir, 300)
@@ -354,15 +303,13 @@ def test_camera_video_and_manual_diagnostic_profiles_are_distinct() -> None:
         video = dict(camera.controls)
         assert_true(video["auto-exposure-mode"] == 8, f"video profile is not aperture priority: {video}")
         assert_true(video["gain"] == 0, f"video profile changed qualified gain: {video}")
-        assert_true("exposure-time-abs" not in video, f"video profile forced manual exposure: {video}")
-
-        camera.controls.clear()
-        camera._configure(1000)
-        manual = dict(camera.controls)
-        assert_true(manual["auto-exposure-mode"] == 1, f"diagnostic profile is not manual: {manual}")
-        assert_true(manual["gain"] == 190, f"diagnostic profile lacks usable gain: {manual}")
-        assert_true(manual["exposure-time-abs"] == 1000, f"diagnostic exposure was lost: {manual}")
-
+        manual_index = camera.controls.index(("auto-exposure-mode", 1))
+        exposure_index = camera.controls.index(("exposure-time-abs", VIDEO_EXPOSURE))
+        aperture_index = camera.controls.index(("auto-exposure-mode", 8))
+        assert_true(
+            manual_index < exposure_index < aperture_index,
+            f"video profile did not seed exposure before restoring aperture priority: {camera.controls}",
+        )
 
 def test_failed_frame_rate_probe_retains_measurements_and_diagnostics() -> None:
     class FinishedProcess:
@@ -383,14 +330,14 @@ def test_failed_frame_rate_probe_retains_measurements_and_diagnostics() -> None:
         def _validate_recording_profile(self) -> dict[str, object]:
             return {"result": "PASS"}
 
-        def _snapshot(self, _exposure: int, path: Path) -> None:
-            path.write_bytes(b"snapshot")
-
         def _extract_video_still(self, _video: Path, path: Path, _time_s: float) -> None:
             path.write_bytes(b"snapshot")
 
         def _set_control(self, _name: str, _value: int) -> None:
             pass
+
+        def _validate_live_profile(self) -> dict[str, int | bool]:
+            return {}
 
     with tempfile.TemporaryDirectory() as tmp:
         camera = LowRateCameraCapture(Path(tmp), 300)
@@ -952,9 +899,8 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_global_shutter_default_uses_qualified_720p200_profile()
-    test_camera_profile_is_applied_after_still_consumer_open()
     test_camera_profile_is_reapplied_after_recorder_open()
-    test_camera_video_and_manual_diagnostic_profiles_are_distinct()
+    test_camera_video_profile_seeds_exposure_before_aperture_priority()
     test_failed_frame_rate_probe_retains_measurements_and_diagnostics()
     test_bench_entrypoint_forwards_explicit_baseline_window()
     test_baseline_promotion_is_future_core_display_only()

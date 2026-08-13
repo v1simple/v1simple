@@ -79,73 +79,137 @@ func writeMarker(_ url: URL, _ payload: [String: Any]) throws {
     try data.write(to: url, options: .atomic)
 }
 
-final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDelegate {
-    private let lock = NSLock()
-    private var startedValue = false
-    private var finishedValue = false
-    private var finishErrorValue: Error?
-    let recordingReady: URL
+final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    let queue = DispatchQueue(label: "v1simple.camera.frames")
 
-    init(recordingReady: URL) {
-        self.recordingReady = recordingReady
+    private let width: Int32
+    private let height: Int32
+    private let frameRate: Int32
+    private var outputURL: URL?
+    private var readyMarker: URL?
+    private var writer: AVAssetWriter?
+    private var writerInput: AVAssetWriterInput?
+    private var errorMessage: String?
+    private var frameCount = 0
+    private var droppedFrameCount = 0
+
+    init(width: Int32, height: Int32, frameRate: Int32) {
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
     }
 
-    var started: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return startedValue
-    }
-
-    var finished: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return finishedValue
-    }
-
-    var finishError: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return finishErrorValue
-    }
-
-    func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didStartRecordingTo fileURL: URL,
-        from connections: [AVCaptureConnection]
-    ) {
-        do {
-            try writeMarker(recordingReady, ["result": "READY"])
-        } catch {
-            lock.lock()
-            finishErrorValue = error
-            lock.unlock()
+    func startRecording(to outputURL: URL, readyMarker: URL) {
+        queue.sync {
+            self.outputURL = outputURL
+            self.readyMarker = readyMarker
+            self.writer = nil
+            self.writerInput = nil
+            self.errorMessage = nil
+            self.frameCount = 0
+            self.droppedFrameCount = 0
         }
-        lock.lock()
-        startedValue = true
-        lock.unlock()
     }
 
-    func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didFinishRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection],
-        error: Error?
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
     ) {
-        lock.lock()
-        finishErrorValue = finishErrorValue ?? error
-        finishedValue = true
-        lock.unlock()
+        guard outputURL != nil, errorMessage == nil, CMSampleBufferDataIsReady(sampleBuffer) else {
+            return
+        }
+        if writer == nil {
+            do {
+                try beginWriter(with: sampleBuffer)
+            } catch {
+                errorMessage = "movie writer could not start: \(error)"
+                return
+            }
+        }
+        guard let writerInput else { return }
+        if writerInput.isReadyForMoreMediaData {
+            if writerInput.append(sampleBuffer) {
+                frameCount += 1
+                if frameCount == 1, let readyMarker {
+                    do {
+                        try writeMarker(readyMarker, ["result": "READY"])
+                    } catch {
+                        errorMessage = "recording-ready marker failed: \(error)"
+                    }
+                }
+            } else {
+                errorMessage = "movie frame append failed: \(writer?.error?.localizedDescription ?? "unknown error")"
+            }
+        } else {
+            droppedFrameCount += 1
+        }
     }
-}
 
-@discardableResult
-func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return true }
-        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    private func beginWriter(with sampleBuffer: CMSampleBuffer) throws {
+        guard let outputURL else {
+            throw NSError(domain: "v1simple.camera", code: 1)
+        }
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+        let compression: [String: Any] = [
+            AVVideoAverageBitRateKey: 20_000_000,
+            AVVideoExpectedSourceFrameRateKey: Int(frameRate),
+            AVVideoMaxKeyFrameIntervalKey: Int(frameRate),
+            AVVideoAllowFrameReorderingKey: false,
+        ]
+        let settings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: Int(width),
+            AVVideoHeightKey: Int(height),
+            AVVideoCompressionPropertiesKey: compression,
+        ]
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: settings,
+            sourceFormatHint: CMSampleBufferGetFormatDescription(sampleBuffer)
+        )
+        input.expectsMediaDataInRealTime = true
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "v1simple.camera", code: 2)
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? NSError(domain: "v1simple.camera", code: 3)
+        }
+        writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        self.writer = writer
+        self.writerInput = input
     }
-    return condition()
+
+    func stopRecording(timeout: TimeInterval) -> (frames: Int, dropped: Int, error: String?) {
+        let completed = DispatchSemaphore(value: 0)
+        queue.async {
+            guard let writer = self.writer, let writerInput = self.writerInput else {
+                if self.errorMessage == nil {
+                    self.errorMessage = "movie recording received no frames"
+                }
+                self.outputURL = nil
+                completed.signal()
+                return
+            }
+            self.outputURL = nil
+            writerInput.markAsFinished()
+            writer.finishWriting {
+                self.queue.async {
+                    if writer.status != .completed, self.errorMessage == nil {
+                        self.errorMessage = "movie recording failed: \(writer.error?.localizedDescription ?? "unknown error")"
+                    }
+                    self.writer = nil
+                    self.writerInput = nil
+                    completed.signal()
+                }
+            }
+        }
+        if completed.wait(timeout: .now() + timeout) == .timedOut {
+            return (0, 0, "movie recording did not finalize")
+        }
+        return queue.sync { (frameCount, droppedFrameCount, errorMessage) }
+    }
 }
 
 let options = parseOptions()
@@ -205,12 +269,16 @@ guard session.canAddInput(input) else {
 }
 session.addInput(input)
 
-let movieOutput = AVCaptureMovieFileOutput()
-guard session.canAddOutput(movieOutput) else {
-    fputs("movie output was rejected\n", stderr)
+let videoOutput = AVCaptureVideoDataOutput()
+videoOutput.alwaysDiscardsLateVideoFrames = false
+videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: options.pixelFormat]
+let recorder = FrameRecorder(width: options.width, height: options.height, frameRate: options.frameRate)
+videoOutput.setSampleBufferDelegate(recorder, queue: recorder.queue)
+guard session.canAddOutput(videoOutput) else {
+    fputs("video output was rejected\n", stderr)
     exit(3)
 }
-session.addOutput(movieOutput)
+session.addOutput(videoOutput)
 session.startRunning()
 
 do {
@@ -274,72 +342,43 @@ while !fileManager.fileExists(atPath: options.startMarker.path) {
     RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
 }
 
-let preflightDelegate = RecordingDelegate(recordingReady: options.preflightReady)
-movieOutput.startRecording(to: options.preflightOutput, recordingDelegate: preflightDelegate)
-guard waitUntil(timeout: 15, condition: { preflightDelegate.started }),
-      preflightDelegate.finishError == nil else {
-    if movieOutput.isRecording { movieOutput.stopRecording() }
-    _ = waitUntil(timeout: 5, condition: { preflightDelegate.finished })
-    session.stopRunning()
-    fputs("preflight recording did not start\n", stderr)
-    exit(3)
-}
+recorder.startRecording(to: options.preflightOutput, readyMarker: options.preflightReady)
 
 while !fileManager.fileExists(atPath: options.preflightStop.path) {
-    if stopRequested.wait(timeout: .now()) == .success {
-        movieOutput.stopRecording()
-        _ = waitUntil(timeout: 5, condition: { preflightDelegate.finished })
+    if stopRequested.wait(timeout: .now() + .milliseconds(50)) == .success {
+        _ = recorder.stopRecording(timeout: 15)
         session.stopRunning()
         exit(130)
     }
     RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
 }
-if movieOutput.isRecording { movieOutput.stopRecording() }
-guard waitUntil(timeout: 15, condition: { preflightDelegate.finished }) else {
-    session.stopRunning()
-    fputs("preflight recording did not finalize\n", stderr)
-    exit(3)
-}
-if let error = preflightDelegate.finishError {
+let preflightResult = recorder.stopRecording(timeout: 15)
+if let error = preflightResult.error {
     session.stopRunning()
     fputs("preflight recording failed: \(error)\n", stderr)
     exit(3)
 }
 do {
-    try writeMarker(options.preflightFinished, ["result": "READY"])
+    try writeMarker(options.preflightFinished, [
+        "result": "READY",
+        "frames": preflightResult.frames,
+        "dropped_frames": preflightResult.dropped,
+    ])
 } catch {
     session.stopRunning()
     fputs("preflight-finished marker failed: \(error)\n", stderr)
     exit(3)
 }
 
-let delegate = RecordingDelegate(recordingReady: options.recordingReady)
-movieOutput.startRecording(to: options.output, recordingDelegate: delegate)
-guard waitUntil(timeout: 15, condition: { delegate.started }), delegate.finishError == nil else {
-    if movieOutput.isRecording { movieOutput.stopRecording() }
-    _ = waitUntil(timeout: 5, condition: { delegate.finished })
-    session.stopRunning()
-    fputs("movie recording did not start\n", stderr)
-    exit(3)
-}
+recorder.startRecording(to: options.output, readyMarker: options.recordingReady)
 
-while movieOutput.isRecording {
-    if stopRequested.wait(timeout: .now()) == .success {
-        break
-    }
+while stopRequested.wait(timeout: .now() + .milliseconds(50)) != .success {
     RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
 }
-if movieOutput.isRecording {
-    movieOutput.stopRecording()
-}
-guard waitUntil(timeout: 15, condition: { delegate.finished }) else {
-    session.stopRunning()
-    fputs("movie recording did not finalize\n", stderr)
-    exit(3)
-}
+let recordingResult = recorder.stopRecording(timeout: 30)
 session.stopRunning()
 
-if let error = delegate.finishError {
+if let error = recordingResult.error {
     fputs("movie recording failed: \(error)\n", stderr)
     exit(3)
 }

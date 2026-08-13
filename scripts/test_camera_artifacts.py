@@ -46,7 +46,7 @@ def camera_fixture(replay_dir: Path) -> tuple[Path, dict, Path]:
         "video": "evidence_exp50.mov",
         "session_start_still": "session_start_exp50.jpg",
         "bright_still": "final_auto.jpg",
-        "dim_still": "final_manual_exp1000.jpg",
+        "dim_still": "final_profile.jpg",
     }
     for index, name in enumerate(names.values(), start=1):
         (camera_dir / name).write_bytes(bytes([index]) * (10 + index))

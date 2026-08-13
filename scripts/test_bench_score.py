@@ -178,7 +178,7 @@ def write_window(
             "video": "evidence_exp50.mov",
             "session_start_still": "session_start_exp50.jpg",
             "bright_still": "final_auto.jpg",
-            "dim_still": "final_manual_exp1000.jpg",
+            "dim_still": "final_profile.jpg",
         }
         if camera_result == "CAPTURED":
             for name in evidence_names.values():

@@ -169,7 +169,6 @@ class FakeCamera:
             "focus_abs": 306,
             "video_exposure_time_abs": 50,
             "gain": 0,
-            "diagnostic_exposure_time_abs": 1000,
             "framerate": 200,
             "input_pixel_format": "nv12",
             "video_size": "1280x720",
@@ -541,7 +540,7 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             "video": "evidence_exp50.mov",
             "session_start_still": "session_start_exp50.jpg",
             "bright_still": "final_auto.jpg",
-            "dim_still": "final_manual_exp1000.jpg",
+            "dim_still": "final_profile.jpg",
         }
         for name in names.values():
             (camera_dir / name).write_bytes(name.encode("ascii"))

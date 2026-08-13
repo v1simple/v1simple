@@ -14,7 +14,7 @@ Service `92A0AFF4-9E05-11E2-AA59-F23C91AEC05E`
 
 | Ending | Properties | Purpose | Required by v1simple? |
 |---|---|---|---|
-| B2CE | Read, Notify | short V1 packets, including display and version replies | **yes** — connection fails without it |
+| B2CE | Read, Notify | short V1 packets, including display and short replies | **yes** — connection fails without it |
 | B4E0 | Read, Notify | long V1 packets, including alert data | optional but used |
 | B6D4 | Write Without Response | commands from v1simple | **yes** (or BAD4) |
 | B8D2 | Write Without Response | long commands | optional |
@@ -59,14 +59,14 @@ AA DA E4 31 08 06 06 3F 22 22 04 00 00 AB
 respVersion    AA DA E4 02 07 76 34 2E 31 30 33 38 AB
 ```
 
-**Current emulator all-volume reply on B4E0** (after a `reqAllVolume` write):
+**All-volume reply on B2CE** (after a `reqAllVolume` write):
 
 ```
 respAllVolume  AA DA E4 3D 04 04 00 04 00 AB
 ```
 
-The B4E0 routing of `respAllVolume` documents current emulator behavior; it is
-not independently confirmed here.
+The repeated current/saved values are this emulator fixture's configured state,
+not a universal device default.
 
 ## Packets — fixture-compatible checksummed form
 
@@ -92,7 +92,7 @@ Short version reply on B2CE:
 respVersion    AA DA E4 02 08 76 34 2E 31 30 33 38 16 AB
 ```
 
-Current emulator all-volume reply on B4E0 (routing not independently confirmed):
+Short all-volume reply on B2CE:
 
 ```
 respAllVolume  AA DA E4 3D 05 04 00 04 00 B2 AB

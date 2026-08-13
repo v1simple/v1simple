@@ -296,7 +296,7 @@ func runCrib() {
     \(Ansi.bold)LightBlue manual test — V1G-REPLAY\(Ansi.reset)
 
     Service   \(V1.serviceUUID)
-      B2CE  Read, Notify              short V1 packets: display + version reply
+      B2CE  Read, Notify              short V1 packets: display + short replies
       B4E0  Read, Notify              long V1 packets: alert data
       B6D4  Write Without Response    commands from v1simple
       B8D2  Write Without Response    long commands
@@ -315,9 +315,8 @@ func runCrib() {
     \(Ansi.bold)Notify on B2CE — short version reply after reqVersion\(Ansi.reset)
       respVersion    \(versionHex)
 
-    \(Ansi.bold)Notify on B4E0 — current emulator reply after reqAllVolume\(Ansi.reset)
+    \(Ansi.bold)Notify on B2CE — short all-volume reply after reqAllVolume\(Ansi.reset)
       respAllVolume  \(volumeHex)
-      (This B4E0 routing is current emulator behavior, not independently confirmed.)
 
     \(Ansi.bold)Framing choices\(Ansi.reset)
     These crib vectors use the repository's DA E4 compatibility convention.

@@ -428,10 +428,15 @@ enum V1 {
     }
 
     /// respAllVolume — exactly four bytes: main, muted, savedMain, savedMuted.
-    static func allVolumePacket(header: Header, main: UInt8, muted: UInt8, checksum: Bool) -> [UInt8] {
+    static func allVolumePacket(header: Header,
+                                main: UInt8,
+                                muted: UInt8,
+                                savedMain: UInt8? = nil,
+                                savedMuted: UInt8? = nil,
+                                checksum: Bool) -> [UInt8] {
         return frame(header: header,
                      id: PacketID.respAllVolume.rawValue,
-                     payload: [main, muted, main, muted],
+                     payload: [main, muted, savedMain ?? main, savedMuted ?? muted],
                      checksum: checksum)
     }
 
@@ -460,7 +465,7 @@ enum V1 {
 
     // MARK: - Inbound frame decoding (commands from v1simple)
 
-    struct InboundPacket {
+    struct InboundPacket: Equatable {
         let id: UInt8
         let payload: [UInt8]
         let raw: [UInt8]

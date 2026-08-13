@@ -24,6 +24,9 @@ final class V1Peripheral: NSObject {
         var version: String = "4.1038"
         var mainVolume: UInt8 = 4
         var mutedVolume: UInt8 = 0
+        /// Nil preserves the existing behavior: saved mirrors current.
+        var savedMainVolume: UInt8?
+        var savedMutedVolume: UInt8?
         var userBytes: [UInt8] = Array(repeating: 0, count: 6)
         var logPackets: Bool = false
         /// Proxy mode publishes the service but holds off advertising until the
@@ -46,24 +49,17 @@ final class V1Peripheral: NSObject {
     /// Everything the console and player threads poll. CoreBluetooth callbacks
     /// land on `queue`; the status line reads from the main thread; the player
     /// polls `displaySubscribed` — so all of it lives behind one lock.
-    private struct Subscription: Hashable {
-        let central: UUID
-        let characteristic: String
-    }
-
     private struct State {
         var isPoweredOn = false
         var isAdvertising = false
-        var subscriptions: Set<Subscription> = []
         var notifiesSent = 0
         var notifiesDropped = 0
         var commandsReceived = 0
-        var alertDataRequested = false
-        var userBytes = V1.UserBytesStore()
+        var session: V1.Session
     }
 
     private let stateLock = NSLock()
-    private var state = State()
+    private var state: State
 
     private func withState<T>(_ body: (inout State) -> T) -> T {
         stateLock.lock()
@@ -73,17 +69,17 @@ final class V1Peripheral: NSObject {
 
     var isPoweredOn: Bool { return withState { $0.isPoweredOn } }
     var isAdvertising: Bool { return withState { $0.isAdvertising } }
-    var subscriberCount: Int { return withState { Set($0.subscriptions.map(\.central)).count } }
+    var subscriberCount: Int { return withState { $0.session.subscriberCount } }
     var displaySubscribed: Bool {
-        return withState { $0.subscriptions.contains { $0.characteristic == V1.displayShortUUID } }
+        return withState { $0.session.readiness.displaySubscribed }
     }
     var alertSubscribed: Bool {
-        return withState { $0.subscriptions.contains { $0.characteristic == V1.displayLongUUID } }
+        return withState { $0.session.readiness.alertSubscribed }
     }
     var notifiesSent: Int { return withState { $0.notifiesSent } }
     var notifiesDropped: Int { return withState { $0.notifiesDropped } }
     var commandsReceived: Int { return withState { $0.commandsReceived } }
-    var alertDataRequested: Bool { return withState { $0.alertDataRequested } }
+    var alertDataRequested: Bool { return withState { $0.session.alertDataRequested } }
 
     let queue = DispatchQueue(label: "com.v1simple.v1replay.ble")
 
@@ -100,13 +96,21 @@ final class V1Peripheral: NSObject {
     private var pending: [(Data, CBMutableCharacteristic)] = []
     private static let pendingCap = 96
     private var lastValues: [CBUUID: Data] = [:]
-    private var rxBuffer: [UInt8] = []
     private var serviceAdded = false
 
     init(config: Config) {
         self.config = config
+        var sessionConfig = V1.Session.Config()
+        sessionConfig.header = config.header
+        sessionConfig.checksum = config.checksum
+        sessionConfig.version = config.version
+        sessionConfig.mainVolume = config.mainVolume
+        sessionConfig.mutedVolume = config.mutedVolume
+        sessionConfig.savedMainVolume = config.savedMainVolume
+        sessionConfig.savedMutedVolume = config.savedMutedVolume
+        sessionConfig.userBytes = config.userBytes
+        self.state = State(session: V1.Session(config: sessionConfig))
         super.init()
-        withState { $0.userBytes = V1.UserBytesStore(config.userBytes) }
         manager = CBPeripheralManager(delegate: self, queue: queue, options: nil)
     }
 
@@ -238,87 +242,51 @@ final class V1Peripheral: NSObject {
 
     // MARK: - Command handling
 
-    private func handle(_ packet: V1.InboundPacket) {
+    private func handle(_ outcome: V1.Session.CommandOutcome) {
         withState { $0.commandsReceived += 1 }
+        let packet = outcome.packet
         let commandName = V1.name(forPacketID: packet.id)
         if config.logPackets {
             onLog?("RX \(commandName) \(packet.raw.hexString)")
         }
 
-        switch packet.id {
-        case V1.PacketID.reqVersion.rawValue:
-            guard let decision = V1.replyDecision(for: packet,
-                                                  version: config.version,
-                                                  header: config.header,
-                                                  checksum: config.checksum) else {
-                onLog?("← rejected malformed reqVersion")
-                return
+        for effect in outcome.effects {
+            switch effect {
+            case .reply(let decision):
+                let responseName = decision.bytes.count > 3
+                    ? V1.name(forPacketID: decision.bytes[3])
+                    : "response"
+                onLog?("→ \(responseName)")
+                send(decision)
+
+            case .compatibilityAcknowledgement(let decision):
+                send(decision)
+
+            case .alertDataChanged(true):
+                onLog?("← reqStartAlertData — alert table enabled")
+                onStartAlertData?()
+                onStateChange?()
+
+            case .alertDataChanged(false):
+                onLog?("← reqStopAlertData")
+                onStateChange?()
+
+            case .muteChanged(let muted):
+                onMuteCommand?(muted)
+
+            case .displayPowerChanged(let enabled):
+                onDisplayPowerCommand?(enabled)
+
+            case .userBytesStored(let bytes):
+                onLog?("← stored user bytes \(bytes.hexString)")
+
+            case .rejected(let reason):
+                onLog?("← rejected \(commandName): \(reason)")
+
+            case .unhandled:
+                onLog?("← unhandled \(commandName)")
             }
-            onLog?("→ respVersion v\(config.version)")
-            send(decision)
-
-        case V1.PacketID.reqAllVolume.rawValue:
-            let reply = V1.allVolumePacket(header: config.header,
-                                           main: config.mainVolume,
-                                           muted: config.mutedVolume,
-                                           checksum: config.checksum)
-            onLog?("→ respAllVolume main=\(config.mainVolume) muted=\(config.mutedVolume)")
-            send(reply, to: alertChar)
-
-        case V1.PacketID.reqUserBytes.rawValue:
-            let storedUserBytes = withState { $0.userBytes.bytes }
-            let reply = V1.userBytesPacket(header: config.header, bytes: storedUserBytes, checksum: config.checksum)
-            onLog?("→ respUserBytes \(storedUserBytes.hexString)")
-            send(reply, to: alertChar)
-
-        case V1.PacketID.reqStartAlertData.rawValue:
-            withState { $0.alertDataRequested = true }
-            onLog?("← reqStartAlertData — alert table enabled")
-            onStartAlertData?()
-            onStateChange?()
-
-        case V1.PacketID.reqStopAlertData.rawValue:
-            withState { $0.alertDataRequested = false }
-            onLog?("← reqStopAlertData")
-            onStateChange?()
-
-        case V1.PacketID.muteOn.rawValue:
-            onMuteCommand?(true)
-            ack(packet.id)
-
-        case V1.PacketID.muteOff.rawValue:
-            onMuteCommand?(false)
-            ack(packet.id)
-
-        case V1.PacketID.turnOffDisplay.rawValue:
-            onDisplayPowerCommand?(false)
-            ack(packet.id)
-
-        case V1.PacketID.turnOnDisplay.rawValue:
-            onDisplayPowerCommand?(true)
-            ack(packet.id)
-
-        case V1.PacketID.reqWriteUserBytes.rawValue:
-            let stored = withState { $0.userBytes.write(packet.payload) }
-            guard stored else {
-                onLog?("← rejected reqWriteUserBytes payload length \(packet.payload.count)")
-                return
-            }
-            onLog?("← stored user bytes \(packet.payload.hexString)")
-            ack(packet.id)
-
-        case V1.PacketID.changeMode.rawValue,
-             V1.PacketID.reqWriteVolume.rawValue:
-            ack(packet.id)
-
-        default:
-            onLog?("← unhandled \(commandName)")
         }
-    }
-
-    private func ack(_ id: UInt8) {
-        let reply = V1.ackPacket(header: config.header, id: id, checksum: config.checksum)
-        send(reply, to: alertChar)
     }
 
     static func shortName(_ uuid: CBUUID) -> String {
@@ -329,6 +297,15 @@ final class V1Peripheral: NSObject {
             return String(text[start..<end])
         }
         return text
+    }
+
+    private static func sessionChannel(
+        for uuid: CBUUID
+    ) -> V1.Session.SubscriptionChannel? {
+        if uuid == CBUUID(string: V1.displayShortUUID) { return .displayShort }
+        if uuid == CBUUID(string: V1.displayLongUUID) { return .displayLong }
+        if uuid == CBUUID(string: V1.notifyAltUUID) { return .compatibilityNotify }
+        return nil
     }
 }
 
@@ -389,11 +366,9 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
-        let subscription = Subscription(
-            central: central.identifier,
-            characteristic: characteristic.uuid.uuidString
-        )
-        _ = withState { $0.subscriptions.insert(subscription) }
+        if let channel = V1Peripheral.sessionChannel(for: characteristic.uuid) {
+            withState { $0.session.subscribe(central: central.identifier, channel: channel) }
+        }
         onLog?("Central subscribed to \(name) (MTU \(central.maximumUpdateValueLength))")
         onStateChange?()
     }
@@ -402,20 +377,17 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            central: CBCentral,
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
-        let subscription = Subscription(
-            central: central.identifier,
-            characteristic: characteristic.uuid.uuidString
-        )
-        let remaining = withState { current -> Int in
-            current.subscriptions.remove(subscription)
-            let count = Set(current.subscriptions.map(\.central)).count
-            if count == 0 { current.alertDataRequested = false }
-            return count
+        let remaining: Int
+        if let channel = V1Peripheral.sessionChannel(for: characteristic.uuid) {
+            remaining = withState {
+                $0.session.unsubscribe(central: central.identifier, channel: channel)
+            }
+        } else {
+            remaining = subscriberCount
         }
         onLog?("Central unsubscribed from \(name)")
         if remaining == 0 {
             pending.removeAll()
-            rxBuffer.removeAll()
         }
         onStateChange?()
     }
@@ -457,13 +429,11 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
 
         for request in requests {
             guard let value = request.value else { continue }
-            rxBuffer.append(contentsOf: [UInt8](value))
+            withState { $0.session.append([UInt8](value)) }
+            while let outcome = withState({ $0.session.nextOutcome() }) {
+                handle(outcome)
+            }
         }
-        // Keep the resync buffer bounded if a peer ever writes garbage.
-        if rxBuffer.count > 512 { rxBuffer.removeFirst(rxBuffer.count - 512) }
-
-        let packets = V1.drainFrames(from: &rxBuffer)
-        for packet in packets { handle(packet) }
         onStateChange?()
 
         if let first = requests.first {

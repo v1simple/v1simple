@@ -951,17 +951,27 @@ def test_encounter_csv_path_uses_perf_boot_identity() -> None:
 
 
 def test_v1replay_tracks_each_subscription_independently() -> None:
-    source = (ROOT / "tools" / "v1replay" / "Sources" / "v1replay" / "Peripheral.swift").read_text()
-    assert_true("private struct Subscription: Hashable" in source, "subscription identity is missing")
-    assert_true("let central: UUID" in source, "subscription does not identify its central")
-    assert_true("let characteristic: String" in source, "subscription does not identify its characteristic")
+    source_dir = ROOT / "tools" / "v1replay" / "Sources" / "v1replay"
+    session = (source_dir / "Session.swift").read_text()
+    peripheral = (source_dir / "Peripheral.swift").read_text()
+    assert_true("private struct Subscription: Hashable" in session, "subscription identity is missing")
+    assert_true("let central: UUID" in session, "subscription does not identify its central")
+    assert_true("let channel: SubscriptionChannel" in session, "subscription does not identify its channel")
     assert_true(
-        "var subscriptions: Set<Subscription> = []" in source,
-        "replay peripheral does not retain independent subscriptions",
+        "var subscriptions: Set<Subscription> = []" in session,
+        "replay session does not retain independent subscriptions",
     )
     assert_true(
-        "current.subscriptions.remove(subscription)" in source,
+        "subscriptions.remove(Subscription(central: central, channel: channel))" in session,
         "unsubscribe does not remove only the matching subscription",
+    )
+    assert_true(
+        "session.subscribe(central: central.identifier, channel: channel)" in peripheral,
+        "CoreBluetooth subscribe does not update the session",
+    )
+    assert_true(
+        "session.unsubscribe(central: central.identifier, channel: channel)" in peripheral,
+        "CoreBluetooth unsubscribe does not update the session",
     )
 
 

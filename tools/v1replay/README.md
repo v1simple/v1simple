@@ -150,14 +150,36 @@ camera-reviewed during Phase 0.
 
 ## Protocol behavior
 
-The first public contract slice has two stable behavior IDs:
+The public contract inventory uses these stable behavior IDs:
 
 - `V1-BLE-IDENTITY-001` pins the service UUID, four core characteristic UUIDs,
   and the separate two-characteristic compatibility surface. It covers literal
   identity only; CoreBluetooth behavior remains integration or bench evidence.
+- `V1-SESSION-TRANSPORT-001` pins the emulator's ordered command stream: an
+  incomplete frame is retained, valid complete frames are handled once in wire
+  order,
+  and coalesced frames do not overwrite the retained tail. It also keeps B2CE
+  subscription, B4E0 subscription, and alert-stream enablement as separate
+  readiness facts: B2CE is core readiness, while alert-bench readiness also
+  requires B4E0 and alert-stream enablement. Fragmented writes are an emulator
+  robustness guarantee, not a claim about typical physical-device boundaries.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
-  V1-to-app reply, and selection of the B2CE short-display channel. Actual
-  notification delivery remains integration or bench evidence.
+  V1-to-app reply, and selection of the B2CE short-display channel.
+- `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
+  B2CE short-packet route. Equal current and saved values are emulator fixture
+  configuration, not a universal device default.
+- `V1-ALERT-STREAM-CONTROL-001` pins start and stop as state transitions with no
+  invented immediate reply. Delivery already queued around a stop and the
+  timing of the first or last alert row remain provisional and non-gating.
+- `V1-USER-BYTES-001` pins the six-byte payload shape, version-aware read/write
+  state, and the B2CE read response. Under the default v4.1038 identity, writes
+  preserve `FF FF` in the final two positions. Writes have no invented immediate
+  reply; verification uses a later readback. Gen2 full six-byte storage begins
+  with v4.1039.
+
+These tests cover pure session decisions. Actual notification delivery,
+subscription mechanics, and characteristic permissions remain integration or
+bench evidence.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect

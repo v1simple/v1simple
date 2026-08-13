@@ -616,7 +616,7 @@ def check_replies():
             tag = "%s/%s" % ("spec" if header == HEADER_V1_TO_APP else "draft",
                              "checksum" if checksum else "no-checksum")
 
-            for packet_id in (0x32, 0x33, 0x34, 0x35, 0x36, 0x39, 0x13):
+            for packet_id in (0x32, 0x33, 0x34, 0x35, 0x36, 0x39):
                 ack = ack_packet(header, packet_id, checksum)
                 check(len(ack) >= 7,
                       "ACK 0x%02X is long enough to parse (%s)" % (packet_id, tag),

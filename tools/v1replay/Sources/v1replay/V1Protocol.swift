@@ -3,8 +3,9 @@ import Foundation
 // =============================================================================
 // V1 Gen2 ESP packet protocol
 //
-// Every constant here is transcribed from the firmware that will consume these
-// packets, not from memory:
+// Parser-facing layouts are grounded in the public firmware that consumes these
+// packets. Direct Swift contract tests separately pin the wire/header/channel
+// facts that must not be inferred from that parser:
 //   v1simple/include/config.h            — UUIDs, packet IDs, framing bytes
 //   v1simple/src/packet_parser.cpp       — infDisplayData (0x31) payload layout
 //   v1simple/src/packet_parser_alerts.cpp— respAlertData (0x43) row layout,
@@ -25,8 +26,8 @@ enum V1 {
         return "92A0" + short + "-9E05-11E2-AA59-F23C91AEC05E"
     }
 
-    static let displayShortUUID = characteristicUUID("B2CE")  // notify: short packets, including display/version
-    static let displayLongUUID = characteristicUUID("B4E0")   // notify: long packets, including alert tables
+    static let displayShortUUID = characteristicUUID("B2CE")  // notify: complete packets up to 20 bytes
+    static let displayLongUUID = characteristicUUID("B4E0")   // notify: partial transport for packets over 20 bytes
     static let notifyAltUUID = characteristicUUID("BCE0")     // notify: compatibility stub
     static let commandUUID = characteristicUUID("B6D4")       // write-no-response: commands
     static let commandLongUUID = characteristicUUID("B8D2")   // write-no-response: long commands
@@ -37,9 +38,8 @@ enum V1 {
     static let packetStart: UInt8 = 0xAA
     static let packetEnd: UInt8 = 0xAB
 
-    /// Packet header (bytes 1 and 2: destination, origin).
-    /// The firmware's parser ignores both, but real captures and companion apps
-    /// do not, so default to the correct V1→app direction.
+    /// Packet header (bytes 1 and 2: destination, origin). Targeted replies and
+    /// unsolicited information use distinct destination values.
     struct Header {
         let dest: UInt8
         let src: UInt8
@@ -47,6 +47,10 @@ enum V1 {
         /// V1 → remote app. dest = 0xD0 + ESP_PACKET_REMOTE(0x06), src = 0xE0 + ESP_PACKET_ORIGIN_V1(0x0A).
         /// This is the V1-to-app directional default.
         static let v1ToApp = Header(dest: 0xD6, src: 0xEA)
+
+        /// Unsolicited V1 information broadcast to connected clients. Display
+        /// frames and the modeled v4.1038 alert rows use this header.
+        static let broadcastInformation = Header(dest: 0xD8, src: 0xEA)
 
         /// Compatibility convention used by repository packet fixtures. Select
         /// it explicitly with `--header draft` when fixture parity is required.
@@ -58,6 +62,16 @@ enum V1 {
         static func named(_ name: String) -> Header? {
             switch name.lowercased() {
             case "v1", "v1toapp", "spec": return .v1ToApp
+            case "draft", "crib", "legacy", "repo": return .repoConvention
+            default: return nil
+            }
+        }
+
+        /// Header selection for generated information packets. Targeted replies
+        /// continue to use `named(_:)`, whose V1 default is `v1ToApp`.
+        static func informationNamed(_ name: String) -> Header? {
+            switch name.lowercased() {
+            case "v1", "v1toapp", "spec": return .broadcastInformation
             case "draft", "crib", "legacy", "repo": return .repoConvention
             default: return nil
             }
@@ -195,6 +209,8 @@ enum V1 {
     /// Inverse of `PacketParser::mapStrengthToBars` — pick a raw RSSI byte that
     /// lands squarely inside the bucket for the requested bar count, so a
     /// round-trip through the firmware's own thresholds returns the same number.
+    /// These representative inverse values are deterministic emulator fixtures,
+    /// not a claim about exact physical-V1 raw emissions.
     static func rawStrength(bars: Int, band: Band) -> UInt8 {
         let n = max(0, min(8, bars))
         if n == 0 { return 0x00 }
@@ -448,19 +464,6 @@ enum V1 {
                      id: PacketID.respUserBytes.rawValue,
                      payload: Array(payload.prefix(6)),
                      checksum: checksum)
-    }
-
-    /// Bare acknowledgement carrying the same packet ID and no payload.
-    ///
-    /// The parser rejects anything shorter than 7 bytes outright
-    /// (packet_parser.cpp parseInternal), and a payload-free frame with no
-    /// checksum byte is only 6 — so pad rather than emit a packet that will be
-    /// silently dropped.
-    static func ackPacket(header: Header, id: UInt8, checksum: Bool) -> [UInt8] {
-        if checksum {
-            return frame(header: header, id: id, payload: [], checksum: true)
-        }
-        return frame(header: header, id: id, payload: [0x00], checksum: false)
     }
 
     // MARK: - Inbound frame decoding (commands from v1simple)

@@ -8,7 +8,9 @@ extension V1 {
 
         struct Config {
             var header: Header = .v1ToApp
-            var checksum = true
+            /// Controls generated response framing only. Inbound V1Simple
+            /// requests always require their checksum byte to validate.
+            var outboundChecksum = true
             var version = "4.1038"
             var mainVolume: UInt8 = 4
             var mutedVolume: UInt8 = 0
@@ -26,16 +28,16 @@ extension V1 {
 
         struct Readiness: Equatable {
             let displaySubscribed: Bool
-            let alertSubscribed: Bool
+            let longTrafficSubscribed: Bool
             let alertDataRequested: Bool
 
             /// Enough logical state for short replies and display packets.
             var shortTrafficReady: Bool { return displaySubscribed }
 
-            /// The current bench requires both the long subscription and an
-            /// explicit start request before it emits alert rows.
+            /// Current display and alert-row packets are short B2CE traffic.
+            /// The bench additionally waits for an explicit start request.
             var alertStreamReady: Bool {
-                return alertSubscribed && alertDataRequested
+                return displaySubscribed && alertDataRequested
             }
         }
 
@@ -48,11 +50,11 @@ extension V1 {
 
         enum Effect: Equatable {
             case reply(ReplyDecision)
-            case compatibilityAcknowledgement(ReplyDecision)
             case alertDataChanged(Bool)
             case muteChanged(Bool)
             case displayPowerChanged(Bool)
             case userBytesStored([UInt8])
+            case acceptedWithoutReply
             case rejected(Rejection)
             case unhandled
         }
@@ -71,6 +73,7 @@ extension V1 {
         private var subscriptions: Set<Subscription> = []
         private var receiveBuffer: [UInt8] = []
         private var pendingPackets: [InboundPacket] = []
+        private static let maximumResidualByteCount = 64
         private(set) var alertDataRequested = false
         private var userBytes: UserBytesStore
 
@@ -84,7 +87,7 @@ extension V1 {
         var readiness: Readiness {
             return Readiness(
                 displaySubscribed: subscriptions.contains { $0.channel == .displayShort },
-                alertSubscribed: subscriptions.contains { $0.channel == .displayLong },
+                longTrafficSubscribed: subscriptions.contains { $0.channel == .displayLong },
                 alertDataRequested: alertDataRequested
             )
         }
@@ -126,10 +129,15 @@ extension V1 {
         /// state belonging to each wire-order outcome.
         mutating func append(_ bytes: [UInt8]) {
             receiveBuffer.append(contentsOf: bytes)
-            if receiveBuffer.count > 512 {
-                receiveBuffer.removeFirst(receiveBuffer.count - 512)
-            }
             pendingPackets.append(contentsOf: V1.drainFrames(from: &receiveBuffer))
+            // `drainFrames` leaves at most one incomplete <=64-byte frame. Keep
+            // a defensive residual bound without discarding complete frames
+            // from a large coalesced write before they have been decoded.
+            if receiveBuffer.count > Session.maximumResidualByteCount {
+                receiveBuffer.removeFirst(
+                    receiveBuffer.count - Session.maximumResidualByteCount
+                )
+            }
         }
 
         mutating func nextOutcome() -> CommandOutcome? {
@@ -138,6 +146,9 @@ extension V1 {
         }
 
         private mutating func decide(_ packet: InboundPacket) -> CommandOutcome {
+            // This ingress models commands authored by V1Simple. DA is the V1
+            // destination and E6 is V1Simple's origin; E6 is not asserted as a
+            // universal origin for every possible V1 client.
             if packet.raw[1] != 0xDA || packet.raw[2] != 0xE6 {
                 return CommandOutcome(packet: packet, effects: [
                     .rejected(.invalidRequestHeader)
@@ -159,7 +170,7 @@ extension V1 {
                     for: packet,
                     version: config.version,
                     header: config.header,
-                    checksum: config.checksum
+                    checksum: config.outboundChecksum
                 ) else {
                     return CommandOutcome(packet: packet, effects: [
                         .rejected(.unexpectedPayload(
@@ -182,7 +193,7 @@ extension V1 {
                         muted: config.mutedVolume,
                         savedMain: config.savedMainVolume,
                         savedMuted: config.savedMutedVolume,
-                        checksum: config.checksum
+                        checksum: config.outboundChecksum
                     )
                 ))]
 
@@ -195,7 +206,7 @@ extension V1 {
                     bytes: V1.userBytesPacket(
                         header: config.header,
                         bytes: userBytes.bytes,
-                        checksum: config.checksum
+                        checksum: config.outboundChecksum
                     )
                 ))]
 
@@ -214,16 +225,30 @@ extension V1 {
                 effects = [.alertDataChanged(false)]
 
             case PacketID.muteOn.rawValue:
-                effects = [.muteChanged(true), .compatibilityAcknowledgement(ack(for: packet.id))]
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.muteChanged(true)]
 
             case PacketID.muteOff.rawValue:
-                effects = [.muteChanged(false), .compatibilityAcknowledgement(ack(for: packet.id))]
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.muteChanged(false)]
 
             case PacketID.turnOffDisplay.rawValue:
-                effects = [.displayPowerChanged(false), .compatibilityAcknowledgement(ack(for: packet.id))]
+                guard packet.payload.isEmpty
+                        || packet.payload == [0x00]
+                        || packet.payload == [0x01] else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.displayPowerChanged(false)]
 
             case PacketID.turnOnDisplay.rawValue:
-                effects = [.displayPowerChanged(true), .compatibilityAcknowledgement(ack(for: packet.id))]
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.displayPowerChanged(true)]
 
             case PacketID.reqWriteUserBytes.rawValue:
                 guard packet.payload.count == 6 else {
@@ -238,9 +263,17 @@ extension V1 {
                 _ = userBytes.write(stored)
                 effects = [.userBytesStored(stored)]
 
-            case PacketID.changeMode.rawValue,
-                 PacketID.reqWriteVolume.rawValue:
-                effects = [.compatibilityAcknowledgement(ack(for: packet.id))]
+            case PacketID.changeMode.rawValue:
+                guard packet.payload.count == 1 else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.acceptedWithoutReply]
+
+            case PacketID.reqWriteVolume.rawValue:
+                guard packet.payload.count == 3 else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.acceptedWithoutReply]
 
             default:
                 effects = [.unhandled]
@@ -258,17 +291,6 @@ extension V1 {
                     count: packet.payload.count
                 ))
             ])
-        }
-
-        private func ack(for packetID: UInt8) -> ReplyDecision {
-            return ReplyDecision(
-                channel: .displayLong,
-                bytes: V1.ackPacket(
-                    header: config.header,
-                    id: packetID,
-                    checksum: config.checksum
-                )
-            )
         }
 
         private static func normalizedUserBytes(

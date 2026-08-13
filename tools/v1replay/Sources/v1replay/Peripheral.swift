@@ -11,7 +11,8 @@ import CoreBluetooth
 //   3. B6D4 or BAD4, must be writable         — required
 //   4. B8D2                                   — optional
 //   5. subscribe B2CE                         — required
-//   6. B4E0 if it can notify                  — optional, carries alert rows
+//   6. B4E0 if it can notify                  — optional, reserved for packets
+//                                               over the short-packet limit
 // BCE0 is never used by the firmware but companion apps expect it to exist.
 // =============================================================================
 
@@ -20,6 +21,7 @@ final class V1Peripheral: NSObject {
     struct Config {
         var localName: String = "V1G-REPLAY"
         var header: V1.Header = .v1ToApp
+        /// Controls generated targeted responses; inbound checksums stay required.
         var checksum: Bool = true
         var version: String = "4.1038"
         var mainVolume: UInt8 = 4
@@ -73,8 +75,8 @@ final class V1Peripheral: NSObject {
     var displaySubscribed: Bool {
         return withState { $0.session.readiness.displaySubscribed }
     }
-    var alertSubscribed: Bool {
-        return withState { $0.session.readiness.alertSubscribed }
+    var longSubscribed: Bool {
+        return withState { $0.session.readiness.longTrafficSubscribed }
     }
     var notifiesSent: Int { return withState { $0.notifiesSent } }
     var notifiesDropped: Int { return withState { $0.notifiesDropped } }
@@ -87,7 +89,7 @@ final class V1Peripheral: NSObject {
     private var manager: CBPeripheralManager!
 
     private var displayChar: CBMutableCharacteristic!   // B2CE
-    private var alertChar: CBMutableCharacteristic!     // B4E0
+    private var longNotifyChar: CBMutableCharacteristic! // B4E0
     private var altNotifyChar: CBMutableCharacteristic! // BCE0
     private var commandChar: CBMutableCharacteristic!   // B6D4
     private var commandLongChar: CBMutableCharacteristic! // B8D2
@@ -102,7 +104,7 @@ final class V1Peripheral: NSObject {
         self.config = config
         var sessionConfig = V1.Session.Config()
         sessionConfig.header = config.header
-        sessionConfig.checksum = config.checksum
+        sessionConfig.outboundChecksum = config.checksum
         sessionConfig.version = config.version
         sessionConfig.mainVolume = config.mainVolume
         sessionConfig.mutedVolume = config.mutedVolume
@@ -120,8 +122,8 @@ final class V1Peripheral: NSObject {
         send(bytes, to: displayChar)
     }
 
-    func sendAlert(_ bytes: [UInt8]) {
-        send(bytes, to: alertChar)
+    func sendLong(_ bytes: [UInt8]) {
+        send(bytes, to: longNotifyChar)
     }
 
     /// Mirror a notification from the real V1 onto the matching characteristic.
@@ -129,7 +131,7 @@ final class V1Peripheral: NSObject {
         if uuid == CBUUID(string: V1.displayShortUUID) {
             send(bytes, to: displayChar)
         } else if uuid == CBUUID(string: V1.displayLongUUID) {
-            send(bytes, to: alertChar)
+            send(bytes, to: longNotifyChar)
         } else if uuid == CBUUID(string: V1.notifyAltUUID) {
             send(bytes, to: altNotifyChar)
         } else {
@@ -159,7 +161,7 @@ final class V1Peripheral: NSObject {
         case .displayShort:
             send(decision.bytes, to: displayChar)
         case .displayLong:
-            send(decision.bytes, to: alertChar)
+            send(decision.bytes, to: longNotifyChar)
         }
     }
 
@@ -190,7 +192,7 @@ final class V1Peripheral: NSObject {
         }
 
         displayChar = notifyCharacteristic(V1.displayShortUUID)
-        alertChar = notifyCharacteristic(V1.displayLongUUID)
+        longNotifyChar = notifyCharacteristic(V1.displayLongUUID)
         altNotifyChar = notifyCharacteristic(V1.notifyAltUUID)
 
         commandChar = CBMutableCharacteristic(
@@ -214,7 +216,7 @@ final class V1Peripheral: NSObject {
 
         let service = CBMutableService(type: CBUUID(string: V1.serviceUUID), primary: true)
         service.characteristics = [
-            displayChar, alertChar, commandChar,
+            displayChar, longNotifyChar, commandChar,
             commandLongChar, altNotifyChar, commandAltChar
         ]
         return service
@@ -259,9 +261,6 @@ final class V1Peripheral: NSObject {
                 onLog?("→ \(responseName)")
                 send(decision)
 
-            case .compatibilityAcknowledgement(let decision):
-                send(decision)
-
             case .alertDataChanged(true):
                 onLog?("← reqStartAlertData — alert table enabled")
                 onStartAlertData?()
@@ -279,6 +278,9 @@ final class V1Peripheral: NSObject {
 
             case .userBytesStored(let bytes):
                 onLog?("← stored user bytes \(bytes.hexString)")
+
+            case .acceptedWithoutReply:
+                onLog?("← accepted \(commandName) — no immediate reply")
 
             case .rejected(let reason):
                 onLog?("← rejected \(commandName): \(reason)")

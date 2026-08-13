@@ -93,10 +93,18 @@ let console = Console()
 // MARK: - Shared option construction
 
 func makeHeader() throws -> V1.Header {
-    // Emulation uses the V1→app direction. Repository fixture parity
+    // Targeted replies use the V1→app direction. Repository fixture parity
     // remains available as an explicit compatibility option.
     let raw = args.string("header", "v1")
     guard let header = V1.Header.named(raw) else {
+        throw ReplayError.message("unknown --header '\(raw)' (use v1 or draft)")
+    }
+    return header
+}
+
+func makeInformationHeader() throws -> V1.Header {
+    let raw = args.string("header", "v1")
+    guard let header = V1.Header.informationNamed(raw) else {
         throw ReplayError.message("unknown --header '\(raw)' (use v1 or draft)")
     }
     return header
@@ -231,7 +239,8 @@ func runHelp() {
 
     \(Ansi.bold)PROTOCOL\(Ansi.reset)
       --name <string>      advertised local name (default V1G-REPLAY)
-      --header <v1|draft>  dest/src bytes: D6 EA (V1-to-app default) or DA E4 (fixture compatibility)
+      --header <v1|draft>  generated information D8 EA and targeted replies D6 EA;
+                           DA E4 selects fixture compatibility for both
       --blink-bogey        bogey image2 = 00, matching test_protocol_spec_conformance.
                            Off by default: image1 != image2 switches on the firmware's
                            blink-refresh repaint, the one paint path not driven by parse
@@ -239,7 +248,7 @@ func runHelp() {
                            priority-arrow blink stimulus. Bench defaults to the
                            authored scenario; other modes default to steady.
       --blink-arrow        legacy alias for --blink-profile stress
-      --no-checksum        omit the checksum byte (the firmware ignores it either way)
+      --no-checksum        omit outbound checksums; inbound commands stay validated
       --no-alerts          display packets only, no alert table
       --always-alerts      send alert rows without waiting for reqStartAlertData
       --mode <glyph>       idle mode glyph: all, logic, advanced, custom, euro
@@ -296,14 +305,14 @@ func runCrib() {
     \(Ansi.bold)LightBlue manual test — V1G-REPLAY\(Ansi.reset)
 
     Service   \(V1.serviceUUID)
-      B2CE  Read, Notify              short V1 packets: display + short replies
-      B4E0  Read, Notify              long V1 packets: alert data
+      B2CE  Read, Notify              complete V1 packets up to 20 bytes
+      B4E0  Read, Notify              partial transport for packets over 20 bytes
       B6D4  Write Without Response    commands from v1simple
       B8D2  Write Without Response    long commands
       BCE0  Read, Notify              compatibility stub
       BAD4  Write, Write Without Response   alternate commands
 
-    \(Ansi.bold)Notify on B4E0 — synthetic Ka 34.700 front, priority\(Ansi.reset)
+    \(Ansi.bold)Notify on B2CE — synthetic Ka 34.700 front, priority\(Ansi.reset)
       \(alertHex)
 
     \(Ansi.bold)Notify on B2CE — one bar\(Ansi.reset)
@@ -320,8 +329,9 @@ func runCrib() {
 
     \(Ansi.bold)Framing choices\(Ansi.reset)
     These crib vectors use the repository's DA E4 compatibility convention.
-    Playback defaults to directionally correct D6 EA (V1→app); use
-    --header draft only when exact fixture parity is required.
+    Playback defaults to D8 EA for generated display/alert information and
+    D6 EA for targeted replies. Use --header draft only when exact fixture
+    parity is required.
 
     \(Ansi.bold)One deliberate difference from the draft: bogey image2\(Ansi.reset)
     The draft and test_protocol_spec_conformance both send 06 00. The tool sends
@@ -341,47 +351,32 @@ func runCrib() {
     """)
 }
 
-func displayPacket(for sample: TimedSample,
-                   mode: V1.ModeGlyph,
-                   volume: UInt8,
-                   blinkBogey: Bool,
-                   arrowBlinkProfile: ArrowBlinkProfile,
-                   header: V1.Header,
-                   checksum: Bool) -> [UInt8] {
-    let frame: V1.DisplayFrame
-    if let priority = sample.priorityAlert {
-        frame = .alerting(bars: priority.strength,
-                          band: priority.band,
-                          direction: priority.direction,
-                          bogeyCount: sample.alerts.count,
-                          muted: sample.muted,
-                          volume: volume,
-                          displayOn: true,
-                          blinkPlane: blinkBogey,
-                          blinkArrow: arrowBlinkProfile.shouldBlink(sample))
-    } else {
-        frame = .idle(mode: mode, volume: volume, displayOn: true,
-                      softMuted: sample.muted)
-    }
-    return frame.packet(header: header, checksum: checksum)
+func playbackPacketPlan(for sample: TimedSample,
+                        mode: V1.ModeGlyph,
+                        volume: UInt8,
+                        blinkBogey: Bool,
+                        arrowBlinkProfile: ArrowBlinkProfile,
+                        header: V1.Header,
+                        checksum: Bool,
+                        includeAlertTable: Bool) -> V1.PlaybackPacketPlan {
+    return V1.PlaybackPacketPlan(
+        sample: sample,
+        mode: mode,
+        volume: volume,
+        displayOn: true,
+        muted: sample.muted,
+        blinkBogey: blinkBogey,
+        blinkArrow: arrowBlinkProfile.shouldBlink(sample),
+        header: header,
+        checksum: checksum,
+        includeAlertTable: includeAlertTable
+    )
 }
 
-func alertPackets(for sample: TimedSample,
-                  header: V1.Header,
-                  checksum: Bool) -> [[UInt8]] {
-    guard !sample.alerts.isEmpty else {
-        return [V1.AlertRow.empty().packet(header: header, checksum: checksum)]
-    }
-
-    return sample.alerts.enumerated().map { index, alert in
-        let row = V1.AlertRow.row(index: index + 1,
-                                  count: sample.alerts.count,
-                                  bars: alert.strength,
-                                  band: alert.band,
-                                  direction: alert.direction,
-                                  frequencyMHz: alert.frequencyMHz,
-                                  priority: alert.isPriority)
-        return row.packet(header: header, checksum: checksum)
+func characteristicName(for channel: V1.ReplyChannel) -> String {
+    switch channel {
+    case .displayShort: return "B2CE"
+    case .displayLong: return "B4E0"
     }
 }
 
@@ -417,7 +412,7 @@ func runExport() throws {
         return
     }
 
-    let header = try makeHeader()
+    let header = try makeInformationHeader()
     let checksum = !args.bool("no-checksum")
     let mode = try makeMode()
     let volume = makeVolumeByte()
@@ -434,19 +429,17 @@ func runExport() throws {
             let primary = sample.priorityAlert
             let bars = primary?.strength ?? 0
             let direction = primary?.direction.label ?? "NONE"
-            let display = displayPacket(for: sample, mode: mode, volume: volume,
-                                        blinkBogey: blinkBogey,
-                                        arrowBlinkProfile: arrowBlinkProfile, header: header,
-                                        checksum: checksum)
-            lines.append(String(format: "%.3f,%d,%d,%@,%@,B2CE,%@",
-                                sample.offset, sample.sourceIndex, bars, direction,
-                                sample.muted ? "1" : "0", compactHex(display)))
-            if sendAlerts {
-                for packet in alertPackets(for: sample, header: header, checksum: checksum) {
-                    lines.append(String(format: "%.3f,%d,%d,%@,%@,B4E0,%@",
-                                        sample.offset, sample.sourceIndex, bars, direction,
-                                        sample.muted ? "1" : "0", compactHex(packet)))
-                }
+            let plan = playbackPacketPlan(
+                for: sample, mode: mode, volume: volume,
+                blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
+                header: header, checksum: checksum, includeAlertTable: sendAlerts
+            )
+            for emission in plan.emissions {
+                lines.append(String(format: "%.3f,%d,%d,%@,%@,%@,%@",
+                                    sample.offset, sample.sourceIndex, bars, direction,
+                                    sample.muted ? "1" : "0",
+                                    characteristicName(for: emission.channel),
+                                    compactHex(emission.bytes)))
             }
         }
 
@@ -459,31 +452,35 @@ func runExport() throws {
             let wait = sample.offset - previous
             previous = sample.offset
             let primary = sample.priorityAlert
-            let display = displayPacket(for: sample, mode: mode, volume: volume,
-                                        blinkBogey: blinkBogey,
-                                        arrowBlinkProfile: arrowBlinkProfile, header: header,
-                                        checksum: checksum)
+            let plan = playbackPacketPlan(
+                for: sample, mode: mode, volume: volume,
+                blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
+                header: header, checksum: checksum, includeAlertTable: sendAlerts
+            )
             lines.append(String(format: "wait %.3fs", wait))
             let description = primary.map { "\($0.strength) bar(s) \($0.direction.label)" } ?? "idle"
-            lines.append("B2CE " + compactHex(display) + "   # " + description)
-            if sendAlerts {
-                for packet in alertPackets(for: sample, header: header, checksum: checksum) {
-                    lines.append("B4E0 " + compactHex(packet))
+            for emission in plan.emissions {
+                var line = characteristicName(for: emission.channel)
+                    + " " + compactHex(emission.bytes)
+                if emission.kind == .displayFrame {
+                    line += "   # " + description
                 }
+                lines.append(line)
             }
         }
 
     default:
         for sample in encounter.samples {
-            let display = displayPacket(for: sample, mode: mode, volume: volume,
-                                        blinkBogey: blinkBogey,
-                                        arrowBlinkProfile: arrowBlinkProfile, header: header,
-                                        checksum: checksum)
-            lines.append(String(format: "%8.3f  B2CE  %@", sample.offset, display.hexString))
-            if sendAlerts {
-                for packet in alertPackets(for: sample, header: header, checksum: checksum) {
-                    lines.append(String(format: "%8.3f  B4E0  %@", sample.offset, packet.hexString))
-                }
+            let plan = playbackPacketPlan(
+                for: sample, mode: mode, volume: volume,
+                blinkBogey: blinkBogey, arrowBlinkProfile: arrowBlinkProfile,
+                header: header, checksum: checksum, includeAlertTable: sendAlerts
+            )
+            for emission in plan.emissions {
+                lines.append(String(
+                    format: "%8.3f  %@  %@", sample.offset,
+                    characteristicName(for: emission.channel), emission.bytes.hexString
+                ))
             }
         }
     }
@@ -493,7 +490,8 @@ func runExport() throws {
 
 func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throws {
     if bench { try validateBenchOptions() }
-    let header = try makeHeader()
+    let replyHeader = try makeHeader()
+    let informationHeader = try makeInformationHeader()
     let checksum = !args.bool("no-checksum")
     let mode = try makeMode()
     let (mainVolume, mutedVolume) = makeVolumePair()
@@ -511,7 +509,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
 
     var peripheralConfig = V1Peripheral.Config()
     peripheralConfig.localName = args.string("name", "V1G-REPLAY")
-    peripheralConfig.header = header
+    peripheralConfig.header = replyHeader
     peripheralConfig.checksum = checksum
     peripheralConfig.version = args.string("v1-version", "4.1038")
     peripheralConfig.mainVolume = mainVolume
@@ -530,7 +528,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     playerOptions.idleTail = (idleOnly || bench) ? 0 : args.double("idle-tail", 3.0)
     playerOptions.idleHz = args.double("idle-hz", 3.0)
     playerOptions.mode = mode
-    playerOptions.header = header
+    playerOptions.header = informationHeader
     playerOptions.checksum = checksum
     playerOptions.volume = makeVolumeByte()
     playerOptions.blinkBogey = args.bool("blink-bogey")
@@ -540,7 +538,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     console.print("")
     console.print("\(Ansi.bold)v1replay \(toolVersion)\(Ansi.reset)  —  pretending to be a Valentine One Gen2")
     console.print("\(Ansi.dim)service  \(V1.serviceUUID)\(Ansi.reset)")
-    console.print("\(Ansi.dim)name     \(peripheralConfig.localName)   header \(String(format: "%02X %02X", header.dest, header.src))   checksum \(checksum ? "on" : "off")\(Ansi.reset)")
+    console.print("\(Ansi.dim)name     \(peripheralConfig.localName)   info \(String(format: "%02X %02X", informationHeader.dest, informationHeader.src))   replies \(String(format: "%02X %02X", replyHeader.dest, replyHeader.src))   checksum \(checksum ? "on" : "off")\(Ansi.reset)")
     // State the blink plane out loud: it decides whether the firmware's
     // blink-refresh repaint runs, so a bench log has to say which stimulus
     // produced it before it can be compared with a native replay.
@@ -639,7 +637,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
         if peripheral.subscriberCount > 0 {
             var parts: [String] = []
             parts.append(peripheral.displaySubscribed ? "\(Ansi.green)B2CE\(Ansi.reset)" : "\(Ansi.dim)B2CE\(Ansi.reset)")
-            parts.append(peripheral.alertSubscribed ? "\(Ansi.green)B4E0\(Ansi.reset)" : "\(Ansi.dim)B4E0\(Ansi.reset)")
+            parts.append(peripheral.longSubscribed ? "\(Ansi.green)B4E0\(Ansi.reset)" : "\(Ansi.dim)B4E0\(Ansi.reset)")
             parts.append(peripheral.alertDataRequested ? "\(Ansi.green)alerts\(Ansi.reset)" : "\(Ansi.dim)alerts\(Ansi.reset)")
             connection = parts.joined(separator: " ")
         } else if peripheral.isAdvertising {

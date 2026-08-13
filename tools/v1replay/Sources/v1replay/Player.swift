@@ -24,7 +24,7 @@ final class Player {
         var idleTail: TimeInterval = 3.0
         var idleHz: Double = 3.0
         var mode: V1.ModeGlyph = .advancedLogic
-        var header: V1.Header = .v1ToApp
+        var header: V1.Header = .broadcastInformation
         var checksum: Bool = true
         var volume: UInt8 = 0x40
         var blinkBogey: Bool = false
@@ -275,7 +275,7 @@ final class Player {
         let displayReady = !options.waitForSubscribe || peripheral.displaySubscribed
         let alertDataReady = !options.waitForAlertData
             || !options.sendAlerts
-            || (peripheral.alertSubscribed && peripheral.alertDataRequested)
+            || (peripheral.displaySubscribed && peripheral.alertDataRequested)
         return displayReady && alertDataReady
     }
 
@@ -312,11 +312,15 @@ final class Player {
         let displayOn = _displayOn
         lock.unlock()
 
-        let frame = V1.DisplayFrame.idle(mode: options.mode,
-                                         volume: options.volume,
-                                         displayOn: displayOn,
-                                         softMuted: muted)
-        peripheral.sendDisplay(frame.packet(header: options.header, checksum: options.checksum))
+        let packet = V1.PlaybackPacketPlan.idleDisplayPacket(
+            mode: options.mode,
+            volume: options.volume,
+            displayOn: displayOn,
+            muted: muted,
+            header: options.header,
+            checksum: options.checksum
+        )
+        peripheral.sendDisplay(packet)
 
         lock.lock(); _packetsSent += 1; _lastBars = 0; lock.unlock()
     }
@@ -325,9 +329,20 @@ final class Player {
     private func sendEmptyAlertTable() -> Bool {
         guard options.sendAlerts else { return false }
         if options.requireStartAlertData && !peripheral.alertDataRequested { return false }
-        let row = V1.AlertRow.empty()
-        peripheral.sendAlert(row.packet(header: options.header, checksum: options.checksum))
+        peripheral.sendDisplay(V1.PlaybackPacketPlan.clearAlertPacket(
+            header: options.header,
+            checksum: options.checksum
+        ))
         return true
+    }
+
+    private func send(_ emission: V1.PlaybackPacketPlan.Emission) {
+        switch emission.channel {
+        case .displayShort:
+            peripheral.sendDisplay(emission.bytes)
+        case .displayLong:
+            peripheral.sendLong(emission.bytes)
+        }
     }
 
     private func playTimeline() -> Outcome {
@@ -365,7 +380,7 @@ final class Player {
             }
 
             // Bench playback must remain aligned with its expected timeline. If
-            // either notification subscription or the alert-data request is
+            // the B2CE notification subscription or the alert-data request is
             // lost in the small window after waitUntil(), retry this same step
             // once readiness returns instead of advancing without a full table.
             if !emit(sampleAt: index) {
@@ -390,45 +405,22 @@ final class Player {
         let displayOn = _displayOn
         lock.unlock()
 
-        var sent = 0
-        if options.sendAlerts,
-           !options.requireStartAlertData || peripheral.alertDataRequested {
-            if sample.alerts.isEmpty {
-                if sendEmptyAlertTable() { sent += 1 }
-            } else {
-                for (rowIndex, alert) in sample.alerts.enumerated() {
-                    let row = V1.AlertRow.row(index: rowIndex + 1,
-                                              count: sample.alerts.count,
-                                              bars: alert.strength,
-                                              band: alert.band,
-                                              direction: alert.direction,
-                                              frequencyMHz: alert.frequencyMHz,
-                                              priority: alert.isPriority)
-                    peripheral.sendAlert(row.packet(header: options.header, checksum: options.checksum))
-                    sent += 1
-                }
-            }
-        }
-
-        let frame: V1.DisplayFrame
-        if let priority = sample.priorityAlert {
-            frame = V1.DisplayFrame.alerting(bars: priority.strength,
-                                             band: priority.band,
-                                             direction: priority.direction,
-                                             bogeyCount: sample.alerts.count,
-                                             muted: muted,
-                                             volume: options.volume,
-                                             displayOn: displayOn,
-                                             blinkPlane: options.blinkBogey,
-                                             blinkArrow: options.arrowBlinkProfile.shouldBlink(sample))
-        } else {
-            frame = V1.DisplayFrame.idle(mode: options.mode,
-                                         volume: options.volume,
-                                         displayOn: displayOn,
-                                         softMuted: muted)
-        }
-        peripheral.sendDisplay(frame.packet(header: options.header, checksum: options.checksum))
-        sent += 1
+        let includeAlertTable = options.sendAlerts
+            && (!options.requireStartAlertData || peripheral.alertDataRequested)
+        let plan = V1.PlaybackPacketPlan(
+            sample: sample,
+            mode: options.mode,
+            volume: options.volume,
+            displayOn: displayOn,
+            muted: muted,
+            blinkBogey: options.blinkBogey,
+            blinkArrow: options.arrowBlinkProfile.shouldBlink(sample),
+            header: options.header,
+            checksum: options.checksum,
+            includeAlertTable: includeAlertTable
+        )
+        for emission in plan.emissions { send(emission) }
+        let sent = plan.emissions.count
 
         lock.lock()
         _packetsSent += sent

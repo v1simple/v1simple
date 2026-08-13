@@ -29,6 +29,7 @@ PACKET_START = 0xAA
 PACKET_END = 0xAB
 
 HEADER_V1_TO_APP = (0xD6, 0xEA)
+HEADER_BROADCAST_INFORMATION = (0xD8, 0xEA)
 HEADER_DRAFT = (0xDA, 0xE4)
 
 BANDS = {"laser": 0x01, "ka": 0x02, "k": 0x04, "x": 0x08, "ku": 0x10}
@@ -433,7 +434,7 @@ def check_repo_fixture_parity():
 def check_framing():
     """Length byte, checksum, and the parser's framing guards."""
     for checksum in (True, False):
-        for header in (HEADER_V1_TO_APP, HEADER_DRAFT):
+        for header in (HEADER_BROADCAST_INFORMATION, HEADER_DRAFT):
             display = frame(header, 0x31,
                             display_payload_alerting(4, BANDS["ka"], DIRECTIONS["F"],
                                                      1, False, 0x40, True),
@@ -464,7 +465,7 @@ def check_framing():
 
     # A spec-framed display packet is 15 bytes; the draft form is 14 and pays for
     # it by losing auxData2 to the checksum slot.
-    spec = frame(HEADER_V1_TO_APP, 0x31,
+    spec = frame(HEADER_BROADCAST_INFORMATION, 0x31,
                  display_payload_alerting(1, BANDS["ka"], DIRECTIONS["F"], 1,
                                           False, 0x40, True), checksum=True)
     check(len(spec) == 15, "spec display packet is 15 bytes", "got %d" % len(spec))
@@ -489,7 +490,7 @@ def check_strength_round_trip():
 
 def check_idle_frame():
     payload = display_payload_idle(MODE_ADVANCED_LOGIC, 0x40, True, False)
-    packet = frame(HEADER_V1_TO_APP, 0x31, payload)
+    packet = frame(HEADER_BROADCAST_INFORMATION, 0x31, payload)
     state = parse_display(parser_payload(packet))
     check(state["signalBars"] == 0, "idle frame shows no bars")
     check(state["activeBands"] == 0, "idle frame shows no band")
@@ -602,27 +603,12 @@ def check_version_reply():
     check(version >= 41037, "photo type support is enabled at this version")
 
 
-def ack_packet(header, packet_id, checksum):
-    """Port of V1.ackPacket."""
-    if checksum:
-        return frame(header, packet_id, [], checksum=True)
-    return frame(header, packet_id, [0x00], checksum=False)
-
-
 def check_replies():
-    """Every reply we send must survive parseInternal's length guards."""
+    """Targeted replies and alert clears survive parser length guards."""
     for header in (HEADER_V1_TO_APP, HEADER_DRAFT):
         for checksum in (True, False):
             tag = "%s/%s" % ("spec" if header == HEADER_V1_TO_APP else "draft",
                              "checksum" if checksum else "no-checksum")
-
-            for packet_id in (0x32, 0x33, 0x34, 0x35, 0x36, 0x39):
-                ack = ack_packet(header, packet_id, checksum)
-                check(len(ack) >= 7,
-                      "ACK 0x%02X is long enough to parse (%s)" % (packet_id, tag),
-                      "%d bytes: %s" % (len(ack), hexs(ack)))
-                check(ack[0] == PACKET_START and ack[-1] == PACKET_END,
-                      "ACK 0x%02X is framed (%s)" % (packet_id, tag))
 
             # respVersion and respAllVolume are NOT on the parser's bypass list,
             # so they additionally have to clear validatePacket's 8-byte floor.
@@ -642,6 +628,10 @@ def check_replies():
                   "respAllVolume declares and carries 4 payload bytes (%s)" % tag,
                   "len byte 0x%02X, payload %d" % (volume[4], len(volume) - 6))
 
+    for header in (HEADER_BROADCAST_INFORMATION, HEADER_DRAFT):
+        for checksum in (True, False):
+            tag = "%s/%s" % ("broadcast" if header == HEADER_BROADCAST_INFORMATION else "draft",
+                             "checksum" if checksum else "no-checksum")
             empty = frame(header, 0x43, [0] * 7, checksum=checksum)
             ok, why = parser_validate(empty)
             check(ok, "empty alert table clears validatePacket (%s)" % tag, why)
@@ -741,7 +731,7 @@ def check_generated_matrix():
                 for muted in (False, True):
                     cases += 1
                     display = frame(
-                        HEADER_V1_TO_APP,
+                        HEADER_BROADCAST_INFORMATION,
                         0x31,
                         display_payload_alerting(
                             bars, band_mask, direction_mask, 1, muted, 0x40, True
@@ -771,7 +761,7 @@ def check_generated_matrix():
                     )
 
                     alert = frame(
-                        HEADER_V1_TO_APP,
+                        HEADER_BROADCAST_INFORMATION,
                         0x43,
                         alert_payload(
                             bars, band_mask, direction_mask, frequencies[band_name]
@@ -1063,7 +1053,7 @@ def main():
     check_command_decoding()
     print("  respVersion")
     check_version_reply()
-    print("  replies and ACK length floors")
+    print("  reply and alert-clear length floors")
     check_replies()
     print("  complete 0/1/2/3-row alert tables")
     check_generated_alert_tables()

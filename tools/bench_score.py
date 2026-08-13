@@ -10,6 +10,7 @@ is not part of this result.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -51,6 +52,62 @@ EXIT_BY_RESULT = {
 }
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
 CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
+
+ENCOUNTER_COLUMNS = (
+    "millis",
+    "encounter_id",
+    "sample_seq",
+    "event",
+    "v1_index",
+    "alert_count",
+    "band",
+    "frequency_mhz",
+    "direction",
+    "front_raw",
+    "rear_raw",
+    "front_bars",
+    "rear_bars",
+    "priority",
+    "junk",
+    "photo_type",
+    "dropped_snapshots",
+)
+ENCOUNTER_INTEGER_COLUMNS = tuple(
+    column for column in ENCOUNTER_COLUMNS if column not in {"event", "band", "direction"}
+)
+
+# These are authored public-bench semantics, not values rebuilt with the
+# emulator's protocol helpers. Alert-table row order is part of the contract.
+EXPECTED_REPLAY_CHECKPOINTS = (
+    (
+        "two-row handoff",
+        (
+            (1, "K", 24_150, "SIDE", 4, 0, 0),
+            (2, "Ka", 34_700, "FRONT", 5, 0, 1),
+        ),
+    ),
+    (
+        "three-row table",
+        (
+            (1, "K", 24_150, "SIDE", 4, 0, 0),
+            (2, "Ka", 34_700, "FRONT", 6, 0, 1),
+            (3, "Ka", 35_500, "REAR", 0, 4, 0),
+        ),
+    ),
+    (
+        "two-row clear-down",
+        (
+            (1, "K", 24_150, "SIDE", 4, 0, 0),
+            (2, "Ka", 34_700, "FRONT", 5, 0, 1),
+        ),
+    ),
+    (
+        "one-row clear-down",
+        (
+            (1, "K", 24_150, "SIDE", 4, 0, 1),
+        ),
+    ),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,6 +231,285 @@ def window_path(window_dir: Path, raw: Any, fallback_name: str) -> Path:
 
 def counter_delta(rows: list[dict[str, int]], column: str) -> int:
     return int(rows[-1].get(column, 0)) - int(rows[0].get(column, 0))
+
+
+def same_window_artifact(window_dir: Path, raw: Any, label: str) -> tuple[Path | None, str]:
+    text = str(raw or "").strip()
+    if not text:
+        return None, f"replay window is missing required {label} path"
+
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        candidate = window_dir / candidate
+    try:
+        window_root = window_dir.resolve()
+        resolved = candidate.resolve()
+        resolved.relative_to(window_root)
+    except (OSError, RuntimeError, ValueError):
+        return None, f"replay {label} must resolve inside its replay window"
+    if not resolved.is_file():
+        return None, f"replay {label} is missing or is not a file: {resolved.name}"
+    return resolved, ""
+
+
+def encounter_collection_failure(message: str) -> dict[str, Any]:
+    return {"result": "COLLECTION_FAILED", "evidence": [message]}
+
+
+def encounter_semantic_failure(message: str) -> dict[str, Any]:
+    return {"result": "FAIL", "evidence": [message]}
+
+
+def encounter_row_signature(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        row["v1_index"],
+        row["band"],
+        row["frequency_mhz"],
+        row["direction"],
+        row["front_bars"],
+        row["rear_bars"],
+        row["priority"],
+    )
+
+
+def score_replay_encounter_csv(csv_path: Path) -> dict[str, Any]:
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            lines = [line for line in handle if line.strip() and not line.lstrip().startswith("#")]
+        reader = csv.DictReader(lines)
+        fieldnames = list(reader.fieldnames or [])
+        if not fieldnames:
+            return encounter_collection_failure("replay encounter CSV has no header")
+        if len(fieldnames) != len(set(fieldnames)):
+            return encounter_collection_failure("replay encounter CSV has duplicate columns")
+        missing = sorted(set(ENCOUNTER_COLUMNS) - set(fieldnames))
+        if missing:
+            return encounter_collection_failure(
+                "replay encounter CSV is missing required columns: " + ", ".join(missing)
+            )
+
+        parsed_rows: list[dict[str, Any]] = []
+        for row_number, raw_row in enumerate(reader, start=2):
+            if None in raw_row or any(
+                raw_row.get(column) is None or not str(raw_row[column]).strip()
+                for column in ENCOUNTER_COLUMNS
+            ):
+                return encounter_collection_failure(
+                    f"replay encounter CSV row {row_number} is truncated or has empty required fields"
+                )
+            row: dict[str, Any] = {
+                "event": str(raw_row["event"]).strip().upper(),
+                "band": str(raw_row["band"]).strip(),
+                "direction": str(raw_row["direction"]).strip().upper(),
+            }
+            try:
+                for column in ENCOUNTER_INTEGER_COLUMNS:
+                    row[column] = int(str(raw_row[column]).strip())
+            except ValueError:
+                return encounter_collection_failure(
+                    f"replay encounter CSV row {row_number} has a non-integer numeric field"
+                )
+            if row["event"] not in {"START", "SAMPLE", "END"}:
+                return encounter_collection_failure(
+                    f"replay encounter CSV row {row_number} has an unknown event"
+                )
+            if row["encounter_id"] < 1 or row["sample_seq"] < 1:
+                return encounter_collection_failure(
+                    f"replay encounter CSV row {row_number} has an invalid encounter identity"
+                )
+            if row["alert_count"] not in {1, 2, 3}:
+                return encounter_semantic_failure(
+                    f"replay encounter CSV row {row_number} has alert_count outside 1...3"
+                )
+            if row["priority"] not in {0, 1}:
+                return encounter_semantic_failure(
+                    f"replay encounter CSV row {row_number} has an invalid priority flag"
+                )
+            if row["dropped_snapshots"] < 0:
+                return encounter_collection_failure(
+                    f"replay encounter CSV row {row_number} has an invalid dropped-snapshot counter"
+                )
+            parsed_rows.append(row)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        return encounter_collection_failure(f"replay encounter CSV could not be read: {exc}")
+
+    if not parsed_rows:
+        return encounter_collection_failure("replay encounter CSV contains no snapshot rows")
+
+    groups: list[dict[str, Any]] = []
+    seen_keys: set[tuple[int, int]] = set()
+    last_sequence: dict[int, int] = {}
+    current_key: tuple[int, int] | None = None
+    for row in parsed_rows:
+        key = (row["encounter_id"], row["sample_seq"])
+        if key != current_key:
+            if key in seen_keys:
+                return encounter_collection_failure(
+                    "replay encounter CSV has a non-contiguous snapshot group"
+                )
+            prior_sequence = last_sequence.get(row["encounter_id"], 0)
+            if row["sample_seq"] <= prior_sequence:
+                return encounter_collection_failure(
+                    "replay encounter CSV sample_seq is not strictly increasing"
+                )
+            seen_keys.add(key)
+            last_sequence[row["encounter_id"]] = row["sample_seq"]
+            current_key = key
+            groups.append(
+                {
+                    "encounter_id": row["encounter_id"],
+                    "sample_seq": row["sample_seq"],
+                    "rows": [],
+                }
+            )
+        groups[-1]["rows"].append(row)
+
+    for group in groups:
+        rows = group["rows"]
+        events = {row["event"] for row in rows}
+        counts = {row["alert_count"] for row in rows}
+        if len(events) != 1 or len(counts) != 1:
+            return encounter_semantic_failure(
+                "replay encounter snapshot rows disagree on event or alert_count"
+            )
+        event = next(iter(events))
+        count = next(iter(counts))
+        indices = [row["v1_index"] for row in rows]
+        if len(rows) != count:
+            return encounter_semantic_failure(
+                "replay encounter snapshot cardinality does not match alert_count"
+            )
+        if indices != list(range(1, count + 1)):
+            return encounter_semantic_failure(
+                "replay encounter snapshot requires ordered unique one-based v1_index values"
+            )
+        if any(row["dropped_snapshots"] != 0 for row in rows):
+            return encounter_collection_failure(
+                "replay encounter snapshot reports dropped snapshots"
+            )
+        if event in {"START", "SAMPLE"} and sum(row["priority"] for row in rows) != 1:
+            return encounter_semantic_failure(
+                "replay encounter active snapshot requires exactly one priority row"
+            )
+        group["event"] = event
+        group["signature"] = tuple(encounter_row_signature(row) for row in rows)
+
+    groups_by_encounter: dict[int, list[dict[str, Any]]] = {}
+    for group in groups:
+        groups_by_encounter.setdefault(group["encounter_id"], []).append(group)
+
+    complete_lifecycle: dict[str, Any] | None = None
+    candidate_failures: list[tuple[int, str, int]] = []
+    for encounter_id, encounter_groups in groups_by_encounter.items():
+        for start_index, start_group in enumerate(encounter_groups):
+            if start_group["event"] != "START":
+                continue
+
+            expected_index = 0
+            matched_group_indices: list[int] = []
+            candidate_failure = ""
+            for group_index in range(start_index, len(encounter_groups)):
+                group = encounter_groups[group_index]
+                event = group["event"]
+                signature = group["signature"]
+
+                if event == "END":
+                    if expected_index == len(EXPECTED_REPLAY_CHECKPOINTS):
+                        final_signature = EXPECTED_REPLAY_CHECKPOINTS[-1][1]
+                        if signature != final_signature:
+                            candidate_failure = (
+                                "replay encounter END does not close the final authored one-row state"
+                            )
+                        else:
+                            complete_lifecycle = {
+                                "encounter_id": encounter_id,
+                                "start_group_index": start_index,
+                                "checkpoint_group_indices": matched_group_indices,
+                                "end_group_index": group_index,
+                            }
+                    elif expected_index > 0:
+                        missing_label = EXPECTED_REPLAY_CHECKPOINTS[expected_index][0]
+                        candidate_failure = (
+                            "replay encounter ended before authored checkpoint: " + missing_label
+                        )
+                    break
+
+                if event == "START" and group_index != start_index:
+                    candidate_failure = "replay encounter has a second START before END"
+                    break
+
+                if expected_index == 0:
+                    if signature == EXPECTED_REPLAY_CHECKPOINTS[0][1]:
+                        matched_group_indices.append(group_index)
+                        expected_index = 1
+                    elif len(signature) == len(EXPECTED_REPLAY_CHECKPOINTS[0][1]):
+                        candidate_failure = (
+                            "replay encounter first two-row state does not match the authored handoff"
+                        )
+                        break
+                    continue
+
+                current_signature = EXPECTED_REPLAY_CHECKPOINTS[expected_index - 1][1]
+                if signature == current_signature:
+                    continue
+                if (
+                    expected_index < len(EXPECTED_REPLAY_CHECKPOINTS)
+                    and signature == EXPECTED_REPLAY_CHECKPOINTS[expected_index][1]
+                ):
+                    matched_group_indices.append(group_index)
+                    expected_index += 1
+                    continue
+
+                candidate_failure = (
+                    "replay encounter has an unexpected or regressed active state after authored checkpoint: "
+                    + EXPECTED_REPLAY_CHECKPOINTS[expected_index - 1][0]
+                )
+                break
+
+            if complete_lifecycle is not None:
+                break
+            if expected_index > 0 or candidate_failure:
+                if not candidate_failure:
+                    if expected_index == len(EXPECTED_REPLAY_CHECKPOINTS):
+                        candidate_failure = (
+                            "replay encounter CSV has no END after the authored active sequence"
+                        )
+                    else:
+                        missing_label = EXPECTED_REPLAY_CHECKPOINTS[expected_index][0]
+                        candidate_failure = (
+                            "replay encounter CSV is missing authored checkpoint: " + missing_label
+                        )
+                candidate_failures.append((expected_index, candidate_failure, encounter_id))
+        if complete_lifecycle is not None:
+            break
+
+    failures: list[str] = []
+    matched_checkpoints = 0
+    if complete_lifecycle is not None:
+        matched_checkpoints = len(EXPECTED_REPLAY_CHECKPOINTS)
+    elif candidate_failures:
+        matched_checkpoints, failure, _encounter_id = max(
+            candidate_failures,
+            key=lambda item: item[0],
+        )
+        failures.append(failure)
+    else:
+        failures.append(
+            "replay encounter CSV has no START-led encounter containing the authored checkpoint sequence"
+        )
+
+    return {
+        "result": "FAIL" if failures else "PASS",
+        "encounter_count": len({group["encounter_id"] for group in groups}),
+        "snapshot_group_count": len(groups),
+        "matched_checkpoints": matched_checkpoints,
+        "expected_checkpoints": len(EXPECTED_REPLAY_CHECKPOINTS),
+        "lifecycle_encounter_id": (
+            complete_lifecycle["encounter_id"] if complete_lifecycle is not None else None
+        ),
+        "closure_found": complete_lifecycle is not None,
+        "evidence": failures,
+    }
 
 
 def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
@@ -371,7 +707,27 @@ def classify_window(
             result = "COLLECTION_FAILED"
             evidence.append("v1replay did not complete successfully")
         csv_path = window_path(window_dir, window.get("csv_path"), "perf.csv")
-        replay_checks = score_replay_csv(csv_path, str(window.get("segment") or "last"))
+        metric_checks = score_replay_csv(csv_path, str(window.get("segment") or "last"))
+        encounter_path, encounter_path_error = same_window_artifact(
+            window_dir,
+            window.get("encounter_csv_path"),
+            "encounter CSV",
+        )
+        encounter_checks = (
+            score_replay_encounter_csv(encounter_path)
+            if encounter_path is not None
+            else encounter_collection_failure(encounter_path_error)
+        )
+        replay_checks = {
+            **metric_checks,
+            "result": worse(str(metric_checks["result"]), str(encounter_checks["result"])),
+            "metrics_result": metric_checks["result"],
+            "encounter_checks": encounter_checks,
+            "evidence": [
+                *(str(item) for item in metric_checks.get("evidence") or []),
+                *(str(item) for item in encounter_checks.get("evidence") or []),
+            ],
+        }
         result = worse(result, str(replay_checks["result"]))
         evidence.extend(str(item) for item in replay_checks.get("evidence") or [])
 

@@ -14,8 +14,8 @@ Service `92A0AFF4-9E05-11E2-AA59-F23C91AEC05E`
 
 | Ending | Properties | Purpose | Required by v1simple? |
 |---|---|---|---|
-| B2CE | Read, Notify | short V1 packets, including display and short replies | **yes** — connection fails without it |
-| B4E0 | Read, Notify | long V1 packets, including alert data | optional but used |
+| B2CE | Read, Notify | complete V1 packets up to 20 bytes, including display, alert rows, and short replies | **yes** — connection fails without it |
+| B4E0 | Read, Notify | partial transport for packets over 20 bytes | optional; not used by these vectors |
 | B6D4 | Write Without Response | commands from v1simple | **yes** (or BAD4) |
 | B8D2 | Write Without Response | long commands | optional |
 | BCE0 | Read, Notify | compatibility stub | no — companion apps only |
@@ -35,7 +35,7 @@ These match the hand-written draft: no checksum byte, `dest`/`src` = `DA E4`.
 parser"). The firmware ignores dest/src and never verifies the checksum
 (`packet_parser.cpp validatePacket`), so these parse exactly as written.
 
-**Alert on B4E0** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
+**Alert on B2CE** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
 
 ```
 AA DA E4 43 07 11 87 8C 80 00 22 80 AB
@@ -99,8 +99,10 @@ respAllVolume  AA DA E4 3D 05 04 00 04 00 B2 AB
 ```
 
 `--header draft` selects the listed compatibility header. Playback defaults to
-directionally correct `D6 EA`; `--blink-bogey --no-checksum --header draft`
-reproduces the draft packets byte-for-byte.
+`D8 EA` for generated display/alert information and `D6 EA` for targeted
+replies; `--blink-bogey --no-checksum --header draft` reproduces the draft
+packets byte-for-byte. `--no-checksum` is outbound-only; manual commands into
+the emulator remain checksummed.
 
 ## The one byte that differs, and why
 
@@ -120,9 +122,9 @@ and nothing in the repo needs to change either way. If you want fixture parity,
 ## Reading the display packet
 
 ```
-AA  D6  EA  31  09  06 06 3F 22 22 0C 00 40  7F  AB
+AA  D8  EA  31  09  06 06 3F 22 22 0C 00 40  81  AB
 │   │   │   │   │   │  │  │  │  │  │  │  │   │   └ end
-│   │   │   │   │   │  │  │  │  │  │  │  │   └ checksum (byte sum, unverified)
+│   │   │   │   │   │  │  │  │  │  │  │  │   └ checksum (byte sum)
 │   │   │   │   │   │  │  │  │  │  │  │  └ auxData2: volume, main high nibble
 │   │   │   │   │   │  │  │  │  │  │  └ auxData1
 │   │   │   │   │   │  │  │  │  │  └ auxData0: 04 system status + 08 display on
@@ -134,7 +136,7 @@ AA  D6  EA  31  09  06 06 3F 22 22 0C 00 40  7F  AB
 │   │   │   │   └ payload length, counting the checksum
 │   │   │   └ packet id — 31 infDisplayData
 │   │   └ origin — E0 + 0A (V1)
-│   └ destination — D0 + 06 (remote app)
+│   └ destination — D8 broadcast information
 └ start
 ```
 
@@ -156,7 +158,7 @@ symptom.
 4. Notify the six-bar packet. The meter should jump to six.
 5. Alternate 1 and 6 by hand a few times, then quickly. If the meter lags or
    sticks, defect #1 is reproducible without a drive.
-6. Notify the alert packet on B4E0 and confirm the alert card shows the
+6. Notify the alert packet on B2CE and confirm the alert card shows the
    synthetic Ka frequency and front direction.
 
 Then use `v1replay demo` for a generated multi-strength sequence.

@@ -39,12 +39,10 @@ final class V1SessionContractTests: XCTestCase {
 
         XCTAssertFalse(session.readiness.shortTrafficReady)
         XCTAssertFalse(session.readiness.alertStreamReady)
+        XCTAssertFalse(session.readiness.longTrafficSubscribed)
 
         session.subscribe(central: central, channel: .displayShort)
         XCTAssertTrue(session.readiness.shortTrafficReady)
-        XCTAssertFalse(session.readiness.alertStreamReady)
-        session.subscribe(central: central, channel: .displayLong)
-        XCTAssertEqual(session.subscriberCount, 1)
         XCTAssertFalse(session.readiness.alertStreamReady)
 
         let startAlert: [UInt8] = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
@@ -54,6 +52,13 @@ final class V1SessionContractTests: XCTestCase {
         let started = session.receive(Array(startAlert.dropFirst(4)))
         XCTAssertEqual(started.map(\.packet.id), [0x41])
         XCTAssertEqual(started[0].effects, [.alertDataChanged(true)])
+        XCTAssertTrue(session.readiness.alertStreamReady)
+
+        // B4E0 remains observable optional capacity, but current display and
+        // alert-row readiness does not depend on a long-packet subscription.
+        session.subscribe(central: central, channel: .displayLong)
+        XCTAssertEqual(session.subscriberCount, 1)
+        XCTAssertTrue(session.readiness.longTrafficSubscribed)
         XCTAssertTrue(session.readiness.alertStreamReady)
 
         let stopAlert: [UInt8] = [0xAA, 0xDA, 0xE6, 0x42, 0x01, 0xAD, 0xAB]
@@ -240,6 +245,8 @@ final class V1SessionContractTests: XCTestCase {
         var session = V1.Session(config: config)
 
         let wrongHeader: [UInt8] = [0xAA, 0xDB, 0xE6, 0x01, 0x01, 0x6D, 0xAB]
+        let broadcastDestination: [UInt8] = [0xAA, 0xD8, 0xE6, 0x01, 0x01, 0x6A, 0xAB]
+        let wrongOrigin: [UInt8] = [0xAA, 0xDA, 0xE5, 0x01, 0x01, 0x6B, 0xAB]
         let wrongChecksum: [UInt8] = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6D, 0xAB]
         let shortUserWrite: [UInt8] = [
             0xAA, 0xDA, 0xE6, 0x13, 0x06,
@@ -247,8 +254,13 @@ final class V1SessionContractTests: XCTestCase {
             0x83, 0xAB,
         ]
 
-        let rejected = session.receive(wrongHeader + wrongChecksum + shortUserWrite)
+        let rejected = session.receive(
+            wrongHeader + broadcastDestination + wrongOrigin
+                + wrongChecksum + shortUserWrite
+        )
         XCTAssertEqual(rejected.map(\.effects), [
+            [.rejected(.invalidRequestHeader)],
+            [.rejected(.invalidRequestHeader)],
             [.rejected(.invalidRequestHeader)],
             [.rejected(.invalidChecksum)],
             [.rejected(.invalidUserBytesLength(5))],
@@ -295,5 +307,124 @@ final class V1SessionContractTests: XCTestCase {
             [.rejected(.unexpectedPayload(packetID: 0x42, count: 1))],
         ])
         XCTAssertTrue(session.alertDataRequested)
+    }
+
+    func testLargeCoalescedWriteDrainsEveryFrameBeforeBoundingPartialTail() {
+        var session = V1.Session()
+        let version: [UInt8] = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
+        let completeCount = 80
+        let burst = Array(repeating: version, count: completeCount).flatMap { $0 }
+
+        let outcomes = session.receive(burst + Array(version.prefix(4)))
+
+        XCTAssertEqual(outcomes.count, completeCount)
+        XCTAssertEqual(outcomes.map(\.packet.id), Array(repeating: 0x01, count: completeCount))
+        XCTAssertTrue(outcomes.allSatisfy { outcome in
+            outcome.effects == [.reply(V1.ReplyDecision(
+                channel: .displayShort,
+                bytes: [
+                    0xAA, 0xD6, 0xEA, 0x02, 0x08,
+                    0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+                    0x18, 0xAB,
+                ]
+            ))]
+        })
+        XCTAssertEqual(session.bufferedByteCount, 4)
+
+        XCTAssertEqual(session.receive(Array(version.dropFirst(4))).count, 1)
+        XCTAssertEqual(session.bufferedByteCount, 0)
+
+        XCTAssertEqual(session.receive(Array(repeating: 0x55, count: 1_024)), [])
+        XCTAssertEqual(session.bufferedByteCount, 0)
+    }
+
+    func testInboundChecksumRemainsMandatoryWhenOutboundChecksumIsDisabled() {
+        var config = V1.Session.Config()
+        config.outboundChecksum = false
+        var session = V1.Session(config: config)
+        let valid: [UInt8] = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
+        let invalid: [UInt8] = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6D, 0xAB]
+
+        XCTAssertEqual(session.receive(valid)[0].effects, [.reply(V1.ReplyDecision(
+            channel: .displayShort,
+            bytes: [
+                0xAA, 0xD6, 0xEA, 0x02, 0x07,
+                0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+                0xAB,
+            ]
+        ))])
+        XCTAssertEqual(session.receive(invalid)[0].effects, [
+            .rejected(.invalidChecksum)
+        ])
+    }
+
+    func testStateCommandsValidatePayloadsAndNeverInventReplies() {
+        var session = V1.Session()
+        let valid: [[UInt8]] = [
+            [0xAA, 0xDA, 0xE6, 0x34, 0x01, 0x9F, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x35, 0x01, 0xA0, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x32, 0x01, 0x9D, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x32, 0x02, 0x00, 0x9E, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x32, 0x02, 0x01, 0x9F, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x33, 0x01, 0x9E, 0xAB],
+        ]
+
+        XCTAssertEqual(session.receive(valid.flatMap { $0 }).map(\.effects), [
+            [.muteChanged(true)],
+            [.muteChanged(false)],
+            [.displayPowerChanged(false)],
+            [.displayPowerChanged(false)],
+            [.displayPowerChanged(false)],
+            [.displayPowerChanged(true)],
+        ])
+
+        let malformed: [[UInt8]] = [
+            [0xAA, 0xDA, 0xE6, 0x34, 0x02, 0x99, 0x39, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x35, 0x02, 0x99, 0x3A, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x33, 0x02, 0x99, 0x38, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x32, 0x02, 0x02, 0xA0, 0xAB],
+            [0xAA, 0xDA, 0xE6, 0x32, 0x03, 0x00, 0x01, 0xA0, 0xAB],
+        ]
+        XCTAssertEqual(session.receive(malformed.flatMap { $0 }).map(\.effects), [
+            [.rejected(.unexpectedPayload(packetID: 0x34, count: 1))],
+            [.rejected(.unexpectedPayload(packetID: 0x35, count: 1))],
+            [.rejected(.unexpectedPayload(packetID: 0x33, count: 1))],
+            [.rejected(.unexpectedPayload(packetID: 0x32, count: 1))],
+            [.rejected(.unexpectedPayload(packetID: 0x32, count: 2))],
+        ])
+
+        let mode: [UInt8] = [0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x03, 0xA5, 0xAB]
+        let volume: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x04, 0x00, 0x00, 0xAB, 0xAB,
+        ]
+        let accepted = session.receive(mode + volume)
+        XCTAssertEqual(accepted.map(\.effects), [
+            [.acceptedWithoutReply], [.acceptedWithoutReply],
+        ])
+        XCTAssertFalse(accepted.flatMap(\.effects).contains { effect in
+            if case .reply = effect { return true }
+            return false
+        })
+
+        let emptyMode: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x36, 0x01, 0xA1, 0xAB,
+        ]
+        let longMode: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x36, 0x03, 0x03, 0x00, 0xA6, 0xAB,
+        ]
+        let shortVolume: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x03, 0x04, 0x00, 0xAA, 0xAB,
+        ]
+        let longVolume: [UInt8] = [
+            0xAA, 0xDA, 0xE6, 0x39, 0x05, 0x04, 0x00, 0x00, 0x00, 0xAC, 0xAB,
+        ]
+        XCTAssertEqual(
+            session.receive(emptyMode + longMode + shortVolume + longVolume).map(\.effects),
+            [
+            [.rejected(.unexpectedPayload(packetID: 0x36, count: 0))],
+            [.rejected(.unexpectedPayload(packetID: 0x36, count: 2))],
+            [.rejected(.unexpectedPayload(packetID: 0x39, count: 2))],
+            [.rejected(.unexpectedPayload(packetID: 0x39, count: 4))],
+        ])
     }
 }

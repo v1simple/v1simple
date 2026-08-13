@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 import sys
@@ -27,10 +28,106 @@ from camera_artifacts import (  # noqa: E402
 
 CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
 
+ENCOUNTER_COLUMNS = (
+    "millis",
+    "encounter_id",
+    "sample_seq",
+    "event",
+    "v1_index",
+    "alert_count",
+    "band",
+    "frequency_mhz",
+    "direction",
+    "front_raw",
+    "rear_raw",
+    "front_bars",
+    "rear_bars",
+    "priority",
+    "junk",
+    "photo_type",
+    "dropped_snapshots",
+)
+
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def canonical_encounter_rows() -> list[dict[str, object]]:
+    def alert(
+        band: str,
+        frequency_mhz: int,
+        direction: str,
+        front_bars: int,
+        rear_bars: int,
+        priority: int,
+    ) -> dict[str, object]:
+        return {
+            "band": band,
+            "frequency_mhz": frequency_mhz,
+            "direction": direction,
+            "front_raw": front_bars,
+            "rear_raw": rear_bars,
+            "front_bars": front_bars,
+            "rear_bars": rear_bars,
+            "priority": priority,
+            "junk": 0,
+            "photo_type": 0,
+        }
+
+    k_front = alert("K", 24_150, "FRONT", 1, 0, 1)
+    k_side_secondary = alert("K", 24_150, "SIDE", 4, 0, 0)
+    k_side_priority = alert("K", 24_150, "SIDE", 4, 0, 1)
+    ka_front_five = alert("Ka", 34_700, "FRONT", 5, 0, 1)
+    ka_front_six = alert("Ka", 34_700, "FRONT", 6, 0, 1)
+    ka_rear_four = alert("Ka", 35_500, "REAR", 0, 4, 0)
+    snapshots = (
+        # A separate complete encounter proves unrelated/reconnect snapshots are allowed.
+        (1, 1, "START", (k_front,)),
+        (1, 2, "END", (k_front,)),
+        (2, 1, "START", (k_front,)),
+        (2, 2, "SAMPLE", (k_side_secondary, ka_front_five)),
+        (2, 3, "SAMPLE", (k_side_secondary, ka_front_five)),
+        (2, 4, "SAMPLE", (k_side_secondary, ka_front_six, ka_rear_four)),
+        (2, 5, "SAMPLE", (k_side_secondary, ka_front_six, ka_rear_four)),
+        (2, 6, "SAMPLE", (k_side_secondary, ka_front_five)),
+        (2, 7, "SAMPLE", (k_side_secondary, ka_front_five)),
+        (2, 8, "SAMPLE", (k_side_priority,)),
+        (2, 9, "SAMPLE", (k_side_priority,)),
+        # END repeats the previous table; it is a closure event, not a zero-row table.
+        (2, 10, "END", (k_side_priority,)),
+    )
+
+    rows: list[dict[str, object]] = []
+    for ordinal, (encounter_id, sample_seq, event, alerts) in enumerate(snapshots, start=1):
+        for v1_index, source in enumerate(alerts, start=1):
+            rows.append(
+                {
+                    "millis": ordinal * 17,
+                    "encounter_id": encounter_id,
+                    "sample_seq": sample_seq,
+                    "event": event,
+                    "v1_index": v1_index,
+                    "alert_count": len(alerts),
+                    **source,
+                    "dropped_snapshots": 0,
+                }
+            )
+    return rows
+
+
+def write_encounter_csv(
+    path: Path,
+    rows: list[dict[str, object]] | None = None,
+    columns: tuple[str, ...] = ENCOUNTER_COLUMNS,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write("# encounter_schema=1,timebase=millis,v1_assignments=raw,no_gps=1,no_speed=1\n")
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows if rows is not None else canonical_encounter_rows())
 
 
 def write_replay_csv(path: Path, *, publishes: int = 708) -> None:
@@ -84,6 +181,7 @@ def write_window(
     camera_grade_errors: tuple[str, ...] = (),
 ) -> None:
     step = root / suite
+    encounter_path: Path | None = None
     metric_payload = [
         {
             "metric": "ble_process_max_peak_us",
@@ -128,10 +226,13 @@ def write_window(
     }
     if suite == "replay":
         csv_path = step / "perf.csv"
+        encounter_path = step / "encounters_test.csv"
         write_replay_csv(csv_path, publishes=replay_publishes)
+        write_encounter_csv(encounter_path)
         window_payload.update(
             {
                 "csv_path": str(csv_path),
+                "encounter_csv_path": str(encounter_path),
                 "segment": "last",
                 "replay": {
                     "started": True,
@@ -198,15 +299,13 @@ def write_window(
         }
         write_json(camera_dir / "camera_result.json", physical_camera)
         if camera_result == "CAPTURED" and camera_grade_result:
-            encounter_path = step / "encounters_test.csv"
-            encounter_path.write_text("millis,event,priority\n0,SAMPLE,1\n", encoding="utf-8")
             capture = build_capture_manifest(
                 camera_dir=camera_dir,
                 camera_result=physical_camera,
                 suite=suite,
                 product_fingerprint=PRODUCT_FINGERPRINT,
                 scenario_fingerprint=SCENARIO_FINGERPRINT,
-                encounter_csv_path=encounter_path if suite == "replay" else None,
+                encounter_csv_path=encounter_path,
                 timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 8.0}
                 if suite == "replay"
                 else None,
@@ -484,6 +583,266 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
         checks = result["windows"][0]["replay_checks"]
         assert_true(checks["result"] == "PASS", f"unexpected replay checks: {checks}")
         assert_true(checks["observed_deltas"]["alertTablePublishes"] == 708, f"wrong replay deltas: {checks}")
+        encounter = checks["encounter_checks"]
+        assert_true(encounter["result"] == "PASS", f"unexpected encounter checks: {encounter}")
+        assert_true(encounter["matched_checkpoints"] == 4, f"missing checkpoints: {encounter}")
+        assert_true(encounter["closure_found"] is True, f"missing END closure: {encounter}")
+
+
+def test_replay_requires_a_readable_same_window_encounter_csv() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.pop("encounter_csv_path")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("missing required encounter CSV path" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        outside = root / "other_window" / "encounters.csv"
+        write_encounter_csv(outside)
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["encounter_csv_path"] = str(outside)
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("must resolve inside its replay window" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        encounter_path = root / "replay" / "encounters_test.csv"
+        encounter_path.write_bytes(b"\xff\xfe\xfd")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("encounter CSV could not be read" in proc.stdout, proc.stdout)
+
+
+def test_replay_encounter_artifact_and_logical_failures_are_classified() -> None:
+    def assert_logical_failure(rows: list[dict[str, object]], expected_message: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            write_encounter_csv(root / "replay" / "encounters_test.csv", rows)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+            assert_true(expected_message in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        encounter_path = root / "replay" / "encounters_test.csv"
+        columns = tuple(column for column in ENCOUNTER_COLUMNS if column != "rear_bars")
+        write_encounter_csv(encounter_path, columns=columns)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("missing required columns: rear_bars" in proc.stdout, proc.stdout)
+
+    wrong_count = canonical_encounter_rows()
+    for row in wrong_count:
+        if row["encounter_id"] == 2 and row["sample_seq"] == 2:
+            row["alert_count"] = 3
+    assert_logical_failure(wrong_count, "cardinality does not match alert_count")
+
+    inconsistent_event = canonical_encounter_rows()
+    inconsistent_group = [
+        row
+        for row in inconsistent_event
+        if row["encounter_id"] == 2 and row["sample_seq"] == 2
+    ]
+    inconsistent_group[1]["event"] = "END"
+    assert_logical_failure(inconsistent_event, "rows disagree on event or alert_count")
+
+    duplicate_index = canonical_encounter_rows()
+    duplicate_group = [
+        row
+        for row in duplicate_index
+        if row["encounter_id"] == 2 and row["sample_seq"] == 2
+    ]
+    duplicate_group[1]["v1_index"] = 1
+    assert_logical_failure(duplicate_index, "ordered unique one-based v1_index")
+
+    missing_priority = canonical_encounter_rows()
+    for row in missing_priority:
+        if row["encounter_id"] == 2 and row["sample_seq"] == 2:
+            row["priority"] = 0
+    assert_logical_failure(missing_priority, "requires exactly one priority row")
+
+    dropped_snapshot = canonical_encounter_rows()
+    dropped_snapshot[0]["dropped_snapshots"] = 1
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        write_encounter_csv(root / "replay" / "encounters_test.csv", dropped_snapshot)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("reports dropped snapshots" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        encounter_path = root / "replay" / "encounters_test.csv"
+        with encounter_path.open("a", encoding="utf-8") as handle:
+            handle.write("1,2,3,SAMPLE,1\n")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("truncated or has empty required fields" in proc.stdout, proc.stdout)
+
+
+def test_replay_encounter_semantic_mutants_are_actionable_failures() -> None:
+    semantic_fields = (
+        "band",
+        "frequency_mhz",
+        "direction",
+        "front_raw",
+        "rear_raw",
+        "front_bars",
+        "rear_bars",
+        "priority",
+        "junk",
+        "photo_type",
+    )
+
+    def assert_semantic_failure(rows: list[dict[str, object]], expected_message: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            write_encounter_csv(root / "replay" / "encounters_test.csv", rows)
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            encounter = result["windows"][0]["replay_checks"]["encounter_checks"]
+            assert_true(encounter["result"] == "FAIL", f"unexpected encounter result: {encounter}")
+            assert_true(expected_message in proc.stdout, proc.stdout)
+
+    swapped = canonical_encounter_rows()
+    swapped_group = [
+        row
+        for row in swapped
+        if row["encounter_id"] == 2 and row["sample_seq"] == 2
+    ]
+    left = {field: swapped_group[0][field] for field in semantic_fields}
+    right = {field: swapped_group[1][field] for field in semantic_fields}
+    swapped_group[0].update(right)
+    swapped_group[1].update(left)
+    assert_semantic_failure(swapped, "first two-row state does not match")
+
+    wrong_priority = canonical_encounter_rows()
+    priority_group = [
+        row
+        for row in wrong_priority
+        if row["encounter_id"] == 2 and row["sample_seq"] == 4
+    ]
+    priority_group[0]["priority"] = 1
+    priority_group[1]["priority"] = 0
+    assert_semantic_failure(wrong_priority, "unexpected or regressed active state")
+
+    stale = canonical_encounter_rows()
+    clear_down = [
+        row
+        for row in stale
+        if row["encounter_id"] == 2 and row["sample_seq"] in {6, 7}
+    ]
+    for row in clear_down:
+        row["alert_count"] = 3
+    stale_source = next(
+        row
+        for row in stale
+        if row["encounter_id"] == 2 and row["sample_seq"] == 4 and row["v1_index"] == 3
+    )
+    for sample_seq in (7, 6):
+        group = [row for row in clear_down if row["sample_seq"] == sample_seq]
+        stale_row = {
+            **stale_source,
+            "millis": group[0]["millis"],
+            "sample_seq": sample_seq,
+            "alert_count": 3,
+        }
+        insert_at = stale.index(group[-1]) + 1
+        stale.insert(insert_at, stale_row)
+    assert_semantic_failure(stale, "unexpected or regressed active state")
+
+    split_across_encounters = canonical_encounter_rows()
+    encounter_by_sequence = {
+        4: 3,
+        5: 3,
+        6: 4,
+        7: 4,
+        8: 5,
+        9: 5,
+        10: 5,
+    }
+    for row in split_across_encounters:
+        if row["encounter_id"] == 2 and row["sample_seq"] in encounter_by_sequence:
+            row["encounter_id"] = encounter_by_sequence[int(row["sample_seq"])]
+    assert_semantic_failure(split_across_encounters, "missing authored checkpoint")
+
+    sample_only = [
+        row
+        for row in canonical_encounter_rows()
+        if not (
+            row["encounter_id"] == 2
+            and row["sample_seq"] == 1
+            and row["event"] == "START"
+        )
+    ]
+    assert_semantic_failure(sample_only, "no START-led encounter")
+
+    stale_after_final = canonical_encounter_rows()
+    final_end = [
+        row
+        for row in stale_after_final
+        if row["encounter_id"] == 2 and row["event"] == "END"
+    ]
+    for row in final_end:
+        row["sample_seq"] = 11
+    prior_three = [
+        row
+        for row in stale_after_final
+        if row["encounter_id"] == 2 and row["sample_seq"] == 4
+    ]
+    regressed_rows = [
+        {
+            **row,
+            "millis": int(final_end[0]["millis"]) - 1,
+            "sample_seq": 10,
+            "event": "SAMPLE",
+        }
+        for row in prior_three
+    ]
+    insert_at = stale_after_final.index(final_end[0])
+    stale_after_final[insert_at:insert_at] = regressed_rows
+    assert_semantic_failure(stale_after_final, "unexpected or regressed active state")
+
+    wrong_end_state = canonical_encounter_rows()
+    final_end_row = next(
+        row
+        for row in wrong_end_state
+        if row["encounter_id"] == 2 and row["event"] == "END"
+    )
+    final_end_row.update(
+        {
+            "band": "Ka",
+            "frequency_mhz": 34_700,
+            "direction": "FRONT",
+            "front_bars": 5,
+            "rear_bars": 0,
+        }
+    )
+    assert_semantic_failure(wrong_end_state, "END does not close the final authored one-row state")
+
+    missing_end = [
+        row
+        for row in canonical_encounter_rows()
+        if not (row["encounter_id"] == 2 and row["event"] == "END")
+    ]
+    assert_semantic_failure(missing_end, "no END after the authored active sequence")
 
 
 def test_replay_scores_complete_window_across_connection_sessions() -> None:
@@ -809,6 +1168,9 @@ def main() -> int:
     test_custom_output_preserves_canonical_summary_pair()
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()
+    test_replay_requires_a_readable_same_window_encounter_csv()
+    test_replay_encounter_artifact_and_logical_failures_are_classified()
+    test_replay_encounter_semantic_mutants_are_actionable_failures()
     test_replay_scores_complete_window_across_connection_sessions()
     test_replay_mismatch_is_actionable_failure()
     test_replay_process_failure_is_collection_failure()

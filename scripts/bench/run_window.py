@@ -898,11 +898,28 @@ class V1Emulator:
         suite: str,
         blink_profile: str | None = None,
         handshake_only: bool = False,
+        handshake_notification_hold_ms: int = 0,
     ):
+        if (
+            not isinstance(handshake_notification_hold_ms, int)
+            or isinstance(handshake_notification_hold_ms, bool)
+            or handshake_notification_hold_ms < 0
+            or handshake_notification_hold_ms > 1_999
+        ):
+            raise ValueError(
+                "handshake notification hold must be an integer from 0 through 1999 milliseconds"
+            )
+        if handshake_notification_hold_ms > 0 and (
+            not handshake_only or suite != "replay"
+        ):
+            raise ValueError(
+                "handshake notification hold requires a replay handshake-only emulator"
+            )
         self.executable = executable
         self.suite = suite
         self.mode = "bench" if suite == "replay" else "idle"
         self.handshake_only = handshake_only
+        self.handshake_notification_hold_ms = handshake_notification_hold_ms
         self.blink_profile = blink_profile or ("scenario" if suite == "replay" else "steady")
         self.log_path = out_dir / (RECONNECT_LOG_NAME if handshake_only else "v1replay.log")
         ledger_name = RECONNECT_LEDGER_NAME if handshake_only else HANDSHAKE_LEDGER_NAME
@@ -932,6 +949,13 @@ class V1Emulator:
             command.extend(["--machine-events", "--blink-profile", self.blink_profile])
             if self.handshake_only:
                 command.extend(["--handshake-only", "--log-packets"])
+                if self.handshake_notification_hold_ms > 0:
+                    command.extend(
+                        [
+                            "--handshake-notification-hold-ms",
+                            str(self.handshake_notification_hold_ms),
+                        ]
+                    )
             assert self.handshake_ledger_path is not None
             command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])
         self.process = subprocess.Popen(
@@ -1097,8 +1121,30 @@ def run_reconnect_preflight(
     q: BenchSerial,
     emulator: V1Emulator,
     timeout_s: float,
+    post_ready_observation_s: float = 0,
+    pre_stop_fence_timeout_s: float = 5.0,
 ) -> dict[str, Any]:
     """Prove managed disappearance and board cleanup before the scored window."""
+    if (
+        not isinstance(post_ready_observation_s, (int, float))
+        or isinstance(post_ready_observation_s, bool)
+        or not math.isfinite(float(post_ready_observation_s))
+        or post_ready_observation_s < 0
+    ):
+        raise ValueError(
+            "post-ready observation duration must be a finite non-negative number of seconds"
+        )
+    if (
+        not isinstance(pre_stop_fence_timeout_s, (int, float))
+        or isinstance(pre_stop_fence_timeout_s, bool)
+        or not math.isfinite(float(pre_stop_fence_timeout_s))
+        or pre_stop_fence_timeout_s <= 0
+    ):
+        raise ValueError(
+            "pre-stop fence timeout must be a finite positive number of seconds"
+        )
+    observation_s = float(post_ready_observation_s)
+    pre_stop_timeout_s = float(pre_stop_fence_timeout_s)
     initial_boot_count = q.boot_marker_count
     initial_cleanup_count = q.disconnect_cleanup_count
     handshake_ready = False
@@ -1114,10 +1160,32 @@ def run_reconnect_preflight(
         emulator.wait_for_handshake_ready(timeout_s)
         handshake_ready = True
 
+        if observation_s > 0:
+            observation_deadline = time.monotonic() + observation_s
+            while True:
+                problem = emulator.health_problem()
+                if problem:
+                    raise RuntimeError(
+                        "reconnect preflight exited during its post-ready observation: "
+                        + problem
+                    )
+                remaining = observation_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
+            if emulator.handshake_ledger_path is None:
+                raise RuntimeError(
+                    "reconnect preflight handshake ledger path is unavailable after readiness"
+                )
+            if not _preflight_ledger_is_complete(emulator.handshake_ledger_path):
+                raise RuntimeError(
+                    "reconnect preflight handshake ledger did not remain complete after readiness"
+                )
+
         # A response received while process A is still healthy drains every
         # earlier serial line, so stale cleanup cannot satisfy the later gate.
         q.record_host_boundary(RECONNECT_FENCE_BEGIN)
-        establish_serial_fence(q)
+        establish_serial_fence(q, timeout_s=pre_stop_timeout_s)
         q.record_host_boundary(RECONNECT_FENCE_COMPLETE)
         serial_fence_observed = True
         if emulator.health_problem():
@@ -1181,6 +1249,10 @@ def run_reconnect_preflight(
             }
         )
         return result
+    except InterruptedError:
+        # The outer collector owns process cleanup and the signal exit code.
+        # Do not turn an operator interruption into reconnect evidence.
+        raise
     except Exception as exc:
         behavioral = isinstance(exc, ReconnectBehaviorError)
         failure_kind = exc.kind if behavioral else "evidence_or_transport"
@@ -1199,6 +1271,8 @@ def run_reconnect_preflight(
                 if behavioral and not post_exit_fence_observed:
                     establish_serial_fence(q)
                     serial_fence_observed = True
+            except InterruptedError:
+                raise
             except Exception as serial_exc:
                 behavioral = False
                 failure_kind = "serial_failure"

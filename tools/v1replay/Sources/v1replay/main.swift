@@ -200,6 +200,26 @@ func validateBenchOptions() throws {
     }
 }
 
+func parseHandshakeNotificationHoldMilliseconds(
+    _ raw: String?,
+    bench: Bool,
+    handshakeOnly: Bool
+) throws -> Int {
+    guard let raw else { return 0 }
+    guard bench && handshakeOnly else {
+        throw ReplayError.message(
+            "--handshake-notification-hold-ms is available only with bench --handshake-only"
+        )
+    }
+    guard let value = Int(raw),
+          (0..<HandshakeNotificationHoldState.upperBoundMilliseconds).contains(value) else {
+        throw ReplayError.message(
+            "--handshake-notification-hold-ms must be an integer from 0 through 1999"
+        )
+    }
+    return value
+}
+
 // MARK: - Commands
 
 func runHelp() {
@@ -231,6 +251,8 @@ func runHelp() {
       --machine-events     emit stable completion events for an external runner
       --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
       --handshake-only     runner preflight: one clear alert row, then stay quiet
+      --handshake-notification-hold-ms N
+                           stress-only outbound hold after START (0...1999; default 0)
       --no-wait            start without waiting for a central to subscribe
       --idle-lead <sec>    idle frames before the encounter (default 3)
       --idle-tail <sec>    idle frames after the encounter (default 3)
@@ -500,7 +522,10 @@ func runExport() throws {
     console.print(lines.joined(separator: "\n"))
 }
 
-func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throws {
+func runPlay(idleOnly: Bool,
+             synthetic: Bool = false,
+             bench: Bool = false,
+             handshakeNotificationHoldMs: Int = 0) throws {
     if args.bool("handshake-only") && !bench {
         throw ReplayError.message("--handshake-only is available only in bench mode")
     }
@@ -531,6 +556,7 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
     peripheralConfig.mainVolume = mainVolume
     peripheralConfig.mutedVolume = mutedVolume
     peripheralConfig.logPackets = args.bool("log-packets")
+    peripheralConfig.handshakeNotificationHoldMs = handshakeNotificationHoldMs
     if let ledgerPath = args.optionalString("handshake-ledger") {
         guard bench else {
             throw ReplayError.message("--handshake-ledger is available only in bench mode")
@@ -853,6 +879,11 @@ func runProxy() throws {
 // MARK: - Dispatch
 
 do {
+    let handshakeNotificationHoldMs = try parseHandshakeNotificationHoldMilliseconds(
+        args.optionalString("handshake-notification-hold-ms"),
+        bench: args.command == "bench",
+        handshakeOnly: args.bool("handshake-only")
+    )
     switch args.command {
     case "help":
         runHelp()
@@ -865,7 +896,11 @@ do {
     case "demo":
         try runPlay(idleOnly: false, synthetic: true)
     case "bench":
-        try runPlay(idleOnly: false, bench: true)
+        try runPlay(
+            idleOnly: false,
+            bench: true,
+            handshakeNotificationHoldMs: handshakeNotificationHoldMs
+        )
     case "idle":
         try runPlay(idleOnly: true)
     case "proxy":

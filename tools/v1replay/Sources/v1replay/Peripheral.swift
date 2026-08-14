@@ -36,6 +36,76 @@ struct HandshakeClearDeliveryState {
 
 }
 
+/// Session-scoped gate for the stress-only outbound notification hold.
+/// CoreBluetooth timing stays in `V1Peripheral`; this value only decides
+/// whether a scheduled release still belongs to the active short subscription.
+struct HandshakeNotificationHoldState {
+    struct ScheduledRelease: Equatable {
+        let epoch: UInt64
+        let delayMilliseconds: Int
+    }
+
+    static let upperBoundMilliseconds = 2_000
+
+    private let delayMilliseconds: Int
+    private var nextEpoch: UInt64 = 0
+    private var activeEpoch: UInt64?
+    private var startSeenEpoch: UInt64?
+    private var heldEpoch: UInt64?
+
+    init(delayMilliseconds: Int) {
+        precondition(
+            (0..<HandshakeNotificationHoldState.upperBoundMilliseconds)
+                .contains(delayMilliseconds)
+        )
+        self.delayMilliseconds = delayMilliseconds
+    }
+
+    mutating func beginEpoch() {
+        nextEpoch &+= 1
+        activeEpoch = nextEpoch
+        startSeenEpoch = nil
+        heldEpoch = nil
+    }
+
+    mutating func endEpoch() {
+        activeEpoch = nil
+        startSeenEpoch = nil
+        heldEpoch = nil
+    }
+
+    /// Only the first accepted START owned by the active subscriber may create
+    /// a timer. The seen marker remains after release so a duplicate cannot
+    /// restart the hold later in the same epoch.
+    mutating func acceptedStart(
+        belongsToActiveEpoch: Bool
+    ) -> ScheduledRelease? {
+        guard belongsToActiveEpoch, let epoch = activeEpoch else { return nil }
+        guard startSeenEpoch != epoch else { return nil }
+        startSeenEpoch = epoch
+        guard delayMilliseconds > 0 else { return nil }
+        heldEpoch = epoch
+        return ScheduledRelease(
+            epoch: epoch,
+            delayMilliseconds: delayMilliseconds
+        )
+    }
+
+    var blocksFlush: Bool {
+        guard let activeEpoch else { return false }
+        return heldEpoch == activeEpoch
+    }
+
+    /// Returns true only when the live epoch owns this exact scheduled release.
+    /// Epoch end, replacement, or stop makes a stale timer a no-op.
+    mutating func release(_ scheduled: ScheduledRelease) -> Bool {
+        guard activeEpoch == scheduled.epoch,
+              heldEpoch == scheduled.epoch else { return false }
+        heldEpoch = nil
+        return true
+    }
+}
+
 // =============================================================================
 // The fake V1: a CBPeripheralManager advertising the V1 service UUID with the
 // six characteristics v1simple's subscribe state machine looks for.
@@ -69,6 +139,9 @@ final class V1Peripheral: NSObject {
         var logPackets: Bool = false
         /// Optional bounded, anonymous startup-handshake evidence.
         var handshakeLedger: HandshakeLedger?
+        /// Stress-only delay after the first epoch-owned START. Zero preserves
+        /// the normal immediate notification path.
+        var handshakeNotificationHoldMs: Int = 0
         /// Proxy mode publishes the service but holds off advertising until the
         /// real V1 is connected, so v1simple cannot win the race to it.
         var deferAdvertising: Bool = false
@@ -162,10 +235,14 @@ final class V1Peripheral: NSObject {
     private var serviceAdded = false
     private var isStopping = false
     private let handshakeLedger: HandshakeLedger?
+    private var handshakeNotificationHold: HandshakeNotificationHoldState
 
     init(config: Config) {
         self.config = config
         self.handshakeLedger = config.handshakeLedger
+        self.handshakeNotificationHold = HandshakeNotificationHoldState(
+            delayMilliseconds: config.handshakeNotificationHoldMs
+        )
         var sessionConfig = V1.Session.Config()
         sessionConfig.header = config.header
         sessionConfig.outboundChecksum = config.checksum
@@ -278,6 +355,7 @@ final class V1Peripheral: NSObject {
 
     private func endHandshakeEpoch() {
         handshakeSubscriberID = nil
+        handshakeNotificationHold.endEpoch()
         discardPendingHandshakeClear()
         handshakeLedger?.endEpoch()
     }
@@ -294,7 +372,7 @@ final class V1Peripheral: NSObject {
     /// Drain the notify queue until CoreBluetooth pushes back, then wait for
     /// `peripheralManagerIsReady(toUpdateSubscribers:)`.
     private func flush() {
-        guard !isStopping else { return }
+        guard !isStopping, !handshakeNotificationHold.blocksFlush else { return }
         while let item = pending.first {
             guard manager.updateValue(
                 item.data,
@@ -411,6 +489,21 @@ final class V1Peripheral: NSObject {
                 channel: Self.shortName(inboundCharacteristic),
                 belongsToEpochSubscriber: belongsToHandshakeSubscriber
             )
+            if packet.id == V1.PacketID.reqStartAlertData.rawValue,
+               let scheduled = handshakeNotificationHold.acceptedStart(
+                   belongsToActiveEpoch: belongsToHandshakeSubscriber
+               ) {
+                queue.asyncAfter(
+                    deadline: .now() + .milliseconds(scheduled.delayMilliseconds)
+                ) { [weak self] in
+                    guard let self = self,
+                          !self.isStopping,
+                          self.handshakeNotificationHold.release(scheduled) else {
+                        return
+                    }
+                    self.flush()
+                }
+            }
         }
 
         for effect in outcome.effects {
@@ -565,6 +658,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             discardPendingHandshakeClear()
             handshakeSubscriberID = central.identifier
             handshakeLedger?.beginEpoch()
+            handshakeNotificationHold.beginEpoch()
         } else if addedSecondShortSubscriber {
             // Notification delivery is broadcast, so attribution becomes
             // ambiguous until every short subscriber leaves.

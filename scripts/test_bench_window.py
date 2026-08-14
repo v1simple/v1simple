@@ -531,6 +531,383 @@ def test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order() 
         emulator.wait_for_handshake_ready(0.1)
 
 
+def test_reconnect_preflight_notification_hold_defaults_off_and_forwards_when_selected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            blink_profile="scenario",
+            blink_samples=57,
+        )
+
+        for label, hold_ms, expected_fragment in (
+            ("default", 0, ""),
+            ("held", 1250, "--handshake-notification-hold-ms 1250"),
+        ):
+            out_dir = root / label
+            emulator = V1Emulator(
+                executable,
+                out_dir,
+                "replay",
+                "scenario",
+                handshake_only=True,
+                handshake_notification_hold_ms=hold_ms,
+            )
+            try:
+                emulator.start()
+                deadline = time.monotonic() + 1
+                log = ""
+                while time.monotonic() < deadline:
+                    log = (out_dir / RECONNECT_LOG_NAME).read_text(encoding="utf-8")
+                    if "argv=" in log:
+                        break
+                    time.sleep(0.02)
+                assert_true("argv=" in log, f"preflight argv was not recorded: {log!r}")
+                if expected_fragment:
+                    assert_true(
+                        expected_fragment in log,
+                        f"notification hold was not forwarded: {log!r}",
+                    )
+                else:
+                    assert_true(
+                        "--handshake-notification-hold-ms" not in log,
+                        f"default notification hold changed the emulator argv: {log!r}",
+                    )
+            finally:
+                emulator.stop()
+
+
+def test_reconnect_preflight_notification_hold_rejects_invalid_arguments() -> None:
+    root = Path("unused")
+    for invalid in (-1, 2_000, True, 1.5):
+        try:
+            V1Emulator(
+                root / "v1replay",
+                root / "out",
+                "replay",
+                handshake_only=True,
+                handshake_notification_hold_ms=invalid,  # type: ignore[arg-type]
+            )
+        except ValueError as exc:
+            assert_true("0 through 1999" in str(exc), f"wrong hold error: {exc}")
+        else:
+            raise AssertionError(f"invalid notification hold passed: {invalid!r}")
+
+    for suite, handshake_only in (("replay", False), ("core", True)):
+        try:
+            V1Emulator(
+                root / "v1replay",
+                root / "out",
+                suite,
+                handshake_only=handshake_only,
+                handshake_notification_hold_ms=1,
+            )
+        except ValueError as exc:
+            assert_true("handshake-only" in str(exc), f"wrong mode error: {exc}")
+        else:
+            raise AssertionError("notification hold passed outside replay handshake-only mode")
+
+
+def test_reconnect_preflight_observation_catches_late_invalid_ledger() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_path = Path(tmp) / RECONNECT_LEDGER_NAME
+        write_handshake_ledger(ledger_path)
+
+        class FakeSerial:
+            boot_marker_count = 0
+            disconnect_cleanup_count = 0
+
+            def write_command(self, _command: str) -> None:
+                pass
+
+            def read_protocol_line(
+                self,
+                _prefixes: tuple[str, ...],
+                _timeout: float,
+            ) -> str:
+                return 'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+
+            def record_host_boundary(self, _label: str) -> None:
+                pass
+
+        class FakeEmulator:
+            process = object()
+            handshake_ledger_path = ledger_path
+
+            def __init__(self) -> None:
+                self.health_checks = 0
+
+            def start(self) -> None:
+                pass
+
+            def wait_for_handshake_ready(self, _timeout: float) -> None:
+                assert_true(
+                    _preflight_ledger_is_complete(self.handshake_ledger_path),
+                    "fixture did not become ready",
+                )
+
+            def health_problem(self) -> str:
+                self.health_checks += 1
+                if self.health_checks == 1:
+                    records = handshake_ledger_records()
+                    late_start = dict(records[2])
+                    late_start["elapsed_ms"] = int(records[-1]["elapsed_ms"]) + 50
+                    records.append(late_start)
+                    self.handshake_ledger_path.write_text(
+                        "".join(
+                            json.dumps(record, separators=(",", ":")) + "\n"
+                            for record in records
+                        ),
+                        encoding="utf-8",
+                    )
+                return ""
+
+            def finish_preflight(
+                self,
+                handshake_ready_while_alive: bool,
+            ) -> dict[str, object]:
+                return {
+                    "handshake_ready_while_alive": handshake_ready_while_alive,
+                    "managed_stop": True,
+                    "confirmed_exit": True,
+                }
+
+        emulator = FakeEmulator()
+        try:
+            run_reconnect_preflight(
+                FakeSerial(),  # type: ignore[arg-type]
+                emulator,  # type: ignore[arg-type]
+                0.1,
+                post_ready_observation_s=0.001,
+            )
+        except ReconnectPreflightFailure as exc:
+            assert_true(
+                exc.classification == "FAIL",
+                f"late invalid ledger was inconclusive: {exc}",
+            )
+            assert_true(exc.failure_kind == "handshake_invalid", f"wrong late failure: {exc}")
+            assert_true(emulator.health_checks >= 2, "observation did not poll process health")
+        else:
+            raise AssertionError("late post-readiness ledger violation passed")
+
+
+def test_reconnect_preflight_observation_rejects_invalid_arguments_before_start() -> None:
+    class NeverStartEmulator:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+    for invalid in (-0.1, True, float("nan"), float("inf"), "1"):
+        emulator = NeverStartEmulator()
+        try:
+            run_reconnect_preflight(
+                SimpleNamespace(boot_marker_count=0, disconnect_cleanup_count=0),
+                emulator,  # type: ignore[arg-type]
+                1,
+                post_ready_observation_s=invalid,  # type: ignore[arg-type]
+            )
+        except ValueError as exc:
+            assert_true("finite non-negative" in str(exc), f"wrong observation error: {exc}")
+        else:
+            raise AssertionError(f"invalid observation duration passed: {invalid!r}")
+        assert_true(not emulator.started, "invalid observation duration started the emulator")
+
+
+def test_reconnect_preflight_pre_stop_fence_timeout_is_narrow_and_evidence_owned() -> None:
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def __init__(self, *, timeout_first_fence: bool) -> None:
+            self.timeout_first_fence = timeout_first_fence
+            self.protocol_timeouts: list[float] = []
+
+        def write_command(self, _command: str) -> None:
+            pass
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            timeout_s: float,
+        ) -> str:
+            self.protocol_timeouts.append(timeout_s)
+            if self.timeout_first_fence and len(self.protocol_timeouts) == 1:
+                raise TimeoutError("stress pre-stop fence timed out")
+            return 'QRESP {"ok":true,"state":"idle","suite":"core","mode":"current"}'
+
+        def read_line(self, _timeout: float) -> str:
+            self.disconnect_cleanup_count += 1
+            return "[BLE] V1 disconnected; cleared LCD BLE state at 123 ms"
+
+        def record_host_boundary(self, _label: str) -> None:
+            pass
+
+    class FakeEmulator:
+        process = object()
+
+        def __init__(self) -> None:
+            self.finish_calls = 0
+
+        def start(self) -> None:
+            pass
+
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            pass
+
+        def health_problem(self) -> str:
+            return ""
+
+        def _bench_event(self, _state: str) -> dict[str, object]:
+            return {"active": True}
+
+        def finish_preflight(
+            self,
+            handshake_ready_while_alive: bool,
+        ) -> dict[str, object]:
+            self.finish_calls += 1
+            return {
+                "handshake_ready_while_alive": handshake_ready_while_alive,
+                "managed_stop": True,
+                "confirmed_exit": True,
+            }
+
+    successful_serial = FakeSerial(timeout_first_fence=False)
+    successful_emulator = FakeEmulator()
+    result = run_reconnect_preflight(
+        successful_serial,  # type: ignore[arg-type]
+        successful_emulator,  # type: ignore[arg-type]
+        1,
+        pre_stop_fence_timeout_s=0.5,
+    )
+    assert_true(result["serial_fence_observed"] is True, f"custom fence failed: {result}")
+    assert_true(
+        successful_serial.protocol_timeouts == [0.5, 5.0],
+        "custom timeout escaped the successful pre-stop fence: "
+        f"{successful_serial.protocol_timeouts}",
+    )
+
+    timed_out_serial = FakeSerial(timeout_first_fence=True)
+    timed_out_emulator = FakeEmulator()
+    try:
+        run_reconnect_preflight(
+            timed_out_serial,  # type: ignore[arg-type]
+            timed_out_emulator,  # type: ignore[arg-type]
+            1,
+            pre_stop_fence_timeout_s=0.5,
+        )
+    except ReconnectPreflightFailure as exc:
+        assert_true(
+            exc.classification == "COLLECTION_FAILED",
+            f"pre-stop timeout became product behavior: {exc.result}",
+        )
+        assert_true(
+            exc.failure_kind == "evidence_or_transport",
+            f"pre-stop timeout received the wrong taxonomy: {exc.failure_kind}",
+        )
+        assert_true(
+            exc.result["serial_fence_observed"] is False,
+            f"timed-out fence was recorded as observed: {exc.result}",
+        )
+    else:
+        raise AssertionError("pre-stop fence timeout passed")
+    assert_true(
+        timed_out_serial.protocol_timeouts == [0.5],
+        f"stress timeout was not forwarded: {timed_out_serial.protocol_timeouts}",
+    )
+    assert_true(
+        timed_out_emulator.finish_calls == 1,
+        "ordinary pre-stop failure changed emulator terminalization",
+    )
+
+
+def test_reconnect_preflight_pre_stop_fence_timeout_rejects_invalid_before_start() -> None:
+    class NeverStartEmulator:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+    for invalid in (0, -0.1, True, float("nan"), float("inf"), "0.5"):
+        emulator = NeverStartEmulator()
+        try:
+            run_reconnect_preflight(
+                SimpleNamespace(boot_marker_count=0, disconnect_cleanup_count=0),
+                emulator,  # type: ignore[arg-type]
+                1,
+                pre_stop_fence_timeout_s=invalid,  # type: ignore[arg-type]
+            )
+        except ValueError as exc:
+            assert_true("finite positive" in str(exc), f"wrong fence timeout error: {exc}")
+        else:
+            raise AssertionError(f"invalid pre-stop fence timeout passed: {invalid!r}")
+        assert_true(not emulator.started, "invalid fence timeout started the emulator")
+
+
+def test_reconnect_preflight_propagates_interruption_without_terminalizing_emulator() -> None:
+    boundaries: list[str] = []
+
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def record_host_boundary(self, label: str) -> None:
+            boundaries.append(label)
+
+    class InterruptingEmulator:
+        def __init__(self) -> None:
+            self.started = False
+            self.finished = False
+            self.stopped = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def wait_for_handshake_ready(self, _timeout: float) -> None:
+            raise InterruptedError("received signal 2")
+
+        def finish_preflight(
+            self,
+            _handshake_ready_while_alive: bool,
+        ) -> dict[str, object]:
+            self.finished = True
+            raise AssertionError("interrupted preflight was terminalized")
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    emulator = InterruptingEmulator()
+    try:
+        run_reconnect_preflight(
+            FakeSerial(),  # type: ignore[arg-type]
+            emulator,  # type: ignore[arg-type]
+            1,
+        )
+    except InterruptedError as exc:
+        assert_true(str(exc) == "received signal 2", f"interruption changed: {exc}")
+    except ReconnectPreflightFailure as exc:
+        raise AssertionError(f"interruption was classified as reconnect evidence: {exc}") from exc
+    else:
+        raise AssertionError("interrupted reconnect preflight returned")
+
+    assert_true(emulator.started, "interruption fixture never entered the preflight")
+    assert_true(not emulator.finished, "inner preflight finished an interrupted emulator")
+    assert_true(not emulator.stopped, "inner preflight stopped an interrupted emulator")
+    assert_true(
+        boundaries == ["reconnect_preflight_start"],
+        f"interruption invented terminal boundaries: {boundaries}",
+    )
+
+    # Model the stress runner's outer finally block, which remains the sole
+    # cleanup owner after the interruption escapes.
+    emulator.stop()
+    assert_true(emulator.stopped, "outer cleanup could not stop the emulator")
+
+
 def test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence() -> None:
     """Public behavior ID: V1-RECONNECT-SESSION-001."""
     events: list[str] = []
@@ -1987,6 +2364,13 @@ def main() -> int:
     test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()
     test_reconnect_preflight_ledger_rejects_unverifiable_timing()
     test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order()
+    test_reconnect_preflight_notification_hold_defaults_off_and_forwards_when_selected()
+    test_reconnect_preflight_notification_hold_rejects_invalid_arguments()
+    test_reconnect_preflight_observation_catches_late_invalid_ledger()
+    test_reconnect_preflight_observation_rejects_invalid_arguments_before_start()
+    test_reconnect_preflight_pre_stop_fence_timeout_is_narrow_and_evidence_owned()
+    test_reconnect_preflight_pre_stop_fence_timeout_rejects_invalid_before_start()
+    test_reconnect_preflight_propagates_interruption_without_terminalizing_emulator()
     test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence()
     test_reconnect_serial_fence_requires_safe_status_shape()
     test_reconnect_readiness_uses_unique_fifo_barrier_before_status_fence()

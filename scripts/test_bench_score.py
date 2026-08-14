@@ -1600,7 +1600,7 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         mutate: object,
         expected_exit: int,
         expected_text: str,
-    ) -> None:
+    ) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_window(root, "replay")
@@ -1613,6 +1613,22 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
                 f"expected {expected_exit}: {proc.stdout}{proc.stderr}",
             )
             assert_true(expected_text in proc.stdout, proc.stdout)
+            return json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+
+    def raw_console_diagnostics(result: dict[str, object]) -> list[str]:
+        windows = result["windows"]
+        assert isinstance(windows, list) and len(windows) == 1
+        window = windows[0]
+        assert isinstance(window, dict)
+        replay_checks = window["replay_checks"]
+        assert isinstance(replay_checks, dict)
+        reconnect_checks = replay_checks["reconnect_checks"]
+        assert isinstance(reconnect_checks, dict)
+        raw_checks = reconnect_checks["raw_evidence_checks"]
+        assert isinstance(raw_checks, dict)
+        diagnostics = raw_checks["diagnostics"]
+        assert isinstance(diagnostics, list)
+        return [str(item) for item in diagnostics]
 
     def mutate_preflight_text(replay: Path, transform: object) -> None:
         path = replay / "v1replay_reconnect_preflight.log"
@@ -1656,18 +1672,144 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         "truncated machine event",
     )
 
-    def transport_falls_before_ready(text: str) -> str:
+    def transport_falls_after_ready(text: str) -> str:
         ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
         return text.replace(
             ready,
-            'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n' + ready,
+            ready + 'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n',
             1,
         )
 
     exercise(
-        lambda replay: mutate_preflight_text(replay, transport_falls_before_ready),
-        3,
-        "lacks active transport evidence",
+        lambda replay: mutate_preflight_text(replay, transport_falls_after_ready),
+        2,
+        "lost active transport before removal",
+    )
+
+    def negative_followed_by_malformed_transport(text: str) -> str:
+        ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
+        return text.replace(
+            ready,
+            ready
+            + 'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n'
+            + 'V1REPLAY_EVENT {"state":"handshake_transport","active":"bad"}\n',
+            1,
+        )
+
+    exercise(
+        lambda replay: mutate_preflight_text(replay, negative_followed_by_malformed_transport),
+        2,
+        "lost active transport before removal",
+    )
+
+    def transport_becomes_active_after_ready(text: str) -> str:
+        lines = text.splitlines()
+        active = 'V1REPLAY_EVENT {"state":"handshake_transport","active":true}'
+        ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}'
+        lines.remove(active)
+        lines.insert(lines.index(ready) + 1, active)
+        return "\n".join(lines) + "\n"
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(replay, transport_becomes_active_after_ready),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("published after readiness" in item for item in raw_console_diagnostics(result)),
+        f"interleaved console order was not retained diagnostically: {result}",
+    )
+
+    def stale_negative_before_late_positive(text: str) -> str:
+        active = 'V1REPLAY_EVENT {"state":"handshake_transport","active":true}\n'
+        ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
+        without_early_positive = text.replace(active, "", 1)
+        return without_early_positive.replace(
+            ready,
+            'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n'
+            + ready
+            + 'V1REPLAY_EVENT {"state":"handshake_transport","active":true}\n',
+            1,
+        )
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(replay, stale_negative_before_late_positive),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("published after readiness" in item for item in raw_console_diagnostics(result)),
+        f"real race ordering was not retained diagnostically: {result}",
+    )
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: "\n".join(
+                line
+                for line in text.splitlines()
+                if '"state":"handshake_transport"' not in line
+            )
+            + "\n",
+        ),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("missing transport events" in item for item in raw_console_diagnostics(result)),
+        f"missing console telemetry was not retained diagnostically: {result}",
+    )
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n',
+                "",
+                1,
+            ),
+        ),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("missing its ready event" in item for item in raw_console_diagnostics(result)),
+        f"missing ready telemetry was not retained diagnostically: {result}",
+    )
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n',
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n',
+                1,
+            ),
+        ),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("repeats its ready event" in item for item in raw_console_diagnostics(result)),
+        f"duplicate ready telemetry was not retained diagnostically: {result}",
+    )
+
+    result = exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                'V1REPLAY_EVENT {"state":"handshake_transport","active":true}\n',
+                'V1REPLAY_EVENT {"state":"handshake_transport","active":"yes"}\n',
+                1,
+            ),
+        ),
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("malformed transport event" in item for item in raw_console_diagnostics(result)),
+        f"malformed transport telemetry was not retained diagnostically: {result}",
     )
 
     def configured_after_ready(text: str) -> str:
@@ -1677,10 +1819,14 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         lines.insert(ready_index + 1, configured)
         return "\n".join(lines) + "\n"
 
-    exercise(
+    result = exercise(
         lambda replay: mutate_preflight_text(replay, configured_after_ready),
-        3,
-        "configured event follows readiness evidence",
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("configured event follows" in item for item in raw_console_diagnostics(result)),
+        f"configured-event ordering was not retained diagnostically: {result}",
     )
     exercise(
         lambda replay: mutate_preflight_text(
@@ -1700,7 +1846,7 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         2,
         "did not stay quiet",
     )
-    exercise(
+    result = exercise(
         lambda replay: mutate_preflight_text(
             replay,
             lambda text: text.replace(
@@ -1709,8 +1855,12 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
                 1,
             ),
         ),
-        2,
-        "did not stay quiet",
+        0,
+        "bench result: PASS",
+    )
+    assert_true(
+        any("missing ledger-confirmed TX" in item for item in raw_console_diagnostics(result)),
+        f"missing duplicate TX telemetry was not retained diagnostically: {result}",
     )
 
     def remove_line(lines: list[str], exact: str) -> list[str]:
@@ -1868,6 +2018,29 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
             replay,
             lambda lines: remove_line(lines, "HOST_BOUNDARY reconnect_preflight_fence_begin"),
         ),
+        3,
+        "missing its pre-stop fence boundaries",
+    )
+
+    def remove_ready_and_pre_stop_fence(replay: Path) -> None:
+        mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n',
+                "",
+                1,
+            ),
+        )
+        mutate_serial_lines(
+            replay,
+            lambda lines: remove_line(
+                lines,
+                "HOST_BOUNDARY reconnect_preflight_fence_begin",
+            ),
+        )
+
+    exercise(
+        remove_ready_and_pre_stop_fence,
         3,
         "missing its pre-stop fence boundaries",
     )

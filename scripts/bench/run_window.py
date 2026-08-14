@@ -853,12 +853,6 @@ class V1Emulator:
             if problem:
                 raise RuntimeError(problem)
             if _preflight_ledger_is_complete(self.handshake_ledger_path):
-                if self._bench_event("handshake_transport").get("active") is not True:
-                    time.sleep(0.05)
-                    continue
-                if not self._bench_event("handshake_ready"):
-                    time.sleep(0.05)
-                    continue
                 if self.health_problem():
                     raise RuntimeError("reconnect preflight exited as its handshake became ready")
                 return

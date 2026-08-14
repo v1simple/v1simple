@@ -291,25 +291,16 @@ def test_reconnect_preflight_ledger_requires_one_exact_epoch() -> None:
         )
 
 
-def test_reconnect_preflight_waits_for_separate_ready_machine_event() -> None:
+def test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         emulator = V1Emulator(root / "unused", root, "replay", handshake_only=True)
         assert emulator.handshake_ledger_path is not None
         write_handshake_ledger(emulator.handshake_ledger_path)
         emulator.health_problem = lambda: ""  # type: ignore[method-assign]
-        events: dict[str, dict[str, object]] = {
-            "handshake_transport": {"state": "handshake_transport", "active": True}
-        }
-        emulator._bench_event = lambda state: events.get(state, {})  # type: ignore[method-assign]
-        try:
-            emulator.wait_for_handshake_ready(0.02)
-        except ReconnectBehaviorError as exc:
-            assert_true(exc.kind == "handshake_timeout", f"wrong delayed-ready result: {exc}")
-        else:
-            raise AssertionError("ledger completion raced ahead of the ready machine event")
-
-        events["handshake_ready"] = {"state": "handshake_ready"}
+        emulator._bench_event = lambda _state: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            AssertionError("console readiness was consulted despite a complete delivery ledger")
+        )
         emulator.wait_for_handshake_ready(0.1)
 
 
@@ -1548,7 +1539,7 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_reconnect_preflight_ledger_requires_one_exact_epoch()
-    test_reconnect_preflight_waits_for_separate_ready_machine_event()
+    test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order()
     test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence()
     test_reconnect_serial_fence_requires_safe_status_shape()
     test_reconnect_readiness_uses_unique_fifo_barrier_before_status_fence()

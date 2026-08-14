@@ -779,25 +779,25 @@ def score_reconnect_raw_evidence(
     configured = [item for item in machine_events if item[1].get("state") == "configured"]
     transport = [item for item in machine_events if item[1].get("state") == "handshake_transport"]
     ready = [item for item in machine_events if item[1].get("state") == "handshake_ready"]
+    console_diagnostics: list[str] = []
     if len(configured) != 1:
-        return handshake_collection_failure(
-            "replay reconnect preflight log is missing one configured machine event"
+        console_diagnostics.append(
+            "replay reconnect preflight log does not contain one configured machine event"
         )
-    configured_line = configured[0][0]
-    if any(
-        line_number < configured_line
+    elif any(
+        line_number < configured[0][0]
         for line_number, event in machine_events
         if event.get("state") in {"handshake_transport", "handshake_ready"}
     ):
-        return handshake_collection_failure(
+        console_diagnostics.append(
             "replay reconnect preflight configured event follows readiness evidence"
         )
     if any(not isinstance(item[1].get("active"), bool) for item in transport):
-        return handshake_collection_failure(
+        console_diagnostics.append(
             "replay reconnect preflight log has a malformed transport event"
         )
     if len(ready) > 1:
-        return handshake_collection_failure(
+        console_diagnostics.append(
             "replay reconnect preflight log repeats its ready event"
         )
     if any(item[1].get("state") in {"replay_started", "complete"} for item in machine_events):
@@ -806,34 +806,40 @@ def score_reconnect_raw_evidence(
             "evidence": ["replay reconnect preflight entered the scored scenario"],
         }
 
-    # The runner validates the completed ledger before it waits for the
-    # separate handshake_ready log event. A structurally valid but
-    # noncanonical ledger can therefore stop the preflight before either the
-    # ready event or the pre-stop fence exists.
+    # Readiness is owned by the strict, delivery-confirmed preflight ledger.
+    # The console is published from multiple host threads, so positive ready
+    # and transport events are diagnostics and their relative order is never
+    # causal evidence. The terminal boolean transport state remains the sole
+    # temporal witness of a live session lost before managed removal.
     expected_ready = failure_kind not in {
         "handshake_timeout",
         "handshake_invalid",
-        "active_session_lost",
     }
     if expected_ready and not ready:
-        return handshake_collection_failure(
+        console_diagnostics.append(
             "replay reconnect preflight log is missing its ready event"
         )
-    transport_lost = False
-    if ready:
+    if not transport:
+        console_diagnostics.append(
+            "replay reconnect preflight log is missing transport events"
+        )
+    elif ready:
         ready_line = ready[0][0]
-        transport_before = [item for item in transport if item[0] <= ready_line]
-        if not transport_before or transport_before[-1][1]["active"] is not True:
-            return handshake_collection_failure(
-                "replay reconnect preflight ready event lacks active transport evidence"
+        active_before_ready = any(
+            line_number <= ready_line and event.get("active") is True
+            for line_number, event in transport
+        )
+        if not active_before_ready:
+            console_diagnostics.append(
+                "replay reconnect positive transport evidence was published after readiness"
             )
-        later_transport = [item for item in transport if item[0] > ready_line]
-        transport_lost = any(item[1]["active"] is not True for item in later_transport)
-    elif failure_kind == "active_session_lost":
-        if not transport or transport[-1][1]["active"] is not False:
-            return handshake_collection_failure(
-                "replay reconnect active-session failure lacks a negative transport event"
-            )
+    boolean_transport = [
+        item for item in transport if isinstance(item[1].get("active"), bool)
+    ]
+    transport_lost = (
+        bool(boolean_transport)
+        and boolean_transport[-1][1].get("active") is False
+    )
 
     transmission_failures: list[str] = []
     if failure_kind != "handshake_timeout":
@@ -864,9 +870,20 @@ def score_reconnect_raw_evidence(
             ("B2CE", RECONNECT_ALL_VOLUME_REPLY_FRAME),
             ("B2CE", RECONNECT_PREFLIGHT_CLEAR_FRAME),
         ]
-        if sorted(transmitted) != sorted(expected_transmissions):
+        unmatched_transmissions = list(transmitted)
+        missing_transmissions: list[tuple[str, tuple[int, ...]]] = []
+        for expected in expected_transmissions:
+            try:
+                unmatched_transmissions.remove(expected)
+            except ValueError:
+                missing_transmissions.append(expected)
+        if unmatched_transmissions:
             transmission_failures.append(
                 "replay reconnect preflight did not stay quiet after its three bounded transmissions"
+            )
+        if missing_transmissions:
+            console_diagnostics.append(
+                "replay reconnect preflight console is missing ledger-confirmed TX telemetry"
             )
 
     lines = serial_text.splitlines()
@@ -1066,7 +1083,7 @@ def score_reconnect_raw_evidence(
             "replay reconnect readiness is missing its final QSTATUS/QRESP fence"
         )
 
-    if ready and failure_kind not in {"handshake_timeout", "handshake_invalid"}:
+    if failure_kind not in {"handshake_timeout", "handshake_invalid"}:
         if len(fence_begins) != 1 or len(fence_completes) != 1:
             return handshake_collection_failure(
                 "replay reconnect serial log is missing its pre-stop fence boundaries"
@@ -1160,6 +1177,7 @@ def score_reconnect_raw_evidence(
                 f"replay reconnect raw lifecycle confirms {failure_kind}",
                 *transmission_failures,
             ],
+            "diagnostics": console_diagnostics,
         }
 
     if before_boundary:
@@ -1266,7 +1284,9 @@ def score_reconnect_raw_evidence(
     cleanups_during = [index for index in after_boundary if qstart <= index <= done]
     failures: list[str] = list(transmission_failures)
     if transport_lost:
-        failures.append("replay reconnect preflight lost active transport before removal")
+        failures.append(
+            "replay reconnect preflight lost active transport before removal"
+        )
     if len(cleanups_between) != 1:
         failures.append(
             "replay reconnect requires exactly one cleanup marker between process exit and QSTART"
@@ -1365,9 +1385,11 @@ def score_reconnect_raw_evidence(
         )
     return {
         "result": "FAIL" if failures else "PASS",
-        "preflight_ready": bool(ready),
+        "preflight_ready": True,
+        "console_ready_observed": bool(ready),
         "cleanup_marker_count": len(after_boundary),
         "evidence": failures,
+        "diagnostics": console_diagnostics,
     }
 
 

@@ -80,6 +80,18 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
 // --- V1 protocol command builders ---
 
 bool V1BLEClient::requestAlertData() {
+    if (!isConnected()) {
+        return false;
+    }
+
+    const uint32_t requestGeneration = sessionGeneration_.load(std::memory_order_acquire);
+    const uint32_t requestNowMs = static_cast<uint32_t>(millis());
+    if (!alertDataRequestGate_.permits(requestGeneration, requestNowMs)) {
+        // The stream is already requested for this session. Treat the
+        // cross-owner duplicate as satisfied rather than as a transport error.
+        return true;
+    }
+
     // Packet structure intentionally explicit (not abstracted). Matches V1
     // protocol docs exactly; easier to verify than a builder pattern.
     uint8_t packet[] = {ESP_PACKET_START,
@@ -92,7 +104,13 @@ bool V1BLEClient::requestAlertData() {
 
     packet[5] = calcV1Checksum(packet, 5);
 
-    return sendCommand(packet, sizeof(packet));
+    const bool sent = sendCommand(packet, sizeof(packet));
+    if (sent) {
+        // Record after the write succeeds so the minimum interval is measured
+        // conservatively from an actual transmission, not an attempted one.
+        alertDataRequestGate_.recordSuccessfulSend(requestGeneration, static_cast<uint32_t>(millis()));
+    }
+    return sent;
 }
 
 bool V1BLEClient::requestVersion() {

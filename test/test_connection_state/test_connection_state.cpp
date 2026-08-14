@@ -401,8 +401,10 @@ void test_real_module_data_stale_boundary_is_exclusive() {
     real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
 
     bleClient.setConnected(true);
-    bleQueueModule.setLastRxMillis(10000);
-    real.process(10000);  // connect transition poll
+    bleClient.setSessionGeneration(7);
+    real.handleConnected(10000, 7);
+    bleQueueModule.setLastRxMillis(10000); // First RX follows session admission.
+    real.process(10000);
     bleClient.requestAlertDataCalls = 0;
 
     // Exactly DATA_STALE_MS (2000 ms) since last RX: not stale yet.
@@ -420,12 +422,20 @@ void test_real_module_session_open_invalidates_detector_version() {
 
     parser.state.v1FirmwareVersion = 41039;
     parser.state.hasV1Version = true;
+    bleQueueModule.setLastRxMillis(999);
+    bleQueueModule.setLastParsedTimestamp(998);
+    bleQueueModule.setBackpressured(true);
+    bleQueueModule.setParsedFlag(true);
     real.handleSessionOpened(7);
 
     TEST_ASSERT_EQUAL(1, parser.resetV1VersionCalls);
     TEST_ASSERT_FALSE(parser.state.hasV1Version);
     TEST_ASSERT_EQUAL_UINT32(0, parser.state.v1FirmwareVersion);
     TEST_ASSERT_EQUAL(1, bleQueueModule.openSessionCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, bleQueueModule.getLastRxMillis());
+    TEST_ASSERT_EQUAL_UINT32(0, bleQueueModule.getLastParsedTimestamp());
+    TEST_ASSERT_FALSE(bleQueueModule.isBackpressured());
+    TEST_ASSERT_FALSE(bleQueueModule.consumeParsedFlag());
 }
 
 void test_real_module_disconnect_clears_ble_display_state() {

@@ -26,6 +26,7 @@ std::deque<SendResult> gResults;
 std::vector<SendAttempt> gAttempts;
 std::vector<std::vector<uint8_t>> gSentPackets;
 int gStableCallbackCalls = 0;
+int gAlertRequestCalls = 0;
 
 constexpr uint8_t kVersionRequest[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
 constexpr uint8_t kAllVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
@@ -54,6 +55,7 @@ V1BLEClient::V1BLEClient() {}
 V1BLEClient::~V1BLEClient() {}
 
 bool V1BLEClient::requestAlertData() {
+    ++gAlertRequestCalls;
     return true;
 }
 
@@ -87,10 +89,24 @@ void setUp() {
     gAttempts.clear();
     gSentPackets.clear();
     gStableCallbackCalls = 0;
+    gAlertRequestCalls = 0;
     mock_reset_nimble_state();
 }
 
 void tearDown() {}
+
+void test_alert_request_followup_runs_once_before_settle() {
+    V1BLEClient client;
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_ALERT_DATA;
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE,
+                      client.connectedFollowupStep_);
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+}
 
 // V1-CONNECT-READBACK-001: transient deferrals retain the current request;
 // successful writes occur exactly once in version -> all-volume order.
@@ -282,6 +298,7 @@ void test_disconnect_none_cancels_retry_and_new_settle_restarts_at_version() {
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
+    RUN_TEST(test_alert_request_followup_runs_once_before_settle);
     RUN_TEST(test_not_yet_retries_in_order_without_spinning_or_duplicate_success);
     RUN_TEST(test_version_terminal_failure_skips_volume_and_reaches_stable_callback);
     RUN_TEST(test_all_volume_terminal_failure_does_not_resend_version_or_block_stable_callback);

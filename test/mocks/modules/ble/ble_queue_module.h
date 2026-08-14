@@ -61,6 +61,13 @@ public:
 
     void openSession(uint32_t generation) {
         openSessionCalls++;
+        // Production openSession() closes the prior session first. Preserve
+        // that reset without counting it as an explicit lifecycle close in
+        // tests that assert callback ownership.
+        lastRxMillis = 0;
+        lastParsedTimestamp = 0;
+        backpressured = false;
+        parsedFlag = false;
         sessionOpen = true;
         sessionGeneration = generation;
     }

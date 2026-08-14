@@ -15,6 +15,7 @@
 #include <atomic>
 #include <memory>
 
+#include "ble_alert_request_gate.h"
 #include "ble_log_rate_limit.h"
 #include "ble_quiesce_policy.h"
 #include "modules/ble/ble_proxy_epoch_observer.h"
@@ -490,6 +491,7 @@ class V1BLEClient {
     std::atomic<uint32_t> discoveryTaskStackMinFreeBytes_{UINT32_MAX};
     DiscoveryTaskContext discoveryTaskContext_{};
     std::atomic<uint32_t> sessionGeneration_{0};
+    BleAlertDataRequestGate alertDataRequestGate_;
     uint32_t activeDiscoveryGeneration_ = 0;
     static void discoveryTaskFunc(void* param);
 

@@ -255,8 +255,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             // but count only the canonical checked-width response used as
             // connection readback evidence. payloadLen includes the checksum.
             const bool canonicalShape = length == 11 && declaredPayloadLen == 5 && payloadLen == 5;
-            const bool canonicalValues =
-                payload[0] <= 9 && payload[1] <= 9 && payload[2] <= 9 && payload[3] <= 9;
+            const bool canonicalValues = payload[0] <= 9 && payload[1] <= 9 && payload[2] <= 9 && payload[3] <= 9;
             if (canonicalShape && canonicalValues) {
                 perfRecordV1AllVolumeParsed();
             }

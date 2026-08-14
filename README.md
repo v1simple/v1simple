@@ -139,10 +139,15 @@ directory. Camera evidence has one explicit role per suite:
   anonymous handshake ledgers record only the automatic startup transactions;
   the grader independently checks framing, checksums, same-session order, short
   characteristics, CoreBluetooth-accepted replies, and the fresh post-cleanup
-  epoch. They are not general packet traces and contain no central identifier or
-  timestamp. The grader also reconstructs the managed exit, board cleanup,
-  serial fences, same-boot replacement, and bounded three-packet preflight from
-  the fixed same-window logs instead of trusting collector summary flags.
+  epoch. The replacement metrics window must also contain exactly one canonical
+  all-volume parser commit. Within that bounded session, the decoded ledger and
+  parser-counter edge provide integration evidence that a canonical reply from
+  the controlled emulator reached board parser state, without adding packet
+  data or device identity to the CSV. They are not general packet traces and
+  contain no central identifier or timestamp. The grader also reconstructs the
+  managed exit, board cleanup, serial fences, same-boot replacement, and bounded
+  three-packet preflight from the fixed same-window logs instead of trusting
+  collector summary flags.
 
 Every requested camera window applies the fixed 1280x720, 30 fps UVC profile
 and exposure 156, records a session-start still, and admits the run only when

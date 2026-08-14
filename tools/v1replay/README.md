@@ -186,13 +186,19 @@ The public contract inventory uses these stable behavior IDs:
   The two bounded ledgers are distinct and each contains exactly one seven-event
   epoch, so neither can borrow readiness or replies from the other. This is host
   emulator and board-cleanup integration evidence, not proof of physical-V1
-  reconnect timing, cache or bond behavior, control persistence, or board-side
-  parsing of the all-volume reply.
+  reconnect timing, cache or bond behavior, or control persistence. The
+  reconnect evidence alone does not prove board-side all-volume parsing; that
+  is joined separately under `V1-ALL-VOLUME-001`.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
   B2CE short-packet route. Equal current and saved values are emulator fixture
-  configuration, not a universal device default.
+  configuration, not a universal device default. For the default-v4.1038
+  managed replay, the independently decoded replacement ledger must contain the
+  canonical delivered reply and the same replacement metrics window must record
+  exactly one canonical four-field parser commit. The counter is recorded only
+  after the four values enter parser state; it does not claim that the firmware
+  independently validated the packet checksum or that a physical V1 was used.
 - `V1-CONTROL-MODE-001` pins the default-US one-byte mode commands `01`, `02`,
   and `03`. They update the current mode without a semantic reply. Later idle
   display information carries the matching mode glyph and Aux1 mode bits; active
@@ -246,11 +252,16 @@ a central identifier or timestamp, and neither is a general packet transcript.
 The grader decodes them separately and requires exactly one connection epoch in
 each with B2CE subscription, accepted start/version/all-volume requests,
 CoreBluetooth-accepted short replies, and alert-stream start. The preflight's
-only stream packet must be the canonical count-zero clear row. This proves the
-emulator-side transactions, managed disappearance, and observed board cleanup;
-a board-side packet-specific marker is still required to claim that all-volume
-was parsed. Each ledger models one logical short-notify session; concurrent
-short subscribers end the active evidence epoch instead of being merged.
+only stream packet must be the canonical count-zero clear row. The scored
+replacement window additionally requires one boot-cumulative canonical
+all-volume parser commit, while the independently decoded replacement ledger
+owns the reply's exact bytes, checksum, and route. Together those two sources
+provide bounded integration evidence that a canonical reply from the controlled
+emulator reached replacement board parser state; the counter alone does not
+identify exact values, checksum, header, or route. Preflight board-side
+consumption remains unclaimed. Each ledger models one logical short-notify
+session; concurrent short subscribers end the active evidence epoch instead of
+being merged.
 
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect
@@ -285,8 +296,10 @@ with a valid priority-row flag. Healthy informational evidence therefore has
 matching `alertTablePublishes`, `alertTablePublishes3Bogey`, and
 `prioritySelectRowFlag` relationships, with no assembly timeouts, invalid
 priority selections, invalid-band rows, live-display priority skips/fallbacks,
-queue drops, or parse failures. Display-update and notify-to-display latency
-counters provide transport context; they are not synthetic pass/fail proof.
+queue drops, or parse failures. The replacement window must also advance
+`v1AllVolumeParsed` exactly once; earlier preflight credit cannot satisfy it.
+Display-update and notify-to-display latency counters provide transport context;
+they are not synthetic pass/fail proof.
 
 ## Verification
 

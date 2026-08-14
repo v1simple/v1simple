@@ -353,24 +353,51 @@ def write_replay_csv(path: Path, *, publishes: int = 708) -> None:
         "qDrop",
         "parseFail",
     ]
-    columns = ["millis", *exact, *zero]
+    columns = ["millis", *exact, *zero, "v1AllVolumeParsed"]
     qstart = {column: 0 for column in columns}
     qstart["millis"] = 10
     replacement = {**qstart, "millis": 20}
-    end = {**qstart, "millis": 300_000, **exact}
+    end = {**qstart, "millis": 300_000, **exact, "v1AllVolumeParsed": 1}
     path.write_text(
         ",".join(columns)
-        + "\n#session_start,seq=1,bootId=1,uptime_ms=10,token=QSTART,schema=45\n"
+        + "\n#session_start,seq=1,bootId=1,uptime_ms=10,token=QSTART,schema=46\n"
         + ",".join(str(qstart[column]) for column in columns)
         + "\n"
         + ",".join(columns)
-        + "\n#session_start,seq=2,bootId=1,uptime_ms=20,token=REPLACEMENT,schema=45\n"
+        + "\n#session_start,seq=2,bootId=1,uptime_ms=20,token=REPLACEMENT,schema=46\n"
         + ",".join(str(replacement[column]) for column in columns)
         + "\n"
         + ",".join(str(end[column]) for column in columns)
         + "\n",
         encoding="utf-8",
     )
+
+
+def rewrite_replay_all_volume(
+    path: Path,
+    values: list[str | int],
+    *,
+    counter_name: str = "v1AllVolumeParsed",
+) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    data_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line and not line.startswith("#") and not line.startswith("millis,")
+    ]
+    assert_true(len(data_indices) == len(values), f"unexpected replay fixture shape: {lines}")
+    for index, value in zip(data_indices, values):
+        fields = lines[index].split(",")
+        fields[-1] = str(value)
+        lines[index] = ",".join(fields)
+    if counter_name != "v1AllVolumeParsed":
+        lines = [
+            line.replace("v1AllVolumeParsed", counter_name)
+            if line.startswith("millis,")
+            else line
+            for line in lines
+        ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_window(
@@ -804,6 +831,10 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
         checks = result["windows"][0]["replay_checks"]
         assert_true(checks["result"] == "PASS", f"unexpected replay checks: {checks}")
         assert_true(checks["observed_deltas"]["alertTablePublishes"] == 708, f"wrong replay deltas: {checks}")
+        all_volume = checks["all_volume_consumption"]
+        assert_true(all_volume["result"] == "PASS", f"missing parse proof: {all_volume}")
+        assert_true(all_volume["observed_delta"] == 1, f"wrong parse delta: {all_volume}")
+        assert_true(all_volume["selected_schema"] == 46, f"wrong parse schema: {all_volume}")
         encounter = checks["encounter_checks"]
         assert_true(encounter["result"] == "PASS", f"unexpected encounter checks: {encounter}")
         assert_true(encounter["matched_checkpoints"] == 4, f"missing checkpoints: {encounter}")
@@ -825,6 +856,174 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
             reconnect["lifecycle_checks"]["result"] == "PASS",
             f"unexpected reconnect lifecycle: {reconnect}",
         )
+
+
+def test_replay_all_volume_consumption_mutants_are_fail_closed() -> None:
+    def score_with_values(values: list[str | int]) -> tuple[subprocess.CompletedProcess[str], dict]:
+        root = Path(tmp)
+        write_window(root, "replay")
+        rewrite_replay_all_volume(root / "replay" / "perf.csv", values)
+        proc = run_score(root, "replay")
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        return proc, result["windows"][0]["replay_checks"]
+
+    for values, expected_delta in (([0, 0, 0], 0), ([0, 0, 2], 2)):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, checks = score_with_values(values)
+            assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+            all_volume = checks["all_volume_consumption"]
+            assert_true(all_volume["result"] == "FAIL", f"unexpected parse gate: {checks}")
+            assert_true(all_volume["observed_delta"] == expected_delta, f"wrong delta: {checks}")
+            assert_true(
+                f"v1AllVolumeParsed delta={expected_delta} expected=1" in proc.stdout,
+                proc.stdout,
+            )
+
+    # The counter is boot-cumulative: a parse in preflight may establish a
+    # nonzero QSTART baseline, while B must still add exactly one fresh parse.
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, checks = score_with_values([1, 1, 2])
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        all_volume = checks["all_volume_consumption"]
+        assert_true(all_volume["result"] == "PASS", f"inherited baseline failed: {checks}")
+        assert_true(all_volume["qstart_value"] == 1, f"baseline was not retained: {checks}")
+        assert_true(all_volume["replacement_value"] == 2, f"fresh B parse missing: {checks}")
+        assert_true(all_volume["observed_delta"] == 1, f"wrong fresh delta: {checks}")
+
+    # A parse earned before QSTART is only the baseline. It cannot satisfy the
+    # replacement connection's independently scoped consumption requirement.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        csv_path = root / "replay" / "perf.csv"
+        rewrite_replay_all_volume(csv_path, [1, 1, 1])
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        lines[1] = lines[1].replace("seq=1", "seq=2")
+        lines[4] = lines[4].replace("seq=2", "seq=3")
+        zero_fields = lines[2].split(",")
+        zero_fields[0] = "1"
+        zero_fields[-1] = "0"
+        earned_fields = list(zero_fields)
+        earned_fields[0] = "5"
+        earned_fields[-1] = "1"
+        preflight = [
+            lines[0],
+            "#session_start,seq=1,bootId=1,uptime_ms=1,token=PREFLIGHT,schema=46",
+            ",".join(zero_fields),
+            ",".join(earned_fields),
+        ]
+        csv_path.write_text("\n".join([*preflight, *lines]) + "\n", encoding="utf-8")
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        checks = result["windows"][0]["replay_checks"]
+        assert_true(checks["session_indices"] == [2, 3], f"preflight leaked into scope: {checks}")
+        assert_true(checks["all_volume_consumption"]["observed_delta"] == 0, f"false credit: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        rewrite_replay_all_volume(
+            root / "replay" / "perf.csv",
+            [0, 0, 1],
+            counter_name="v1AllVolumeParseCount",
+        )
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("missing required columns: v1AllVolumeParsed" in proc.stdout, proc.stdout)
+
+    for session_name, header_index, row_indices in (
+        ("QSTART", 0, (2,)),
+        ("replacement", 3, (5, 6)),
+    ):
+        for conflicting in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_window(root, "replay")
+                csv_path = root / "replay" / "perf.csv"
+                lines = csv_path.read_text(encoding="utf-8").splitlines()
+                lines[header_index] += ",v1AllVolumeParsed"
+                for row_index in row_indices:
+                    original = int(lines[row_index].rsplit(",", 1)[1])
+                    duplicate = original + 1 if conflicting else original
+                    lines[row_index] += f",{duplicate}"
+                csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                proc = run_score(root, "replay")
+                assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+                assert_true(
+                    "selected session header repeats required column: v1AllVolumeParsed"
+                    in proc.stdout,
+                    f"{session_name} duplicate false-greened: {proc.stdout}",
+                )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, _checks = score_with_values([0, 0, "not-a-number"])
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("replay CSV could not be read" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, checks = score_with_values([0, 0, "1.5"])
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("counter is not an unsigned integer" in proc.stdout, proc.stdout)
+        assert_true(checks["all_volume_consumption"]["result"] == "COLLECTION_FAILED", f"wrong class: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, checks = score_with_values([0x1_0000_0000, 0x1_0000_0000, 0x1_0000_0001])
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("counter is not an unsigned integer" in proc.stdout, proc.stdout)
+        assert_true(checks["all_volume_consumption"]["result"] == "COLLECTION_FAILED", f"wrong class: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, checks = score_with_values([2, 2, 1])
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("v1AllVolumeParsed" in proc.stdout and "cumulative counters regress" in proc.stdout, proc.stdout)
+        assert_true(checks["all_volume_consumption"]["result"] == "COLLECTION_FAILED", f"wrong class: {checks}")
+
+    for schemas in ((45, 45), (46, 47)):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            csv_path = root / "replay" / "perf.csv"
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            lines[1] = lines[1].replace("schema=46", f"schema={schemas[0]}")
+            lines[4] = lines[4].replace("schema=46", f"schema={schemas[1]}")
+            csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            proc = run_score(root, "replay")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            expected = "requires session schema >=46" if schemas == (45, 45) else "invalid or discontinuous metadata"
+            assert_true(expected in proc.stdout, proc.stdout)
+
+    # Transport delivery and firmware consumption remain an AND-join: neither
+    # artifact can substitute for the other.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        events = copy.deepcopy(canonical_handshake_events())
+        events[-1]["bytes"][5] = 0x05
+        write_handshake_ledger(root / "replay" / "handshake_ledger.jsonl", events)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        checks = result["windows"][0]["replay_checks"]
+        assert_true(checks["all_volume_consumption"]["result"] == "PASS", f"CSV proof changed: {checks}")
+        assert_true(checks["handshake_checks"]["result"] == "FAIL", f"raw mutant passed: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        (root / "replay" / "handshake_ledger.jsonl").unlink()
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        checks = result["windows"][0]["replay_checks"]
+        assert_true(checks["all_volume_consumption"]["result"] == "PASS", f"CSV proof changed: {checks}")
+        assert_true(checks["handshake_checks"]["result"] == "COLLECTION_FAILED", f"missing raw passed: {checks}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proc, checks = score_with_values([0, 0, 0])
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true(checks["handshake_checks"]["result"] == "PASS", f"raw proof changed: {checks}")
+        assert_true(checks["all_volume_consumption"]["result"] == "FAIL", f"missing parse passed: {checks}")
 
 
 def test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch() -> None:
@@ -2424,6 +2623,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
             "disc",
             "qDrop",
             "parseFail",
+            "v1AllVolumeParsed",
         ]
 
         def row(
@@ -2433,6 +2633,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
             disc: int = 1,
             q_drop: int = 0,
             parse_fail: int = 0,
+            all_volume: int | None = None,
         ) -> str:
             values = {column: 0 for column in columns}
             values.update(
@@ -2444,6 +2645,9 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
                     "disc": disc,
                     "qDrop": q_drop,
                     "parseFail": parse_fail,
+                    "v1AllVolumeParsed": (
+                        1 if all_volume is None and millis >= 300_000 else (all_volume or 0)
+                    ),
                 }
             )
             return ",".join(str(values[column]) for column in columns)
@@ -2461,7 +2665,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
             for seq, rows in enumerate(sessions, start=1):
                 marker_seq = seqs[seq - 1] if seqs is not None else seq
                 boot_id = boot_ids[seq - 1] if boot_ids is not None else 1
-                schema = schemas[seq - 1] if schemas is not None else 45
+                schema = schemas[seq - 1] if schemas is not None else 46
                 uptime = (
                     uptimes[seq - 1]
                     if uptimes is not None
@@ -2516,11 +2720,11 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
                 "\n".join(
                     [
                         ",".join(columns),
-                        "#session_start,seq=1,bootId=1,uptime_ms=35000,token=QSTART,schema=45",
+                        "#session_start,seq=1,bootId=1,uptime_ms=35000,token=QSTART,schema=46",
                         row(35_000, 0, 0),
                         row(40_000, 200, 30),
                         ",".join(replacement_columns),
-                        "#session_start,seq=2,bootId=1,uptime_ms=45000,token=REPLACEMENT,schema=45",
+                        "#session_start,seq=2,bootId=1,uptime_ms=45000,token=REPLACEMENT,schema=46",
                         without_missing_column(row(45_000, 200, 30)),
                         without_missing_column(row(300_000, 708, 30)),
                     ]
@@ -2587,8 +2791,8 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
 
         for metadata in (
             {"boot_ids": [1, 2]},
-            {"schemas": [45, 0]},
-            {"schemas": [45, 46]},
+            {"schemas": [46, 0]},
+            {"schemas": [46, 47]},
             {"uptimes": [10, 10]},
             {"tokens": ["SAME", "SAME"]},
             {"tokens": ["S1", ""]},
@@ -2656,7 +2860,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
         replacement_first = lines.index(row(45_000, 200, 30))
         lines.insert(
             replacement_first + 1,
-            "#session_start,seq=3,bootId=1,uptime_ms=45000,token=INJECTED,schema=45",
+            "#session_start,seq=3,bootId=1,uptime_ms=45000,token=INJECTED,schema=46",
         )
         csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         proc = run_score(root, "replay")
@@ -2958,6 +3162,7 @@ def main() -> int:
     test_custom_output_preserves_canonical_summary_pair()
     test_missing_window_artifact_is_collection_failure()
     test_replay_exact_invariants_are_part_of_the_verdict()
+    test_replay_all_volume_consumption_mutants_are_fail_closed()
     test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch()
     test_replay_reconnect_scores_two_ledgers_without_cross_credit()
     test_replay_reconnect_rejects_extra_epochs_and_shared_artifacts()

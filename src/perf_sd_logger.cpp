@@ -19,8 +19,7 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION =
-    46; // adds canonical V1 all-volume parse evidence
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 46; // adds canonical V1 all-volume parse evidence
 static constexpr const char* PERF_CSV_HEADER =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"

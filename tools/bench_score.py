@@ -160,6 +160,8 @@ RECONNECT_ALL_VOLUME_REPLY_FRAME = (
     0x04, 0x00, 0x04, 0x00,
     0xB4, 0xAB,
 )
+REPLAY_ALL_VOLUME_COUNTER = "v1AllVolumeParsed"
+REPLAY_ALL_VOLUME_MIN_SCHEMA = 46
 
 
 def parse_args() -> argparse.Namespace:
@@ -1902,7 +1904,6 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
     if (
         qstart_meta.bootId <= 0
         or replacement_meta.bootId != qstart_meta.bootId
-        or qstart_meta.schema <= 0
         or replacement_meta.schema != qstart_meta.schema
         or qstart_meta.seq <= 0
         or replacement_meta.seq != qstart_meta.seq + 1
@@ -1916,6 +1917,22 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
             "evidence": [
                 "replay CSV QSTART and replacement sessions have invalid or discontinuous metadata"
             ],
+        }
+    if qstart_meta.schema < REPLAY_ALL_VOLUME_MIN_SCHEMA:
+        message = (
+            "replay CSV all-volume consumption evidence requires session schema "
+            f">={REPLAY_ALL_VOLUME_MIN_SCHEMA}"
+        )
+        return {
+            "result": "COLLECTION_FAILED",
+            "all_volume_consumption": {
+                "result": "COLLECTION_FAILED",
+                "counter": REPLAY_ALL_VOLUME_COUNTER,
+                "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                "selected_schema": qstart_meta.schema,
+                "evidence": [message],
+            },
+            "evidence": [message],
         }
     if any("millis" not in row for _index, _meta, session_rows in selected_sessions for row in session_rows):
         return {
@@ -1979,6 +1996,55 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
             "result": "COLLECTION_FAILED",
             "evidence": ["replay CSV final replacement session marker is missing or invalid"],
         }
+    try:
+        selected_raw_session_ends = [selected_marker_indices[1] - 1, len(csv_lines)]
+        for marker_index, session_end in zip(
+            selected_marker_indices, selected_raw_session_ends
+        ):
+            header_fields = csv_lines[marker_index - 1].split(",")
+            if header_fields.count(REPLAY_ALL_VOLUME_COUNTER) > 1:
+                message = (
+                    "replay CSV selected session header repeats required column: "
+                    + REPLAY_ALL_VOLUME_COUNTER
+                )
+                return {
+                    "result": "COLLECTION_FAILED",
+                    "all_volume_consumption": {
+                        "result": "COLLECTION_FAILED",
+                        "counter": REPLAY_ALL_VOLUME_COUNTER,
+                        "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                        "selected_schema": qstart_meta.schema,
+                        "evidence": [message],
+                    },
+                    "evidence": [message],
+                }
+            if REPLAY_ALL_VOLUME_COUNTER not in header_fields:
+                continue
+            counter_index = header_fields.index(REPLAY_ALL_VOLUME_COUNTER)
+            for line in csv_lines[marker_index + 1 : session_end]:
+                if not line.strip() or line.startswith("#") or line.startswith("millis,"):
+                    continue
+                values = line.split(",")
+                raw_value = values[counter_index].strip()
+                if (
+                    not raw_value.isascii()
+                    or not raw_value.isdigit()
+                    or int(raw_value) > 0xFFFFFFFF
+                ):
+                    raise ValueError
+    except (IndexError, ValueError):
+        message = "replay CSV all-volume consumption counter is not an unsigned integer"
+        return {
+            "result": "COLLECTION_FAILED",
+            "all_volume_consumption": {
+                "result": "COLLECTION_FAILED",
+                "counter": REPLAY_ALL_VOLUME_COUNTER,
+                "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                "selected_schema": qstart_meta.schema,
+                "evidence": [message],
+            },
+            "evidence": [message],
+        }
     final_marker_has_rows = any(
         line.strip()
         and not line.startswith("#")
@@ -1993,7 +2059,7 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
     rows = [row for _index, _meta, session_rows in selected_sessions for row in session_rows]
     session_indices = [index for index, _meta, _rows in selected_sessions]
 
-    required = set(exact) | set(zero)
+    required = set(exact) | set(zero) | {REPLAY_ALL_VOLUME_COUNTER}
     missing = sorted(
         {
             column
@@ -2003,9 +2069,33 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
         }
     )
     if missing:
+        message = "replay CSV is missing required columns: " + ", ".join(missing)
+        result: dict[str, Any] = {
+            "result": "COLLECTION_FAILED",
+            "evidence": [message],
+        }
+        if REPLAY_ALL_VOLUME_COUNTER in missing:
+            result["all_volume_consumption"] = {
+                "result": "COLLECTION_FAILED",
+                "counter": REPLAY_ALL_VOLUME_COUNTER,
+                "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                "selected_schema": qstart_meta.schema,
+                "evidence": [message],
+            }
+        return result
+
+    if any(int(row[REPLAY_ALL_VOLUME_COUNTER]) < 0 for row in rows):
+        message = "replay CSV all-volume consumption counter is not an unsigned integer"
         return {
             "result": "COLLECTION_FAILED",
-            "evidence": ["replay CSV is missing required columns: " + ", ".join(missing)],
+            "all_volume_consumption": {
+                "result": "COLLECTION_FAILED",
+                "counter": REPLAY_ALL_VOLUME_COUNTER,
+                "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                "selected_schema": qstart_meta.schema,
+                "evidence": [message],
+            },
+            "evidence": [message],
         }
 
     regressed = sorted(
@@ -2017,13 +2107,23 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
         )
     )
     if regressed:
-        return {
+        message = (
+            "replay CSV cumulative counters regress inside the replacement window: "
+            + ", ".join(regressed)
+        )
+        result = {
             "result": "COLLECTION_FAILED",
-            "evidence": [
-                "replay CSV cumulative counters regress inside the replacement window: "
-                + ", ".join(regressed)
-            ],
+            "evidence": [message],
         }
+        if REPLAY_ALL_VOLUME_COUNTER in regressed:
+            result["all_volume_consumption"] = {
+                "result": "COLLECTION_FAILED",
+                "counter": REPLAY_ALL_VOLUME_COUNTER,
+                "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+                "selected_schema": qstart_meta.schema,
+                "evidence": [message],
+            }
+        return result
 
     observed = {column: counter_delta(rows, column) for column in required}
     failures: list[str] = []
@@ -2033,6 +2133,12 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
     for column in zero:
         if observed[column] != 0:
             failures.append(f"{column} delta={observed[column]} expected=0")
+    all_volume_failures: list[str] = []
+    if observed[REPLAY_ALL_VOLUME_COUNTER] != 1:
+        all_volume_failures.append(
+            f"{REPLAY_ALL_VOLUME_COUNTER} delta={observed[REPLAY_ALL_VOLUME_COUNTER]} expected=1"
+        )
+    failures.extend(all_volume_failures)
     return {
         "result": "FAIL" if failures else "PASS",
         "segment_scope": "replacement_window",
@@ -2042,6 +2148,16 @@ def score_replay_csv(csv_path: Path, _selector: str) -> dict[str, Any]:
         "session_index": session_indices[-1],
         "row_count": len(rows),
         "observed_deltas": {column: observed[column] for column in sorted(observed)},
+        "all_volume_consumption": {
+            "result": "FAIL" if all_volume_failures else "PASS",
+            "counter": REPLAY_ALL_VOLUME_COUNTER,
+            "minimum_schema": REPLAY_ALL_VOLUME_MIN_SCHEMA,
+            "selected_schema": qstart_meta.schema,
+            "qstart_value": int(rows[0][REPLAY_ALL_VOLUME_COUNTER]),
+            "replacement_value": int(rows[-1][REPLAY_ALL_VOLUME_COUNTER]),
+            "observed_delta": observed[REPLAY_ALL_VOLUME_COUNTER],
+            "evidence": all_volume_failures,
+        },
         "evidence": failures,
     }
 

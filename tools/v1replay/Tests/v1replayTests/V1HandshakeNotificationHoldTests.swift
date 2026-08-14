@@ -7,48 +7,104 @@ final class V1HandshakeNotificationHoldTests: XCTestCase {
         var state = HandshakeNotificationHoldState(delayMilliseconds: 0)
         state.beginEpoch()
 
-        XCTAssertNil(state.acceptedStart(belongsToActiveEpoch: true))
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: true), .none)
         XCTAssertFalse(state.blocksFlush)
-        XCTAssertNil(state.acceptedStart(belongsToActiveEpoch: true))
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: true), .none)
     }
 
-    func testFirstOwnedStartSchedulesOnceAndDuplicateDoesNotRestartHold() throws {
+    func testSecondOwnedStartReleasesWithoutRestartingDeadline() throws {
         var state = HandshakeNotificationHoldState(delayMilliseconds: 1_250)
         state.beginEpoch()
 
-        XCTAssertNil(state.acceptedStart(belongsToActiveEpoch: false))
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: false), .none)
         XCTAssertFalse(state.blocksFlush)
 
-        let scheduled = try XCTUnwrap(
-            state.acceptedStart(belongsToActiveEpoch: true)
-        )
+        guard case .schedule(let scheduled) = state.acceptedStart(
+            belongsToActiveEpoch: true
+        ) else {
+            return XCTFail("first owned START did not schedule its safety deadline")
+        }
         XCTAssertEqual(scheduled.delayMilliseconds, 1_250)
         XCTAssertTrue(state.blocksFlush)
 
-        XCTAssertNil(state.acceptedStart(belongsToActiveEpoch: true))
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: false), .none)
+        XCTAssertTrue(state.blocksFlush, "foreign START released the owned hold")
+        XCTAssertEqual(
+            state.acceptedStart(belongsToActiveEpoch: true),
+            .releaseHeldNotifications
+        )
+        XCTAssertFalse(state.blocksFlush)
+        XCTAssertFalse(state.release(scheduled), "stale deadline released twice")
+
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: true), .none)
+        XCTAssertFalse(state.blocksFlush)
+    }
+
+    func testDeadlineRemainsBoundedFallbackWhenSecondStartDoesNotArrive() throws {
+        var state = HandshakeNotificationHoldState(delayMilliseconds: 1_999)
+        state.beginEpoch()
+        guard case .schedule(let scheduled) = state.acceptedStart(
+            belongsToActiveEpoch: true
+        ) else {
+            return XCTFail("first owned START did not schedule its safety deadline")
+        }
+
+        XCTAssertEqual(scheduled.delayMilliseconds, 1_999)
         XCTAssertTrue(state.blocksFlush)
         XCTAssertTrue(state.release(scheduled))
         XCTAssertFalse(state.blocksFlush)
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: true), .none)
+    }
 
-        XCTAssertNil(state.acceptedStart(belongsToActiveEpoch: true))
-        XCTAssertFalse(state.blocksFlush)
+    func testSecondStartReleaseKeepsClearPendingAcrossBackpressure() throws {
+        var hold = HandshakeNotificationHoldState(delayMilliseconds: 1_250)
+        var clear = HandshakeClearDeliveryState()
+        hold.beginEpoch()
+        guard case .schedule(let scheduled) = hold.acceptedStart(
+            belongsToActiveEpoch: true
+        ) else {
+            return XCTFail("first owned START did not schedule its safety deadline")
+        }
+        XCTAssertEqual(clear.ensure(), .enqueue)
+
+        XCTAssertEqual(
+            hold.acceptedStart(belongsToActiveEpoch: true),
+            .releaseHeldNotifications
+        )
+        XCTAssertFalse(hold.blocksFlush)
+
+        // A false CoreBluetooth update leaves the queued clear unconfirmed;
+        // the readiness callback retries that same row without rearming hold.
+        XCTAssertEqual(clear.ensure(), .retryPending)
+        XCTAssertTrue(clear.isPending)
+        XCTAssertFalse(clear.isDeliveryConfirmed)
+        XCTAssertTrue(clear.confirmDelivery())
+        XCTAssertFalse(clear.isPending)
+        XCTAssertTrue(clear.isDeliveryConfirmed)
+        XCTAssertFalse(hold.release(scheduled))
+        XCTAssertEqual(hold.acceptedStart(belongsToActiveEpoch: true), .none)
     }
 
     func testEpochEndAndReplacementInvalidateStaleRelease() throws {
         var state = HandshakeNotificationHoldState(delayMilliseconds: 1_250)
         state.beginEpoch()
-        let stale = try XCTUnwrap(
-            state.acceptedStart(belongsToActiveEpoch: true)
-        )
+        guard case .schedule(let stale) = state.acceptedStart(
+            belongsToActiveEpoch: true
+        ) else {
+            return XCTFail("first epoch did not schedule its safety deadline")
+        }
 
         state.endEpoch()
         XCTAssertFalse(state.blocksFlush)
         XCTAssertFalse(state.release(stale))
+        XCTAssertEqual(state.acceptedStart(belongsToActiveEpoch: true), .none)
 
         state.beginEpoch()
-        let current = try XCTUnwrap(
-            state.acceptedStart(belongsToActiveEpoch: true)
-        )
+        guard case .schedule(let current) = state.acceptedStart(
+            belongsToActiveEpoch: true
+        ) else {
+            return XCTFail("replacement epoch did not schedule its safety deadline")
+        }
         XCTAssertNotEqual(current.epoch, stale.epoch)
         XCTAssertTrue(state.blocksFlush)
         XCTAssertFalse(state.release(stale))
@@ -108,13 +164,33 @@ final class V1HandshakeNotificationHoldTests: XCTestCase {
             encoding: .utf8
         )
 
+        let ledgerRecord = try XCTUnwrap(
+            source.range(of: "handshakeLedger?.recordAcceptedRequest(")
+        )
         let acceptedStart = try XCTUnwrap(
-            source.range(of: "let scheduled = handshakeNotificationHold.acceptedStart(")
+            source.range(
+                of: "switch handshakeNotificationHold.acceptedStart(",
+                range: ledgerRecord.lowerBound..<source.endIndex
+            )
         )
         let effects = try XCTUnwrap(
             source.range(of: "for effect in outcome.effects", range: acceptedStart.lowerBound..<source.endIndex)
         )
+        XCTAssertLessThan(ledgerRecord.lowerBound, acceptedStart.lowerBound)
         XCTAssertLessThan(acceptedStart.lowerBound, effects.lowerBound)
+        let releaseCase = try XCTUnwrap(
+            source.range(
+                of: "case .releaseHeldNotifications:",
+                range: acceptedStart.lowerBound..<effects.lowerBound
+            )
+        )
+        XCTAssertNotNil(
+            source.range(
+                of: "self.flush()",
+                range: releaseCase.lowerBound..<effects.lowerBound
+            ),
+            "second START release does not flush before command effects"
+        )
         XCTAssertTrue(
             source.contains(
                 "guard !isStopping, !handshakeNotificationHold.blocksFlush else { return }"

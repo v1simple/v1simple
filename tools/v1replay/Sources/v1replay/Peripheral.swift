@@ -45,6 +45,12 @@ struct HandshakeNotificationHoldState {
         let delayMilliseconds: Int
     }
 
+    enum AcceptedStartAction: Equatable {
+        case none
+        case schedule(ScheduledRelease)
+        case releaseHeldNotifications
+    }
+
     static let upperBoundMilliseconds = 2_000
 
     private let delayMilliseconds: Int
@@ -74,20 +80,26 @@ struct HandshakeNotificationHoldState {
         heldEpoch = nil
     }
 
-    /// Only the first accepted START owned by the active subscriber may create
-    /// a timer. The seen marker remains after release so a duplicate cannot
-    /// restart the hold later in the same epoch.
+    /// The first accepted START owned by the active subscriber creates the
+    /// safety deadline. A second owned START releases the queued notifications
+    /// immediately; later duplicates cannot restart the hold in this epoch.
     mutating func acceptedStart(
         belongsToActiveEpoch: Bool
-    ) -> ScheduledRelease? {
-        guard belongsToActiveEpoch, let epoch = activeEpoch else { return nil }
-        guard startSeenEpoch != epoch else { return nil }
+    ) -> AcceptedStartAction {
+        guard belongsToActiveEpoch, let epoch = activeEpoch else { return .none }
+        if startSeenEpoch == epoch {
+            guard heldEpoch == epoch else { return .none }
+            heldEpoch = nil
+            return .releaseHeldNotifications
+        }
         startSeenEpoch = epoch
-        guard delayMilliseconds > 0 else { return nil }
+        guard delayMilliseconds > 0 else { return .none }
         heldEpoch = epoch
-        return ScheduledRelease(
-            epoch: epoch,
-            delayMilliseconds: delayMilliseconds
+        return .schedule(
+            ScheduledRelease(
+                epoch: epoch,
+                delayMilliseconds: delayMilliseconds
+            )
         )
     }
 
@@ -139,8 +151,8 @@ final class V1Peripheral: NSObject {
         var logPackets: Bool = false
         /// Optional bounded, anonymous startup-handshake evidence.
         var handshakeLedger: HandshakeLedger?
-        /// Stress-only delay after the first epoch-owned START. Zero preserves
-        /// the normal immediate notification path.
+        /// Stress-only maximum hold after the first epoch-owned START. A second
+        /// owned START releases sooner; zero preserves immediate notifications.
         var handshakeNotificationHoldMs: Int = 0
         /// Proxy mode publishes the service but holds off advertising until the
         /// real V1 is connected, so v1simple cannot win the race to it.
@@ -489,18 +501,24 @@ final class V1Peripheral: NSObject {
                 channel: Self.shortName(inboundCharacteristic),
                 belongsToEpochSubscriber: belongsToHandshakeSubscriber
             )
-            if packet.id == V1.PacketID.reqStartAlertData.rawValue,
-               let scheduled = handshakeNotificationHold.acceptedStart(
-                   belongsToActiveEpoch: belongsToHandshakeSubscriber
-               ) {
-                queue.asyncAfter(
-                    deadline: .now() + .milliseconds(scheduled.delayMilliseconds)
-                ) { [weak self] in
-                    guard let self = self,
-                          !self.isStopping,
-                          self.handshakeNotificationHold.release(scheduled) else {
-                        return
+            if packet.id == V1.PacketID.reqStartAlertData.rawValue {
+                switch handshakeNotificationHold.acceptedStart(
+                    belongsToActiveEpoch: belongsToHandshakeSubscriber
+                ) {
+                case .none:
+                    break
+                case .schedule(let scheduled):
+                    queue.asyncAfter(
+                        deadline: .now() + .milliseconds(scheduled.delayMilliseconds)
+                    ) { [weak self] in
+                        guard let self = self,
+                              !self.isStopping,
+                              self.handshakeNotificationHold.release(scheduled) else {
+                            return
+                        }
+                        self.flush()
                     }
+                case .releaseHeldNotifications:
                     self.flush()
                 }
             }

@@ -252,7 +252,7 @@ func runHelp() {
       --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
       --handshake-only     runner preflight: one clear alert row, then stay quiet
       --handshake-notification-hold-ms N
-                           stress-only outbound hold after START (0...1999; default 0)
+                           maximum stress hold; second START releases (0...1999; default 0)
       --no-wait            start without waiting for a central to subscribe
       --idle-lead <sec>    idle frames before the encounter (default 3)
       --idle-tail <sec>    idle frames after the encounter (default 3)

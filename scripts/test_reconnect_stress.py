@@ -308,6 +308,51 @@ def verify_terminal_hashes(root: Path) -> None:
         assert_true(path.stat().st_size == entry["size_bytes"], "bad artifact size")
 
 
+def test_second_start_release_contract() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        selected = config(Path(temporary) / "stress").contract_parameters()
+        assert_true(
+            selected["handshake_clear_release_trigger"]
+            == "second_accepted_start",
+            "stress contract does not name the deterministic release trigger",
+        )
+        assert_true(
+            selected["handshake_clear_release_safety_deadline_ms"] == 1999,
+            "stress safety deadline no longer precedes the third retry slot",
+        )
+        assert_true(
+            selected["post_ready_observation_ms"] == 1100,
+            "stress observation window cannot expose a third one-second retry",
+        )
+        assert_true(
+            selected["pre_stop_fence_timeout_ms"] == 250,
+            "stress pre-stop fence extends the live post-delivery window",
+        )
+        assert_true(
+            "handshake_notification_hold_ms" not in selected,
+            "stress contract still describes a fixed notification hold",
+        )
+
+    runtime = stress.ProductionRuntime()
+    captured: dict[str, Any] = {}
+    original_emulator = runtime.run_window.V1Emulator
+
+    def recording_emulator(*args: Any, **kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    runtime.run_window.V1Emulator = recording_emulator
+    try:
+        runtime.make_emulator(Path("/fake/v1replay"), Path("/fake/0001"))
+    finally:
+        runtime.run_window.V1Emulator = original_emulator
+    assert_true(captured.get("handshake_only") is True, "stress emulator is not handshake-only")
+    assert_true(
+        captured.get("handshake_notification_hold_ms") == 1999,
+        "stress runner did not pass the bounded second-START release deadline",
+    )
+
+
 def test_production_ledger_scorer_exposes_retry_timing() -> None:
     runtime = stress.ProductionRuntime()
     frames = runtime.run_window
@@ -454,8 +499,8 @@ def test_three_pass_cycles() -> None:
         assert_true(runtime.sleeps == [2.1, 1.1, 1.1], "wrong pre-cycle waits")
         assert_true(runtime.readiness_calls == 4, "initial/per-cycle readiness barriers missing")
         assert_true(
-            runtime.pre_stop_fence_timeouts == [0.5, 0.5, 0.5],
-            "pre-stop fence can cross the 2s stale-stream boundary",
+            runtime.pre_stop_fence_timeouts == [0.25, 0.25, 0.25],
+            "pre-stop fence is no longer bounded after the observation window",
         )
         assert_true(
             [
@@ -625,6 +670,7 @@ def test_reuse_invalid_arguments_and_terminal_drift() -> None:
 
 
 def main() -> int:
+    test_second_start_release_contract()
     test_production_ledger_scorer_exposes_retry_timing()
     test_three_pass_cycles()
     test_fail_fast_at_cycle_two_preserves_evidence()

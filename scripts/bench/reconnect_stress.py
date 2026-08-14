@@ -32,9 +32,16 @@ DEFAULT_BOARD_ID = "release"
 DEFAULT_TIMEOUT_SECONDS = 45.0
 MAX_CYCLES = 1000
 
-HANDSHAKE_NOTIFICATION_HOLD_MS = 1250
-POST_READY_OBSERVATION_SECONDS = 0.25
-PRE_STOP_FENCE_TIMEOUT_SECONDS = 0.5
+# In handshake-only stress mode the clear row is released as soon as the
+# second accepted START arrives.  This value is only the bounded fallback if
+# that trigger never arrives; 1999 ms is v1replay's CLI maximum and expires
+# just before a third slot at the firmware's documented >=1 s retry cadence.
+SECOND_START_RELEASE_SAFETY_DEADLINE_MS = 1999
+# Keep the emulator alive long enough to expose another retry at the documented
+# >=1 s cadence after clear delivery.  The final ledger grade also covers the
+# bounded pre-stop fence that follows this observation.
+POST_READY_OBSERVATION_SECONDS = 1.1
+PRE_STOP_FENCE_TIMEOUT_SECONDS = 0.25
 FIRST_CYCLE_WAIT_SECONDS = 2.1
 INTER_CYCLE_WAIT_SECONDS = 1.1
 
@@ -82,7 +89,10 @@ class StressConfig:
             "board_id": self.board_id,
             "baud": self.baud,
             "timeout_seconds": self.timeout_seconds,
-            "handshake_notification_hold_ms": HANDSHAKE_NOTIFICATION_HOLD_MS,
+            "handshake_clear_release_trigger": "second_accepted_start",
+            "handshake_clear_release_safety_deadline_ms": (
+                SECOND_START_RELEASE_SAFETY_DEADLINE_MS
+            ),
             "post_ready_observation_ms": int(POST_READY_OBSERVATION_SECONDS * 1000),
             "pre_stop_fence_timeout_ms": int(PRE_STOP_FENCE_TIMEOUT_SECONDS * 1000),
             "first_cycle_wait_ms": int(FIRST_CYCLE_WAIT_SECONDS * 1000),
@@ -512,7 +522,12 @@ class ProductionRuntime:
             "replay",
             "scenario",
             handshake_only=True,
-            handshake_notification_hold_ms=HANDSHAKE_NOTIFICATION_HOLD_MS,
+            # The v1replay constructor keeps its compatibility name, but in
+            # handshake-only stress mode this is a release safety deadline:
+            # the second accepted START normally releases the clear earlier.
+            handshake_notification_hold_ms=(
+                SECOND_START_RELEASE_SAFETY_DEADLINE_MS
+            ),
         )
 
     def run_preflight(

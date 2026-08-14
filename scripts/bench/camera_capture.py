@@ -512,6 +512,20 @@ class CameraCapture:
             )
 
     def stop(self, collection_completed: bool) -> dict[str, Any]:
+        if self.process is None:
+            if self.result_path.is_file():
+                try:
+                    existing = json.loads(self.result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+                if isinstance(existing, dict):
+                    return existing
+            return {
+                "result": "NOT_RUN",
+                "reason": "camera admission was not reached",
+                "errors": [],
+            }
+
         was_running = self.process is not None
         self._stop_process()
         duration = 0.0

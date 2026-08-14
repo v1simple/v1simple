@@ -611,7 +611,11 @@ def score_reconnect_epoch(label: str, checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def score_reconnect_lifecycle(raw: Any) -> dict[str, Any]:
+def score_reconnect_lifecycle(
+    raw: Any,
+    *,
+    failure_kind: str = "",
+) -> dict[str, Any]:
     """Score bounded disappearance evidence recorded by the live runner."""
     if raw is None:
         return handshake_collection_failure(
@@ -622,8 +626,9 @@ def score_reconnect_lifecycle(raw: Any) -> dict[str, Any]:
             "replay reconnect preflight terminal result is not an object"
         )
 
+    early_handshake_failure = failure_kind in {"handshake_timeout", "handshake_invalid"}
     boolean_expectations = {
-        "handshake_ready_while_alive": True,
+        "handshake_ready_while_alive": not early_handshake_failure,
         "serial_fence_observed": True,
         "managed_stop": True,
         "confirmed_exit": True,
@@ -663,7 +668,12 @@ def score_reconnect_lifecycle(raw: Any) -> dict[str, Any]:
             failures.append(
                 f"replay reconnect preflight {field}={raw[field]!r} expected={expected!r}"
             )
-    if cleanup_count != 1:
+    diagnostics: list[str] = []
+    if early_handshake_failure and cleanup_count == 0:
+        diagnostics.append(
+            "replay reconnect cleanup was not collected after the early handshake terminal"
+        )
+    elif cleanup_count != 1:
         failures.append(
             f"replay reconnect preflight cleanup_marker_count={cleanup_count!r} expected=1"
         )
@@ -671,6 +681,7 @@ def score_reconnect_lifecycle(raw: Any) -> dict[str, Any]:
     return {
         "result": "FAIL" if failures else "PASS",
         "evidence": failures,
+        "diagnostics": diagnostics,
     }
 
 
@@ -1535,7 +1546,10 @@ def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, A
                 "reconnect failure terminal requires a complete preflight handshake ledger"
             )
 
-    lifecycle_checks = score_reconnect_lifecycle(window.get("reconnect_preflight"))
+    lifecycle_checks = score_reconnect_lifecycle(
+        window.get("reconnect_preflight"),
+        failure_kind=str(failure_kind),
+    )
     preflight_log_path, preflight_log_error = same_window_artifact(
         window_dir,
         window.get("reconnect_preflight_log_path"),

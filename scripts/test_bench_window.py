@@ -11,12 +11,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
 import camera_grade as camera_grade_module  # noqa: E402
+import run_window as run_window_module  # noqa: E402
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
     FRAME_BYTES,
@@ -735,6 +737,135 @@ def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
     finally:
         if previous is not None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
+
+
+def test_unadmitted_camera_is_not_reported_as_capture_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = CameraCapture(Path(tmp), 300)
+        result = camera.stop(collection_completed=False)
+        assert_true(result["result"] == "NOT_RUN", f"unadmitted camera result: {result}")
+        assert_true(
+            result.get("reason") == "camera admission was not reached",
+            f"unadmitted camera reason is missing: {result}",
+        )
+        assert_true(
+            not camera.result_path.exists(),
+            "unadmitted camera synthesized a physical capture artifact",
+        )
+
+        failed_start = {"result": "CAPTURE_FAILED", "errors": ["camera unavailable"]}
+        camera.result_path.write_text(json.dumps(failed_start) + "\n", encoding="utf-8")
+        assert_true(
+            camera.stop(collection_completed=False) == failed_start,
+            "an admitted camera failure was replaced with NOT_RUN",
+        )
+
+
+def test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact() -> None:
+    observed_stop_results: list[dict[str, object]] = []
+
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeEmulator:
+        process = None
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def finish(self, _completed: bool) -> dict[str, object]:
+            return {"completed": False, "mode": "bench"}
+
+    class RecordingCamera(CameraCapture):
+        def stop(self, collection_completed: bool) -> dict[str, object]:
+            result = super().stop(collection_completed)
+            observed_stop_results.append(result)
+            return result
+
+    def fail_reconnect(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ReconnectPreflightFailure(
+            "duplicate start request",
+            {
+                "handshake_ready_while_alive": False,
+                "serial_fence_observed": True,
+                "managed_stop": True,
+                "confirmed_exit": True,
+                "cleanup_marker_count": 0,
+                "serial_session_continuous": True,
+                "boot_observed_before_second_complete": False,
+            },
+            classification="FAIL",
+            failure_kind="handshake_invalid",
+        )
+
+    originals = (
+        run_window_module.wait_for_port,
+        run_window_module.BenchSerial,
+        run_window_module.wait_ready,
+        run_window_module.establish_reconnect_readiness,
+        run_window_module.V1Emulator,
+        run_window_module.CameraCapture,
+        run_window_module.run_reconnect_preflight,
+        run_window_module.run_camera_preflight,
+    )
+    try:
+        run_window_module.wait_for_port = lambda *_args, **_kwargs: "fake-port"
+        run_window_module.BenchSerial = FakeSerial
+        run_window_module.wait_ready = lambda *_args, **_kwargs: {"ok": True}
+        run_window_module.establish_reconnect_readiness = lambda *_args, **_kwargs: {"ok": True}
+        run_window_module.V1Emulator = FakeEmulator
+        run_window_module.CameraCapture = RecordingCamera
+        run_window_module.run_reconnect_preflight = fail_reconnect
+        run_window_module.run_camera_preflight = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("camera preflight ran before reconnect admission")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "replay"
+            args = SimpleNamespace(
+                suite="replay",
+                camera=True,
+                upload=False,
+                port="fake-port",
+                baud=115200,
+                replay_executable=str(Path(tmp) / "v1replay"),
+                blink_profile="scenario",
+                ready_timeout_seconds=1,
+                duration_seconds=300,
+            )
+            try:
+                run_window_module.collect_live(args, out_dir)
+            except ReconnectPreflightFailure as exc:
+                assert_true(exc.failure_kind == "handshake_invalid", f"wrong failure: {exc}")
+            else:
+                raise AssertionError("invalid reconnect unexpectedly reached camera admission")
+            assert_true(
+                observed_stop_results
+                == [{
+                    "result": "NOT_RUN",
+                    "reason": "camera admission was not reached",
+                    "errors": [],
+                }],
+                f"unadmitted camera finalization changed: {observed_stop_results}",
+            )
+            assert_true(not (out_dir / "camera").exists(), "unadmitted camera directory was created")
+    finally:
+        (
+            run_window_module.wait_for_port,
+            run_window_module.BenchSerial,
+            run_window_module.wait_ready,
+            run_window_module.establish_reconnect_readiness,
+            run_window_module.V1Emulator,
+            run_window_module.CameraCapture,
+            run_window_module.run_reconnect_preflight,
+            run_window_module.run_camera_preflight,
+        ) = originals
 
 
 def test_camera_grader_integrates_high_speed_frames_before_sampling() -> None:
@@ -1548,6 +1679,8 @@ def main() -> int:
     test_reconnect_preflight_process_uses_separate_quiet_artifacts()
     test_handshake_ledger_runner_and_delivery_wiring_are_pinned()
     test_global_shutter_default_uses_qualified_720p200_profile()
+    test_unadmitted_camera_is_not_reported_as_capture_failure()
+    test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact()
     test_camera_grader_integrates_high_speed_frames_before_sampling()
     test_camera_profile_is_reapplied_after_recorder_open()
     test_camera_video_profile_seeds_exposure_before_aperture_priority()

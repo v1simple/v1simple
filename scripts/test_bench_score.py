@@ -856,6 +856,10 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
             reconnect["lifecycle_checks"]["result"] == "PASS",
             f"unexpected reconnect lifecycle: {reconnect}",
         )
+        assert_true(
+            reconnect["lifecycle_checks"]["diagnostics"] == [],
+            f"healthy reconnect gained lifecycle diagnostics: {reconnect}",
+        )
 
 
 def test_replay_all_volume_consumption_mutants_are_fail_closed() -> None:
@@ -1316,6 +1320,22 @@ def test_pre_qstart_reconnect_failure_taxonomy_is_preserved() -> None:
         proc = run_score(root, "replay")
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
         assert_true("handshake_timeout" in proc.stdout, proc.stdout)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        lifecycle = reconnect["lifecycle_checks"]
+        assert_true(lifecycle["result"] == "PASS", f"timeout lifecycle failed: {lifecycle}")
+        assert_true(
+            lifecycle["diagnostics"]
+            == ["replay reconnect cleanup was not collected after the early handshake terminal"],
+            f"timeout cleanup was not diagnostic-only: {lifecycle}",
+        )
+        assert_true(
+            not any(
+                "handshake_ready_while_alive" in item or "cleanup_marker_count" in item
+                for item in reconnect["evidence"]
+            ),
+            f"timeout retained derivative lifecycle evidence: {reconnect}",
+        )
 
     for ledger_state in ("missing", "complete"):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1468,6 +1488,148 @@ def test_pre_qstart_reconnect_failure_taxonomy_is_preserved() -> None:
         proc = run_score(root, "replay")
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
         assert_true("wrong all-volume route" in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        replay = root / "replay"
+        window_path = replay / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.update(
+            {
+                "result": "RECONNECT_FAILED",
+                "duration_seconds": 300,
+                "reconnect_failure_kind": "handshake_invalid",
+                "error": "duplicate start request",
+                "reconnect_preflight": {
+                    **RECONNECT_PREFLIGHT_RESULT,
+                    "handshake_ready_while_alive": False,
+                    "cleanup_marker_count": 0,
+                },
+            }
+        )
+        events = canonical_handshake_events()
+        events[2] = copy.deepcopy(events[1])
+        write_handshake_ledger(replay / "handshake_ledger_preflight.jsonl", events)
+        write_reconnect_logs(replay, failure_kind="handshake_invalid")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        reconnect = result["windows"][0]["replay_checks"]["reconnect_checks"]
+        lifecycle = reconnect["lifecycle_checks"]
+        assert_true(lifecycle["result"] == "PASS", f"derived lifecycle failed: {lifecycle}")
+        assert_true(
+            lifecycle["diagnostics"]
+            == ["replay reconnect cleanup was not collected after the early handshake terminal"],
+            f"early-terminal cleanup diagnostic missing: {lifecycle}",
+        )
+        assert_true(
+            not any(
+                "handshake_ready_while_alive" in item or "cleanup_marker_count" in item
+                for item in reconnect["evidence"]
+            ),
+            f"derived early-terminal fields remained gating evidence: {reconnect}",
+        )
+        assert_true(
+            any("repeats start request" in item for item in reconnect["evidence"]),
+            f"authoritative duplicate-start failure was lost: {reconnect}",
+        )
+
+        baseline_preflight = copy.deepcopy(window["reconnect_preflight"])
+        serial_path = replay / "bench_serial.log"
+        baseline_serial = serial_path.read_text(encoding="utf-8")
+
+        def score_lifecycle(
+            preflight: dict,
+            cleanup_lines: int = 0,
+        ) -> tuple[subprocess.CompletedProcess[str], dict]:
+            lines = baseline_serial.splitlines()
+            boundary = lines.index("HOST_BOUNDARY reconnect_preflight_process_exited")
+            command = lines.index(">>> QSTATUS", boundary + 1)
+            lines[command:command] = [
+                f"[BLE] V1 disconnected; cleared LCD BLE state at {101 + index} ms"
+                for index in range(cleanup_lines)
+            ]
+            serial_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            window["reconnect_preflight"] = preflight
+            write_json(window_path, window)
+            scored = run_score(root, "replay")
+            scored_result = json.loads(
+                (root / "bench_result.json").read_text(encoding="utf-8")
+            )
+            scored_reconnect = scored_result["windows"][0]["replay_checks"][
+                "reconnect_checks"
+            ]
+            return scored, scored_reconnect["lifecycle_checks"]
+
+        one_cleanup = {**baseline_preflight, "cleanup_marker_count": 1}
+        proc, lifecycle = score_lifecycle(one_cleanup, cleanup_lines=1)
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true(
+            lifecycle == {"result": "PASS", "evidence": [], "diagnostics": []},
+            f"observed early cleanup was not neutral: {lifecycle}",
+        )
+
+        two_cleanups = {**baseline_preflight, "cleanup_marker_count": 2}
+        proc, lifecycle = score_lifecycle(two_cleanups, cleanup_lines=2)
+        assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true(lifecycle["result"] == "FAIL", f"duplicate cleanup passed: {lifecycle}")
+        assert_true(
+            any(
+                "cleanup_marker_count=2 expected=1" in item
+                for item in lifecycle["evidence"]
+            ),
+            f"duplicate cleanup lost its lifecycle witness: {lifecycle}",
+        )
+
+        witness_mutants = (
+            (
+                "handshake_ready_while_alive",
+                True,
+                "handshake_ready_while_alive=True expected=False",
+            ),
+            ("serial_fence_observed", False, "serial_fence_observed=False expected=True"),
+            ("managed_stop", False, "managed_stop=False expected=True"),
+            ("confirmed_exit", False, "confirmed_exit=False expected=True"),
+            (
+                "serial_session_continuous",
+                False,
+                "serial_session_continuous=False expected=True",
+            ),
+            (
+                "boot_observed_before_second_complete",
+                True,
+                "boot_observed_before_second_complete=True expected=False",
+            ),
+        )
+        for field, value, expected in witness_mutants:
+            mutant = {**baseline_preflight, field: value}
+            proc, lifecycle = score_lifecycle(mutant)
+            assert_true(proc.returncode == 2, f"{field}: {proc.stdout}{proc.stderr}")
+            assert_true(lifecycle["result"] == "FAIL", f"{field} was weakened: {lifecycle}")
+            assert_true(
+                any(expected in item for item in lifecycle["evidence"]),
+                f"{field}: {lifecycle}",
+            )
+
+        for field, value in (
+            ("handshake_ready_while_alive", None),
+            ("cleanup_marker_count", None),
+            ("handshake_ready_while_alive", "yes"),
+            ("cleanup_marker_count", True),
+        ):
+            mutant = copy.deepcopy(baseline_preflight)
+            if value is None:
+                mutant.pop(field)
+            else:
+                mutant[field] = value
+            proc, lifecycle = score_lifecycle(mutant)
+            assert_true(proc.returncode == 3, f"{field}: {proc.stdout}{proc.stderr}")
+            assert_true(
+                lifecycle["result"] == "COLLECTION_FAILED",
+                f"invalid {field} did not fail closed: {lifecycle}",
+            )
 
     for event_count in (0, 5, 6):
         with tempfile.TemporaryDirectory() as tmp:

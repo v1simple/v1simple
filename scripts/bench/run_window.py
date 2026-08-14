@@ -66,6 +66,15 @@ RECONNECT_POST_CLEANUP_FENCE_BEGIN = "reconnect_post_cleanup_fence_begin"
 RECONNECT_POST_CLEANUP_FENCE_COMPLETE = "reconnect_post_cleanup_fence_complete"
 RECONNECT_PRE_QSTART_FENCE_BEGIN = "reconnect_pre_qstart_fence_begin"
 RECONNECT_PRE_QSTART_FENCE_COMPLETE = "reconnect_pre_qstart_fence_complete"
+HANDSHAKE_LEDGER_SCHEMA = 2
+HANDSHAKE_LEDGER_TIMEBASE = "epoch_monotonic_ms"
+MAX_HANDSHAKE_EPOCHS = 4
+MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
+# Six non-start events plus five accepted starts use 11 slots, so the existing
+# cap still records a violating sixth start as the twelfth event.
+MAX_HANDSHAKE_START_REQUESTS = 5
+MIN_HANDSHAKE_START_RETRY_MS = 1000
+MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
 
 START_ALERT_REQUEST = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
 VERSION_REQUEST = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
@@ -435,7 +444,13 @@ def establish_reconnect_readiness(
 
 
 def _preflight_ledger_is_complete(path: Path) -> bool:
-    """Small collection-side readiness check; the grader decodes both ledgers again."""
+    """Return readiness from one bounded, delivery-confirmed schema-v2 epoch.
+
+    A valid but incomplete ledger returns False so collection can continue.
+    Irreversible protocol contradictions raise ``handshake_invalid``. Evidence
+    schema/type failures remain collection errors. The grader independently
+    decodes the final ledger after the emulator exits.
+    """
     try:
         if path.stat().st_size > 8 * 1024:
             raise RuntimeError("reconnect preflight ledger exceeds its bounded size")
@@ -447,23 +462,30 @@ def _preflight_ledger_is_complete(path: Path) -> bool:
     if text and not text.endswith("\n"):
         return False
     lines = text.splitlines()
-    if len(lines) < 8:
+    if not lines:
         return False
-    if len(lines) > 13:
+    if len(lines) > 1 + MAX_HANDSHAKE_EPOCHS * MAX_HANDSHAKE_EVENTS_PER_EPOCH:
         raise RuntimeError("reconnect preflight ledger exceeds its bounded event count")
     try:
         records = [json.loads(line) for line in lines]
     except json.JSONDecodeError as exc:
         raise RuntimeError("reconnect preflight ledger contains invalid JSON") from exc
-    if records[0] != {"schema_version": 1, "kind": "v1replay_handshake_ledger"}:
+    if records[0] != {
+        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+        "kind": "v1replay_handshake_ledger",
+        "timebase": HANDSHAKE_LEDGER_TIMEBASE,
+    }:
         raise RuntimeError("reconnect preflight ledger has an invalid header")
     events = records[1:]
     event_keys = {
-        "subscribe": {"event", "epoch", "channel"},
-        "request": {"event", "epoch", "channel", "bytes"},
-        "response": {"event", "epoch", "channel", "bytes", "delivery"},
-        "stream_started": {"event", "epoch", "channel", "bytes", "delivery"},
+        "subscribe": {"event", "epoch", "channel", "elapsed_ms"},
+        "request": {"event", "epoch", "channel", "bytes", "elapsed_ms"},
+        "response": {"event", "epoch", "channel", "bytes", "delivery", "elapsed_ms"},
+        "stream_started": {
+            "event", "epoch", "channel", "bytes", "delivery", "elapsed_ms",
+        },
     }
+    previous_elapsed_ms = -1
     for event in events:
         if not isinstance(event, dict):
             raise RuntimeError("reconnect preflight ledger event is not an object")
@@ -475,10 +497,33 @@ def _preflight_ledger_is_complete(path: Path) -> bool:
         ):
             raise RuntimeError("reconnect preflight ledger has an invalid event schema")
         epoch = event.get("epoch")
-        if not isinstance(epoch, int) or isinstance(epoch, bool) or not 1 <= epoch <= 4:
+        if (
+            not isinstance(epoch, int)
+            or isinstance(epoch, bool)
+            or not 1 <= epoch <= 4
+        ):
             raise RuntimeError("reconnect preflight ledger has an invalid anonymous epoch")
+        if epoch != 1:
+            raise ReconnectBehaviorError(
+                "handshake_invalid",
+                "reconnect preflight ledger crosses its one anonymous epoch",
+            )
         if not isinstance(event.get("channel"), str):
             raise RuntimeError("reconnect preflight ledger has an invalid channel")
+        elapsed_ms = event.get("elapsed_ms")
+        if (
+            not isinstance(elapsed_ms, int)
+            or isinstance(elapsed_ms, bool)
+            or not 0 <= elapsed_ms <= MAX_HANDSHAKE_ELAPSED_MS
+        ):
+            raise RuntimeError("reconnect preflight ledger has invalid relative timing evidence")
+        if elapsed_ms < previous_elapsed_ms:
+            raise RuntimeError("reconnect preflight ledger relative timing is not monotonic")
+        if event_name == "subscribe" and elapsed_ms != 0:
+            raise RuntimeError(
+                "reconnect preflight ledger subscription timing does not begin at zero"
+            )
+        previous_elapsed_ms = elapsed_ms
         if event_name != "subscribe":
             raw = event.get("bytes")
             if (
@@ -496,40 +541,88 @@ def _preflight_ledger_is_complete(path: Path) -> bool:
             event.get("delivery"), str
         ):
             raise RuntimeError("reconnect preflight ledger has invalid delivery evidence")
+    if len(events) > MAX_HANDSHAKE_EVENTS_PER_EPOCH:
+        raise RuntimeError("reconnect preflight ledger epoch exceeds its bounded event count")
 
-    if len(lines) != 8 or any(event["epoch"] != 1 for event in events):
-        raise ReconnectBehaviorError(
-            "handshake_invalid",
-            "reconnect preflight ledger does not contain exactly one seven-event epoch",
-        )
-
-    expected_frames = {
-        "start": START_ALERT_REQUEST,
-        "version_request": VERSION_REQUEST,
-        "version_response": VERSION_RESPONSE,
-        "all_volume_request": ALL_VOLUME_REQUEST,
-        "all_volume_response": ALL_VOLUME_RESPONSE,
-        "stream": EMPTY_ALERT_ROW,
+    seen = {
+        "subscribe": False,
+        "stream": False,
+        "version_request": False,
+        "version_response": False,
+        "all_volume_request": False,
+        "all_volume_response": False,
     }
-    matches: dict[str, int] = {}
-    request_channels: set[str] = set()
+    selected_request_channel: str | None = None
+    start_elapsed_ms: list[int] = []
     for index, event in enumerate(events):
         event_name = event.get("event")
         channel = event.get("channel")
         raw = event.get("bytes")
+        if event_name == "subscribe":
+            if index != 0 or seen["subscribe"] or channel != "B2CE":
+                raise ReconnectBehaviorError(
+                    "handshake_invalid",
+                    "reconnect preflight ledger has an invalid B2CE subscription boundary",
+                )
+            seen["subscribe"] = True
+            continue
+
+        if not seen["subscribe"]:
+            raise ReconnectBehaviorError(
+                "handshake_invalid",
+                "reconnect preflight handshake traffic occurred before B2CE subscription",
+            )
+
         key = ""
-        if event_name == "subscribe" and channel == "B2CE" and set(event) == {
-            "event", "epoch", "channel"
-        }:
-            key = "subscribe"
-        elif event_name == "request" and channel in {"B6D4", "BAD4"}:
-            request_channels.add(str(channel))
+        if event_name == "request" and channel in {"B6D4", "BAD4"}:
+            if selected_request_channel is None:
+                selected_request_channel = str(channel)
+            elif channel != selected_request_channel:
+                raise ReconnectBehaviorError(
+                    "handshake_invalid",
+                    "reconnect preflight ledger switches its selected command channel",
+                )
             if raw == START_ALERT_REQUEST:
-                key = "start"
-            elif raw == VERSION_REQUEST:
+                if seen["stream"]:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight repeats start after stream delivery",
+                    )
+                start_elapsed_ms.append(event["elapsed_ms"])
+                if len(start_elapsed_ms) > MAX_HANDSHAKE_START_REQUESTS:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight exceeds its bounded pre-stream start retries",
+                    )
+                if (
+                    len(start_elapsed_ms) > 1
+                    and start_elapsed_ms[-1] - start_elapsed_ms[-2]
+                    < MIN_HANDSHAKE_START_RETRY_MS
+                ):
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight start retry arrived before the 1000 ms recovery interval",
+                    )
+                continue
+            if raw == VERSION_REQUEST:
                 key = "version_request"
+                if not start_elapsed_ms:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight version request occurred before start",
+                    )
             elif raw == ALL_VOLUME_REQUEST:
                 key = "all_volume_request"
+                if not seen["version_request"]:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight all-volume request occurred before version request",
+                    )
+            else:
+                raise ReconnectBehaviorError(
+                    "handshake_invalid",
+                    "reconnect preflight ledger contains a non-canonical request",
+                )
         elif (
             event_name == "response"
             and channel == "B2CE"
@@ -537,8 +630,18 @@ def _preflight_ledger_is_complete(path: Path) -> bool:
         ):
             if raw == VERSION_RESPONSE:
                 key = "version_response"
+                if not seen["version_request"]:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight version response occurred before its request",
+                    )
             elif raw == ALL_VOLUME_RESPONSE:
                 key = "all_volume_response"
+                if not seen["all_volume_request"]:
+                    raise ReconnectBehaviorError(
+                        "handshake_invalid",
+                        "reconnect preflight all-volume response occurred before its request",
+                    )
         elif (
             event_name == "stream_started"
             and channel == "B2CE"
@@ -546,30 +649,28 @@ def _preflight_ledger_is_complete(path: Path) -> bool:
             and raw == EMPTY_ALERT_ROW
         ):
             key = "stream"
-        if not key or key in matches:
+            if not start_elapsed_ms:
+                raise ReconnectBehaviorError(
+                    "handshake_invalid",
+                    "reconnect preflight stream began before start",
+                )
+        if not key:
             raise ReconnectBehaviorError(
                 "handshake_invalid",
-                "reconnect preflight ledger does not contain one canonical startup exchange",
+                "reconnect preflight ledger contains non-canonical delivery evidence",
             )
-        matches[key] = index
+        if seen[key]:
+            raise ReconnectBehaviorError(
+                "handshake_invalid",
+                f"reconnect preflight repeats {key.replace('_', ' ')}",
+            )
+        seen[key] = True
 
-    if set(matches) != {"subscribe", *expected_frames} or len(request_channels) != 1:
-        raise ReconnectBehaviorError(
-            "handshake_invalid",
-            "reconnect preflight ledger is incomplete or switches command channel",
-        )
-    if not (
-        matches["subscribe"] < matches["start"]
-        and matches["start"] < matches["stream"]
-        and matches["start"] < matches["version_request"] < matches["all_volume_request"]
-        and matches["version_request"] < matches["version_response"]
-        and matches["all_volume_request"] < matches["all_volume_response"]
-    ):
-        raise ReconnectBehaviorError(
-            "handshake_invalid",
-            "reconnect preflight ledger has invalid startup ordering",
-        )
-    return True
+    return bool(
+        start_elapsed_ms
+        and selected_request_channel is not None
+        and all(seen.values())
+    )
 
 
 def start_and_wait(

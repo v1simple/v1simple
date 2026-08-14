@@ -77,11 +77,12 @@ Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
 The unified runner alone uses `bench --handshake-only` before the scored replay.
-That mode waits for B2CE subscription and the start-alert request, sends exactly
-one canonical count-zero alert row, and then stays quiet and alive until the
-runner removes the peripheral. Its bounded packet log must contain only the two
-targeted startup replies and that clear row; it does not enter the scenario or
-idle stream.
+That mode reacts directly to each accepted start-alert request and ensures one
+canonical count-zero alert row is queued until CoreBluetooth accepts it for
+delivery; it does not depend on the player's polling cadence. Once delivery is
+recorded it stays quiet and alive until the runner removes the peripheral. Its
+bounded packet log contains only the two targeted startup replies and that clear
+row; it does not enter the scenario or idle stream.
 
 Bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
@@ -183,12 +184,26 @@ The public contract inventory uses these stable behavior IDs:
   handshake-only process must independently complete one active startup epoch,
   then disappear; after the still-open serial session observes the board's V1
   cleanup, a replacement process must independently complete a fresh epoch.
-  The two bounded ledgers are distinct and each contains exactly one seven-event
-  epoch, so neither can borrow readiness or replies from the other. This is host
-  emulator and board-cleanup integration evidence, not proof of physical-V1
-  reconnect timing, cache or bond behavior, or control persistence. The
-  reconnect evidence alone does not prove board-side all-volume parsing; that
-  is joined separately under `V1-ALL-VOLUME-001`.
+  The two bounded ledgers are distinct, so neither can borrow readiness or
+  replies from the other. Schema 2 records anonymous epoch-relative monotonic
+  milliseconds for every event. One initial start plus at most four recovery
+  starts are legal before the delivered clear row when every consecutive retry
+  is at least 1000 ms later. The evidence is
+  `ConnectionStateModule::DATA_REQUEST_INTERVAL_MS` in
+  `src/modules/ble/connection_state_module.h`, the strict `>` rate-limit check
+  in `src/modules/ble/connection_state_module.cpp`, and
+  `V1SessionContractTests.testDuplicateStartIsDeterministicAndStopEmitsNoReply`.
+  Because the ledger stores integer milliseconds, the gate accepts a measured
+  1000 ms boundary for an underlying interval that can be just over 1000 ms.
+  The five-start limit leaves the existing 12-event ledger cap enough room to
+  record a violating sixth start alongside the six non-start events. A sixth
+  start, a faster retry, or any start after stream delivery fails. Historical
+  schema-1 evidence remains readable only for the unambiguous single-start
+  shape because it cannot prove retry spacing. This is host emulator and
+  board-cleanup integration evidence, not proof of physical-V1 reconnect
+  timing, cache or bond behavior, or control persistence. The reconnect
+  evidence alone does not prove board-side all-volume parsing; that is joined
+  separately under `V1-ALL-VOLUME-001`.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
@@ -214,8 +229,10 @@ The public contract inventory uses these stable behavior IDs:
   V4.1037, the emulator leaves saved state unchanged because reserved-bit
   handling is unknown. A later all-volume reply carries both pairs.
 - `V1-ALERT-STREAM-CONTROL-001` pins start and stop as state transitions with no
-  invented immediate reply. Delivery already queued around a stop and the
-  timing of the first or last alert row remain provisional and non-gating.
+  invented immediate reply. Repeating start while already enabled is an
+  idempotent request, not a second state transition. Delivery already queued
+  around a stop and the timing of the first or last alert row remain provisional
+  and non-gating.
 - `V1-USER-BYTES-001` pins the six-byte payload shape, version-aware read/write
   state, and the B2CE read response. Under the default v4.1038 identity, writes
   preserve `FF FF` in the final two positions. Writes have no invented immediate
@@ -248,9 +265,11 @@ host-state gate.
 
 Managed replay writes two bounded anonymous startup-handshake ledgers: one for
 the quiet preflight process and one for the scored replacement. Neither contains
-a central identifier or timestamp, and neither is a general packet transcript.
+a central identifier or absolute timestamp; schema 2 contains only epoch-relative
+monotonic milliseconds. Neither ledger is a general packet transcript.
 The grader decodes them separately and requires exactly one connection epoch in
-each with B2CE subscription, accepted start/version/all-volume requests,
+each with B2CE subscription, one or more accepted pre-stream start requests
+within the bounded retry contract, accepted version and all-volume requests,
 CoreBluetooth-accepted short replies, and alert-stream start. The preflight's
 only stream packet must be the canonical count-zero clear row. The scored
 replacement window additionally requires one boot-cumulative canonical

@@ -623,6 +623,12 @@ func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false) throw
             console.print("V1REPLAY_EVENT {\"state\":\"handshake_ready\"}")
         }
     }
+    peripheral.onHandshakeClearDelivered = {
+        player.handshakeOnlyClearDelivered()
+    }
+    peripheral.onStartAlertData = {
+        player.ensureHandshakeOnlyClear()
+    }
     player.onReplayStarted = { hostMonotonicSeconds in
         if machineEvents && bench {
             console.log("V1REPLAY_EVENT {\"state\":\"replay_started\","

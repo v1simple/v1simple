@@ -133,13 +133,45 @@ def canonical_handshake_events(
     ]
 
 
+def timed_handshake_events(
+    start_elapsed_ms: tuple[int, ...] = (100,),
+    *,
+    request_channel: str = "B6D4",
+) -> list[dict[str, object]]:
+    assert start_elapsed_ms
+    canonical = canonical_handshake_events(request_channel=request_channel)
+    events = [{**canonical[0], "elapsed_ms": 0}]
+    events.extend(
+        {**copy.deepcopy(canonical[1]), "elapsed_ms": elapsed_ms}
+        for elapsed_ms in start_elapsed_ms
+    )
+    elapsed_ms = start_elapsed_ms[-1] + 100
+    for event in canonical[2:]:
+        events.append({**copy.deepcopy(event), "elapsed_ms": elapsed_ms})
+        elapsed_ms += 100
+    return events
+
+
 def write_handshake_ledger(
     path: Path,
     events: list[dict[str, object]] | None = None,
+    *,
+    schema_version: int = 1,
 ) -> None:
+    header: dict[str, object] = {
+        "schema_version": schema_version,
+        "kind": "v1replay_handshake_ledger",
+    }
+    if schema_version == 2:
+        header["timebase"] = "epoch_monotonic_ms"
+    default_events = (
+        timed_handshake_events()
+        if schema_version == 2
+        else canonical_handshake_events()
+    )
     records: list[dict[str, object]] = [
-        {"schema_version": 1, "kind": "v1replay_handshake_ledger"},
-        *(events if events is not None else canonical_handshake_events()),
+        header,
+        *(events if events is not None else default_events),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1075,6 +1107,226 @@ def test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect
         assert_true(handshake["complete_epoch"] == 2, f"reconnect epoch was not accepted: {handshake}")
         assert_true(reconnect["result"] == "FAIL", f"strict reconnect shape passed: {reconnect}")
         assert_true("epoch_count=2 expected=1" in proc.stdout, proc.stdout)
+
+
+def test_timed_handshake_start_retry_contract_is_fail_closed() -> None:
+    def exercise(
+        events: list[dict[str, object]],
+        *,
+        schema_version: int = 2,
+        timebase: str | None = "epoch_monotonic_ms",
+    ) -> tuple[subprocess.CompletedProcess[str], dict, dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            write_handshake_ledger(
+                root / "replay" / "handshake_ledger.jsonl",
+                events,
+                schema_version=schema_version,
+            )
+            ledger_path = root / "replay" / "handshake_ledger.jsonl"
+            if schema_version == 2 and timebase != "epoch_monotonic_ms":
+                records = [
+                    json.loads(line)
+                    for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                ]
+                if timebase is None:
+                    records[0].pop("timebase")
+                else:
+                    records[0]["timebase"] = timebase
+                ledger_path.write_text(
+                    "".join(
+                        json.dumps(record, separators=(",", ":")) + "\n"
+                        for record in records
+                    ),
+                    encoding="utf-8",
+                )
+            proc = run_score(root, "replay")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            replay = result["windows"][0]["replay_checks"]
+            reconnect = replay["reconnect_checks"]["primary_handshake_checks"]
+            return proc, replay["handshake_checks"], reconnect
+
+    proc, handshake, reconnect = exercise(canonical_handshake_events(), schema_version=1)
+    assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+    assert_true(
+        handshake["schema_version"] == 1
+        and handshake["handshake_state"] == "complete"
+        and reconnect["event_count"] == 7,
+        f"legacy canonical handshake changed: {handshake} {reconnect}",
+    )
+
+    legacy_retry = canonical_handshake_events()
+    legacy_retry.insert(2, copy.deepcopy(legacy_retry[1]))
+    proc, handshake, _ = exercise(legacy_retry, schema_version=1)
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(handshake["handshake_state"] == "invalid", f"legacy retry passed: {handshake}")
+    assert_true("repeats start request" in proc.stdout, proc.stdout)
+
+    for retry_gap_ms, expected_exit in ((999, 2), (1000, 0), (1001, 0)):
+        events = timed_handshake_events((100, 100 + retry_gap_ms))
+        proc, handshake, reconnect = exercise(events)
+        assert_true(
+            proc.returncode == expected_exit,
+            f"gap={retry_gap_ms}: {proc.stdout}{proc.stderr}",
+        )
+        expected_state = "invalid" if expected_exit else "complete"
+        assert_true(
+            handshake["handshake_state"] == expected_state,
+            f"gap={retry_gap_ms}: {handshake}",
+        )
+        if expected_exit == 0:
+            assert_true(
+                reconnect["result"] == "PASS" and reconnect["event_count"] == 8,
+                f"timed retry failed strict reconnect scoring: {reconnect}",
+            )
+        else:
+            assert_true("less than 1000 ms apart" in proc.stdout, proc.stdout)
+
+    proc, handshake, _ = exercise(timed_handshake_events((100, 1100, 2099)))
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(handshake["handshake_state"] == "invalid", f"consecutive-gap mutant passed: {handshake}")
+    assert_true("less than 1000 ms apart" in proc.stdout, proc.stdout)
+
+    post_stream = timed_handshake_events()
+    retry = copy.deepcopy(post_stream[1])
+    retry["elapsed_ms"] = int(post_stream[-1]["elapsed_ms"]) + 1000
+    post_stream.append(retry)
+    proc, handshake, _ = exercise(post_stream)
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(handshake["handshake_state"] == "invalid", f"post-stream retry passed: {handshake}")
+    assert_true("after stream delivery" in proc.stdout, proc.stdout)
+
+    five_starts = tuple(100 + 1000 * index for index in range(5))
+    proc, handshake, reconnect = exercise(timed_handshake_events(five_starts))
+    assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+    assert_true(
+        handshake["handshake_state"] == "complete"
+        and reconnect["result"] == "PASS"
+        and reconnect["event_count"] == 11,
+        f"bounded retries failed: {handshake} {reconnect}",
+    )
+
+    six_starts = tuple(100 + 1000 * index for index in range(6))
+    proc, handshake, reconnect = exercise(timed_handshake_events(six_starts))
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(
+        handshake["handshake_state"] == "invalid" and reconnect["event_count"] == 12,
+        f"unbounded retry mutant passed: {handshake} {reconnect}",
+    )
+    assert_true("exceeds its bounded start request count" in proc.stdout, proc.stdout)
+
+    switched_channel = timed_handshake_events((100, 1100))
+    switched_channel[2]["channel"] = "BAD4"
+    proc, handshake, _ = exercise(switched_channel)
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(handshake["handshake_state"] == "invalid", f"channel switch passed: {handshake}")
+    assert_true("switches its selected command channel" in proc.stdout, proc.stdout)
+
+    incomplete = timed_handshake_events((100, 1100))
+    incomplete.pop(3)
+    proc, handshake, _ = exercise(incomplete)
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(
+        handshake["handshake_state"] == "incomplete",
+        f"missing delivery was not incomplete: {handshake}",
+    )
+
+    malformed_elapsed: tuple[object, ...] = (None, True, 1.5, -1, 0x100000000)
+    for value in malformed_elapsed:
+        events = timed_handshake_events()
+        if value is None:
+            events[1].pop("elapsed_ms")
+        else:
+            events[1]["elapsed_ms"] = value
+        proc, handshake, _ = exercise(events)
+        assert_true(proc.returncode == 3, f"elapsed_ms={value!r}: {proc.stdout}{proc.stderr}")
+        assert_true(
+            handshake["result"] == "COLLECTION_FAILED",
+            f"elapsed_ms={value!r} did not fail closed: {handshake}",
+        )
+
+    for timebase in (None, "wall_clock_ms"):
+        proc, handshake, _ = exercise(timed_handshake_events(), timebase=timebase)
+        assert_true(proc.returncode == 3, f"timebase={timebase!r}: {proc.stdout}{proc.stderr}")
+        assert_true(
+            handshake["result"] == "COLLECTION_FAILED",
+            f"timebase={timebase!r} did not fail closed: {handshake}",
+        )
+
+    nonzero_subscribe = timed_handshake_events()
+    nonzero_subscribe[0]["elapsed_ms"] = 1
+    proc, handshake, _ = exercise(nonzero_subscribe)
+    assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+    assert_true(
+        handshake["result"] == "COLLECTION_FAILED",
+        f"nonzero subscription time passed: {handshake}",
+    )
+
+    decreasing = timed_handshake_events()
+    decreasing[3]["elapsed_ms"] = int(decreasing[2]["elapsed_ms"]) - 1
+    proc, handshake, _ = exercise(decreasing)
+    assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+    assert_true(handshake["result"] == "COLLECTION_FAILED", f"decreasing time passed: {handshake}")
+    assert_true("elapsed_ms values decrease" in proc.stdout, proc.stdout)
+
+
+def test_timed_handshake_state_drives_failure_taxonomy() -> None:
+    def exercise(
+        events: list[dict[str, object]],
+        failure_kind: str,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "replay")
+            replay = root / "replay"
+            window_path = replay / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window.update(
+                {
+                    "result": "RECONNECT_FAILED",
+                    "duration_seconds": 300,
+                    "reconnect_failure_kind": failure_kind,
+                    "error": f"timed {failure_kind}",
+                    "reconnect_preflight": {
+                        **RECONNECT_PREFLIGHT_RESULT,
+                        "handshake_ready_while_alive": False,
+                        "cleanup_marker_count": 0,
+                    },
+                }
+            )
+            write_handshake_ledger(
+                replay / "handshake_ledger_preflight.jsonl",
+                events,
+                schema_version=2,
+            )
+            write_reconnect_logs(replay, failure_kind=failure_kind)
+            write_json(window_path, window)
+            proc = run_score(root, "replay")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            checks = result["windows"][0]["replay_checks"]["reconnect_checks"]
+            return proc, checks["preflight_handshake_checks"]
+
+    incomplete = timed_handshake_events((100, 1100))
+    incomplete.pop(3)
+    invalid = timed_handshake_events((100, 1099))
+
+    proc, checks = exercise(incomplete, "handshake_timeout")
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(checks["handshake_state"] == "incomplete", f"timeout state: {checks}")
+
+    proc, checks = exercise(invalid, "handshake_invalid")
+    assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+    assert_true(checks["handshake_state"] == "invalid", f"invalid state: {checks}")
+
+    for events, failure_kind in (
+        (invalid, "handshake_timeout"),
+        (incomplete, "handshake_invalid"),
+    ):
+        proc, checks = exercise(events, failure_kind)
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true(checks["result"] == "COLLECTION_FAILED", f"terminal mismatch: {checks}")
+        assert_true("terminal contradicts its preflight ledger" in proc.stdout, proc.stdout)
 
 
 def test_replay_reconnect_scores_two_ledgers_without_cross_credit() -> None:
@@ -3499,6 +3751,8 @@ def main() -> int:
     test_replay_exact_invariants_are_part_of_the_verdict()
     test_replay_all_volume_consumption_mutants_are_fail_closed()
     test_replay_handshake_accepts_independent_reply_order_and_complete_reconnect_epoch()
+    test_timed_handshake_start_retry_contract_is_fail_closed()
+    test_timed_handshake_state_drives_failure_taxonomy()
     test_replay_reconnect_scores_two_ledgers_without_cross_credit()
     test_replay_reconnect_rejects_extra_epochs_and_shared_artifacts()
     test_replay_reconnect_requires_preflight_artifact_and_exact_clear()

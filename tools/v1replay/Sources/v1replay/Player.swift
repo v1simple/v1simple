@@ -68,6 +68,7 @@ final class Player {
     private var _lastBars = 0
     private var _elapsed: Double = 0
     private var reportedReplayStart = false
+    private var handshakeClearDeliveryConfirmed = false
 
     private let encounter: Encounter
     private let peripheral: V1Peripheral
@@ -136,6 +137,37 @@ final class Player {
 
     func stop() {
         lock.lock(); _stopped = true; _paused = false; lock.unlock()
+    }
+
+    /// Event-driven handshake-only response. The peripheral owns pending-row
+    /// deduplication and delivery retry; this method is also called once by the
+    /// polling path as a fallback for a start accepted before callback wiring.
+    func ensureHandshakeOnlyClear() {
+        guard options.handshakeOnly else { return }
+        let emissions = V1.PlaybackPacketPlan.handshakeOnlyEmissions(
+            header: options.header,
+            checksum: options.checksum
+        )
+        guard emissions.count == 1,
+              let clear = emissions.first,
+              clear.channel == .displayShort else { return }
+        peripheral.ensureHandshakeClear(clear.bytes)
+    }
+
+    /// Called only after CoreBluetooth accepts the canonical clear row. Keep
+    /// the ready event one-shot even if an adapter ever repeats its callback.
+    func handshakeOnlyClearDelivered() {
+        guard options.handshakeOnly else { return }
+        lock.lock()
+        guard !handshakeClearDeliveryConfirmed else {
+            lock.unlock()
+            return
+        }
+        handshakeClearDeliveryConfirmed = true
+        _packetsSent += 1
+        _phase = .finished
+        lock.unlock()
+        onLog?("Handshake-only ready — clear alert row delivery confirmed; holding quiet.")
     }
 
     func toggleMuteOverride() {
@@ -268,7 +300,11 @@ final class Player {
 
     private func waitForCentral() {
         guard options.waitForSubscribe || options.waitForAlertData else { return }
-        setPhase(.waiting)
+        lock.lock()
+        if !(options.handshakeOnly && handshakeClearDeliveryConfirmed) {
+            _phase = .waiting
+        }
+        lock.unlock()
         while !isStopped {
             if transportReady() { return }
             Thread.sleep(forTimeInterval: 0.05)
@@ -284,16 +320,7 @@ final class Player {
     }
 
     private func runHandshakeOnly() {
-        let emissions = V1.PlaybackPacketPlan.handshakeOnlyEmissions(
-            header: options.header,
-            checksum: options.checksum
-        )
-        for emission in emissions {
-            send(emission)
-        }
-        lock.lock(); _packetsSent += emissions.count; lock.unlock()
-        setPhase(.finished)
-        onLog?("Handshake-only ready — one clear alert row queued; holding quiet.")
+        ensureHandshakeOnlyClear()
         while !isStopped {
             Thread.sleep(forTimeInterval: 0.05)
         }

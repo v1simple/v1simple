@@ -3,27 +3,34 @@ import Foundation
 /// Bounded, anonymous evidence for the automatic V1Simple startup handshake.
 ///
 /// This is intentionally not a packet transcript. It records only the short
-/// subscription, the three startup requests accepted by the emulator, their
-/// two targeted replies after CoreBluetooth accepts them for delivery, and the
-/// first delivered alert row in each logical session.
+/// subscription, every startup request accepted by the emulator (including
+/// retries), the two targeted replies after CoreBluetooth accepts them for
+/// delivery, and the first delivered alert row in each logical session.
 final class HandshakeLedger {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let maximumEpochs = 4
     static let maximumEventsPerEpoch = 12
 
     private let lock = NSLock()
     private let handle: FileHandle
+    private let nowMilliseconds: () -> Int64
     private var epoch = 0
     private var currentEpoch: Int?
+    private var currentEpochStartedAtMilliseconds: Int64?
     private var eventCountByEpoch: [Int: Int] = [:]
     private var streamRecordedEpochs: Set<Int> = []
     private var writeFailed = false
 
-    init(path: String) throws {
+    init(path: String,
+         nowMilliseconds: @escaping () -> Int64 = {
+             Int64(ProcessInfo.processInfo.systemUptime * 1_000)
+         }) throws {
+        self.nowMilliseconds = nowMilliseconds
         let url = URL(fileURLWithPath: path)
         let header: [String: Any] = [
             "schema_version": HandshakeLedger.schemaVersion,
             "kind": "v1replay_handshake_ledger",
+            "timebase": "epoch_monotonic_ms",
         ]
         let headerData = try HandshakeLedger.lineData(header)
         do {
@@ -47,22 +54,25 @@ final class HandshakeLedger {
         defer { lock.unlock() }
         guard epoch < HandshakeLedger.maximumEpochs, !writeFailed else {
             currentEpoch = nil
+            currentEpochStartedAtMilliseconds = nil
             return nil
         }
         epoch += 1
         currentEpoch = epoch
+        currentEpochStartedAtMilliseconds = nowMilliseconds()
         eventCountByEpoch[epoch] = 0
         writeEvent([
             "event": "subscribe",
             "epoch": epoch,
             "channel": "B2CE",
-        ], epoch: epoch)
+        ], epoch: epoch, elapsedMilliseconds: 0)
         return epoch
     }
 
     func endEpoch() {
         lock.lock()
         currentEpoch = nil
+        currentEpochStartedAtMilliseconds = nil
         lock.unlock()
     }
 
@@ -84,6 +94,7 @@ final class HandshakeLedger {
             // A command from any other central makes subsequent broadcast
             // notification attribution ambiguous for the rest of this epoch.
             currentEpoch = nil
+            currentEpochStartedAtMilliseconds = nil
             return
         }
         guard let packetID = HandshakeLedger.packetID(bytes),
@@ -124,18 +135,30 @@ final class HandshakeLedger {
         ], epoch: queuedEpoch)
     }
 
-    private func writeEvent(_ object: [String: Any], epoch: Int) {
+    private func writeEvent(_ object: [String: Any],
+                            epoch: Int,
+                            elapsedMilliseconds: Int64? = nil) {
         guard !writeFailed else { return }
         let count = eventCountByEpoch[epoch, default: 0]
         guard count < HandshakeLedger.maximumEventsPerEpoch else { return }
+        var timedObject = object
+        timedObject["elapsed_ms"] = elapsedMilliseconds ?? elapsedMillisecondsSinceEpoch()
         do {
-            handle.write(try HandshakeLedger.lineData(object))
+            handle.write(try HandshakeLedger.lineData(timedObject))
             try handle.synchronize()
             eventCountByEpoch[epoch] = count + 1
         } catch {
             writeFailed = true
             currentEpoch = nil
+            currentEpochStartedAtMilliseconds = nil
         }
+    }
+
+    private func elapsedMillisecondsSinceEpoch() -> Int64 {
+        guard let startedAt = currentEpochStartedAtMilliseconds else { return 0 }
+        let now = nowMilliseconds()
+        guard now > startedAt else { return 0 }
+        return now - startedAt
     }
 
     private static func packetID(_ bytes: [UInt8]) -> UInt8? {

@@ -110,11 +110,18 @@ EXPECTED_REPLAY_CHECKPOINTS = (
 )
 
 HANDSHAKE_LEDGER_KIND = "v1replay_handshake_ledger"
-HANDSHAKE_LEDGER_SCHEMA = 1
+HANDSHAKE_LEDGER_LEGACY_SCHEMA = 1
+HANDSHAKE_LEDGER_SCHEMA = 2
+HANDSHAKE_LEDGER_TIMEBASE = "epoch_monotonic_ms"
 MAX_HANDSHAKE_LEDGER_BYTES = 8 * 1024
 MAX_HANDSHAKE_EPOCHS = 4
 MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 MAX_HANDSHAKE_EVENTS = MAX_HANDSHAKE_EPOCHS * MAX_HANDSHAKE_EVENTS_PER_EPOCH
+MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
+# Six non-start events plus five accepted starts use 11 slots, leaving the
+# twelfth slot to expose a violating sixth start before the writer's hard cap.
+MAX_HANDSHAKE_START_REQUESTS_PER_EPOCH = 5
+MIN_HANDSHAKE_START_RETRY_MS = 1000
 HANDSHAKE_REQUEST_CHANNELS = {"B6D4", "BAD4"}
 MAX_RECONNECT_PREFLIGHT_LOG_BYTES = 256 * 1024
 MAX_BENCH_SERIAL_LOG_BYTES = 8 * 1024 * 1024
@@ -357,11 +364,20 @@ def score_replay_handshake_ledger(
             )
         records.append(record)
 
-    expected_header = {
-        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+    legacy_header = {
+        "schema_version": HANDSHAKE_LEDGER_LEGACY_SCHEMA,
         "kind": HANDSHAKE_LEDGER_KIND,
     }
-    if records[0] != expected_header:
+    current_header = {
+        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+        "kind": HANDSHAKE_LEDGER_KIND,
+        "timebase": HANDSHAKE_LEDGER_TIMEBASE,
+    }
+    if records[0] == legacy_header:
+        ledger_schema = HANDSHAKE_LEDGER_LEGACY_SCHEMA
+    elif records[0] == current_header:
+        ledger_schema = HANDSHAKE_LEDGER_SCHEMA
+    else:
         return handshake_collection_failure("replay handshake ledger has an invalid header")
 
     raw_events = records[1:]
@@ -370,12 +386,18 @@ def score_replay_handshake_ledger(
 
     events: list[dict[str, Any]] = []
     epoch_ids: set[int] = set()
-    event_keys = {
+    event_keys: dict[str, set[str]] = {
         "subscribe": {"event", "epoch", "channel"},
         "request": {"event", "epoch", "channel", "bytes"},
         "response": {"event", "epoch", "channel", "bytes", "delivery"},
         "stream_started": {"event", "epoch", "channel", "bytes", "delivery"},
     }
+    if ledger_schema == HANDSHAKE_LEDGER_SCHEMA:
+        event_keys = {
+            event_name: {*keys, "elapsed_ms"}
+            for event_name, keys in event_keys.items()
+        }
+    previous_elapsed_by_epoch: dict[int, int] = {}
     for line_number, raw_event in enumerate(raw_events, start=2):
         event_name = raw_event.get("event")
         if (
@@ -397,6 +419,27 @@ def score_replay_handshake_ledger(
                 f"replay handshake ledger line {line_number} has an invalid channel field"
             )
         event = {"event": event_name, "epoch": epoch, "channel": channel}
+        if ledger_schema == HANDSHAKE_LEDGER_SCHEMA:
+            elapsed_ms = raw_event.get("elapsed_ms")
+            if (
+                not isinstance(elapsed_ms, int)
+                or isinstance(elapsed_ms, bool)
+                or not 0 <= elapsed_ms <= MAX_HANDSHAKE_ELAPSED_MS
+            ):
+                return handshake_collection_failure(
+                    f"replay handshake ledger line {line_number} has an invalid elapsed_ms"
+                )
+            previous_elapsed = previous_elapsed_by_epoch.get(epoch)
+            if previous_elapsed is not None and elapsed_ms < previous_elapsed:
+                return handshake_collection_failure(
+                    f"replay handshake ledger epoch {epoch} elapsed_ms values decrease"
+                )
+            if event_name == "subscribe" and elapsed_ms != 0:
+                return handshake_collection_failure(
+                    f"replay handshake ledger epoch {epoch} subscription elapsed_ms is not zero"
+                )
+            previous_elapsed_by_epoch[epoch] = elapsed_ms
+            event["elapsed_ms"] = elapsed_ms
         if event_name != "subscribe":
             raw_bytes = raw_event.get("bytes")
             if (
@@ -431,14 +474,16 @@ def score_replay_handshake_ledger(
     if any(count > MAX_HANDSHAKE_EVENTS_PER_EPOCH for count in events_per_epoch.values()):
         return handshake_collection_failure("replay handshake epoch has too many events")
 
-    failures: list[str] = []
+    semantic_failures: list[str] = []
     expected_epoch = 1
     current_epoch = 0
     for event in events:
         epoch = event["epoch"]
         if epoch != current_epoch:
             if epoch != expected_epoch:
-                failures.append("replay handshake epochs are not contiguous and ordered")
+                semantic_failures.append(
+                    "replay handshake epochs are not contiguous and ordered"
+                )
                 break
             current_epoch = epoch
             expected_epoch += 1
@@ -449,19 +494,23 @@ def score_replay_handshake_ledger(
         channel = event["channel"]
         if event_name == "subscribe":
             if channel != "B2CE":
-                failures.append("replay handshake subscribed on the wrong short-response channel")
+                semantic_failures.append(
+                    "replay handshake subscribed on the wrong short-response channel"
+                )
             decoded_events.append({**event, "kind": "subscribe"})
             continue
 
         decoded, error = decode_handshake_frame(event["bytes"])
         if decoded is None:
-            failures.append(f"replay handshake {event_name} frame {error}")
+            semantic_failures.append(f"replay handshake {event_name} frame {error}")
             continue
         destination, origin, packet_id, payload = decoded
 
         if event_name == "request":
             if channel not in HANDSHAKE_REQUEST_CHANNELS:
-                failures.append("replay handshake request used an unsupported command channel")
+                semantic_failures.append(
+                    "replay handshake request used an unsupported command channel"
+                )
             frame = (destination, origin, packet_id, payload)
             request_kind = {
                 START_ALERT_REQUEST: "start_request",
@@ -469,15 +518,21 @@ def score_replay_handshake_ledger(
                 ALL_VOLUME_REQUEST: "all_volume_request",
             }.get(frame)
             if request_kind is None:
-                failures.append("replay handshake request has the wrong header, ID, length, or payload")
+                semantic_failures.append(
+                    "replay handshake request has the wrong header, ID, length, or payload"
+                )
                 continue
             decoded_events.append({**event, "kind": request_kind})
             continue
 
         if event.get("delivery") != "delivered":
-            failures.append(f"replay handshake {event_name} was not delivered")
+            semantic_failures.append(
+                f"replay handshake {event_name} was not delivered"
+            )
         if channel != "B2CE":
-            failures.append(f"replay handshake {event_name} used the wrong response channel")
+            semantic_failures.append(
+                f"replay handshake {event_name} used the wrong response channel"
+            )
 
         frame = (destination, origin, packet_id, payload)
         if event_name == "response":
@@ -486,13 +541,15 @@ def score_replay_handshake_ledger(
                 ALL_VOLUME_RESPONSE: "all_volume_response",
             }.get(frame)
             if response_kind is None:
-                failures.append("replay handshake response has the wrong header, ID, length, or payload")
+                semantic_failures.append(
+                    "replay handshake response has the wrong header, ID, length, or payload"
+                )
                 continue
             decoded_events.append({**event, "kind": response_kind})
             continue
 
         if expected_stream_frame is not None and tuple(event["bytes"]) != expected_stream_frame:
-            failures.append(
+            semantic_failures.append(
                 "replay reconnect preflight stream frame is not the canonical clear row"
             )
 
@@ -509,7 +566,9 @@ def score_replay_handshake_ledger(
             or len(payload) != 7
             or not valid_descriptor
         ):
-            failures.append("replay handshake first stream frame is not a valid broadcast alert row")
+            semantic_failures.append(
+                "replay handshake first stream frame is not a valid broadcast alert row"
+            )
             continue
         decoded_events.append({**event, "kind": "stream_started"})
 
@@ -518,8 +577,10 @@ def score_replay_handshake_ledger(
         events_by_epoch.setdefault(event["epoch"], []).append(event)
 
     complete_epoch: int | None = None
+    start_request_counts: list[dict[str, int]] = []
     for epoch in sorted(epoch_ids):
         request_channel: str | None = None
+        start_elapsed_ms: list[int] = []
         state = {
             "subscribe": False,
             "start_request": False,
@@ -531,58 +592,118 @@ def score_replay_handshake_ledger(
         }
         for event in events_by_epoch.get(epoch, []):
             kind = event["kind"]
-            if state[kind]:
-                failures.append(f"replay handshake epoch repeats {kind.replace('_', ' ')}")
-                continue
             if kind in {"start_request", "version_request", "all_volume_request"}:
                 if request_channel is None:
                     request_channel = event["channel"]
                 elif event["channel"] != request_channel:
-                    failures.append(
+                    semantic_failures.append(
                         "replay handshake epoch switches its selected command channel"
                     )
-            if kind == "subscribe":
-                state[kind] = True
-            elif kind == "start_request":
+            if kind == "start_request":
                 if not state["subscribe"]:
-                    failures.append("replay handshake start request occurred before B2CE subscription")
+                    semantic_failures.append(
+                        "replay handshake start request occurred before B2CE subscription"
+                    )
+                if ledger_schema == HANDSHAKE_LEDGER_LEGACY_SCHEMA:
+                    if state["start_request"]:
+                        semantic_failures.append(
+                            "replay handshake epoch repeats start request"
+                        )
+                else:
+                    elapsed_ms = int(event["elapsed_ms"])
+                    if state["stream_started"]:
+                        semantic_failures.append(
+                            "replay handshake start retry occurred after stream delivery"
+                        )
+                    if len(start_elapsed_ms) >= MAX_HANDSHAKE_START_REQUESTS_PER_EPOCH:
+                        semantic_failures.append(
+                            "replay handshake epoch exceeds its bounded start request count"
+                        )
+                    if (
+                        start_elapsed_ms
+                        and elapsed_ms - start_elapsed_ms[-1]
+                        < MIN_HANDSHAKE_START_RETRY_MS
+                    ):
+                        semantic_failures.append(
+                            "replay handshake start retries are less than 1000 ms apart"
+                        )
+                    start_elapsed_ms.append(elapsed_ms)
+                state["start_request"] = True
+                continue
+            if state[kind]:
+                semantic_failures.append(
+                    f"replay handshake epoch repeats {kind.replace('_', ' ')}"
+                )
+                continue
+            if kind == "subscribe":
                 state[kind] = True
             elif kind == "stream_started":
                 if not state["start_request"]:
-                    failures.append("replay handshake stream began before the accepted start request")
+                    semantic_failures.append(
+                        "replay handshake stream began before the accepted start request"
+                    )
                 state[kind] = True
             elif kind == "version_request":
                 if not state["start_request"]:
-                    failures.append("replay handshake version request occurred before the accepted start request")
+                    semantic_failures.append(
+                        "replay handshake version request occurred before the accepted start request"
+                    )
                 state[kind] = True
             elif kind == "version_response":
                 if not state["version_request"]:
-                    failures.append("replay handshake version response occurred before its request")
+                    semantic_failures.append(
+                        "replay handshake version response occurred before its request"
+                    )
                 state[kind] = True
             elif kind == "all_volume_request":
                 if not state["version_request"]:
-                    failures.append("replay handshake all-volume request occurred before version request")
+                    semantic_failures.append(
+                        "replay handshake all-volume request occurred before version request"
+                    )
                 state[kind] = True
             elif kind == "all_volume_response":
                 if not state["all_volume_request"]:
-                    failures.append("replay handshake all-volume response occurred before its request")
+                    semantic_failures.append(
+                        "replay handshake all-volume response occurred before its request"
+                    )
                 state[kind] = True
 
+        start_request_counts.append(
+            {
+                "epoch": epoch,
+                "count": (
+                    len(start_elapsed_ms)
+                    if ledger_schema == HANDSHAKE_LEDGER_SCHEMA
+                    else int(state["start_request"])
+                ),
+            }
+        )
         if all(state.values()):
             complete_epoch = epoch
 
+    incomplete_failures: list[str] = []
     if complete_epoch is None:
-        failures.append(
+        incomplete_failures.append(
             "replay handshake has no single epoch containing subscribe, start, stream, version, and all-volume delivery"
         )
 
-    failures = list(dict.fromkeys(failures))
+    semantic_failures = list(dict.fromkeys(semantic_failures))
+    failures = list(dict.fromkeys([*semantic_failures, *incomplete_failures]))
+    handshake_state = (
+        "invalid"
+        if semantic_failures
+        else "incomplete"
+        if complete_epoch is None
+        else "complete"
+    )
     return {
         "result": "FAIL" if failures else "PASS",
-        "schema_version": HANDSHAKE_LEDGER_SCHEMA,
+        "schema_version": ledger_schema,
         "event_count": len(events),
         "epoch_count": len(epoch_ids),
         "complete_epoch": complete_epoch,
+        "handshake_state": handshake_state,
+        "start_request_counts": start_request_counts,
         "evidence": failures,
     }
 
@@ -596,17 +717,45 @@ def score_reconnect_epoch(label: str, checks: dict[str, Any]) -> dict[str, Any]:
     expected = {
         "epoch_count": 1,
         "complete_epoch": 1,
-        "event_count": 7,
     }
     for field, value in expected.items():
         if checks.get(field) != value:
             failures.append(
                 f"replay reconnect {label} {field}={checks.get(field)!r} expected={value}"
             )
+    ledger_schema = checks.get("schema_version")
+    maximum_event_count = (
+        7
+        if ledger_schema == HANDSHAKE_LEDGER_LEGACY_SCHEMA
+        else 6 + MAX_HANDSHAKE_START_REQUESTS_PER_EPOCH
+    )
+    event_count = checks.get("event_count")
+    if (
+        not isinstance(event_count, int)
+        or isinstance(event_count, bool)
+        or not 7 <= event_count <= maximum_event_count
+    ):
+        expected_count = "7" if maximum_event_count == 7 else f"7..{maximum_event_count}"
+        failures.append(
+            f"replay reconnect {label} event_count={event_count!r} expected={expected_count}"
+        )
+    strict_invalid = (
+        checks.get("epoch_count") not in {0, 1}
+        or checks.get("complete_epoch") not in {None, 1}
+        or (
+            isinstance(event_count, int)
+            and not isinstance(event_count, bool)
+            and event_count > maximum_event_count
+        )
+    )
+    handshake_state = str(checks.get("handshake_state") or "invalid")
+    if strict_invalid:
+        handshake_state = "invalid"
     failures = list(dict.fromkeys(failures))
     return {
         **checks,
         "result": "FAIL" if failures else "PASS",
+        "handshake_state": handshake_state,
         "evidence": failures,
     }
 
@@ -1522,22 +1671,15 @@ def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, A
     if preflight_checks.get("result") != "COLLECTION_FAILED":
         if failure_kind == "handshake_timeout":
             structurally_incomplete = (
-                preflight_checks.get("complete_epoch") is None
+                preflight_checks.get("handshake_state") == "incomplete"
                 and preflight_checks.get("epoch_count") in {0, 1}
-                and isinstance(preflight_checks.get("event_count"), int)
-                and preflight_checks.get("event_count") < 7
             )
             if not structurally_incomplete:
                 preflight_checks = handshake_collection_failure(
                     "reconnect handshake-timeout terminal contradicts its preflight ledger"
                 )
         elif failure_kind == "handshake_invalid":
-            structurally_complete = (
-                preflight_checks.get("result") == "FAIL"
-                and preflight_checks.get("epoch_count") == 1
-                and preflight_checks.get("event_count") == 7
-            )
-            if not structurally_complete:
+            if preflight_checks.get("handshake_state") != "invalid":
                 preflight_checks = handshake_collection_failure(
                     "reconnect invalid-handshake terminal contradicts its preflight ledger"
                 )

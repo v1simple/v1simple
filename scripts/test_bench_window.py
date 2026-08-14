@@ -106,29 +106,68 @@ def write_dummy_emulator(
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def write_handshake_ledger(path: Path) -> None:
-    events = [
-        {"event": "subscribe", "epoch": 1, "channel": "B2CE"},
-        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": START_ALERT_REQUEST},
-        {
+def handshake_ledger_records(
+    *,
+    start_elapsed_ms: tuple[int, ...] = (100,),
+    include_stream: bool = True,
+) -> list[dict[str, object]]:
+    after_starts = start_elapsed_ms[-1] + 50
+    events: list[dict[str, object]] = [
+        {"event": "subscribe", "epoch": 1, "channel": "B2CE", "elapsed_ms": 0},
+        *(
+            {
+                "event": "request", "epoch": 1, "channel": "B6D4",
+                "bytes": START_ALERT_REQUEST, "elapsed_ms": elapsed_ms,
+            }
+            for elapsed_ms in start_elapsed_ms
+        ),
+    ]
+    if include_stream:
+        events.append({
             "event": "stream_started", "epoch": 1, "channel": "B2CE",
             "bytes": EMPTY_ALERT_ROW, "delivery": "delivered",
+            "elapsed_ms": after_starts,
+        })
+    events.extend([
+        {
+            "event": "request", "epoch": 1, "channel": "B6D4",
+            "bytes": VERSION_REQUEST, "elapsed_ms": after_starts + 50,
         },
-        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": VERSION_REQUEST},
         {
             "event": "response", "epoch": 1, "channel": "B2CE",
             "bytes": VERSION_RESPONSE, "delivery": "delivered",
+            "elapsed_ms": after_starts + 100,
         },
-        {"event": "request", "epoch": 1, "channel": "B6D4", "bytes": ALL_VOLUME_REQUEST},
+        {
+            "event": "request", "epoch": 1, "channel": "B6D4",
+            "bytes": ALL_VOLUME_REQUEST, "elapsed_ms": after_starts + 150,
+        },
         {
             "event": "response", "epoch": 1, "channel": "B2CE",
             "bytes": ALL_VOLUME_RESPONSE, "delivery": "delivered",
+            "elapsed_ms": after_starts + 200,
         },
-    ]
-    records = [
-        {"schema_version": 1, "kind": "v1replay_handshake_ledger"},
+    ])
+    return [
+        {
+            "schema_version": 2,
+            "kind": "v1replay_handshake_ledger",
+            "timebase": "epoch_monotonic_ms",
+        },
         *events,
     ]
+
+
+def write_handshake_ledger(
+    path: Path,
+    *,
+    start_elapsed_ms: tuple[int, ...] = (100,),
+    include_stream: bool = True,
+) -> None:
+    records = handshake_ledger_records(
+        start_elapsed_ms=start_elapsed_ms,
+        include_stream=include_stream,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
@@ -262,7 +301,7 @@ def test_replay_blink_profile_argv_and_result() -> None:
             )
 
 
-def test_reconnect_preflight_ledger_requires_one_exact_epoch() -> None:
+def test_reconnect_preflight_ledger_requires_one_bounded_epoch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / RECONNECT_LEDGER_NAME
         write_handshake_ledger(path)
@@ -278,11 +317,32 @@ def test_reconnect_preflight_ledger_requires_one_exact_epoch() -> None:
             _preflight_ledger_is_complete(path)
         except ReconnectBehaviorError as exc:
             assert_true(
-                exc.kind == "handshake_invalid" and "seven-event epoch" in str(exc),
+                exc.kind == "handshake_invalid" and "one anonymous epoch" in str(exc),
                 f"wrong extra-epoch failure: {exc}",
             )
         else:
             raise AssertionError("cross-epoch preflight evidence passed")
+
+        records = handshake_ledger_records()
+        second_epoch = json.loads(json.dumps(records[1:]))
+        for event in second_epoch:
+            event["epoch"] = 2
+        path.write_text(
+            "".join(
+                json.dumps(record, separators=(",", ":")) + "\n"
+                for record in [*records, *second_epoch]
+            ),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except ReconnectBehaviorError as exc:
+            assert_true(
+                exc.kind == "handshake_invalid" and "one anonymous epoch" in str(exc),
+                f"wrong full second-epoch failure: {exc}",
+            )
+        else:
+            raise AssertionError("two complete ledger epochs passed")
 
         write_handshake_ledger(path)
         complete = path.read_text(encoding="utf-8")
@@ -291,6 +351,171 @@ def test_reconnect_preflight_ledger_requires_one_exact_epoch() -> None:
             not _preflight_ledger_is_complete(path),
             "concurrently written partial final line was treated as malformed or complete",
         )
+
+
+def test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries() -> None:
+    def write_records(path: Path, records: list[dict[str, object]]) -> None:
+        path.write_text(
+            "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+    def expect_invalid(path: Path, expected: str) -> None:
+        try:
+            _preflight_ledger_is_complete(path)
+        except ReconnectBehaviorError as exc:
+            assert_true(
+                exc.kind == "handshake_invalid" and expected in str(exc),
+                f"wrong retry failure: {exc}",
+            )
+        else:
+            raise AssertionError(f"invalid retry ledger passed: {expected}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / RECONNECT_LEDGER_NAME
+
+        write_handshake_ledger(path, start_elapsed_ms=(100, 1100))
+        assert_true(_preflight_ledger_is_complete(path), "1000 ms retry did not pass")
+
+        write_handshake_ledger(path, start_elapsed_ms=(100, 1101))
+        assert_true(_preflight_ledger_is_complete(path), "1001 ms retry did not pass")
+
+        for starts in (
+            (100, 1100, 2100),
+            (100, 1100, 2100, 3100),
+        ):
+            write_handshake_ledger(path, start_elapsed_ms=starts)
+            assert_true(
+                _preflight_ledger_is_complete(path),
+                f"valid {len(starts)}-start ledger did not pass",
+            )
+
+        write_handshake_ledger(path, start_elapsed_ms=(100, 1099))
+        expect_invalid(path, "before the 1000 ms recovery interval")
+
+        write_handshake_ledger(path, start_elapsed_ms=(100, 1100, 2099))
+        expect_invalid(path, "before the 1000 ms recovery interval")
+
+        five_starts = (100, 1100, 2100, 3100, 4100)
+        write_handshake_ledger(path, start_elapsed_ms=five_starts)
+        assert_true(_preflight_ledger_is_complete(path), "bounded fifth start did not pass")
+
+        write_handshake_ledger(path, start_elapsed_ms=(*five_starts, 5100))
+        expect_invalid(path, "exceeds its bounded pre-stream start retries")
+
+        switched = handshake_ledger_records(start_elapsed_ms=(100, 1100))
+        switched[2]["channel"] = "BAD4"
+        write_records(path, switched)
+        expect_invalid(path, "switches its selected command channel")
+
+        records = handshake_ledger_records()
+        post_stream = dict(records[2])
+        post_stream["elapsed_ms"] = 1150
+        records.insert(4, post_stream)
+        for event in records[5:]:
+            event["elapsed_ms"] = max(int(event["elapsed_ms"]), 1200)
+        write_records(path, records)
+        expect_invalid(path, "after stream delivery")
+
+        incomplete = handshake_ledger_records(
+            start_elapsed_ms=(100, 1100),
+            include_stream=False,
+        )
+        write_records(path, incomplete)
+        assert_true(
+            not _preflight_ledger_is_complete(path),
+            "valid retry evidence without delivery was terminalized early",
+        )
+        incomplete.append({
+            "event": "stream_started", "epoch": 1, "channel": "B2CE",
+            "bytes": EMPTY_ALERT_ROW, "delivery": "delivered", "elapsed_ms": 1350,
+        })
+        write_records(path, incomplete)
+        assert_true(
+            _preflight_ledger_is_complete(path),
+            "appended delivery did not complete a valid retry epoch",
+        )
+
+
+def test_reconnect_preflight_ledger_rejects_unverifiable_timing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / RECONNECT_LEDGER_NAME
+        base = handshake_ledger_records(start_elapsed_ms=(100, 1100))
+
+        malformed_values: tuple[object, ...] = (True, 1.5, -1, 0x1_0000_0000)
+        for value in malformed_values:
+            records = json.loads(json.dumps(base))
+            records[2]["elapsed_ms"] = value
+            path.write_text(
+                "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            try:
+                _preflight_ledger_is_complete(path)
+            except RuntimeError as exc:
+                assert_true("relative timing" in str(exc), f"wrong timing failure: {exc}")
+            else:
+                raise AssertionError(f"malformed elapsed_ms passed: {value!r}")
+
+        records = json.loads(json.dumps(base))
+        records[2].pop("elapsed_ms")
+        path.write_text(
+            "".join(
+                json.dumps(record, separators=(",", ":")) + "\n"
+                for record in records
+            ),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except RuntimeError as exc:
+            assert_true("event schema" in str(exc), f"wrong missing-time failure: {exc}")
+        else:
+            raise AssertionError("missing elapsed_ms passed")
+
+        records = json.loads(json.dumps(base))
+        records[3]["elapsed_ms"] = 50
+        path.write_text(
+            "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except RuntimeError as exc:
+            assert_true("not monotonic" in str(exc), f"wrong clock failure: {exc}")
+        else:
+            raise AssertionError("decreasing relative timing passed")
+
+        records = json.loads(json.dumps(base))
+        records[1]["elapsed_ms"] = 1
+        path.write_text(
+            "".join(
+                json.dumps(record, separators=(",", ":")) + "\n"
+                for record in records
+            ),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except RuntimeError as exc:
+            assert_true("begin at zero" in str(exc), f"wrong origin failure: {exc}")
+        else:
+            raise AssertionError("nonzero subscription timing passed")
+
+        legacy = json.loads(json.dumps(base))
+        legacy[0] = {"schema_version": 1, "kind": "v1replay_handshake_ledger"}
+        for event in legacy[1:]:
+            event.pop("elapsed_ms")
+        path.write_text(
+            "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in legacy),
+            encoding="utf-8",
+        )
+        try:
+            _preflight_ledger_is_complete(path)
+        except RuntimeError as exc:
+            assert_true("invalid header" in str(exc), f"wrong legacy failure: {exc}")
+        else:
+            raise AssertionError("live schema-1 ledger passed without retry timing")
 
 
 def test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order() -> None:
@@ -1634,19 +1859,108 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
     """Public behavior ID: V1-RECONNECT-SESSION-001."""
     source_dir = ROOT / "tools" / "v1replay" / "Sources" / "v1replay"
     player = (source_dir / "Player.swift").read_text(encoding="utf-8")
+    peripheral = (source_dir / "Peripheral.swift").read_text(encoding="utf-8")
     main_source = (source_dir / "main.swift").read_text(encoding="utf-8")
     method = player.split("private func runHandshakeOnly()", 1)[1].split(
         "private func emitIdle", 1
     )[0]
+    ensure_method = player.split("func ensureHandshakeOnlyClear()", 1)[1].split(
+        "func handshakeOnlyClearDelivered()", 1
+    )[0]
+    delivered_method = player.split("func handshakeOnlyClearDelivered()", 1)[1].split(
+        "func toggleMuteOverride()", 1
+    )[0]
+    wait_method = player.split("private func waitForCentral()", 1)[1].split(
+        "private func transportReady()", 1
+    )[0]
+    peripheral_ensure = peripheral.split("func ensureHandshakeClear", 1)[1].split(
+        "private func appendPending", 1
+    )[0]
+    epoch_cleanup = peripheral.split("private func discardPendingHandshakeClear()", 1)[1].split(
+        "private func endHandshakeEpoch()", 1
+    )[0]
+    epoch_end = peripheral.split("private func endHandshakeEpoch()", 1)[1].split(
+        "private func send(_ decision", 1
+    )[0]
+    stop_method = peripheral.split("func stop()", 1)[1].split(
+        "// MARK: - Command handling", 1
+    )[0]
+    adapter_state = peripheral.split("func peripheralManagerDidUpdateState", 1)[1].split(
+        "func peripheralManager(_ peripheral: CBPeripheralManager,\n"
+        "                           didAdd service", 1
+    )[0]
 
     assert_true(
-        "PlaybackPacketPlan.handshakeOnlyEmissions" in method
-        and method.count("send(emission)") == 1,
-        "handshake-only does not use its one-emission pure plan",
+        "PlaybackPacketPlan.handshakeOnlyEmissions" in ensure_method
+        and ensure_method.count("peripheral.ensureHandshakeClear(clear.bytes)") == 1,
+        "handshake-only start does not ensure its one canonical clear plan",
     )
     assert_true(
-        "sendIdleFrame" not in method and "playTimeline" not in method,
+        method.count("ensureHandshakeOnlyClear()") == 1
+        and "send(emission)" not in method,
+        "handshake-only polling fallback bypasses the shared clear ensure path",
+    )
+    assert_true(
+        peripheral_ensure.count("self.appendPending(PendingNotification(") == 1
+        and "case .retryPending:\n                break" in peripheral_ensure,
+        "a pre-delivery start can append a duplicate canonical clear",
+    )
+    assert_true(
+        "while !isStopped" in method
+        and "sendIdleFrame" not in method
+        and "playTimeline" not in method,
         "handshake-only enters an idle or encounter stream",
+    )
+    assert_true(
+        player.count("Handshake-only ready —") == 1
+        and "handshakeClearDeliveryConfirmed = true" in delivered_method,
+        "handshake readiness is not emitted only after confirmed clear delivery",
+    )
+    assert_true(
+        "options.handshakeOnly && handshakeClearDeliveryConfirmed" in wait_method,
+        "an early delivered clear is overwritten when the Player polling thread starts",
+    )
+    start_callback = main_source.index("peripheral.onStartAlertData = {")
+    delivery_callback = main_source.index("peripheral.onHandshakeClearDelivered = {")
+    player_start = main_source.index("player.start()")
+    assert_true(
+        delivery_callback < start_callback < player_start
+        and "player.ensureHandshakeOnlyClear()"
+        in main_source[start_callback:player_start],
+        "handshake-only start and delivery callbacks are not wired before polling starts",
+    )
+    update = peripheral.index("guard manager.updateValue(")
+    dequeue = peripheral.index("pending.removeFirst()", update)
+    ledger_delivery = peripheral.index("handshakeLedger?.recordDelivered(", dequeue)
+    ready_callback = peripheral.index("onHandshakeClearDelivered?()", ledger_delivery)
+    assert_true(
+        update < dequeue < ledger_delivery < ready_callback,
+        "handshake ready can precede CoreBluetooth acceptance or ledger delivery evidence",
+    )
+    accepted_request = peripheral.index("handshakeLedger?.recordAcceptedRequest(")
+    start_hook = peripheral.index("onStartAlertData?()", accepted_request)
+    assert_true(
+        accepted_request < start_hook,
+        "a post-delivery start can bypass the authoritative request ledger",
+    )
+    assert_true(
+        "pending.removeAll { $0.purpose == .handshakeClear }" in epoch_cleanup
+        and "discardPendingHandshakeClear()" in epoch_end
+        and peripheral.count("handshakeLedger?.endEpoch()") == 1,
+        "an ended evidence epoch can retain a stale handshake clear",
+    )
+    assert_true(
+        "isStopping = true" in stop_method
+        and "pending.removeAll()" in stop_method
+        and "guard !self.isStopping" in peripheral_ensure
+        and "let characteristic = self.displayChar" in peripheral_ensure,
+        "handshake clear work can cross teardown or use an off-queue characteristic",
+    )
+    assert_true(
+        "default:\n            withState { $0.isPoweredOn = false }\n"
+        "            shortSubscriberIDs.removeAll()\n            endHandshakeEpoch()"
+        in adapter_state,
+        "an indeterminate CoreBluetooth state can retain active handshake evidence",
     )
     assert_true(
         'V1REPLAY_EVENT {\\"state\\":\\"handshake_transport\\"' in main_source
@@ -1669,7 +1983,9 @@ def main() -> int:
     test_failed_window_still_stops_emulator()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
-    test_reconnect_preflight_ledger_requires_one_exact_epoch()
+    test_reconnect_preflight_ledger_requires_one_bounded_epoch()
+    test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()
+    test_reconnect_preflight_ledger_rejects_unverifiable_timing()
     test_reconnect_preflight_readiness_uses_delivery_ledger_not_console_order()
     test_reconnect_preflight_orders_fence_stop_cleanup_and_second_fence()
     test_reconnect_serial_fence_requires_safe_status_shape()

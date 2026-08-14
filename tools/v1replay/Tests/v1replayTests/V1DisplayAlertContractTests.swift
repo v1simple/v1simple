@@ -3,6 +3,46 @@ import XCTest
 
 final class V1DisplayAlertContractTests: XCTestCase {
 
+    func testHandshakeClearEarlyStartQueuesBeforePolling() {
+        var state = HandshakeClearDeliveryState()
+
+        XCTAssertEqual(state.ensure(), .enqueue)
+        XCTAssertTrue(state.isPending)
+        XCTAssertFalse(state.isDeliveryConfirmed)
+    }
+
+    func testHandshakeClearPreDeliveryStartRetriesOnePendingRow() {
+        var state = HandshakeClearDeliveryState()
+        XCTAssertEqual(state.ensure(), .enqueue)
+
+        XCTAssertEqual(state.ensure(), .retryPending)
+        XCTAssertTrue(state.isPending)
+        XCTAssertFalse(state.isDeliveryConfirmed)
+    }
+
+    func testHandshakeClearPostDeliveryStartQueuesNothingAndStaysQuiet() {
+        var state = HandshakeClearDeliveryState()
+        XCTAssertEqual(state.ensure(), .enqueue)
+
+        XCTAssertTrue(state.confirmDelivery())
+        XCTAssertFalse(state.confirmDelivery())
+        XCTAssertTrue(state.isDeliveryConfirmed)
+        XCTAssertFalse(state.isPending)
+        XCTAssertEqual(state.ensure(), .alreadyDelivered)
+        XCTAssertFalse(state.isPending)
+    }
+
+    func testHandshakeClearDroppedPendingRowCanBeRequeued() {
+        var state = HandshakeClearDeliveryState()
+        XCTAssertEqual(state.ensure(), .enqueue)
+
+        state.discardPending()
+
+        XCTAssertFalse(state.isPending)
+        XCTAssertFalse(state.isDeliveryConfirmed)
+        XCTAssertEqual(state.ensure(), .enqueue)
+    }
+
     /// Public behavior ID: `V1-RECONNECT-SESSION-001`.
     func testHandshakeOnlyPlanIsExactlyOneLiteralShortClearRow() throws {
         let emissions = V1.PlaybackPacketPlan.handshakeOnlyEmissions()

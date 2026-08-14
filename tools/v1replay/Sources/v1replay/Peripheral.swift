@@ -1,6 +1,41 @@
 import Foundation
 import CoreBluetooth
 
+/// Delivery state for the one canonical clear row used by handshake-only mode.
+/// The peripheral queue owns mutation; this value keeps retry and duplicate
+/// suppression independently testable.
+struct HandshakeClearDeliveryState {
+    enum EnsureAction: Equatable {
+        case enqueue
+        case retryPending
+        case alreadyDelivered
+    }
+
+    private(set) var isPending = false
+    private(set) var isDeliveryConfirmed = false
+
+    mutating func ensure() -> EnsureAction {
+        if isDeliveryConfirmed { return .alreadyDelivered }
+        if isPending { return .retryPending }
+        isPending = true
+        return .enqueue
+    }
+
+    /// Returns true only for the first accepted delivery.
+    mutating func confirmDelivery() -> Bool {
+        guard isPending, !isDeliveryConfirmed else { return false }
+        isPending = false
+        isDeliveryConfirmed = true
+        return true
+    }
+
+    mutating func discardPending() {
+        guard !isDeliveryConfirmed else { return }
+        isPending = false
+    }
+
+}
+
 // =============================================================================
 // The fake V1: a CBPeripheralManager advertising the V1 service UUID with the
 // six characteristics v1simple's subscribe state machine looks for.
@@ -43,6 +78,7 @@ final class V1Peripheral: NSObject {
     var onLog: ((String) -> Void)?
     var onStateChange: (() -> Void)?
     var onStartAlertData: (() -> Void)?
+    var onHandshakeClearDelivered: (() -> Void)?
     var onMuteCommand: ((Bool) -> Void)?
     var onDisplayPowerCommand: ((Bool) -> Void)?
 
@@ -90,6 +126,8 @@ final class V1Peripheral: NSObject {
     }
 
     let queue = DispatchQueue(label: "com.v1simple.v1replay.ble")
+    private let queueIdentityKey = DispatchSpecificKey<UInt8>()
+    private let queueIdentityValue: UInt8 = 1
 
     private let config: Config
     private var manager: CBPeripheralManager!
@@ -101,10 +139,16 @@ final class V1Peripheral: NSObject {
     private var commandLongChar: CBMutableCharacteristic! // B8D2
     private var commandAltChar: CBMutableCharacteristic!  // BAD4
 
+    private enum NotificationPurpose {
+        case ordinary
+        case handshakeClear
+    }
+
     private struct PendingNotification {
         let data: Data
         let characteristic: CBMutableCharacteristic
         let handshakeEpoch: Int?
+        let purpose: NotificationPurpose
     }
 
     private var pending: [PendingNotification] = []
@@ -114,7 +158,9 @@ final class V1Peripheral: NSObject {
     /// central identifiers are never written to the ledger.
     private var shortSubscriberIDs: Set<UUID> = []
     private var handshakeSubscriberID: UUID?
+    private var handshakeClearDelivery = HandshakeClearDeliveryState()
     private var serviceAdded = false
+    private var isStopping = false
     private let handshakeLedger: HandshakeLedger?
 
     init(config: Config) {
@@ -132,6 +178,7 @@ final class V1Peripheral: NSObject {
         sessionConfig.userBytes = config.userBytes
         self.state = State(session: V1.Session(config: sessionConfig))
         super.init()
+        queue.setSpecific(key: queueIdentityKey, value: queueIdentityValue)
         manager = CBPeripheralManager(delegate: self, queue: queue, options: nil)
     }
 
@@ -162,21 +209,77 @@ final class V1Peripheral: NSObject {
         guard let characteristic = characteristic else { return }
         let data = Data(bytes)
         queue.async {
+            guard !self.isStopping else { return }
             self.lastValues[characteristic.uuid] = data
-            if self.pending.count >= V1Peripheral.pendingCap {
-                self.pending.removeFirst()
-                self.withState { $0.notifiesDropped += 1 }
-            }
-            self.pending.append(PendingNotification(
+            self.appendPending(PendingNotification(
                 data: data,
                 characteristic: characteristic,
-                handshakeEpoch: self.handshakeLedger?.activeEpoch
+                handshakeEpoch: self.handshakeLedger?.activeEpoch,
+                purpose: .ordinary
             ))
             self.flush()
             if self.config.logPackets {
                 self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
             }
         }
+    }
+
+    /// Ensure handshake-only mode has one canonical clear row pending. Calls
+    /// from the start-request callback run inline on the BLE queue, ahead of a
+    /// later write callback. Calls from the Player polling fallback dispatch
+    /// onto that same queue. Repeated calls retry without appending a duplicate.
+    func ensureHandshakeClear(_ bytes: [UInt8]) {
+        let data = Data(bytes)
+        let ensure = {
+            guard !self.isStopping,
+                  self.handshakeSubscriberID != nil,
+                  let characteristic = self.displayChar else { return }
+            switch self.handshakeClearDelivery.ensure() {
+            case .alreadyDelivered:
+                return
+            case .retryPending:
+                break
+            case .enqueue:
+                self.lastValues[characteristic.uuid] = data
+                self.appendPending(PendingNotification(
+                    data: data,
+                    characteristic: characteristic,
+                    handshakeEpoch: self.handshakeLedger?.activeEpoch,
+                    purpose: .handshakeClear
+                ))
+                if self.config.logPackets {
+                    self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
+                }
+            }
+            self.flush()
+        }
+        if DispatchQueue.getSpecific(key: queueIdentityKey) == queueIdentityValue {
+            ensure()
+        } else {
+            queue.async(execute: ensure)
+        }
+    }
+
+    private func appendPending(_ notification: PendingNotification) {
+        if pending.count >= V1Peripheral.pendingCap {
+            let dropped = pending.removeFirst()
+            if dropped.purpose == .handshakeClear {
+                handshakeClearDelivery.discardPending()
+            }
+            withState { $0.notifiesDropped += 1 }
+        }
+        pending.append(notification)
+    }
+
+    private func discardPendingHandshakeClear() {
+        pending.removeAll { $0.purpose == .handshakeClear }
+        handshakeClearDelivery.discardPending()
+    }
+
+    private func endHandshakeEpoch() {
+        handshakeSubscriberID = nil
+        discardPendingHandshakeClear()
+        handshakeLedger?.endEpoch()
     }
 
     private func send(_ decision: V1.ReplyDecision) {
@@ -191,6 +294,7 @@ final class V1Peripheral: NSObject {
     /// Drain the notify queue until CoreBluetooth pushes back, then wait for
     /// `peripheralManagerIsReady(toUpdateSubscribers:)`.
     private func flush() {
+        guard !isStopping else { return }
         while let item = pending.first {
             guard manager.updateValue(
                 item.data,
@@ -199,11 +303,16 @@ final class V1Peripheral: NSObject {
             ) else { return }
             pending.removeFirst()
             withState { $0.notifiesSent += 1 }
+            let firstHandshakeClearDelivery = item.purpose == .handshakeClear
+                && handshakeClearDelivery.confirmDelivery()
             handshakeLedger?.recordDelivered(
                 bytes: [UInt8](item.data),
                 channel: Self.shortName(item.characteristic.uuid),
                 epoch: item.handshakeEpoch
             )
+            if firstHandshakeClearDelivery {
+                onHandshakeClearDelivered?()
+            }
         }
     }
 
@@ -269,11 +378,13 @@ final class V1Peripheral: NSObject {
 
     func stop() {
         queue.sync {
+            isStopping = true
+            pending.removeAll()
+            handshakeClearDelivery.discardPending()
             if manager.isAdvertising { manager.stopAdvertising() }
             manager.removeAllServices()
             shortSubscriberIDs.removeAll()
-            handshakeSubscriberID = nil
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
         }
     }
 
@@ -388,24 +499,23 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         case .poweredOff:
             withState { $0.isPoweredOn = false }
             shortSubscriberIDs.removeAll()
-            handshakeSubscriberID = nil
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
             onLog?("Bluetooth is off — turn it on to advertise")
         case .unauthorized:
             withState { $0.isPoweredOn = false }
             shortSubscriberIDs.removeAll()
-            handshakeSubscriberID = nil
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
             onLog?("Bluetooth permission denied. System Settings → Privacy & Security → Bluetooth, "
                    + "and enable the terminal application that launched v1replay.")
         case .unsupported:
             withState { $0.isPoweredOn = false }
             shortSubscriberIDs.removeAll()
-            handshakeSubscriberID = nil
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
             onLog?("This Mac reports no BLE peripheral support")
         default:
             withState { $0.isPoweredOn = false }
+            shortSubscriberIDs.removeAll()
+            endHandshakeEpoch()
         }
         onStateChange?()
     }
@@ -452,13 +562,13 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             }
         }
         if beganShortSession {
+            discardPendingHandshakeClear()
             handshakeSubscriberID = central.identifier
             handshakeLedger?.beginEpoch()
         } else if addedSecondShortSubscriber {
             // Notification delivery is broadcast, so attribution becomes
             // ambiguous until every short subscriber leaves.
-            handshakeSubscriberID = nil
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
         }
         onLog?("Central subscribed to \(name) (MTU \(central.maximumUpdateValueLength))")
         onStateChange?()
@@ -481,9 +591,6 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             if channel == .displayShort {
                 let removed = shortSubscriberIDs.remove(central.identifier) != nil
                 endedShortSession = removed && shortSubscriberIDs.isEmpty
-                if endedShortSession {
-                    handshakeSubscriberID = nil
-                }
             }
         } else {
             remaining = subscriberCount
@@ -497,7 +604,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             }
         }
         if endedShortSession || remaining == 0 {
-            handshakeLedger?.endEpoch()
+            endHandshakeEpoch()
         }
         onStateChange?()
     }
@@ -546,8 +653,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             if !belongsToHandshakeSubscriber {
                 // Fail closed before appending bytes: otherwise fragments from
                 // two centrals could be reassembled into one credited request.
-                handshakeSubscriberID = nil
-                handshakeLedger?.endEpoch()
+                endHandshakeEpoch()
             }
             withState { $0.session.append([UInt8](value)) }
             while let outcome = withState({ $0.session.nextOutcome() }) {

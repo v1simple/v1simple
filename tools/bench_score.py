@@ -901,6 +901,7 @@ def score_reconnect_raw_evidence(
     *,
     failure_kind: str = "",
     expected_duration_seconds: int | None = None,
+    require_graceful_shutdown: bool = False,
 ) -> dict[str, Any]:
     """Independently reconstruct the managed-disappearance lifecycle from logs."""
     if preflight_log_path is None:
@@ -1010,10 +1011,47 @@ def score_reconnect_raw_evidence(
     boolean_transport = [
         item for item in transport if isinstance(item[1].get("active"), bool)
     ]
+    # Current managed children publish a serialized shutdown boundary before
+    # removing their services:
+    #
+    #   stopping(sessionTransportActive=true) -> transport=false -> stopped
+    #
+    # The false event after that boundary is required teardown evidence, not a
+    # live-session loss.  Legacy logs have no stopping snapshot, so retain the
+    # historical terminal-state interpretation for them. Current artifacts
+    # independently validate the complete raw stopping/stopped sequence below.
+    stopping = [item for item in machine_events if item[1].get("state") == "stopping"]
+    stopped = [item for item in machine_events if item[1].get("state") == "stopped"]
+    transport_before_removal = boolean_transport
+    graceful_shutdown = False
+    if len(stopping) == 1 and len(stopped) == 1:
+        stopping_line = stopping[0][0]
+        stopped_line = stopped[0][0]
+        teardown_transport = [
+            item
+            for item in machine_events
+            if stopping_line < item[0] < stopped_line
+            and item[1].get("state") == "session_transport"
+        ]
+        graceful_shutdown = (
+            stopping[0][1].get("sessionTransportActive") is True
+            and stopped_line == machine_events[-1][0]
+            and len(teardown_transport) == 1
+            and teardown_transport[0][1].get("active") is False
+        )
+        if graceful_shutdown:
+            transport_before_removal = [
+                item for item in boolean_transport if item[0] < stopping_line
+            ]
     transport_lost = (
-        bool(boolean_transport)
-        and boolean_transport[-1][1].get("active") is False
+        bool(transport_before_removal)
+        and transport_before_removal[-1][1].get("active") is False
     )
+    malformed_graceful_shutdown = bool(stopping or stopped) and not graceful_shutdown
+    if require_graceful_shutdown and not graceful_shutdown:
+        return handshake_collection_failure(
+            "replay reconnect preflight graceful shutdown evidence is missing or malformed"
+        )
 
     transmission_failures: list[str] = []
     if failure_kind != "handshake_timeout":
@@ -1457,6 +1495,10 @@ def score_reconnect_raw_evidence(
     cleanups_between = [index for index in after_boundary if index < qstart]
     cleanups_during = [index for index in after_boundary if qstart <= index <= done]
     failures: list[str] = list(transmission_failures)
+    if malformed_graceful_shutdown and not failure_kind:
+        failures.append(
+            "replay reconnect preflight graceful shutdown evidence is malformed"
+        )
     if transport_lost:
         failures.append(
             "replay reconnect preflight lost active transport before removal"
@@ -1728,6 +1770,7 @@ def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, A
         serial_log_path,
         serial_log_error,
         failure_kind=str(failure_kind),
+        require_graceful_shutdown=window.get("schema_version") != 1,
         expected_duration_seconds=(
             int(window["duration_seconds"])
             if isinstance(window.get("duration_seconds"), int)
@@ -2604,6 +2647,7 @@ def classify_window(
             reconnect_preflight_log_error,
             serial_log_path,
             serial_log_error,
+            require_graceful_shutdown=window.get("schema_version") != 1,
             expected_duration_seconds=(
                 int(window["duration_seconds"])
                 if isinstance(window.get("duration_seconds"), int)

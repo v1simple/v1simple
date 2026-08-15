@@ -182,10 +182,23 @@ def write_handshake_ledger(
     )
 
 
+def graceful_stop_event_text() -> str:
+    return "".join(
+        "V1REPLAY_EVENT " + json.dumps(event, separators=(",", ":")) + "\n"
+        for event in (
+            {"state": "stopping", "sessionTransportActive": True},
+            {"state": "session_transport", "active": False},
+            {"state": "handshake_transport", "active": False},
+            {"state": "stopped"},
+        )
+    )
+
+
 def write_reconnect_logs(
     directory: Path,
     *,
     failure_kind: str = "",
+    include_graceful_shutdown: bool = True,
 ) -> None:
     preflight_events = [
         {
@@ -219,6 +232,8 @@ def write_reconnect_logs(
             f"TX {channel} " + " ".join(f"{byte:02X}" for byte in frame) + "\n"
             for channel, frame in transmissions
         )
+    if include_graceful_shutdown:
+        event_text += graceful_stop_event_text()
     (directory / "v1replay_reconnect_preflight.log").write_text(
         event_text,
         encoding="utf-8",
@@ -2127,6 +2142,56 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         "lost active transport before removal",
     )
 
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                '"sessionTransportActive":true',
+                '"sessionTransportActive":false',
+                1,
+            ),
+        ),
+        3,
+        "graceful shutdown evidence is missing or malformed",
+    )
+
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay, lambda text: text.replace(graceful_stop_event_text(), "")
+        ),
+        3,
+        "graceful shutdown evidence is missing or malformed",
+    )
+
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(graceful_stop_event_text(), "").replace(
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n',
+                'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}\n'
+                'V1REPLAY_EVENT {"state":"handshake_transport","active":false}\n',
+                1,
+            ),
+        ),
+        3,
+        "graceful shutdown evidence is missing or malformed",
+    )
+
+    exercise(
+        lambda replay: mutate_preflight_text(
+            replay,
+            lambda text: text.replace(
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}\n',
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}\n'
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}\n',
+                1,
+            ),
+        ),
+        3,
+        "graceful shutdown evidence is missing or malformed",
+    )
+
     def negative_followed_by_malformed_transport(text: str) -> str:
         ready = 'V1REPLAY_EVENT {"state":"handshake_ready"}\n'
         return text.replace(
@@ -3707,6 +3772,7 @@ def test_explicit_legacy_window_preserves_pre_graceful_stop_scoring() -> None:
         window["v1_emulator"].pop("session_transport_owned")
         window["v1_emulator"].pop("session_transport_continuous")
         write_json(window_path, window)
+        write_reconnect_logs(root / "replay", include_graceful_shutdown=False)
         proc = run_score(root, "replay")
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))

@@ -145,6 +145,11 @@ void test_mock_r_plus_overwrites_reserve_then_grows_at_exact_capacity() {
     created.flush();
     created.close();
 
+    File verified = fs.open("/perf/reserved.csv", FILE_READ, false);
+    TEST_ASSERT_TRUE(verified);
+    TEST_ASSERT_EQUAL_UINT32(1024, static_cast<uint32_t>(verified.size()));
+    verified.close();
+
     File update = fs.open("/perf/reserved.csv", "r+", false);
     TEST_ASSERT_TRUE(update);
     TEST_ASSERT_TRUE(update.seek(1023, SeekSet));
@@ -272,11 +277,16 @@ void test_perf_sd_logger_reserve_source_contract_is_fail_safe_and_measured() {
     const size_t padding = prep.find("writeParserSafeReservePadding(reserve)");
     const size_t flush = prep.find("reserve.flush()", padding);
     const size_t close = prep.find("reserve.close()", flush);
-    const size_t verify = prep.find("verifyContiguousReserve", close);
+    const size_t reopen = prep.find("fs.open(PERF_SD_RESERVE_TEMP_PATH, FILE_READ, false)", close);
+    const size_t exactSize = prep.find("physicalBytes != PERF_SD_CONTIGUOUS_RESERVE_SIZE", reopen);
+    const size_t verify = prep.find("verifyContiguousReserve", exactSize);
     const size_t rename = prep.find("fs.rename(PERF_SD_RESERVE_TEMP_PATH, csvPath)", verify);
-    TEST_ASSERT_TRUE(padding < flush && flush < close && close < verify && verify < rename);
+    TEST_ASSERT_TRUE(padding < flush && flush < close && close < reopen && reopen < exactSize && exactSize < verify &&
+                     verify < rename);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_create"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_padding"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_size_reopen"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_size_mismatch"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_test"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("fallback_rename"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, prep.find("logPrep(\"active\""));

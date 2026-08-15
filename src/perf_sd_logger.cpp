@@ -562,14 +562,30 @@ bool PerfSdLogger::prepareReservedFileLocked(fs::FS& fs) {
     }
 
     const bool paddingWritten = writeParserSafeReservePadding(reserve);
-    const size_t physicalBytes = reserve.size();
     if (paddingWritten) {
         reserve.flush();
     }
     reserve.close();
     if (!paddingWritten) {
         fs.remove(PERF_SD_RESERVE_TEMP_PATH);
-        logPrep("fallback_padding", "ok", "failed", "not_run", "unknown", physicalBytes);
+        logPrep("fallback_padding", "ok", "failed", "not_run", "unknown", 0);
+        return false;
+    }
+
+    // File::size() can remain stale until FatFs flushes and closes the writer.
+    // Reopen the closed extent and require its exact physical size before a
+    // contiguity result is allowed to admit reserved mode.
+    File extent = fs.open(PERF_SD_RESERVE_TEMP_PATH, FILE_READ, false);
+    if (!extent) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_size_reopen", "ok", "ok", "not_run", "unknown", 0);
+        return false;
+    }
+    const size_t physicalBytes = extent.size();
+    extent.close();
+    if (physicalBytes != PERF_SD_CONTIGUOUS_RESERVE_SIZE) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_size_mismatch", "ok", "ok", "not_run", "unknown", physicalBytes);
         return false;
     }
 

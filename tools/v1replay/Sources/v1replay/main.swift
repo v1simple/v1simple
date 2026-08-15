@@ -525,7 +525,8 @@ func runExport() throws {
 func runPlay(idleOnly: Bool,
              synthetic: Bool = false,
              bench: Bool = false,
-             handshakeNotificationHoldMs: Int = 0) throws {
+             handshakeNotificationHoldMs: Int = 0,
+             ownerProcess: ProcessOwnerGuard? = nil) throws {
     if args.bool("handshake-only") && !bench {
         throw ReplayError.message("--handshake-only is available only in bench mode")
     }
@@ -624,14 +625,24 @@ func runPlay(idleOnly: Bool,
         console.log("\(Ansi.cyan)ble\(Ansi.reset)  v1simple asked for display \(on ? "ON" : "OFF")")
     }
     let machineEvents = args.bool("machine-events")
-    if machineEvents && playerOptions.handshakeOnly {
-        peripheral.onStateChange = {
-            let active = peripheral.displaySubscribed
-                && peripheral.alertDataRequested
-                && peripheralConfig.handshakeLedger?.activeEpoch != nil
-            console.print("V1REPLAY_EVENT {\"state\":\"handshake_transport\","
+    let sessionTransportEvents = machineEvents
+        ? BooleanMachineEventEmitter { active in
+            console.print("V1REPLAY_EVENT {\"state\":\"session_transport\","
                           + "\"active\":\(active ? "true" : "false")}")
         }
+        : nil
+    if machineEvents {
+        peripheral.onStateChange = {
+            sessionTransportEvents?.emit(peripheral.sessionTransportActive)
+            if playerOptions.handshakeOnly {
+                let active = peripheral.displaySubscribed
+                    && peripheral.alertDataRequested
+                    && peripheralConfig.handshakeLedger?.activeEpoch != nil
+                console.print("V1REPLAY_EVENT {\"state\":\"handshake_transport\","
+                              + "\"active\":\(active ? "true" : "false")}")
+            }
+        }
+        sessionTransportEvents?.emit(peripheral.sessionTransportActive)
     }
     if machineEvents && bench {
         console.print("V1REPLAY_EVENT {\"state\":\"configured\","
@@ -663,6 +674,8 @@ func runPlay(idleOnly: Bool,
     }
 
     let quit = Flag()
+    let signalMonitor = GracefulSignalMonitor { quit.set() }
+    defer { signalMonitor.cancel() }
     let exitOnComplete = args.bool("exit-on-complete")
     console.enableRawMode()
     console.onKey = { key in
@@ -692,6 +705,10 @@ func runPlay(idleOnly: Bool,
     let startedAt = nowSeconds()
 
     while !quit.isSet {
+        if let ownerProcess, !ownerProcess.isDirectParent() {
+            quit.set()
+            continue
+        }
         let snapshot = player.snapshot
         if exitOnComplete && snapshot.phase == .finished {
             quit.set()
@@ -736,12 +753,23 @@ func runPlay(idleOnly: Bool,
                         + "System Settings → Privacy & Security → Bluetooth, then run it again.")
         }
 
-        Thread.sleep(forTimeInterval: 0.1)
+        Thread.sleep(forTimeInterval: ownerProcess == nil
+                     ? 0.1
+                     : ProcessOwnerGuard.pollIntervalSeconds)
     }
 
     player.stop()
-    peripheral.stop()
+    peripheral.stop { sessionTransportActive in
+        guard machineEvents else { return }
+        console.print(
+            StoppingMachineEvent(sessionTransportActive: sessionTransportActive).line
+        )
+    }
     console.clearStatus()
+    sessionTransportEvents?.emit(false)
+    if machineEvents {
+        console.print("V1REPLAY_EVENT {\"state\":\"stopped\"}")
+    }
     console.restore()
     console.print("Stopped. \(player.snapshot.packetsSent) packets sent, "
                   + "\(peripheral.commandsReceived) commands received, "
@@ -828,6 +856,8 @@ func runProxy() throws {
     log.note("proxy_start", ["tool": toolVersion, "localName": peripheralConfig.localName])
 
     let quit = Flag()
+    let signalMonitor = GracefulSignalMonitor { quit.set() }
+    defer { signalMonitor.cancel() }
     console.enableRawMode()
     console.onKey = { key in
         switch key {
@@ -879,6 +909,10 @@ func runProxy() throws {
 // MARK: - Dispatch
 
 do {
+    let ownerProcess = try parseProcessOwnerGuard(
+        args.optionalString("owner-pid"),
+        command: args.command
+    )
     let handshakeNotificationHoldMs = try parseHandshakeNotificationHoldMilliseconds(
         args.optionalString("handshake-notification-hold-ms"),
         bench: args.command == "bench",
@@ -899,10 +933,11 @@ do {
         try runPlay(
             idleOnly: false,
             bench: true,
-            handshakeNotificationHoldMs: handshakeNotificationHoldMs
+            handshakeNotificationHoldMs: handshakeNotificationHoldMs,
+            ownerProcess: ownerProcess
         )
     case "idle":
-        try runPlay(idleOnly: true)
+        try runPlay(idleOnly: true, ownerProcess: ownerProcess)
     case "proxy":
         try runProxy()
     default:

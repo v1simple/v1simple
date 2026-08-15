@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -60,12 +61,15 @@ from run_window import (  # noqa: E402
     VERSION_REQUEST,
     VERSION_RESPONSE,
     V1Emulator,
+    V1_RADIO_LEASE_PATH,
+    V1RadioLease,
     _preflight_ledger_is_complete,
     camera_grade_required,
     encounter_csv_sd_path,
     establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
+    start_and_wait,
     wait_for_post_upload_settle,
 )
 
@@ -81,6 +85,11 @@ def write_dummy_emulator(
     emit_complete: bool,
     blink_profile: str = "",
     blink_samples: int = 0,
+    emit_session_transport: bool = True,
+    emit_session_transport_loss: bool = False,
+    emit_stopped: bool = True,
+    stop_exit_code: int = 0,
+    stop_events: tuple[str, ...] | None = None,
 ) -> None:
     configured = "true"
     if blink_profile:
@@ -94,16 +103,47 @@ def write_dummy_emulator(
         )
         configured += "\necho 'status V1REPLAY_EVENT {\"state\":\"replay_started\",\"hostMonotonicSeconds\":12345.5}'"
     marker = 'echo \'V1REPLAY_EVENT {"state":"complete"}\'' if emit_complete else "true"
+    session_transport = (
+        'echo \'V1REPLAY_EVENT {"state":"session_transport","active":true}\''
+        if emit_session_transport
+        else "true"
+    )
+    if emit_session_transport_loss:
+        session_transport += (
+            '\necho \'V1REPLAY_EVENT {"state":"session_transport","active":false}\''
+        )
+    if stop_events is None:
+        stop_events = (
+            'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}',
+            'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+            *((('V1REPLAY_EVENT {"state":"stopped"}',) if emit_stopped else ())),
+        )
+    stop_commands = "; ".join(
+        'echo "' + event.replace('"', '\\"') + '"' for event in stop_events
+    ) or "true"
     path.write_text(
         "#!/bin/sh\n"
+        f"trap '{stop_commands}; exit {stop_exit_code}' TERM INT\n"
         "echo argv=$*\n"
         f"{configured}\n"
         f"{marker}\n"
-        "trap 'exit 0' TERM INT\n"
+        f"{session_transport}\n"
         "while :; do sleep 1; done\n",
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def wait_for_dummy_emulator_started(emulator: V1Emulator, timeout_s: float = 2) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            if "argv=" in emulator.log_path.read_text(encoding="utf-8"):
+                return
+        except OSError:
+            pass
+        time.sleep(0.02)
+    raise AssertionError("dummy emulator did not reach its signal-ready marker")
 
 
 def handshake_ledger_records(
@@ -182,7 +222,7 @@ def test_idle_emulator_covers_and_stops_with_window() -> None:
         write_dummy_emulator(executable, emit_complete=False)
         emulator = V1Emulator(executable, root / "core", "core")
         emulator.start()
-        time.sleep(0.1)
+        emulator.wait_for_session_transport(1)
         assert_true(emulator.health_problem() == "", "idle emulator exited before the window")
         result = emulator.finish(window_completed=True)
         assert_true(result["completed"] is True, f"idle emulator did not cover window: {result}")
@@ -198,11 +238,849 @@ def test_failed_window_still_stops_emulator() -> None:
         write_dummy_emulator(executable, emit_complete=False)
         emulator = V1Emulator(executable, root / "core", "core")
         emulator.start()
-        time.sleep(0.1)
+        emulator.wait_for_session_transport(1)
         result = emulator.finish(window_completed=False)
         assert_true(result["completed"] is False, f"failed collection was marked complete: {result}")
         assert_true(result["managed_stop"] is True, f"failed collection skipped cleanup: {result}")
         assert_true(emulator.process is not None and emulator.process.poll() is not None, "emulator survived failed collection")
+
+
+def test_idle_emulator_requires_current_process_transport_ownership() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            emit_session_transport=False,
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        wait_for_dummy_emulator_started(emulator)
+        try:
+            emulator.wait_for_session_transport(0.5)
+        except RuntimeError as exc:
+            assert_true(
+                "current-process session transport ownership" in str(exc),
+                f"wrong missing-ownership failure: {exc}",
+            )
+        else:
+            raise AssertionError("idle emulator without an ownership event was admitted")
+        finally:
+            emulator.stop()
+
+
+def test_managed_stop_requires_graceful_stopped_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            emit_stopped=False,
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        emulator.wait_for_session_transport(1)
+        try:
+            emulator.finish(window_completed=True)
+        except RuntimeError as exc:
+            assert_true(
+                "graceful stopped marker" in str(exc),
+                f"wrong ungraceful-stop failure: {exc}",
+            )
+        else:
+            raise AssertionError("managed stop without a stopped marker passed")
+        assert_true(
+            emulator.process is not None and emulator.process.poll() is not None,
+            "missing stopped marker left the emulator alive",
+        )
+
+
+def test_managed_stop_rejects_nonzero_exit_after_stopped_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            stop_exit_code=7,
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        emulator.wait_for_session_transport(1)
+        try:
+            emulator.finish(window_completed=True)
+        except RuntimeError as exc:
+            assert_true(
+                "graceful teardown exited with code 7" in str(exc),
+                f"wrong nonzero-stop failure: {exc}",
+            )
+        else:
+            raise AssertionError("a stopped marker hid the emulator's nonzero exit")
+        assert_true(
+            emulator.returncode == 7 and emulator.graceful_stop_confirmed is False,
+            "nonzero exit was retained as graceful evidence",
+        )
+
+
+def test_all_managed_modes_require_current_stopping_ownership_snapshot() -> None:
+    cases = (
+        ("replay-false", False, False, "did not own session transport"),
+        ("replay-nonboolean", False, "true", "snapshot is not boolean"),
+        ("preflight-false", True, False, "did not own session transport"),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, handshake_only, snapshot_value, expected in cases:
+            case_root = root / name
+            case_root.mkdir()
+            executable = case_root / "v1replay"
+            encoded_snapshot = json.dumps(snapshot_value, separators=(",", ":"))
+            write_dummy_emulator(
+                executable,
+                emit_complete=True,
+                blink_profile="scenario",
+                blink_samples=57,
+                stop_events=(
+                    "V1REPLAY_EVENT "
+                    '{"state":"stopping","sessionTransportActive":'
+                    f"{encoded_snapshot}}}",
+                    'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+                    'V1REPLAY_EVENT {"state":"stopped"}',
+                ),
+            )
+            emulator = V1Emulator(
+                executable,
+                case_root / "out",
+                "replay",
+                handshake_only=handshake_only,
+            )
+            emulator.start()
+            wait_for_dummy_emulator_started(emulator)
+            try:
+                if handshake_only:
+                    emulator.finish_preflight(handshake_ready_while_alive=True)
+                else:
+                    emulator.finish(window_completed=True)
+            except RuntimeError as exc:
+                assert_true(expected in str(exc), f"wrong {name} snapshot failure: {exc}")
+            else:
+                raise AssertionError(f"managed mode accepted invalid stopping snapshot: {name}")
+            assert_true(
+                emulator.graceful_stop_confirmed is False,
+                f"invalid {name} snapshot was retained as graceful stop evidence",
+            )
+
+
+def test_idle_completion_rejects_transport_loss_even_after_reownership() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            stop_events=(
+                'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+                'V1REPLAY_EVENT {"state":"session_transport","active":true}',
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}',
+                'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+                'V1REPLAY_EVENT {"state":"stopped"}',
+            ),
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        emulator.wait_for_session_transport(1)
+        try:
+            emulator.finish(window_completed=True)
+        except RuntimeError as exc:
+            assert_true(
+                "lost session transport before the stopping boundary" in str(exc),
+                f"wrong interrupted-transport failure: {exc}",
+            )
+        else:
+            raise AssertionError("final reownership hid an interrupted idle transport")
+
+
+def test_idle_completion_grades_loss_during_managed_stop() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            stop_events=(
+                'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+                'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":false}',
+                'V1REPLAY_EVENT {"state":"stopped"}',
+            ),
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        emulator.wait_for_session_transport(1)
+        try:
+            emulator.finish(window_completed=True)
+        except RuntimeError as exc:
+            assert_true(
+                "did not own session transport at the stopping boundary" in str(exc),
+                f"wrong stop-race ownership failure: {exc}",
+            )
+        else:
+            raise AssertionError("transport loss between admission and managed stop passed")
+
+
+def test_idle_shutdown_requires_prior_admission_and_strict_ordered_events() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "unadmitted" / "v1replay"
+        executable.parent.mkdir()
+        write_dummy_emulator(executable, emit_complete=False)
+        unadmitted = V1Emulator(executable, root / "unadmitted" / "out", "core")
+        unadmitted.start()
+        wait_for_dummy_emulator_started(unadmitted)
+        try:
+            unadmitted.finish(window_completed=True)
+        except RuntimeError as exc:
+            assert_true(
+                "without prior current-process ownership admission" in str(exc),
+                f"wrong missing-admission failure: {exc}",
+            )
+        else:
+            raise AssertionError("a child log event substituted for host ownership admission")
+
+        canonical_stopping = (
+            'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":true}',
+            'V1REPLAY_EVENT {"state":"session_transport","active":false}',
+            'V1REPLAY_EVENT {"state":"stopped"}',
+        )
+        mutants = (
+            (
+                "malformed",
+                ('V1REPLAY_EVENT {"state":', *canonical_stopping),
+                "malformed V1 emulator machine event",
+            ),
+            (
+                "missing-stopping",
+                canonical_stopping[1:],
+                "exactly one stopping ownership snapshot",
+            ),
+            (
+                "duplicate-stopping",
+                (canonical_stopping[0], *canonical_stopping),
+                "exactly one stopping ownership snapshot",
+            ),
+            (
+                "stopping-false",
+                (
+                    'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":false}',
+                    *canonical_stopping[1:],
+                ),
+                "did not own session transport at the stopping boundary",
+            ),
+            (
+                "stopping-nonboolean",
+                (
+                    'V1REPLAY_EVENT {"state":"stopping","sessionTransportActive":"true"}',
+                    *canonical_stopping[1:],
+                ),
+                "stopping ownership snapshot is not boolean",
+            ),
+            (
+                "teardown-missing",
+                (canonical_stopping[0], canonical_stopping[2]),
+                "without a teardown session transport event",
+            ),
+            (
+                "teardown-nonboolean",
+                (
+                    canonical_stopping[0],
+                    'V1REPLAY_EVENT {"state":"session_transport","active":"false"}',
+                    canonical_stopping[2],
+                ),
+                "session transport event is not boolean",
+            ),
+            (
+                "stopped-before-teardown",
+                (
+                    canonical_stopping[0],
+                    canonical_stopping[2],
+                    canonical_stopping[1],
+                ),
+                "stopped marker is not the final machine event",
+            ),
+            (
+                "event-after-stopped",
+                (*canonical_stopping, 'V1REPLAY_EVENT {"state":"configured"}'),
+                "stopped marker is not the final machine event",
+            ),
+        )
+        for name, stop_events, expected in mutants:
+            case_root = root / name
+            case_root.mkdir()
+            case_executable = case_root / "v1replay"
+            write_dummy_emulator(
+                case_executable,
+                emit_complete=False,
+                stop_events=stop_events,
+            )
+            emulator = V1Emulator(case_executable, case_root / "out", "core")
+            emulator.start()
+            emulator.wait_for_session_transport(1)
+            try:
+                emulator.finish(window_completed=True)
+            except RuntimeError as exc:
+                assert_true(expected in str(exc), f"wrong {name} failure: {exc}")
+            else:
+                raise AssertionError(f"idle shutdown mutant passed: {name}")
+
+
+def test_idle_admission_rejects_transport_already_lost() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=False,
+            emit_session_transport_loss=True,
+        )
+        emulator = V1Emulator(executable, root / "core", "core")
+        emulator.start()
+        wait_for_dummy_emulator_started(emulator)
+        try:
+            emulator.wait_for_session_transport(0.5)
+        except RuntimeError as exc:
+            assert_true(
+                "current-process session transport ownership" in str(exc),
+                f"wrong stale-ownership failure: {exc}",
+            )
+        else:
+            raise AssertionError("historical transport ownership admitted a disconnected peer")
+        finally:
+            emulator.stop()
+
+
+def test_qstart_companion_failures_abort_the_active_dut_window() -> None:
+    class FakeSerial:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return (
+                    'QRESP {"ok":false,"state":"error","suite":"core",'
+                    '"message":"aborted","error":"aborted"}'
+                )
+            return (
+                'QRESP {"ok":true,"state":"running","suite":"core",'
+                '"csvPath":"/perf/test.csv"}'
+            )
+
+    def fail_admission() -> None:
+        raise RuntimeError("idle transport ownership missing")
+
+    class LostAckThenBusySerial(FakeSerial):
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            starts = sum(command.startswith("QSTART ") for command in self.commands)
+            if starts == 1:
+                raise TimeoutError("running acknowledgement was lost")
+            return 'QERR {"ok":false,"state":"running","error":"busy"}'
+
+    ambiguous_start_serial = LostAckThenBusySerial()
+    try:
+        start_and_wait(
+            ambiguous_start_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+        )
+    except RuntimeError as exc:
+        assert_true("QSTART failed" in str(exc), f"wrong ambiguous-start failure: {exc}")
+        assert_true(
+            "QABORT cleanup was not confirmed" not in str(exc),
+            f"ambiguous start did not consume its abort acknowledgement: {exc}",
+        )
+    else:
+        raise AssertionError("lost QSTART acknowledgement followed by busy passed")
+    assert_true(
+        ambiguous_start_serial.commands
+        == ["QSTART core 1", "QSTART core 1", "QABORT"],
+        f"ambiguous QSTART left the DUT window active: {ambiguous_start_serial.commands}",
+    )
+
+    class MalformedStartSerial(FakeSerial):
+        def __init__(self, response: str) -> None:
+            super().__init__()
+            self.response = response
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            return self.response
+
+    for response, expected in (
+        ("QRESP []", "JSON object"),
+        (
+            'QRESP {"ok":"false","state":"running","suite":"core"}',
+            "ok field is not boolean",
+        ),
+    ):
+        malformed_serial = MalformedStartSerial(response)
+        try:
+            start_and_wait(
+                malformed_serial,  # type: ignore[arg-type]
+                "core",
+                1,
+                1,
+            )
+        except RuntimeError as exc:
+            assert_true(expected in str(exc), f"wrong malformed-ack failure: {exc}")
+        else:
+            raise AssertionError(f"malformed QSTART acknowledgement passed: {response}")
+        assert_true(
+            malformed_serial.commands == ["QSTART core 1", "QABORT"],
+            f"malformed QSTART left the DUT window active: {malformed_serial.commands}",
+        )
+
+    after_started_serial = FakeSerial()
+    try:
+        start_and_wait(
+            after_started_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+            after_started=fail_admission,
+        )
+    except RuntimeError as exc:
+        assert_true("ownership missing" in str(exc), f"wrong admission failure: {exc}")
+    else:
+        raise AssertionError("companion admission failure did not escape")
+    assert_true(
+        after_started_serial.commands == ["QSTART core 1", "QABORT"],
+        f"admission failure left the DUT window active: {after_started_serial.commands}",
+    )
+
+    health_serial = FakeSerial()
+
+    def fail_health() -> str:
+        raise RuntimeError("companion health crashed")
+
+    try:
+        start_and_wait(
+            health_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+            health_check=fail_health,
+        )
+    except RuntimeError as exc:
+        assert_true("health crashed" in str(exc), f"wrong health failure: {exc}")
+    else:
+        raise AssertionError("health-check exception did not escape")
+    assert_true(
+        health_serial.commands == ["QSTART core 1", "QABORT"],
+        f"health failure left the DUT window active: {health_serial.commands}",
+    )
+
+    class StaleThenConfirmedAbortSerial(FakeSerial):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abort_reads = 0
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] != "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            self.abort_reads += 1
+            if self.abort_reads == 1:
+                return 'QERR {"ok":false,"state":"running","error":"run_active"}'
+            return super().read_protocol_line(_prefixes, _timeout)
+
+    stale_serial = StaleThenConfirmedAbortSerial()
+    try:
+        start_and_wait(
+            stale_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+            after_started=fail_admission,
+        )
+    except RuntimeError as exc:
+        assert_true("ownership missing" in str(exc), f"wrong stale-response failure: {exc}")
+        assert_true(
+            "QABORT cleanup was not confirmed" not in str(exc),
+            f"stale response hid the later abort acknowledgement: {exc}",
+        )
+    else:
+        raise AssertionError("companion failure did not escape after confirmed abort")
+    assert_true(stale_serial.abort_reads == 2, "abort confirmation ignored a stale response")
+
+    class InterruptedReadSerial(FakeSerial):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            self.reads += 1
+            if self.reads == 1:
+                return super().read_protocol_line(_prefixes, _timeout)
+            raise InterruptedError("operator interrupted the serial wait")
+
+    interrupted_serial = InterruptedReadSerial()
+    try:
+        start_and_wait(
+            interrupted_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+        )
+    except InterruptedError as exc:
+        assert_true("operator interrupted" in str(exc), f"wrong interruption: {exc}")
+    else:
+        raise AssertionError("serial-wait interruption did not escape")
+    assert_true(
+        interrupted_serial.commands == ["QSTART core 1", "QABORT"],
+        f"serial interruption left the DUT window active: {interrupted_serial.commands}",
+    )
+
+    class TerminalMutationSerial(FakeSerial):
+        def __init__(self, terminal: str) -> None:
+            super().__init__()
+            self.terminal = terminal
+            self.reads = 0
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            self.reads += 1
+            if self.reads == 1:
+                return super().read_protocol_line(_prefixes, _timeout)
+            return self.terminal
+
+    for terminal, expected in (
+        (
+            'QEVENT {"ok":"false","state":"done","suite":"core"}',
+            "terminal event ok field is not boolean",
+        ),
+        (
+            'QEVENT {"ok":true,"state":"done","suite":"display"}',
+            "suite='display' expected='core'",
+        ),
+        (
+            'QERR {"ok":true,"state":"done","suite":"core"}',
+            "terminal response was not QEVENT",
+        ),
+    ):
+        terminal_serial = TerminalMutationSerial(terminal)
+        try:
+            start_and_wait(
+                terminal_serial,  # type: ignore[arg-type]
+                "core",
+                1,
+                1,
+            )
+        except RuntimeError as exc:
+            assert_true(expected in str(exc), f"wrong terminal-shape failure: {exc}")
+        else:
+            raise AssertionError(f"invalid terminal event passed: {terminal}")
+        assert_true(
+            terminal_serial.commands == ["QSTART core 1", "QABORT"],
+            f"invalid terminal event left the DUT window active: {terminal_serial.commands}",
+        )
+
+    timeout_serial = FakeSerial()
+    try:
+        start_and_wait(
+            timeout_serial,  # type: ignore[arg-type]
+            "core",
+            0,
+            0,
+        )
+    except RuntimeError as exc:
+        assert_true("timed out waiting for completion" in str(exc), f"wrong timeout: {exc}")
+    else:
+        raise AssertionError("window timeout did not escape")
+    assert_true(
+        timeout_serial.commands == ["QSTART core 0", "QABORT"],
+        f"window timeout left the DUT window active: {timeout_serial.commands}",
+    )
+
+    class UnconfirmedAbortSerial(FakeSerial):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abort_reads = 0
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] != "QABORT":
+                return super().read_protocol_line(_prefixes, _timeout)
+            self.abort_reads += 1
+            if self.abort_reads == 1:
+                return 'QERR {"ok":false,"state":"running","error":"run_active"}'
+            raise TimeoutError("abort acknowledgement timed out")
+
+    unconfirmed_serial = UnconfirmedAbortSerial()
+    try:
+        start_and_wait(
+            unconfirmed_serial,  # type: ignore[arg-type]
+            "core",
+            1,
+            1,
+            after_started=fail_admission,
+        )
+    except RuntimeError as exc:
+        assert_true(
+            "ownership missing" in str(exc)
+            and "QABORT cleanup was not confirmed" in str(exc),
+            f"unconfirmed abort hid its companion failure: {exc}",
+        )
+    else:
+        raise AssertionError("an unconfirmed QABORT was accepted")
+
+
+def test_radio_lease_is_inherited_and_owner_pid_is_forwarded() -> None:
+    assert_true(
+        ROOT not in V1_RADIO_LEASE_PATH.parents,
+        f"radio lease is vulnerable to repository artifact cleanup: {V1_RADIO_LEASE_PATH}",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        out_dir = root / "core"
+        lock_path = root / "v1radio.lock"
+        write_dummy_emulator(executable, emit_complete=False)
+        lease = V1RadioLease(lock_path, quiet_seconds=0)
+        lease.__enter__()
+        assert lease.fd is not None
+        emulator = V1Emulator(
+            executable,
+            out_dir,
+            "core",
+            lease_fd=lease.fd,
+        )
+        emulator.start()
+        emulator.wait_for_session_transport(1)
+        lease.close()
+        try:
+            with V1RadioLease(lock_path, quiet_seconds=0):
+                pass
+        except RuntimeError as exc:
+            assert_true("radio lease unavailable" in str(exc), f"wrong lease failure: {exc}")
+        else:
+            raise AssertionError("parent close released a lease still inherited by the child")
+
+        result = emulator.finish(window_completed=True)
+        assert_true(result["graceful_stop_confirmed"] is True, f"stop was not proven: {result}")
+        with V1RadioLease(lock_path, quiet_seconds=0):
+            pass
+        log = (out_dir / "v1replay.log").read_text(encoding="utf-8")
+        assert_true(
+            f"argv=idle --machine-events --owner-pid {os.getpid()}" in log,
+            f"owner PID was not forwarded to the child: {log!r}",
+        )
+
+
+def test_first_signal_makes_cleanup_non_interruptible() -> None:
+    original_signal = run_window_module.signal.signal
+    registrations: list[tuple[int, object]] = []
+
+    def record_signal(signum: int, handler: object) -> None:
+        registrations.append((signum, handler))
+
+    run_window_module.signal.signal = record_signal  # type: ignore[assignment]
+    try:
+        run_window_module.install_signal_handlers()
+        handler = next(
+            handler
+            for signum, handler in registrations
+            if signum == signal.SIGTERM and callable(handler)
+        )
+        try:
+            handler(signal.SIGTERM, None)  # type: ignore[operator]
+        except InterruptedError:
+            pass
+        else:
+            raise AssertionError("first termination signal did not begin cleanup")
+        ignored = registrations[-3:]
+        assert_true(
+            {signum for signum, handler_value in ignored if handler_value == signal.SIG_IGN}
+            == {signal.SIGINT, signal.SIGTERM, signal.SIGHUP},
+            f"cleanup signals were not ignored after the first signal: {ignored}",
+        )
+        handler(signal.SIGTERM, None)  # type: ignore[operator]
+    finally:
+        run_window_module.signal.signal = original_signal  # type: ignore[assignment]
+
+
+def test_live_cleanup_stops_emulators_before_serial_and_camera() -> None:
+    source = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
+    cleanup = source.index("finally:\n        primary_error = sys.exc_info()[1]")
+    primary_stop = source.index("emulator.finish(collection_completed)", cleanup)
+    preflight_stop = source.index("reconnect_preflight.stop()", primary_stop)
+    serial_stop = source.index("q.close()", preflight_stop)
+    camera_stop = source.index("camera.stop(collection_completed)", serial_stop)
+    assert_true(
+        primary_stop < preflight_stop < serial_stop < camera_stop,
+        "live cleanup does not withdraw both emulators before serial and camera teardown",
+    )
+
+
+def test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails() -> None:
+    serials: list[object] = []
+    cleanup_failure = ""
+    serial_cleanup_failure = ""
+
+    class FakeSerial:
+        boot_marker_count = 0
+        disconnect_cleanup_count = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.commands: list[str] = []
+            self.closed = False
+            serials.append(self)
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(
+            self,
+            _prefixes: tuple[str, ...],
+            _timeout: float,
+        ) -> str:
+            if self.commands[-1] == "QABORT":
+                return (
+                    'QRESP {"ok":false,"state":"error","suite":"core",'
+                    '"message":"aborted","error":"aborted"}'
+                )
+            return (
+                'QRESP {"ok":true,"state":"running","suite":"core",'
+                '"csvPath":"/perf/test.csv"}'
+            )
+
+        def close(self) -> None:
+            self.closed = True
+            if serial_cleanup_failure:
+                raise RuntimeError(serial_cleanup_failure)
+
+    class FakeEmulator:
+        process = None
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def wait_for_session_transport(self, _timeout_s: float) -> None:
+            raise RuntimeError("idle ownership primary failure")
+
+        def health_problem(self) -> str:
+            return ""
+
+        def finish(self, _completed: bool) -> dict[str, object]:
+            raise RuntimeError(cleanup_failure)
+
+    originals = (
+        run_window_module.wait_for_port,
+        run_window_module.BenchSerial,
+        run_window_module.wait_ready,
+        run_window_module.V1Emulator,
+    )
+    try:
+        run_window_module.wait_for_port = lambda *_args, **_kwargs: "fake-port"
+        run_window_module.BenchSerial = FakeSerial
+        run_window_module.wait_ready = lambda *_args, **_kwargs: {"ok": True}
+        run_window_module.V1Emulator = FakeEmulator
+        for cleanup_failure, serial_cleanup_failure in (
+            ("managed V1 emulator exited without a graceful stopped marker", ""),
+            (
+                "managed V1 emulator graceful teardown exited with code 9",
+                "serial close failed",
+            ),
+        ):
+            serials.clear()
+            with tempfile.TemporaryDirectory() as tmp:
+                args = SimpleNamespace(
+                    suite="core",
+                    camera=False,
+                    upload=False,
+                    port="fake-port",
+                    baud=115200,
+                    replay_executable=str(Path(tmp) / "v1replay"),
+                    blink_profile="steady",
+                    ready_timeout_seconds=1,
+                    duration_seconds=1,
+                    completion_grace_seconds=1,
+                )
+                try:
+                    run_window_module._collect_live(
+                        args,
+                        Path(tmp) / "core",
+                        lease_fd=73,
+                    )
+                except RuntimeError as exc:
+                    message = str(exc)
+                    assert_true(
+                        message.startswith("idle ownership primary failure"),
+                        f"cleanup masked the primary failure: {message}",
+                    )
+                    assert_true(
+                        f"cleanup failure: V1 emulator: {cleanup_failure}" in message,
+                        f"cleanup failure disappeared: {message}",
+                    )
+                    if serial_cleanup_failure:
+                        assert_true(
+                            f"; serial: {serial_cleanup_failure}" in message,
+                            f"later serial cleanup failure disappeared or reordered: {message}",
+                        )
+                else:
+                    raise AssertionError("simultaneous primary and cleanup failures passed")
+            assert_true(len(serials) == 1, f"unexpected serial sessions: {serials}")
+            serial = serials[0]
+            assert_true(
+                getattr(serial, "commands") == ["QSTART core 1", "QABORT"],
+                f"primary failure did not abort the DUT window: {getattr(serial, 'commands')}",
+            )
+            assert_true(getattr(serial, "closed") is True, "serial cleanup did not run")
+    finally:
+        (
+            run_window_module.wait_for_port,
+            run_window_module.BenchSerial,
+            run_window_module.wait_ready,
+            run_window_module.V1Emulator,
+        ) = originals
 
 
 def test_replay_requires_machine_completion_before_managed_stop() -> None:
@@ -239,7 +1117,7 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
         )
         missing = V1Emulator(missing_executable, missing_root / "out", "replay")
         missing.start()
-        time.sleep(0.1)
+        wait_for_dummy_emulator_started(missing)
         missing_result = missing.finish(window_completed=True)
         assert_true(missing_result["completed"] is False, f"incomplete replay passed: {missing_result}")
 
@@ -249,7 +1127,9 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
         write_dummy_emulator(unconfigured_executable, emit_complete=True)
         unconfigured = V1Emulator(unconfigured_executable, unconfigured_root / "out", "replay")
         unconfigured.start()
-        time.sleep(0.1)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not unconfigured._bench_completed():
+            time.sleep(0.02)
         unconfigured_result = unconfigured.finish(window_completed=True)
         assert_true(
             unconfigured_result["completed"] is False,
@@ -282,7 +1162,8 @@ def test_replay_blink_profile_argv_and_result() -> None:
             log = (out_dir / "v1replay.log").read_text(encoding="utf-8")
             expected_ledger = out_dir / "handshake_ledger.jsonl"
             expected_argv = (
-                f"argv=bench --machine-events --blink-profile {blink_profile} "
+                f"argv=bench --machine-events --owner-pid {os.getpid()} "
+                f"--blink-profile {blink_profile} "
                 f"--handshake-ledger {expected_ledger}"
             )
             assert_true(expected_argv in log, f"unexpected replay argv: {log!r}")
@@ -650,7 +1531,7 @@ def test_reconnect_preflight_observation_catches_late_invalid_ledger() -> None:
 
             def health_problem(self) -> str:
                 self.health_checks += 1
-                if self.health_checks == 1:
+                if self.health_checks == 2:
                     records = handshake_ledger_records()
                     late_start = dict(records[2])
                     late_start["elapsed_ms"] = int(records[-1]["elapsed_ms"]) + 50
@@ -680,7 +1561,7 @@ def test_reconnect_preflight_observation_catches_late_invalid_ledger() -> None:
                 FakeSerial(),  # type: ignore[arg-type]
                 emulator,  # type: ignore[arg-type]
                 0.1,
-                post_ready_observation_s=0.001,
+                post_ready_observation_s=0.06,
             )
         except ReconnectPreflightFailure as exc:
             assert_true(
@@ -1236,7 +2117,8 @@ def test_reconnect_preflight_process_uses_separate_quiet_artifacts() -> None:
         try:
             emulator.start()
             expected = (
-                "argv=bench --machine-events --blink-profile scenario --handshake-only "
+                f"argv=bench --machine-events --owner-pid {os.getpid()} "
+                "--blink-profile scenario --handshake-only "
                 "--log-packets "
                 f"--handshake-ledger {root / 'replay' / RECONNECT_LEDGER_NAME}"
             )
@@ -1391,6 +2273,15 @@ def test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact() -
             observed_stop_results.append(result)
             return result
 
+    class FakeLease:
+        fd = 42
+
+        def __enter__(self) -> FakeLease:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
     def fail_reconnect(*_args: object, **_kwargs: object) -> dict[str, object]:
         raise ReconnectPreflightFailure(
             "duplicate start request",
@@ -1414,6 +2305,7 @@ def test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact() -
         run_window_module.establish_reconnect_readiness,
         run_window_module.V1Emulator,
         run_window_module.CameraCapture,
+        run_window_module.V1RadioLease,
         run_window_module.run_reconnect_preflight,
         run_window_module.run_camera_preflight,
     )
@@ -1424,6 +2316,7 @@ def test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact() -
         run_window_module.establish_reconnect_readiness = lambda *_args, **_kwargs: {"ok": True}
         run_window_module.V1Emulator = FakeEmulator
         run_window_module.CameraCapture = RecordingCamera
+        run_window_module.V1RadioLease = FakeLease
         run_window_module.run_reconnect_preflight = fail_reconnect
         run_window_module.run_camera_preflight = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("camera preflight ran before reconnect admission")
@@ -1465,6 +2358,7 @@ def test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact() -
             run_window_module.establish_reconnect_readiness,
             run_window_module.V1Emulator,
             run_window_module.CameraCapture,
+            run_window_module.V1RadioLease,
             run_window_module.run_reconnect_preflight,
             run_window_module.run_camera_preflight,
         ) = originals
@@ -2363,7 +3257,10 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
     epoch_end = peripheral.split("private func endHandshakeEpoch()", 1)[1].split(
         "private func send(_ decision", 1
     )[0]
-    stop_method = peripheral.split("func stop()", 1)[1].split(
+    transport_reset = peripheral.split("private func resetSessionTransport()", 1)[1].split(
+        "private func send(_ decision", 1
+    )[0]
+    stop_method = peripheral.split("func stop(onStopping:", 1)[1].split(
         "// MARK: - Command handling", 1
     )[0]
     adapter_state = peripheral.split("func peripheralManagerDidUpdateState", 1)[1].split(
@@ -2432,16 +3329,26 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
     )
     assert_true(
         "isStopping = true" in stop_method
-        and "pending.removeAll()" in stop_method
+        and "resetSessionTransport()" in stop_method
         and "guard !self.isStopping" in peripheral_ensure
         and "let characteristic = self.displayChar" in peripheral_ensure,
         "handshake clear work can cross teardown or use an off-queue characteristic",
     )
     assert_true(
-        "default:\n            withState { $0.isPoweredOn = false }\n"
-        "            shortSubscriberIDs.removeAll()\n            endHandshakeEpoch()"
-        in adapter_state,
-        "an indeterminate CoreBluetooth state can retain active handshake evidence",
+        all(
+            fragment in transport_reset
+            for fragment in (
+                "endHandshakeEpoch()",
+                "pending.removeAll()",
+                "lastValues.removeAll()",
+                "shortSubscriberIDs.removeAll()",
+                "$0.session.resetTransport()",
+            )
+        )
+        and "guard peripheral.state == .poweredOn else" in adapter_state
+        and "resetSessionTransport()" in adapter_state
+        and stop_method.index("resetSessionTransport()") < stop_method.index("onStateChange?()"),
+        "adapter loss or teardown can retain active session ownership evidence",
     )
     assert_true(
         'V1REPLAY_EVENT {\\"state\\":\\"handshake_transport\\"' in main_source
@@ -2462,6 +3369,19 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
 def main() -> int:
     test_idle_emulator_covers_and_stops_with_window()
     test_failed_window_still_stops_emulator()
+    test_idle_emulator_requires_current_process_transport_ownership()
+    test_managed_stop_requires_graceful_stopped_marker()
+    test_managed_stop_rejects_nonzero_exit_after_stopped_marker()
+    test_all_managed_modes_require_current_stopping_ownership_snapshot()
+    test_idle_completion_rejects_transport_loss_even_after_reownership()
+    test_idle_completion_grades_loss_during_managed_stop()
+    test_idle_shutdown_requires_prior_admission_and_strict_ordered_events()
+    test_idle_admission_rejects_transport_already_lost()
+    test_qstart_companion_failures_abort_the_active_dut_window()
+    test_radio_lease_is_inherited_and_owner_pid_is_forwarded()
+    test_first_signal_makes_cleanup_non_interruptible()
+    test_live_cleanup_stops_emulators_before_serial_and_camera()
+    test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails()
     test_replay_requires_machine_completion_before_managed_stop()
     test_replay_blink_profile_argv_and_result()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()

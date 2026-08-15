@@ -764,6 +764,7 @@ def score_reconnect_lifecycle(
     raw: Any,
     *,
     failure_kind: str = "",
+    legacy: bool = False,
 ) -> dict[str, Any]:
     """Score bounded disappearance evidence recorded by the live runner."""
     if raw is None:
@@ -784,7 +785,11 @@ def score_reconnect_lifecycle(
         "serial_session_continuous": True,
         "boot_observed_before_second_complete": False,
     }
+    if not legacy:
+        boolean_expectations["graceful_stop_confirmed"] = True
     missing = [field for field in boolean_expectations if field not in raw]
+    if not legacy and "returncode" not in raw:
+        missing.append("returncode")
     if "cleanup_marker_count" not in raw:
         missing.append("cleanup_marker_count")
     if missing:
@@ -805,6 +810,11 @@ def score_reconnect_lifecycle(
         or cleanup_count < 0
     ):
         malformed.append("cleanup_marker_count")
+    returncode = raw.get("returncode")
+    if not legacy and (
+        not isinstance(returncode, int) or isinstance(returncode, bool)
+    ):
+        malformed.append("returncode")
     if malformed:
         return handshake_collection_failure(
             "replay reconnect preflight terminal result has invalid fields: "
@@ -817,6 +827,10 @@ def score_reconnect_lifecycle(
             failures.append(
                 f"replay reconnect preflight {field}={raw[field]!r} expected={expected!r}"
             )
+    if not legacy and returncode != 0:
+        failures.append(
+            f"replay reconnect preflight returncode={returncode!r} expected=0"
+        )
     diagnostics: list[str] = []
     if early_handshake_failure and cleanup_count == 0:
         diagnostics.append(
@@ -1561,6 +1575,8 @@ def score_replay_reconnect(
     raw_lifecycle: Any,
     primary_handshake_checks: dict[str, Any],
     raw_evidence_checks: dict[str, Any],
+    *,
+    legacy_lifecycle: bool = False,
 ) -> dict[str, Any]:
     """Score two handshake ledgers independently; never combine their events."""
     if preflight_path is None:
@@ -1594,7 +1610,10 @@ def score_replay_reconnect(
 
     preflight_epoch_checks = score_reconnect_epoch("preflight", preflight_checks)
     primary_epoch_checks = score_reconnect_epoch("primary", primary_checks)
-    lifecycle_checks = score_reconnect_lifecycle(raw_lifecycle)
+    lifecycle_checks = score_reconnect_lifecycle(
+        raw_lifecycle,
+        legacy=legacy_lifecycle,
+    )
     result = "PASS"
     evidence: list[str] = []
     for checks in (
@@ -1691,6 +1710,7 @@ def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, A
     lifecycle_checks = score_reconnect_lifecycle(
         window.get("reconnect_preflight"),
         failure_kind=str(failure_kind),
+        legacy=window.get("schema_version") == 1,
     )
     preflight_log_path, preflight_log_error = same_window_artifact(
         window_dir,
@@ -2356,6 +2376,20 @@ def classify_window(
             "artifact_dir": str(window_dir),
             "evidence": [f"missing or invalid {result_path}"],
         }
+    window_schema = window.get("schema_version")
+    if (
+        not isinstance(window_schema, int)
+        or isinstance(window_schema, bool)
+        or window_schema not in {1, 2}
+    ):
+        return {
+            "suite": suite,
+            "result": "COLLECTION_FAILED",
+            "artifact_dir": str(window_dir),
+            "evidence": [
+                f"window result schema_version={window_schema!r} is not supported"
+            ],
+        }
     if window.get("result") == "RECONNECT_FAILED":
         return classify_reconnect_failure(window_dir, suite, window)
     if window.get("result") == "COLLECTION_FAILED":
@@ -2458,10 +2492,76 @@ def classify_window(
             f"messages={'; '.join(absolute_messages)}"
         )
     replay_checks: dict[str, Any] = {}
-    emulator = window.get("v1_emulator") if isinstance(window.get("v1_emulator"), dict) else {}
-    if emulator and emulator.get("completed") is not True:
+    raw_emulator = window.get("v1_emulator")
+    emulator = raw_emulator if isinstance(raw_emulator, dict) else {}
+    completion = window.get("completion") if isinstance(window.get("completion"), dict) else {}
+    live_window = completion.get("source") != "from_csv"
+    if window_schema == 1:
+        if emulator and emulator.get("completed") is not True:
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator did not cover the complete metrics window")
+    elif not live_window:
+        pass
+    elif not isinstance(raw_emulator, dict):
         result = "COLLECTION_FAILED"
-        evidence.append("managed V1 emulator did not cover the complete metrics window")
+        evidence.append("managed V1 emulator evidence is missing or invalid")
+    else:
+        expected_mode = "bench" if suite == "replay" else "idle"
+        if emulator.get("mode") != expected_mode:
+            result = "COLLECTION_FAILED"
+            evidence.append(
+                f"managed V1 emulator mode={emulator.get('mode')!r} expected={expected_mode!r}"
+            )
+        completed = emulator.get("completed")
+        if not isinstance(completed, bool):
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator completion evidence is missing or invalid")
+        elif not completed:
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator did not cover the complete metrics window")
+        managed_stop = emulator.get("managed_stop")
+        if not isinstance(managed_stop, bool):
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator stop evidence is missing or invalid")
+        elif not managed_stop:
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator was not stopped by the runner")
+        returncode = emulator.get("returncode")
+        if (
+            not isinstance(returncode, int)
+            or isinstance(returncode, bool)
+        ):
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator return code evidence is missing or invalid")
+        elif returncode != 0:
+            result = "COLLECTION_FAILED"
+            evidence.append(
+                f"managed V1 emulator graceful teardown exited with code {returncode}"
+            )
+        graceful_stop = emulator.get("graceful_stop_confirmed")
+        if not isinstance(graceful_stop, bool):
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator graceful stop evidence is missing or invalid")
+        elif not graceful_stop:
+            result = "COLLECTION_FAILED"
+            evidence.append("managed V1 emulator did not confirm graceful stop")
+        if emulator.get("mode") == "idle":
+            session_owned = emulator.get("session_transport_owned")
+            if not isinstance(session_owned, bool):
+                result = "COLLECTION_FAILED"
+                evidence.append("idle V1 emulator session ownership evidence is missing or invalid")
+            elif not session_owned:
+                result = "COLLECTION_FAILED"
+                evidence.append("idle V1 emulator did not own the final session transport")
+            session_continuous = emulator.get("session_transport_continuous")
+            if not isinstance(session_continuous, bool):
+                result = "COLLECTION_FAILED"
+                evidence.append(
+                    "idle V1 emulator transport continuity evidence is missing or invalid"
+                )
+            elif not session_continuous:
+                result = "COLLECTION_FAILED"
+                evidence.append("idle V1 emulator lost session transport during the window")
     if suite == "replay":
         replay_process = window.get("replay") if isinstance(window.get("replay"), dict) else {}
         if replay_process.get("completed") is not True:
@@ -2524,6 +2624,7 @@ def classify_window(
             window.get("reconnect_preflight"),
             handshake_checks,
             reconnect_raw_checks,
+            legacy_lifecycle=window.get("schema_version") == 1,
         )
         replay_checks = {
             **metric_checks,
@@ -2683,6 +2784,23 @@ def classify_window(
             "mode": emulator.get("mode", ""),
             "completed": emulator.get("completed") is True,
             "managed_stop": emulator.get("managed_stop") is True,
+            "session_transport_owned": (
+                emulator.get("session_transport_owned")
+                if isinstance(emulator.get("session_transport_owned"), bool)
+                else None
+            ),
+            "session_transport_continuous": (
+                emulator.get("session_transport_continuous")
+                if isinstance(emulator.get("session_transport_continuous"), bool)
+                else None
+            ),
+            "graceful_stop_confirmed": emulator.get("graceful_stop_confirmed") is True,
+            "returncode": (
+                emulator.get("returncode")
+                if isinstance(emulator.get("returncode"), int)
+                and not isinstance(emulator.get("returncode"), bool)
+                else None
+            ),
         }
         if emulator
         else {},

@@ -73,7 +73,9 @@ RECONNECT_PREFLIGHT_RESULT = {
     "handshake_ready_while_alive": True,
     "serial_fence_observed": True,
     "managed_stop": True,
+    "graceful_stop_confirmed": True,
     "confirmed_exit": True,
+    "returncode": 0,
     "cleanup_marker_count": 1,
     "serial_session_continuous": True,
     "boot_observed_before_second_complete": False,
@@ -480,7 +482,7 @@ def write_window(
             }
         )
     window_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "result": "COLLECTED",
         "suite": suite,
         "product_fingerprint": PRODUCT_FINGERPRINT,
@@ -488,6 +490,15 @@ def write_window(
         "git_worktree_clean": True,
         "scoring_path": str(step / "scoring.json"),
         "manifest_path": str(step / "manifest.json"),
+        "v1_emulator": {
+            "mode": "bench" if suite == "replay" else "idle",
+            "completed": replay_completed if suite == "replay" else True,
+            "managed_stop": True,
+            "session_transport_owned": None if suite == "replay" else True,
+            "session_transport_continuous": None if suite == "replay" else True,
+            "graceful_stop_confirmed": True,
+            "returncode": 0,
+        },
     }
     if suite == "replay":
         csv_path = step / "perf.csv"
@@ -1483,6 +1494,11 @@ def test_replay_reconnect_requires_actionable_lifecycle_evidence() -> None:
         ("handshake_ready_while_alive", False, "handshake_ready_while_alive=False expected=True"),
         ("serial_fence_observed", False, "serial_fence_observed=False expected=True"),
         ("managed_stop", False, "managed_stop=False expected=True"),
+        (
+            "graceful_stop_confirmed",
+            False,
+            "graceful_stop_confirmed=False expected=True",
+        ),
         ("confirmed_exit", False, "confirmed_exit=False expected=True"),
         ("serial_session_continuous", False, "serial_session_continuous=False expected=True"),
         (
@@ -1492,6 +1508,7 @@ def test_replay_reconnect_requires_actionable_lifecycle_evidence() -> None:
         ),
         ("cleanup_marker_count", 0, "cleanup_marker_count=0 expected=1"),
         ("cleanup_marker_count", 2, "cleanup_marker_count=2 expected=1"),
+        ("returncode", 7, "returncode=7 expected=0"),
     )
     for field, value, expected_message in mutants:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1508,7 +1525,12 @@ def test_replay_reconnect_requires_actionable_lifecycle_evidence() -> None:
             assert_true(proc.returncode == 2, f"{field}: {proc.stdout}{proc.stderr}")
             assert_true(expected_message in proc.stdout, f"{field}: {proc.stdout}")
 
-    for missing_field in ("serial_fence_observed", "cleanup_marker_count"):
+    for missing_field in (
+        "serial_fence_observed",
+        "graceful_stop_confirmed",
+        "cleanup_marker_count",
+        "returncode",
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_window(root, "replay")
@@ -1533,7 +1555,9 @@ def test_replay_reconnect_requires_actionable_lifecycle_evidence() -> None:
 
     for field, value in (
         ("confirmed_exit", "yes"),
+        ("graceful_stop_confirmed", "yes"),
         ("cleanup_marker_count", True),
+        ("returncode", "zero"),
     ):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3518,11 +3542,195 @@ def test_managed_emulator_must_cover_every_live_window() -> None:
             "mode": "idle",
             "completed": False,
             "managed_stop": True,
+            "session_transport_owned": True,
+            "session_transport_continuous": True,
+            "graceful_stop_confirmed": True,
+            "returncode": 0,
         }
         write_json(window_path, window)
         proc = run_score(root, "core")
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
         assert_true("managed V1 emulator did not cover" in proc.stdout, proc.stdout)
+
+
+def test_current_emulator_shutdown_and_ownership_evidence_fail_closed() -> None:
+    mutants = (
+        (
+            "graceful_stop_confirmed",
+            False,
+            "managed V1 emulator did not confirm graceful stop",
+        ),
+        (
+            "graceful_stop_confirmed",
+            None,
+            "managed V1 emulator graceful stop evidence is missing or invalid",
+        ),
+        (
+            "session_transport_owned",
+            False,
+            "idle V1 emulator did not own the final session transport",
+        ),
+        (
+            "session_transport_owned",
+            None,
+            "idle V1 emulator session ownership evidence is missing or invalid",
+        ),
+        (
+            "session_transport_owned",
+            "yes",
+            "idle V1 emulator session ownership evidence is missing or invalid",
+        ),
+        (
+            "session_transport_continuous",
+            False,
+            "idle V1 emulator lost session transport during the window",
+        ),
+        (
+            "session_transport_continuous",
+            None,
+            "idle V1 emulator transport continuity evidence is missing or invalid",
+        ),
+        (
+            "session_transport_continuous",
+            "yes",
+            "idle V1 emulator transport continuity evidence is missing or invalid",
+        ),
+        (
+            "managed_stop",
+            False,
+            "managed V1 emulator was not stopped by the runner",
+        ),
+        (
+            "managed_stop",
+            None,
+            "managed V1 emulator stop evidence is missing or invalid",
+        ),
+        (
+            "completed",
+            None,
+            "managed V1 emulator completion evidence is missing or invalid",
+        ),
+        (
+            "returncode",
+            7,
+            "managed V1 emulator graceful teardown exited with code 7",
+        ),
+        (
+            "returncode",
+            None,
+            "managed V1 emulator return code evidence is missing or invalid",
+        ),
+    )
+    for field, value, expected in mutants:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "core")
+            window_path = root / "core" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            if value is None:
+                window["v1_emulator"].pop(field)
+            else:
+                window["v1_emulator"][field] = value
+            write_json(window_path, window)
+            proc = run_score(root, "core")
+            assert_true(proc.returncode == 3, f"{field}: {proc.stdout}{proc.stderr}")
+            assert_true(expected in proc.stdout, f"{field}: {proc.stdout}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        proc = run_score(root, "core")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        summary = result["windows"][0]["v1_emulator"]
+        assert_true(
+            summary["session_transport_owned"] is True
+            and summary["session_transport_continuous"] is True
+            and summary["graceful_stop_confirmed"] is True
+            and summary["returncode"] == 0,
+            f"current emulator evidence was dropped from the summary: {summary}",
+        )
+
+    structural_mutants = (
+        (None, "managed V1 emulator evidence is missing or invalid"),
+        ([], "managed V1 emulator evidence is missing or invalid"),
+        ({}, "managed V1 emulator mode=None expected='idle'"),
+        (
+            {
+                "mode": "bench",
+                "completed": True,
+                "managed_stop": True,
+                "graceful_stop_confirmed": True,
+                "returncode": 0,
+            },
+            "managed V1 emulator mode='bench' expected='idle'",
+        ),
+    )
+    for mutant, expected in structural_mutants:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(root, "core")
+            window_path = root / "core" / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            if mutant is None:
+                window.pop("v1_emulator")
+            else:
+                window["v1_emulator"] = mutant
+            write_json(window_path, window)
+            proc = run_score(root, "core")
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(expected in proc.stdout, proc.stdout)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        window_path = root / "core" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["completion"] = {"source": "from_csv"}
+        window["v1_emulator"] = {}
+        write_json(window_path, window)
+        proc = run_score(root, "core")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+
+
+def test_explicit_legacy_window_preserves_pre_graceful_stop_scoring() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["schema_version"] = 1
+        window["reconnect_preflight"].pop("graceful_stop_confirmed")
+        window["reconnect_preflight"].pop("returncode")
+        window["v1_emulator"].pop("graceful_stop_confirmed")
+        window["v1_emulator"].pop("returncode")
+        window["v1_emulator"].pop("session_transport_owned")
+        window["v1_emulator"].pop("session_transport_continuous")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        summary = result["windows"][0]["v1_emulator"]
+        assert_true(
+            summary["session_transport_owned"] is None
+            and summary["session_transport_continuous"] is None
+            and summary["graceful_stop_confirmed"] is False
+            and summary["returncode"] is None,
+            f"legacy absence was not retained explicitly in the summary: {summary}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        window_path = root / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window.pop("schema_version")
+        window["reconnect_preflight"].pop("graceful_stop_confirmed")
+        window["v1_emulator"].pop("graceful_stop_confirmed")
+        write_json(window_path, window)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("schema_version" in proc.stdout, proc.stdout)
 
 
 def test_requested_replay_camera_separates_product_and_evidence_failures() -> None:
@@ -3771,6 +3979,8 @@ def main() -> int:
     test_replay_mismatch_is_actionable_failure()
     test_replay_process_failure_is_collection_failure()
     test_managed_emulator_must_cover_every_live_window()
+    test_current_emulator_shutdown_and_ownership_evidence_fail_closed()
+    test_explicit_legacy_window_preserves_pre_graceful_stop_scoring()
     test_requested_replay_camera_separates_product_and_evidence_failures()
     test_strict_camera_ownership_and_confidence_are_required()
     test_strict_camera_bytes_and_window_identity_are_required()

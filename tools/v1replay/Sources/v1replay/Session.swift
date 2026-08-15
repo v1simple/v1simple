@@ -135,8 +135,29 @@ extension V1 {
             return Set(subscriptions.map(\.central)).count
         }
 
+        var shortSubscriberCount: Int {
+            return Set(
+                subscriptions.lazy
+                    .filter { $0.channel == .displayShort }
+                    .map(\.central)
+            ).count
+        }
+
+        /// Machine-readable transport ownership is valid only while one
+        /// central, and no ambiguous second central, owns short notifications.
+        var sessionTransportActive: Bool { return shortSubscriberCount == 1 }
+
         var bufferedByteCount: Int { return receiveBuffer.count }
         var storedUserBytes: [UInt8] { return userBytes.bytes }
+
+        /// End one CoreBluetooth transport lifetime without resetting the
+        /// emulated detector's persistent control/user settings.
+        mutating func resetTransport() {
+            subscriptions.removeAll(keepingCapacity: true)
+            receiveBuffer.removeAll(keepingCapacity: true)
+            pendingPackets.removeAll(keepingCapacity: true)
+            alertDataRequested = false
+        }
 
         mutating func subscribe(central: UUID, channel: SubscriptionChannel) {
             subscriptions.insert(Subscription(central: central, channel: channel))

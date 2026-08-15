@@ -6,9 +6,6 @@ import Darwin
 // =============================================================================
 
 final class Console {
-
-    static var shared: Console?
-
     private let lock = NSLock()
     private var status: String = ""
     private var rawModeActive = false
@@ -19,7 +16,6 @@ final class Console {
 
     init() {
         interactive = isatty(STDIN_FILENO) == 1
-        Console.shared = self
     }
 
     // MARK: - Raw mode
@@ -31,17 +27,6 @@ final class Console {
         raw.c_lflag &= ~(tcflag_t(ECHO) | tcflag_t(ICANON))
         guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return }
         rawModeActive = true
-
-        _ = signal(SIGINT) { _ in
-            Console.shared?.restore()
-            fputs("\n", stdout)
-            fflush(stdout)
-            _exit(0)
-        }
-        _ = signal(SIGTERM) { _ in
-            Console.shared?.restore()
-            _exit(0)
-        }
     }
 
     func restore() {

@@ -515,7 +515,15 @@ class ProductionRuntime:
             timeout_s=timeout_seconds,
         )
 
-    def make_emulator(self, executable: Path, cycle_dir: Path) -> Any:
+    def radio_lease(self) -> Any:
+        return self.run_window.V1RadioLease()
+
+    def make_emulator(
+        self,
+        executable: Path,
+        cycle_dir: Path,
+        lease_fd: int,
+    ) -> Any:
         return self.run_window.V1Emulator(
             executable,
             cycle_dir,
@@ -528,6 +536,7 @@ class ProductionRuntime:
             handshake_notification_hold_ms=(
                 SECOND_START_RELEASE_SAFETY_DEADLINE_MS
             ),
+            lease_fd=lease_fd,
         )
 
     def run_preflight(
@@ -883,6 +892,7 @@ def _run_cycle(
     ordinal: int,
     boot_anchor: int,
     cleanup_anchor: int,
+    lease_fd: int,
 ) -> tuple[dict[str, Any], bool]:
     cycle_dir = root / "cycles" / f"{ordinal:04d}"
     cycle_dir.mkdir(parents=True, exist_ok=False)
@@ -902,7 +912,7 @@ def _run_cycle(
         runtime.establish_readiness(serial_session, config.timeout_seconds)
         if serial_session.boot_marker_count != boot_anchor:
             raise RuntimeError("board booted between reconnect stress cycles")
-        emulator = runtime.make_emulator(executable, cycle_dir)
+        emulator = runtime.make_emulator(executable, cycle_dir, lease_fd)
         preflight_raw = runtime.run_preflight(
             serial_session,
             emulator,
@@ -1187,6 +1197,9 @@ def run_stress(config: StressConfig, runtime: Any) -> int:
     interrupted = False
     boot_anchor = 0
     cleanup_anchor = 0
+    radio_lease_context: Any = None
+    radio_lease_entered = False
+    lease_fd: int | None = None
 
     try:
         identity = runtime.build_identity(config)
@@ -1199,6 +1212,17 @@ def run_stress(config: StressConfig, runtime: Any) -> int:
         executable_identity = _executable_identity(executable)
         identity["v1replay_executable"] = executable_identity
         _atomic_write_json(root / IDENTITY_NAME, identity)
+
+        # Share run_window's host-wide radio exclusion. The inherited fd stays
+        # live in each cycle child, so owner death cannot hide an advertiser
+        # from a competing bench or reconnect-stress process.
+        radio_lease_context = runtime.radio_lease()
+        radio_lease = radio_lease_context.__enter__()
+        radio_lease_entered = True
+        lease_fd = getattr(radio_lease, "fd", None)
+        if not isinstance(lease_fd, int) or isinstance(lease_fd, bool) or lease_fd < 0:
+            raise RuntimeError("managed V1 radio lease did not provide an inheritable fd")
+
         port = runtime.wait_for_port(config.port, 30)
         if config.upload:
             runtime.upload_firmware(port, root / "firmware_upload.log")
@@ -1261,6 +1285,7 @@ def run_stress(config: StressConfig, runtime: Any) -> int:
                 ordinal,
                 boot_anchor,
                 cleanup_anchor,
+                lease_fd,
             )
             cycle_result_path = root / cycle_payload["cycle_result"]["path"]
             progress_entry = {
@@ -1342,6 +1367,15 @@ def run_stress(config: StressConfig, runtime: Any) -> int:
                     exit_code = 3
                     failure_kind = "serial_close"
                     terminal_error = f"serial close failed: {exc}"
+        if radio_lease_entered:
+            try:
+                radio_lease_context.__exit__(None, None, None)
+            except Exception as exc:  # noqa: BLE001 - radio exclusion must fail closed
+                if exit_code == 0:
+                    final_result = COLLECTION_FAILED
+                    exit_code = 3
+                    failure_kind = "radio_lease_release"
+                    terminal_error = f"radio lease release failed: {exc}"
 
     if identity:
         try:

@@ -64,11 +64,13 @@ class FakeRuntime:
         terminal_identity_drift: bool = False,
         binary_drift_cycle: int | None = None,
         upload_failure: bool = False,
+        lease_failure: bool = False,
     ) -> None:
         self.modes = modes or {}
         self.terminal_identity_drift = terminal_identity_drift
         self.binary_drift_cycle = binary_drift_cycle
         self.upload_failure = upload_failure
+        self.lease_failure = lease_failure
         self.identity_calls = 0
         self.sleeps: list[float] = []
         self.readiness_calls = 0
@@ -78,6 +80,8 @@ class FakeRuntime:
         self.binary_path: Path | None = None
         self.serial_grader = stress.ProductionRuntime()
         self.pre_stop_fence_timeouts: list[float] = []
+        self.host_events: list[str] = []
+        self.emulator_lease_fds: list[int] = []
 
     def now_utc(self) -> str:
         return "2026-08-14T12:00:00Z"
@@ -122,16 +126,19 @@ class FakeRuntime:
 
     def wait_for_port(self, preferred: str, timeout_seconds: int = 30) -> str:
         del preferred, timeout_seconds
+        self.host_events.append("wait_for_port")
         return "/dev/fake"
 
     def upload_firmware(self, port: str, path: Path) -> None:
         del port
+        self.host_events.append("upload")
         path.write_text("fake upload\n", encoding="utf-8")
         if self.upload_failure:
             raise RuntimeError("fake upload failed")
 
     def open_serial(self, port: str, baud: int, path: Path) -> FakeSerial:
         del port, baud
+        self.host_events.append("open_serial")
         self.serial = FakeSerial(path)
         return self.serial
 
@@ -165,13 +172,33 @@ class FakeRuntime:
         del timeout_seconds
         serial_session.emit("QSTATUS fence=terminal")
 
+    def radio_lease(self) -> object:
+        runtime = self
+
+        class FakeRadioLease:
+            fd = 73
+
+            def __enter__(self) -> object:
+                runtime.host_events.append("lease_acquire")
+                if runtime.lease_failure:
+                    raise RuntimeError("fake radio lease unavailable")
+                return self
+
+            def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+                runtime.host_events.append("lease_release")
+
+        return FakeRadioLease()
+
     def make_emulator(
         self,
         executable: Path,
         cycle_dir: Path,
+        lease_fd: int,
     ) -> FakeEmulator:
         del executable
         ordinal = int(cycle_dir.name)
+        self.host_events.append(f"emulator_{ordinal}")
+        self.emulator_lease_fds.append(lease_fd)
         emulator = FakeEmulator(ordinal)
         self.emulators[ordinal] = emulator
         return emulator
@@ -218,7 +245,9 @@ class FakeRuntime:
             "handshake_ready_while_alive": True,
             "serial_fence_observed": True,
             "managed_stop": True,
+            "graceful_stop_confirmed": True,
             "confirmed_exit": True,
+            "returncode": 0,
             "serial_session_continuous": True,
             "boot_observed_before_second_complete": False,
             "cleanup_marker_count": 1,
@@ -343,7 +372,11 @@ def test_second_start_release_contract() -> None:
 
     runtime.run_window.V1Emulator = recording_emulator
     try:
-        runtime.make_emulator(Path("/fake/v1replay"), Path("/fake/0001"))
+        runtime.make_emulator(
+            Path("/fake/v1replay"),
+            Path("/fake/0001"),
+            lease_fd=42,
+        )
     finally:
         runtime.run_window.V1Emulator = original_emulator
     assert_true(captured.get("handshake_only") is True, "stress emulator is not handshake-only")
@@ -351,6 +384,7 @@ def test_second_start_release_contract() -> None:
         captured.get("handshake_notification_hold_ms") == 1999,
         "stress runner did not pass the bounded second-START release deadline",
     )
+    assert_true(captured.get("lease_fd") == 42, "stress child did not inherit the radio lease")
 
 
 def test_production_ledger_scorer_exposes_retry_timing() -> None:
@@ -497,6 +531,25 @@ def test_three_pass_cycles() -> None:
         assert_true(exit_code == 0 and terminal["result"] == stress.PASS, "3-pass run failed")
         assert_true(terminal["passed_cycles"] == 3, "wrong pass count")
         assert_true(runtime.sleeps == [2.1, 1.1, 1.1], "wrong pre-cycle waits")
+        assert_true(
+            runtime.host_events
+            == [
+                "lease_acquire",
+                "wait_for_port",
+                "upload",
+                "wait_for_port",
+                "open_serial",
+                "emulator_1",
+                "emulator_2",
+                "emulator_3",
+                "lease_release",
+            ],
+            f"radio lease did not enclose hardware/emulator ownership: {runtime.host_events}",
+        )
+        assert_true(
+            runtime.emulator_lease_fds == [73, 73, 73],
+            f"stress children did not share one inherited lease: {runtime.emulator_lease_fds}",
+        )
         assert_true(runtime.readiness_calls == 4, "initial/per-cycle readiness barriers missing")
         assert_true(
             runtime.pre_stop_fence_timeouts == [0.25, 0.25, 0.25],
@@ -657,6 +710,19 @@ def test_reuse_invalid_arguments_and_terminal_drift() -> None:
         terminal = load_json(interrupted_root / stress.RESULT_NAME)
         assert_true(exit_code == 130, "operator interruption did not return 130")
         assert_true(terminal["failure_kind"] == "interrupted", "interruption taxonomy changed")
+
+        lease_root = parent / "lease-failure"
+        lease_runtime = FakeRuntime(lease_failure=True)
+        exit_code = stress.run_stress(config(lease_root, 1, upload=True), lease_runtime)
+        terminal = load_json(lease_root / stress.RESULT_NAME)
+        assert_true(
+            exit_code == 3 and terminal["result"] == stress.COLLECTION_FAILED,
+            "unavailable stress radio lease did not fail closed",
+        )
+        assert_true(
+            lease_runtime.host_events == ["lease_acquire"],
+            f"hardware was touched before lease admission: {lease_runtime.host_events}",
+        )
 
     for argv in (
         ["--cycles", "1"],

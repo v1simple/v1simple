@@ -199,6 +199,9 @@ final class V1Peripheral: NSObject {
     var displaySubscribed: Bool {
         return withState { $0.session.readiness.displaySubscribed }
     }
+    var sessionTransportActive: Bool {
+        return withState { $0.session.sessionTransportActive }
+    }
     var longSubscribed: Bool {
         return withState { $0.session.readiness.longTrafficSubscribed }
     }
@@ -372,6 +375,21 @@ final class V1Peripheral: NSObject {
         handshakeLedger?.endEpoch()
     }
 
+    /// Clear every value owned by one CoreBluetooth transport lifetime. This
+    /// runs on the peripheral queue, while `State.session` remains lock-owned
+    /// for readers on the console/main thread.
+    private func resetSessionTransport() {
+        endHandshakeEpoch()
+        pending.removeAll()
+        lastValues.removeAll()
+        shortSubscriberIDs.removeAll()
+        handshakeClearDelivery = HandshakeClearDeliveryState()
+        withState {
+            $0.isAdvertising = false
+            $0.session.resetTransport()
+        }
+    }
+
     private func send(_ decision: V1.ReplyDecision) {
         switch decision.channel {
         case .displayShort:
@@ -466,15 +484,17 @@ final class V1Peripheral: NSObject {
         ])
     }
 
-    func stop() {
+    func stop(onStopping: ((Bool) -> Void)? = nil) {
         queue.sync {
+            // Publish the exact final ownership state while the peripheral
+            // queue still excludes transport mutations. The callback is
+            // synchronous so its flushed machine event precedes every reset.
+            onStopping?(withState { $0.session.sessionTransportActive })
             isStopping = true
-            pending.removeAll()
-            handshakeClearDelivery.discardPending()
             if manager.isAdvertising { manager.stopAdvertising() }
             manager.removeAllServices()
-            shortSubscriberIDs.removeAll()
-            endHandshakeEpoch()
+            resetSessionTransport()
+            onStateChange?()
         }
     }
 
@@ -600,33 +620,28 @@ final class V1Peripheral: NSObject {
 extension V1Peripheral: CBPeripheralManagerDelegate {
 
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
-        switch peripheral.state {
-        case .poweredOn:
-            withState { $0.isPoweredOn = true }
-            if !serviceAdded {
-                serviceAdded = true
-                peripheral.add(buildService())
+        guard peripheral.state == .poweredOn else {
+            withState { $0.isPoweredOn = false }
+            resetSessionTransport()
+            switch peripheral.state {
+            case .poweredOff:
+                onLog?("Bluetooth is off — turn it on to advertise")
+            case .unauthorized:
+                onLog?("Bluetooth permission denied. System Settings → Privacy & Security → Bluetooth, "
+                       + "and enable the terminal application that launched v1replay.")
+            case .unsupported:
+                onLog?("This Mac reports no BLE peripheral support")
+            default:
+                break
             }
-        case .poweredOff:
-            withState { $0.isPoweredOn = false }
-            shortSubscriberIDs.removeAll()
-            endHandshakeEpoch()
-            onLog?("Bluetooth is off — turn it on to advertise")
-        case .unauthorized:
-            withState { $0.isPoweredOn = false }
-            shortSubscriberIDs.removeAll()
-            endHandshakeEpoch()
-            onLog?("Bluetooth permission denied. System Settings → Privacy & Security → Bluetooth, "
-                   + "and enable the terminal application that launched v1replay.")
-        case .unsupported:
-            withState { $0.isPoweredOn = false }
-            shortSubscriberIDs.removeAll()
-            endHandshakeEpoch()
-            onLog?("This Mac reports no BLE peripheral support")
-        default:
-            withState { $0.isPoweredOn = false }
-            shortSubscriberIDs.removeAll()
-            endHandshakeEpoch()
+            onStateChange?()
+            return
+        }
+
+        withState { $0.isPoweredOn = true }
+        if !serviceAdded {
+            serviceAdded = true
+            peripheral.add(buildService())
         }
         onStateChange?()
     }

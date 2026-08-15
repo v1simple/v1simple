@@ -414,7 +414,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     pending_profile_updates: list[dict[str, Any]] = []
 
     class FakeEmulator:
-        def __init__(self, *_args: Any) -> None:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             self.started = False
 
         def start(self) -> None:
@@ -423,6 +423,9 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
 
         def health_problem(self) -> str:
             return ""
+
+        def wait_for_session_transport(self, _timeout_s: float) -> None:
+            assert_true(self.started, "idle ownership was checked before emulator start")
 
         def finish(self, completed: bool) -> dict[str, Any]:
             return {"completed": bool(completed and self.started), "mode": "idle"}
@@ -434,6 +437,15 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         def close(self) -> None:
             pass
 
+    class FakeLease:
+        fd = 42
+
+        def __enter__(self) -> FakeLease:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            pass
+
     originals = {
         "CameraCapture": run_window_module.CameraCapture,
         "V1Emulator": run_window_module.V1Emulator,
@@ -442,6 +454,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         "wait_ready": run_window_module.wait_ready,
         "start_and_wait": run_window_module.start_and_wait,
         "download_csv": run_window_module.download_csv,
+        "V1RadioLease": run_window_module.V1RadioLease,
     }
     run_window_module.CameraCapture = lambda out, duration: (  # type: ignore[assignment]
         cameras.append(
@@ -471,6 +484,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         return path
 
     run_window_module.download_csv = fake_download  # type: ignore[assignment]
+    run_window_module.V1RadioLease = FakeLease  # type: ignore[assignment]
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

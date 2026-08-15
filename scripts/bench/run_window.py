@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import fcntl
 import glob
 import json
 import math
@@ -56,6 +57,7 @@ BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
 QGETCSV_BUSY_RETRY_TIMEOUT_S = 15.0
 QGETCSV_BUSY_RETRY_DELAY_S = 0.25
+QABORT_CONFIRM_TIMEOUT_S = 5.0
 HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"
 RECONNECT_LEDGER_NAME = "handshake_ledger_preflight.jsonl"
 RECONNECT_LOG_NAME = "v1replay_reconnect_preflight.log"
@@ -77,6 +79,12 @@ MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 MAX_HANDSHAKE_START_REQUESTS = 5
 MIN_HANDSHAKE_START_RETRY_MS = 1000
 MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
+# This must be shared across clones/worktrees and must never sit under artifact
+# retention, which could unlink a live lock and allow a second advertiser.
+V1_RADIO_LEASE_PATH = (
+    Path.home() / ".local" / "state" / "v1simple" / "managed-v1-radio.lock"
+)
+V1_RADIO_QUIET_SECONDS = 1.0
 
 START_ALERT_REQUEST = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
 VERSION_REQUEST = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
@@ -135,6 +143,44 @@ class ReconnectBehaviorError(RuntimeError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class V1RadioLease:
+    """Exclude other managed V1 advertisers, including inherited orphan children."""
+
+    def __init__(
+        self,
+        path: Path = V1_RADIO_LEASE_PATH,
+        quiet_seconds: float = V1_RADIO_QUIET_SECONDS,
+    ) -> None:
+        self.path = path
+        self.quiet_seconds = quiet_seconds
+        self.fd: int | None = None
+
+    def __enter__(self) -> V1RadioLease:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            os.close(fd)
+            raise RuntimeError(
+                "managed V1 radio lease unavailable; another bench or orphan emulator owns it"
+            ) from exc
+        os.set_inheritable(fd, True)
+        self.fd = fd
+        if self.quiet_seconds > 0:
+            time.sleep(self.quiet_seconds)
+        return self
+
+    def close(self) -> None:
+        if self.fd is None:
+            return
+        os.close(self.fd)
+        self.fd = None
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -203,13 +249,23 @@ def utc_now() -> str:
 
 
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
-    payload.setdefault("schema_version", 1)
+    payload.setdefault("schema_version", 2)
     payload.setdefault("timestamp_utc", utc_now())
     (out_dir / "window_result.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def install_signal_handlers() -> None:
+    handled = False
+
     def interrupt(signum: int, _frame: Any) -> None:
+        nonlocal handled
+        if handled:
+            return
+        handled = True
+        # Cleanup owns the process after the first interruption. A repeated
+        # Ctrl-C/SIGTERM must not interrupt emulator withdrawal or evidence flush.
+        for managed_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(managed_signal, signal.SIG_IGN)
         raise InterruptedError(f"received signal {signum}")
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -345,7 +401,10 @@ class BenchSerial:
 def parse_json_line(line: str, prefix: str) -> dict[str, Any]:
     if not line.startswith(prefix):
         raise RuntimeError(f"expected {prefix!r}, got: {line}")
-    return json.loads(line[len(prefix):])
+    payload = json.loads(line[len(prefix):])
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"expected {prefix!r} JSON object")
+    return payload
 
 
 def wait_ready(q: BenchSerial, timeout_s: int) -> dict[str, Any]:
@@ -688,8 +747,55 @@ def start_and_wait(
     start_payload: dict[str, Any] | None = None
     firmware_suite = "core" if suite == "replay" else suite
     command = f"QSTART {firmware_suite} {duration_s}"
+
+    def abort_started_window() -> str:
+        try:
+            q.write_command("QABORT")
+            deadline = time.monotonic() + QABORT_CONFIRM_TIMEOUT_S
+            last_unexpected = ""
+            while time.monotonic() < deadline:
+                line = q.read_protocol_line(
+                    ("QRESP ", "QERR "),
+                    max(0.1, deadline - time.monotonic()),
+                )
+                if line.startswith("QRESP "):
+                    payload = parse_json_line(line, "QRESP ")
+                    if (
+                        payload.get("ok") is False
+                        and payload.get("state") == "error"
+                        and payload.get("suite") == firmware_suite
+                        and payload.get("message") == "aborted"
+                        and payload.get("error") == "aborted"
+                    ):
+                        return ""
+                    last_unexpected = f"unexpected abort acknowledgement: {payload}"
+                else:
+                    last_unexpected = f"unexpected abort response: {line}"
+            return last_unexpected or "timed out waiting for the abort acknowledgement"
+        except Exception as exc:  # noqa: BLE001 - report cleanup beside root cause
+            return str(exc)
+
+    def preserve_failure_after_abort(exc: BaseException) -> None:
+        abort_error = abort_started_window()
+        if not abort_error:
+            return
+        detail = f"QABORT cleanup was not confirmed: {abort_error}"
+        if isinstance(exc, InterruptedError):
+            exc.args = (f"{exc}; {detail}",)
+            return
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            exc.add_note(detail)
+            return
+        raise RuntimeError(f"{exc}; {detail}") from exc
+
+    start_attempted = False
     while time.monotonic() < start_deadline:
-        q.write_command(command)
+        start_attempted = True
+        try:
+            q.write_command(command)
+        except BaseException as exc:
+            preserve_failure_after_abort(exc)
+            raise
         attempt_deadline = min(start_deadline, time.monotonic() + 5)
         retry_start = False
         while time.monotonic() < attempt_deadline:
@@ -699,10 +805,19 @@ def start_and_wait(
             except TimeoutError as exc:
                 last_start_error = {"timeout": str(exc)}
                 break
+            except BaseException as exc:
+                preserve_failure_after_abort(exc)
+                raise
             if line.startswith("QRESP "):
-                payload = parse_json_line(line, "QRESP ")
+                try:
+                    payload = parse_json_line(line, "QRESP ")
+                    if not isinstance(payload.get("ok"), bool):
+                        raise RuntimeError("QSTART acknowledgement ok field is not boolean")
+                except BaseException as exc:
+                    preserve_failure_after_abort(exc)
+                    raise
                 if (
-                    payload.get("ok")
+                    payload.get("ok") is True
                     and payload.get("state") == "running"
                     and payload.get("suite") == firmware_suite
                 ):
@@ -710,59 +825,83 @@ def start_and_wait(
                     break
                 last_start_error = {"stale_response": payload}
                 continue
-            last_start_error = parse_json_line(line, "QERR ")
+            try:
+                last_start_error = parse_json_line(line, "QERR ")
+            except BaseException as exc:
+                preserve_failure_after_abort(exc)
+                raise
             retry_reason = str(last_start_error.get("error") or last_start_error.get("message") or "")
             if retry_reason == "perf_sd_busy_retry":
                 retry_start = True
                 break
-            raise RuntimeError(f"QSTART failed: {last_start_error}")
+            exc = RuntimeError(f"QSTART failed: {last_start_error}")
+            preserve_failure_after_abort(exc)
+            raise exc
         if start_payload is not None:
             break
         if retry_start:
             time.sleep(0.25)
             continue
     if start_payload is None:
-        raise RuntimeError(f"QSTART did not produce a running acknowledgement: {last_start_error}")
+        exc = RuntimeError(
+            f"QSTART did not produce a running acknowledgement: {last_start_error}"
+        )
+        if start_attempted:
+            preserve_failure_after_abort(exc)
+        raise exc
 
     print(
         f"[bench] started suite={suite} duration={duration_s}s csv={start_payload.get('csvPath') or 'unknown'}; "
         "metrics are recording to SD",
         flush=True,
     )
-    if after_started is not None:
-        after_started()
 
-    deadline = time.monotonic() + duration_s + grace_s
-    run_started = time.monotonic()
-    next_progress = run_started + RUN_PROGRESS_INTERVAL_S
-    last_event: dict[str, Any] = start_payload
-    while time.monotonic() < deadline:
-        if health_check is not None:
-            problem = health_check()
-            if problem:
-                try:
-                    q.write_command("QABORT")
-                except Exception:  # noqa: BLE001 - retain the original companion failure
-                    pass
-                raise RuntimeError(problem)
-        try:
-            line = q.read_protocol_line(("QEVENT ", "QERR "), 1)
-        except TimeoutError:
-            now = time.monotonic()
-            if now >= next_progress:
-                elapsed_s = min(duration_s, int(now - run_started))
-                print(f"[bench] running suite={suite}: {elapsed_s}/{duration_s}s elapsed", flush=True)
-                next_progress = now + RUN_PROGRESS_INTERVAL_S
-            continue
-        prefix = "QEVENT " if line.startswith("QEVENT ") else "QERR "
-        payload = parse_json_line(line, prefix)
-        last_event = payload
-        if payload.get("state") in {"done", "error"}:
-            if not payload.get("ok"):
-                raise RuntimeError(f"bench window failed: {payload}")
-            print(f"[bench] firmware completed suite={suite}: {payload}", flush=True)
-            return payload
-    raise RuntimeError(f"bench window timed out waiting for completion; last={last_event}")
+    try:
+        if after_started is not None:
+            after_started()
+
+        deadline = time.monotonic() + duration_s + grace_s
+        run_started = time.monotonic()
+        next_progress = run_started + RUN_PROGRESS_INTERVAL_S
+        last_event: dict[str, Any] = start_payload
+        while time.monotonic() < deadline:
+            if health_check is not None:
+                problem = health_check()
+                if problem:
+                    raise RuntimeError(problem)
+            try:
+                line = q.read_protocol_line(("QEVENT ", "QERR "), 1)
+            except TimeoutError:
+                now = time.monotonic()
+                if now >= next_progress:
+                    elapsed_s = min(duration_s, int(now - run_started))
+                    print(
+                        f"[bench] running suite={suite}: {elapsed_s}/{duration_s}s elapsed",
+                        flush=True,
+                    )
+                    next_progress = now + RUN_PROGRESS_INTERVAL_S
+                continue
+            prefix = "QEVENT " if line.startswith("QEVENT ") else "QERR "
+            payload = parse_json_line(line, prefix)
+            last_event = payload
+            if payload.get("state") in {"done", "error"}:
+                if prefix != "QEVENT ":
+                    raise RuntimeError(f"bench terminal response was not QEVENT: {payload}")
+                if not isinstance(payload.get("ok"), bool):
+                    raise RuntimeError("bench terminal event ok field is not boolean")
+                if payload.get("suite") != firmware_suite:
+                    raise RuntimeError(
+                        "bench terminal event suite="
+                        f"{payload.get('suite')!r} expected={firmware_suite!r}"
+                    )
+                if payload.get("state") != "done" or payload.get("ok") is not True:
+                    raise RuntimeError(f"bench window failed: {payload}")
+                print(f"[bench] firmware completed suite={suite}: {payload}", flush=True)
+                return payload
+        raise RuntimeError(f"bench window timed out waiting for completion; last={last_event}")
+    except BaseException as exc:
+        preserve_failure_after_abort(exc)
+        raise
 
 
 def download_csv(q: BenchSerial, out_dir: Path, idle_timeout_s: int, sd_path: str = "") -> Path:
@@ -918,6 +1057,7 @@ class V1Emulator:
         blink_profile: str | None = None,
         handshake_only: bool = False,
         handshake_notification_hold_ms: int = 0,
+        lease_fd: int | None = None,
     ):
         if (
             not isinstance(handshake_notification_hold_ms, int)
@@ -939,6 +1079,7 @@ class V1Emulator:
         self.mode = "bench" if suite == "replay" else "idle"
         self.handshake_only = handshake_only
         self.handshake_notification_hold_ms = handshake_notification_hold_ms
+        self.lease_fd = lease_fd
         self.blink_profile = blink_profile or ("scenario" if suite == "replay" else "steady")
         self.log_path = out_dir / (RECONNECT_LOG_NAME if handshake_only else "v1replay.log")
         ledger_name = RECONNECT_LEDGER_NAME if handshake_only else HANDSHAKE_LEDGER_NAME
@@ -949,6 +1090,12 @@ class V1Emulator:
         self.started_monotonic: float | None = None
         self.completed = False
         self.managed_stop = False
+        self.session_transport_owned = False
+        self.session_transport_continuous = False
+        self.graceful_stop_confirmed = False
+        self._managed_shutdown_evidence: (
+            tuple[list[dict[str, Any]], int, int] | None
+        ) = None
         self.returncode: int | None = None
 
     def start(self) -> None:
@@ -963,9 +1110,15 @@ class V1Emulator:
             raise RuntimeError("refusing to overwrite an existing V1 emulator log")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_handle = self.log_path.open("wb")
-        command = [str(self.executable), self.mode]
+        command = [
+            str(self.executable),
+            self.mode,
+            "--machine-events",
+            "--owner-pid",
+            str(os.getpid()),
+        ]
         if self.mode == "bench":
-            command.extend(["--machine-events", "--blink-profile", self.blink_profile])
+            command.extend(["--blink-profile", self.blink_profile])
             if self.handshake_only:
                 command.extend(["--handshake-only", "--log-packets"])
                 if self.handshake_notification_hold_ms > 0:
@@ -983,6 +1136,7 @@ class V1Emulator:
             stdout=self.log_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            pass_fds=(() if self.lease_fd is None else (self.lease_fd,)),
         )
         self.started_monotonic = time.monotonic()
         self.started = True
@@ -1006,15 +1160,34 @@ class V1Emulator:
             "reconnect preflight timed out before one complete active handshake epoch",
         )
 
+    def wait_for_session_transport(self, timeout_s: float) -> None:
+        """Require proof that this idle emulator, not another advertiser, owns the DUT."""
+        if self.mode != "idle":
+            return
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            problem = self.health_problem()
+            if problem:
+                raise RuntimeError(problem)
+            if self._bench_event("session_transport").get("active") is True:
+                self.session_transport_owned = True
+                return
+            time.sleep(0.05)
+        raise RuntimeError(
+            "idle V1 emulator did not prove current-process session transport ownership"
+        )
+
     def finish_preflight(self, handshake_ready_while_alive: bool) -> dict[str, Any]:
         process_was_running = self.process is not None and self.process.poll() is None
-        self.managed_stop = process_was_running
+        self.managed_stop = self.managed_stop or process_was_running
         self.stop()
         confirmed_exit = self.process is not None and self.process.poll() is not None
         return {
             "handshake_ready_while_alive": bool(handshake_ready_while_alive and process_was_running),
             "managed_stop": self.managed_stop,
+            "graceful_stop_confirmed": self.graceful_stop_confirmed,
             "confirmed_exit": confirmed_exit,
+            "returncode": self.returncode,
             "log": self.log_path.name if self.log_path.is_file() else "",
             "handshake_ledger": (
                 self.handshake_ledger_path.name if self.handshake_ledger_path is not None else ""
@@ -1037,13 +1210,18 @@ class V1Emulator:
             return False
 
     def _bench_event(self, state: str) -> dict[str, Any]:
+        events = self._bench_events(state)
+        return events[-1] if events else {}
+
+    def _bench_events(self, state: str) -> list[dict[str, Any]]:
         try:
             lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            return {}
+            return []
         prefix = "V1REPLAY_EVENT "
         decoder = json.JSONDecoder()
-        for line in reversed(lines):
+        events: list[dict[str, Any]] = []
+        for line in lines:
             marker = line.find(prefix)
             if marker < 0:
                 continue
@@ -1052,8 +1230,166 @@ class V1Emulator:
             except (json.JSONDecodeError, TypeError):
                 continue
             if isinstance(event, dict) and event.get("state") == state:
-                return event
-        return {}
+                events.append(event)
+        return events
+
+    def _ordered_machine_events(self) -> list[dict[str, Any]]:
+        """Read the complete child-authored event stream after process exit."""
+        try:
+            lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            raise RuntimeError("could not read the V1 emulator machine-event log") from exc
+        prefix = "V1REPLAY_EVENT "
+        decoder = json.JSONDecoder()
+        events: list[dict[str, Any]] = []
+        for line_number, line in enumerate(lines, start=1):
+            marker = line.find(prefix)
+            if marker < 0:
+                continue
+            payload = line[marker + len(prefix) :]
+            try:
+                event, end = decoder.raw_decode(payload)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RuntimeError(
+                    f"malformed V1 emulator machine event at log line {line_number}"
+                ) from exc
+            if payload[end:].strip():
+                raise RuntimeError(
+                    f"trailing data in V1 emulator machine event at log line {line_number}"
+                )
+            if not isinstance(event, dict):
+                raise RuntimeError(
+                    f"V1 emulator machine event at log line {line_number} is not an object"
+                )
+            if not isinstance(event.get("state"), str) or not event.get("state"):
+                raise RuntimeError(
+                    f"V1 emulator machine event at log line {line_number} has no valid state"
+                )
+            events.append(event)
+        return events
+
+    def _grade_managed_shutdown(self) -> tuple[list[dict[str, Any]], int, int]:
+        """Prove graceful withdrawal from the complete child-authored event stream."""
+        if self.returncode != 0:
+            raise RuntimeError(
+                "managed V1 emulator graceful teardown exited with "
+                f"code {self.returncode}"
+            )
+        events = self._ordered_machine_events()
+        stopping_indexes = [
+            index for index, event in enumerate(events) if event.get("state") == "stopping"
+        ]
+        stopped_indexes = [
+            index for index, event in enumerate(events) if event.get("state") == "stopped"
+        ]
+        if len(stopping_indexes) != 1:
+            raise RuntimeError(
+                "managed V1 emulator shutdown requires exactly one stopping ownership snapshot"
+            )
+        if not stopped_indexes:
+            raise RuntimeError(
+                "managed V1 emulator exited without a graceful stopped marker"
+            )
+        if len(stopped_indexes) != 1:
+            raise RuntimeError(
+                "managed V1 emulator shutdown requires exactly one graceful stopped marker"
+            )
+
+        stopping_index = stopping_indexes[0]
+        stopped_index = stopped_indexes[0]
+        if stopping_index >= stopped_index:
+            raise RuntimeError(
+                "managed V1 emulator stopped marker preceded its stopping ownership snapshot"
+            )
+        if stopped_index != len(events) - 1:
+            raise RuntimeError(
+                "managed V1 emulator stopped marker is not the final machine event"
+            )
+
+        stopping_active = events[stopping_index].get("sessionTransportActive")
+        if not isinstance(stopping_active, bool):
+            raise RuntimeError(
+                "managed V1 emulator stopping ownership snapshot is not boolean"
+            )
+        if not stopping_active:
+            raise RuntimeError(
+                "managed V1 emulator did not own session transport at the stopping boundary"
+            )
+
+        teardown_observed = False
+        for index, event in enumerate(events):
+            if event.get("state") != "session_transport":
+                continue
+            if not (stopping_index < index < stopped_index):
+                continue
+            active = event.get("active")
+            if not isinstance(active, bool):
+                raise RuntimeError(
+                    "managed V1 emulator teardown session transport event is not boolean"
+                )
+            if active:
+                raise RuntimeError(
+                    "managed V1 emulator reactivated session transport during teardown"
+                )
+            teardown_observed = True
+        if not teardown_observed:
+            raise RuntimeError(
+                "managed V1 emulator stopped without a teardown session transport event"
+            )
+        return events, stopping_index, stopped_index
+
+    def _grade_idle_shutdown(self) -> None:
+        """Prove one uninterrupted admitted session through the stopping snapshot."""
+        self.session_transport_continuous = False
+        if not self.session_transport_owned:
+            raise RuntimeError(
+                "idle V1 emulator shutdown has no prior current-process ownership admission"
+            )
+        if self._managed_shutdown_evidence is None:
+            raise RuntimeError("idle V1 emulator has no managed shutdown evidence")
+        events, stopping_index, _stopped_index = self._managed_shutdown_evidence
+        first_owned_index: int | None = None
+        for index, event in enumerate(events):
+            if event.get("state") != "session_transport":
+                continue
+            active = event.get("active")
+            if not isinstance(active, bool):
+                raise RuntimeError("idle V1 emulator session transport event is not boolean")
+            if index >= stopping_index:
+                continue
+            if active:
+                if first_owned_index is None:
+                    first_owned_index = index
+            elif first_owned_index is not None:
+                raise RuntimeError(
+                    "idle V1 emulator lost session transport before the stopping boundary"
+                )
+        if first_owned_index is None:
+            raise RuntimeError(
+                "idle V1 emulator shutdown has no owned session transport event before stopping"
+            )
+        self.session_transport_continuous = True
+
+    def _has_bench_event(self, state: str, **required: Any) -> bool:
+        try:
+            lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return False
+        prefix = "V1REPLAY_EVENT "
+        decoder = json.JSONDecoder()
+        for line in lines:
+            marker = line.find(prefix)
+            if marker < 0:
+                continue
+            try:
+                event, _end = decoder.raw_decode(line[marker + len(prefix) :])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(event, dict) or event.get("state") != state:
+                continue
+            if all(event.get(key) == value for key, value in required.items()):
+                return True
+        return False
 
     def _bench_configuration(self) -> dict[str, Any]:
         return self._bench_event("configured")
@@ -1081,15 +1417,30 @@ class V1Emulator:
             and cadence_hz > 0
             and blink_samples >= 0
         )
-        self.completed = bool(
-            window_completed and process_was_running and bench_completed and configuration_valid
+        base_completed = bool(
+            window_completed
+            and process_was_running
+            and bench_completed
+            and configuration_valid
         )
+        self.completed = False
         if process_was_running:
             self.managed_stop = True
             self.stop()
         elif self.process is not None:
             self.returncode = self.process.poll()
         self._close_log()
+        idle_shutdown_valid = self.mode != "idle"
+        if self.mode == "idle" and process_was_running and self.session_transport_owned:
+            # Grade only after the child has exited and flushed the complete
+            # ordered stream. This closes the old scan-before-SIGTERM race.
+            self._grade_idle_shutdown()
+            idle_shutdown_valid = True
+        elif self.mode == "idle" and process_was_running and window_completed:
+            raise RuntimeError(
+                "idle V1 emulator completed without prior current-process ownership admission"
+            )
+        self.completed = bool(base_completed and idle_shutdown_valid)
         return {
             "started": self.started,
             "completed": self.completed,
@@ -1101,6 +1452,13 @@ class V1Emulator:
             "total_samples": total_samples,
             "cadence_hz": cadence_hz,
             "managed_stop": self.managed_stop,
+            "session_transport_owned": (
+                self.session_transport_owned if self.mode == "idle" else None
+            ),
+            "session_transport_continuous": (
+                self.session_transport_continuous if self.mode == "idle" else None
+            ),
+            "graceful_stop_confirmed": self.graceful_stop_confirmed,
             "returncode": self.returncode,
             "log": self.log_path.name if self.log_path.is_file() else "",
             "handshake_ledger": (
@@ -1117,9 +1475,12 @@ class V1Emulator:
             self.log_handle = None
 
     def stop(self) -> None:
-        if self.process is not None and self.process.poll() is None:
+        managed_stop_requested = self.process is not None and self.process.poll() is None
+        if managed_stop_requested:
             try:
-                os.killpg(self.process.pid, signal.SIGTERM)
+                # Ask the emulator itself to run its graceful teardown. Only
+                # the timeout fallback targets the whole isolated process group.
+                self.process.send_signal(signal.SIGTERM)
                 self.process.wait(timeout=2)
             except (OSError, subprocess.TimeoutExpired):
                 if self.process.poll() is None:
@@ -1134,6 +1495,10 @@ class V1Emulator:
         if self.process is not None:
             self.returncode = self.process.poll()
         self._close_log()
+        if managed_stop_requested:
+            self.graceful_stop_confirmed = False
+            self._managed_shutdown_evidence = self._grade_managed_shutdown()
+            self.graceful_stop_confirmed = True
 
 
 def run_reconnect_preflight(
@@ -1329,6 +1694,36 @@ def collect_live(
     dict[str, Any],
     dict[str, Any],
 ]:
+    # This lease is acquired before port discovery, upload, or board reset. Its
+    # fd is inherited by every managed advertiser, so parent death cannot make
+    # an orphan invisible to the next bench invocation.
+    with V1RadioLease() as lease:
+        assert lease.fd is not None
+        return _collect_live(
+            args,
+            out_dir,
+            lease_fd=lease.fd,
+            after_upload=after_upload,
+            identity_provider=identity_provider,
+        )
+
+
+def _collect_live(
+    args: argparse.Namespace,
+    out_dir: Path,
+    *,
+    lease_fd: int,
+    after_upload: Callable[[], None] | None = None,
+    identity_provider: Callable[[], dict[str, Any]] | None = None,
+) -> tuple[
+    Path,
+    Path | None,
+    dict[str, Any],
+    str,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
     protocol_log = out_dir / "bench_serial.log"
     reserved_evidence = [
         protocol_log,
@@ -1368,7 +1763,11 @@ def collect_live(
     q: BenchSerial | None = None
     completion: dict[str, Any] = {}
     emulator = V1Emulator(
-        Path(args.replay_executable).resolve(), out_dir, args.suite, args.blink_profile
+        Path(args.replay_executable).resolve(),
+        out_dir,
+        args.suite,
+        args.blink_profile,
+        lease_fd=lease_fd,
     )
     emulator_result: dict[str, Any] = {}
     reconnect_preflight_result: dict[str, Any] = {}
@@ -1421,6 +1820,7 @@ def collect_live(
                 args.suite,
                 args.blink_profile,
                 handshake_only=True,
+                lease_fd=lease_fd,
             )
             reconnect_preflight_result = run_reconnect_preflight(
                 q,
@@ -1444,12 +1844,18 @@ def collect_live(
                     "unexpected V1 disconnect cleanup before the replacement emulator launch"
                 )
             expected_cleanup_count = q.disconnect_cleanup_count
+
+        def start_managed_emulator() -> None:
+            emulator.start()
+            if args.suite != "replay":
+                emulator.wait_for_session_transport(args.ready_timeout_seconds)
+
         completion = start_and_wait(
             q,
             args.suite,
             args.duration_seconds,
             args.completion_grace_seconds,
-            after_started=emulator.start,
+            after_started=start_managed_emulator,
             health_check=lambda: (
                 emulator.health_problem()
                 or (
@@ -1515,82 +1921,115 @@ def collect_live(
             encounter_csv_path = download_csv(q, out_dir, args.export_idle_timeout_seconds, encounter_sd_path)
         collection_completed = True
     finally:
+        primary_error = sys.exc_info()[1]
+        cleanup_errors: list[tuple[str, Exception]] = []
+        try:
+            if not emulator_result:
+                emulator_result = emulator.finish(collection_completed)
+        except Exception as exc:  # noqa: BLE001 - finish remaining cleanup before failing closed
+            cleanup_errors.append(("V1 emulator", exc))
+        try:
+            if reconnect_preflight is not None and reconnect_preflight.process is not None:
+                if reconnect_preflight.process.poll() is None:
+                    reconnect_preflight.stop()
+        except Exception as exc:  # noqa: BLE001 - finish serial/camera cleanup before surfacing
+            cleanup_errors.append(("reconnect preflight", exc))
         if q is not None:
-            q.close()
-        if not emulator_result:
-            emulator_result = emulator.finish(collection_completed)
-        if reconnect_preflight is not None and reconnect_preflight.process is not None:
-            if reconnect_preflight.process.poll() is None:
-                reconnect_preflight.stop()
-        if camera is not None:
-            camera_result = camera.stop(collection_completed)
             try:
-                camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                pass
-            replay_started_monotonic = emulator_result.get("replay_started_monotonic_seconds")
-            timeline_start_video_s, timing_anchor = replay_timing_anchor(
-                args.suite,
-                camera.recording_started_monotonic,
-                replay_started_monotonic,
-            )
-            camera_grade: dict[str, Any] = {}
-            capture_inputs_complete = args.suite != "replay" or encounter_csv_path is not None
-            if camera_result.get("result") == "CAPTURED" and capture_inputs_complete:
-                current_identity = identity_provider() if identity_provider is not None else {}
-                capture_manifest = build_capture_manifest(
-                    camera_dir=camera.out_dir,
-                    camera_result=camera_result,
-                    suite=args.suite,
-                    product_fingerprint=str(current_identity.get("product_fingerprint") or ""),
-                    scenario_fingerprint=str(current_identity.get("scenario_fingerprint") or ""),
-                    encounter_csv_path=encounter_csv_path,
-                    timing_anchor=timing_anchor,
-                    traceability=(
-                        current_identity.get("traceability")
-                        if isinstance(current_identity.get("traceability"), dict)
-                        else {}
-                    ),
+                q.close()
+            except Exception as exc:  # noqa: BLE001 - continue remaining cleanup
+                cleanup_errors.append(("serial", exc))
+        if camera is not None:
+            try:
+                camera_result = camera.stop(collection_completed)
+                try:
+                    camera_result = json.loads(camera.result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    pass
+                replay_started_monotonic = emulator_result.get("replay_started_monotonic_seconds")
+                timeline_start_video_s, timing_anchor = replay_timing_anchor(
+                    args.suite,
+                    camera.recording_started_monotonic,
+                    replay_started_monotonic,
                 )
-                manifest_path, _created = publish_capture_manifest(camera.out_dir, capture_manifest)
-                camera_result = {
-                    **camera_result,
-                    "capture_manifest": manifest_path.name,
-                    "capture_id": capture_manifest["capture_id"],
-                    "grader_fingerprint": current_identity.get("grader_fingerprint", ""),
-                    "preflight": camera.preflight_result_path.name,
-                    "preflight_result": "PASS",
-                    "preflight_registration": capture_manifest.get("preflight", {}).get("registration", {}),
-                }
+                camera_grade: dict[str, Any] = {}
+                capture_inputs_complete = args.suite != "replay" or encounter_csv_path is not None
+                if camera_result.get("result") == "CAPTURED" and capture_inputs_complete:
+                    current_identity = identity_provider() if identity_provider is not None else {}
+                    capture_manifest = build_capture_manifest(
+                        camera_dir=camera.out_dir,
+                        camera_result=camera_result,
+                        suite=args.suite,
+                        product_fingerprint=str(current_identity.get("product_fingerprint") or ""),
+                        scenario_fingerprint=str(current_identity.get("scenario_fingerprint") or ""),
+                        encounter_csv_path=encounter_csv_path,
+                        timing_anchor=timing_anchor,
+                        traceability=(
+                            current_identity.get("traceability")
+                            if isinstance(current_identity.get("traceability"), dict)
+                            else {}
+                        ),
+                    )
+                    manifest_path, _created = publish_capture_manifest(
+                        camera.out_dir,
+                        capture_manifest,
+                    )
+                    camera_result = {
+                        **camera_result,
+                        "capture_manifest": manifest_path.name,
+                        "capture_id": capture_manifest["capture_id"],
+                        "grader_fingerprint": current_identity.get("grader_fingerprint", ""),
+                        "preflight": camera.preflight_result_path.name,
+                        "preflight_result": "PASS",
+                        "preflight_registration": capture_manifest.get("preflight", {}).get(
+                            "registration",
+                            {},
+                        ),
+                    }
+                else:
+                    capture_manifest = {}
+                    current_identity = identity_provider() if identity_provider is not None else {}
+                if camera_grade_required(args.suite, camera_result) and capture_manifest:
+                    grader_fingerprint = str(current_identity.get("grader_fingerprint") or "")
+                    grade_camera_result = camera_result_view(capture_manifest)
+                    camera_grade = grade_camera(
+                        suite=args.suite,
+                        camera_dir=camera.out_dir,
+                        camera_result=grade_camera_result,
+                        capture_manifest=capture_manifest,
+                        grader_fingerprint=grader_fingerprint,
+                        emulator_result=emulator_result,
+                        encounter_csv_path=encounter_csv_path,
+                        timeline_start_video_s=timeline_start_video_s,
+                    )
+                    grade_path, _created = publish_grade(
+                        camera.out_dir,
+                        capture_manifest,
+                        grader_fingerprint,
+                        camera_grade,
+                    )
+                    camera_result["visually_graded"] = True
+                    camera_result["grade"] = grade_path.relative_to(camera.out_dir).as_posix()
+                    camera_result["grade_result"] = camera_grade.get("result")
+                grade_result = camera_grade.get("result") or (
+                    "ungraded" if camera_result.get("result") == "CAPTURED" else "unavailable"
+                )
+                print(
+                    f"[bench] camera capture={camera_result.get('result')} grade={grade_result}",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - aggregate every cleanup failure
+                cleanup_errors.append(("camera", exc))
+        if cleanup_errors:
+            cleanup_detail = "; ".join(
+                f"{owner}: {error}" for owner, error in cleanup_errors
+            )
+            if primary_error is not None:
+                primary_error.args = (
+                    f"{primary_error}; cleanup failure: {cleanup_detail}",
+                )
             else:
-                capture_manifest = {}
-                current_identity = identity_provider() if identity_provider is not None else {}
-            if camera_grade_required(args.suite, camera_result) and capture_manifest:
-                grader_fingerprint = str(current_identity.get("grader_fingerprint") or "")
-                grade_camera_result = camera_result_view(capture_manifest)
-                camera_grade = grade_camera(
-                    suite=args.suite,
-                    camera_dir=camera.out_dir,
-                    camera_result=grade_camera_result,
-                    capture_manifest=capture_manifest,
-                    grader_fingerprint=grader_fingerprint,
-                    emulator_result=emulator_result,
-                    encounter_csv_path=encounter_csv_path,
-                    timeline_start_video_s=timeline_start_video_s,
-                )
-                grade_path, _created = publish_grade(
-                    camera.out_dir,
-                    capture_manifest,
-                    grader_fingerprint,
-                    camera_grade,
-                )
-                camera_result["visually_graded"] = True
-                camera_result["grade"] = grade_path.relative_to(camera.out_dir).as_posix()
-                camera_result["grade_result"] = camera_grade.get("result")
-            grade_result = camera_grade.get("result") or (
-                "ungraded" if camera_result.get("result") == "CAPTURED" else "unavailable"
-            )
-            print(f"[bench] camera capture={camera_result.get('result')} grade={grade_result}", flush=True)
+                raise RuntimeError(f"cleanup failure: {cleanup_detail}") from cleanup_errors[0][1]
     if not emulator_result.get("completed"):
         mode = str(emulator_result.get("mode") or args.suite)
         raise RuntimeError(f"V1 emulator mode={mode} did not cover the complete metrics window")

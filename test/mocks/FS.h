@@ -163,6 +163,14 @@ public:
         return state_->stream.good();
     }
 
+    size_t position() const {
+        if (!state_ || state_->directory || !state_->stream.is_open()) {
+            return static_cast<size_t>(-1);
+        }
+        const std::streampos pos = state_->writable ? state_->stream.tellp() : state_->stream.tellg();
+        return pos < 0 ? static_cast<size_t>(-1) : static_cast<size_t>(pos);
+    }
+
     void flush() {
         if (state_ && !state_->directory && state_->stream.is_open()) {
             state_->stream.flush();
@@ -237,8 +245,9 @@ private:
         const std::string openMode = mode ? std::string(mode) : std::string(FILE_READ);
         const bool append = openMode.find('a') != std::string::npos;
         const bool truncate = openMode.find('w') != std::string::npos;
-        state->readable = (openMode.find('r') != std::string::npos);
-        state->writable = append || truncate;
+        const bool update = openMode.find('+') != std::string::npos;
+        state->readable = (openMode.find('r') != std::string::npos) || update;
+        state->writable = append || truncate || update;
         if (state->writable) {
             state->writeBudgetRemaining = mock_fs_detail::g_new_file_write_budget;
         }
@@ -259,10 +268,6 @@ private:
 
         std::filesystem::create_directories(path.parent_path(), ec);
         state->stream.open(path, iosMode);
-        if (!state->stream.is_open() && state->writable && !truncate && !append) {
-            state->stream.clear();
-            state->stream.open(path, iosMode | std::ios::trunc);
-        }
         if (!state->stream.is_open()) {
             return File();
         }

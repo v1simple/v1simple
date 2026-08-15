@@ -50,13 +50,22 @@ class PerfSdLogger {
     /// Returns true once the queue is empty and the persistent handle is closed.
     bool tryDrainAndClose();
 
+    /// Select the exact export boundary for the current boot CSV. Append mode
+    /// uses physical EOF. Reserved mode returns its committed logical prefix
+    /// only after queue, writer, and handle are all idle; otherwise fails
+    /// closed so export cannot race a writer or leak padding.
+    bool tryResolveExportSize(size_t physicalSize, size_t& selectedSize) const;
+
   private:
     static void writerTaskEntry(void* param);
     void writerTaskLoop();
     bool receiveSnapshot(PerfSdSnapshot& snapshot, TickType_t timeoutTicks);
     bool ensurePerfDir(fs::FS& fs);
+    bool prepareReservedFileLocked(fs::FS& fs);
+    bool writeParserSafeReservePadding(File& f);
     bool ensurePersistentFileLocked(fs::FS& fs);
     bool ensureCsvHeaderAndSessionMarker(File& f);
+    bool formatSessionMarker(char* marker, size_t markerCapacity, size_t& markerLen) const;
     bool writeSessionMarker(File& f);
     bool ensureCsvBuffers();
     bool writeStaged(File& f, const uint8_t* data, size_t len);
@@ -75,7 +84,11 @@ class PerfSdLogger {
     bool perfDirReady_ = false;
     bool csvHeaderReady_ = false;
     bool sessionMarkerPending_ = false;
+    bool reservedLayoutActive_ = false;
+    bool reserveExhaustionPending_ = false;
+    bool reserveExhaustionReported_ = false;
     File persistentFile_{};
+    size_t reservedLogicalEnd_ = 0;
     uint32_t sessionSeq_ = 0;
     uint32_t sessionToken_ = 0;
     uint32_t sessionStartMs_ = 0;

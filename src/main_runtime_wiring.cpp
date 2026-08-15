@@ -460,6 +460,9 @@ static void configureQualificationSerialModule() {
     providers.startPerfSession = [](void*) { perfSdLogger.startNewSession(); };
     providers.enqueueSnapshotNow = [](void*) { return perfMetricsEnqueueSnapshotNow(); };
     providers.tryDrainPerf = [](void*) { return perfSdLogger.tryDrainAndClose(); };
+    providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes, void*) {
+        return perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes);
+    };
     providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
     providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
     providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };

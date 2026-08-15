@@ -27,6 +27,7 @@ class QualificationSerialModule {
         void (*startPerfSession)(void* ctx) = nullptr;
         bool (*enqueueSnapshotNow)(void* ctx) = nullptr;
         bool (*tryDrainPerf)(void* ctx) = nullptr;
+        bool (*tryResolvePerfExportSize)(size_t physicalBytes, size_t& selectedBytes, void* ctx) = nullptr;
         void (*setSdCapturePaused)(bool paused, void* ctx) = nullptr;
         void (*startDisplayPreview)(uint32_t durationMs, void* ctx) = nullptr;
         void (*cancelDisplayPreview)(void* ctx) = nullptr;

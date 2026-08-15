@@ -28,6 +28,33 @@ void copyString(char* dst, size_t dstLen, const char* src) {
     }
     snprintf(dst, dstLen, "%s", src);
 }
+
+bool validCanonicalExportPath(const char* path) {
+    if (!path || path[0] != '/' || path[1] == '\0') {
+        return false;
+    }
+
+    bool segmentStart = true;
+    for (const char* cursor = path + 1; *cursor != '\0'; ++cursor) {
+        const unsigned char c = static_cast<unsigned char>(*cursor);
+        if (c == '/') {
+            if (segmentStart || cursor[-1] == '.') {
+                return false;
+            }
+            segmentStart = true;
+            continue;
+        }
+        if (segmentStart && c == '.') {
+            return false;
+        }
+        segmentStart = false;
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) {
+            return false;
+        }
+    }
+    const size_t pathLen = strlen(path);
+    return !segmentStart && path[pathLen - 1] != '.';
+}
 } // namespace
 
 void QualificationSerialModule::begin(Stream* io, const Providers& providers) {
@@ -148,6 +175,16 @@ void QualificationSerialModule::serviceRun() {
         return;
     }
 
+    if (state_ == State::Error) {
+        // QABORT and finalize_timeout both pause capture. Keep making a
+        // non-blocking drain attempt so the preserved current CSV can become
+        // exportable after the terminal response.
+        if (providers_.tryDrainPerf) {
+            (void)providers_.tryDrainPerf(providers_.ctx);
+        }
+        return;
+    }
+
     if (state_ != State::Finalizing) {
         return;
     }
@@ -188,6 +225,7 @@ void QualificationSerialModule::serviceExport() {
     uint8_t bytes[kExportChunkBytes];
     size_t bytesRead = 0;
     bool eof = false;
+    bool truncated = false;
     {
         if (!providers_.sdMutex) {
             closeExport();
@@ -198,12 +236,26 @@ void QualificationSerialModule::serviceExport() {
         if (!lock) {
             return;
         }
-        bytesRead = exportFile_.read(bytes, sizeof(bytes));
-        if (bytesRead == 0) {
+        if (exportBytes_ >= exportSize_) {
             exportFile_.close();
             exportActive_ = false;
             eof = true;
+        } else {
+            const size_t remaining = static_cast<size_t>(exportSize_ - exportBytes_);
+            const size_t requested = remaining < sizeof(bytes) ? remaining : sizeof(bytes);
+            bytesRead = exportFile_.read(bytes, requested);
+            if (bytesRead == 0) {
+                exportFile_.close();
+                exportActive_ = false;
+                truncated = true;
+            }
         }
+    }
+
+    if (truncated) {
+        closeExport();
+        sendErrorLine("export_truncated");
+        return;
     }
 
     if (eof) {
@@ -301,6 +353,12 @@ void QualificationSerialModule::handleGetCsv(char* args) {
     const char* requested = (args && args[0] != '\0') ? args : csvPath_;
     if (!requested || requested[0] == '\0') {
         sendErrorLine("no_csv_path");
+        return;
+    }
+    const char* currentPerfPath = providers_.perfCsvPath ? providers_.perfCsvPath(providers_.ctx) : nullptr;
+    if (currentPerfPath && strcmp(requested, currentPerfPath) == 0 &&
+        (!providers_.tryDrainPerf || !providers_.tryDrainPerf(providers_.ctx))) {
+        sendErrorLine("perf_sd_busy_retry");
         return;
     }
     if (!openExport(requested)) {
@@ -543,7 +601,10 @@ bool QualificationSerialModule::openExport(const char* path) {
         setError("sd_unavailable");
         return false;
     }
-    if (!path || path[0] != '/' || strstr(path, "..") != nullptr) {
+    // FAT path lookup is case-insensitive and may expose 8.3 aliases. Accept
+    // only the canonical lowercase managed-path alphabet so an alias of the
+    // active perf file cannot bypass its committed-prefix resolver.
+    if (!validCanonicalExportPath(path)) {
         setError("invalid_path");
         return false;
     }
@@ -565,17 +626,35 @@ bool QualificationSerialModule::openExport(const char* path) {
         setError("file_not_found");
         return false;
     }
-    exportActive_ = true;
     exportCrc_ = 0xFFFFFFFFUL;
     exportBytes_ = 0;
-    exportSize_ = static_cast<uint32_t>(exportFile_.size());
+    const size_t physicalSize = exportFile_.size();
+    size_t selectedSize = physicalSize;
+    const char* currentPerfPath = providers_.perfCsvPath ? providers_.perfCsvPath(providers_.ctx) : nullptr;
+    if (currentPerfPath && strcmp(path, currentPerfPath) == 0) {
+        if (!providers_.tryResolvePerfExportSize ||
+            !providers_.tryResolvePerfExportSize(physicalSize, selectedSize, providers_.ctx)) {
+            exportFile_.close();
+            setError("export_size_unavailable");
+            return false;
+        }
+    }
+    if (selectedSize > physicalSize || selectedSize > UINT32_MAX || physicalSize > UINT32_MAX) {
+        exportFile_.close();
+        setError("export_too_large");
+        return false;
+    }
+    exportSize_ = static_cast<uint32_t>(selectedSize);
     exportChunks_ = 0;
+    exportActive_ = true;
 
     io_->print(kPrefixFile);
     io_->print("{\"ok\":true,\"path\":");
     printJsonString(path);
     io_->print(",\"size\":");
     io_->print(exportSize_);
+    io_->print(",\"physicalSize\":");
+    io_->print(static_cast<uint32_t>(physicalSize));
     io_->println("}");
     return true;
 }

@@ -11,6 +11,9 @@
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#ifndef UNIT_TEST
+#include <esp_vfs_fat.h>
+#endif
 
 #ifndef MALLOC_CAP_DMA
 #define MALLOC_CAP_DMA (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
@@ -20,7 +23,7 @@ namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
 static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 46; // adds canonical V1 all-volume parse evidence
-static constexpr const char* PERF_CSV_HEADER =
+static constexpr char PERF_CSV_HEADER[] =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
     "uiToScan,uiToRest,uiScanToRest,uiFastScanExit,uiLastScanDwellMs,uiMinScanDwellMs,fadeDown,fadeRestore,"
@@ -89,8 +92,74 @@ static constexpr UBaseType_t PERF_SD_WRITER_PRIORITY = 1;
 static constexpr TickType_t PERF_SD_QUEUE_RECEIVE_TIMEOUT_TICKS = pdMS_TO_TICKS(1000);
 static constexpr uint16_t PERF_SD_FLUSH_EVERY_ROWS = 1;
 static constexpr uint32_t PERF_SD_FLUSH_INTERVAL_MS = 15000;
-static constexpr size_t PERF_CSV_LINE_BUFFER_SIZE = 6144;
+static constexpr size_t PERF_CSV_LINE_BUFFER_SIZE = 6656;
 static constexpr size_t PERF_SD_WRITE_STAGING_SIZE = 512;
+static constexpr size_t PERF_SD_SESSION_MARKER_BUFFER_SIZE = 128;
+// One boot file can run for hours, so this reserve is an optimization rather
+// than a hard cap. Once it is consumed, the same r+ handle grows normally and
+// the allocation cost remains inside appendSnapshotLine()'s latency sample.
+static constexpr size_t PERF_SD_CONTIGUOUS_RESERVE_SIZE = 1024 * 1024;
+static constexpr size_t PERF_SD_RESERVE_YIELD_EVERY_BYTES = 32 * 1024;
+static constexpr const char* PERF_SD_RESERVE_TEMP_PATH = "/perf/.perf_reserve.tmp";
+static constexpr const char* PERF_SD_READ_WRITE_MODE = "r+";
+static_assert((sizeof(PERF_CSV_HEADER) - 1) + PERF_SD_SESSION_MARKER_BUFFER_SIZE <= PERF_CSV_LINE_BUFFER_SIZE,
+              "CSV line buffer must fit an adjacent header and maximum session marker");
+
+#ifndef UNIT_TEST
+static bool buildMountedPath(fs::FS& fs, const char* fsPath, char* out, size_t outLen) {
+    if (!fsPath || !out || outLen == 0) {
+        return false;
+    }
+    const char* mountpoint = fs.mountpoint();
+    if (!mountpoint || mountpoint[0] == '\0') {
+        return false;
+    }
+    const int n = snprintf(out, outLen, "%s%s", mountpoint, fsPath);
+    return n > 0 && static_cast<size_t>(n) < outLen;
+}
+
+static bool createContiguousReserve(fs::FS& fs, const char* fsPath, size_t size) {
+    char fullPath[128];
+    if (!buildMountedPath(fs, fsPath, fullPath, sizeof(fullPath))) {
+        return false;
+    }
+    // opt=0 leaves the temp at logical size zero and seeds FatFs's next
+    // allocation search. The caller immediately fills it while still owning
+    // the project-wide SD lock, then verifies the resulting chain. In
+    // contrast, opt=1 makes uninitialized card contents part of the file's
+    // visible size before parser-safe bytes can be written.
+    return esp_vfs_fat_create_contiguous_file(fs.mountpoint(), fullPath, size, false) == ESP_OK;
+}
+
+static bool verifyContiguousReserve(fs::FS& fs, const char* fsPath, bool& contiguous) {
+    char fullPath[128];
+    if (!buildMountedPath(fs, fsPath, fullPath, sizeof(fullPath))) {
+        return false;
+    }
+    // IDF 5.5.4's public signature takes bool*, but vfs_fat.c passes that
+    // pointer to an internal int* result and writes four bytes. Back it with
+    // an aligned int so the vendor implementation cannot overwrite adjacent
+    // stack state; do not replace this with a local bool until IDF fixes the
+    // ABI mismatch.
+    static_assert(sizeof(int) == 4, "IDF FAT contiguous result requires a 4-byte int");
+    int contiguousWord = 0;
+    const esp_err_t result =
+        esp_vfs_fat_test_contiguous_file(fs.mountpoint(), fullPath, reinterpret_cast<bool*>(&contiguousWord));
+    contiguous = contiguousWord != 0;
+    return result == ESP_OK;
+}
+
+#else
+static bool createContiguousReserve(fs::FS&, const char*, size_t) {
+    return false;
+}
+
+static bool verifyContiguousReserve(fs::FS&, const char*, bool& contiguous) {
+    contiguous = false;
+    return false;
+}
+
+#endif
 
 static uint16_t countCsvColumns(const char* text, size_t len) {
     if (!text || len == 0) {
@@ -240,6 +309,10 @@ void PerfSdLogger::releaseForTest() {
     perfDirReady_ = false;
     csvHeaderReady_ = false;
     sessionMarkerPending_ = false;
+    reservedLayoutActive_ = false;
+    reserveExhaustionPending_ = false;
+    reserveExhaustionReported_ = false;
+    reservedLogicalEnd_ = 0;
     pendingWrites_.store(0, std::memory_order_relaxed);
 }
 #endif
@@ -250,6 +323,10 @@ void PerfSdLogger::setBootId(uint32_t id, uint32_t bootToken) {
     buildPerfCsvPath(bootId_, bootToken_, csvPathBuf_, sizeof(csvPathBuf_));
     csvHeaderReady_ = false;
     sessionMarkerPending_ = true;
+    reservedLayoutActive_ = false;
+    reserveExhaustionPending_ = false;
+    reserveExhaustionReported_ = false;
+    reservedLogicalEnd_ = 0;
     rowsSinceFlush_ = 0;
     lastFlushMs_ = 0;
     // Path may have changed; force a reopen on the next write.
@@ -275,6 +352,10 @@ void PerfSdLogger::begin(bool sdAvailable) {
     perfDirReady_ = false;
     csvHeaderReady_ = false;
     sessionMarkerPending_ = true;
+    reservedLayoutActive_ = false;
+    reserveExhaustionPending_ = false;
+    reserveExhaustionReported_ = false;
+    reservedLogicalEnd_ = 0;
     rowsSinceFlush_ = 0;
     lastFlushMs_ = 0;
     sessionStartMs_ = millis();
@@ -313,9 +394,16 @@ void PerfSdLogger::begin(bool sdAvailable) {
     if (storageManager.isReady() && storageManager.isSDCard()) {
         if (fs::FS* fs = storageManager.getFilesystem()) {
             StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
-            if (lock && ensurePersistentFileLocked(*fs)) {
-                if (!ensureCsvHeaderAndSessionMarker(persistentFile_)) {
-                    persistentFile_.close();
+            if (lock) {
+                // Reserve work is boot-only. If storage becomes available later,
+                // the lazy writer takes the existing append path so a 1 MiB
+                // allocation can never be shifted into an unreported background
+                // phase. Any lazy append cost remains in appendSnapshotLine().
+                reservedLayoutActive_ = prepareReservedFileLocked(*fs);
+                if (ensurePersistentFileLocked(*fs)) {
+                    if (!ensureCsvHeaderAndSessionMarker(persistentFile_)) {
+                        persistentFile_.close();
+                    }
                 }
             }
         }
@@ -398,6 +486,113 @@ bool PerfSdLogger::ensurePerfDir(fs::FS& fs) {
     return false;
 }
 
+bool PerfSdLogger::writeParserSafeReservePadding(File& f) {
+    if (!writeStagingBuffer_ || !f.seek(0, SeekSet)) {
+        return false;
+    }
+
+    // Raw f_expand() contents are unspecified. Each fixed-size record is a
+    // valid CSV comment line, and any suffix left after a logical row
+    // overwrites its leading '#' consists only of spaces plus a newline.
+    // Consequently a power loss, export, or append fallback can expose only
+    // comments/blank lines after the last complete CSV row, never binary junk.
+    memset(writeStagingBuffer_, ' ', PERF_SD_WRITE_STAGING_SIZE);
+    writeStagingBuffer_[0] = '#';
+    writeStagingBuffer_[PERF_SD_WRITE_STAGING_SIZE - 1] = '\n';
+
+    size_t writtenTotal = 0;
+    while (writtenTotal < PERF_SD_CONTIGUOUS_RESERVE_SIZE) {
+        const size_t remaining = PERF_SD_CONTIGUOUS_RESERVE_SIZE - writtenTotal;
+        const size_t chunkLen = (remaining > PERF_SD_WRITE_STAGING_SIZE) ? PERF_SD_WRITE_STAGING_SIZE : remaining;
+        if (f.write(writeStagingBuffer_, chunkLen) != chunkLen) {
+            return false;
+        }
+        writtenTotal += chunkLen;
+        if (writtenTotal % PERF_SD_RESERVE_YIELD_EVERY_BYTES == 0) {
+            // The setup task keeps the SD lock so no allocator can consume the
+            // opt=0 contiguous hint, but a short delay lets idle/watchdog work
+            // run during the one-time 1 MiB fill.
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+    return f.position() == PERF_SD_CONTIGUOUS_RESERVE_SIZE;
+}
+
+bool PerfSdLogger::prepareReservedFileLocked(fs::FS& fs) {
+    const uint32_t prepStartUs = PERF_TIMESTAMP_US();
+    const char* csvPath = (csvPathBuf_[0] != '\0') ? csvPathBuf_ : PERF_CSV_PATH_FALLBACK;
+    const auto logPrep = [&](const char* result, const char* createResult, const char* paddingResult,
+                             const char* testResult, const char* contiguousResult, size_t physicalBytes) {
+        Serial.printf("[PerfReserve] prep result=%s path=%s temp=%s requested=%u physical=%u logical=%u "
+                      "create=%s padding=%s test=%s contiguous=%s elapsed_us=%lu\n",
+                      result, csvPath, PERF_SD_RESERVE_TEMP_PATH,
+                      static_cast<unsigned>(PERF_SD_CONTIGUOUS_RESERVE_SIZE), static_cast<unsigned>(physicalBytes),
+                      static_cast<unsigned>(reservedLogicalEnd_), createResult, paddingResult, testResult,
+                      contiguousResult, static_cast<unsigned long>(PERF_TIMESTAMP_US() - prepStartUs));
+    };
+
+    if (!ensurePerfDir(fs) || !writeStagingBuffer_) {
+        logPrep("fallback_setup", "not_run", "not_run", "not_run", "unknown", 0);
+        return false;
+    }
+
+    // A fixed temp name bounds crash debris to one file. Never replace an
+    // existing boot CSV: a repeated begin() must preserve its prior evidence
+    // and use the ordinary append path.
+    if (fs.exists(PERF_SD_RESERVE_TEMP_PATH) && !fs.remove(PERF_SD_RESERVE_TEMP_PATH)) {
+        logPrep("fallback_temp_cleanup", "not_run", "not_run", "not_run", "unknown", 0);
+        return false;
+    }
+    if (fs.exists(csvPath)) {
+        logPrep("append_existing", "not_run", "not_run", "not_run", "unknown", fs.open(csvPath, FILE_READ).size());
+        return false;
+    }
+
+    if (!createContiguousReserve(fs, PERF_SD_RESERVE_TEMP_PATH, PERF_SD_CONTIGUOUS_RESERVE_SIZE)) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_create", "failed", "not_run", "not_run", "unknown", 0);
+        return false;
+    }
+
+    File reserve = fs.open(PERF_SD_RESERVE_TEMP_PATH, PERF_SD_READ_WRITE_MODE, false);
+    if (!reserve) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_reopen", "ok", "not_run", "not_run", "unknown", 0);
+        return false;
+    }
+
+    const bool paddingWritten = writeParserSafeReservePadding(reserve);
+    const size_t physicalBytes = reserve.size();
+    if (paddingWritten) {
+        reserve.flush();
+    }
+    reserve.close();
+    if (!paddingWritten) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_padding", "ok", "failed", "not_run", "unknown", physicalBytes);
+        return false;
+    }
+
+    bool contiguous = false;
+    const bool testOk = verifyContiguousReserve(fs, PERF_SD_RESERVE_TEMP_PATH, contiguous);
+    if (!testOk || !contiguous) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep(testOk ? "fallback_fragmented" : "fallback_test", "ok", "ok", testOk ? "ok" : "failed",
+                testOk ? "no" : "unknown", physicalBytes);
+        return false;
+    }
+
+    if (fs.exists(csvPath) || !fs.rename(PERF_SD_RESERVE_TEMP_PATH, csvPath)) {
+        fs.remove(PERF_SD_RESERVE_TEMP_PATH);
+        logPrep("fallback_rename", "ok", "ok", "ok", "yes", physicalBytes);
+        return false;
+    }
+
+    reservedLogicalEnd_ = 0;
+    logPrep("active", "ok", "ok", "ok", "yes", physicalBytes);
+    return true;
+}
+
 bool PerfSdLogger::ensureCsvBuffers() {
     if (!csvLineBuffer_) {
         csvLineBuffer_ =
@@ -430,6 +625,54 @@ bool PerfSdLogger::writeStaged(File& f, const uint8_t* data, size_t len) {
         return false;
     }
 
+    if (reservedLayoutActive_) {
+        const size_t writeStart = reservedLogicalEnd_;
+        if (writeStart % PERF_SD_WRITE_STAGING_SIZE != 0 || f.position() != writeStart || data[len - 1] != '\n') {
+            return false;
+        }
+
+        size_t offset = 0;
+        while (len - offset >= PERF_SD_WRITE_STAGING_SIZE) {
+            memcpy(writeStagingBuffer_, data + offset, PERF_SD_WRITE_STAGING_SIZE);
+            if (f.write(writeStagingBuffer_, PERF_SD_WRITE_STAGING_SIZE) != PERF_SD_WRITE_STAGING_SIZE) {
+                return false;
+            }
+            offset += PERF_SD_WRITE_STAGING_SIZE;
+        }
+
+        const size_t tailLen = len - offset;
+        if (tailLen > 0) {
+            // Never issue a partial overwrite: combine the data tail and its
+            // parser-safe suffix in one full sector. This avoids FatFs's
+            // read-before-write path for fptr < physical file size.
+            memcpy(writeStagingBuffer_, data + offset, tailLen);
+            const size_t paddingLen = PERF_SD_WRITE_STAGING_SIZE - tailLen;
+            if (paddingLen == 1) {
+                writeStagingBuffer_[tailLen] = '\n';
+            } else {
+                writeStagingBuffer_[tailLen] = '#';
+                if (paddingLen > 2) {
+                    memset(writeStagingBuffer_ + tailLen + 1, ' ', paddingLen - 2);
+                }
+                writeStagingBuffer_[PERF_SD_WRITE_STAGING_SIZE - 1] = '\n';
+            }
+            if (f.write(writeStagingBuffer_, PERF_SD_WRITE_STAGING_SIZE) != PERF_SD_WRITE_STAGING_SIZE) {
+                return false;
+            }
+        }
+
+        const size_t paddedLen = tailLen == 0 ? len : len + (PERF_SD_WRITE_STAGING_SIZE - tailLen);
+        const size_t writeEnd = f.position();
+        if (writeEnd < writeStart || writeEnd - writeStart != paddedLen) {
+            return false;
+        }
+        reservedLogicalEnd_ = writeEnd;
+        if (!reserveExhaustionReported_ && writeEnd > PERF_SD_CONTIGUOUS_RESERVE_SIZE) {
+            reserveExhaustionPending_ = true;
+        }
+        return true;
+    }
+
     size_t offset = 0;
     while (offset < len) {
         const size_t remaining = len - offset;
@@ -444,16 +687,28 @@ bool PerfSdLogger::writeStaged(File& f, const uint8_t* data, size_t len) {
     return true;
 }
 
-bool PerfSdLogger::writeSessionMarker(File& f) {
-    char marker[128];
-    int n = snprintf(marker, sizeof(marker), "#session_start,seq=%lu,bootId=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
-                     static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
-                     static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
-                     static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
-    if (n <= 0 || n >= static_cast<int>(sizeof(marker))) {
+bool PerfSdLogger::formatSessionMarker(char* marker, size_t markerCapacity, size_t& markerLen) const {
+    if (!marker || markerCapacity == 0) {
         return false;
     }
-    size_t markerLen = static_cast<size_t>(n);
+    const int n =
+        snprintf(marker, markerCapacity, "#session_start,seq=%lu,bootId=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
+                 static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
+                 static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
+                 static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
+    if (n <= 0 || static_cast<size_t>(n) >= markerCapacity) {
+        return false;
+    }
+    markerLen = static_cast<size_t>(n);
+    return true;
+}
+
+bool PerfSdLogger::writeSessionMarker(File& f) {
+    char marker[PERF_SD_SESSION_MARKER_BUFFER_SIZE];
+    size_t markerLen = 0;
+    if (!formatSessionMarker(marker, sizeof(marker), markerLen)) {
+        return false;
+    }
     return writeStaged(f, reinterpret_cast<const uint8_t*>(marker), markerLen);
 }
 
@@ -465,10 +720,26 @@ bool PerfSdLogger::ensurePersistentFileLocked(fs::FS& fs) {
     const char* csvPath = (csvPathBuf_[0] != '\0') ? csvPathBuf_ : PERF_CSV_PATH_FALLBACK;
 
     // Persistent handle: open once, keep open across rows. Eliminates the per-row
-    // FAT EOF walk + dirent rewrite that dominates flush_max_peak_us on the slower
-    // FATFS path in IDF 5.5.1+. Data flushes are batched; metadata/session markers
-    // and shutdown drain still force a flush boundary.
+    // FAT EOF walk that contributes to sd_runtime_max_peak_us on the slower
+    // FATFS path. Reserved files overwrite parser-safe, sector-aligned padding
+    // through a logical cursor. Per-row f_sync still updates the dirent; after
+    // the 1 MiB extent is consumed r+ grows normally and that cost remains timed.
     if (!persistentFile_) {
+        if (reservedLayoutActive_) {
+            persistentFile_ = fs.open(csvPath, PERF_SD_READ_WRITE_MODE, false);
+            if (persistentFile_ && persistentFile_.seek(static_cast<uint32_t>(reservedLogicalEnd_), SeekSet)) {
+                return true;
+            }
+            if (persistentFile_) {
+                persistentFile_.close();
+            }
+            // The physical reserve contains only parser-safe comments/blanks.
+            // Appending at its real EOF preserves all committed rows and keeps
+            // subsequent allocation latency inside the normal row measurement.
+            reservedLayoutActive_ = false;
+            Serial.println("[Perf] WARN: Reserved CSV reopen/seek failed; using append fallback");
+        }
+
         persistentFile_ = fs.open(csvPath, FILE_APPEND, true);
         if (!persistentFile_ && perfDirReady_) {
             // Directory can be removed while running; invalidate cache and retry once.
@@ -486,12 +757,35 @@ bool PerfSdLogger::ensurePersistentFileLocked(fs::FS& fs) {
 }
 
 bool PerfSdLogger::ensureCsvHeaderAndSessionMarker(File& f) {
-    // If the file was rotated/deleted while running, size 0 means header must be rewritten.
-    if (f.size() == 0) {
+    // Physical size is fixed while a reserved file is being overwritten, so
+    // logical end is the authoritative emptiness witness in that mode.
+    if ((reservedLayoutActive_ && reservedLogicalEnd_ == 0) || (!reservedLayoutActive_ && f.size() == 0)) {
         csvHeaderReady_ = false;
     }
 
     bool metadataWritten = false;
+    if (!csvHeaderReady_ && sessionMarkerPending_) {
+        // The qualification scorer requires #session_start to be the line
+        // immediately following its schema header. Compose them into one
+        // sector-aligned transaction so reserved-mode padding follows the
+        // marker rather than appearing between the two evidence records.
+        const size_t headerLen = strlen(PERF_CSV_HEADER);
+        if (!csvLineBuffer_ || headerLen >= PERF_CSV_LINE_BUFFER_SIZE) {
+            PERF_INC(perfSdHeaderFail);
+            return false;
+        }
+        memcpy(csvLineBuffer_, PERF_CSV_HEADER, headerLen);
+        size_t markerLen = 0;
+        if (!formatSessionMarker(csvLineBuffer_ + headerLen, PERF_CSV_LINE_BUFFER_SIZE - headerLen, markerLen) ||
+            !writeStaged(f, reinterpret_cast<const uint8_t*>(csvLineBuffer_), headerLen + markerLen)) {
+            PERF_INC(perfSdHeaderFail);
+            return false;
+        }
+        metadataWritten = true;
+        csvHeaderReady_ = true;
+        sessionMarkerPending_ = false;
+    }
+
     if (!csvHeaderReady_) {
         size_t headerLen = strlen(PERF_CSV_HEADER);
         if (!writeStaged(f, reinterpret_cast<const uint8_t*>(PERF_CSV_HEADER), headerLen)) {
@@ -874,6 +1168,14 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
     }
 
     perfRecordSdFlushUs(PERF_TIMESTAMP_US() - startUs);
+    if (reserveExhaustionPending_ && !reserveExhaustionReported_) {
+        reserveExhaustionPending_ = false;
+        reserveExhaustionReported_ = true;
+        Serial.printf("[PerfReserve] runtime result=extent_exhausted path=%s requested=%u logical=%u "
+                      "growth=ordinary\n",
+                      csvPath(), static_cast<unsigned>(PERF_SD_CONTIGUOUS_RESERVE_SIZE),
+                      static_cast<unsigned>(reservedLogicalEnd_));
+    }
     return true;
 }
 
@@ -923,5 +1225,21 @@ bool PerfSdLogger::tryDrainAndClose() {
         flushPersistentFile(persistentFile_);
         persistentFile_.close();
     }
+    return true;
+}
+
+bool PerfSdLogger::tryResolveExportSize(size_t physicalSize, size_t& selectedSize) const {
+    if ((queue_ && uxQueueMessagesWaiting(queue_) > 0) || pendingWrites_.load(std::memory_order_relaxed) > 0 ||
+        persistentFile_) {
+        return false;
+    }
+    if (!reservedLayoutActive_) {
+        selectedSize = physicalSize;
+        return true;
+    }
+    if (reservedLogicalEnd_ == 0 || reservedLogicalEnd_ > physicalSize) {
+        return false;
+    }
+    selectedSize = reservedLogicalEnd_;
     return true;
 }

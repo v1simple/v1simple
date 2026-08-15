@@ -2783,7 +2783,10 @@ def render_text(payload: dict[str, Any]) -> str:
     failures = [w for w in payload["windows"] if w["result"] != "PASS"]
     if failures:
         lines.append("")
-        lines.append("evidence failure:" if payload["result"] == "EVIDENCE_FAILED" else "failed:")
+        if payload["result"] == "WARN":
+            lines.append("warnings:")
+        else:
+            lines.append("evidence failure:" if payload["result"] == "EVIDENCE_FAILED" else "failed:")
         for window in failures:
             evidence = window.get("evidence") or []
             if not evidence:

@@ -739,6 +739,7 @@ def test_core_metric_failure_is_actionable_failure() -> None:
         write_window(root, "display")
         proc = run_score(root, "core", "display")
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
+        assert_true("\nfailed:\n" in proc.stdout, proc.stdout)
         assert_true("core.queue_drops_delta" in proc.stdout, proc.stdout)
 
 
@@ -775,6 +776,8 @@ def test_advisory_absolute_bound_is_a_warning() -> None:
         assert_true(proc.returncode == 1, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         assert_true(result["result"] == "WARN", f"unexpected advisory result: {result}")
+        assert_true("\nwarnings:\n" in proc.stdout, proc.stdout)
+        assert_true("\nfailed:\n" not in proc.stdout, proc.stdout)
         assert_true("sd_runtime_max_peak_us" in proc.stdout, proc.stdout)
 
 

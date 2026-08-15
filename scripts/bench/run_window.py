@@ -54,6 +54,8 @@ ROOT = Path(__file__).resolve().parents[2]
 IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
+QGETCSV_BUSY_RETRY_TIMEOUT_S = 15.0
+QGETCSV_BUSY_RETRY_DELAY_S = 0.25
 HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"
 RECONNECT_LEDGER_NAME = "handshake_ledger_preflight.jsonl"
 RECONNECT_LOG_NAME = "v1replay_reconnect_preflight.log"
@@ -767,10 +769,27 @@ def download_csv(q: BenchSerial, out_dir: Path, idle_timeout_s: int, sd_path: st
     command = "QGETCSV"
     if sd_path:
         command += f" {sd_path}"
-    q.write_command(command)
-    line = q.read_protocol_line(("QFILE ", "QERR "), 10)
-    if line.startswith("QERR "):
-        raise RuntimeError(f"QGETCSV failed: {line}")
+    retry_deadline = time.monotonic() + QGETCSV_BUSY_RETRY_TIMEOUT_S
+    last_busy_error: dict[str, Any] | None = None
+    while True:
+        remaining = retry_deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                "QGETCSV failed after retrying perf_sd_busy_retry for "
+                f"{QGETCSV_BUSY_RETRY_TIMEOUT_S:g}s: {last_busy_error}"
+            )
+        q.write_command(command)
+        line = q.read_protocol_line(("QFILE ", "QERR "), min(10.0, remaining))
+        if not line.startswith("QERR "):
+            break
+        error = parse_json_line(line, "QERR ")
+        if error.get("error") != "perf_sd_busy_retry":
+            raise RuntimeError(f"QGETCSV failed: {line}")
+        last_busy_error = error
+        remaining = retry_deadline - time.monotonic()
+        if remaining <= 0:
+            continue
+        time.sleep(min(QGETCSV_BUSY_RETRY_DELAY_S, remaining))
     header = parse_json_line(line, "QFILE ")
     path = str(header.get("path") or "perf.csv")
     expected_size = int(header.get("size") or 0)

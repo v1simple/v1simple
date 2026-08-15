@@ -2176,6 +2176,110 @@ def test_post_upload_settle_is_interruptible_and_skippable() -> None:
     assert_true(not intervals, f"zero-second settle should be skipped: {intervals}")
 
 
+def test_csv_export_retries_busy_admission_then_preserves_grading() -> None:
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+            self.sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    class FakeSerial:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+            self.lines = [
+                'QERR {"ok":false,"error":"perf_sd_busy_retry"}',
+                'QFILE {"path":"/perf/perf_boot_1.csv","size":3}',
+                "QCHUNK 0 612C62",
+                'QEND {"bytes":3,"crc32":"2CD913DF"}',
+            ]
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return self.lines.pop(0)
+
+    clock = FakeClock()
+    original_time = run_window_module.time
+    run_window_module.time = SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = FakeSerial()
+            csv_path = run_window_module.download_csv(serial, Path(tmp), 1)
+            assert_true(csv_path.read_bytes() == b"a,b", "retried export changed CSV bytes")
+            assert_true(serial.commands == ["QGETCSV", "QGETCSV"], f"wrong retry commands: {serial.commands}")
+            assert_true(clock.sleeps == [0.25], f"wrong busy retry delay: {clock.sleeps}")
+    finally:
+        run_window_module.time = original_time
+
+
+def test_csv_export_busy_retry_is_bounded_and_fails_closed() -> None:
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    class BusySerial:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return 'QERR {"ok":false,"error":"perf_sd_busy_retry"}'
+
+    clock = FakeClock()
+    serial = BusySerial()
+    original_time = run_window_module.time
+    run_window_module.time = SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                run_window_module.download_csv(serial, Path(tmp), 1)
+            except RuntimeError as exc:
+                assert_true("after retrying perf_sd_busy_retry for 15s" in str(exc), f"wrong timeout: {exc}")
+            else:
+                raise AssertionError("perpetually busy CSV export passed")
+    finally:
+        run_window_module.time = original_time
+    assert_true(clock.now == 15.0, f"busy retry exceeded its deadline: {clock.now}")
+    assert_true(len(serial.commands) == 60, f"wrong bounded retry count: {len(serial.commands)}")
+
+
+def test_csv_export_unrelated_qerr_fails_without_retry() -> None:
+    class FakeSerial:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            return 'QERR {"ok":false,"error":"export_size_unavailable"}'
+
+    serial = FakeSerial()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            run_window_module.download_csv(serial, Path(tmp), 1)
+        except RuntimeError as exc:
+            assert_true("export_size_unavailable" in str(exc), f"wrong unrelated QERR: {exc}")
+        else:
+            raise AssertionError("unrelated QGETCSV error was retried or accepted")
+    assert_true(serial.commands == ["QGETCSV"], f"unrelated QERR was retried: {serial.commands}")
+
+
 def test_encounter_csv_path_uses_perf_boot_identity() -> None:
     assert_true(
         encounter_csv_sd_path("/perf/perf_boot_61-cbab7c22.csv")
@@ -2400,6 +2504,9 @@ def main() -> int:
     test_replay_consensus_grades_stable_windows_not_planned_transitions()
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
+    test_csv_export_retries_busy_admission_then_preserves_grading()
+    test_csv_export_busy_retry_is_bounded_and_fails_closed()
+    test_csv_export_unrelated_qerr_fails_without_retry()
     test_encounter_csv_path_uses_perf_boot_identity()
     test_v1replay_tracks_each_subscription_independently()
     test_v1replay_player_uses_live_control_snapshot()

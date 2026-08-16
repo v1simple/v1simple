@@ -216,14 +216,19 @@ def validate_camera_profile(camera_result: dict[str, Any]) -> None:
 
 
 def _segment_bounds(x0: int, x1: int) -> tuple[tuple[int, int, int, int], ...]:
+    # Sample disjoint stroke cores.  Adjacent seven-segment strokes meet at
+    # their endpoints, so sampling those junctions lets an illuminated
+    # horizontal stroke contaminate an inactive vertical stroke (and vice
+    # versa) after camera scaling/antialiasing.  The core regions retain ample
+    # active-pixel coverage while keeping every segment vote independent.
     return (
-        (x0 + 5, 60, x1 - 2, 68),
-        (x1 - 8, 68, x1, 81),
-        (x1 - 8, 85, x1, 104),
-        (x0 + 5, 101, x1 - 4, 108),
-        (x0, 85, x0 + 8, 104),
-        (x0, 64, x0 + 8, 84),
-        (x0 + 7, 82, x1 - 6, 90),
+        (x0 + 9, 60, x1 - 9, 68),
+        (x1 - 8, 68, x1, 82),
+        (x1 - 8, 90, x1, 101),
+        (x0 + 9, 101, x1 - 9, 108),
+        (x0, 90, x0 + 8, 101),
+        (x0, 68, x0 + 8, 82),
+        (x0 + 9, 82, x1 - 9, 90),
     )
 
 

@@ -3336,6 +3336,52 @@ def test_frequency_sampling_ignores_neighboring_stroke_bleed() -> None:
     )
 
 
+def test_frequency_sampling_uses_disjoint_segment_cores() -> None:
+    patterns_by_digit = {
+        digit: pattern for pattern, digit in camera_grade_module.SEGMENT_PATTERNS.items()
+    }
+    frame = bytearray(camera_grade_module.FRAME_BYTES)
+
+    def fill(bounds: tuple[int, int, int, int]) -> None:
+        for y in range(bounds[1], bounds[3]):
+            for x in range(bounds[0], bounds[2]):
+                offset = (y * camera_grade_module.FRAME_WIDTH + x) * 3
+                frame[offset : offset + 3] = bytes((255, 100, 0))
+
+    def connected_strokes(x0: int, x1: int) -> tuple[tuple[int, int, int, int], ...]:
+        return (
+            (x0 + 4, 60, x1 - 3, 69),
+            (x1 - 9, 64, x1, 84),
+            (x1 - 9, 84, x1, 106),
+            (x0 + 4, 100, x1 - 3, 109),
+            (x0, 84, x0 + 9, 106),
+            (x0, 64, x0 + 9, 84),
+            (x0 + 4, 81, x1 - 3, 91),
+        )
+
+    for digit, (x0, x1) in zip(
+        (3, 5, 5, 0, 0), camera_grade_module.FREQUENCY_DIGIT_X_BOUNDS
+    ):
+        for active, bounds in zip(patterns_by_digit[digit], connected_strokes(x0, x1)):
+            if active:
+                fill(bounds)
+
+        sample_bounds = camera_grade_module._segment_bounds(x0, x1)
+        for index, left in enumerate(sample_bounds):
+            for right in sample_bounds[index + 1 :]:
+                overlap_width = max(0, min(left[2], right[2]) - max(left[0], right[0]))
+                overlap_height = max(0, min(left[3], right[3]) - max(left[1], right[1]))
+                assert_true(
+                    overlap_width * overlap_height == 0,
+                    f"seven-segment sampling cores overlap: {left} vs {right}",
+                )
+
+    signature = frequency_signature(bytes(frame))
+    actual, confidence = identify_frequency(signature)
+    assert_true(actual == 35500, f"connected 35.500 strokes decoded as {actual}: {signature}")
+    assert_true(confidence > 0.0, "connected 35.500 strokes had no confidence")
+
+
 def registration_fixture(offset_x: float, offset_y: float) -> bytes:
     glyphs = (
         ("11111", "10000", "10000", "11111", "00001", "00001", "11111"),
@@ -4005,6 +4051,7 @@ def main() -> int:
     test_only_captured_replay_video_is_mechanically_graded()
     test_reference_free_segment_decoder_abstains_when_ambiguous()
     test_frequency_sampling_ignores_neighboring_stroke_bleed()
+    test_frequency_sampling_uses_disjoint_segment_cores()
     test_camera_crop_registration_tracks_dynamic_rig_movement()
     test_camera_crop_registration_falls_back_to_bright_still()
     test_camera_grade_rejects_visual_state_that_disagrees_with_log()

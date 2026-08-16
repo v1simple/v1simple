@@ -137,9 +137,9 @@ def load_catalog(path: Path) -> list[MetricPolicy]:
                     f"for {policy.run_kind}/{policy.metric}"
                 )
         if policy.absolute_min is None and policy.absolute_max is None:
-            if policy.required or policy.score_level != "info":
+            if policy.score_level != "info" or policy.regression_score_level != "info":
                 raise RuntimeError(
-                    "Fully unbounded catalog entries must be optional info observations: "
+                    "Fully unbounded catalog entries must have informational value and regression policies: "
                     f"catalog entry {idx} for {policy.run_kind}/{policy.metric}"
                 )
         if policy.advisory_min is not None or policy.advisory_max is not None:
@@ -465,12 +465,39 @@ def _regression_state(
     raise RuntimeError(f"Unsupported direction '{policy.direction}' for metric {policy.metric}")
 
 
-def _track_key(manifest: dict[str, Any]) -> tuple[str, str, str, str]:
+def _track_key(manifest: dict[str, Any]) -> tuple[str, str, str, str, str]:
     return (
         str(manifest.get("run_kind", "")),
         str(manifest.get("board_id", "")),
         str(manifest.get("env", "")),
         str(manifest.get("stress_class", "")),
+        _hardware_scoring_fingerprint(manifest),
+    )
+
+
+def _hardware_scoring_fingerprint(manifest: dict[str, Any]) -> str:
+    return str(manifest.get("hardware_scoring_fingerprint") or "")
+
+
+def _valid_hardware_scoring_fingerprint(manifest: dict[str, Any]) -> bool:
+    value = _hardware_scoring_fingerprint(manifest)
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _compatible_hardware_scoring_identity(
+    current: dict[str, Any],
+    candidate: dict[str, Any],
+) -> bool:
+    current_value = _hardware_scoring_fingerprint(current)
+    candidate_value = _hardware_scoring_fingerprint(candidate)
+    if not current_value and not candidate_value:
+        return True
+    return (
+        current_value == candidate_value
+        and _valid_hardware_scoring_fingerprint(current)
+        and _valid_hardware_scoring_fingerprint(candidate)
     )
 
 
@@ -564,7 +591,10 @@ def score_run(
         if not baseline_manifest_path.exists():
             continue
         candidate = load_manifest(baseline_manifest_path)
-        if _track_key(candidate) != _track_key(manifest):
+        if (
+            not _compatible_hardware_scoring_identity(manifest, candidate)
+            or _track_key(candidate) != _track_key(manifest)
+        ):
             continue
         candidate_result = _baseline_result(candidate)
         baseline_records = load_metrics(baseline_manifest_path, candidate)
@@ -816,6 +846,9 @@ def score_run(
             "lane": manifest["lane"],
             "suite_or_profile": manifest["suite_or_profile"],
             "stress_class": manifest["stress_class"],
+            "hardware_scoring_fingerprint": manifest.get(
+                "hardware_scoring_fingerprint", ""
+            ),
             "base_result": base_result,
             "source_type": manifest.get("source_type", ""),
             "source_schema": manifest.get("source_schema"),
@@ -827,6 +860,9 @@ def score_run(
             "run_id": baseline_manifest["run_id"],
             "git_sha": baseline_manifest["git_sha"],
             "git_ref": baseline_manifest["git_ref"],
+            "hardware_scoring_fingerprint": baseline_manifest.get(
+                "hardware_scoring_fingerprint", ""
+            ),
         },
         "baseline_window": {
             "strategy": _baseline_strategy_label(len(selected_candidates) if baseline_candidates else 0),

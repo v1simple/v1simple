@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 from bench_identity import (
     canonical_bytes,
     current_grader_fingerprint,
+    current_hardware_scoring_fingerprint,
     current_product_fingerprint,
     git_traceability,
     scenario_manifest,
@@ -32,8 +33,8 @@ from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_SUITES = ("core", "display", "replay")
-QUALIFICATION_SCHEMA_VERSION = 1
-PLAN_SCHEMA_VERSION = 1
+QUALIFICATION_SCHEMA_VERSION = 2
+PLAN_SCHEMA_VERSION = 2
 HEX_DIGEST_LENGTH = 64
 FULL_BATCH = "FULL_BATCH"
 REGRADE_AND_SMOKE = "REGRADE_AND_SMOKE"
@@ -126,6 +127,7 @@ def current_policy_identity(
     return {
         "product_fingerprint": current_product_fingerprint(root),
         "grader_fingerprint": current_grader_fingerprint(root),
+        "hardware_scoring_fingerprint": current_hardware_scoring_fingerprint(root),
         "scenario_fingerprints": scenarios,
         "scenario_parameters": {
             "duration_seconds": duration_seconds,
@@ -144,7 +146,11 @@ def validate_qualification_record(record: Mapping[str, Any]) -> None:
         or record.get("kind") != "bench_qualification"
     ):
         raise QualificationError("invalid qualification schema")
-    for field in ("product_fingerprint", "grader_fingerprint"):
+    for field in (
+        "product_fingerprint",
+        "grader_fingerprint",
+        "hardware_scoring_fingerprint",
+    ):
         if not _valid_digest(record.get(field)):
             raise QualificationError(f"invalid qualification {field}")
     scenarios = record.get("scenario_fingerprints")
@@ -214,11 +220,18 @@ def classify_policy(
 
     current_product = str(current.get("product_fingerprint") or "")
     current_grader = str(current.get("grader_fingerprint") or "")
+    current_hardware_scoring = str(current.get("hardware_scoring_fingerprint") or "")
     current_scenarios = current.get("scenario_fingerprints")
-    if not _valid_digest(current_product) or not _valid_digest(current_grader):
-        return FULL_BATCH, "current product or grader identity is invalid"
+    if (
+        not _valid_digest(current_product)
+        or not _valid_digest(current_grader)
+        or not _valid_digest(current_hardware_scoring)
+    ):
+        return FULL_BATCH, "current product, grader, or hardware-scoring identity is invalid"
     if current_product != accepted.get("product_fingerprint"):
         return FULL_BATCH, "product fingerprint changed"
+    if current_hardware_scoring != accepted.get("hardware_scoring_fingerprint"):
+        return FULL_BATCH, "hardware scoring fingerprint changed"
     if not isinstance(current_scenarios, dict) or set(current_scenarios) != set(REQUIRED_SUITES):
         return FULL_BATCH, "current scenario coverage is incomplete"
     if any(not _valid_digest(current_scenarios.get(suite)) for suite in REQUIRED_SUITES):
@@ -235,7 +248,7 @@ def classify_policy(
         return FULL_BATCH, f"accepted qualification evidence is invalid: {exc}"
     if current_grader != accepted.get("grader_fingerprint"):
         return REGRADE_AND_SMOKE, "camera grader fingerprint changed"
-    return REUSE, "product, scenario, and grader fingerprints match"
+    return REUSE, "product, scenario, hardware-scoring, and grader fingerprints match"
 
 
 def _strict_replay_evidence(
@@ -293,7 +306,7 @@ def build_qualification_record(
     """Validate a full batch and create its accepted qualification record."""
     bench_result_path = bench_result_path.resolve()
     bench_result = _read_json(bench_result_path)
-    if bench_result.get("kind") != "bench_result" or bench_result.get("schema_version") != 3:
+    if bench_result.get("kind") != "bench_result" or bench_result.get("schema_version") != 4:
         raise QualificationError("candidate is not a current bench result")
     if bench_result.get("result") != "PASS":
         raise QualificationError("candidate full batch did not PASS")
@@ -304,12 +317,21 @@ def build_qualification_record(
 
     product = str(bench_result.get("product_fingerprint") or "")
     grader = str(bench_result.get("grader_fingerprint") or "")
-    if not _valid_digest(product) or not _valid_digest(grader):
-        raise QualificationError("candidate full batch has invalid product or grader identity")
+    hardware_scoring = str(bench_result.get("hardware_scoring_fingerprint") or "")
+    if (
+        not _valid_digest(product)
+        or not _valid_digest(grader)
+        or not _valid_digest(hardware_scoring)
+    ):
+        raise QualificationError(
+            "candidate full batch has invalid product, grader, or hardware-scoring identity"
+        )
     if product != current_identity.get("product_fingerprint"):
         raise QualificationError("candidate full batch owns a stale product fingerprint")
     if grader != current_identity.get("grader_fingerprint"):
         raise QualificationError("candidate full batch owns a stale grader fingerprint")
+    if hardware_scoring != current_identity.get("hardware_scoring_fingerprint"):
+        raise QualificationError("candidate full batch owns a stale hardware-scoring fingerprint")
 
     raw_windows = bench_result.get("windows")
     if not isinstance(raw_windows, list) or len(raw_windows) != len(REQUIRED_SUITES):
@@ -331,9 +353,11 @@ def build_qualification_record(
         scenario = str(window.get("scenario_fingerprint") or "")
         if (
             window.get("result") != "PASS"
+            or window.get("window_schema_version") != 3
             or window.get("git_worktree_clean") is not True
             or window.get("product_fingerprint") != product
             or window.get("grader_fingerprint") != grader
+            or window.get("hardware_scoring_fingerprint") != hardware_scoring
             or not _valid_digest(scenario)
         ):
             raise QualificationError(f"{suite} does not own a clean current PASS")
@@ -357,6 +381,7 @@ def build_qualification_record(
         "board_id": board_id,
         "product_fingerprint": product,
         "grader_fingerprint": grader,
+        "hardware_scoring_fingerprint": hardware_scoring,
         "scenario_fingerprints": scenarios,
         "traceability": trace,
         "evidence": {
@@ -664,6 +689,12 @@ def build_grader_revalidation_record(
         raise QualificationError("repository is not clean at grader revalidation time")
     if current_identity.get("product_fingerprint") != prior.get("product_fingerprint"):
         raise QualificationError("product changed; grader-only revalidation is not allowed")
+    if current_identity.get("hardware_scoring_fingerprint") != prior.get(
+        "hardware_scoring_fingerprint"
+    ):
+        raise QualificationError(
+            "hardware scoring changed; grader-only revalidation is not allowed"
+        )
     if current_identity.get("scenario_fingerprints") != prior.get("scenario_fingerprints"):
         raise QualificationError("scenario changed; grader-only revalidation is not allowed")
     current_grader = str(current_identity.get("grader_fingerprint") or "")
@@ -692,6 +723,7 @@ def build_grader_revalidation_record(
         "board_id": prior.get("board_id", "release"),
         "product_fingerprint": prior["product_fingerprint"],
         "grader_fingerprint": current_grader,
+        "hardware_scoring_fingerprint": prior["hardware_scoring_fingerprint"],
         "scenario_fingerprints": dict(prior["scenario_fingerprints"]),
         "traceability": trace,
         "evidence": {
@@ -751,6 +783,7 @@ def validate_qualification_evidence(
     identity = {
         "product_fingerprint": record["product_fingerprint"],
         "grader_fingerprint": record["grader_fingerprint"],
+        "hardware_scoring_fingerprint": record["hardware_scoring_fingerprint"],
         "scenario_fingerprints": dict(record["scenario_fingerprints"]),
     }
     trace = dict(record["traceability"])
@@ -841,11 +874,14 @@ def _commands(
         f"--segment {segment} --blink-profile {blink}"
     )
     if action == FULL_BATCH:
+        qualification_target = (
+            "<new-qualification.json>" if qualification_path.exists() else str(qualification_path)
+        )
         return [
             f"./bench.sh --all --camera {scenario_args}",
             "python3 scripts/bench/bench_policy.py record-full "
             "--bench-result <new-run>/bench_result.json "
-            f"--qualification {qualification_path}",
+            f"--qualification {qualification_target}",
         ]
     if action == REGRADE_AND_SMOKE:
         return [

@@ -2549,6 +2549,200 @@ def test_bench_entrypoint_forwards_explicit_baseline_window() -> None:
     )
 
 
+def test_importer_receives_hardware_scoring_identity_and_rejects_stale_baseline() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out_dir = root / "out"
+        out_dir.mkdir()
+        csv_path = root / "perf.csv"
+        csv_path.write_text("header\n", encoding="utf-8")
+        scoring_fingerprint = "a" * 64
+        identity = {
+            "schema_version": 2,
+            "kind": "bench_identity",
+            "product_fingerprint": "b" * 64,
+            "grader_fingerprint": "c" * 64,
+            "hardware_scoring_fingerprint": scoring_fingerprint,
+            "scenario_fingerprint": "d" * 64,
+            "scenario": {"parameters": {"suite": "core"}},
+        }
+        baseline_root = root / "baselines"
+        baseline_dir = run_window_module.baseline_directory(
+            baseline_root,
+            "release",
+            identity,
+        )
+        baseline_dir.mkdir(parents=True)
+        (baseline_dir / "manifest.json").write_text("{}\n", encoding="utf-8")
+        stale_identity = dict(identity)
+        stale_identity["hardware_scoring_fingerprint"] = "e" * 64
+        (baseline_dir / "identity.json").write_text(
+            json.dumps(stale_identity),
+            encoding="utf-8",
+        )
+        args = SimpleNamespace(
+            suite="core",
+            board_id="release",
+            git_sha="f" * 40,
+            git_ref="main",
+            profile="drive_wifi_off",
+            segment="last",
+            lane="bench",
+            compare_to=[],
+            baseline_root=str(baseline_root),
+        )
+        captured: list[str] = []
+        original_run = run_window_module.subprocess.run
+
+        def fake_run(cmd, **_kwargs):
+            captured.extend(str(item) for item in cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+
+        flag_index = captured.index("--hardware-scoring-fingerprint")
+        assert_true(
+            captured[flag_index + 1] == scoring_fingerprint,
+            f"importer did not receive exact scoring identity: {captured}",
+        )
+        assert_true(
+            "--compare-to" not in captured,
+            f"scoring-incompatible automatic baseline was admitted: {captured}",
+        )
+
+        (baseline_dir / "identity.json").write_text(
+            json.dumps(identity),
+            encoding="utf-8",
+        )
+        (baseline_dir / "manifest.json").write_text(
+            "{malformed automatic baseline manifest\n",
+            encoding="utf-8",
+        )
+        captured.clear()
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+        assert_true(
+            "--compare-to" not in captured,
+            f"malformed optional automatic manifest was admitted: {captured}",
+        )
+
+        baseline_manifest = {
+            "schema_version": 1,
+            "run_id": "baseline",
+            "timestamp_utc": "2026-08-15T00:00:00Z",
+            "git_sha": "1" * 40,
+            "git_ref": "main",
+            "product_fingerprint": identity["product_fingerprint"],
+            "grader_fingerprint": identity["grader_fingerprint"],
+            "hardware_scoring_fingerprint": identity[
+                "hardware_scoring_fingerprint"
+            ],
+            "scenario_fingerprint": identity["scenario_fingerprint"],
+            "run_kind": "real_fw_soak",
+            "board_id": "release",
+            "env": "perf-csv-import",
+            "lane": "bench-core",
+            "suite_or_profile": "drive_wifi_off",
+            "stress_class": "core",
+            "result": "PASS",
+            "metrics_file": "metrics.ndjson",
+            "scoring_file": "scoring.json",
+            "tracks": ["drive_wifi_off"],
+            "source_type": "perf_csv",
+            "source_schema": 46,
+        }
+        (baseline_dir / "manifest.json").write_text(
+            json.dumps(baseline_manifest),
+            encoding="utf-8",
+        )
+        metrics_path = baseline_dir / "metrics.ndjson"
+        captured.clear()
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+        assert_true(
+            "--compare-to" not in captured,
+            f"optional automatic baseline with missing metrics was admitted: {captured}",
+        )
+
+        metrics_path.write_text("{malformed baseline metric\n", encoding="utf-8")
+        captured.clear()
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+        assert_true(
+            "--compare-to" not in captured,
+            f"corrupt optional automatic metrics were admitted: {captured}",
+        )
+
+        metrics_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "baseline",
+                    "git_sha": "1" * 40,
+                    "run_kind": "real_fw_soak",
+                    "suite_or_profile": "drive_wifi_off",
+                    "metric": "sd_max_peak_us",
+                    "sample": 0,
+                    "value": 10000,
+                    "unit": "us",
+                    "tags": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        captured.clear()
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+        automatic_manifest = str(baseline_dir / "manifest.json")
+        assert_true(
+            automatic_manifest in captured,
+            f"valid optional automatic baseline was rejected: {captured}",
+        )
+
+        explicit_manifest = root / "explicit-baseline.json"
+        explicit_manifest.write_text("{malformed explicit baseline\n", encoding="utf-8")
+        (baseline_dir / "identity.json").write_text(
+            "{malformed automatic baseline identity\n",
+            encoding="utf-8",
+        )
+        args.compare_to = [str(explicit_manifest)]
+        captured.clear()
+        run_window_module.subprocess.run = fake_run
+        try:
+            run_window_module.run_import(args, csv_path, out_dir, identity)
+        finally:
+            run_window_module.subprocess.run = original_run
+        compare_indices = [
+            index for index, value in enumerate(captured) if value == "--compare-to"
+        ]
+        assert_true(
+            compare_indices == [len(captured) - 2]
+            and captured[compare_indices[0] + 1] == str(explicit_manifest),
+            f"explicit baseline was not forwarded unchanged: {captured}",
+        )
+        assert_true(
+            str(baseline_dir / "manifest.json") not in captured,
+            f"malformed optional automatic baseline was admitted: {captured}",
+        )
+
+
 def test_baseline_promotion_is_future_core_display_only() -> None:
     entrypoint = ROOT / "bench.sh"
     text = entrypoint.read_text(encoding="utf-8")
@@ -2559,6 +2753,11 @@ def test_baseline_promotion_is_future_core_display_only() -> None:
     assert_true(
         "Current manifests retain the baseline comparison available when they were scored." in text,
         "promotion result does not preserve manifest provenance",
+    )
+    assert_true('"schema_version": 3' in text, "promoted baseline metadata schema is stale")
+    assert_true(
+        '"hardware_scoring_fingerprint": "$hardware_scoring_fingerprint"' in text,
+        "promoted baseline does not retain hardware-scoring identity",
     )
 
     proc = subprocess.run(
@@ -3410,6 +3609,7 @@ def main() -> int:
     test_camera_video_profile_seeds_exposure_before_aperture_priority()
     test_failed_frame_rate_probe_retains_measurements_and_diagnostics()
     test_bench_entrypoint_forwards_explicit_baseline_window()
+    test_importer_receives_hardware_scoring_identity_and_rejects_stale_baseline()
     test_baseline_promotion_is_future_core_display_only()
     test_camera_profile_validation_rejects_recorder_brightness_drift()
     test_only_captured_replay_video_is_mechanically_graded()

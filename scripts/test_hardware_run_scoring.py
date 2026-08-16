@@ -18,6 +18,7 @@ import score_hardware_run  # type: ignore  # noqa: E402
 
 
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
+HARDWARE_SCORING_FINGERPRINT = "a" * 64
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -54,6 +55,7 @@ def write_manifest(
     source_schema: int | None = None,
     coverage_status: str | None = None,
     mode_coverage: dict[str, object] | None = None,
+    hardware_scoring_fingerprint: str | None = HARDWARE_SCORING_FINGERPRINT,
 ) -> None:
     payload = {
         "schema_version": 1,
@@ -71,6 +73,8 @@ def write_manifest(
         "metrics_file": metrics_file,
         "scoring_file": scoring_file,
     }
+    if hardware_scoring_fingerprint is not None:
+        payload["hardware_scoring_fingerprint"] = hardware_scoring_fingerprint
     if base_result is not None:
         payload["base_result"] = base_result
     if tracks is not None:
@@ -550,6 +554,186 @@ def test_selector_and_track_matching(tmpdir: Path) -> None:
     assert_true(result["comparison_kind"] == "no_baseline", "board mismatch must skip baseline comparison")
 
 
+def test_baseline_requires_matching_hardware_scoring_identity(tmpdir: Path) -> None:
+    case_dir = tmpdir / "hardware_scoring_baseline_identity"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = case_dir / "metrics.ndjson"
+    current_path = case_dir / "current.json"
+    matching_path = case_dir / "matching.json"
+    different_path = case_dir / "different.json"
+    missing_path = case_dir / "missing.json"
+    empty_path = case_dir / "empty.json"
+    invalid_path = case_dir / "invalid.json"
+    write_metrics(metrics_path, standard_soak_records())
+
+    common = {
+        "git_sha": "abc1234",
+        "git_ref": "main",
+        "run_kind": "real_fw_soak",
+        "board_id": "release",
+        "env": "perf-csv-import",
+        "lane": "qualification-core",
+        "suite_or_profile": "drive_wifi_off",
+        "stress_class": "core",
+        "result": "PASS",
+        "metrics_file": metrics_path.name,
+        "base_result": "PASS",
+        "tracks": ["drive_wifi_off"],
+    }
+    write_manifest(current_path, run_id="current", **common)
+    write_manifest(matching_path, run_id="matching", **common)
+    write_manifest(
+        different_path,
+        run_id="different",
+        hardware_scoring_fingerprint="b" * 64,
+        **common,
+    )
+    write_manifest(
+        missing_path,
+        run_id="missing",
+        hardware_scoring_fingerprint=None,
+        **common,
+    )
+    write_manifest(
+        empty_path,
+        run_id="empty",
+        hardware_scoring_fingerprint="",
+        **common,
+    )
+    write_manifest(
+        invalid_path,
+        run_id="invalid",
+        hardware_scoring_fingerprint="not-a-digest",
+        **common,
+    )
+
+    matching = score_hardware_run.score_run(current_path, CATALOG_PATH, matching_path)
+    assert_true(matching["comparison_kind"] != "no_baseline", str(matching))
+    assert_true(
+        matching["manifest"]["hardware_scoring_fingerprint"]
+        == HARDWARE_SCORING_FINGERPRINT,
+        str(matching),
+    )
+    assert_true(
+        matching["baseline_manifest"]["hardware_scoring_fingerprint"]
+        == HARDWARE_SCORING_FINGERPRINT,
+        str(matching),
+    )
+
+    for incompatible in (different_path, missing_path, empty_path, invalid_path):
+        result = score_hardware_run.score_run(current_path, CATALOG_PATH, incompatible)
+        assert_true(result["comparison_kind"] == "no_baseline", str(result))
+
+    current_missing_path = case_dir / "current_missing.json"
+    write_manifest(
+        current_missing_path,
+        run_id="current-missing",
+        hardware_scoring_fingerprint=None,
+        **common,
+    )
+    current_missing = score_hardware_run.score_run(
+        current_missing_path,
+        CATALOG_PATH,
+        matching_path,
+    )
+    assert_true(current_missing["comparison_kind"] == "no_baseline", str(current_missing))
+
+    legacy = score_hardware_run.score_run(
+        current_missing_path,
+        CATALOG_PATH,
+        missing_path,
+    )
+    assert_true(legacy["comparison_kind"] != "no_baseline", str(legacy))
+    assert_true(legacy["baseline_manifest"]["run_id"] == "missing", str(legacy))
+
+    legacy_empty = score_hardware_run.score_run(
+        current_missing_path,
+        CATALOG_PATH,
+        empty_path,
+    )
+    assert_true(legacy_empty["comparison_kind"] != "no_baseline", str(legacy_empty))
+
+    invalid_current_path = case_dir / "current_invalid.json"
+    write_manifest(
+        invalid_current_path,
+        run_id="current-invalid",
+        hardware_scoring_fingerprint="not-a-digest",
+        **common,
+    )
+    for incompatible in (missing_path, empty_path, invalid_path):
+        invalid_current = score_hardware_run.score_run(
+            invalid_current_path,
+            CATALOG_PATH,
+            incompatible,
+        )
+        assert_true(invalid_current["comparison_kind"] == "no_baseline", str(invalid_current))
+
+    mixed = score_hardware_run.score_run(
+        current_path,
+        CATALOG_PATH,
+        [different_path, matching_path, missing_path],
+    )
+    assert_true(mixed["baseline_window"]["candidate_count"] == 1, str(mixed))
+    assert_true(mixed["baseline_manifest"]["run_id"] == "matching", str(mixed))
+
+
+def test_import_drive_log_legacy_manifests_retain_baseline_comparison(tmpdir: Path) -> None:
+    case_dir = tmpdir / "drive_log_legacy_baseline"
+    input_dir = case_dir / "input"
+    input_dir.mkdir(parents=True)
+    source_fixture = ROOT / "test" / "fixtures" / "perf" / "core_soak_connect_burst_reduced.metrics.jsonl"
+    (input_dir / "metrics.jsonl").write_bytes(source_fixture.read_bytes())
+
+    baseline_dir = case_dir / "baseline"
+    current_dir = case_dir / "current"
+    common_args = [
+        sys.executable,
+        str(ROOT / "tools" / "import_drive_log.py"),
+        "--input",
+        str(input_dir),
+        "--board-id",
+        "release",
+        "--env",
+        "parsed-drive-log",
+        "--suite-or-profile",
+        "drive_wifi_ap",
+        "--stress-class",
+        "core",
+    ]
+    baseline = subprocess.run(
+        [*common_args, "--out-dir", str(baseline_dir)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert_true(baseline.returncode in {0, 1, 2}, baseline.stdout + baseline.stderr)
+    baseline_manifest_path = baseline_dir / "manifest.json"
+    baseline_manifest = json.loads(baseline_manifest_path.read_text(encoding="utf-8"))
+    assert_true(
+        "hardware_scoring_fingerprint" not in baseline_manifest,
+        f"legacy drive-log manifest unexpectedly declared a scoring identity: {baseline_manifest}",
+    )
+
+    current = subprocess.run(
+        [
+            *common_args,
+            "--out-dir",
+            str(current_dir),
+            "--compare-to",
+            str(baseline_manifest_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert_true(current.returncode in {0, 1, 2}, current.stdout + current.stderr)
+    scoring = json.loads((current_dir / "scoring.json").read_text(encoding="utf-8"))
+    assert_true(scoring["comparison_kind"] == "run_variance", str(scoring))
+    assert_true(scoring["baseline_window"]["candidate_count"] == 1, str(scoring))
+
+
 def test_lab_no_external_activity_downgrades_packet_count_gates(tmpdir: Path) -> None:
     case_dir = tmpdir / "lab_no_external_activity"
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -970,21 +1154,25 @@ def test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir: Path) -> None
     assert_true(result["result"] == "PASS_WITH_WARNINGS", "missing optional advisory metrics should warn, not become inconclusive")
 
 
-def test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir: Path) -> None:
+def test_catalog_allows_required_info_observations_to_be_unbounded(tmpdir: Path) -> None:
     policies = score_hardware_run.load_catalog(CATALOG_PATH)
     unbounded = [
         policy
         for policy in policies
         if policy.absolute_min is None and policy.absolute_max is None
     ]
-    assert_true(unbounded, "the catalog should retain useful optional observations")
+    assert_true(unbounded, "the catalog should retain useful informational observations")
     assert_true(
-        all(not policy.required and policy.score_level == "info" for policy in unbounded),
-        f"required or scoring policies must have an absolute contract: {unbounded}",
+        all(policy.score_level == "info" for policy in unbounded),
+        f"unbounded value policies must be informational: {unbounded}",
+    )
+    assert_true(
+        any(policy.required for policy in unbounded),
+        f"required diagnostic evidence should not need a verdict threshold: {unbounded}",
     )
 
-    invalid_catalog = tmpdir / "invalid_unbounded_catalog.json"
-    invalid_catalog.write_text(
+    invalid_hard_catalog = tmpdir / "invalid_unbounded_hard_catalog.json"
+    invalid_hard_catalog.write_text(
         json.dumps(
             {
                 "schema_version": 1,
@@ -1011,11 +1199,46 @@ def test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir: 
         encoding="utf-8",
     )
     try:
-        score_hardware_run.load_catalog(invalid_catalog)
+        score_hardware_run.load_catalog(invalid_hard_catalog)
     except RuntimeError as exc:
         assert_true("Fully unbounded catalog entries" in str(exc), f"unexpected validation error: {exc}")
     else:
-        raise AssertionError("unbounded required policy should be rejected")
+        raise AssertionError("unbounded hard policy should be rejected")
+
+    invalid_regression_catalog = tmpdir / "invalid_unbounded_regression_catalog.json"
+    invalid_regression_catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "metrics": [
+                    {
+                        "metric": "latency_us",
+                        "run_kind": "custom_kind",
+                        "selector": {},
+                        "unit": "us",
+                        "aggregation": "last",
+                        "direction": "lower_better",
+                        "score_level": "info",
+                        "regression_score_level": "hard",
+                        "required": True,
+                        "absolute_min": None,
+                        "absolute_max": None,
+                        "regress_abs": 10,
+                        "regress_pct": None,
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        score_hardware_run.load_catalog(invalid_regression_catalog)
+    except RuntimeError as exc:
+        assert_true("Fully unbounded catalog entries" in str(exc), f"unexpected validation error: {exc}")
+    else:
+        raise AssertionError("unbounded hard regression policy should be rejected")
 
 
 def test_required_soak_metrics_enforce_absolute_budgets(tmpdir: Path) -> None:
@@ -1186,7 +1409,7 @@ def test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir: Path) -> None
             raise AssertionError(f"advisory bound outside the hard limit should be rejected: {name}")
 
 
-def test_catalog_contains_data_derived_metric_budgets() -> None:
+def test_catalog_contains_functional_budgets_and_sd_diagnostics() -> None:
     policies = score_hardware_run.load_catalog(CATALOG_PATH)
 
     notify = [policy for policy in policies if policy.metric == "notify_to_display_max_ms"]
@@ -1198,7 +1421,7 @@ def test_catalog_contains_data_derived_metric_budgets() -> None:
             and policy.advisory_max is None
             for policy in notify
         ),
-        f"notify budgets do not match the data-derived contract: {notify}",
+        f"notify budgets do not match the functional contract: {notify}",
     )
 
     core_display_peak = next(
@@ -1210,23 +1433,129 @@ def test_catalog_contains_data_derived_metric_budgets() -> None:
         core_display_peak.score_level == "hard"
         and core_display_peak.absolute_max == 80000
         and core_display_peak.advisory_max == 60000,
-        f"core display peak budgets do not match the data-derived contract: {core_display_peak}",
+        f"core display peak budgets do not match the functional contract: {core_display_peak}",
     )
 
     by_metric = {policy.metric: policy for policy in policies if policy.run_kind == "real_fw_soak"}
-    runtime_sd = by_metric["sd_runtime_max_peak_us"]
-    assert_true(
-        runtime_sd.score_level == "hard"
-        and runtime_sd.absolute_max == 150000
-        and runtime_sd.advisory_max == 60000,
-        f"runtime SD budget does not match the data-derived contract: {runtime_sd}",
-    )
-    for metric_name in ("sd_max_peak_us", "sd_start_max_peak_us"):
+    for metric_name in ("sd_max_peak_us", "sd_start_max_peak_us", "sd_runtime_max_peak_us"):
         policy = by_metric[metric_name]
         assert_true(
-            policy.score_level == "advisory" and policy.absolute_max == 150000,
-            f"startup-inclusive SD budget does not match the data-derived contract: {policy}",
+            policy.required
+            and policy.score_level == "info"
+            and policy.regression_score_level == "info"
+            and policy.absolute_min is None
+            and policy.absolute_max is None
+            and policy.advisory_min is None
+            and policy.advisory_max is None,
+            f"raw SD latency must remain required diagnostic telemetry: {policy}",
         )
+
+
+def test_sd_latency_is_required_diagnostic_not_a_verdict(tmpdir: Path) -> None:
+    case_dir = tmpdir / "sd_latency_diagnostic"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    baseline_metrics_path = case_dir / "baseline.ndjson"
+    current_metrics_path = case_dir / "current.ndjson"
+    missing_metrics_path = case_dir / "missing.ndjson"
+    dropped_metrics_path = case_dir / "dropped.ndjson"
+    baseline_manifest_path = case_dir / "baseline.json"
+    current_manifest_path = case_dir / "current.json"
+    missing_manifest_path = case_dir / "missing.json"
+    dropped_manifest_path = case_dir / "dropped.json"
+
+    baseline_records = standard_soak_records()
+    baseline_records.extend(
+        [
+            soak_metric("drive_wifi_ap", "sd_start_max_peak_us", 10000),
+            soak_metric("drive_wifi_ap", "sd_runtime_max_peak_us", 10000),
+        ]
+    )
+    current_records = [dict(record) for record in baseline_records]
+    for record in current_records:
+        if record["metric"] in {
+            "sd_max_peak_us",
+            "sd_start_max_peak_us",
+            "sd_runtime_max_peak_us",
+        }:
+            record["value"] = 999999999
+    missing_records = [
+        dict(record)
+        for record in current_records
+        if record["metric"] != "sd_runtime_max_peak_us"
+    ]
+    dropped_records = [dict(record) for record in current_records]
+    for record in dropped_records:
+        if record["metric"] == "queue_drops_delta":
+            record["value"] = 1
+
+    for path, records in (
+        (baseline_metrics_path, baseline_records),
+        (current_metrics_path, current_records),
+        (missing_metrics_path, missing_records),
+        (dropped_metrics_path, dropped_records),
+    ):
+        write_metrics(path, records)
+
+    common_manifest = {
+        "run_kind": "real_fw_soak",
+        "board_id": "release",
+        "env": "perf-csv-import",
+        "lane": "qualification-core",
+        "suite_or_profile": "drive_wifi_ap",
+        "stress_class": "core",
+        "result": "PASS",
+        "base_result": "PASS",
+        "tracks": ["drive_wifi_ap"],
+        "source_type": "perf_csv",
+        "source_schema": 46,
+    }
+    for path, run_id, git_sha, metrics_file in (
+        (baseline_manifest_path, "sd-baseline", "base123", baseline_metrics_path.name),
+        (current_manifest_path, "sd-current", "cur1234", current_metrics_path.name),
+        (missing_manifest_path, "sd-missing", "cur1234", missing_metrics_path.name),
+        (dropped_manifest_path, "sd-dropped", "cur1234", dropped_metrics_path.name),
+    ):
+        write_manifest(
+            path,
+            run_id=run_id,
+            git_sha=git_sha,
+            git_ref="main",
+            metrics_file=metrics_file,
+            **common_manifest,
+        )
+
+    scored = score_hardware_run.score_run(
+        current_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(scored["result"] == "PASS", f"raw SD latency alone changed the verdict: {scored}")
+    assert_true(scored["summary"]["hard_failures"] == 0, f"raw SD latency hard-failed: {scored}")
+    assert_true(scored["summary"]["advisory_failures"] == 0, f"raw SD latency warned: {scored}")
+    scored_by_metric = {metric["metric"]: metric for metric in scored["metrics"]}
+    for metric_name in ("sd_max_peak_us", "sd_start_max_peak_us", "sd_runtime_max_peak_us"):
+        metric = scored_by_metric[metric_name]
+        assert_true(metric["score_level"] == "info", f"{metric_name} is not informational: {metric}")
+        assert_true(metric["absolute_state"] == "n/a", f"{metric_name} retained a value threshold: {metric}")
+        assert_true(metric["advisory_state"] == "n/a", f"{metric_name} retained an advisory gate: {metric}")
+        assert_true(metric["score_status"] == "info", f"{metric_name} regression was not diagnostic: {metric}")
+
+    missing = score_hardware_run.score_run(
+        missing_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(missing["result"] == "FAIL", f"missing required SD evidence passed: {missing}")
+    assert_true(missing["summary"]["missing_required"] == 1, f"missing SD evidence was not counted: {missing}")
+
+    dropped = score_hardware_run.score_run(
+        dropped_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(dropped["result"] == "FAIL", f"a direct queue-drop witness was weakened: {dropped}")
+    queue_drop = next(metric for metric in dropped["metrics"] if metric["metric"] == "queue_drops_delta")
+    assert_true(queue_drop["score_status"] == "fail", f"queue-drop gate did not remain hard: {queue_drop}")
 
 
 def test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir: Path) -> None:
@@ -1707,6 +2036,8 @@ def main() -> int:
         test_inconclusive_baseline_is_still_compared(tmpdir)
         test_passing_baseline_wins_over_failing(tmpdir)
         test_selector_and_track_matching(tmpdir)
+        test_baseline_requires_matching_hardware_scoring_identity(tmpdir)
+        test_import_drive_log_legacy_manifests_retain_baseline_comparison(tmpdir)
         test_lab_no_external_activity_downgrades_packet_count_gates(tmpdir)
         test_drive_wifi_ap_loop_peak_is_informational(tmpdir)
         test_dma_largest_uses_fixed_absolute_threshold(tmpdir)
@@ -1715,11 +2046,12 @@ def main() -> int:
         test_observed_spread_absorbs_noise_but_not_a_real_regression()
         test_spread_never_loosens_below_the_policy_threshold()
         test_optional_metric_gap_warns_but_is_not_inconclusive(tmpdir)
-        test_catalog_allows_only_optional_info_observations_to_be_unbounded(tmpdir)
+        test_catalog_allows_required_info_observations_to_be_unbounded(tmpdir)
         test_required_soak_metrics_enforce_absolute_budgets(tmpdir)
         test_advisory_bound_warns_before_hard_absolute_failure(tmpdir)
         test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir)
-        test_catalog_contains_data_derived_metric_budgets()
+        test_catalog_contains_functional_budgets_and_sd_diagnostics()
+        test_sd_latency_is_required_diagnostic_not_a_verdict(tmpdir)
         test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir)
         test_unsupported_metrics_do_not_fail_run(tmpdir)
         test_uncataloged_metric_rejected(tmpdir)

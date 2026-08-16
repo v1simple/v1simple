@@ -28,6 +28,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIR = ROOT / "tools"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+import score_hardware_run  # type: ignore  # noqa: E402
+
 from bench_identity import (
     baseline_directory,
     build_identity_manifest,
@@ -51,7 +58,6 @@ try:  # pyserial is needed only for live collection, not --from-csv imports.
 except ImportError:  # pragma: no cover - exercised only on hosts without pyserial
     serial = None  # type: ignore
 
-ROOT = Path(__file__).resolve().parents[2]
 IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
@@ -249,7 +255,7 @@ def utc_now() -> str:
 
 
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
-    payload.setdefault("schema_version", 2)
+    payload.setdefault("schema_version", 3)
     payload.setdefault("timestamp_utc", utc_now())
     (out_dir / "window_result.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -1000,6 +1006,8 @@ def run_import(
         str(identity["product_fingerprint"]),
         "--grader-fingerprint",
         str(identity["grader_fingerprint"]),
+        "--hardware-scoring-fingerprint",
+        str(identity["hardware_scoring_fingerprint"]),
         "--scenario-fingerprint",
         str(identity["scenario_fingerprint"]),
         "--profile",
@@ -1018,16 +1026,73 @@ def run_import(
         compatible_identity_path = compatible_dir / "identity.json"
         legacy_dir = Path(args.baseline_root).resolve() / args.board_id / args.suite
         if compatible_manifest.is_file() and compatible_identity_path.is_file():
-            baseline_identity = load_identity_manifest(compatible_identity_path)
-            matches_current = all(
-                baseline_identity.get(field) == identity.get(field)
-                for field in ("product_fingerprint", "scenario_fingerprint")
-            )
-            if matches_current:
-                baselines.append(str(compatible_manifest))
-                print(f"[bench] using compatible baseline: {compatible_manifest}", flush=True)
+            try:
+                baseline_identity = load_identity_manifest(compatible_identity_path)
+            except Exception as exc:  # noqa: BLE001 - optional baseline must not abort collection
+                print(
+                    f"[bench] invalid identity-keyed baseline ignored: {compatible_dir}: {exc}",
+                    flush=True,
+                )
             else:
-                print(f"[bench] incompatible identity-keyed baseline ignored: {compatible_dir}", flush=True)
+                matches_current = all(
+                    baseline_identity.get(field) == identity.get(field)
+                    for field in (
+                        "product_fingerprint",
+                        "hardware_scoring_fingerprint",
+                        "scenario_fingerprint",
+                    )
+                )
+                if matches_current:
+                    try:
+                        baseline_manifest = score_hardware_run.load_manifest(
+                            compatible_manifest
+                        )
+                        for field in (
+                            "product_fingerprint",
+                            "hardware_scoring_fingerprint",
+                            "scenario_fingerprint",
+                        ):
+                            if baseline_manifest.get(field) != identity.get(field):
+                                raise RuntimeError(
+                                    f"baseline manifest {field} does not match its identity"
+                                )
+                        metrics_ref = baseline_manifest.get("metrics_file")
+                        if not isinstance(metrics_ref, str) or not metrics_ref:
+                            raise RuntimeError("baseline manifest has no metrics file")
+                        metrics_path = Path(metrics_ref)
+                        if not metrics_path.is_absolute():
+                            metrics_path = compatible_manifest.parent / metrics_path
+                        resolved_metrics = metrics_path.resolve(strict=True)
+                        resolved_metrics.relative_to(compatible_dir.resolve())
+                        if not resolved_metrics.is_file():
+                            raise RuntimeError("baseline metrics path is not a file")
+                        baseline_records = score_hardware_run.load_metrics(
+                            compatible_manifest,
+                            baseline_manifest,
+                        )
+                        if not baseline_records:
+                            raise RuntimeError("baseline metrics file is empty")
+                        score_hardware_run.score_run(
+                            compatible_manifest,
+                            score_hardware_run.DEFAULT_CATALOG_PATH,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - optional baseline must not abort collection
+                        print(
+                            f"[bench] invalid identity-keyed baseline ignored: "
+                            f"{compatible_dir}: {exc}",
+                            flush=True,
+                        )
+                    else:
+                        baselines.append(str(compatible_manifest))
+                        print(
+                            f"[bench] using compatible baseline: {compatible_manifest}",
+                            flush=True,
+                        )
+                else:
+                    print(
+                        f"[bench] incompatible identity-keyed baseline ignored: {compatible_dir}",
+                        flush=True,
+                    )
         elif compatible_manifest.is_file():
             print(f"[bench] baseline without identity manifest ignored: {compatible_dir}", flush=True)
         elif (legacy_dir / "manifest.json").is_file():
@@ -2087,6 +2152,7 @@ def main() -> int:
             "identity_manifest": identity_path.name,
             "product_fingerprint": identity["product_fingerprint"],
             "grader_fingerprint": identity["grader_fingerprint"],
+            "hardware_scoring_fingerprint": identity["hardware_scoring_fingerprint"],
             "scenario_fingerprint": identity["scenario_fingerprint"],
         }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create deterministic product, camera-grader, and bench-scenario identities."""
+"""Create deterministic product, hardware-scoring, camera-grader, and scenario identities."""
 
 from __future__ import annotations
 
@@ -89,6 +89,7 @@ GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     # bench code, but they own camera ordering and acceptance wiring. Hashing
     # them prevents that behavior from changing while evidence remains REUSE.
     "camera_integrations": (
+        "scripts/bench/run_logged.py",
         "scripts/bench/run_window.py",
         "tools/bench_score.py",
     ),
@@ -104,10 +105,52 @@ GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# These inputs define hardware metric derivation and scoring. They are separate
+# from the camera grader because a change here needs a fresh full batch, not a
+# camera-only archive regrade and smoke test.
+HARDWARE_SCORING_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "identity_contract": ("scripts/bench/bench_identity.py",),
+    "metric_contract": (
+        "tools/hardware_metric_catalog.json",
+        "tools/metric_schema.py",
+    ),
+    "metric_import": (
+        "tools/import_drive_log.py",
+        "tools/import_perf_csv.py",
+        "tools/metric_derivation.py",
+        "tools/soak_parse_metrics.py",
+        "tools/soak_parse_panic.py",
+    ),
+    "metric_score": ("tools/score_hardware_run.py",),
+    "metric_reporting": ("tools/hardware_report_utils.py",),
+    # These mixed integration files contain camera behavior too, so they also
+    # remain in the camera grader fingerprint. Their hardware collection,
+    # verdict, and qualification branches require the conservative full-batch
+    # identity as well until those responsibilities are split into pure modules.
+    "hardware_integrations": (
+        "bench.sh",
+        "scripts/bench/bench_policy.py",
+        "scripts/bench/run_logged.py",
+        "scripts/bench/run_window.py",
+        "tools/bench_score.py",
+    ),
+}
+
 
 def current_grader_fingerprint(root: Path = ROOT) -> str:
-    """Return the current camera behavior identity without a scenario dependency."""
+    """Return the current bench-grader identity without a scenario dependency."""
     return str(_behavior_manifest(root.resolve(), "grader", GRADER_COMPONENT_PATTERNS)["fingerprint"])
+
+
+def current_hardware_scoring_fingerprint(root: Path = ROOT) -> str:
+    """Return the current hardware collection, verdict, and qualification identity."""
+    return str(
+        _behavior_manifest(
+            root.resolve(),
+            "hardware-scoring",
+            HARDWARE_SCORING_COMPONENT_PATTERNS,
+        )["fingerprint"]
+    )
 
 
 def current_product_fingerprint(root: Path = ROOT) -> str:
@@ -241,6 +284,11 @@ def build_identity_manifest(
     root = root.resolve()
     product = _behavior_manifest(root, "product", PRODUCT_COMPONENT_PATTERNS)
     grader = _behavior_manifest(root, "grader", GRADER_COMPONENT_PATTERNS)
+    hardware_scoring = _behavior_manifest(
+        root,
+        "hardware-scoring",
+        HARDWARE_SCORING_COMPONENT_PATTERNS,
+    )
     scenario = scenario_manifest(
         suite=suite,
         duration_seconds=duration_seconds,
@@ -250,15 +298,17 @@ def build_identity_manifest(
     )
     trace = dict(traceability) if traceability is not None else git_traceability(root)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bench_identity",
         "algorithm": SHA256_NAME,
         "canonicalization": CANONICALIZATION,
         "product_fingerprint": product["fingerprint"],
         "grader_fingerprint": grader["fingerprint"],
+        "hardware_scoring_fingerprint": hardware_scoring["fingerprint"],
         "scenario_fingerprint": scenario["fingerprint"],
         "product": product,
         "grader": grader,
+        "hardware_scoring": hardware_scoring,
         "scenario": scenario,
         "traceability": trace,
     }
@@ -274,12 +324,20 @@ def load_identity_manifest(path: Path) -> dict[str, Any]:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"failed to read bench identity manifest {path}: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("kind") != "bench_identity":
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("kind") != "bench_identity"
+        or manifest.get("schema_version") not in {1, 2}
+    ):
         raise RuntimeError(f"invalid bench identity manifest: {path}")
     for field in ("product_fingerprint", "grader_fingerprint", "scenario_fingerprint"):
         value = str(manifest.get(field) or "")
         if len(value) != HEX_DIGEST_LENGTH or any(character not in "0123456789abcdef" for character in value):
             raise RuntimeError(f"invalid {field} in bench identity manifest: {path}")
+    if manifest.get("schema_version") == 2:
+        value = str(manifest.get("hardware_scoring_fingerprint") or "")
+        if len(value) != HEX_DIGEST_LENGTH or any(character not in "0123456789abcdef" for character in value):
+            raise RuntimeError(f"invalid hardware_scoring_fingerprint in bench identity manifest: {path}")
     return manifest
 
 
@@ -298,6 +356,10 @@ def baseline_directory(
     parameters = scenario.get("parameters") if isinstance(scenario, dict) else {}
     suite = str(parameters.get("suite") or "") if isinstance(parameters, dict) else ""
     product_fingerprint = _safe_path_component(str(identity.get("product_fingerprint") or ""), "product fingerprint")
+    hardware_scoring_fingerprint = _safe_path_component(
+        str(identity.get("hardware_scoring_fingerprint") or ""),
+        "hardware scoring fingerprint",
+    )
     scenario_fingerprint = _safe_path_component(
         str(identity.get("scenario_fingerprint") or ""), "scenario fingerprint"
     )
@@ -305,6 +367,7 @@ def baseline_directory(
         baseline_root.resolve()
         / _safe_path_component(board_id, "board id")
         / product_fingerprint
+        / hardware_scoring_fingerprint
         / _safe_path_component(suite, "suite")
         / scenario_fingerprint
     )

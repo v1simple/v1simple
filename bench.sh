@@ -250,7 +250,7 @@ fi
 if [[ "${#COMPARE_TO[@]}" -gt 0 ]]; then
   echo "  baseline:   explicit ${#COMPARE_TO[@]}-run comparison window" | tee -a "$RUN_LOG"
 elif [[ "$USE_BASELINE" -eq 1 ]]; then
-  echo "  baseline:   board/product/suite/scenario identity (if present)" | tee -a "$RUN_LOG"
+  echo "  baseline:   board/product/hardware-scoring/suite/scenario identity (if present)" | tee -a "$RUN_LOG"
 else
   echo "  baseline:   disabled" | tee -a "$RUN_LOG"
 fi
@@ -395,16 +395,18 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
       cp "$RUN_DIR/$suite/import_diagnostics.json" "$baseline_dir/import_diagnostics.json"
       product_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["product_fingerprint"])' "$identity_manifest")"
       grader_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["grader_fingerprint"])' "$identity_manifest")"
+      hardware_scoring_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hardware_scoring_fingerprint"])' "$identity_manifest")"
       scenario_fingerprint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario_fingerprint"])' "$identity_manifest")"
       cat > "$baseline_dir/baseline_metadata.json" <<EOF
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "promoted_from": "$RUN_DIR/$suite",
   "promoted_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "board_id": "$BOARD_ID",
   "suite": "$suite",
   "product_fingerprint": "$product_fingerprint",
   "grader_fingerprint": "$grader_fingerprint",
+  "hardware_scoring_fingerprint": "$hardware_scoring_fingerprint",
   "scenario_fingerprint": "$scenario_fingerprint",
   "git_sha": "$GIT_SHA",
   "git_ref": "$GIT_REF"

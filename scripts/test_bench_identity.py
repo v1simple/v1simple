@@ -67,9 +67,19 @@ def write_fixture(root: Path) -> None:
         "scripts/bench/camera_artifacts.py": b"artifact ownership\n",
         "scripts/bench/camera_grade.py": b"grader\n",
         "scripts/bench/camera_regrade.py": b"regrader\n",
+        "scripts/bench/run_logged.py": b"managed process wrapper\n",
         "scripts/bench/run_window.py": b"camera window integration\n",
         "scripts/bench/bench_policy.py": b"qualification policy\n",
         "tools/bench_score.py": b"camera scoring integration\n",
+        "tools/hardware_metric_catalog.json": b"{}\n",
+        "tools/hardware_report_utils.py": b"reporting\n",
+        "tools/import_drive_log.py": b"drive importer\n",
+        "tools/import_perf_csv.py": b"CSV importer\n",
+        "tools/metric_derivation.py": b"metric derivation\n",
+        "tools/metric_schema.py": b"metric schema\n",
+        "tools/score_hardware_run.py": b"hardware scorer\n",
+        "tools/soak_parse_metrics.py": b"soak metrics parser\n",
+        "tools/soak_parse_panic.py": b"panic parser\n",
         "bench.sh": b"camera gate entrypoint\n",
     }
     for relative, content in files.items():
@@ -96,6 +106,10 @@ def test_traceability_and_docs_do_not_change_behavior_identities(root: Path) -> 
     second = identity(root, trace=TRACE_B)
     assert_true(first["product_fingerprint"] == second["product_fingerprint"], "non-product edit changed product")
     assert_true(first["grader_fingerprint"] == second["grader_fingerprint"], "non-grader edit changed grader")
+    assert_true(
+        first["hardware_scoring_fingerprint"] == second["hardware_scoring_fingerprint"],
+        "documentation or traceability changed hardware scoring",
+    )
     assert_true(first["traceability"] != second["traceability"], "traceability was not retained separately")
 
 
@@ -117,6 +131,10 @@ def test_product_inputs_change_only_product_identity(root: Path) -> None:
         path.write_bytes(original)
         assert_true(before["product_fingerprint"] != after["product_fingerprint"], f"missed {relative}")
         assert_true(before["grader_fingerprint"] == after["grader_fingerprint"], f"{relative} changed grader")
+        assert_true(
+            before["hardware_scoring_fingerprint"] == after["hardware_scoring_fingerprint"],
+            f"{relative} changed hardware scoring",
+        )
 
 
 def test_generated_deployed_html_does_not_change_product_identity(root: Path) -> None:
@@ -133,6 +151,10 @@ def test_generated_deployed_html_does_not_change_product_identity(root: Path) ->
 
     assert_true(first["product"] == second["product"], "generated web output changed product identity")
     assert_true(first["grader_fingerprint"] == second["grader_fingerprint"], "generated web output changed grader")
+    assert_true(
+        first["hardware_scoring_fingerprint"] == second["hardware_scoring_fingerprint"],
+        "generated web output changed hardware scoring",
+    )
 
 
 def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
@@ -140,15 +162,10 @@ def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
         "scripts/bench/camera_capture.py",
         "scripts/bench/camera_recorder.swift",
         "scripts/bench/camera_preflight.py",
-        "scripts/bench/bench_identity.py",
         "scripts/bench/camera_contract.py",
         "scripts/bench/camera_artifacts.py",
         "scripts/bench/camera_grade.py",
         "scripts/bench/camera_regrade.py",
-        "scripts/bench/run_window.py",
-        "scripts/bench/bench_policy.py",
-        "tools/bench_score.py",
-        "bench.sh",
     ):
         before = identity(root)
         path = root / relative
@@ -158,6 +175,63 @@ def test_grader_inputs_change_only_grader_identity(root: Path) -> None:
         path.write_bytes(original)
         assert_true(before["grader_fingerprint"] != after["grader_fingerprint"], f"missed {relative}")
         assert_true(before["product_fingerprint"] == after["product_fingerprint"], f"{relative} changed product")
+        assert_true(
+            before["hardware_scoring_fingerprint"] == after["hardware_scoring_fingerprint"],
+            f"{relative} changed hardware scoring",
+        )
+
+
+def test_mixed_integrations_change_grader_and_hardware_identity(root: Path) -> None:
+    for relative in (
+        "scripts/bench/bench_identity.py",
+        "scripts/bench/run_logged.py",
+        "scripts/bench/run_window.py",
+        "scripts/bench/bench_policy.py",
+        "tools/bench_score.py",
+        "bench.sh",
+    ):
+        before = identity(root)
+        path = root / relative
+        original = path.read_bytes()
+        path.write_bytes(original + b"dirty mixed integration edit\n")
+        after = identity(root)
+        path.write_bytes(original)
+        assert_true(before["grader_fingerprint"] != after["grader_fingerprint"], f"missed {relative}")
+        assert_true(
+            before["hardware_scoring_fingerprint"]
+            != after["hardware_scoring_fingerprint"],
+            f"{relative} did not invalidate hardware scoring",
+        )
+        assert_true(
+            before["product_fingerprint"] == after["product_fingerprint"],
+            f"{relative} changed product",
+        )
+
+
+def test_hardware_scoring_inputs_change_only_hardware_identity(root: Path) -> None:
+    for relative in (
+        "tools/hardware_metric_catalog.json",
+        "tools/hardware_report_utils.py",
+        "tools/import_drive_log.py",
+        "tools/import_perf_csv.py",
+        "tools/metric_derivation.py",
+        "tools/metric_schema.py",
+        "tools/score_hardware_run.py",
+        "tools/soak_parse_metrics.py",
+        "tools/soak_parse_panic.py",
+    ):
+        before = identity(root)
+        path = root / relative
+        original = path.read_bytes()
+        path.write_bytes(original + b"dirty hardware scoring edit\n")
+        after = identity(root)
+        path.write_bytes(original)
+        assert_true(
+            before["hardware_scoring_fingerprint"] != after["hardware_scoring_fingerprint"],
+            f"missed {relative}",
+        )
+        assert_true(before["product_fingerprint"] == after["product_fingerprint"], f"{relative} changed product")
+        assert_true(before["grader_fingerprint"] == after["grader_fingerprint"], f"{relative} changed grader")
 
 
 def test_canonical_manifest_is_stable_and_repo_relative(root: Path) -> None:
@@ -165,7 +239,7 @@ def test_canonical_manifest_is_stable_and_repo_relative(root: Path) -> None:
     second = identity(root)
     assert_true(first == second, "identical inputs did not produce identical manifest data")
     assert_true(canonical_bytes(first) == canonical_bytes(second), "canonical serialization was unstable")
-    for behavior_kind in ("product", "grader"):
+    for behavior_kind in ("product", "grader", "hardware_scoring"):
         for component in first[behavior_kind]["components"].values():
             for file_entry in component["files"]:
                 assert_true(not Path(file_entry["path"]).is_absolute(), f"absolute path leaked: {file_entry}")
@@ -209,10 +283,11 @@ def test_scenario_key_and_legacy_baseline_are_isolated(root: Path) -> None:
     expected_parts = (
         "release",
         current["product_fingerprint"],
+        current["hardware_scoring_fingerprint"],
         "core",
         current["scenario_fingerprint"],
     )
-    assert_true(compatible_dir.parts[-4:] == expected_parts, f"wrong baseline ownership path: {compatible_dir}")
+    assert_true(compatible_dir.parts[-5:] == expected_parts, f"wrong baseline ownership path: {compatible_dir}")
 
 
 def test_pretty_output_is_repeatable(root: Path) -> None:
@@ -233,6 +308,8 @@ def main() -> int:
         test_product_inputs_change_only_product_identity(root)
         test_generated_deployed_html_does_not_change_product_identity(root)
         test_grader_inputs_change_only_grader_identity(root)
+        test_mixed_integrations_change_grader_and_hardware_identity(root)
+        test_hardware_scoring_inputs_change_only_hardware_identity(root)
         test_canonical_manifest_is_stable_and_repo_relative(root)
         test_dirty_relevant_content_digest_is_recorded(root)
         write_fixture(root)

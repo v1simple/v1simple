@@ -19,6 +19,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 import import_perf_csv  # type: ignore  # noqa: E402
 
 CURRENT_HEADER_SCHEMA = 30
+HARDWARE_SCORING_FINGERPRINT = "a" * 64
 DIRECT_SPEED_COLUMNS = {
     "speedSourceSelected",
     "speedSourceValid",
@@ -264,6 +265,8 @@ def run_import(
             "abc1234",
             "--git-ref",
             "test-branch",
+            "--hardware-scoring-fingerprint",
+            HARDWARE_SCORING_FINGERPRINT,
             *extra_args,
         ],
         cwd=ROOT,
@@ -1049,6 +1052,16 @@ def test_import_compare_to_baseline_scores_run_variance(tmpdir: Path) -> None:
     )
     assert_true(candidate_result.returncode == 0, f"candidate compare failed: rc={candidate_result.returncode} stderr={candidate_result.stderr}")
     scoring = json.loads((candidate_out / "scoring.json").read_text(encoding="utf-8"))
+    manifest = json.loads((candidate_out / "manifest.json").read_text(encoding="utf-8"))
+    assert_true(
+        manifest["hardware_scoring_fingerprint"] == HARDWARE_SCORING_FINGERPRINT,
+        f"import manifest lost hardware-scoring identity: {manifest}",
+    )
+    assert_true(
+        scoring["manifest"]["hardware_scoring_fingerprint"]
+        == HARDWARE_SCORING_FINGERPRINT,
+        f"scoring manifest lost hardware-scoring identity: {scoring}",
+    )
     assert_true(scoring["comparison_kind"] == "run_variance", f"expected baseline comparison: {scoring}")
     assert_true(scoring["baseline_window"]["candidate_count"] == 1, f"expected one baseline candidate: {scoring}")
     comparison = (candidate_out / "comparison.txt").read_text(encoding="utf-8")

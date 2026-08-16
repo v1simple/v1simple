@@ -122,6 +122,7 @@ MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
 # twelfth slot to expose a violating sixth start before the writer's hard cap.
 MAX_HANDSHAKE_START_REQUESTS_PER_EPOCH = 5
 MIN_HANDSHAKE_START_RETRY_MS = 1000
+HEX_DIGEST_LENGTH = 64
 HANDSHAKE_REQUEST_CHANNELS = {"B6D4", "BAD4"}
 MAX_RECONNECT_PREFLIGHT_LOG_BYTES = 256 * 1024
 MAX_BENCH_SERIAL_LOG_BYTES = 8 * 1024 * 1024
@@ -199,6 +200,13 @@ def load_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def valid_digest(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == HEX_DIGEST_LENGTH and all(
+        character in "0123456789abcdef" for character in text
+    )
 
 
 def load_catalog(path: Path = CATALOG_PATH) -> dict[str, dict[str, Any]]:
@@ -1810,10 +1818,16 @@ def classify_reconnect_failure(window_dir: Path, suite: str, window: dict[str, A
     return {
         "suite": suite,
         "result": reconnect_result,
+        "window_schema_version": window.get("schema_version"),
         "git_sha": window.get("git_sha", ""),
         "git_ref": window.get("git_ref", ""),
         "product_fingerprint": window.get("product_fingerprint", ""),
         "grader_fingerprint": window.get("grader_fingerprint", ""),
+        "hardware_scoring_fingerprint": (
+            window.get("hardware_scoring_fingerprint", "")
+            if window.get("schema_version") == 3
+            else ""
+        ),
         "scenario_fingerprint": window.get("scenario_fingerprint", ""),
         "git_worktree_clean": window.get("git_worktree_clean") is True,
         "artifact_dir": str(window_dir),
@@ -2423,7 +2437,7 @@ def classify_window(
     if (
         not isinstance(window_schema, int)
         or isinstance(window_schema, bool)
-        or window_schema not in {1, 2}
+        or window_schema not in {1, 2, 3}
     ):
         return {
             "suite": suite,
@@ -2470,10 +2484,14 @@ def classify_window(
         return {
             "suite": suite,
             "result": "EVIDENCE_FAILED",
+            "window_schema_version": window_schema,
             "git_sha": window.get("git_sha", ""),
             "git_ref": window.get("git_ref", ""),
             "product_fingerprint": window.get("product_fingerprint", ""),
             "grader_fingerprint": window.get("grader_fingerprint", ""),
+            "hardware_scoring_fingerprint": (
+                window.get("hardware_scoring_fingerprint", "") if window_schema == 3 else ""
+            ),
             "scenario_fingerprint": window.get("scenario_fingerprint", ""),
             "git_worktree_clean": window.get("git_worktree_clean") is True,
             "artifact_dir": str(window_dir),
@@ -2501,6 +2519,44 @@ def classify_window(
             "artifact_dir": str(window_dir),
             "evidence": [f"missing or invalid scoring artifact: {scoring_path}"],
         }
+    manifest_path = window_path(window_dir, window.get("manifest_path"), "manifest.json")
+    manifest = load_json(manifest_path)
+    if manifest is None:
+        return {
+            "suite": suite,
+            "result": "COLLECTION_FAILED",
+            "artifact_dir": str(window_dir),
+            "evidence": [f"missing or invalid performance manifest: {manifest_path}"],
+        }
+    if window_schema == 3:
+        scoring_manifest = (
+            scoring.get("manifest") if isinstance(scoring.get("manifest"), dict) else {}
+        )
+        hardware_scoring_values = {
+            "window result": window.get("hardware_scoring_fingerprint"),
+            "performance manifest": manifest.get("hardware_scoring_fingerprint"),
+            "scoring manifest": scoring_manifest.get("hardware_scoring_fingerprint"),
+        }
+        normalized = {label: str(value or "") for label, value in hardware_scoring_values.items()}
+        valid = all(valid_digest(value) for value in normalized.values())
+        if not valid or len(set(normalized.values())) != 1:
+            return {
+                "suite": suite,
+                "result": "COLLECTION_FAILED",
+                "window_schema_version": window_schema,
+                "git_sha": window.get("git_sha", ""),
+                "git_ref": window.get("git_ref", ""),
+                "product_fingerprint": window.get("product_fingerprint", ""),
+                "grader_fingerprint": window.get("grader_fingerprint", ""),
+                "hardware_scoring_fingerprint": "",
+                "scenario_fingerprint": window.get("scenario_fingerprint", ""),
+                "git_worktree_clean": window.get("git_worktree_clean") is True,
+                "artifact_dir": str(window_dir),
+                "evidence": [
+                    "current window hardware-scoring identity is missing or inconsistent "
+                    "across the window, performance manifest, and scoring manifest"
+                ],
+            }
     failures = metric_failures(scoring)
     summary = scoring.get("summary") if isinstance(scoring.get("summary"), dict) else {}
     hard_failures = sum(1 for metric in failures if str(metric.get("score_status") or "") == "fail")
@@ -2693,7 +2749,6 @@ def classify_window(
         result = worse(result, str(replay_checks["result"]))
         evidence.extend(str(item) for item in replay_checks.get("evidence") or [])
 
-    manifest = load_json(window_path(window_dir, window.get("manifest_path"), "manifest.json")) or {}
     camera_dir = window_dir / "camera"
     camera_path = camera_dir / "camera_result.json"
     window_camera = window.get("camera") if isinstance(window.get("camera"), dict) else {}
@@ -2810,10 +2865,14 @@ def classify_window(
     return {
         "suite": suite,
         "result": result,
+        "window_schema_version": window_schema,
         "git_sha": manifest.get("git_sha", ""),
         "git_ref": manifest.get("git_ref", ""),
         "product_fingerprint": manifest.get("product_fingerprint", ""),
         "grader_fingerprint": manifest.get("grader_fingerprint", ""),
+        "hardware_scoring_fingerprint": (
+            manifest.get("hardware_scoring_fingerprint", "") if window_schema == 3 else ""
+        ),
         "scenario_fingerprint": manifest.get("scenario_fingerprint", ""),
         "git_worktree_clean": window.get("git_worktree_clean") is True,
         "artifact_dir": str(window_dir),
@@ -3001,6 +3060,27 @@ def main() -> int:
     for window in windows:
         result = worse(result, str(window["result"]))
 
+    window_schemas = [window.get("window_schema_version") for window in windows]
+    current_window_count = sum(schema == 3 for schema in window_schemas)
+    if current_window_count:
+        hardware_values = {
+            str(window.get("hardware_scoring_fingerprint") or "") for window in windows
+        }
+        if (
+            current_window_count != len(windows)
+            or len(hardware_values) != 1
+            or not valid_digest(next(iter(hardware_values), ""))
+        ):
+            identity_message = (
+                "bench windows do not share one current hardware-scoring identity"
+            )
+            for window in windows:
+                window["result"] = worse(str(window["result"]), "COLLECTION_FAILED")
+                evidence = window.setdefault("evidence", [])
+                if isinstance(evidence, list) and identity_message not in evidence:
+                    evidence.append(identity_message)
+            result = "COLLECTION_FAILED"
+
     git_shas = {str(window.get("git_sha") or "").strip() for window in windows}
     git_refs = {str(window.get("git_ref") or "").strip() for window in windows}
     product_fingerprints = {
@@ -3009,8 +3089,12 @@ def main() -> int:
     grader_fingerprints = {
         str(window.get("grader_fingerprint") or "").strip() for window in windows
     }
+    hardware_scoring_fingerprints = {
+        str(window.get("hardware_scoring_fingerprint") or "").strip()
+        for window in windows
+    }
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "bench_result",
         "run_dir": str(run_dir),
         "git_sha": next(iter(git_shas)) if len(git_shas) == 1 else "",
@@ -3020,6 +3104,11 @@ def main() -> int:
         ),
         "grader_fingerprint": (
             next(iter(grader_fingerprints)) if len(grader_fingerprints) == 1 else ""
+        ),
+        "hardware_scoring_fingerprint": (
+            next(iter(hardware_scoring_fingerprints))
+            if len(hardware_scoring_fingerprints) == 1
+            else ""
         ),
         "git_worktree_clean": bool(windows)
         and all(window.get("git_worktree_clean") is True for window in windows),

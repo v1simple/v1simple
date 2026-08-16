@@ -5,6 +5,15 @@ newest 20 generated CSV files in each of `/perf`, `/alp`, and `/encounters`.
 Maintenance boots do not prune evidence, and files that do not exactly match a
 firmware-generated CSV name are never removed.
 
+`sd_max_peak_us`, `sd_start_max_peak_us`, and `sd_runtime_max_peak_us` are
+required diagnostic telemetry. They have no pass/fail upper bound because the
+recorded corpus has not established a raw-duration value that causes a receive
+or display failure. The verdict instead follows direct consequences: CSV
+transfer/parse integrity, explicit perf/event/packet drop counters, parser
+failures, receive/display continuity, reboots, and gated replay camera
+agreement. Continue comparing SD latency distributions to diagnose storage
+behavior; do not treat a raw peak by itself as a product failure.
+
 Each enabled logger warms its file at boot: directory creation, CSV create,
 and header (plus the perf session marker) are written during setup, before BLE
 connects.
@@ -39,8 +48,8 @@ and bench setup for both layouts:
 4. Run the same three commands, using `--no-upload` for every run because the
    firmware revision must remain unchanged.
 5. Compare `sd_start_max_peak_us`, `sd_runtime_max_peak_us`, `flushMax_us`, SD
-   write-latency buckets, dropped perf rows, and the overall verdict across all
-   three trials.
+   write-latency buckets, selected-row cadence, explicit perf queue drops, and
+   the overall verdict across all three trials.
 
 Adopt 32 KB only if it produces no new correctness or evidence failures and
 improves typical runtime SD latency without making the worst trial materially

@@ -351,6 +351,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-ref", default="", help="Override git_ref")
     parser.add_argument("--product-fingerprint", default="", help="Bench product behavior identity")
     parser.add_argument("--grader-fingerprint", default="", help="Bench camera-grader identity")
+    parser.add_argument(
+        "--hardware-scoring-fingerprint",
+        default="",
+        help="Bench hardware collection and scoring identity",
+    )
     parser.add_argument("--scenario-fingerprint", default="", help="Bench runtime scenario identity")
     parser.add_argument("--stress-class", default="core", help="Stress class (default: core)")
     parser.add_argument("--lane", default="perf-csv-import", help="Lane tag")
@@ -1608,6 +1613,7 @@ def main() -> int:
         "git_ref": git_ref,
         "product_fingerprint": args.product_fingerprint,
         "grader_fingerprint": args.grader_fingerprint,
+        "hardware_scoring_fingerprint": args.hardware_scoring_fingerprint,
         "scenario_fingerprint": args.scenario_fingerprint,
         "run_kind": "real_fw_soak",
         "board_id": board_id,

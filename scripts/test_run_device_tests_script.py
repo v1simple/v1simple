@@ -145,6 +145,7 @@ def run_device_tests(
     infra_exit: bool = False,
     zero_exit_error: bool = False,
     partial_skip: bool = False,
+    compare_to: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin = tmp_dir / "bin"
     write_fake_pio(fake_bin / "pio")
@@ -172,8 +173,12 @@ def run_device_tests(
     if partial_skip:
         env["FAKE_PIO_PARTIAL_SKIP"] = "1"
 
+    command = [str(RUNNER), "--quick", "--cooldown-seconds", "0", "--out-dir", str(out_dir)]
+    if compare_to is not None:
+        command.extend(["--compare-to", str(compare_to)])
+
     completed = subprocess.run(
-        [str(RUNNER), "--quick", "--cooldown-seconds", "0", "--out-dir", str(out_dir)],
+        command,
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -209,6 +214,34 @@ def test_scorer_hard_failure_controls_exit_status() -> None:
         assert_true(manifest["base_result"] == "PASS", f"suite base result should remain PASS: {manifest}")
         assert_true(manifest["result"] == "FAIL", f"manifest should reflect scorer failure: {manifest}")
         assert_true(scoring["result"] == "FAIL", f"scoring should fail: {scoring}")
+
+
+def test_legacy_device_manifests_retain_baseline_comparison() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir_raw:
+        root = Path(tmp_dir_raw)
+        baseline_completed, baseline_out = run_device_tests(root / "baseline")
+        assert_true(
+            baseline_completed.returncode == 0,
+            baseline_completed.stdout + baseline_completed.stderr,
+        )
+        baseline_manifest = baseline_out / "manifest.json"
+        baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
+        assert_true(
+            "hardware_scoring_fingerprint" not in baseline_payload,
+            f"legacy fixture unexpectedly declared a scoring identity: {baseline_payload}",
+        )
+
+        current_completed, current_out = run_device_tests(
+            root / "current",
+            compare_to=baseline_manifest,
+        )
+        assert_true(
+            current_completed.returncode == 0,
+            current_completed.stdout + current_completed.stderr,
+        )
+        scoring = json.loads((current_out / "scoring.json").read_text(encoding="utf-8"))
+        assert_true(scoring["comparison_kind"] == "run_variance", str(scoring))
+        assert_true(scoring["baseline_window"]["candidate_count"] == 1, str(scoring))
 
 
 def test_fail_closed_transport_rejects_nonzero_pio_exit() -> None:
@@ -268,6 +301,7 @@ def test_device_lane_owns_only_the_three_surviving_suites() -> None:
 def main() -> int:
     test_empty_compare_args_passes_on_nounset_shells()
     test_scorer_hard_failure_controls_exit_status()
+    test_legacy_device_manifests_retain_baseline_comparison()
     test_fail_closed_transport_rejects_nonzero_pio_exit()
     test_zero_exit_with_reported_test_error_fails()
     test_partial_skip_uses_real_platformio_counters_and_passes()

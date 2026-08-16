@@ -19,7 +19,10 @@ PRODUCT_FINGERPRINT = "a" * 64
 SCENARIO_FINGERPRINT = "b" * 64
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
-from bench_identity import current_grader_fingerprint  # noqa: E402
+from bench_identity import (  # noqa: E402
+    current_grader_fingerprint,
+    current_hardware_scoring_fingerprint,
+)
 from camera_artifacts import (  # noqa: E402
     build_capture_manifest,
     capture_input_hashes,
@@ -29,6 +32,7 @@ from camera_artifacts import (  # noqa: E402
 
 
 CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
+CURRENT_HARDWARE_SCORING_FINGERPRINT = current_hardware_scoring_fingerprint(ROOT)
 
 ENCOUNTER_COLUMNS = (
     "millis",
@@ -497,10 +501,12 @@ def write_window(
             }
         )
     window_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "result": "COLLECTED",
         "suite": suite,
         "product_fingerprint": PRODUCT_FINGERPRINT,
+        "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,
+        "hardware_scoring_fingerprint": CURRENT_HARDWARE_SCORING_FINGERPRINT,
         "scenario_fingerprint": SCENARIO_FINGERPRINT,
         "git_worktree_clean": True,
         "scoring_path": str(step / "scoring.json"),
@@ -558,6 +564,8 @@ def write_window(
             "git_sha": FULL_SHA,
             "git_ref": "dev/test",
             "product_fingerprint": PRODUCT_FINGERPRINT,
+            "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,
+            "hardware_scoring_fingerprint": CURRENT_HARDWARE_SCORING_FINGERPRINT,
             "scenario_fingerprint": SCENARIO_FINGERPRINT,
             "rows": 61,
             "duration_s": 300.0,
@@ -572,6 +580,10 @@ def write_window(
                 "metrics_scored": 10,
                 "hard_failures": hard,
                 "advisory_failures": advisory,
+            },
+            "manifest": {
+                "base_result": "PASS",
+                "hardware_scoring_fingerprint": CURRENT_HARDWARE_SCORING_FINGERPRINT,
             },
             "metrics": metric_payload,
         },
@@ -689,13 +701,113 @@ def test_no_baseline_language_does_not_make_bench_fail() -> None:
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         assert_true(result["result"] == "PASS", f"unexpected result: {result}")
-        assert_true(result["schema_version"] == 3, f"unexpected schema: {result}")
+        assert_true(result["schema_version"] == 4, f"unexpected schema: {result}")
+        assert_true(
+            result["hardware_scoring_fingerprint"]
+            == CURRENT_HARDWARE_SCORING_FINGERPRINT,
+            f"hardware scoring identity was not retained: {result}",
+        )
         assert_true(result["git_sha"] == FULL_SHA, f"missing full Git binding: {result}")
         assert_true(result["git_worktree_clean"] is True, f"dirty binding: {result}")
         assert_true("NO_BASELINE" not in proc.stdout, f"bench output leaked old baseline language: {proc.stdout}")
         assert_true("top budget pressure:" in proc.stdout, f"bench output should surface budget pressure: {proc.stdout}")
         assert_true("ble_process_max_peak_us" in proc.stdout, f"bench output should name top pressure metric: {proc.stdout}")
         assert_true("display_preview_render_peak_us" not in proc.stdout, f"optional missing metrics are not actionable PASS evidence: {proc.stdout}")
+
+
+def test_hardware_scoring_identity_is_owned_end_to_end() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def score_pair() -> tuple[subprocess.CompletedProcess[str], dict]:
+            proc = run_score(root, "core", "display")
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            return proc, result
+
+        for artifact_name, mutate in (
+            (
+                "window",
+                lambda payload: payload.__setitem__("hardware_scoring_fingerprint", ""),
+            ),
+            (
+                "manifest",
+                lambda payload: payload.__setitem__("hardware_scoring_fingerprint", "f" * 64),
+            ),
+            (
+                "scoring",
+                lambda payload: payload["manifest"].pop(
+                    "hardware_scoring_fingerprint", None
+                ),
+            ),
+        ):
+            write_window(root, "core")
+            write_window(root, "display")
+            path = {
+                "window": root / "core" / "window_result.json",
+                "manifest": root / "core" / "manifest.json",
+                "scoring": root / "core" / "scoring.json",
+            }[artifact_name]
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            mutate(payload)
+            write_json(path, payload)
+            proc, result = score_pair()
+            assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+            assert_true(result["result"] == "COLLECTION_FAILED", str(result))
+            assert_true(
+                any(
+                    "hardware-scoring identity" in str(item)
+                    for window in result["windows"]
+                    for item in window.get("evidence") or []
+                ),
+                f"{artifact_name} identity failure was not explained: {result}",
+            )
+
+        write_window(root, "core")
+        write_window(root, "display")
+        different = "f" * 64
+        for name in ("window_result.json", "manifest.json", "scoring.json"):
+            path = root / "display" / name
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if name == "scoring.json":
+                payload["manifest"]["hardware_scoring_fingerprint"] = different
+            else:
+                payload["hardware_scoring_fingerprint"] = different
+            write_json(path, payload)
+        proc, result = score_pair()
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true(result["result"] == "COLLECTION_FAILED", str(result))
+        assert_true(
+            any(
+                "do not share one current hardware-scoring identity" in str(item)
+                for window in result["windows"]
+                for item in window.get("evidence") or []
+            ),
+            f"cross-window identity disagreement was not rejected: {result}",
+        )
+
+        write_window(root, "core")
+        write_window(root, "display")
+        display_window_path = root / "display" / "window_result.json"
+        display_window = json.loads(display_window_path.read_text(encoding="utf-8"))
+        display_window["schema_version"] = 2
+        write_json(display_window_path, display_window)
+        proc, result = score_pair()
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true(result["result"] == "COLLECTION_FAILED", str(result))
+
+        for suite in ("core", "display"):
+            write_window(root, suite)
+            path = root / suite / "window_result.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["schema_version"] = 2
+            write_json(path, payload)
+        proc, result = score_pair()
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        assert_true(result["result"] == "PASS", str(result))
+        assert_true(
+            result["hardware_scoring_fingerprint"] == "",
+            f"legacy windows unexpectedly became qualifying evidence: {result}",
+        )
 
 
 def test_baseline_only_regression_is_comparison_not_verdict() -> None:
@@ -751,7 +863,10 @@ def test_failed_base_result_remains_a_hard_failure() -> None:
         write_window(root, "core")
         scoring_path = root / "core" / "scoring.json"
         scoring = json.loads(scoring_path.read_text(encoding="utf-8"))
-        scoring["manifest"] = {"base_result": "FAIL"}
+        scoring["manifest"] = {
+            "base_result": "FAIL",
+            "hardware_scoring_fingerprint": CURRENT_HARDWARE_SCORING_FINGERPRINT,
+        }
         write_json(scoring_path, scoring)
         proc = run_score(root, "core")
         assert_true(proc.returncode == 2, proc.stdout + proc.stderr)
@@ -787,7 +902,7 @@ def test_advisory_absolute_bound_is_a_warning() -> None:
         scoring = json.loads(scoring_path.read_text(encoding="utf-8"))
         scoring["metrics"].append(
             {
-                "metric": "sd_runtime_max_peak_us",
+                "metric": "disp_pipe_max_peak_us",
                 "score_level": "hard",
                 "required": True,
                 "score_status": "warn",
@@ -804,7 +919,7 @@ def test_advisory_absolute_bound_is_a_warning() -> None:
         assert_true(result["result"] == "WARN", f"unexpected advisory result: {result}")
         assert_true("\nwarnings:\n" in proc.stdout, proc.stdout)
         assert_true("\nfailed:\n" not in proc.stdout, proc.stdout)
-        assert_true("sd_runtime_max_peak_us" in proc.stdout, proc.stdout)
+        assert_true("disp_pipe_max_peak_us" in proc.stdout, proc.stdout)
 
 
 def test_custom_output_preserves_canonical_summary_pair() -> None:
@@ -4017,6 +4132,7 @@ def test_camera_preflight_evidence_failure_needs_no_metrics_artifacts() -> None:
 
 def main() -> int:
     test_no_baseline_language_does_not_make_bench_fail()
+    test_hardware_scoring_identity_is_owned_end_to_end()
     test_baseline_only_regression_is_comparison_not_verdict()
     test_required_missing_metric_remains_a_hard_failure()
     test_failed_base_result_remains_a_hard_failure()

@@ -183,19 +183,21 @@ unified gate without claiming that firmware behavior failed, and collection is
 still reported separately. The video and exposure stills remain archived for
 diagnosis, but human viewing is not the acceptance gate.
 
-Each window also records three content identities in `identity.json`. The
+Each window also records four content identities in `identity.json`. The
 product fingerprint covers firmware, production configuration and build hooks,
 checked-in UI/audio/branding sources, dependency pins, and UI build/deploy
 inputs, directly deployed audio/branding assets, and the complete `v1replay`
 implementation. Generated UI build output is represented by those checked-in
-inputs rather than hashed directly. The grader fingerprint covers the camera
-capture, evidence contract, dynamic registration, and reference-free
-seven-segment grader. A separate scenario fingerprint covers the suite,
-duration, profile, segment, and replay
-blink profile. Git SHA/ref and clean state remain traceability only.
+inputs rather than hashed directly. The hardware-scoring fingerprint covers
+metric contracts, import and derivation, scoring, reporting, collection and
+verdict integration, and qualification policy. Any change to it requires fresh
+hardware evidence. The grader fingerprint covers camera capture, evidence
+ownership, dynamic registration, and the reference-free seven-segment grader.
+A separate scenario fingerprint covers the suite, duration, profile, segment,
+and replay blink profile. Git SHA/ref and clean state remain traceability only.
 Promoted performance baselines live under
-`<board>/<product fingerprint>/<suite>/<scenario fingerprint>/`; an older
-board/suite baseline is never selected automatically.
+`<board>/<product fingerprint>/<hardware-scoring fingerprint>/<suite>/<scenario fingerprint>/`;
+an older or scoring-incompatible baseline is never selected automatically.
 
 Ask the read-only qualification planner for the minimum evidence work before
 starting a bench run. It prints commands but never executes them:
@@ -205,12 +207,14 @@ python3 scripts/bench/bench_policy.py plan \
   --qualification <accepted-qualification.json>
 ```
 
-A product or per-suite scenario change requires the full batch. A grader-only
-change requires a complete archive regrade plus one live camera smoke. Matching
-product, scenarios, and grader reuse the accepted evidence; Git SHA/ref changes
-remain traceability only. Missing or malformed qualification records default to
-the full batch. New qualification records are immutable: `record-full` accepts
-only a clean core/display/replay PASS with strict replay camera ownership, and
+A product, per-suite scenario, or hardware-scoring change requires the full
+batch. A camera-grader-only change requires a complete archive regrade plus one
+live camera smoke. Matching product, scenarios, hardware scoring, and grader
+reuse the accepted evidence; Git SHA/ref changes remain traceability only.
+Missing, legacy, or malformed qualification records default to the full batch;
+because accepted records are immutable, migration publishes a distinct new
+qualification record. `record-full` accepts only a clean
+core/display/replay PASS with strict replay camera ownership, and
 `record-grader` advances only the grader after a complete regrade report, a
 current smoke PASS, and a confident current grade for the previously accepted
 replay capture.
@@ -222,14 +226,24 @@ control the absolute check. When both are `null`, the scorer reports
 `absolute_state=n/a`. A hard policy may also set `advisory_min` or
 `advisory_max` inside its absolute bounds; crossing that earlier line warns the
 run while crossing the absolute bound still fails it. Fully unbounded entries
-are allowed only for optional informational observations whose value depends on
-run duration or external
-activity; the catalog loader rejects an unbounded required, hard, or advisory
-policy. Required metrics have an absolute contract as well as any compatible
-`regress_abs` or `regress_pct` comparison: sustained Wi-Fi and display work use
-a 50 ms ceiling, while an individual Wi-Fi peak uses the main loop's 250 ms
-ceiling. The `required` field also enforces presence: a missing required metric
-fails the run regardless of its value thresholds.
+are allowed only for informational observations; they may remain required when
+the evidence itself is mandatory but no causal value threshold is known. Hard
+and advisory policies require an absolute contract. Other required metrics may
+also have a compatible `regress_abs` or `regress_pct` comparison: sustained
+Wi-Fi and display work use a 50 ms ceiling, while an individual Wi-Fi peak uses
+the main loop's 250 ms ceiling. The `required` field independently enforces
+presence: a missing required metric fails the run regardless of its value
+thresholds.
+
+The three SD write-peak metrics are required health telemetry, not
+product verdicts. Recorded bench and camera evidence has not identified a raw
+SD-duration value that causes receive or display failure, and `sdMax_us`
+times the append/flush path, including SD-lock wait and any preemption during
+that interval. Qualification therefore gates the measured consequences
+instead: missing or transfer-corrupt CSV evidence, explicit perf/event/packet
+drop counters, parser failures, receive/display continuity, reboots, and the
+gated replay camera contract. SD peaks remain in the scoring artifacts, with
+compatible-baseline trends in the comparison artifacts, for diagnosis.
 
 Automated tests establish code behavior. Device tests and bench runs establish
 only what happened on the connected setup. Camera evidence establishes visible

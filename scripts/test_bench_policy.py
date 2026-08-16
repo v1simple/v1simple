@@ -19,6 +19,7 @@ from bench_policy import (  # noqa: E402
     REGRADE_AND_SMOKE,
     REUSE,
     QualificationError,
+    build_plan,
     build_grader_revalidation_record,
     build_qualification_record,
     classify_policy,
@@ -37,6 +38,8 @@ from camera_artifacts import (  # noqa: E402
 PRODUCT = "a" * 64
 GRADER = "b" * 64
 NEW_GRADER = "c" * 64
+HARDWARE_SCORING = "d" * 64
+NEW_HARDWARE_SCORING = "e" * 64
 SCENARIOS = {"core": "1" * 64, "display": "2" * 64, "replay": "3" * 64}
 CLEAN_TRACE = {
     "repository_sha": "0123456789abcdef0123456789abcdef01234567",
@@ -64,10 +67,16 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def policy_identity(*, product: str = PRODUCT, grader: str = GRADER) -> dict:
+def policy_identity(
+    *,
+    product: str = PRODUCT,
+    grader: str = GRADER,
+    hardware_scoring: str = HARDWARE_SCORING,
+) -> dict:
     return {
         "product_fingerprint": product,
         "grader_fingerprint": grader,
+        "hardware_scoring_fingerprint": hardware_scoring,
         "scenario_fingerprints": dict(SCENARIOS),
         "traceability": dict(CLEAN_TRACE),
     }
@@ -253,9 +262,11 @@ def full_batch_fixture(
         window = {
             "suite": suite,
             "result": "PASS",
+            "window_schema_version": 3,
             "git_worktree_clean": True,
             "product_fingerprint": PRODUCT,
             "grader_fingerprint": GRADER,
+            "hardware_scoring_fingerprint": HARDWARE_SCORING,
             "scenario_fingerprint": SCENARIOS[suite],
         }
         if suite == "replay":
@@ -272,13 +283,14 @@ def full_batch_fixture(
             }
         windows.append(window)
     result = {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "bench_result",
         "run_dir": str(run_dir.resolve()),
         "git_sha": CLEAN_TRACE["repository_sha"],
         "git_ref": "main",
         "product_fingerprint": PRODUCT,
         "grader_fingerprint": GRADER,
+        "hardware_scoring_fingerprint": HARDWARE_SCORING,
         "git_worktree_clean": True,
         "result": "PASS",
         "windows": windows,
@@ -310,6 +322,18 @@ def test_decision_precedence_and_repository_trace_is_inert() -> None:
         assert_true(
             classify_policy(grader_only, accepted)[0] == REGRADE_AND_SMOKE,
             "grader-only change did not choose regrade and smoke",
+        )
+        scoring_only = copy.deepcopy(current)
+        scoring_only["hardware_scoring_fingerprint"] = NEW_HARDWARE_SCORING
+        assert_true(
+            classify_policy(scoring_only, accepted)[0] == FULL_BATCH,
+            "hardware-scoring change did not require a full batch",
+        )
+        grader_and_scoring = copy.deepcopy(grader_only)
+        grader_and_scoring["hardware_scoring_fingerprint"] = NEW_HARDWARE_SCORING
+        assert_true(
+            classify_policy(grader_and_scoring, accepted)[0] == FULL_BATCH,
+            "combined grader and hardware-scoring change did not require a full batch",
         )
         scenario_only = copy.deepcopy(grader_only)
         scenario_only["scenario_fingerprints"]["replay"] = "d" * 64
@@ -345,8 +369,64 @@ def test_full_record_requires_clean_complete_strict_current_evidence() -> None:
         )
         validate_qualification_record(record)
         assert_true(record["scenario_fingerprints"] == SCENARIOS, "suite scenarios not retained")
+        assert_true(
+            record["hardware_scoring_fingerprint"] == HARDWARE_SCORING,
+            "hardware-scoring identity was not retained",
+        )
 
         payload = json.loads(result_path.read_text(encoding="utf-8"))
+        legacy_result = copy.deepcopy(payload)
+        legacy_result["schema_version"] = 3
+        write_json(result_path, legacy_result)
+        expect_error(
+            lambda: build_qualification_record(
+                result_path,
+                board_id="fixture",
+                current_identity=policy_identity(),
+                current_traceability=CLEAN_TRACE,
+            ),
+            "current bench result",
+        )
+        for field_value, expected in ((None, "invalid product"), (NEW_HARDWARE_SCORING, "stale hardware")):
+            changed = copy.deepcopy(payload)
+            if field_value is None:
+                changed.pop("hardware_scoring_fingerprint")
+            else:
+                changed["hardware_scoring_fingerprint"] = field_value
+            write_json(result_path, changed)
+            expect_error(
+                lambda: build_qualification_record(
+                    result_path,
+                    board_id="fixture",
+                    current_identity=policy_identity(),
+                    current_traceability=CLEAN_TRACE,
+                ),
+                expected,
+            )
+        stale_suite = copy.deepcopy(payload)
+        stale_suite["windows"][0]["hardware_scoring_fingerprint"] = NEW_HARDWARE_SCORING
+        write_json(result_path, stale_suite)
+        expect_error(
+            lambda: build_qualification_record(
+                result_path,
+                board_id="fixture",
+                current_identity=policy_identity(),
+                current_traceability=CLEAN_TRACE,
+            ),
+            "core does not own",
+        )
+        legacy_suite = copy.deepcopy(payload)
+        legacy_suite["windows"][0]["window_schema_version"] = 2
+        write_json(result_path, legacy_suite)
+        expect_error(
+            lambda: build_qualification_record(
+                result_path,
+                board_id="fixture",
+                current_identity=policy_identity(),
+                current_traceability=CLEAN_TRACE,
+            ),
+            "core does not own",
+        )
         for state in ("WARN", "FAIL", "EVIDENCE_FAILED"):
             changed = copy.deepcopy(payload)
             changed["windows"][1]["result"] = state
@@ -530,6 +610,19 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         write_json(report_path, report)
         smoke_path, smoke = smoke_fixture(root, NEW_GRADER)
         current = policy_identity(grader=NEW_GRADER)
+        expect_error(
+            lambda: build_grader_revalidation_record(
+                prior_path,
+                report_path,
+                smoke_path,
+                current_identity=policy_identity(
+                    grader=NEW_GRADER,
+                    hardware_scoring=NEW_HARDWARE_SCORING,
+                ),
+                current_traceability=CLEAN_TRACE,
+            ),
+            "hardware scoring changed",
+        )
         advanced = build_grader_revalidation_record(
             prior_path,
             report_path,
@@ -817,11 +910,54 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         )
 
 
+def test_legacy_qualification_migration_uses_a_new_immutable_target() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        result_path, _camera_dir, _capture, _grade = full_batch_fixture(root)
+        current_record = build_qualification_record(
+            result_path,
+            board_id="fixture",
+            current_identity=policy_identity(),
+            current_traceability=CLEAN_TRACE,
+        )
+        legacy = copy.deepcopy(current_record)
+        legacy["schema_version"] = 1
+        legacy.pop("hardware_scoring_fingerprint")
+        legacy.pop("qualification_id")
+        from bench_identity import canonical_bytes  # noqa: PLC0415
+
+        legacy["qualification_id"] = hashlib.sha256(canonical_bytes(legacy)).hexdigest()
+        legacy_path = root / "qualification.json"
+        legacy_bytes = json.dumps(legacy, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        legacy_path.write_bytes(legacy_bytes)
+
+        loaded, reason = load_qualification_record(legacy_path, validate_evidence=False)
+        assert_true(loaded is None and "schema" in reason, reason)
+        plan = build_plan(
+            policy_identity(),
+            loaded,
+            invalid_reason=reason,
+            qualification_path=legacy_path,
+            board_id="fixture",
+        )
+        assert_true(plan["schema_version"] == 2, str(plan))
+        assert_true(plan["action"] == FULL_BATCH, str(plan))
+        assert_true(
+            any("--qualification <new-qualification.json>" in command for command in plan["commands"]),
+            str(plan),
+        )
+        new_path = root / "qualification-v2.json"
+        write_qualification_record(new_path, current_record)
+        assert_true(new_path.is_file(), "new qualification was not published")
+        assert_true(legacy_path.read_bytes() == legacy_bytes, "legacy qualification was modified")
+
+
 def main() -> None:
     test_decision_precedence_and_repository_trace_is_inert()
     test_full_record_requires_clean_complete_strict_current_evidence()
     test_qualification_publication_is_immutable_and_missing_is_conservative()
     test_grader_revalidation_converges_and_rejects_incomplete_evidence()
+    test_legacy_qualification_migration_uses_a_new_immutable_target()
     print("bench policy tests passed")
 
 

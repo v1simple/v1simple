@@ -161,6 +161,7 @@ class FakeCamera:
         self.start_calls = 0
         self.abort_calls = 0
         self.stop_calls = 0
+        self.health_checks = 0
 
     def profile(self) -> dict[str, Any]:
         return {
@@ -234,6 +235,10 @@ class FakeCamera:
         result = "CAPTURED" if self.smoke_capture_ok and collection_completed is False else "CAPTURE_FAILED"
         self._write_result(result)
         return {"result": result, "errors": list(self.errors)}
+
+    def health_problem(self) -> str:
+        self.health_checks += 1
+        return ""
 
 
 def with_calibrator(fake: Any, callback: Any) -> Any:
@@ -471,9 +476,15 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     run_window_module.wait_for_port = lambda *_args: "fixture-port"  # type: ignore[assignment]
     run_window_module.wait_ready = lambda *_args: {}  # type: ignore[assignment]
 
-    def fake_start_and_wait(*_args: Any, after_started: Any, **_kwargs: Any) -> dict[str, Any]:
+    def fake_start_and_wait(
+        *_args: Any,
+        after_started: Any,
+        health_check: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
         events["qstart"] += 1
         after_started()
+        assert_true(health_check() == "", "healthy camera blocked the managed window")
         return {"csvPath": "/perf/perf_boot_1.csv"}
 
     run_window_module.start_and_wait = fake_start_and_wait  # type: ignore[assignment]
@@ -535,6 +546,10 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             assert_true(
                 passed_camera.start_calls == 1 and passed_camera.stop_calls == 1,
                 "pass did not continue once",
+            )
+            assert_true(
+                passed_camera.health_checks == 0,
+                "diagnostic core camera health unexpectedly gated product collection",
             )
             assert_true(
                 events == {"serial": 1, "qstart": 1, "emulator_start": 1},

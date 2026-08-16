@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+MANAGED_SHUTDOWN_GRACE_SECONDS = 70.0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stdout", required=True)
@@ -55,15 +58,19 @@ def main() -> int:
 
     interrupted_status = 0
     interrupted_at = 0.0
+    termination_forwarded = False
     process: subprocess.Popen[bytes] | None = None
 
     def handle_signal(signum: int, _frame: object) -> None:
-        nonlocal interrupted_status, interrupted_at
+        nonlocal interrupted_status, interrupted_at, termination_forwarded
+        if interrupted_status:
+            return
         interrupted_status = 128 + signum
         interrupted_at = time.monotonic()
         if process is not None and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
+                termination_forwarded = True
             except OSError:
                 pass
 
@@ -89,6 +96,13 @@ def main() -> int:
             combined_log.write(message)
             return 3
 
+        if interrupted_status and not termination_forwarded and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                termination_forwarded = True
+            except OSError:
+                pass
+
         assert process.stdout is not None
         assert process.stderr is not None
         lock = threading.Lock()
@@ -106,7 +120,10 @@ def main() -> int:
         stderr_thread.start()
 
         while process.poll() is None:
-            if interrupted_status and time.monotonic() - interrupted_at >= 12:
+            if (
+                interrupted_status
+                and time.monotonic() - interrupted_at >= MANAGED_SHUTDOWN_GRACE_SECONDS
+            ):
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except OSError:

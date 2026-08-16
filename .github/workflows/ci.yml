@@ -31,6 +31,15 @@ jobs:
           SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/tools/v1replay/.build/module-cache
         run: swift test --package-path tools/v1replay
 
+      - name: Check native camera recorder
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          mkdir -p tools/v1replay/.build/camera-module-cache
+          xcrun swiftc -module-cache-path tools/v1replay/.build/camera-module-cache -typecheck scripts/bench/camera_recorder.swift
+          xcrun swift -module-cache-path tools/v1replay/.build/camera-module-cache scripts/bench/camera_recorder.swift --self-test-timing
+          xcrun swift -module-cache-path tools/v1replay/.build/camera-module-cache scripts/bench/camera_recorder.swift --self-test-writer
+
   test:
     name: ci-test.sh
     runs-on: ubuntu-latest

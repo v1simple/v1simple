@@ -84,6 +84,21 @@ run_v1replay_swift_tests() {
     --package-path "$ROOT_DIR/tools/v1replay"
 }
 
+run_camera_recorder_checks() {
+  local module_cache="$ROOT_DIR/tools/v1replay/.build/camera-module-cache"
+  local recorder="$ROOT_DIR/scripts/bench/camera_recorder.swift"
+  local xcrun_driver=(xcrun)
+
+  if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+    xcrun_driver=(env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun)
+  fi
+
+  mkdir -p "$module_cache"
+  "${xcrun_driver[@]}" swiftc -module-cache-path "$module_cache" -typecheck "$recorder"
+  "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-timing
+  "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-writer
+}
+
 PIO_CMD="${PIO_CMD:-pio}"
 if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
@@ -169,8 +184,10 @@ run_step "Release license staging regression suite" python3 scripts/test_stage_r
 section "Host Tools"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   run_step "v1replay Swift package tests" run_v1replay_swift_tests
+  run_step "Native camera recorder checks" run_camera_recorder_checks
 else
   echo -e "${YELLOW}[skip] v1replay Swift package tests require macOS CoreBluetooth${NC}"
+  echo -e "${YELLOW}[skip] Native camera recorder checks require macOS AVFoundation${NC}"
 fi
 
 section "Native Tests"

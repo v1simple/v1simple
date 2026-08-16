@@ -2459,31 +2459,68 @@ def classify_window(
     if window.get("result") == "EVIDENCE_FAILED":
         camera_contract = camera_evidence_contract(suite)
         window_camera = window.get("camera") if isinstance(window.get("camera"), dict) else {}
+        failure_stage = str(window.get("camera_failure_stage") or "preflight")
         preflight_name = Path(str(window_camera.get("preflight") or "camera_preflight.json")).name
         preflight = load_json(window_dir / "camera" / preflight_name) or {}
-        diagnostics = (
-            preflight.get("diagnostics")
-            if isinstance(preflight.get("diagnostics"), list)
-            else window_camera.get("preflight_diagnostics") or []
-        )
         evidence: list[str] = []
-        for item in diagnostics:
-            if not isinstance(item, dict):
-                evidence.append(f"camera preflight: {item}")
-                continue
-            detail = str(item.get("message") or item.get("code") or "camera evidence failed")
-            measured = item.get("measured") if isinstance(item.get("measured"), dict) else {}
-            thresholds = item.get("thresholds") if isinstance(item.get("thresholds"), dict) else {}
-            evidence.append(
-                f"camera preflight {item.get('code') or 'inconclusive'}: {detail}"
-                + (f"; measured={measured}" if measured else "")
-                + (f"; thresholds={thresholds}" if thresholds else "")
+        diagnostics: list[Any] = []
+        recorder_failure = (
+            window_camera.get("recorder_failure")
+            if isinstance(window_camera.get("recorder_failure"), dict)
+            else {}
+        )
+        if failure_stage == "recording":
+            code = str(recorder_failure.get("code") or window.get("camera_failure_kind") or "failed")
+            message = str(recorder_failure.get("message") or window.get("error") or "camera recorder failed")
+            recorder_error = (
+                recorder_failure.get("error")
+                if isinstance(recorder_failure.get("error"), dict)
+                else {}
             )
+            error_identity = ""
+            if isinstance(recorder_error.get("domain"), str) and isinstance(
+                recorder_error.get("code"), int
+            ):
+                error_identity = f"; {recorder_error['domain']} {recorder_error['code']}"
+            underlying_error = (
+                recorder_error.get("underlying")
+                if isinstance(recorder_error.get("underlying"), dict)
+                else {}
+            )
+            if isinstance(underlying_error.get("domain"), str) and isinstance(
+                underlying_error.get("code"), int
+            ):
+                error_identity += (
+                    f"; underlying {underlying_error['domain']} "
+                    f"{underlying_error['code']}"
+                )
+            evidence.append(f"camera recorder {code}: {message}{error_identity}")
+        else:
+            diagnostics = (
+                preflight.get("diagnostics")
+                if isinstance(preflight.get("diagnostics"), list)
+                else window_camera.get("preflight_diagnostics") or []
+            )
+            for item in diagnostics:
+                if not isinstance(item, dict):
+                    evidence.append(f"camera preflight: {item}")
+                    continue
+                detail = str(item.get("message") or item.get("code") or "camera evidence failed")
+                measured = item.get("measured") if isinstance(item.get("measured"), dict) else {}
+                thresholds = item.get("thresholds") if isinstance(item.get("thresholds"), dict) else {}
+                evidence.append(
+                    f"camera preflight {item.get('code') or 'inconclusive'}: {detail}"
+                    + (f"; measured={measured}" if measured else "")
+                    + (f"; thresholds={thresholds}" if thresholds else "")
+                )
         if not evidence:
             evidence.append(str(window.get("error") or "camera preflight was inconclusive"))
         return {
             "suite": suite,
             "result": "EVIDENCE_FAILED",
+            "collection_status": (
+                "INCOMPLETE" if failure_stage == "recording" else "NOT_STARTED"
+            ),
             "window_schema_version": window_schema,
             "git_sha": window.get("git_sha", ""),
             "git_ref": window.get("git_ref", ""),
@@ -2500,6 +2537,9 @@ def classify_window(
                 "capture_result": window_camera.get("result", "CAPTURE_FAILED"),
                 "diagnostics": diagnostics,
                 "preflight": preflight_name,
+                "failure_stage": failure_stage,
+                "recorder_failure": recorder_failure,
+                "errors": window_camera.get("errors", []),
                 "role": camera_contract["role"],
                 "purpose": camera_contract["purpose"],
                 "role_summary": camera_contract["summary"],
@@ -2959,7 +2999,20 @@ def render_text(payload: dict[str, Any]) -> str:
     collection_failed = any(
         window.get("result") == "COLLECTION_FAILED" for window in payload["windows"]
     )
-    lines.append(f"collection: {'FAIL' if collection_failed else 'PASS'}")
+    collection_incomplete = any(
+        window.get("collection_status") == "INCOMPLETE" for window in payload["windows"]
+    )
+    collection_not_started = any(
+        window.get("collection_status") == "NOT_STARTED" for window in payload["windows"]
+    )
+    if collection_failed:
+        lines.append("collection: FAIL")
+    elif collection_incomplete:
+        lines.append("collection: INCOMPLETE (camera evidence infrastructure abort)")
+    elif collection_not_started:
+        lines.append("collection: NOT_STARTED (camera evidence admission)")
+    else:
+        lines.append("collection: PASS")
     camera_windows = [window.get("camera", {}) for window in payload["windows"] if window.get("camera")]
     gated_camera = [camera for camera in camera_windows if camera.get("gate_required")]
     if gated_camera:

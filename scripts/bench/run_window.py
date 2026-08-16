@@ -126,6 +126,15 @@ class CameraPreflightFailure(RuntimeError):
         self.reconnect_preflight: dict[str, Any] = {}
 
 
+class CameraEvidenceFailure(RuntimeError):
+    """A gated replay recorder failed after camera admission."""
+
+    def __init__(self, message: str, camera: CameraCapture) -> None:
+        super().__init__(message)
+        self.camera = camera
+        self.reconnect_preflight: dict[str, Any] = {}
+
+
 class ReconnectPreflightFailure(RuntimeError):
     """Managed reconnect could not establish a safe boundary before QSTART."""
 
@@ -786,7 +795,7 @@ def start_and_wait(
         if not abort_error:
             return
         detail = f"QABORT cleanup was not confirmed: {abort_error}"
-        if isinstance(exc, InterruptedError):
+        if isinstance(exc, Exception):
             exc.args = (f"{exc}; {detail}",)
             return
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
@@ -1915,6 +1924,18 @@ def _collect_live(
             if args.suite != "replay":
                 emulator.wait_for_session_transport(args.ready_timeout_seconds)
 
+        def require_healthy_replay_camera() -> str:
+            if camera is None or args.suite != "replay":
+                return ""
+            problem = camera.health_problem()
+            if not problem:
+                return ""
+            failure = CameraEvidenceFailure(problem, camera)
+            failure.reconnect_preflight = dict(reconnect_preflight_result)
+            raise failure
+
+        require_healthy_replay_camera()
+
         completion = start_and_wait(
             q,
             args.suite,
@@ -1923,6 +1944,7 @@ def _collect_live(
             after_started=start_managed_emulator,
             health_check=lambda: (
                 emulator.health_problem()
+                or require_healthy_replay_camera()
                 or (
                     "board rebooted before the replacement V1 session completed"
                     if args.suite == "replay"
@@ -2294,6 +2316,7 @@ def main() -> int:
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
                 "camera": exc.camera_result,
+                "camera_failure_stage": "preflight",
                 "reconnect_preflight_handshake_ledger_path": (
                     str(out_dir / RECONNECT_LEDGER_NAME) if args.suite == "replay" else ""
                 ),
@@ -2306,6 +2329,58 @@ def main() -> int:
             },
         )
         print(f"[bench] camera preflight inconclusive: {exc}", file=sys.stderr)
+        return 3
+    except CameraEvidenceFailure as exc:
+        try:
+            camera_result = json.loads(exc.camera.result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            camera_result = {}
+        if not isinstance(camera_result, dict):
+            camera_result = {}
+        errors = camera_result.get("errors") if isinstance(camera_result.get("errors"), list) else []
+        if str(exc) not in errors:
+            errors = [*errors, str(exc)]
+        recorder_failure = (
+            camera_result.get("recorder_failure")
+            if isinstance(camera_result.get("recorder_failure"), dict)
+            else exc.camera.recorder_failure
+        )
+        camera_result = {
+            **camera_result,
+            "result": "CAPTURE_FAILED",
+            "errors": errors,
+            "recorder_failure": recorder_failure,
+        }
+        failure_code = (
+            recorder_failure.get("code")
+            if isinstance(recorder_failure, dict)
+            and isinstance(recorder_failure.get("code"), str)
+            else "recorder_failure"
+        )
+        write_window_result(
+            out_dir,
+            {
+                "result": "EVIDENCE_FAILED",
+                "suite": args.suite,
+                "duration_seconds": args.duration_seconds,
+                "board_id": args.board_id,
+                "git_sha": args.git_sha,
+                "git_ref": args.git_ref,
+                "git_worktree_clean": args.git_worktree_clean == "1",
+                **identity_summary(),
+                "camera": camera_result,
+                "camera_failure_stage": "recording",
+                "camera_failure_kind": failure_code,
+                "reconnect_preflight_handshake_ledger_path": str(
+                    out_dir / RECONNECT_LEDGER_NAME
+                ),
+                "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
+                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "reconnect_preflight": exc.reconnect_preflight,
+                "error": str(exc),
+            },
+        )
+        print(f"[bench] camera recorder evidence failed: {exc}", file=sys.stderr)
         return 3
     except ReconnectPreflightFailure as exc:
         write_window_result(

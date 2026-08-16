@@ -26,9 +26,15 @@ DISPLAY_CROP = "crop=iw*0.52:ih*0.38:iw*0.18:ih*0.25"
 CALIBRATION_VIDEO_TIME_S = 3.0
 CALIBRATION_PATCH = (150, 20, 260, 45)
 CAMERA_PROFILE_SETTLE_S = 5.0
-CAMERA_SESSION_READY_TIMEOUT_S = 15.0
+# A cold Swift module-cache build measured 27.44 seconds on the bench host.
+# Session admission must not depend on a prior CI run having warmed that cache.
+CAMERA_SESSION_READY_TIMEOUT_S = 45.0
 CAMERA_RECORDING_READY_TIMEOUT_S = 15.0
 CAMERA_PREFLIGHT_RECORD_SECONDS = 0.75
+CAMERA_NATIVE_PREFLIGHT_FINALIZE_TIMEOUT_S = 15.0
+CAMERA_PREFLIGHT_FINISHED_TIMEOUT_S = CAMERA_NATIVE_PREFLIGHT_FINALIZE_TIMEOUT_S + 5.0
+CAMERA_RECORDER_FINALIZE_TIMEOUT_S = 30.0
+CAMERA_PROCESS_STOP_TIMEOUT_S = CAMERA_RECORDER_FINALIZE_TIMEOUT_S + 10.0
 
 
 def utc_now() -> str:
@@ -125,11 +131,25 @@ class CameraCapture:
         self.preflight_stop_path = self.out_dir / ".camera_preflight_stop"
         self.preflight_finished_path = self.out_dir / ".camera_preflight_finished.json"
         self.recording_ready_path = self.out_dir / ".camera_recording_ready.json"
+        self.failure_marker_path = self.out_dir / ".camera_recording_failed.json"
+        self.stats_marker_path = self.out_dir / ".camera_recording_stats.json"
+        self.swift_module_cache = (
+            Path(os.environ.get("BENCH_SWIFT_MODULE_CACHE", "")).expanduser().resolve()
+            if os.environ.get("BENCH_SWIFT_MODULE_CACHE", "").strip()
+            else Path(__file__).resolve().parents[2]
+            / "tools"
+            / "v1replay"
+            / ".build"
+            / "camera-module-cache"
+        )
         self.process: subprocess.Popen[bytes] | None = None
         self.recording_started_monotonic: float | None = None
         self.log_handle: Any = None
         self.errors: list[str] = []
         self.recorder_session: dict[str, Any] = {}
+        self.recorder_failure: dict[str, Any] = {}
+        self.recorder_stats: dict[str, Any] = {}
+        self.recorder_returncode: int | None = None
         self.profile_readback: dict[str, Any] = {}
 
     def profile(self) -> dict[str, Any]:
@@ -156,6 +176,9 @@ class CameraCapture:
             "profile": self.profile(),
             "profile_readback": self.profile_readback,
             "recorder_session": self.recorder_session,
+            "recorder_failure": self.recorder_failure,
+            "recorder_stats": self.recorder_stats,
+            "recorder_returncode": self.recorder_returncode,
             "expected_duration_seconds": self.expected_duration_s,
             "errors": self.errors,
         }
@@ -340,14 +363,105 @@ class CameraCapture:
             time.sleep(0.05)
         raise RuntimeError(f"camera recorder timed out waiting for {label}")
 
+    @staticmethod
+    def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise RuntimeError(f"{label} is unreadable") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{label} is malformed")
+        return payload
+
+    @staticmethod
+    def _recorder_failure_message(payload: dict[str, Any]) -> str:
+        code = payload.get("code")
+        message = payload.get("message")
+        if not isinstance(code, str) or not code or not isinstance(message, str) or not message:
+            return "camera recorder failure marker is malformed"
+        error = payload.get("error")
+        detail = ""
+        if isinstance(error, dict):
+            domain = error.get("domain")
+            error_code = error.get("code")
+            if isinstance(domain, str) and isinstance(error_code, int):
+                detail = f" ({domain} {error_code})"
+            underlying = error.get("underlying")
+            if isinstance(underlying, dict):
+                underlying_domain = underlying.get("domain")
+                underlying_code = underlying.get("code")
+                if isinstance(underlying_domain, str) and isinstance(underlying_code, int):
+                    detail += f"; underlying {underlying_domain} {underlying_code}"
+        return f"camera recorder failed during capture [{code}]: {message}{detail}"
+
+    def _ingest_recorder_artifacts(self) -> None:
+        if self.failure_marker_path.is_file():
+            try:
+                self.recorder_failure = self._read_json_object(
+                    self.failure_marker_path,
+                    "camera recorder failure marker",
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                if message not in self.errors:
+                    self.errors.append(message)
+            else:
+                message = self._recorder_failure_message(self.recorder_failure)
+                if message not in self.errors:
+                    self.errors.append(message)
+        if self.stats_marker_path.is_file():
+            try:
+                self.recorder_stats = self._read_json_object(
+                    self.stats_marker_path,
+                    "camera recorder statistics marker",
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                if message not in self.errors:
+                    self.errors.append(message)
+
+    def health_problem(self) -> str:
+        """Return a stable live failure without weakening final capture validation."""
+        if self.failure_marker_path.is_file():
+            try:
+                payload = self._read_json_object(
+                    self.failure_marker_path,
+                    "camera recorder failure marker",
+                )
+            except RuntimeError as exc:
+                return str(exc)
+            self.recorder_failure = payload
+            return self._recorder_failure_message(payload)
+        process = self.process
+        if process is not None:
+            returncode = process.poll()
+            if returncode is not None:
+                self.recorder_returncode = returncode
+                message = f"camera recorder exited during capture (code {returncode})"
+                self.recorder_failure = {
+                    "schema_version": 1,
+                    "result": "CAPTURE_FAILED",
+                    "code": "recorder_exited_early",
+                    "message": message,
+                    "phase": "recording",
+                    "returncode": returncode,
+                }
+                if message not in self.errors:
+                    self.errors.append(message)
+                return message
+        return ""
+
     def start(self) -> bool:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         try:
             self._require_tools()
             assert self.swift is not None
+            self.swift_module_cache.mkdir(parents=True, exist_ok=True)
             self.log_handle = self.log_path.open("wb")
             command = [
                 self.swift,
+                "-module-cache-path",
+                str(self.swift_module_cache),
                 str(self.native_recorder),
                 "--device-name",
                 self.camera_name,
@@ -373,6 +487,14 @@ class CameraCapture:
                 str(self.preflight_finished_path),
                 "--recording-ready",
                 str(self.recording_ready_path),
+                "--failure-marker",
+                str(self.failure_marker_path),
+                "--stats-marker",
+                str(self.stats_marker_path),
+                "--finalize-timeout-seconds",
+                str(CAMERA_RECORDER_FINALIZE_TIMEOUT_S),
+                "--preflight-finalize-timeout-seconds",
+                str(CAMERA_NATIVE_PREFLIGHT_FINALIZE_TIMEOUT_S),
             ]
             self.process = subprocess.Popen(
                 command,
@@ -401,7 +523,7 @@ class CameraCapture:
             self.preflight_stop_path.write_text("stop\n", encoding="utf-8")
             self._wait_for_marker(
                 self.preflight_finished_path,
-                CAMERA_RECORDING_READY_TIMEOUT_S,
+                CAMERA_PREFLIGHT_FINISHED_TIMEOUT_S,
                 "native preflight recording finalization",
             )
             self._wait_for_marker(
@@ -424,8 +546,17 @@ class CameraCapture:
         if process is not None and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGINT)
-                process.wait(timeout=20)
-            except (OSError, subprocess.TimeoutExpired):
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=CAMERA_PROCESS_STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                message = (
+                    "camera recorder did not stop within "
+                    f"{CAMERA_PROCESS_STOP_TIMEOUT_S:.0f}s; forcing termination"
+                )
+                if message not in self.errors:
+                    self.errors.append(message)
                 if process.poll() is None:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
@@ -435,10 +566,17 @@ class CameraCapture:
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
+        if process is not None:
+            self.recorder_returncode = process.poll()
         self.process = None
         if self.log_handle is not None:
             self.log_handle.close()
             self.log_handle = None
+        self._ingest_recorder_artifacts()
+        if self.recorder_returncode not in {None, 0} and not self.recorder_failure:
+            message = f"camera recorder exited with code {self.recorder_returncode}"
+            if message not in self.errors:
+                self.errors.append(message)
 
     def abort(self, diagnostic_code: str) -> dict[str, Any]:
         """Stop an admitted recorder without finalizing capture evidence."""
@@ -477,7 +615,13 @@ class CameraCapture:
             check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError("camera video could not be verified")
+            detail = proc.stderr.strip().replace(str(self.out_dir), "<camera-artifact>")
+            if len(detail) > 300:
+                detail = detail[-300:]
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"camera video could not be verified (ffprobe exit {proc.returncode}){suffix}"
+            )
         try:
             payload = json.loads(proc.stdout)
             stream = payload["streams"][0]

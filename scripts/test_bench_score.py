@@ -4125,8 +4125,65 @@ def test_camera_preflight_evidence_failure_needs_no_metrics_artifacts() -> None:
         proc = run_score(root, "replay", camera_suites=("replay",))
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
         assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
-        assert_true("collection: PASS" in proc.stdout, proc.stdout)
+        assert_true(
+            "collection: NOT_STARTED (camera evidence admission)" in proc.stdout,
+            proc.stdout,
+        )
         assert_true("screen_landmark_unreadable" in proc.stdout, proc.stdout)
+        assert_true("bench result: FAIL" not in proc.stdout, proc.stdout)
+
+
+def test_live_camera_recorder_failure_needs_no_metrics_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        replay = root / "replay"
+        write_json(
+            replay / "window_result.json",
+            {
+                "schema_version": 3,
+                "result": "EVIDENCE_FAILED",
+                "suite": "replay",
+                "git_sha": FULL_SHA,
+                "git_ref": "dev/test",
+                "git_worktree_clean": True,
+                "product_fingerprint": PRODUCT_FINGERPRINT,
+                "grader_fingerprint": CURRENT_GRADER_FINGERPRINT,
+                "hardware_scoring_fingerprint": CURRENT_HARDWARE_SCORING_FINGERPRINT,
+                "scenario_fingerprint": SCENARIO_FINGERPRINT,
+                "camera_failure_stage": "recording",
+                "camera_failure_kind": "frame_append_failed",
+                "error": "camera recorder failed during capture",
+                "camera": {
+                    "result": "CAPTURE_FAILED",
+                    "errors": ["camera recorder failed during capture"],
+                    "recorder_failure": {
+                        "schema_version": 1,
+                        "result": "CAPTURE_FAILED",
+                        "code": "frame_append_failed",
+                        "message": "movie frame append failed",
+                        "error": {
+                            "domain": "AVFoundationErrorDomain",
+                            "code": -11800,
+                            "underlying": {
+                                "domain": "NSOSStatusErrorDomain",
+                                "code": -16364,
+                            },
+                        },
+                    },
+                },
+            },
+        )
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        assert_true("bench result: EVIDENCE_FAILED" in proc.stdout, proc.stdout)
+        assert_true(
+            "collection: INCOMPLETE (camera evidence infrastructure abort)" in proc.stdout,
+            proc.stdout,
+        )
+        assert_true("camera recorder frame_append_failed" in proc.stdout, proc.stdout)
+        assert_true("AVFoundationErrorDomain -11800" in proc.stdout, proc.stdout)
+        assert_true("underlying NSOSStatusErrorDomain -16364" in proc.stdout, proc.stdout)
+        assert_true("camera preflight" not in proc.stdout, proc.stdout)
         assert_true("bench result: FAIL" not in proc.stdout, proc.stdout)
 
 
@@ -4168,6 +4225,7 @@ def main() -> int:
     test_strict_camera_bytes_and_window_identity_are_required()
     test_only_replay_camera_grade_is_required_by_the_full_bench()
     test_camera_preflight_evidence_failure_needs_no_metrics_artifacts()
+    test_live_camera_recorder_failure_needs_no_metrics_artifacts()
     print("bench scorer tests passed")
     return 0
 

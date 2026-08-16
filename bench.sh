@@ -26,6 +26,7 @@ COMPARE_TO=()
 BLINK_PROFILE="scenario"
 BLINK_PROFILE_SET=0
 LEGACY_BLINK_ARROW=0
+WRAPPER_SHUTDOWN_GRACE_SECONDS=75
 
 usage() {
   cat <<'EOF'
@@ -268,7 +269,8 @@ CURRENT_PID=""
 cleanup_current_process() {
   if [[ -n "$CURRENT_PID" ]] && kill -0 "$CURRENT_PID" 2>/dev/null; then
     kill -TERM "$CURRENT_PID" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    local shutdown_deadline=$((SECONDS + WRAPPER_SHUTDOWN_GRACE_SECONDS))
+    while (( SECONDS < shutdown_deadline )); do
       kill -0 "$CURRENT_PID" 2>/dev/null || break
       sleep 1
     done

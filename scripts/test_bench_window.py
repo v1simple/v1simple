@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
 import camera_grade as camera_grade_module  # noqa: E402
+import run_logged as run_logged_module  # noqa: E402
 import run_window as run_window_module  # noqa: E402
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
@@ -2223,6 +2225,387 @@ def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
+def test_native_camera_recorder_uses_host_clock_timeline() -> None:
+    source = (ROOT / "scripts" / "bench" / "camera_recorder.swift").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
+    assert_true(
+        "videoOutput.alwaysDiscardsLateVideoFrames = true" in source,
+        "native recorder can accumulate stale camera frames",
+    )
+    assert_true(
+        "CMClockGetTime(CMClockGetHostTimeClock())" in source
+        and "pixelBufferAdaptor.append(pixelBuffer, withPresentationTime: presentationTime)" in source
+        and "writer.startSession(atSourceTime: .zero)" in source,
+        "native recorder does not replace camera timestamps with a monotonic host timeline",
+    )
+    assert_true(
+        "writerInput.append(sampleBuffer)" not in source,
+        "native recorder still forwards camera-owned sample timing to AVAssetWriter",
+    )
+    assert_true(
+        "switch writer.status" in source
+        and 'code: "writer_failed"' in source
+        and "--self-test-writer" in source,
+        "native writer failure can hide behind backpressure or lacks a real writer-path test",
+    )
+    assert_true(
+        'if camera is None or args.suite != "replay"' in runner
+        and runner.count("require_healthy_replay_camera()") == 3,
+        "diagnostic core/display camera health can alter product collection",
+    )
+
+
+def test_camera_failure_marker_aborts_active_window() -> None:
+    class FakeSerial:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def write_command(self, command: str) -> None:
+            self.commands.append(command)
+
+        def read_protocol_line(self, _prefixes: tuple[str, ...], _timeout: float) -> str:
+            if self.commands[-1] == "QABORT":
+                return (
+                    'QRESP {"ok":false,"state":"error","suite":"core",'
+                    '"message":"aborted","error":"aborted"}'
+                )
+            return (
+                'QRESP {"ok":true,"state":"running","suite":"core",'
+                '"csvPath":"/perf/test.csv"}'
+            )
+
+    class ExitedRecorder:
+        returncode = 7
+
+        def poll(self) -> int:
+            return self.returncode
+
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = CameraCapture(Path(tmp), 300)
+        camera.out_dir.mkdir(parents=True, exist_ok=True)
+        camera.failure_marker_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "result": "CAPTURE_FAILED",
+                    "code": "frame_append_failed",
+                    "message": "movie frame append failed",
+                    "error": {
+                        "domain": "AVFoundationErrorDomain",
+                        "code": -11800,
+                        "underlying": {"domain": "NSOSStatusErrorDomain", "code": -16364},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        camera.process = ExitedRecorder()  # type: ignore[assignment]
+        serial = FakeSerial()
+
+        def require_healthy_camera() -> str:
+            problem = camera.health_problem()
+            if problem:
+                raise run_window_module.CameraEvidenceFailure(problem, camera)
+            return ""
+
+        try:
+            start_and_wait(
+                serial,  # type: ignore[arg-type]
+                "replay",
+                1,
+                1,
+                health_check=require_healthy_camera,
+            )
+        except run_window_module.CameraEvidenceFailure as exc:
+            message = str(exc)
+            assert_true("frame_append_failed" in message, f"failure code was lost: {message}")
+            assert_true(
+                "AVFoundationErrorDomain -11800" in message,
+                f"recorder error identity was lost: {message}",
+            )
+            assert_true(
+                "NSOSStatusErrorDomain -16364" in message,
+                f"underlying recorder error identity was lost: {message}",
+            )
+            assert_true("exited during capture" not in message, f"generic exit hid marker: {message}")
+        else:
+            raise AssertionError("camera writer failure did not abort the active window")
+        assert_true(
+            serial.commands == ["QSTART core 1", "QABORT"],
+            f"camera failure left the DUT window active: {serial.commands}",
+        )
+
+
+def test_live_camera_failure_is_serialized_as_evidence_failure() -> None:
+    original_parse_args = run_window_module.parse_args
+    original_collect_live = run_window_module.collect_live
+    original_build_identity = run_window_module.build_identity_manifest
+    original_install_signals = run_window_module.install_signal_handlers
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "replay"
+        args = SimpleNamespace(
+            suite="replay",
+            duration_seconds=300,
+            profile="drive_wifi_off",
+            segment="last",
+            blink_profile=None,
+            blink_arrow=False,
+            out_dir=str(out_dir),
+            identity_manifest=str(out_dir / "identity.json"),
+            board_id="release",
+            git_sha="1" * 40,
+            git_ref="main",
+            git_worktree_clean="1",
+            post_upload_settle_seconds=0,
+            from_csv="",
+            replay_executable="fixture-v1replay",
+            camera=True,
+            upload=False,
+        )
+        identity = {
+            "product_fingerprint": "a" * 64,
+            "grader_fingerprint": "b" * 64,
+            "hardware_scoring_fingerprint": "c" * 64,
+            "scenario_fingerprint": "d" * 64,
+        }
+
+        def fail_with_camera_evidence(
+            _args: object,
+            target: Path,
+            **_kwargs: object,
+        ) -> object:
+            camera = CameraCapture(target / "camera", 300)
+            camera.recorder_failure = {
+                "schema_version": 1,
+                "result": "CAPTURE_FAILED",
+                "code": "frame_append_failed",
+                "message": "movie frame append failed",
+                "error": {
+                    "domain": "AVFoundationErrorDomain",
+                    "code": -11800,
+                    "underlying": {"domain": "NSOSStatusErrorDomain", "code": -16364},
+                },
+            }
+            message = camera._recorder_failure_message(camera.recorder_failure)
+            camera.errors.append(message)
+            camera._write_result("CAPTURE_FAILED")
+            failure = run_window_module.CameraEvidenceFailure(message, camera)
+            failure.reconnect_preflight = {"result": "PASS"}
+            raise failure
+
+        try:
+            run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+            run_window_module.collect_live = fail_with_camera_evidence  # type: ignore[assignment]
+            run_window_module.build_identity_manifest = (  # type: ignore[assignment]
+                lambda *_args, **_kwargs: dict(identity)
+            )
+            run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+            returncode = run_window_module.main()
+        finally:
+            run_window_module.parse_args = original_parse_args
+            run_window_module.collect_live = original_collect_live
+            run_window_module.build_identity_manifest = original_build_identity
+            run_window_module.install_signal_handlers = original_install_signals
+
+        window = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        assert_true(returncode == 3, f"camera evidence failure exit={returncode}")
+        assert_true(window["result"] == "EVIDENCE_FAILED", f"wrong taxonomy: {window}")
+        assert_true(window["camera_failure_stage"] == "recording", f"stage lost: {window}")
+        assert_true(window["camera_failure_kind"] == "frame_append_failed", f"code lost: {window}")
+        assert_true(
+            window["camera"]["recorder_failure"]["error"]["underlying"]["code"] == -16364,
+            f"camera error identity was lost: {window}",
+        )
+
+
+def test_camera_stop_timeout_exceeds_native_finalize_timeout() -> None:
+    waits: list[float] = []
+    signals: list[int] = []
+
+    class FakeProcess:
+        pid = 1234
+
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float) -> int:
+            waits.append(timeout)
+            self.returncode = 0
+            return 0
+
+    original_killpg = camera_capture_module.os.killpg
+    try:
+        camera_capture_module.os.killpg = lambda _pid, sig: signals.append(sig)  # type: ignore[assignment]
+        with tempfile.TemporaryDirectory() as tmp:
+            camera = CameraCapture(Path(tmp), 300)
+            camera.process = FakeProcess()  # type: ignore[assignment]
+            camera._stop_process()
+    finally:
+        camera_capture_module.os.killpg = original_killpg
+
+    assert_true(
+        camera_capture_module.CAMERA_PROCESS_STOP_TIMEOUT_S
+        > camera_capture_module.CAMERA_RECORDER_FINALIZE_TIMEOUT_S,
+        "host can kill the recorder before its native finalization deadline",
+    )
+    assert_true(
+        camera_capture_module.CAMERA_PREFLIGHT_FINISHED_TIMEOUT_S
+        > camera_capture_module.CAMERA_NATIVE_PREFLIGHT_FINALIZE_TIMEOUT_S,
+        "host can time out before native preflight finalization publishes its marker",
+    )
+    assert_true(
+        camera_capture_module.CAMERA_SESSION_READY_TIMEOUT_S >= 45,
+        "cold Swift module compilation can outlive camera session admission",
+    )
+    assert_true(
+        run_logged_module.MANAGED_SHUTDOWN_GRACE_SECONDS
+        > camera_capture_module.CAMERA_PROCESS_STOP_TIMEOUT_S + 20,
+        "the managed wrapper can kill run_window before camera cleanup completes",
+    )
+    bench_source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    assert_true(
+        "WRAPPER_SHUTDOWN_GRACE_SECONDS=75" in bench_source
+        and "shutdown_deadline=$((SECONDS + WRAPPER_SHUTDOWN_GRACE_SECONDS))" in bench_source,
+        "the outer bench wrapper can preempt managed run cleanup",
+    )
+    run_logged_source = (ROOT / "scripts" / "bench" / "run_logged.py").read_text(
+        encoding="utf-8"
+    )
+    assert_true(
+        "if interrupted_status:\n            return" in run_logged_source,
+        "repeated signals can extend the managed cleanup deadline",
+    )
+    assert_true(
+        "if interrupted_status and not termination_forwarded and process.poll() is None"
+        in run_logged_source,
+        "a signal received during managed-process startup can be lost",
+    )
+    assert_true(
+        waits == [camera_capture_module.CAMERA_PROCESS_STOP_TIMEOUT_S],
+        f"camera stop used the wrong deadline: {waits}",
+    )
+    assert_true(signals == [signal.SIGINT], f"graceful camera stop sent destructive signals: {signals}")
+
+
+def test_run_logged_forwards_first_signal_received_during_startup() -> None:
+    handlers: dict[int, object] = {}
+    forwarded: list[int] = []
+    fake_process: object | None = None
+
+    class FakeProcess:
+        pid = 2468
+
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("fixture", 0)
+            return self.returncode
+
+    original_parse_args = run_logged_module.parse_args
+    original_popen = run_logged_module.subprocess.Popen
+    original_signal = run_logged_module.signal.signal
+    original_killpg = run_logged_module.os.killpg
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_logged_module.parse_args = lambda: SimpleNamespace(  # type: ignore[assignment]
+                stdout=str(root / "stdout.log"),
+                stderr=str(root / "stderr.log"),
+                combined=str(root / "combined.log"),
+                command=["fixture"],
+            )
+            run_logged_module.signal.signal = (  # type: ignore[assignment]
+                lambda signum, handler: handlers.__setitem__(signum, handler)
+            )
+
+            def fake_popen(*_args: object, **_kwargs: object) -> FakeProcess:
+                nonlocal fake_process
+                process = FakeProcess()
+                fake_process = process
+                handler = handlers[signal.SIGTERM]
+                assert callable(handler)
+                handler(signal.SIGTERM, None)
+                handler(signal.SIGINT, None)
+                return process
+
+            def fake_killpg(_pid: int, sent_signal: int) -> None:
+                forwarded.append(sent_signal)
+                assert isinstance(fake_process, FakeProcess)
+                fake_process.returncode = 0
+
+            run_logged_module.subprocess.Popen = fake_popen  # type: ignore[assignment]
+            run_logged_module.os.killpg = fake_killpg  # type: ignore[assignment]
+            returncode = run_logged_module.main()
+    finally:
+        run_logged_module.parse_args = original_parse_args
+        run_logged_module.subprocess.Popen = original_popen
+        run_logged_module.signal.signal = original_signal
+        run_logged_module.os.killpg = original_killpg
+
+    assert_true(returncode == 143, f"first signal status was not retained: {returncode}")
+    assert_true(
+        forwarded == [signal.SIGTERM],
+        f"startup/repeated signals were lost or multiply forwarded: {forwarded}",
+    )
+
+
+def test_camera_probe_failure_retains_sanitized_diagnostics() -> None:
+    class FailedProbe:
+        returncode = 2
+        stdout = ""
+        stderr = "moov atom not found in private artifact path"
+
+    original_run = camera_capture_module.subprocess.run
+    try:
+        camera_capture_module.subprocess.run = lambda *_args, **_kwargs: FailedProbe()  # type: ignore[assignment]
+        with tempfile.TemporaryDirectory() as tmp:
+            camera = CameraCapture(Path(tmp), 300)
+            camera.ffprobe = "ffprobe"
+            try:
+                camera._probe_video()
+            except RuntimeError as exc:
+                message = str(exc)
+                assert_true("ffprobe exit 2" in message, f"probe exit status was lost: {message}")
+                assert_true("moov atom not found" in message, f"probe diagnostic was lost: {message}")
+            else:
+                raise AssertionError("failed video probe passed")
+    finally:
+        camera_capture_module.subprocess.run = original_run
+
+
+def test_early_recorder_exit_is_latched_as_capture_failure() -> None:
+    class ExitedRecorder:
+        returncode = 0
+
+        def poll(self) -> int:
+            return self.returncode
+
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = CameraCapture(Path(tmp), 300)
+        camera.process = ExitedRecorder()  # type: ignore[assignment]
+        problem = camera.health_problem()
+        assert_true("exited during capture (code 0)" in problem, f"exit was hidden: {problem}")
+        assert_true(camera.recorder_failure.get("code") == "recorder_exited_early", str(camera.recorder_failure))
+        assert_true(problem in camera.errors, f"early exit was not latched: {camera.errors}")
+        camera._write_result("CAPTURE_FAILED")
+        raw = json.loads(camera.result_path.read_text(encoding="utf-8"))
+        assert_true(raw["result"] == "CAPTURE_FAILED", f"raw artifact contradicted failure: {raw}")
+        assert_true(raw["recorder_failure"]["returncode"] == 0, f"return code was lost: {raw}")
+
+
 def test_unadmitted_camera_is_not_reported_as_capture_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         camera = CameraCapture(Path(tmp), 300)
@@ -3602,6 +3985,13 @@ def main() -> int:
     test_reconnect_preflight_process_uses_separate_quiet_artifacts()
     test_handshake_ledger_runner_and_delivery_wiring_are_pinned()
     test_global_shutter_default_uses_qualified_720p200_profile()
+    test_native_camera_recorder_uses_host_clock_timeline()
+    test_camera_failure_marker_aborts_active_window()
+    test_live_camera_failure_is_serialized_as_evidence_failure()
+    test_camera_stop_timeout_exceeds_native_finalize_timeout()
+    test_run_logged_forwards_first_signal_received_during_startup()
+    test_camera_probe_failure_retains_sanitized_diagnostics()
+    test_early_recorder_exit_is_latched_as_capture_failure()
     test_unadmitted_camera_is_not_reported_as_capture_failure()
     test_reconnect_failure_before_camera_admission_leaves_no_camera_artifact()
     test_camera_grader_integrates_high_speed_frames_before_sampling()

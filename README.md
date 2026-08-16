@@ -149,8 +149,8 @@ directory. Camera evidence has one explicit role per suite:
   three-packet preflight from the fixed same-window logs instead of trusting
   collector summary flags.
 
-Every requested camera window applies the fixed 1280x720, 30 fps UVC profile
-and exposure 156, records a session-start still, and admits the run only when
+Every requested camera window applies the fixed 1280x720, 200 fps UVC profile
+and exposure 50, records a session-start still, and admits the run only when
 the SCAN landmark produces a fully contained, bounded dynamic scale/position
 crop. Core and display do this before opening serial or starting their emulator.
 Replay does it after the unscored reconnect cleanup fence and immediately before
@@ -158,8 +158,14 @@ QSTART, so process A cannot consume the duration-bounded recording. A refusal wr
 `camera_preflight.json` with measured camera diagnostics and ends as
 `EVIDENCE_FAILED`; it does not claim firmware failure. The successful preflight
 hash and exact normalized crop are owned by the immutable capture manifest.
-The completed video is probed for its real dimensions and average frame rate;
-an apparent 30 fps request that actually records below 29 fps is rejected.
+The native recorder discards stale capture callbacks and writes delivered image
+buffers on a monotonic host-clock timeline instead of trusting camera-supplied
+sample timestamps. During gated replay, a live writer failure is surfaced
+immediately, aborts the incomplete collection, and remains an evidence failure;
+it is never converted into a product failure or hidden by a later generic
+video-probe error. Core/display capture failures remain diagnostic/exercise-only.
+The completed video is still probed for its real dimensions and average frame
+rate; an apparent 200 fps request that actually records below 199 fps is rejected.
 
 Run the same camera-only lifecycle as a short standalone smoke, without serial,
 upload, emulator, or a long collection window:

@@ -1409,19 +1409,23 @@ def test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir: Path) -> None
             raise AssertionError(f"advisory bound outside the hard limit should be rejected: {name}")
 
 
-def test_catalog_contains_functional_budgets_and_sd_diagnostics() -> None:
+def test_catalog_contains_functional_budgets_and_latency_diagnostics() -> None:
     policies = score_hardware_run.load_catalog(CATALOG_PATH)
 
     notify = [policy for policy in policies if policy.metric == "notify_to_display_max_ms"]
     assert_true(len(notify) == 2, f"expected one notify policy per drive profile: {notify}")
     assert_true(
         all(
-            policy.score_level == "hard"
-            and policy.absolute_max == 100
+            not policy.required
+            and policy.score_level == "info"
+            and policy.regression_score_level == "info"
+            and policy.absolute_min is None
+            and policy.absolute_max is None
+            and policy.advisory_min is None
             and policy.advisory_max is None
             for policy in notify
         ),
-        f"notify budgets do not match the functional contract: {notify}",
+        f"notify latency must remain optional diagnostic telemetry: {notify}",
     )
 
     core_display_peak = next(
@@ -1449,6 +1453,108 @@ def test_catalog_contains_functional_budgets_and_sd_diagnostics() -> None:
             and policy.advisory_max is None,
             f"raw SD latency must remain required diagnostic telemetry: {policy}",
         )
+
+
+def test_notify_latency_is_diagnostic_not_a_verdict(tmpdir: Path) -> None:
+    case_dir = tmpdir / "notify_latency_diagnostic"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    baseline_metrics_path = case_dir / "baseline.ndjson"
+    current_metrics_path = case_dir / "current.ndjson"
+    missing_metrics_path = case_dir / "missing.ndjson"
+    dropped_metrics_path = case_dir / "dropped.ndjson"
+    baseline_manifest_path = case_dir / "baseline.json"
+    current_manifest_path = case_dir / "current.json"
+    missing_manifest_path = case_dir / "missing.json"
+    dropped_manifest_path = case_dir / "dropped.json"
+
+    baseline_records = standard_soak_records()
+    baseline_records.extend(
+        [
+            soak_metric("drive_wifi_ap", "sd_start_max_peak_us", 10000),
+            soak_metric("drive_wifi_ap", "sd_runtime_max_peak_us", 10000),
+        ]
+    )
+    current_records = [dict(record) for record in baseline_records]
+    for record in current_records:
+        if record["metric"] == "notify_to_display_max_ms":
+            record["value"] = 113
+    missing_records = [
+        dict(record)
+        for record in current_records
+        if record["metric"] != "notify_to_display_max_ms"
+    ]
+    dropped_records = [dict(record) for record in current_records]
+    for record in dropped_records:
+        if record["metric"] == "queue_drops_delta":
+            record["value"] = 1
+
+    for path, records in (
+        (baseline_metrics_path, baseline_records),
+        (current_metrics_path, current_records),
+        (missing_metrics_path, missing_records),
+        (dropped_metrics_path, dropped_records),
+    ):
+        write_metrics(path, records)
+
+    common_manifest = {
+        "run_kind": "real_fw_soak",
+        "board_id": "release",
+        "env": "perf-csv-import",
+        "lane": "qualification-core",
+        "suite_or_profile": "drive_wifi_ap",
+        "stress_class": "core",
+        "result": "PASS",
+        "base_result": "PASS",
+        "tracks": ["drive_wifi_ap"],
+        "source_type": "perf_csv",
+        "source_schema": 46,
+    }
+    for path, run_id, git_sha, metrics_file in (
+        (baseline_manifest_path, "notify-baseline", "base123", baseline_metrics_path.name),
+        (current_manifest_path, "notify-current", "cur1234", current_metrics_path.name),
+        (missing_manifest_path, "notify-missing", "cur1234", missing_metrics_path.name),
+        (dropped_manifest_path, "notify-dropped", "cur1234", dropped_metrics_path.name),
+    ):
+        write_manifest(
+            path,
+            run_id=run_id,
+            git_sha=git_sha,
+            git_ref="main",
+            metrics_file=metrics_file,
+            **common_manifest,
+        )
+
+    scored = score_hardware_run.score_run(
+        current_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(scored["result"] == "PASS", f"raw notify latency alone changed the verdict: {scored}")
+    assert_true(scored["summary"]["hard_failures"] == 0, f"raw notify latency hard-failed: {scored}")
+    assert_true(scored["summary"]["advisory_failures"] == 0, f"raw notify latency warned: {scored}")
+    notify = next(metric for metric in scored["metrics"] if metric["metric"] == "notify_to_display_max_ms")
+    assert_true(notify["score_level"] == "info", f"notify latency is not informational: {notify}")
+    assert_true(notify["absolute_state"] == "n/a", f"notify latency retained a value threshold: {notify}")
+    assert_true(notify["advisory_state"] == "n/a", f"notify latency retained an advisory gate: {notify}")
+    assert_true(notify["score_status"] == "info", f"notify latency regression was not diagnostic: {notify}")
+
+    missing = score_hardware_run.score_run(
+        missing_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(missing["result"] == "PASS", f"optional notify evidence changed the verdict: {missing}")
+    assert_true(missing["summary"]["missing_required"] == 0, f"optional notify evidence became required: {missing}")
+    assert_true(missing["summary"]["missing_optional"] >= 1, f"missing notify evidence was not reported: {missing}")
+
+    dropped = score_hardware_run.score_run(
+        dropped_manifest_path,
+        CATALOG_PATH,
+        baseline_manifest_path,
+    )
+    assert_true(dropped["result"] == "FAIL", f"a direct queue-drop witness was weakened: {dropped}")
+    queue_drop = next(metric for metric in dropped["metrics"] if metric["metric"] == "queue_drops_delta")
+    assert_true(queue_drop["score_status"] == "fail", f"queue-drop gate did not remain hard: {queue_drop}")
 
 
 def test_sd_latency_is_required_diagnostic_not_a_verdict(tmpdir: Path) -> None:
@@ -2050,7 +2156,8 @@ def main() -> int:
         test_required_soak_metrics_enforce_absolute_budgets(tmpdir)
         test_advisory_bound_warns_before_hard_absolute_failure(tmpdir)
         test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir)
-        test_catalog_contains_functional_budgets_and_sd_diagnostics()
+        test_catalog_contains_functional_budgets_and_latency_diagnostics()
+        test_notify_latency_is_diagnostic_not_a_verdict(tmpdir)
         test_sd_latency_is_required_diagnostic_not_a_verdict(tmpdir)
         test_regression_severity_can_be_advisory_under_hard_absolute_gate(tmpdir)
         test_unsupported_metrics_do_not_fail_run(tmpdir)

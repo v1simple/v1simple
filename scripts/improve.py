@@ -2907,10 +2907,36 @@ def execute_experiment(
                 )
             except Exception as cleanup_exc:
                 evaluation_error = str(cleanup_exc)
+        # An analysis is only durably recorded once the experiment reached
+        # ANALYZED, i.e. every batch, camera grade, and cross-arm regression
+        # gate already passed and the envelope rule already decided the run.
+        recorded_analysis = store.state.get("analysis")
+        if not isinstance(recorded_analysis, dict) or not recorded_analysis:
+            recorded_analysis = None
+        stored_context = store.state.get("context")
+        if not isinstance(stored_context, dict):
+            stored_context = {}
+        # A transient internal cleanup step must not overwrite an experiment that
+        # is already decided. When the measured outcome exists and both baseline
+        # restoration and evaluation-branch cleanup ultimately succeeded, publish
+        # the experimental result rather than the cleanup diagnosis.
+        decided_rejection = (
+            not restore_error
+            and not evaluation_error
+            and recorded_analysis is not None
+            and recorded_analysis.get("accepted") is False
+        )
         if restore_error:
             result = "RESTORE_FAILED"
         elif evaluation_error:
             result = "CLEANUP_FAILED"
+        elif decided_rejection:
+            result = (
+                "REJECTED_NO_CHANGE"
+                if plan.get("simulated") is True
+                and stored_context.get("candidate_diff") == "no-op"
+                else "REJECTED_NO_IMPROVEMENT"
+            )
         elif isinstance(exc, NoChangeCandidate):
             result = "REJECTED_NO_CHANGE"
         elif isinstance(exc, ResourceFailure):
@@ -2921,18 +2947,29 @@ def execute_experiment(
             result = "ABORTED_BASE_RESTORED"
         else:
             result = "ABORTED_NO_RESTORE"
-        details = [primary]
+        if decided_rejection:
+            details = [
+                "candidate envelope did not strictly clear baseline variability",
+                f"internal cleanup step recovered after: {primary}",
+            ]
+        else:
+            details = [primary]
         if restore_error:
             details.append(f"baseline restore failed: {restore_error}")
         if evaluation_error:
             details.append(f"evaluation evidence finalization failed: {evaluation_error}")
         finalize_pending_flash_evidence(store)
-        terminal_event = "rejected" if result == "REJECTED_NO_CHANGE" else "terminal_failure"
-        store.event(terminal_event, {"result": result, "reason": primary})
+        terminal_event = (
+            "rejected"
+            if result in {"REJECTED_NO_CHANGE", "REJECTED_NO_IMPROVEMENT"}
+            else "terminal_failure"
+        )
+        store.event(terminal_event, {"result": result, "reason": details[0]})
         decision = decision_payload(
             result,
             plan,
             store,
+            analysis=recorded_analysis,
             reason="; ".join(details),
             cleanup=cleanup_messages,
             require_valid_evidence=False,
@@ -3030,10 +3067,17 @@ def recover_experiment(plan: Mapping[str, Any], adapter: Adapter, store: Evidenc
     )
     finalize_pending_flash_evidence(store)
     store.event("recovery_terminal", {"result": result, "reason": reason})
+    # Recovery never resumes measurements, but if the interrupted session had
+    # already reached ANALYZED its stored envelope result is still the honest
+    # description of what was measured. Carry it into the tolerant decision.
+    recorded_analysis = store.state.get("analysis")
+    if not isinstance(recorded_analysis, dict) or not recorded_analysis:
+        recorded_analysis = None
     decision = decision_payload(
         result,
         plan,
         store,
+        analysis=recorded_analysis,
         reason=reason,
         cleanup=cleanup,
         require_valid_evidence=False,
@@ -4201,6 +4245,22 @@ class LiveAdapter:
                 )
         return records
 
+    def _assert_staged_base_tree(self, worktree: Path, base: str) -> None:
+        """Require the index and worktree to be exactly the pinned base tree."""
+        status = run_capture(["git", "status", "--porcelain=v1", "-uall"], cwd=worktree)
+        if any(line.startswith("??") for line in status.splitlines()):
+            raise GateFailure("evaluation worktree has untracked files before the revert commit")
+        unstaged_status, _, _ = run_capture_optional(
+            ["git", "diff", "--quiet", "--"], cwd=worktree
+        )
+        if unstaged_status != 0:
+            raise GateFailure("evaluation worktree has unstaged changes before the revert commit")
+        index_matches_base, _, _ = run_capture_optional(
+            ["git", "diff", "--cached", "--quiet", base, "--"], cwd=worktree
+        )
+        if index_matches_base != 0:
+            raise GateFailure("staged evaluation tree does not equal the pinned base tree")
+
     def finalize_evaluation(self) -> dict[str, Any]:
         if not self.candidate_worktree.is_dir():
             status, ref_sha, _ = run_capture_optional(
@@ -4307,18 +4367,38 @@ class LiveAdapter:
                 ]
             self._run(command_name, command, worktree, recovery=True)
         elif head == candidate:
+            # Materialize the pinned base tree in the controller-owned evaluation
+            # worktree, then commit it with an ordinary `git commit`.
+            #
+            # `git revert` cannot be used here. On Git versions that stage a merge
+            # result it points the `AUTO_MERGE` pseudo-ref at a *tree* object, and
+            # the fail-closed privacy reference hook correctly refuses every ref
+            # target that is not a commit or tag. That abort is predictable rather
+            # than transient, so clean finalization must never depend on it.
+            #
+            # `read-tree` writes only the index and the worktree, so the single
+            # reference update in this path is the commit itself — a commit
+            # object, which the hook evaluates normally.
             assert_repository_hook_contract(worktree)
-            command_name = self._next_command_attempt_name("revert-evaluation-branch")
             self._run(
-                command_name,
+                self._next_command_attempt_name("stage-evaluation-base-tree"),
+                ["git", "read-tree", "-u", "--reset", base],
+                worktree,
+                recovery=True,
+            )
+            self._assert_staged_base_tree(worktree, base)
+            subject = run_capture(["git", "log", "-1", "--format=%s", candidate], cwd=worktree)
+            assert_repository_hook_contract(worktree)
+            self._run(
+                self._next_command_attempt_name("revert-evaluation-branch"),
                 [
                     "git",
                     "-c",
                     "commit.gpgSign=false",
-                    "revert",
-                    "--no-edit",
+                    "commit",
                     "--no-gpg-sign",
-                    candidate,
+                    "-m",
+                    f'Revert "{subject}"',
                 ],
                 worktree,
                 recovery=True,

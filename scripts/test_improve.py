@@ -767,6 +767,365 @@ def test_evaluation_revert_recovers_exact_staged_base_after_hook_abort() -> None
             improve.ROOT = original_root
 
 
+def build_evaluation_repository(root: Path) -> dict:
+    """Disposable source repo plus a controller-owned evaluation worktree.
+
+    The candidate both edits a tracked file and adds a new one, so a correct
+    finalization has to delete the added path again rather than merely revert
+    the edit.
+    """
+    source = root / "source"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+    subprocess.run(["git", "config", "user.name", "Phase B Test"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "phase-b@example.invalid"], cwd=source, check=True
+    )
+    subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=source, check=True)
+    hooks = source / ".githooks"
+    hooks.mkdir()
+    reference_hook = hooks / "reference-transaction"
+    # Mirror the repository gate's fail-closed rule for ref targets: only commit
+    # and tag objects are scannable, so anything else (notably the AUTO_MERGE
+    # tree that `git revert` writes) must abort the transaction.
+    reference_hook.write_text(
+        "#!/bin/sh\n"
+        'case "${1:-}" in\n'
+        "  preparing|prepared) ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n"
+        "while read -r old new ref; do\n"
+        '  [ -n "${ref:-}" ] || continue\n'
+        '  case "${new:-}" in ref:*) continue ;; esac\n'
+        '  [ -n "$(printf %s "$new" | tr -d 0)" ] || continue\n'
+        '  kind=$(git cat-file -t "$new" 2>/dev/null) || exit 1\n'
+        '  case "$kind" in\n'
+        "    commit|tag) ;;\n"
+        '    *) echo "blocked non-commit ref target: $kind" >&2; exit 1 ;;\n'
+        "  esac\n"
+        "done\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    reference_hook.chmod(0o755)
+    (source / "src").mkdir()
+    (source / "src" / "display_indicators.cpp").write_text("int value = 1;\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".githooks/reference-transaction", "src/display_indicators.cpp"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+
+    subprocess.run(["git", "switch", "-q", "-c", "submitted"], cwd=source, check=True)
+    (source / "src" / "display_indicators.cpp").write_text("int value = 2;\n", encoding="utf-8")
+    (source / "test" / "test_added").mkdir(parents=True)
+    (source / "test" / "test_added" / "added.cpp").write_text("int added = 1;\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", "src/display_indicators.cpp", "test/test_added/added.cpp"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "perf(display): candidate"], cwd=source, check=True
+    )
+    candidate = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True
+    ).strip()
+    subprocess.run(["git", "switch", "-q", "main"], cwd=source, check=True)
+
+    session = root / "session"
+    # FileEvidenceStore owns session creation, so build it before the worktree.
+    store = improve.FileEvidenceStore(session)
+    evaluation = session / "worktrees" / "candidate"
+    evaluation.parent.mkdir(parents=True)
+    subprocess.run(
+        [
+            "git",
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "improve/test/evaluation",
+            str(evaluation),
+            candidate,
+        ],
+        cwd=source,
+        check=True,
+    )
+    return {
+        "source": source,
+        "session": session,
+        "store": store,
+        "evaluation": evaluation,
+        "base": base,
+        "candidate": candidate,
+        "plan": {
+            "session_dir": str(session),
+            "base_worktree": str(session / "worktrees" / "base"),
+            "candidate_worktree": str(evaluation),
+            "base_sha": base,
+            "candidate_sha": candidate,
+            "candidate_branch": "submitted",
+            "evaluation_branch": "improve/test/evaluation",
+        },
+    }
+
+
+def logged_git_subcommands(session: Path) -> list[str]:
+    """Return the git subcommand of every immutable controller command log."""
+    subcommands = []
+    for log in sorted((session / "logs").glob("*.log")):
+        first = log.read_text(encoding="utf-8").splitlines()[0]
+        tokens = first.removeprefix("$ ").split()
+        # Skip `git` and any leading `-c key=value` pairs.
+        index = 1
+        while index < len(tokens) and tokens[index] == "-c":
+            index += 2
+        if tokens and tokens[0].endswith("git") and index < len(tokens):
+            subcommands.append(tokens[index])
+    return subcommands
+
+
+def test_clean_finalization_commits_base_tree_without_git_revert() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        fixture = build_evaluation_repository(Path(temp))
+        source = fixture["source"]
+        evaluation = fixture["evaluation"]
+        base = fixture["base"]
+        candidate = fixture["candidate"]
+        store = fixture["store"]
+        original_root = improve.ROOT
+        improve.ROOT = source
+        try:
+            adapter = improve.LiveAdapter(
+                fixture["plan"],
+                store,
+                improve.CommandRunner(improve.StopController()),
+                improve.StopController(),
+            )
+            result = adapter.finalize_evaluation()
+            revert_commit = str(result["revert_commit"])
+
+            subcommands = logged_git_subcommands(fixture["session"])
+            assert_true(
+                "revert" not in subcommands,
+                f"clean finalization still invoked git revert: {subcommands}",
+            )
+            assert_true(
+                "commit" in subcommands and "read-tree" in subcommands,
+                f"clean finalization did not stage and commit the base tree: {subcommands}",
+            )
+            assert_true(
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "-q", "AUTO_MERGE"],
+                    cwd=evaluation,
+                    capture_output=True,
+                ).returncode
+                != 0,
+                "finalization left an AUTO_MERGE pseudo-ref behind",
+            )
+
+            parents = subprocess.check_output(
+                ["git", "rev-list", "--parents", "-n", "1", revert_commit],
+                cwd=evaluation,
+                text=True,
+            ).split()
+            assert_true(
+                parents == [revert_commit, candidate],
+                "revert commit does not have the candidate as its sole parent",
+            )
+            assert_true(
+                subprocess.check_output(
+                    ["git", "rev-parse", f"{revert_commit}^{{tree}}"], cwd=evaluation, text=True
+                ).strip()
+                == subprocess.check_output(
+                    ["git", "rev-parse", f"{base}^{{tree}}"], cwd=evaluation, text=True
+                ).strip(),
+                "revert commit tree does not equal the pinned base tree",
+            )
+            assert_true(
+                subprocess.check_output(
+                    ["git", "status", "--porcelain=v1", "-uall"], cwd=evaluation, text=True
+                ).strip()
+                == "",
+                "finalization left the evaluation worktree dirty",
+            )
+            submitted = subprocess.check_output(
+                ["git", "rev-parse", "refs/heads/submitted"], cwd=source, text=True
+            ).strip()
+            assert_true(submitted == candidate, "submitted candidate branch was mutated")
+        finally:
+            improve.ROOT = original_root
+
+
+class RealFinalizeAdapter(improve.FakeAdapter):
+    """Simulated measurements with a real-Git evaluation finalization."""
+
+    def __init__(self, baseline_values, candidate_values, live) -> None:
+        super().__init__(baseline_values, candidate_values)
+        self._live = live
+        self.fail_first_finalize = False
+        self.finalize_calls = 0
+
+    def finalize_evaluation(self) -> dict:
+        self.operations.append("finalize_evaluation")
+        self.finalize_calls += 1
+        if self.fail_first_finalize and self.finalize_calls == 1:
+            raise improve.GateFailure(
+                "simulated transient reference-gate abort during finalization"
+            )
+        return self._live.finalize_evaluation()
+
+
+def run_overlapping_experiment(temp: str, *, fail_first_finalize: bool) -> dict:
+    fixture = build_evaluation_repository(Path(temp))
+    store = fixture["store"]
+    original_root = improve.ROOT
+    improve.ROOT = fixture["source"]
+    try:
+        live = improve.LiveAdapter(
+            fixture["plan"],
+            store,
+            improve.CommandRunner(improve.StopController()),
+            improve.StopController(),
+        )
+        # Candidate is mostly faster but its worst sample exceeds the best
+        # baseline sample, so the strict envelope rule must reject it.
+        adapter = RealFinalizeAdapter([100] * 5, [90, 90, 90, 90, 110], live)
+        adapter.fail_first_finalize = fail_first_finalize
+        decision = improve.execute_experiment(improve.dry_plan(), adapter, store)
+        return {"decision": decision, "store": store, "adapter": adapter, "fixture": fixture}
+    finally:
+        improve.ROOT = original_root
+
+
+def assert_complete_no_improvement(outcome: dict, label: str) -> None:
+    decision = outcome["decision"]
+    store = outcome["store"]
+    assert_true(
+        decision["result"] == "REJECTED_NO_IMPROVEMENT",
+        f"{label}: expected REJECTED_NO_IMPROVEMENT, got {decision['result']}",
+    )
+    analysis = decision["analysis"]
+    assert_true(bool(analysis), f"{label}: terminal decision omitted the stored analysis")
+    assert_true(
+        analysis == store.state["analysis"],
+        f"{label}: published analysis differs from the recorded analysis",
+    )
+    assert_true(
+        analysis["accepted"] is False
+        and analysis["separation_gap"] < 0
+        and analysis["baseline"]["count"] == 5
+        and analysis["candidate"]["count"] == 5,
+        f"{label}: analysis is not the complete five-versus-five envelope result",
+    )
+    assert_true(
+        store.decision_path.is_file(),
+        f"{label}: terminal decision was not published",
+    )
+    revert_commit = subprocess.check_output(
+        ["git", "rev-parse", "refs/heads/improve/test/evaluation"],
+        cwd=outcome["fixture"]["source"],
+        text=True,
+    ).strip()
+    assert_true(
+        revert_commit != outcome["fixture"]["candidate"],
+        f"{label}: evaluation branch was not finalized before publication",
+    )
+    submitted = subprocess.check_output(
+        ["git", "rev-parse", "refs/heads/submitted"],
+        cwd=outcome["fixture"]["source"],
+        text=True,
+    ).strip()
+    assert_true(
+        submitted == outcome["fixture"]["candidate"],
+        f"{label}: submitted candidate branch was mutated",
+    )
+
+
+def test_overlapping_measurements_reject_no_improvement_after_real_cleanup() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        outcome = run_overlapping_experiment(temp, fail_first_finalize=False)
+        assert_complete_no_improvement(outcome, "clean cleanup")
+        assert_true(
+            "revert" not in logged_git_subcommands(outcome["fixture"]["session"]),
+            "clean rejection cleanup invoked git revert",
+        )
+
+
+def test_recovered_cleanup_preserves_the_no_improvement_outcome() -> None:
+    # Reproduces the observed defect: the first finalization attempt aborts,
+    # the controller's own retry succeeds, and the already-measured experimental
+    # outcome must survive that transient internal step.
+    with tempfile.TemporaryDirectory() as temp:
+        outcome = run_overlapping_experiment(temp, fail_first_finalize=True)
+        assert_true(
+            outcome["adapter"].finalize_calls == 2,
+            "internal cleanup retry did not run",
+        )
+        assert_complete_no_improvement(outcome, "recovered cleanup")
+
+
+class AlwaysFailFinalizeAdapter(improve.FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__([100] * 5, [90, 90, 90, 90, 110])
+        self.fail_revert = True
+
+    def finalize_evaluation(self) -> dict:
+        self.operations.append("finalize_evaluation")
+        if self.fail_revert:
+            raise improve.GateFailure("simulated unresolved evaluation cleanup failure")
+        return {"message": "simulated evaluation branch reverted to base tree"}
+
+
+def test_unresolved_cleanup_after_analysis_blocks_and_retains_analysis() -> None:
+    plan = improve.dry_plan()
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp) / "session"
+        store = improve.FileEvidenceStore(root)
+        adapter = AlwaysFailFinalizeAdapter()
+        first = improve.execute_experiment(plan, adapter, store)
+        assert_true(
+            first["result"] == "CLEANUP_FAILED",
+            "genuine unresolved cleanup failure was downgraded to a terminal rejection",
+        )
+        assert_true(
+            store.state["status"] == "CLEANUP_FAILED",
+            "unresolved cleanup failure was marked terminal",
+        )
+        assert_true(
+            store.state["evaluation_cleanup_required"] is True,
+            "evaluation-branch cleanup obligation was cleared",
+        )
+        assert_true(
+            not store.decision_path.exists(),
+            "unresolved cleanup published a misleading terminal decision",
+        )
+        assert_true(
+            bool(first["analysis"]) and first["analysis"] == store.state["analysis"],
+            "tolerant post-analysis failure decision dropped the stored analysis",
+        )
+        failures = sorted((root / "cleanup_failures").glob("attempt-*.json"))
+        assert_true(len(failures) == 1, "unresolved cleanup evidence was not preserved")
+
+        adapter.fail_revert = False
+        reopened = improve.FileEvidenceStore.open(root)
+        recovered = improve.recover_experiment(plan, adapter, reopened)
+        assert_true(
+            recovered["result"] in improve.TERMINAL_STATES,
+            "cleanup retry did not close the session",
+        )
+        assert_true(
+            bool(recovered["analysis"]),
+            "recovery decision dropped the already-recorded analysis",
+        )
+        assert_true(
+            reopened.state["evaluation_cleanup_required"] is False,
+            "evaluation-branch cleanup obligation survived success",
+        )
+
+
 def test_effective_worktree_hook_override_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
@@ -2094,6 +2453,10 @@ def main() -> int:
         test_controller_leases_reject_hardlinked_lock_files,
         test_evaluation_revert_refuses_a_switched_submitted_branch,
         test_evaluation_revert_recovers_exact_staged_base_after_hook_abort,
+        test_clean_finalization_commits_base_tree_without_git_revert,
+        test_overlapping_measurements_reject_no_improvement_after_real_cleanup,
+        test_recovered_cleanup_preserves_the_no_improvement_outcome,
+        test_unresolved_cleanup_after_analysis_blocks_and_retains_analysis,
         test_effective_worktree_hook_override_is_rejected,
         test_target_policy,
         test_strict_target_extraction,

@@ -402,6 +402,31 @@ def test_reference_transaction_blocks_direct_ref_to_unsafe_message() -> None:
         assert private_email not in completed.stderr
 
 
+def test_reference_transaction_blocks_tree_reference_target() -> None:
+    # `git revert` points the AUTO_MERGE pseudo-ref at a tree object. The gate
+    # only ever scans commits and tags, so a tree target must stay rejected
+    # rather than be waved through as an unscannable object kind.
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        enable_tracked_hooks(repo)
+        tree = git(repo, "rev-parse", "HEAD^{tree}")
+        assert tree in object_ids(repo, "tree")
+
+        completed = run(["git", "update-ref", "AUTO_MERGE", tree], cwd=repo)
+        assert completed.returncode != 0
+        assert (
+            run(["git", "rev-parse", "--verify", "AUTO_MERGE"], cwd=repo).returncode != 0
+        )
+
+        direct = run(
+            [str(repo / ".githooks" / "reference-transaction"), "preparing"],
+            cwd=repo,
+            input_text=f"{ZERO} {tree} AUTO_MERGE\n",
+        )
+        assert direct.returncode != 0
+        assert "privacy reference gate blocked a Git ref update" in direct.stderr
+
+
 def test_reference_transaction_uses_prepared_before_git_2_54() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -758,6 +783,7 @@ def main() -> int:
         test_reference_transaction_blocks_private_annotated_tag_identity,
         test_reference_transaction_blocks_direct_ref_to_unsafe_commit,
         test_reference_transaction_blocks_direct_ref_to_unsafe_message,
+        test_reference_transaction_blocks_tree_reference_target,
         test_reference_transaction_uses_prepared_before_git_2_54,
         test_prepare_commit_msg_fails_closed_without_scanner,
         test_reference_transaction_fails_closed_without_scanner,

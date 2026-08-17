@@ -124,6 +124,7 @@ run_step "clang-format check" python3 scripts/check_clang_format.py
 
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
+run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "Release bump selector regression suite" python3 scripts/test_release_bump.py
 
 section "Privacy"

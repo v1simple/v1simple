@@ -135,6 +135,7 @@ DEFAULT_ENV="waveshare-349"
 
 # Parse arguments
 CLEAN=false
+FACTORY_RESET=false
 UPLOAD_FS=false
 UPLOAD_FW=false
 MONITOR=false
@@ -149,6 +150,14 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --clean|-c)
             CLEAN=true
+            shift
+            ;;
+        --reset)
+            FACTORY_RESET=true
+            CLEAN=true
+            UPLOAD_FS=true
+            UPLOAD_FW=true
+            MONITOR=true
             shift
             ;;
         --upload-fs|-f)
@@ -219,6 +228,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -c, --clean        Clean build (remove .pio/build/)"
+            echo "  --reset            Factory reset: clean build, erase onboard flash, upload all, monitor"
             echo "  -f, --upload-fs    Upload filesystem after build (tests run only with --test)"
             echo "  -u, --upload       Upload firmware after build (tests run only with --test)"
             echo "  -m, --monitor      Open serial monitor after upload"
@@ -234,6 +244,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  $0                 # Build everything (no upload)"
+            echo "  $0 --reset         # With SD removed: erase, rebuild, upload everything, and monitor"
             echo "  $0 --clean --all   # Clean build and upload everything"
             echo "  $0 --clean --all --jobs 1  # Force single-threaded PlatformIO run"
             echo "  $0 -u -m           # Build firmware, upload, and monitor"
@@ -252,6 +263,29 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$FACTORY_RESET" = true ]; then
+    echo -e "${RED}Factory reset erases all onboard settings, BLE bonds, LittleFS data, and firmware.${NC}"
+    echo -e "${YELLOW}Remove the SD card first so its backup cannot restore the settings being erased.${NC}"
+    if [ -n "$UPLOAD_PORT" ]; then
+        echo -e "${YELLOW}Target port: ${UPLOAD_PORT}${NC}"
+    else
+        echo -e "${YELLOW}Target port: PlatformIO auto-detect${NC}"
+    fi
+    printf "Confirm the SD card is removed and erase onboard flash? [y/N] "
+    if ! read -r RESET_CONFIRMATION; then
+        RESET_CONFIRMATION=""
+    fi
+    case "$RESET_CONFIRMATION" in
+        y|Y|yes|YES)
+            ;;
+        *)
+            echo -e "${YELLOW}Factory reset cancelled; nothing was erased.${NC}"
+            exit 1
+            ;;
+    esac
+    echo ""
+fi
 
 python3 "$SCRIPT_DIR/scripts/check_platformio_core_version.py" --pio "$PIO_CMD"
 
@@ -354,8 +388,35 @@ if [ "$RUN_TESTS" = true ]; then
     echo ""
 fi
 
+# Build first so a compile failure cannot leave the device blank. Only erase
+# after every requested local build/test step has succeeded.
+if [ "$FACTORY_RESET" = true ]; then
+    echo -e "${YELLOW}Building LittleFS image before erase...${NC}"
+    "$PIO_CMD" run $PIO_RUN_ARGS -t buildfs
+    echo -e "${GREEN}LittleFS image built successfully${NC}"
+    echo ""
+
+    echo -e "${YELLOW}Erasing onboard flash (including NVS)...${NC}"
+    "$PIO_CMD" run $PIO_ARGS -t erase
+    echo -e "${GREEN}Onboard flash erased${NC}"
+    echo ""
+    sleep 1
+
+    # Restore the bootloader, partition table, and application before writing
+    # LittleFS. This keeps the device bootable if the filesystem upload fails.
+    echo -e "${YELLOW}Uploading firmware...${NC}"
+    "$PIO_CMD" run $PIO_RUN_ARGS -t upload
+    echo -e "${GREEN}Firmware uploaded${NC}"
+    echo ""
+
+    echo -e "${YELLOW}Uploading filesystem (LittleFS)...${NC}"
+    "$PIO_CMD" run $PIO_RUN_ARGS -t uploadfs
+    echo -e "${GREEN}Filesystem uploaded${NC}"
+    echo ""
+fi
+
 # Upload filesystem
-if [ "$UPLOAD_FS" = true ]; then
+if [ "$UPLOAD_FS" = true ] && [ "$FACTORY_RESET" = false ]; then
     echo -e "${YELLOW}Warning: uploadfs overwrites internal LittleFS data.${NC}"
     echo -e "${YELLOW}   If profile storage ever fell back to LittleFS, those profiles will be erased.${NC}"
     echo -e "${YELLOW}   Confirm SD is mounted in boot logs before relying on profile persistence.${NC}"
@@ -366,7 +427,7 @@ if [ "$UPLOAD_FS" = true ]; then
 fi
 
 # Upload firmware
-if [ "$UPLOAD_FW" = true ]; then
+if [ "$UPLOAD_FW" = true ] && [ "$FACTORY_RESET" = false ]; then
     echo -e "${YELLOW}Uploading firmware...${NC}"
     "$PIO_CMD" run $PIO_RUN_ARGS -t upload
     echo -e "${GREEN}Firmware uploaded${NC}"
@@ -384,6 +445,12 @@ if [ "$UPLOAD_FW" = true ]; then
     else
         echo -e "${YELLOW}${RESET_SKIP_REASON}${NC}"
     fi
+    echo ""
+fi
+
+if [ "$FACTORY_RESET" = true ]; then
+    echo -e "${GREEN}Factory image installed.${NC}"
+    echo -e "${YELLOW}Keep the SD card out until V1-Simple accepts the default password in maintenance mode.${NC}"
     echo ""
 fi
 

@@ -13,6 +13,7 @@ unsigned long mockMicros = 0;
 #define private public
 #include "../../src/ble_client.h"
 #undef private
+#include "../mocks/ble_client_callback_stubs.h"
 
 V1BLEClient::V1BLEClient() {}
 V1BLEClient::~V1BLEClient() {}

@@ -188,13 +188,17 @@ final class V1DisplayAlertContractTests: XCTestCase {
 
     func testOneTwoAndThreeRowPlansRepeatCountAndUseOneBasedIndexes() throws {
         for count in 1...3 {
-            let alerts = (0..<count).map { index in
-                ReplayAlert(
+            let alerts: [ReplayAlert] = (0..<count).map { (index: Int) -> ReplayAlert in
+                let frequencyMHz = UInt16(34_700 + index)
+                let strength = index + 1
+                let isPriority = index == count - 1
+
+                return ReplayAlert(
                     band: .ka,
-                    frequencyMHz: UInt16(34_700 + index),
-                    strength: index + 1,
+                    frequencyMHz: frequencyMHz,
+                    strength: strength,
                     direction: .front,
-                    isPriority: index == count - 1
+                    isPriority: isPriority
                 )
             }
             let sample = TimedSample(

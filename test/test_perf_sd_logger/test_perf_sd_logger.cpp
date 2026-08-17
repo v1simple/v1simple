@@ -159,8 +159,13 @@ void test_mock_r_plus_overwrites_reserve_then_grows_at_exact_capacity() {
 
     writeAll(update, "Y");
     TEST_ASSERT_EQUAL_UINT32(1025, static_cast<uint32_t>(update.position()));
-    TEST_ASSERT_EQUAL_UINT32(1025, static_cast<uint32_t>(update.size()));
+    update.flush();
     update.close();
+
+    File grown = fs.open("/perf/reserved.csv", FILE_READ, false);
+    TEST_ASSERT_TRUE(grown);
+    TEST_ASSERT_EQUAL_UINT32(1025, static_cast<uint32_t>(grown.size()));
+    grown.close();
 
     File missing = fs.open("/perf/missing.csv", "r+", false);
     TEST_ASSERT_FALSE(missing);

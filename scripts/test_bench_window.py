@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -63,6 +65,7 @@ from run_window import (  # noqa: E402
     VERSION_REQUEST,
     VERSION_RESPONSE,
     V1Emulator,
+    V1_RADIO_LEASE_FD_ENV,
     V1_RADIO_LEASE_PATH,
     V1RadioLease,
     _preflight_ledger_is_complete,
@@ -79,6 +82,22 @@ from run_window import (  # noqa: E402
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+@contextmanager
+def temporary_environment(name: str, value: str | None):
+    previous = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
 
 
 def write_dummy_emulator(
@@ -883,35 +902,180 @@ def test_radio_lease_is_inherited_and_owner_pid_is_forwarded() -> None:
         out_dir = root / "core"
         lock_path = root / "v1radio.lock"
         write_dummy_emulator(executable, emit_complete=False)
-        lease = V1RadioLease(lock_path, quiet_seconds=0)
-        lease.__enter__()
-        assert lease.fd is not None
-        emulator = V1Emulator(
-            executable,
-            out_dir,
-            "core",
-            lease_fd=lease.fd,
-        )
-        emulator.start()
-        emulator.wait_for_session_transport(1)
-        lease.close()
-        try:
+        with temporary_environment(V1_RADIO_LEASE_FD_ENV, None):
+            lease = V1RadioLease(lock_path, quiet_seconds=0)
+            lease.__enter__()
+            assert lease.fd is not None
+            emulator = V1Emulator(
+                executable,
+                out_dir,
+                "core",
+                lease_fd=lease.fd,
+            )
+            emulator.start()
+            emulator.wait_for_session_transport(1)
+            lease.close()
+            try:
+                with V1RadioLease(lock_path, quiet_seconds=0):
+                    pass
+            except RuntimeError as exc:
+                assert_true("radio lease unavailable" in str(exc), f"wrong lease failure: {exc}")
+            else:
+                raise AssertionError("parent close released a lease still inherited by the child")
+
+            result = emulator.finish(window_completed=True)
+            assert_true(result["graceful_stop_confirmed"] is True, f"stop was not proven: {result}")
             with V1RadioLease(lock_path, quiet_seconds=0):
                 pass
-        except RuntimeError as exc:
-            assert_true("radio lease unavailable" in str(exc), f"wrong lease failure: {exc}")
-        else:
-            raise AssertionError("parent close released a lease still inherited by the child")
-
-        result = emulator.finish(window_completed=True)
-        assert_true(result["graceful_stop_confirmed"] is True, f"stop was not proven: {result}")
-        with V1RadioLease(lock_path, quiet_seconds=0):
-            pass
         log = (out_dir / "v1replay.log").read_text(encoding="utf-8")
         assert_true(
             f"argv=idle --machine-events --owner-pid {os.getpid()}" in log,
             f"owner PID was not forwarded to the child: {log!r}",
         )
+
+
+def test_radio_lease_rejects_an_intermediate_state_symlink() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        account_home = root / "account"
+        account_home.mkdir()
+        state_a = root / "state-a"
+        state_b = root / "state-b"
+        for target in (state_a, state_b):
+            (target / "state" / "v1simple").mkdir(parents=True)
+        local_link = account_home / ".local"
+        local_link.symlink_to(state_a, target_is_directory=True)
+        lock_path = account_home / ".local" / "state" / "v1simple" / "managed.lock"
+        original_home = run_window_module.ACCOUNT_HOME
+        run_window_module.ACCOUNT_HOME = account_home
+        try:
+            for target in (state_a, state_b):
+                if local_link.readlink() != target:
+                    local_link.unlink()
+                    local_link.symlink_to(target, target_is_directory=True)
+                try:
+                    with V1RadioLease(lock_path, quiet_seconds=0):
+                        pass
+                except RuntimeError as exc:
+                    assert_true(
+                        "without symlinks" in str(exc),
+                        f"wrong intermediate-symlink rejection: {exc}",
+                    )
+                else:
+                    raise AssertionError("radio lease followed an intermediate state symlink")
+            assert_true(
+                not (state_a / "state" / "v1simple" / "managed.lock").exists()
+                and not (state_b / "state" / "v1simple" / "managed.lock").exists(),
+                "radio lease created a split lock through the state symlink",
+            )
+        finally:
+            run_window_module.ACCOUNT_HOME = original_home
+
+
+def test_radio_lease_accepts_only_the_campaigns_inherited_locked_fd() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        lock_path = root / "v1radio.lock"
+        with temporary_environment(V1_RADIO_LEASE_FD_ENV, None):
+            parent = V1RadioLease(lock_path, quiet_seconds=0)
+            parent.__enter__()
+        assert parent.fd is not None
+        child_source = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts' / 'bench')!r})\n"
+            "from run_window import V1RadioLease\n"
+            "with V1RadioLease(Path(sys.argv[1]), quiet_seconds=99) as lease:\n"
+            " print(json.dumps({'inherited': lease.inherited, 'distinct_fd': lease.fd != int(sys.argv[2])}))\n"
+        )
+        child_env = dict(os.environ)
+        child_env[V1_RADIO_LEASE_FD_ENV] = str(parent.fd)
+        try:
+            child = subprocess.run(
+                [sys.executable, "-c", child_source, str(lock_path), str(parent.fd)],
+                cwd=ROOT,
+                env=child_env,
+                pass_fds=(parent.fd,),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            assert_true(child.returncode == 0, f"inherited lease child failed: {child.stderr}")
+            child_result = json.loads(child.stdout)
+            assert_true(
+                child_result == {"inherited": True, "distinct_fd": True},
+                f"child did not duplicate the campaign lease: {child_result}",
+            )
+            with temporary_environment(V1_RADIO_LEASE_FD_ENV, None):
+                try:
+                    with V1RadioLease(lock_path, quiet_seconds=0):
+                        pass
+                except RuntimeError as exc:
+                    assert_true(
+                        "radio lease unavailable" in str(exc),
+                        f"campaign lease was not retained by the parent: {exc}",
+                    )
+                else:
+                    raise AssertionError("nested child released the campaign's parent lease")
+        finally:
+            parent.close()
+
+
+def test_radio_lease_rejects_malformed_stale_and_nonowned_inherited_fds() -> None:
+    def require_rejection(lock_path: Path, raw: str, expected: str) -> None:
+        with temporary_environment(V1_RADIO_LEASE_FD_ENV, raw):
+            try:
+                with V1RadioLease(lock_path, quiet_seconds=0):
+                    pass
+            except RuntimeError as exc:
+                assert_true(expected in str(exc), f"wrong inherited-lease failure: {exc}")
+            else:
+                raise AssertionError(f"invalid inherited lease was accepted: {raw!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        malformed_path = root / "malformed.lock"
+        for raw in ("", " 7", "+7", "-1", "07", "not-a-fd", "999999999"):
+            require_rejection(malformed_path, raw, "file descriptor")
+            assert_true(
+                not malformed_path.exists(),
+                "malformed inherited-fd input fell back to creating a fresh lease",
+            )
+
+        lock_path = root / "v1radio.lock"
+        lock_path.touch(mode=0o600)
+        unlocked_fd = os.open(lock_path, os.O_RDWR)
+        try:
+            require_rejection(lock_path, str(unlocked_fd), "is not locked")
+        finally:
+            os.close(unlocked_fd)
+
+        other_path = root / "other.lock"
+        other_fd = os.open(other_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            require_rejection(lock_path, str(other_fd), "does not match the lease path")
+        finally:
+            os.close(other_fd)
+
+        closed_fd = os.open(lock_path, os.O_RDWR)
+        os.close(closed_fd)
+        require_rejection(lock_path, str(closed_fd), "does not name an open file descriptor")
+
+        with temporary_environment(V1_RADIO_LEASE_FD_ENV, None):
+            owner = V1RadioLease(lock_path, quiet_seconds=0)
+            owner.__enter__()
+        independently_opened_fd = os.open(lock_path, os.O_RDWR)
+        try:
+            require_rejection(
+                lock_path,
+                str(independently_opened_fd),
+                "locked by a different owner",
+            )
+        finally:
+            os.close(independently_opened_fd)
+            owner.close()
 
 
 def test_first_signal_makes_cleanup_non_interruptible() -> None:
@@ -2554,13 +2718,34 @@ def test_run_logged_forwards_first_signal_received_during_startup() -> None:
         run_logged_module.subprocess.Popen = original_popen
         run_logged_module.signal.signal = original_signal
         run_logged_module.os.killpg = original_killpg
-
     assert_true(returncode == 143, f"first signal status was not retained: {returncode}")
     assert_true(
         forwarded == [signal.SIGTERM],
         f"startup/repeated signals were lost or multiply forwarded: {forwarded}",
     )
 
+
+def test_run_logged_preserves_campaign_radio_lease_descriptor() -> None:
+    key = run_logged_module.MANAGED_V1_RADIO_LEASE_FD_ENV
+    original = os.environ.get(key)
+    with tempfile.TemporaryDirectory() as temp:
+        descriptor = os.open(Path(temp) / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            os.environ[key] = str(descriptor)
+            assert run_logged_module.inherited_pass_fds() == (descriptor,)
+            os.environ[key] = "03"
+            try:
+                run_logged_module.inherited_pass_fds()
+            except ValueError as exc:
+                assert "canonical open descriptor" in str(exc)
+            else:
+                raise AssertionError("run_logged accepted a noncanonical inherited descriptor")
+        finally:
+            os.close(descriptor)
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
 
 def test_camera_probe_failure_retains_sanitized_diagnostics() -> None:
     class FailedProbe:
@@ -4007,6 +4192,9 @@ def main() -> int:
     test_idle_admission_rejects_transport_already_lost()
     test_qstart_companion_failures_abort_the_active_dut_window()
     test_radio_lease_is_inherited_and_owner_pid_is_forwarded()
+    test_radio_lease_rejects_an_intermediate_state_symlink()
+    test_radio_lease_accepts_only_the_campaigns_inherited_locked_fd()
+    test_radio_lease_rejects_malformed_stale_and_nonowned_inherited_fds()
     test_first_signal_makes_cleanup_non_interruptible()
     test_live_cleanup_stops_emulators_before_serial_and_camera()
     test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails()
@@ -4036,6 +4224,7 @@ def main() -> int:
     test_live_camera_failure_is_serialized_as_evidence_failure()
     test_camera_stop_timeout_exceeds_native_finalize_timeout()
     test_run_logged_forwards_first_signal_received_during_startup()
+    test_run_logged_preserves_campaign_radio_lease_descriptor()
     test_camera_probe_failure_retains_sanitized_diagnostics()
     test_early_recorder_exit_is_latched_as_capture_failure()
     test_unadmitted_camera_is_not_reported_as_capture_failure()

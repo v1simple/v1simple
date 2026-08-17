@@ -225,6 +225,82 @@ core/display/replay PASS with strict replay camera ownership, and
 current smoke PASS, and a confident current grade for the previously accepted
 replay capture.
 
+### Evaluate a firmware optimization
+
+`scripts/improve.py` is the Phase-B, host-side controller for comparing one
+committed firmware candidate with its pinned base. It never changes the
+invoking worktree or the submitted candidate branch. Instead it creates owned
+evaluation worktrees and an `improve/...` evaluation branch, builds both
+revisions before reserving the rig, flashes firmware without replacing
+LittleFS, and runs the fixed all-suite/camera gate with no promoted baseline.
+The controller holds the same managed-V1 radio lease used by ordinary bench
+windows from the first flash through the last run, so another bench cannot
+interleave with a candidate campaign.
+
+A live experiment requires at least five fresh runs per arm. Baseline and
+candidate runs are time-balanced in `B,C,C,B` blocks. Every individual batch
+must be a clean canonical PASS with a strict replay camera grade, and flash,
+RAM, IRAM, and DIRAM must remain inside the existing production limits. The
+target policy and direction come from the checked-in hardware metric catalog;
+informational metrics and changes to metric instrumentation are not eligible.
+The first controller version is replay-only and supports only
+`disp_pipe_p95_us` and `disp_pipe_max_peak_us`. Its on-device timing boundary,
+headers, pre-timer orchestration, importers, scorer, and camera gate are
+protected. A candidate may change only the implementation `.cpp` files named
+by `DISPLAY_OPTIMIZATION_PATHS` in `scripts/improve.py`, plus accompanying
+tests; at least one eligible implementation file must change. The pinned base
+must be the clean invoking `HEAD`, and the candidate must be its single direct,
+non-merge child.
+Acceptance requires strict empirical-envelope separation: every candidate
+sample must beat every baseline sample. An equal or overlapping envelope is a
+rejection, even when the candidate median is better. Each candidate suite is
+also rescored against all N fresh, same-suite baseline manifests, so improving
+the target cannot hide a regression in another hard or advisory metric.
+
+First exercise the controller without build, serial, camera, or hardware
+access. This deterministic proof uses real Git only inside a disposable
+temporary repository. It verifies a committed behavior-no-op candidate takes
+the same pre-flash `REJECTED_NO_CHANGE` path as a byte-identical live build,
+including the owned evaluation worktree and real revert; separate simulated
+scenarios exercise acceptance and crash recovery:
+
+```sh
+python3 scripts/improve.py dry-run
+```
+
+Every live `start` repeats that dry run before creating its immutable plan and
+stores the exact report and controller-component hashes with the session.
+The default five-run-per-arm campaign requires at least 38.5 GiB free at
+startup: ten estimated 2.25 GiB full-camera runs, 6 GiB for builds/worktrees,
+and a 10 GiB safety reserve. Space is checked again before every capture.
+
+Then evaluate a single committed firmware candidate branch:
+
+```sh
+python3 scripts/improve.py start \
+  --candidate-branch <local-branch> \
+  --target-suite replay \
+  --target-metric disp_pipe_p95_us \
+  --runs 5 \
+  --port <serial-port> \
+  --artifact-root <durable-artifact-root>
+```
+
+The controller records an immutable plan and decision, a hash-chained event
+journal, resource and firmware hashes, and every bench result and strict
+qualification it cites. A rejected or interrupted candidate is followed by a
+verified base-firmware restore and a revert commit on the controller-owned
+evaluation branch; the submitted branch remains intact. After an ungraceful
+host stop, `resume --session <path>` performs recovery only—it restores the
+base and closes the experiment rather than selectively resuming measurements.
+Failed restore or evaluation-branch cleanup remains durably blocked and must
+be retried with `resume`; it never unlocks another experiment. A reserved
+recovery block protects that closeout from a full artifact volume, and free
+space is rechecked before every full-camera capture using the remaining run
+count and observed artifact sizes.
+An `ACCEPTED` candidate remains isolated and pending user integration;
+promotion or merging is a separate human decision.
+
 Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in
 [`tools/hardware_metric_catalog.json`](tools/hardware_metric_catalog.json)

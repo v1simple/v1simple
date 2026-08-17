@@ -162,6 +162,8 @@ section "Python Regression Tests"
 # script and workflow regressions in the full gate without expanding --fast.
 run_step "Bench identity regression suite" python3 scripts/test_bench_identity.py
 run_step "Bench qualification policy regression suite" python3 scripts/test_bench_policy.py
+run_step "Phase-B improvement controller regression suite" python3 scripts/test_improve.py
+run_step "Phase-B disposable Git dry-run regression suite" python3 scripts/test_improve_git_dryrun.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py

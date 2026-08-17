@@ -15,6 +15,31 @@ from typing import BinaryIO
 
 
 MANAGED_SHUTDOWN_GRACE_SECONDS = 70.0
+MANAGED_V1_RADIO_LEASE_FD_ENV = "V1SIMPLE_MANAGED_V1_LEASE_FD"
+
+
+def inherited_pass_fds() -> tuple[int, ...]:
+    """Preserve the controller-owned radio lease through this wrapper."""
+    raw = os.environ.get(MANAGED_V1_RADIO_LEASE_FD_ENV)
+    if raw is None:
+        return ()
+    try:
+        descriptor = int(raw, 10)
+    except ValueError as exc:
+        raise ValueError(
+            f"{MANAGED_V1_RADIO_LEASE_FD_ENV} must be a canonical open descriptor"
+        ) from exc
+    if descriptor < 3 or raw != str(descriptor):
+        raise ValueError(
+            f"{MANAGED_V1_RADIO_LEASE_FD_ENV} must be a canonical open descriptor"
+        )
+    try:
+        os.fstat(descriptor)
+    except OSError as exc:
+        raise ValueError(
+            f"{MANAGED_V1_RADIO_LEASE_FD_ENV} does not name an open descriptor"
+        ) from exc
+    return (descriptor,)
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,13 +108,15 @@ def main() -> int:
         Path(args.combined).open("ab") as combined_log,
     ):
         try:
+            pass_fds = inherited_pass_fds()
             process = subprocess.Popen(
                 args.command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
+                pass_fds=pass_fds,
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             message = f"managed command could not start: {exc}\n".encode("utf-8", errors="replace")
             sys.stderr.buffer.write(message)
             stderr_log.write(message)

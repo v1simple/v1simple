@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import errno
 import fcntl
 import glob
 import json
 import math
 import os
+import pwd
 import secrets
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -85,12 +88,106 @@ MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 MAX_HANDSHAKE_START_REQUESTS = 5
 MIN_HANDSHAKE_START_RETRY_MS = 1000
 MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
+ACCOUNT_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
 # This must be shared across clones/worktrees and must never sit under artifact
 # retention, which could unlink a live lock and allow a second advertiser.
 V1_RADIO_LEASE_PATH = (
-    Path.home() / ".local" / "state" / "v1simple" / "managed-v1-radio.lock"
+    ACCOUNT_HOME / ".local" / "state" / "v1simple" / "managed-v1-radio.lock"
 )
 V1_RADIO_QUIET_SECONDS = 1.0
+# A campaign controller may acquire V1_RADIO_LEASE_PATH once and pass that
+# *locked descriptor* to each run_window child with pass_fds plus this variable.
+# The child validates the descriptor, duplicates it for its own lifetime, and
+# passes only that duplicate to its managed emulator. Merely naming an open fd
+# for the lock file is insufficient: the referenced open-file description must
+# already own the exclusive flock.
+V1_RADIO_LEASE_FD_ENV = "V1SIMPLE_MANAGED_V1_LEASE_FD"
+
+
+def _lease_path_owner(path: Path) -> Path:
+    try:
+        path.relative_to(ACCOUNT_HOME)
+    except ValueError:
+        # Alternate paths are accepted only for isolated tests; their direct
+        # parent still must be a real user-owned directory.
+        return path.parent
+    return ACCOUNT_HOME
+
+
+def _ensure_lease_directory_chain(
+    owner: Path,
+    target: Path,
+    *,
+    create: bool,
+) -> tuple[int, int]:
+    if not owner.is_absolute() or not target.is_absolute():
+        raise RuntimeError("managed V1 radio lease directory must be absolute")
+    try:
+        relative = target.relative_to(owner)
+    except ValueError as exc:
+        raise RuntimeError("managed V1 radio lease directory escaped its owner") from exc
+    current = owner
+    for part in (".", *relative.parts):
+        if part != ".":
+            parent = current
+            current = current / part
+            if not os.path.lexists(current):
+                if not create:
+                    raise RuntimeError(
+                        f"managed V1 radio lease directory is unavailable: {current}"
+                    )
+                try:
+                    parent_before = parent.lstat()
+                    os.mkdir(current, 0o700)
+                    parent_after = parent.lstat()
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"could not create managed V1 radio lease directory: {current}"
+                    ) from exc
+                else:
+                    if (parent_before.st_dev, parent_before.st_ino) != (
+                        parent_after.st_dev,
+                        parent_after.st_ino,
+                    ):
+                        raise RuntimeError(
+                            "managed V1 radio lease directory changed while it was created"
+                        )
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not inspect managed V1 radio lease directory: {current}"
+            ) from exc
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise RuntimeError(
+                "managed V1 radio lease requires user-owned directories without symlinks: "
+                f"{current}"
+            )
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _prepare_lease_parent(path: Path) -> tuple[int, int]:
+    return _ensure_lease_directory_chain(
+        _lease_path_owner(path),
+        path.parent,
+        create=True,
+    )
+
+
+def _verify_lease_parent(path: Path, expected_identity: tuple[int, int]) -> None:
+    actual = _ensure_lease_directory_chain(
+        _lease_path_owner(path),
+        path.parent,
+        create=False,
+    )
+    if actual != expected_identity:
+        raise RuntimeError("managed V1 radio lease directory changed while opening the lock")
 
 START_ALERT_REQUEST = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
 VERSION_REQUEST = [0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB]
@@ -161,7 +258,15 @@ class ReconnectBehaviorError(RuntimeError):
 
 
 class V1RadioLease:
-    """Exclude other managed V1 advertisers, including inherited orphan children."""
+    """Exclude other managed V1 advertisers, including campaign-owned children.
+
+    Normally this object acquires the durable lock itself. If
+    ``V1SIMPLE_MANAGED_V1_LEASE_FD`` is present, the value must be the canonical
+    decimal number of an inherited, read/write descriptor for ``path`` whose
+    open-file description already owns the exclusive flock. Invalid, stale,
+    unlocked, or independently opened descriptors are rejected rather than
+    falling back to a new lease.
+    """
 
     def __init__(
         self,
@@ -171,19 +276,132 @@ class V1RadioLease:
         self.path = path
         self.quiet_seconds = quiet_seconds
         self.fd: int | None = None
+        self.inherited = False
+
+    def _inherited_fd(self) -> int | None:
+        raw = os.environ.get(V1_RADIO_LEASE_FD_ENV)
+        if raw is None:
+            return None
+        try:
+            fd = int(raw, 10)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{V1_RADIO_LEASE_FD_ENV} must be a canonical decimal file descriptor"
+            ) from exc
+        if fd < 3 or raw != str(fd):
+            raise RuntimeError(
+                f"{V1_RADIO_LEASE_FD_ENV} must be a canonical decimal file descriptor"
+            )
+        return fd
+
+    def _validate_inherited_fd(self, fd: int) -> None:
+        parent_identity = _prepare_lease_parent(self.path)
+        try:
+            fd_stat = os.fstat(fd)
+            fd_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        except OSError as exc:
+            raise RuntimeError(
+                f"{V1_RADIO_LEASE_FD_ENV} does not name an open file descriptor"
+            ) from exc
+        try:
+            path_stat = self.path.lstat()
+        except OSError as exc:
+            raise RuntimeError("inherited managed V1 radio lease path is unavailable") from exc
+        if not stat.S_ISREG(fd_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+            raise RuntimeError("inherited managed V1 radio lease is not a regular file")
+        if (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise RuntimeError("inherited managed V1 radio lease does not match the lease path")
+        if fd_stat.st_uid != os.geteuid() or path_stat.st_uid != os.geteuid():
+            raise RuntimeError("inherited managed V1 radio lease is not owned by this user")
+        if fd_stat.st_nlink != 1 or path_stat.st_nlink != 1:
+            raise RuntimeError("inherited managed V1 radio lease link ownership is invalid")
+        if fd_flags & os.O_ACCMODE != os.O_RDWR:
+            raise RuntimeError("inherited managed V1 radio lease is not open read/write")
+        _verify_lease_parent(self.path, parent_identity)
+
+        # A separate open file description must observe the lock as busy. Then
+        # an idempotent nonblocking lock on the inherited descriptor must
+        # succeed. Together these checks distinguish the controller's inherited
+        # locked descriptor from an unlocked or separately opened stale fd.
+        contender_fd = os.open(
+            self.path,
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            contender_stat = os.fstat(contender_fd)
+            if (contender_stat.st_dev, contender_stat.st_ino) != (
+                fd_stat.st_dev,
+                fd_stat.st_ino,
+            ):
+                raise RuntimeError(
+                    "inherited managed V1 radio lease path changed during validation"
+                )
+            try:
+                fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise RuntimeError(
+                        "could not validate inherited managed V1 radio lease ownership"
+                    ) from exc
+            else:
+                fcntl.flock(contender_fd, fcntl.LOCK_UN)
+                raise RuntimeError("inherited managed V1 radio lease is not locked")
+
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    raise RuntimeError(
+                        "inherited managed V1 radio lease is locked by a different owner"
+                    ) from exc
+                raise RuntimeError(
+                    "could not validate inherited managed V1 radio lease ownership"
+                ) from exc
+        finally:
+            os.close(contender_fd)
 
     def __enter__(self) -> V1RadioLease:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        inherited_fd = self._inherited_fd()
+        if inherited_fd is not None:
+            self._validate_inherited_fd(inherited_fd)
+            self.fd = os.dup(inherited_fd)
+            os.set_inheritable(self.fd, True)
+            self.inherited = True
+            return self
+
+        parent_identity = _prepare_lease_parent(self.path)
+        fd = os.open(
+            self.path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
         try:
+            fd_stat = os.fstat(fd)
+            path_stat = self.path.lstat()
+            if (
+                not stat.S_ISREG(fd_stat.st_mode)
+                or not stat.S_ISREG(path_stat.st_mode)
+                or fd_stat.st_uid != os.geteuid()
+                or path_stat.st_uid != os.geteuid()
+                or fd_stat.st_nlink != 1
+                or path_stat.st_nlink != 1
+                or (fd_stat.st_dev, fd_stat.st_ino)
+                != (path_stat.st_dev, path_stat.st_ino)
+            ):
+                raise RuntimeError("managed V1 radio lease ownership is invalid")
+            _verify_lease_parent(self.path, parent_identity)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             os.close(fd)
             raise RuntimeError(
                 "managed V1 radio lease unavailable; another bench or orphan emulator owns it"
             ) from exc
+        except Exception:
+            os.close(fd)
+            raise
         os.set_inheritable(fd, True)
         self.fd = fd
+        self.inherited = False
         if self.quiet_seconds > 0:
             time.sleep(self.quiet_seconds)
         return self
@@ -1768,9 +1986,10 @@ def collect_live(
     dict[str, Any],
     dict[str, Any],
 ]:
-    # This lease is acquired before port discovery, upload, or board reset. Its
-    # fd is inherited by every managed advertiser, so parent death cannot make
-    # an orphan invisible to the next bench invocation.
+    # This lease is acquired here, or safely adopted from a campaign controller,
+    # before port discovery, upload, or board reset. Its fd is inherited by
+    # every managed advertiser, so parent death cannot make an orphan invisible
+    # to the next bench invocation.
     with V1RadioLease() as lease:
         assert lease.fd is not None
         return _collect_live(

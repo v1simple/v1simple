@@ -301,6 +301,44 @@ count and observed artifact sizes.
 An `ACCEPTED` candidate remains isolated and pending user integration;
 promotion or merging is a separate human decision.
 
+#### First live evaluator closeout
+
+The first live five-run-per-arm evaluation completed ten identity-owned,
+canonical `PASS` batches. All 30 suite windows passed, and all ten gated replay
+camera grades were confident `PASS`. The lower-better target was
+`replay.disp_pipe_p95_us`. Baseline min/median/max were
+38,615.85/38,640.00/39,085.00 us; candidate min/median/max were
+38,324.75/38,535.00/38,944.45 us. The candidate median was 105 us lower, but
+its envelope overlapped the baseline by 328.60 us, so the stored analysis did
+not satisfy strict empirical-envelope separation and the candidate was not
+integrated.
+
+The immutable controller decision remains `REJECTED_GATE_FAILURE`; it is not
+retroactively relabelled. A post-analysis `git revert` attempted to update an
+`AUTO_MERGE` tree ref that the privacy hook correctly refused. The fallback
+cleanup still restored the baseline firmware, reverted the controller-owned
+evaluation branch to the pinned base tree, and preserved the submitted
+candidate branch. The session recorded `evidence_integrity=PASS`, and its final
+state recorded no pending firmware restore or evaluation cleanup. The
+scientific closeout is therefore `NO_GO` for this candidate, kept separate from
+the official immutable result.
+
+The external session remains the evidence authority. Its portable anchors are:
+
+- plan SHA-256: `a58fa9cebdf844e9d5d4f32708a29293424907507ed1a6f5add4a6e6a638adbd`
+- decision SHA-256: `74291e43613ccfcec9bf886f8085415e29cef2861b331c6b6a053307f931e8b4`
+- final journal event SHA-256: `13f867aa654472bfd4096758bae745eb62679059881745e5890b20d6a33dde3a`
+
+Commit `809be3633e3cc222928b7a5b85a217f94dce85c5` made clean evaluation
+finalization compatible with the privacy hook and ensures a recovered cleanup
+cannot mask an already-recorded negative analysis. The original session was
+not rewritten. Two later host-only planning screens were also stopped before
+implementation: steady-state safety-flush elimination projected 0 us of p95
+improvement on all five baseline traces, and an RSSI-only raster cache had a
+generous 630 us ceiling against the 1 ms preflight bar. Those screens are
+diagnostic planning results, not qualification evidence. No follow-on
+candidate justified another live campaign.
+
 Bench metrics have independent absolute and baseline-regression checks. The
 `absolute_min` and `absolute_max` fields in
 [`tools/hardware_metric_catalog.json`](tools/hardware_metric_catalog.json)

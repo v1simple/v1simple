@@ -56,6 +56,13 @@ class DisplayPreviewModule {
     // Drive the preview; call from loop()
     void update();
 
+    // How many of this preview's renders were blink refreshes rather than step
+    // renders. The perf layer already counts preview renders as a whole; this
+    // is the one value that separates the two, so an operator can see the
+    // declared animation happening without inferring it from a render total.
+    // It is a diagnostic, not a proof: only camera evidence shows the screen.
+    uint32_t blinkRefreshCount() const { return blinkRefreshCount_; }
+
     // ── Step table definition ────────────────────────────────────────
 
     // Flags for per-step indicator overrides
@@ -200,6 +207,16 @@ class DisplayPreviewModule {
     void applyCarryState(const PreviewStep& step);
     void renderStep(int stepIndex, bool firstFrame);
     void renderResolvedStep(const ResolvedStep& resolved, bool firstFrame);
+    // True when the step now on screen declares a flash and the renderer's
+    // shared blink phase has come due since its last transition.
+    bool blinkRefreshDue(unsigned long nowMs) const;
+
+    // The state most recently put on screen, kept so a blink refresh can redraw
+    // exactly that -- not a freshly resolved step, which would re-run carry
+    // progression, and not a cleared state, which would drop the flash masks.
+    ResolvedStep lastResolved_{};
+    bool hasLastResolved_ = false;
+    uint32_t blinkRefreshCount_ = 0;
     void resetCarryState();
     void cleanupPreviewOverrides();
 };

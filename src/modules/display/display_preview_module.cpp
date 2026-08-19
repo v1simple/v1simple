@@ -1,3 +1,8 @@
+// Native tests reach this translation unit two ways: the linked-source pilot
+// builds it separately, and an ordinary native build includes it into the test
+// TU. Either way it must be compiled exactly once, against the mock display.
+#if !defined(UNIT_TEST) || defined(V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK)
+
 #include "display_preview_module.h"
 
 #include "display_layout.h"
@@ -369,6 +374,8 @@ void DisplayPreviewModule::requestHold(uint32_t durationMs) {
     loopSequence_ = (durationMs != 0) && (durationMs > autoDurationMs);
     previewStep_ = 0;
     previewEnded_ = false;
+    hasLastResolved_ = false;
+    blinkRefreshCount_ = 0;
     resetCarryState();
     if (display_) {
         display_->setPreviewIndicatorOverridesActive(true);
@@ -487,7 +494,46 @@ void DisplayPreviewModule::update() {
         }
         renderStep(targetStep % STEP_COUNT, previewStep_ == 0);
         previewStep_ = targetStep + 1;
+        return;
     }
+
+    // Blink refresh.
+    //
+    // A step render happens once every two seconds, but the step table declares
+    // that some steps flash, and V1's cadence for that is a 96 ms alternation.
+    // Nothing was driving it here: the orchestrator's lightweight refresh is
+    // suppressed while preview is running, and it renders the live pipeline
+    // rather than the preview anyway. So a flashing preview step was drawn once,
+    // in whatever phase happened to be current, and then held for two seconds.
+    //
+    // Preview owns the *invocation* only. V1Display remains the single owner of
+    // the phase itself: this asks whether the renderer's own last transition is
+    // at least one interval old and, if so, redraws the state already on screen.
+    // Because arrow and band both read that one phase inside the renderer, they
+    // stay synchronised without preview knowing anything about either.
+    //
+    // A step transition above returns early, so a boundary and a due tick in the
+    // same loop still produce exactly one render, and a late loop refreshes once
+    // rather than replaying the intervals it missed.
+    if (blinkRefreshDue(now)) {
+        renderResolvedStep(lastResolved_, false);
+        ++blinkRefreshCount_;
+    }
+}
+
+bool DisplayPreviewModule::blinkRefreshDue(unsigned long nowMs) const {
+    if (!hasLastResolved_ || !display_) {
+        return false;
+    }
+    // Only a step that declares a flash has anything to alternate.
+    if (lastResolved_.flashMask == 0 && lastResolved_.bandFlashMask == 0) {
+        return false;
+    }
+    const unsigned long lastToggle = display_->getLastBlinkToggleMs();
+    if (lastToggle == 0) {
+        return false; // the renderer has not established its phase epoch yet
+    }
+    return (nowMs - lastToggle) >= V1Display::getBlinkIntervalMs();
 }
 
 // ============================================================================
@@ -541,6 +587,8 @@ void DisplayPreviewModule::renderStep(int stepIndex, bool firstFrame) {
 
     ResolvedStep resolved;
     buildResolvedStepFromCarry(stepIndex, step, currentCarryState(), resolved);
+    lastResolved_ = resolved;
+    hasLastResolved_ = true;
     renderResolvedStep(resolved, firstFrame);
 }
 
@@ -651,3 +699,5 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
     perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
     perfClearDisplayRenderScenario();
 }
+
+#endif // !UNIT_TEST || V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK

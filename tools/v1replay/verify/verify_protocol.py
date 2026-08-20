@@ -882,8 +882,8 @@ struct BenchVerifier {
         check(csv == BenchScenario.expectedCSV(for: BenchScenario.make()),
               "two generated exports are byte-identical")
         check(lines.first == Substring(header), "CSV has the exact 14-column header")
-        check(lines.count == 775, "CSV has one header and 774 timeline rows")
-        check(encounter.samples.count == 774, "scenario has 774 samples")
+        check(lines.count == 829, "CSV has one header and 828 timeline rows")
+        check(encounter.samples.count == 828, "scenario has 828 samples")
         check(encounter.samples.filter { !$0.alerts.isEmpty }.count == 708,
               "scenario has 708 active table publishes")
         check(encounter.samples.filter { $0.alerts.count == 3 }.count == 30,
@@ -901,7 +901,7 @@ struct BenchVerifier {
             "idle": 15, "k_encounter": 36, "ka_encounter": 36,
             "priority_handoff": 30, "three_bogeys": 30,
             "handoff_clear": 30, "duke_shaped_approach": 555,
-            "idle_tail": 42,
+            "idle_tail": 96,
         ]
         let phaseCounts = Dictionary(grouping: encounter.samples, by: { $0.phase })
             .mapValues(\.count)
@@ -948,7 +948,7 @@ struct BenchVerifier {
         check(plateau.count == 60 && plateau.allSatisfy { $0.priorityAlert?.strength == 6 },
               "Duke-shaped approach has an exact 20-second six-bar plateau")
         check(encounter.samples[(244 * 3)...].allSatisfy { $0.alerts.isEmpty },
-              "scenario ends with a clean 14-second idle tail")
+              "scenario ends with a clean 32-second idle tail")
 
         let volumeCheckpoints = encounter.detectorVolumeCheckpoints
         let expectedVolumeCheckpoints = [
@@ -1032,6 +1032,58 @@ struct BenchVerifier {
         }
         check(authoredMuteBits == [[0x10, 0x01, 0x40], [0x00, 0x00, 0x40]],
               "detector mute edges reach LED/audio bits without changing volume")
+
+        let modeCheckpoints = encounter.detectorModeCheckpoints
+        let expectedModeCheckpoints = [
+            DetectorModeCheckpoint(replaySecond: 260, mode: .advancedLogic),
+            DetectorModeCheckpoint(replaySecond: 264, mode: .allBogeys),
+            DetectorModeCheckpoint(replaySecond: 268, mode: .logic),
+            DetectorModeCheckpoint(replaySecond: 272, mode: .advancedLogic),
+        ]
+        check(modeCheckpoints == expectedModeCheckpoints,
+              "idle tail owns the exact detector-mode checkpoints")
+        check(modeCheckpoints.map(\.machineEventLine) == [
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":260,\"modeChar\":\"L\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":264,\"modeChar\":\"A\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":268,\"modeChar\":\"l\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":272,\"modeChar\":\"L\"}",
+        ], "detector-mode events have the exact bounded machine schema")
+        check(encounter.samples[..<(260 * 3)].allSatisfy { $0.detectorMode == nil },
+              "detector mode is not authored before its isolated idle window")
+
+        var modeSession = V1.Session()
+        let modeGlyphs: [UInt8] = [0x38, 0x77, 0x18, 0x38]
+        let modeBits: [UInt8] = [0x0C, 0x04, 0x08, 0x0C]
+        for (index, checkpoint) in modeCheckpoints.enumerated() {
+            let start = checkpoint.replaySecond * 3
+            let endSecond = index + 1 < modeCheckpoints.count
+                ? modeCheckpoints[index + 1].replaySecond
+                : BenchScenario.durationSeconds
+            check(encounter.detectorModeCheckpoint(at: start) == checkpoint,
+                  "detector mode applies once at checkpoint \(checkpoint.replaySecond)")
+            check(((start + 1)..<(endSecond * 3)).allSatisfy {
+                encounter.detectorModeCheckpoint(at: $0) == nil
+                    && encounter.samples[$0].detectorMode == checkpoint.mode
+            }, "detector mode is held without reapplying checkpoint \(checkpoint.replaySecond)")
+
+            let before = modeSession.controlState
+            let control = modeSession.applyDetectorMode(checkpoint.mode)
+            check(control.mainVolume == before.mainVolume
+                  && control.mutedVolume == before.mutedVolume
+                  && control.savedMainVolume == before.savedMainVolume
+                  && control.savedMutedVolume == before.savedMutedVolume,
+                  "detector mode does not alter current or saved volumes")
+            let idle = V1.PlaybackPacketPlan.idleDisplayPacket(
+                controlState: control,
+                displayOn: true,
+                muted: false
+            )
+            check(idle[5] == modeGlyphs[index] && idle[6] == modeGlyphs[index]
+                  && idle[11] == modeBits[index],
+                  "detector mode reaches literal idle glyph and aux1 bits")
+        }
+        check(modeSession.controlState.mode == .advancedLogic,
+              "detector mode sequence restores Advanced Logic")
 
         let steadyFront = V1.DisplayFrame.alerting(
             bars: 1, band: .ka, direction: .front, bogeyCount: 1,

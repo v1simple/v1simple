@@ -77,6 +77,8 @@ REPLAY_VOLUME_SIGNAL_SCHEMA = 1
 DETECTOR_VOLUME_EVENT_STATE = "detector_volume"
 REPLAY_MUTE_SIGNAL_SCHEMA = 1
 DETECTOR_MUTE_EVENT_STATE = "detector_mute"
+REPLAY_MODE_SIGNAL_SCHEMA = 1
+DETECTOR_MODE_EVENT_STATE = "detector_mode"
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
 RECONNECT_PREFLIGHT_START = "reconnect_preflight_start"
@@ -565,6 +567,21 @@ def retain_replay_mute_signal(
     return {
         "schema_version": REPLAY_MUTE_SIGNAL_SCHEMA,
         "events": emulator_result.pop("detector_mute_events", []),
+    }
+
+
+def retain_replay_mode_signal(
+    emulator_result: dict[str, Any],
+    *,
+    suite: str,
+    live: bool,
+) -> dict[str, Any] | None:
+    """Move the bounded detector-mode stream into one versioned window field."""
+    if suite != "replay" or not live:
+        return None
+    return {
+        "schema_version": REPLAY_MODE_SIGNAL_SCHEMA,
+        "events": emulator_result.pop("detector_mode_events", []),
     }
 
 
@@ -1971,6 +1988,9 @@ class V1Emulator:
         detector_mute_events = (
             self._bench_events(DETECTOR_MUTE_EVENT_STATE) if self.mode == "bench" else []
         )
+        detector_mode_events = (
+            self._bench_events(DETECTOR_MODE_EVENT_STATE) if self.mode == "bench" else []
+        )
         idle_shutdown_valid = self.mode != "idle"
         if self.mode == "idle" and process_was_running and self.session_transport_owned:
             # Grade only after the child has exited and flushed the complete
@@ -2012,6 +2032,7 @@ class V1Emulator:
         if self.mode == "bench":
             result["detector_volume_events"] = detector_volume_events
             result["detector_mute_events"] = detector_mute_events
+            result["detector_mode_events"] = detector_mode_events
         return result
 
     def _close_log(self) -> None:
@@ -2793,6 +2814,11 @@ def main() -> int:
             suite=args.suite,
             live=not bool(args.from_csv),
         )
+        replay_mode_signal = retain_replay_mode_signal(
+            emulator_result,
+            suite=args.suite,
+            live=not bool(args.from_csv),
+        )
         import_proc = run_import(args, csv_path, out_dir, identity)
         scoring_path = out_dir / "scoring.json"
         manifest_path = out_dir / "manifest.json"
@@ -2837,6 +2863,11 @@ def main() -> int:
                 **(
                     {"replay_mute_signal": replay_mute_signal}
                     if replay_mute_signal is not None
+                    else {}
+                ),
+                **(
+                    {"replay_mode_signal": replay_mode_signal}
+                    if replay_mode_signal is not None
                     else {}
                 ),
                 "camera": camera_result,

@@ -135,6 +135,15 @@ extension V1 {
             return controlState
         }
 
+        /// Apply a modeled physical-V1 mode change. Bench playback uses this
+        /// once at each authored checkpoint; it is not a V1Simple command and
+        /// does not alter volume or saved detector state.
+        @discardableResult
+        mutating func applyDetectorMode(_ mode: ModeGlyph) -> ControlState {
+            controlState.mode = mode
+            return controlState
+        }
+
         var readiness: Readiness {
             return Readiness(
                 displaySubscribed: subscriptions.contains { $0.channel == .displayShort },

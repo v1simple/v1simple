@@ -10,7 +10,7 @@ import Foundation
 
 enum BenchScenario {
     static let cadenceHz = 3
-    static let durationSeconds = 258
+    static let durationSeconds = 276
     static let detectorVolumeCheckpoints = [
         DetectorVolumeCheckpoint(replaySecond: 244, mainVolume: 4, muteVolume: 0),
         DetectorVolumeCheckpoint(replaySecond: 250, mainVolume: 7, muteVolume: 0),
@@ -22,6 +22,12 @@ enum BenchScenario {
         DetectorMuteCheckpoint(replaySecond: 185, muted: true),
         DetectorMuteCheckpoint(replaySecond: 189, muted: false),
     ]
+    static let detectorModeCheckpoints = [
+        DetectorModeCheckpoint(replaySecond: 260, mode: .advancedLogic),
+        DetectorModeCheckpoint(replaySecond: 264, mode: .allBogeys),
+        DetectorModeCheckpoint(replaySecond: 268, mode: .logic),
+        DetectorModeCheckpoint(replaySecond: 272, mode: .advancedLogic),
+    ]
 
     private static func detectorVolume(at second: Int) -> DetectorVolume? {
         return detectorVolumeCheckpoints.last(where: { $0.replaySecond <= second })?.volume
@@ -29,6 +35,10 @@ enum BenchScenario {
 
     private static func muted(at second: Int) -> Bool {
         return detectorMuteCheckpoints.last(where: { $0.replaySecond <= second })?.muted ?? false
+    }
+
+    private static func detectorMode(at second: Int) -> V1.ModeGlyph? {
+        return detectorModeCheckpoints.last(where: { $0.replaySecond <= second })?.mode
     }
 
     private static func alert(_ band: V1.Band,
@@ -182,6 +192,7 @@ enum BenchScenario {
                                        muted: muted(at: second),
                                        alerts: alerts,
                                        detectorVolume: detectorVolume(at: second),
+                                       detectorMode: detectorMode(at: second),
                                        scenarioArrowBlink: scenarioArrowBlink,
                                        sourceIndex: tick))
         }
@@ -207,7 +218,7 @@ enum BenchScenario {
             "three_bogeys": 30,
             "handoff_clear": 30,
             "duke_shaped_approach": 555,
-            "idle_tail": 42,
+            "idle_tail": 96,
         ])
         precondition(samples.filter { !$0.alerts.isEmpty }.count == 708)
         precondition(samples.filter { $0.alerts.count == 3 }.count == 30)
@@ -273,6 +284,24 @@ enum BenchScenario {
             precondition(sample.priorityAlert?.direction.rawValue == V1.Direction.front.rawValue)
             precondition(sample.priorityAlert?.strength == 6)
         }
+
+        precondition(samples[..<(260 * cadenceHz)].allSatisfy { $0.detectorMode == nil })
+        let observedModeCheckpoints = Encounter(
+            origin: .syntheticBench,
+            samples: samples
+        ).detectorModeCheckpoints
+        precondition(observedModeCheckpoints == detectorModeCheckpoints)
+        for (index, checkpoint) in detectorModeCheckpoints.enumerated() {
+            let start = checkpoint.replaySecond * cadenceHz
+            let endSecond = index + 1 < detectorModeCheckpoints.count
+                ? detectorModeCheckpoints[index + 1].replaySecond
+                : durationSeconds
+            let end = endSecond * cadenceHz
+            precondition(samples[start..<end].allSatisfy {
+                $0.phase == "idle_tail" && $0.alerts.isEmpty && $0.detectorMode == checkpoint.mode
+            })
+        }
+        precondition(samples.last?.detectorMode == .advancedLogic)
     }
 
     static func expectedCSV(for encounter: Encounter) -> String {

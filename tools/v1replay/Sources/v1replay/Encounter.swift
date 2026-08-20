@@ -95,6 +95,35 @@ struct DetectorMuteCheckpoint: Equatable {
     }
 }
 
+/// One modeled physical-V1 mode edge in the fixed bench stimulus.
+struct DetectorModeCheckpoint: Equatable {
+    let replaySecond: Int
+    let mode: V1.ModeGlyph
+
+    init(replaySecond: Int, mode: V1.ModeGlyph) {
+        precondition(replaySecond >= 0, "replay second must be non-negative")
+        self.replaySecond = replaySecond
+        self.mode = mode
+    }
+
+    var modeChar: String {
+        switch mode {
+        case .allBogeys: return "A"
+        case .logic: return "l"
+        case .advancedLogic: return "L"
+        case .customSweeps: return "C"
+        case .euroKaOnly: return "u"
+        case .euroKaPhoto: return "U"
+        }
+    }
+
+    var machineEventLine: String {
+        return "V1REPLAY_EVENT {\"state\":\"detector_mode\","
+            + "\"replaySecond\":\(replaySecond),"
+            + "\"modeChar\":\"\(modeChar)\"}"
+    }
+}
+
 /// One replay step: the complete ordered alert table to transmit, and when.
 struct TimedSample {
     let offset: TimeInterval
@@ -102,6 +131,7 @@ struct TimedSample {
     let muted: Bool
     let alerts: [ReplayAlert]
     let detectorVolume: DetectorVolume?
+    let detectorMode: V1.ModeGlyph?
     let scenarioArrowBlink: Bool
     let sourceIndex: Int
 
@@ -110,6 +140,7 @@ struct TimedSample {
          muted: Bool,
          alerts: [ReplayAlert],
          detectorVolume: DetectorVolume? = nil,
+         detectorMode: V1.ModeGlyph? = nil,
          scenarioArrowBlink: Bool = false,
          sourceIndex: Int) {
         precondition((0...3).contains(alerts.count), "replay steps support zero through three alerts")
@@ -124,6 +155,7 @@ struct TimedSample {
         self.muted = muted
         self.alerts = alerts
         self.detectorVolume = detectorVolume
+        self.detectorMode = detectorMode
         self.scenarioArrowBlink = scenarioArrowBlink
         self.sourceIndex = sourceIndex
     }
@@ -140,6 +172,7 @@ struct TimedSample {
         guard phase == other.phase,
               muted == other.muted,
               detectorVolume == other.detectorVolume,
+              detectorMode == other.detectorMode,
               scenarioArrowBlink == other.scenarioArrowBlink,
               alerts.count == other.alerts.count else {
             return false
@@ -358,6 +391,7 @@ struct Encounter {
                         muted: sample.muted,
                         alerts: sample.alerts,
                         detectorVolume: sample.detectorVolume,
+                        detectorMode: sample.detectorMode,
                         scenarioArrowBlink: sample.scenarioArrowBlink,
                         sourceIndex: sample.sourceIndex)
         }
@@ -414,6 +448,21 @@ struct Encounter {
 
     var detectorMuteCheckpoints: [DetectorMuteCheckpoint] {
         return samples.indices.compactMap(detectorMuteCheckpoint(at:))
+    }
+
+    func detectorModeCheckpoint(at index: Int) -> DetectorModeCheckpoint? {
+        guard samples.indices.contains(index),
+              let mode = samples[index].detectorMode else { return nil }
+        let previous = index > samples.startIndex ? samples[index - 1].detectorMode : nil
+        guard mode != previous else { return nil }
+        return DetectorModeCheckpoint(
+            replaySecond: Int(samples[index].offset),
+            mode: mode
+        )
+    }
+
+    var detectorModeCheckpoints: [DetectorModeCheckpoint] {
+        return samples.indices.compactMap(detectorModeCheckpoint(at:))
     }
 }
 

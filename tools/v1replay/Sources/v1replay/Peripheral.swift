@@ -220,6 +220,9 @@ final class V1Peripheral: NSObject {
             )
         }
     }
+    func applyDetectorMode(_ mode: V1.ModeGlyph) -> V1.Session.ControlState {
+        return withState { $0.session.applyDetectorMode(mode) }
+    }
 
     let queue = DispatchQueue(label: "com.v1simple.v1replay.ble")
     private let queueIdentityKey = DispatchSpecificKey<UInt8>()

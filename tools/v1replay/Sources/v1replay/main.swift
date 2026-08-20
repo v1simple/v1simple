@@ -656,6 +656,11 @@ func runPlay(idleOnly: Bool,
         }
     }
     if machineEvents && bench {
+        player.onDetectorModeCheckpoint = { checkpoint in
+            console.print(checkpoint.machineEventLine)
+        }
+    }
+    if machineEvents && bench {
         console.print("V1REPLAY_EVENT {\"state\":\"configured\","
                       + "\"blinkProfile\":\"\(playerOptions.arrowBlinkProfile.rawValue)\","
                       + "\"blinkSource\":\"\(playerOptions.arrowBlinkProfile.sourceLabel)\","

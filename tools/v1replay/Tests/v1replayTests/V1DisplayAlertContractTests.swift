@@ -340,7 +340,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
             "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":256,\"mainVolume\":4,\"muteVolume\":0}",
         ]
 
-        XCTAssertEqual(encounter.samples.count, 774)
+        XCTAssertEqual(encounter.samples.count, 828)
         XCTAssertEqual(BenchScenario.detectorVolumeCheckpoints, expected)
         XCTAssertEqual(encounter.detectorVolumeCheckpoints, expected)
         XCTAssertEqual(encounter.detectorVolumeCheckpoints.map(\.machineEventLine), expectedLines)
@@ -422,6 +422,87 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertTrue(encounter.samples[(189 * 3)...].allSatisfy { !$0.muted })
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 185 * 3 + 1))
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 189 * 3 + 1))
+    }
+
+    func testBenchDetectorModeCheckpointsApplyOnceAndReachLiteralFrames() throws {
+        let encounter = BenchScenario.make()
+        let expected = [
+            DetectorModeCheckpoint(replaySecond: 260, mode: .advancedLogic),
+            DetectorModeCheckpoint(replaySecond: 264, mode: .allBogeys),
+            DetectorModeCheckpoint(replaySecond: 268, mode: .logic),
+            DetectorModeCheckpoint(replaySecond: 272, mode: .advancedLogic),
+        ]
+        let expectedGlyphs: [UInt8] = [0x38, 0x77, 0x18, 0x38]
+        let expectedModeBits: [UInt8] = [0x0C, 0x04, 0x08, 0x0C]
+        XCTAssertEqual(BenchScenario.detectorModeCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorModeCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorModeCheckpoints.map(\.machineEventLine), [
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":260,\"modeChar\":\"L\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":264,\"modeChar\":\"A\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":268,\"modeChar\":\"l\"}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mode\",\"replaySecond\":272,\"modeChar\":\"L\"}",
+        ])
+        XCTAssertTrue(encounter.samples[..<(260 * 3)].allSatisfy { $0.detectorMode == nil })
+
+        var session = V1.Session()
+        for (index, checkpoint) in expected.enumerated() {
+            let sampleIndex = checkpoint.replaySecond * BenchScenario.cadenceHz
+            let sample = encounter.samples[sampleIndex]
+            XCTAssertEqual(encounter.detectorModeCheckpoint(at: sampleIndex), checkpoint)
+            XCTAssertEqual(sample.phase, "idle_tail")
+            XCTAssertTrue(sample.alerts.isEmpty)
+
+            let nextSecond = index + 1 < expected.count
+                ? expected[index + 1].replaySecond
+                : BenchScenario.durationSeconds
+            for heldIndex in (sampleIndex + 1)..<(nextSecond * BenchScenario.cadenceHz) {
+                XCTAssertNil(encounter.detectorModeCheckpoint(at: heldIndex))
+                XCTAssertEqual(encounter.samples[heldIndex].detectorMode, checkpoint.mode)
+            }
+
+            let prior = session.controlState
+            let control = session.applyDetectorMode(checkpoint.mode)
+            XCTAssertEqual(control.mode, checkpoint.mode)
+            XCTAssertEqual(control.mainVolume, prior.mainVolume)
+            XCTAssertEqual(control.mutedVolume, prior.mutedVolume)
+            XCTAssertEqual(control.savedMainVolume, prior.savedMainVolume)
+            XCTAssertEqual(control.savedMutedVolume, prior.savedMutedVolume)
+
+            let idle = try IndependentFrame.decode(V1.PlaybackPacketPlan.idleDisplayPacket(
+                controlState: control,
+                displayOn: true,
+                muted: false
+            ))
+            XCTAssertEqual(idle.payload[0], expectedGlyphs[index])
+            XCTAssertEqual(idle.payload[1], expectedGlyphs[index])
+            XCTAssertEqual(idle.payload[6], expectedModeBits[index])
+
+            let activeSample = TimedSample(
+                offset: 0,
+                phase: "mode-active-contract",
+                muted: false,
+                alerts: [ReplayAlert(
+                    band: .ka,
+                    frequencyMHz: 34_700,
+                    strength: 6,
+                    direction: .front,
+                    isPriority: true
+                )],
+                sourceIndex: 0
+            )
+            let active = try IndependentFrame.decode(V1.PlaybackPacketPlan(
+                sample: activeSample,
+                controlState: control,
+                displayOn: true,
+                muted: false,
+                blinkBogey: false,
+                blinkArrow: false
+            ).displayPacket)
+            XCTAssertEqual(active.payload[0], 0x06)
+            XCTAssertEqual(active.payload[6], expectedModeBits[index])
+        }
+
+        XCTAssertEqual(session.controlState.mode, .advancedLogic)
     }
 
     func testExplicitDraftHeaderPreservesFixtureAux1() {

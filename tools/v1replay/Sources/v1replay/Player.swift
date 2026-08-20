@@ -79,6 +79,7 @@ final class Player {
     var onReplayStarted: ((Double) -> Void)?
     var onDetectorVolumeCheckpoint: ((DetectorVolumeCheckpoint) -> Void)?
     var onDetectorMuteCheckpoint: ((DetectorMuteCheckpoint) -> Void)?
+    var onDetectorModeCheckpoint: ((DetectorModeCheckpoint) -> Void)?
 
     init(encounter: Encounter, peripheral: V1Peripheral, options: Options) {
         self.encounter = encounter
@@ -468,6 +469,11 @@ final class Player {
         // by the complete table/display emission. The session then owns the
         // held value; a later V1Simple write remains observable rather than
         // being masked by a per-frame scenario override.
+        let modeCheckpoint = encounter.detectorModeCheckpoint(at: index)
+        if let modeCheckpoint = modeCheckpoint {
+            _ = peripheral.applyDetectorMode(modeCheckpoint.mode)
+            onDetectorModeCheckpoint?(modeCheckpoint)
+        }
         let checkpoint = encounter.detectorVolumeCheckpoint(at: index)
         let control: V1.Session.ControlState
         if let checkpoint = checkpoint {

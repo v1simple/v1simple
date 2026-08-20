@@ -29,6 +29,10 @@ from camera_artifacts import (  # noqa: E402
 )
 from camera_grade import CONSENSUS_MIN_RATIO  # noqa: E402
 from bench_blink_cadence import analyze_blink_cadence  # noqa: E402
+from bench_stimulus_hunt import (  # noqa: E402
+    compare_idle_modes_to_renderer,
+    parse_stimulus_ledger,
+)
 from import_perf_csv import load_sessions, select_segment  # noqa: E402
 from bench_score import score_replay_encounter_csv  # noqa: E402
 from run_window import summarize_display_commit_artifact  # noqa: E402
@@ -40,6 +44,7 @@ EVIDENCE_ORDER = (
     "bench_result",
     "window_result",
     "logs",
+    "replay_stimulus",
     "replay_signals",
     "identity",
     "performance",
@@ -52,6 +57,7 @@ OWNER_REFS = {
     "bench_result": ["bench_result.json"],
     "window_result": ["replay/window_result.json"],
     "logs": ["replay/window_result.json#/raw_logs"],
+    "replay_stimulus": ["replay/window_result.json#/replay_stimulus"],
     "replay_signals": [
         "replay/window_result.json#/replay_volume_signal",
         "replay/window_result.json#/replay_mute_signal",
@@ -302,6 +308,59 @@ def _replay_signal_evidence(
     }
 
 
+def _replay_stimulus_evidence(
+    run: Path,
+    replay: Path,
+    window: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    owner = window.get("replay_stimulus")
+    if not isinstance(owner, dict):
+        return _fact(run, None, "missing", "not_owned_by_window"), []
+    expected_keys = {
+        "schema_version",
+        "status",
+        "path",
+        "sha256",
+        "size_bytes",
+        "event_count",
+        "reason",
+    }
+    if set(owner) != expected_keys or not _schema_is(owner.get("schema_version"), 1):
+        return _fact(run, None, "partial", "unsupported_schema"), []
+    if owner.get("status") != "captured":
+        return _fact(run, None, "partial", str(owner.get("reason") or "not_captured")), []
+    path, path_error = _resolve(run, replay, owner.get("path"))
+    fact = _fact(run, path, "complete" if not path_error else _unavailable(path_error), path_error)
+    if path is None:
+        return fact, []
+    if fact["sha256"] != owner.get("sha256") or fact["size_bytes"] != owner.get("size_bytes"):
+        fact.update({"status": "partial", "reason": "owner_digest_mismatch"})
+        return fact, []
+    event_count = owner.get("event_count")
+    replay_result = window.get("replay") if isinstance(window.get("replay"), dict) else {}
+    configured_total = replay_result.get("total_samples")
+    if (
+        not isinstance(event_count, int)
+        or isinstance(event_count, bool)
+        or event_count < 0
+        or not isinstance(configured_total, int)
+        or isinstance(configured_total, bool)
+        or configured_total < 1
+    ):
+        fact.update({"status": "partial", "reason": "owner_count_invalid"})
+        return fact, []
+    try:
+        summary, events = parse_stimulus_ledger(
+            path.read_bytes(),
+            owner_event_count=event_count,
+            configured_total_samples=configured_total,
+        )
+    except OSError:
+        summary, events = {"status": "partial", "reason": "io_error"}, []
+    fact.update(summary)
+    return fact, events
+
+
 def _valid_comparison(
     value: Any,
     video_duration: float,
@@ -414,6 +473,11 @@ def build_report(run_directory: Path) -> dict[str, Any]:
         "window_result": _fact(run, window_path, "complete" if not window_error else _unavailable(window_error), window_error),
     }
     evidence["logs"] = _raw_log_evidence(run, replay, window, evidence["window_result"])
+    evidence["replay_stimulus"], stimulus_events = _replay_stimulus_evidence(
+        run,
+        replay,
+        window,
+    )
     evidence["replay_signals"] = _replay_signal_evidence(window, evidence["window_result"])
 
     identity_path, identity_path_error = _resolve(run, replay, window.get("identity_manifest"))
@@ -842,6 +906,26 @@ def build_report(run_directory: Path) -> dict[str, Any]:
     elif not blink_profile_supported and evidence["camera_grade"]["status"] == "complete":
         blink_investigation["reason"] = "capture_profile_unsupported"
 
+    mode_investigation: dict[str, Any] = {
+        "status": "not_available",
+        "reason": "owned_inputs_incomplete",
+        "comparisons": [],
+    }
+    if (
+        stimulus_events
+        and display_path is not None
+        and encounter_path is not None
+        and all(
+            evidence[role]["status"] == "complete"
+            for role in ("replay_stimulus", "display_commits", "encounters")
+        )
+    ):
+        mode_investigation = compare_idle_modes_to_renderer(
+            stimulus_events,
+            display_commit_path=display_path,
+            encounter_path=encounter_path,
+        )
+
     if encounter_validation.get("result") == "FAIL":
         details = encounter_validation.get("evidence")
         detail = details[0] if isinstance(details, list) and details and isinstance(details[0], str) else ""
@@ -1068,6 +1152,76 @@ def build_report(run_directory: Path) -> dict[str, Any]:
             )
         )
 
+    mode_refs = [
+        evidence["replay_stimulus"].get("path", ""),
+        evidence["encounters"].get("path", ""),
+        evidence["display_commits"].get("path", ""),
+    ]
+    if mode_investigation.get("status") == "complete":
+        comparison_count = int(mode_investigation.get("comparison_count") or 0)
+        matched_count = int(mode_investigation.get("matched_count") or 0)
+        mismatched_count = int(mode_investigation.get("mismatched_count") or 0)
+        unknown_count = int(mode_investigation.get("unknown_count") or 0)
+        maximum_response = mode_investigation.get("maximum_response_ms")
+        if mismatched_count:
+            findings.append(
+                _finding(
+                    "mode-stimulus-renderer-mismatch",
+                    "confirmed" if identity_agreed else "unknown",
+                    "Each idle mode stimulus produces its matching dispatched renderer state before the next authored sample.",
+                    (
+                        f"{mismatched_count}/{comparison_count} idle mode transitions were not observed inside "
+                        "their stimulus-derived response windows."
+                    ),
+                    mode_refs,
+                    (
+                        "The renderer mismatch is measured; packet delivery and physical panel output remain unknown."
+                        if identity_agreed
+                        else "Run identity disagreement prevents cross-evidence attribution."
+                    ),
+                )
+            )
+        elif unknown_count:
+            findings.append(
+                _finding(
+                    "mode-stimulus-renderer-inconclusive",
+                    "unknown",
+                    "Each idle mode stimulus has an owned previous renderer state and a comparable response window.",
+                    f"{unknown_count}/{comparison_count} idle mode transitions could not be attributed.",
+                    mode_refs,
+                    "No renderer-function claim is made where the preceding state is unowned or disagrees.",
+                )
+            )
+        elif comparison_count:
+            findings.append(
+                _finding(
+                    "mode-stimulus-renderer-measured",
+                    "confirmed" if identity_agreed else "unknown",
+                    "Each idle mode stimulus produces its matching dispatched renderer state before the next authored sample.",
+                    (
+                        f"All {matched_count}/{comparison_count} idle mode transitions matched; maximum relative "
+                        f"renderer response was {float(maximum_response):.3f} ms."
+                    ),
+                    mode_refs,
+                    (
+                        "This confirms stimulus-to-renderer behavior; CoreBluetooth delivery and optical pixels remain unmeasured."
+                        if identity_agreed
+                        else "Run identity disagreement prevents cross-evidence attribution."
+                    ),
+                )
+            )
+    elif mode_investigation.get("status") == "partial":
+        findings.append(
+            _finding(
+                "mode-stimulus-renderer-inconclusive",
+                "unknown",
+                "Owned stimulus, encounter, and renderer evidence support an idle-mode comparison.",
+                f"Mode comparison abstained: {mode_investigation.get('reason') or 'incomplete_evidence'}.",
+                mode_refs,
+                "No mode-function claim is made from incomplete or unjoinable evidence.",
+            )
+        )
+
     if evidence["display_commits"]["status"] == "complete" and comparisons:
         findings.extend(
             (
@@ -1100,7 +1254,10 @@ def build_report(run_directory: Path) -> dict[str, Any]:
         "verdict_effect": "none",
         "run": {"git_sha": agreed["git_sha"]},
         "evidence": evidence,
-        "investigations": {"blink_cadence": blink_investigation},
+        "investigations": {
+            "blink_cadence": blink_investigation,
+            "stimulus_mode_renderer": mode_investigation,
+        },
         "findings": findings,
     }
 

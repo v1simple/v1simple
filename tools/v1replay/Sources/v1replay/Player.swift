@@ -69,6 +69,7 @@ final class Player {
     private var _elapsed: Double = 0
     private var reportedReplayStart = false
     private var handshakeClearDeliveryConfirmed = false
+    private var stimulusSequence = 0
 
     private let encounter: Encounter
     private let peripheral: V1Peripheral
@@ -80,6 +81,7 @@ final class Player {
     var onDetectorVolumeCheckpoint: ((DetectorVolumeCheckpoint) -> Void)?
     var onDetectorMuteCheckpoint: ((DetectorMuteCheckpoint) -> Void)?
     var onDetectorModeCheckpoint: ((DetectorModeCheckpoint) -> Void)?
+    var onStimulusRequested: ((ReplayStimulusEvent) -> Void)?
 
     init(encounter: Encounter, peripheral: V1Peripheral, options: Options) {
         self.encounter = encounter
@@ -487,29 +489,42 @@ final class Player {
 
         let includeAlertTable = options.sendAlerts
             && (!options.requireStartAlertData || peripheral.alertDataRequested)
+        let arrowBlink = options.arrowBlinkProfile.shouldBlink(sample)
         let plan = V1.PlaybackPacketPlan(
             sample: sample,
             controlState: control,
             displayOn: displayOn,
             muted: muted,
             blinkBogey: options.blinkBogey,
-            blinkArrow: options.arrowBlinkProfile.shouldBlink(sample),
+            blinkArrow: arrowBlink,
             header: options.header,
             checksum: options.checksum,
             includeAlertTable: includeAlertTable
         )
         for emission in plan.emissions { send(emission) }
         let sent = plan.emissions.count
+        let requestedAt = nowSeconds()
+        stimulusSequence += 1
+        if !reportedReplayStart {
+            reportedReplayStart = true
+            onReplayStarted?(requestedAt)
+        }
+        onStimulusRequested?(ReplayStimulusEvent(
+            sequence: stimulusSequence,
+            sample: sample,
+            controlState: control,
+            muted: muted,
+            displayOn: displayOn,
+            arrowBlink: arrowBlink,
+            plan: plan,
+            requestedHostMonotonicSeconds: requestedAt
+        ))
 
         lock.lock()
         _packetsSent += sent
         _lastBars = sample.priorityAlert?.strength ?? 0
         _elapsed = sample.offset
         lock.unlock()
-        if !reportedReplayStart {
-            reportedReplayStart = true
-            onReplayStarted?(nowSeconds())
-        }
         return true
     }
 

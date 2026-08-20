@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -76,6 +77,7 @@ from run_window import (  # noqa: E402
     establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
+    publish_replay_stimulus_ledger,
     retain_replay_mode_signal,
     retain_replay_mute_signal,
     retain_replay_volume_signal,
@@ -121,6 +123,7 @@ def write_dummy_emulator(
     detector_volume_events: tuple[tuple[int, int, int], ...] = (),
     detector_mute_events: tuple[tuple[int, bool], ...] = (),
     detector_mode_events: tuple[tuple[int, str], ...] = (),
+    stimulus_events: tuple[dict[str, object], ...] = (),
 ) -> None:
     configured = "true"
     if blink_profile:
@@ -174,6 +177,12 @@ def write_dummy_emulator(
         + "'"
         for replay_second, mode_char in detector_mode_events
     ) or "true"
+    stimulus_lines = "\n".join(
+        "echo 'V1REPLAY_EVENT "
+        + json.dumps(event, separators=(",", ":"), sort_keys=True)
+        + "'"
+        for event in stimulus_events
+    ) or "true"
     session_transport = (
         'echo \'V1REPLAY_EVENT {"state":"session_transport","active":true}\''
         if emit_session_transport
@@ -200,6 +209,7 @@ def write_dummy_emulator(
         f"{volume_events}\n"
         f"{mute_events}\n"
         f"{mode_events}\n"
+        f"{stimulus_lines}\n"
         f"{marker}\n"
         f"{session_transport}\n"
         "while :; do sleep 1; done\n",
@@ -1333,6 +1343,10 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
             f"missing detector mode events were not retained as empty evidence: {result}",
         )
         assert_true(
+            result["stimulus_events"] == [],
+            f"missing generic stimulus events were not retained as empty evidence: {result}",
+        )
+        assert_true(
             result["replay_started_monotonic_seconds"] == 12345.5,
             f"first replay sample time was not recorded: {result}",
         )
@@ -1653,6 +1667,68 @@ def test_live_replay_retains_one_versioned_detector_mode_stream() -> None:
         non_replay_emulator_result["detector_mode_events"] == expected_mode_events,
         "non-replay detector mode evidence was consumed",
     )
+
+
+def test_live_replay_publishes_one_immutable_generic_stimulus_ledger() -> None:
+    events = [
+        {
+            "state": "stimulus_requested",
+            "schemaVersion": 1,
+            "stimulusSequence": sequence,
+            "sourceIndex": sequence + 40,
+            "replayOffsetSeconds": float(sequence - 1) / 3.0,
+            "requestedHostMonotonicSeconds": 123.0 + sequence,
+            "expected": {"phase": f"phase-{sequence}"},
+            "notifications": [{"ordinal": 0, "bytesHex": "AAAB"}],
+        }
+        for sequence in (1, 2)
+    ]
+    with tempfile.TemporaryDirectory() as temp:
+        out_dir = Path(temp)
+        emulator_result = {"stimulus_events": events}
+        ownership = publish_replay_stimulus_ledger(
+            emulator_result,
+            out_dir,
+            suite="replay",
+            live=True,
+        )
+        assert_true(ownership is not None, "live replay lost its stimulus ownership")
+        assert_true(ownership["status"] == "captured", f"stimulus was not captured: {ownership}")
+        assert_true(ownership["event_count"] == 2, f"stimulus count changed: {ownership}")
+        assert_true("stimulus_events" not in emulator_result, "stimulus events were duplicated")
+        path = out_dir / ownership["path"]
+        payload = path.read_bytes()
+        assert_true(len(payload) == ownership["size_bytes"], "stimulus size ownership changed")
+        assert_true(
+            hashlib.sha256(payload).hexdigest() == ownership["sha256"],
+            "stimulus hash ownership changed",
+        )
+        assert_true(
+            [json.loads(line) for line in payload.splitlines()] == events,
+            "stimulus event order or values changed during publication",
+        )
+        before = payload
+        refused = publish_replay_stimulus_ledger(
+            {"stimulus_events": [{"state": "replacement"}]},
+            out_dir,
+            suite="replay",
+            live=True,
+        )
+        assert_true(refused is not None and refused["reason"] == "publish_failed", "overwrite passed")
+        assert_true(path.read_bytes() == before, "existing stimulus ledger was overwritten")
+
+    offline = {"stimulus_events": events}
+    assert_true(
+        publish_replay_stimulus_ledger(
+            offline,
+            Path("unused"),
+            suite="replay",
+            live=False,
+        )
+        is None,
+        "offline import unexpectedly published a live stimulus ledger",
+    )
+    assert_true(offline["stimulus_events"] == events, "offline stimulus evidence was consumed")
 
 
 def test_raw_log_ownership_names_only_exact_bench_streams() -> None:
@@ -4696,8 +4772,10 @@ def test_v1replay_player_uses_live_control_snapshot() -> None:
         "active Player path does not apply and report detector mode edges once",
     )
     assert_true(
-        player.count("controlState: control") == 2,
-        "idle and active Player paths do not pass their live control snapshot",
+        idle_method.count("controlState: control") == 1
+        and active_method.count("controlState: control") == 2
+        and "onStimulusRequested?(ReplayStimulusEvent(" in active_method,
+        "idle packet, active packet, and stimulus evidence do not share the same live control snapshot",
     )
 
 
@@ -4859,6 +4937,7 @@ def main() -> int:
     test_replay_requires_machine_completion_before_managed_stop()
     test_live_replay_retains_one_versioned_detector_volume_stream()
     test_live_replay_retains_one_versioned_detector_mute_stream()
+    test_live_replay_publishes_one_immutable_generic_stimulus_ledger()
     test_live_replay_retains_one_versioned_detector_mode_stream()
     test_raw_log_ownership_names_only_exact_bench_streams()
     test_replay_blink_profile_argv_and_result()

@@ -661,6 +661,11 @@ func runPlay(idleOnly: Bool,
         }
     }
     if machineEvents && bench {
+        player.onStimulusRequested = { stimulus in
+            console.print(stimulus.machineEventLine)
+        }
+    }
+    if machineEvents && bench {
         console.print("V1REPLAY_EVENT {\"state\":\"configured\","
                       + "\"blinkProfile\":\"\(playerOptions.arrowBlinkProfile.rawValue)\","
                       + "\"blinkSource\":\"\(playerOptions.arrowBlinkProfile.sourceLabel)\","

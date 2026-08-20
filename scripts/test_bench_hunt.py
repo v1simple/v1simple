@@ -115,6 +115,62 @@ def fixture(
     }
     for key, name in raw_log_names.items():
         (replay_dir / name).write_bytes(f"{key} line 1\n{key} line 2\n".encode("ascii"))
+    stimulus_events = [
+        {
+            "state": "stimulus_requested",
+            "schemaVersion": 1,
+            "stimulusSequence": sequence,
+            "sourceIndex": sequence - 1,
+            "replayOffsetSeconds": float(sequence - 1),
+            "requestedHostMonotonicSeconds": 100.0 + sequence - 1,
+            "expected": {
+                "phase": "fixture_changed_scenario",
+                "alerts": (
+                    [
+                        {
+                            "band": "k",
+                            "bandMask": 4,
+                            "frequencyMHz": 24_150,
+                            "bars": 1,
+                            "direction": "FRONT",
+                            "priority": True,
+                        }
+                    ]
+                    if sequence == 1
+                    else []
+                ),
+                "muted": False,
+                "mainVolume": 4,
+                "muteVolume": 0,
+                "modeChar": "L",
+                "displayOn": True,
+                "arrowBlink": False,
+            },
+            "notifications": [
+                {
+                    "ordinal": 0,
+                    "channel": "display_short",
+                    "kind": "alert_row",
+                    "alertRowIndex": 1 if sequence == 1 else 0,
+                    "alertRowCount": 1 if sequence == 1 else 0,
+                    "bytesHex": "AAD8EA430800000000000000B7AB",
+                },
+                {
+                    "ordinal": 1,
+                    "channel": "display_short",
+                    "kind": "display_frame",
+                    "bytesHex": "AAD8EA310800000000000000A5AB",
+                },
+            ],
+        }
+        for sequence in (1, 2)
+    ]
+    stimulus_payload = b"".join(
+        (json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+        for event in stimulus_events
+    )
+    stimulus_path = replay_dir / "replay_stimulus.ndjson"
+    stimulus_path.write_bytes(stimulus_payload)
 
     identity = {
         "schema_version": 2,
@@ -308,6 +364,16 @@ def fixture(
             "grade_result": "PASS",
         },
         "raw_logs": {"schema_version": 1, "streams": raw_log_names},
+        "replay": {"total_samples": len(stimulus_events)},
+        "replay_stimulus": {
+            "schema_version": 1,
+            "status": "captured",
+            "path": stimulus_path.name,
+            "sha256": hashlib.sha256(stimulus_payload).hexdigest(),
+            "size_bytes": len(stimulus_payload),
+            "event_count": len(stimulus_events),
+            "reason": "",
+        },
         "replay_volume_signal": {
             "schema_version": 1,
             "events": [
@@ -369,6 +435,10 @@ def test_complete_report_is_deterministic_and_advisory() -> None:
         assert_true(
             [signals[kind]["event_count"] for kind in ("volume", "mute", "mode")] == [1, 1, 1],
             f"bounded replay signals were not consumed: {signals}",
+        )
+        assert_true(
+            report["evidence"]["replay_stimulus"]["event_count"] == 2,
+            f"generic replay stimulus was not consumed: {report['evidence']['replay_stimulus']}",
         )
         ids = {item["id"] for item in report["findings"]}
         assert_true(
@@ -469,6 +539,68 @@ def test_blink_cadence_facts_are_advisory_and_mean_based() -> None:
         assert_true(
             gap_findings["blink-camera-cadence-inconclusive"]["state"] == "unknown",
             "PTS-gap abstention became a gate",
+        )
+
+
+def test_generic_mode_comparison_is_advisory_and_scenario_derived() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        run_dir = fixture(Path(temp))
+        original = bench_hunt.compare_idle_modes_to_renderer
+        bench_hunt.compare_idle_modes_to_renderer = lambda *_args, **_kwargs: {
+            "status": "complete",
+            "reason": "",
+            "comparison_count": 3,
+            "matched_count": 3,
+            "mismatched_count": 0,
+            "maximum_response_ms": 44.0,
+            "comparisons": [],
+        }
+        try:
+            matched = bench_hunt.build_report(run_dir)
+            bench_hunt.compare_idle_modes_to_renderer = lambda *_args, **_kwargs: {
+                "status": "complete",
+                "reason": "",
+                "comparison_count": 3,
+                "matched_count": 2,
+                "mismatched_count": 1,
+                "maximum_response_ms": 30.0,
+                "comparisons": [],
+            }
+            mismatched = bench_hunt.build_report(run_dir)
+        finally:
+            bench_hunt.compare_idle_modes_to_renderer = original
+
+        matched_findings = {item["id"]: item for item in matched["findings"]}
+        mismatch_findings = {item["id"]: item for item in mismatched["findings"]}
+        assert_true(matched["verdict_effect"] == "none", "mode comparison gained verdict authority")
+        assert_true(
+            matched_findings["mode-stimulus-renderer-measured"]["state"] == "confirmed"
+            and "44.000 ms" in matched_findings["mode-stimulus-renderer-measured"]["observed"],
+            "matched mode evidence was not retained",
+        )
+        assert_true(
+            mismatch_findings["mode-stimulus-renderer-mismatch"]["state"] == "confirmed"
+            and "1/3" in mismatch_findings["mode-stimulus-renderer-mismatch"]["observed"],
+            "renderer mismatch was hidden or gated",
+        )
+
+
+def test_tampered_generic_stimulus_is_unknown() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        run_dir = fixture(Path(temp))
+        stimulus = run_dir / "replay" / "replay_stimulus.ndjson"
+        stimulus.write_bytes(stimulus.read_bytes() + b"{}\n")
+        report = bench_hunt.build_report(run_dir)
+        findings = {item["id"]: item for item in report["findings"]}
+        assert_true(
+            report["evidence"]["replay_stimulus"]["status"] == "partial",
+            "tampered stimulus remained complete",
+        )
+        assert_true(findings["evidence-replay_stimulus"]["state"] == "unknown", "tamper became failure")
+        assert_true(
+            "mode-stimulus-renderer-measured" not in findings
+            and "mode-stimulus-renderer-mismatch" not in findings,
+            "unowned stimulus produced a functional claim",
         )
 
 
@@ -964,6 +1096,8 @@ def main() -> int:
     test_complete_report_is_deterministic_and_advisory()
     test_partial_run_points_to_failures_without_inventing_correlation()
     test_blink_cadence_facts_are_advisory_and_mean_based()
+    test_generic_mode_comparison_is_advisory_and_scenario_derived()
+    test_tampered_generic_stimulus_is_unknown()
     test_raw_logs_and_replay_signals_require_owned_safe_inputs()
     test_raw_logs_and_replay_signals_reject_boolean_schema_versions()
     test_malformed_performance_is_unknown()

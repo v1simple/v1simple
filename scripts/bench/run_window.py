@@ -79,6 +79,9 @@ REPLAY_MUTE_SIGNAL_SCHEMA = 1
 DETECTOR_MUTE_EVENT_STATE = "detector_mute"
 REPLAY_MODE_SIGNAL_SCHEMA = 1
 DETECTOR_MODE_EVENT_STATE = "detector_mode"
+REPLAY_STIMULUS_SCHEMA = 1
+REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
+REPLAY_STIMULUS_NAME = "replay_stimulus.ndjson"
 RAW_LOG_SCHEMA = 1
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
@@ -619,6 +622,61 @@ def retain_replay_mode_signal(
     return {
         "schema_version": REPLAY_MODE_SIGNAL_SCHEMA,
         "events": emulator_result.pop("detector_mode_events", []),
+    }
+
+
+def publish_replay_stimulus_ledger(
+    emulator_result: dict[str, Any],
+    out_dir: Path,
+    *,
+    suite: str,
+    live: bool,
+) -> dict[str, Any] | None:
+    """Own the complete generic sample-request stream without gating collection."""
+    if suite != "replay" or not live:
+        return None
+    events = emulator_result.pop("stimulus_events", [])
+    base = {
+        "schema_version": REPLAY_STIMULUS_SCHEMA,
+        "status": "unavailable",
+        "path": "",
+        "sha256": "",
+        "size_bytes": 0,
+        "event_count": len(events) if isinstance(events, list) else 0,
+        "reason": "",
+    }
+    if not isinstance(events, list):
+        return {**base, "reason": "events_invalid"}
+    try:
+        payload = b"".join(
+            (
+                json.dumps(
+                    event,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+            for event in events
+        )
+    except (TypeError, ValueError):
+        return {**base, "reason": "event_serialization_invalid"}
+    path = out_dir / REPLAY_STIMULUS_NAME
+    try:
+        with path.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        return {**base, "reason": "publish_failed"}
+    return {
+        **base,
+        "status": "captured",
+        "path": path.name,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
     }
 
 
@@ -2028,6 +2086,9 @@ class V1Emulator:
         detector_mode_events = (
             self._bench_events(DETECTOR_MODE_EVENT_STATE) if self.mode == "bench" else []
         )
+        stimulus_events = (
+            self._bench_events(REPLAY_STIMULUS_EVENT_STATE) if self.mode == "bench" else []
+        )
         idle_shutdown_valid = self.mode != "idle"
         if self.mode == "idle" and process_was_running and self.session_transport_owned:
             # Grade only after the child has exited and flushed the complete
@@ -2070,6 +2131,7 @@ class V1Emulator:
             result["detector_volume_events"] = detector_volume_events
             result["detector_mute_events"] = detector_mute_events
             result["detector_mode_events"] = detector_mode_events
+            result["stimulus_events"] = stimulus_events
         return result
 
     def _close_log(self) -> None:
@@ -2864,6 +2926,12 @@ def main() -> int:
             suite=args.suite,
             live=not bool(args.from_csv),
         )
+        replay_stimulus = publish_replay_stimulus_ledger(
+            emulator_result,
+            out_dir,
+            suite=args.suite,
+            live=not bool(args.from_csv),
+        )
         import_proc = run_import(args, csv_path, out_dir, identity)
         scoring_path = out_dir / "scoring.json"
         manifest_path = out_dir / "manifest.json"
@@ -2914,6 +2982,11 @@ def main() -> int:
                 **(
                     {"replay_mode_signal": replay_mode_signal}
                     if replay_mode_signal is not None
+                    else {}
+                ),
+                **(
+                    {"replay_stimulus": replay_stimulus}
+                    if replay_stimulus is not None
                     else {}
                 ),
                 "camera": camera_result,

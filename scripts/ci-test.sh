@@ -169,6 +169,7 @@ run_step "Camera artifact regression suite" python3 scripts/test_camera_artifact
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
 run_step "Bench blink cadence regression suite" python3 scripts/test_bench_blink_cadence.py
+run_step "Bench stimulus hunter regression suite" python3 scripts/test_bench_stimulus_hunt.py
 run_step "Bench hunter regression suite" python3 scripts/test_bench_hunt.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "Reconnect stress regression suite" python3 scripts/test_reconnect_stress.py

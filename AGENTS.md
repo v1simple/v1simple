@@ -4,6 +4,9 @@ Keep V1Simple simple, in code and docs.
 
 - Use `.agents/skills/v1simple-engineering/SKILL.md` for engineering work.
 - This public repository is the complete source of engineering context.
+- Process for the sake of process is NOT accepted. Every plan, artifact,
+  abstraction, check, or report must directly deliver a requested product
+  outcome or prove a necessary safety property; otherwise stop before building it.
 - Run `./scripts/check_local_privacy_setup.py` at the start of every task and
   again before any commit or handoff. Stop if it fails; do not bypass, weaken,
   or treat `./scripts/ci-test.sh` as a substitute for this machine-local check.

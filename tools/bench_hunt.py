@@ -28,6 +28,7 @@ from camera_artifacts import (  # noqa: E402
     verify_capture_files,
 )
 from camera_grade import CONSENSUS_MIN_RATIO  # noqa: E402
+from bench_blink_cadence import analyze_blink_cadence  # noqa: E402
 from import_perf_csv import load_sessions, select_segment  # noqa: E402
 from bench_score import score_replay_encounter_csv  # noqa: E402
 from run_window import summarize_display_commit_artifact  # noqa: E402
@@ -547,6 +548,7 @@ def build_report(run_directory: Path) -> dict[str, Any]:
     evidence["encounters"] = encounters
 
     artifacts = window.get("artifacts") if isinstance(window.get("artifacts"), dict) else {}
+    display_path: Path | None = None
     owned_display = artifacts.get("display_commits")
     if not isinstance(owned_display, dict):
         display = _fact(run, None, "missing", "not_owned_by_window")
@@ -805,6 +807,41 @@ def build_report(run_directory: Path) -> dict[str, Any]:
         and all(value != "unknown" for value in agreed.values())
     )
 
+    blink_investigation: dict[str, Any] = {
+        "status": "not_available",
+        "reason": "owned_inputs_incomplete",
+    }
+    capture_identity = capture.get("identity") if isinstance(capture.get("identity"), dict) else {}
+    camera_identity = (
+        capture_identity.get("camera") if isinstance(capture_identity.get("camera"), dict) else {}
+    )
+    capture_profile = (
+        camera_identity.get("profile") if isinstance(camera_identity.get("profile"), dict) else {}
+    )
+    blink_profile_supported = (
+        capture_profile.get("framerate") == 200
+        and capture_profile.get("capture_backend") == "avfoundation_native"
+    )
+    if (
+        blink_profile_supported
+        and display_path is not None
+        and encounter_path is not None
+        and capture_paths.get("video") is not None
+        and grade
+        and all(
+            evidence[role]["status"] == "complete"
+            for role in ("display_commits", "encounters", "camera_grade")
+        )
+    ):
+        blink_investigation = analyze_blink_cadence(
+            display_commit_path=display_path,
+            encounter_path=encounter_path,
+            video_path=capture_paths["video"],
+            grade=grade,
+        )
+    elif not blink_profile_supported and evidence["camera_grade"]["status"] == "complete":
+        blink_investigation["reason"] = "capture_profile_unsupported"
+
     if encounter_validation.get("result") == "FAIL":
         details = encounter_validation.get("evidence")
         detail = details[0] if isinstance(details, list) and details and isinstance(details[0], str) else ""
@@ -945,14 +982,103 @@ def build_report(run_directory: Path) -> dict[str, Any]:
             )
         )
 
+    renderer_cadence = blink_investigation.get("renderer")
+    camera_cadence = blink_investigation.get("camera")
+    blink_episode = blink_investigation.get("episode")
+    blink_refs = [evidence["display_commits"]["path"], grade_ref + "#/alignment"]
+    if isinstance(blink_episode, dict) and video_ref:
+        blink_refs.append(
+            f"{video_ref}#t={float(blink_episode['video_start_seconds']):.3f}-"
+            f"{float(blink_episode['video_end_seconds']):.3f}"
+        )
+    if isinstance(renderer_cadence, dict) and renderer_cadence.get("status") == "complete":
+        findings.append(
+            _finding(
+                "blink-renderer-cadence-measured",
+                "confirmed" if identity_agreed else "unknown",
+                "Renderer flash commits are measured against the declared 96 ms half-period.",
+                (
+                    f"Renderer mean half-period is {renderer_cadence['mean_half_period_ms']:.3f} ms; "
+                    f"deviation from 96 ms is {renderer_cadence['deviation_from_declared_percent']:.3f}%; "
+                    f"PARTIAL flash dispatches={renderer_cadence.get('partial_dispatch_count', 0)}; "
+                    f"reported dropped commits={renderer_cadence.get('reported_dropped_commits', 0)}."
+                ),
+                [evidence["display_commits"]["path"]],
+                (
+                    "This confirms logged renderer cadence, not optical panel output."
+                    if identity_agreed
+                    else "Run identity disagreement prevents cross-evidence attribution."
+                ),
+            )
+        )
+    if isinstance(camera_cadence, dict) and camera_cadence.get("status") == "complete":
+        findings.append(
+            _finding(
+                "blink-camera-cadence-measured",
+                "confirmed" if identity_agreed else "unknown",
+                "Camera arrow transitions are measured against the declared 96 ms half-period.",
+                (
+                    f"Camera mean half-period is {camera_cadence['mean_half_period_ms']:.3f} ms; "
+                    f"deviation from 96 ms is {camera_cadence['deviation_from_declared_percent']:.3f}%."
+                ),
+                blink_refs,
+                (
+                    "Mean is authoritative; the bimodal median is diagnostic only."
+                    if identity_agreed
+                    else "Run identity disagreement prevents cross-evidence attribution."
+                ),
+            )
+        )
+        on_ms = camera_cadence.get("mean_on_ms")
+        off_ms = camera_cadence.get("mean_off_ms")
+        max_gap_ms = camera_cadence.get("maximum_pts_gap_ms")
+        if all(isinstance(value, (int, float)) for value in (on_ms, off_ms, max_gap_ms)) and abs(
+            float(on_ms) - float(off_ms)
+        ) > 2.0 * float(max_gap_ms):
+            findings.append(
+                _finding(
+                    "blink-optical-duty-asymmetry",
+                    "suspected" if identity_agreed else "unknown",
+                    "The equal renderer toggle cadence appears optically symmetric.",
+                    f"Camera mean ON is {float(on_ms):.3f} ms and mean OFF is {float(off_ms):.3f} ms.",
+                    blink_refs,
+                    "Firmware scheduling, panel response, and optical classification remain candidate causes.",
+                )
+            )
+    elif isinstance(camera_cadence, dict) and camera_cadence.get("status") == "partial":
+        findings.append(
+            _finding(
+                "blink-camera-cadence-inconclusive",
+                "unknown",
+                "The blink episode has continuous camera PTS evidence for cadence measurement.",
+                f"Camera cadence abstained: {camera_cadence.get('reason') or 'incomplete_evidence'}.",
+                blink_refs,
+                "No optical cadence claim is made across incomplete camera evidence.",
+            )
+        )
+    elif blink_investigation.get("status") == "partial":
+        findings.append(
+            _finding(
+                "blink-cadence-inconclusive",
+                "unknown",
+                "Owned renderer and camera evidence support a complete blink-cadence investigation.",
+                f"Blink cadence abstained: {blink_investigation.get('reason') or 'incomplete_evidence'}.",
+                blink_refs,
+                "No cadence claim is made from incomplete decoder evidence.",
+            )
+        )
+
     if evidence["display_commits"]["status"] == "complete" and comparisons:
         findings.extend(
             (
                 _finding(
-                    "renderer-camera-correlation-unmeasured",
+                    "renderer-camera-causal-link-unmeasured",
                     "unknown",
                     "Each camera comparison links to the renderer commit that caused it.",
-                    "Renderer evidence uses DUT millis/sequence; camera evidence uses aligned 3 Hz windows without a shared event ID.",
+                    (
+                        "Blink rate may be measured, but renderer evidence uses DUT millis/sequence and camera "
+                        "evidence has no shared causal event ID."
+                    ),
                     [evidence["display_commits"]["path"], grade_ref + "#/encounter_comparisons"],
                     "The causing renderer commit is unknown.",
                 ),
@@ -974,6 +1100,7 @@ def build_report(run_directory: Path) -> dict[str, Any]:
         "verdict_effect": "none",
         "run": {"git_sha": agreed["git_sha"]},
         "evidence": evidence,
+        "investigations": {"blink_cadence": blink_investigation},
         "findings": findings,
     }
 

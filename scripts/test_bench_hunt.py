@@ -101,6 +101,7 @@ def fixture(
     encounter_drops: int = 0,
     display_drops: int = 0,
     failed_metric: bool = False,
+    blink_profile: bool = False,
 ) -> Path:
     run_dir = root / "run"
     replay_dir = run_dir / "replay"
@@ -206,7 +207,11 @@ def fixture(
         "result": "CAPTURED",
         "camera_name": "fixture",
         "camera_device_index": 0,
-        "profile": {},
+        "profile": (
+            {"framerate": 200, "capture_backend": "avfoundation_native"}
+            if blink_profile
+            else {}
+        ),
         "expected_duration_seconds": 300,
         "video_duration_seconds": 300.0,
         "profile_validation": {"result": "PASS"},
@@ -367,7 +372,7 @@ def test_complete_report_is_deterministic_and_advisory() -> None:
         )
         ids = {item["id"] for item in report["findings"]}
         assert_true(
-            ids == {"renderer-camera-correlation-unmeasured", "transition-latency-unmeasured"},
+            ids == {"renderer-camera-causal-link-unmeasured", "transition-latency-unmeasured"},
             f"matching evidence produced noise: {ids}",
         )
         first_path, created = bench_hunt.publish_report(run_dir)
@@ -394,7 +399,77 @@ def test_partial_run_points_to_failures_without_inventing_correlation() -> None:
         assert_true(by_id["evidence-encounters"]["state"] == "unknown", "encounter loss became success")
         assert_true(by_id["evidence-display_commits"]["state"] == "unknown", "missing renderer evidence became success")
         assert_true(by_id["evidence-camera_grade"]["state"] == "unknown", "legacy grade became complete")
-        assert_true("renderer-camera-correlation-unmeasured" not in by_id, "missing streams were correlated")
+        assert_true("renderer-camera-causal-link-unmeasured" not in by_id, "missing streams were correlated")
+
+
+def test_blink_cadence_facts_are_advisory_and_mean_based() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        run_dir = fixture(Path(temp), blink_profile=True)
+        original = bench_hunt.analyze_blink_cadence
+        bench_hunt.analyze_blink_cadence = lambda **_kwargs: {
+            "status": "complete",
+            "reason": "",
+            "episode": {
+                "video_start_seconds": 35.0,
+                "video_end_seconds": 54.0,
+            },
+            "renderer": {
+                "status": "complete",
+                "mean_half_period_ms": 96.0,
+                "deviation_from_declared_percent": 0.0,
+            },
+            "camera": {
+                "status": "complete",
+                "mean_half_period_ms": 95.5,
+                "median_half_period_ms": 85.0,
+                "deviation_from_declared_percent": 0.521,
+                "mean_on_ms": 115.0,
+                "mean_off_ms": 81.0,
+                "maximum_pts_gap_ms": 6.0,
+            },
+        }
+        try:
+            report = bench_hunt.build_report(run_dir)
+            bench_hunt.analyze_blink_cadence = lambda **_kwargs: {
+                "status": "partial",
+                "reason": "pts_gap_exceeds_half_period",
+                "episode": {
+                    "video_start_seconds": 35.0,
+                    "video_end_seconds": 54.0,
+                },
+                "renderer": {
+                    "status": "complete",
+                    "mean_half_period_ms": 96.0,
+                    "deviation_from_declared_percent": 0.0,
+                },
+                "camera": {
+                    "status": "partial",
+                    "reason": "pts_gap_exceeds_half_period",
+                    "maximum_pts_gap_ms": 115.9,
+                },
+            }
+            gap_report = bench_hunt.build_report(run_dir)
+        finally:
+            bench_hunt.analyze_blink_cadence = original
+
+        assert_true(report["verdict_effect"] == "none", "blink investigator gained verdict authority")
+        assert_true(report["investigations"]["blink_cadence"]["status"] == "complete", "facts lost")
+        findings = {item["id"]: item for item in report["findings"]}
+        assert_true(findings["blink-renderer-cadence-measured"]["state"] == "confirmed", "renderer fact lost")
+        camera = findings["blink-camera-cadence-measured"]
+        assert_true(camera["state"] == "confirmed" and "95.500" in camera["observed"], "mean was not reported")
+        assert_true("85.0" not in camera["observed"], "misleading median became authoritative")
+        assert_true(findings["blink-optical-duty-asymmetry"]["state"] == "suspected", "lead was gated")
+        assert_true(
+            findings["renderer-camera-causal-link-unmeasured"]["state"] == "unknown",
+            "rate evidence became a causal claim",
+        )
+        gap_findings = {item["id"]: item for item in gap_report["findings"]}
+        assert_true("blink-camera-cadence-measured" not in gap_findings, "PTS gap produced a camera fact")
+        assert_true(
+            gap_findings["blink-camera-cadence-inconclusive"]["state"] == "unknown",
+            "PTS-gap abstention became a gate",
+        )
 
 
 def test_raw_logs_and_replay_signals_require_owned_safe_inputs() -> None:
@@ -888,6 +963,7 @@ def test_cli_failure_does_not_echo_private_paths() -> None:
 def main() -> int:
     test_complete_report_is_deterministic_and_advisory()
     test_partial_run_points_to_failures_without_inventing_correlation()
+    test_blink_cadence_facts_are_advisory_and_mean_based()
     test_raw_logs_and_replay_signals_require_owned_safe_inputs()
     test_raw_logs_and_replay_signals_reject_boolean_schema_versions()
     test_malformed_performance_is_unknown()

@@ -168,6 +168,7 @@ run_step "Phase-B disposable Git dry-run regression suite" python3 scripts/test_
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
+run_step "Bench hunter regression suite" python3 scripts/test_bench_hunt.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "Reconnect stress regression suite" python3 scripts/test_reconnect_stress.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py

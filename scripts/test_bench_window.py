@@ -70,11 +70,13 @@ from run_window import (  # noqa: E402
     V1RadioLease,
     _preflight_ledger_is_complete,
     camera_grade_required,
+    display_commit_csv_sd_path,
     encounter_csv_sd_path,
     establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
     start_and_wait,
+    summarize_display_commit_artifact,
     wait_for_post_upload_settle,
 )
 
@@ -2540,6 +2542,13 @@ def test_live_camera_failure_is_serialized_as_evidence_failure() -> None:
             target: Path,
             **_kwargs: object,
         ) -> object:
+            artifact_state = _kwargs.get("artifacts")
+            assert_true(isinstance(artifact_state, dict), "live artifact state was not shared with main")
+            artifact_state["display_commits"] = {
+                "status": "complete",
+                "scope": "boot_prefix_through_export",
+                "path": "display_commits_fixture.csv",
+            }
             camera = CameraCapture(target / "camera", 300)
             camera.recorder_failure = {
                 "schema_version": 1,
@@ -2581,6 +2590,10 @@ def test_live_camera_failure_is_serialized_as_evidence_failure() -> None:
         assert_true(
             window["camera"]["recorder_failure"]["error"]["underlying"]["code"] == -16364,
             f"camera error identity was lost: {window}",
+        )
+        assert_true(
+            window["artifacts"]["display_commits"]["path"] == "display_commits_fixture.csv",
+            f"captured renderer evidence was lost on camera failure: {window}",
         )
 
 
@@ -3901,7 +3914,7 @@ def test_csv_export_retries_busy_admission_then_preserves_grading() -> None:
             self.commands: list[str] = []
             self.lines = [
                 'QERR {"ok":false,"error":"perf_sd_busy_retry"}',
-                'QFILE {"path":"/perf/perf_boot_1.csv","size":3}',
+                'QFILE {"path":"/display_commits/display_commits_1.csv","size":3}',
                 "QCHUNK 0 612C62",
                 'QEND {"bytes":3,"crc32":"2CD913DF"}',
             ]
@@ -3918,9 +3931,13 @@ def test_csv_export_retries_busy_admission_then_preserves_grading() -> None:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             serial = FakeSerial()
-            csv_path = run_window_module.download_csv(serial, Path(tmp), 1)
+            display_path = "/display_commits/display_commits_1.csv"
+            csv_path = run_window_module.download_csv(serial, Path(tmp), 1, display_path)
             assert_true(csv_path.read_bytes() == b"a,b", "retried export changed CSV bytes")
-            assert_true(serial.commands == ["QGETCSV", "QGETCSV"], f"wrong retry commands: {serial.commands}")
+            assert_true(
+                serial.commands == [f"QGETCSV {display_path}", f"QGETCSV {display_path}"],
+                f"wrong retry commands: {serial.commands}",
+            )
             assert_true(clock.sleeps == [0.25], f"wrong busy retry delay: {clock.sleeps}")
     finally:
         run_window_module.time = original_time
@@ -3999,6 +4016,145 @@ def test_encounter_csv_path_uses_perf_boot_identity() -> None:
     )
     for invalid in ("", "/perf/other.csv", "/perf/perf_boot_.csv", "/perf/perf_boot_1/extra.csv"):
         assert_true(encounter_csv_sd_path(invalid) == "", f"invalid perf path was accepted: {invalid}")
+
+
+def test_display_commit_csv_path_uses_perf_boot_identity() -> None:
+    assert_true(
+        display_commit_csv_sd_path("/perf/perf_boot_61-cbab7c22.csv")
+        == "/display_commits/display_commits_61-cbab7c22.csv",
+        "tokenized display-commit path did not follow the perf boot identity",
+    )
+    assert_true(
+        display_commit_csv_sd_path("/perf/perf_boot_61.csv")
+        == "/display_commits/display_commits_61.csv",
+        "legacy display-commit path did not follow the perf boot identity",
+    )
+    for invalid in ("", "/perf/other.csv", "/perf/perf_boot_.csv", "/perf/perf_boot_1/extra.csv"):
+        assert_true(
+            display_commit_csv_sd_path(invalid) == "",
+            f"invalid perf path produced a display-commit path: {invalid}",
+        )
+
+
+def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> None:
+    header = [
+        "seq", "millis", "path", "dispatch", "render_us", "pushes", "arrows_to_show",
+        "blink_phase", "arrow_painted", "alert_count", "region_x", "region_y", "region_w",
+        "region_h", "active_bands", "arrows", "priority_arrow", "signal_bars", "flash_bits",
+        "band_flash_bits", "muted", "soft_muted", "display_on", "system_status", "system_test",
+        "mode_char", "bogey_char", "bogey_dot", "bogey_char2", "main_volume", "mute_volume",
+        "has_junk", "has_photo", "has_ku", "dropped_commits",
+    ]
+
+    def row(sequence: int, dropped: int) -> str:
+        values = ["0"] * len(header)
+        values[0] = str(sequence)
+        values[2] = "LIVE"
+        values[3] = "PARTIAL"
+        values[-1] = str(dropped)
+        return ",".join(values)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        csv_path = out_dir / "display_commits_61-cbab7c22.csv"
+        payload = (
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(header)
+            + "\n"
+            + row(1, 0)
+            + "\n"
+            + row(2, 0)
+            + "\n# display_commit_export_schema=1,terminal_seq=2,dropped_commits=0\n"
+        )
+        csv_path.write_text(payload, encoding="utf-8")
+
+        summary = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(summary["status"] == "complete", f"valid renderer prefix was not complete: {summary}")
+        assert_true(summary["path"] == csv_path.name, f"renderer path was not relative: {summary}")
+        assert_true(summary["size_bytes"] == len(payload.encode()), f"wrong renderer byte count: {summary}")
+        assert_true(len(summary["sha256"]) == 64, f"renderer hash is missing: {summary}")
+        assert_true(summary["row_count"] == 2, f"wrong renderer row count: {summary}")
+        assert_true(summary["first_sequence"] == 1, f"wrong first renderer sequence: {summary}")
+        assert_true(summary["last_sequence"] == 2, f"wrong last renderer sequence: {summary}")
+        assert_true(summary["terminal_sequence"] == 2, f"terminal renderer fence was lost: {summary}")
+        assert_true(summary["reported_dropped_commits"] == 0, f"wrong renderer losses: {summary}")
+
+        csv_path.write_text(
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(header)
+            + "\n"
+            + row(1, 0)
+            + "\n"
+            + row(3, 1)
+            + "\n# display_commit_export_schema=1,terminal_seq=3,dropped_commits=1\n",
+            encoding="utf-8",
+        )
+        partial = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(partial["status"] == "partial", f"lossy renderer prefix passed: {partial}")
+        assert_true("sequence_gap" in partial["reason"], f"renderer gap was hidden: {partial}")
+        assert_true("reported_drops" in partial["reason"], f"renderer loss was hidden: {partial}")
+
+        csv_path.write_text(
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(header)
+            + "\n"
+            + row(1, 0)
+            + "\n",
+            encoding="utf-8",
+        )
+        unfenced = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(unfenced["status"] == "partial", f"unfenced renderer prefix passed: {unfenced}")
+        assert_true("terminal_marker_missing" in unfenced["reason"], f"missing fence was hidden: {unfenced}")
+        assert_true(unfenced["path"] == csv_path.name, f"partial renderer lost ownership: {unfenced}")
+
+        renamed_header = list(header)
+        renamed_header[10] = "renamed_region_x"
+        csv_path.write_text(
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(renamed_header)
+            + "\n"
+            + row(1, 0)
+            + "\n# display_commit_export_schema=1,terminal_seq=1,dropped_commits=0\n",
+            encoding="utf-8",
+        )
+        wrong_schema = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(wrong_schema["status"] == "partial", f"renamed renderer field passed: {wrong_schema}")
+        assert_true("header_invalid" in wrong_schema["reason"], f"schema drift was hidden: {wrong_schema}")
+
+        malformed_payload = (
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(header)
+            + '\n"unterminated\n'
+            + "# display_commit_export_schema=1,terminal_seq=1,dropped_commits=0\n"
+        )
+        csv_path.write_text(malformed_payload, encoding="utf-8")
+        malformed = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(malformed["status"] == "partial", f"malformed renderer CSV passed: {malformed}")
+        assert_true("csv_parse_error" in malformed["reason"], f"CSV parser error was hidden: {malformed}")
+        assert_true(malformed["path"] == csv_path.name, f"malformed renderer lost its path: {malformed}")
+        assert_true(
+            malformed["size_bytes"] == len(malformed_payload.encode()),
+            f"malformed renderer lost its byte count: {malformed}",
+        )
+        assert_true(len(malformed["sha256"]) == 64, f"malformed renderer lost its hash: {malformed}")
+
+        csv_path.write_text(
+            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            + ",".join(header)
+            + "\n"
+            + row(1, 0)
+            + "\n# display_commit_export_schema=1,terminal_seq=1,dropped_commits=0,extra=1\n",
+            encoding="utf-8",
+        )
+        malformed_fence = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(
+            "terminal_marker_missing" in malformed_fence["reason"],
+            f"noncanonical terminal fence passed: {malformed_fence}",
+        )
+
+        missing = summarize_display_commit_artifact(None, out_dir, "export_failed")
+        assert_true(missing["status"] == "missing", f"missing renderer file passed: {missing}")
+        assert_true(missing["reason"] == "export_failed", f"missing renderer reason was lost: {missing}")
 
 
 def test_v1replay_tracks_each_subscription_independently() -> None:
@@ -4254,6 +4410,8 @@ def main() -> int:
     test_csv_export_busy_retry_is_bounded_and_fails_closed()
     test_csv_export_unrelated_qerr_fails_without_retry()
     test_encounter_csv_path_uses_perf_boot_identity()
+    test_display_commit_csv_path_uses_perf_boot_identity()
+    test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix()
     test_v1replay_tracks_each_subscription_independently()
     test_v1replay_player_uses_live_control_snapshot()
     test_v1replay_handshake_only_path_sends_once_then_holds_quiet()

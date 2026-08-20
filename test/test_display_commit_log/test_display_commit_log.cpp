@@ -174,6 +174,25 @@ void test_commit_log_never_blocks_the_render_path() {
     TEST_ASSERT_EQUAL(std::string::npos, body.find("SDLock"));
 }
 
+void test_commit_log_export_drain_is_nonblocking_and_writes_a_terminal_fence() {
+    const std::string source = readProjectFile("src/modules/display/display_commit_log.cpp");
+    TEST_ASSERT_FALSE(source.empty());
+    const size_t drain = source.find("bool V1DisplayCommitLog::tryDrainAndClose()");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, drain);
+    const std::string body = source.substr(drain);
+    const size_t pending = body.find("pendingWrites_.load");
+    const size_t queued = body.find("uxQueueMessagesWaiting(queue_)");
+    const size_t tryLock = body.find("StorageManager::SDTryLock");
+    const size_t marker = body.find("COMMIT_EXPORT_MARKER_FORMAT");
+    const size_t flush = body.find("persistentFile_.flush()", marker);
+    const size_t close = body.find("persistentFile_.close()", flush);
+    TEST_ASSERT_TRUE(pending < tryLock && queued < tryLock);
+    TEST_ASSERT_TRUE(tryLock < marker && marker < flush && flush < close);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("display_commit_export_schema=1"));
+    TEST_ASSERT_EQUAL(std::string::npos, body.find("SDLockBlocking"));
+    TEST_ASSERT_EQUAL(std::string::npos, body.find("vTaskDelay"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_commit_log_records_resolved_state_and_dispatch);
@@ -183,5 +202,6 @@ int main() {
     RUN_TEST(test_commit_log_is_inert_without_storage);
     RUN_TEST(test_commit_log_hands_out_monotonic_sequence_ids);
     RUN_TEST(test_commit_log_never_blocks_the_render_path);
+    RUN_TEST(test_commit_log_export_drain_is_nonblocking_and_writes_a_terminal_fence);
     return UNITY_END();
 }

@@ -38,6 +38,7 @@
 #include "modules/ble/connection_state_dispatch_module.h"
 #include "modules/ble/connection_state_module.h"
 #include "modules/display/display_orchestration_module.h"
+#include "modules/display/display_commit_log.h"
 #include "modules/display/display_pipeline_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
@@ -463,6 +464,8 @@ static void configureQualificationSerialModule() {
     providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes, void*) {
         return perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes);
     };
+    providers.displayCommitCsvPath = [](void*) { return v1DisplayCommitLog.csvPath(); };
+    providers.tryDrainDisplayCommit = [](void*) { return v1DisplayCommitLog.tryDrainAndClose(); };
     providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
     providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
     providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };

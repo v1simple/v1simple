@@ -395,6 +395,12 @@ void test_qualification_export_uses_current_perf_logical_prefix_without_changing
     const size_t exportDrain = handleGetBody.find("providers_.tryDrainPerf(providers_.ctx)", currentExport);
     const size_t openAfterDrain = handleGetBody.find("openExport(requested)", exportDrain);
     TEST_ASSERT_TRUE(currentExport < exportDrain && exportDrain < openAfterDrain);
+    const size_t currentDisplayExport =
+        handleGetBody.find("strcmp(requested, currentDisplayCommitPath) == 0", exportDrain);
+    const size_t displayDrain =
+        handleGetBody.find("providers_.tryDrainDisplayCommit(providers_.ctx)", currentDisplayExport);
+    const size_t openAfterDisplayDrain = handleGetBody.find("openExport(requested)", displayDrain);
+    TEST_ASSERT_TRUE(currentDisplayExport < displayDrain && displayDrain < openAfterDisplayDrain);
 
     const size_t serviceRun = qualification.find("void QualificationSerialModule::serviceRun(");
     const size_t serviceRunEnd = qualification.find("\nvoid QualificationSerialModule::serviceExport", serviceRun);
@@ -402,6 +408,7 @@ void test_qualification_export_uses_current_perf_logical_prefix_without_changing
     const size_t terminalError = serviceRunBody.find("state_ == State::Error");
     const size_t terminalDrain = serviceRunBody.find("providers_.tryDrainPerf(providers_.ctx)", terminalError);
     TEST_ASSERT_TRUE(terminalError < terminalDrain);
+    TEST_ASSERT_EQUAL(std::string::npos, serviceRunBody.find("tryDrainDisplayCommit"));
 
     const size_t openExport = qualification.find("bool QualificationSerialModule::openExport(");
     const size_t openExportEnd = qualification.find("\nvoid QualificationSerialModule::closeExport", openExport);
@@ -440,6 +447,10 @@ void test_qualification_export_uses_current_perf_logical_prefix_without_changing
         wiring.find("providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           wiring.find("perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          wiring.find("providers.displayCommitCsvPath = [](void*)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          wiring.find("v1DisplayCommitLog.tryDrainAndClose()"));
 }
 
 int main() {

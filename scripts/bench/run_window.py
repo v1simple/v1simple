@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import csv
 import errno
 import fcntl
 import glob
+import hashlib
 import json
 import math
 import os
 import pwd
+import re
 import secrets
 import signal
 import shutil
@@ -86,6 +89,50 @@ MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 # Six non-start events plus five accepted starts use 11 slots, so the existing
 # cap still records a violating sixth start as the twelfth event.
 MAX_HANDSHAKE_START_REQUESTS = 5
+DISPLAY_COMMIT_HEADER = (
+    "seq",
+    "millis",
+    "path",
+    "dispatch",
+    "render_us",
+    "pushes",
+    "arrows_to_show",
+    "blink_phase",
+    "arrow_painted",
+    "alert_count",
+    "region_x",
+    "region_y",
+    "region_w",
+    "region_h",
+    "active_bands",
+    "arrows",
+    "priority_arrow",
+    "signal_bars",
+    "flash_bits",
+    "band_flash_bits",
+    "muted",
+    "soft_muted",
+    "display_on",
+    "system_status",
+    "system_test",
+    "mode_char",
+    "bogey_char",
+    "bogey_dot",
+    "bogey_char2",
+    "main_volume",
+    "mute_volume",
+    "has_junk",
+    "has_photo",
+    "has_ku",
+    "dropped_commits",
+)
+DISPLAY_COMMIT_METADATA_LINE = (
+    "# display_commit_schema=1,timebase=millis,source=renderer_commit"
+)
+DISPLAY_COMMIT_EXPORT_MARKER = re.compile(
+    r"# display_commit_export_schema=1,terminal_seq=(0|[1-9][0-9]*),"
+    r"dropped_commits=(0|[1-9][0-9]*)"
+)
 MIN_HANDSHAKE_START_RETRY_MS = 1000
 MAX_HANDSHAKE_ELAPSED_MS = 0xFFFFFFFF
 ACCOUNT_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
@@ -1221,6 +1268,156 @@ def display_commit_csv_sd_path(perf_csv_sd_path: str) -> str:
     return f"/display_commits/display_commits_{boot_suffix}"
 
 
+def summarize_display_commit_artifact(
+    csv_path: Path | None,
+    out_dir: Path,
+    unavailable_reason: str = "",
+) -> dict[str, Any]:
+    """Describe the exact renderer-log prefix downloaded by QGETCSV."""
+    summary: dict[str, Any] = {
+        "status": "missing",
+        "scope": "boot_prefix_through_export",
+        "path": "",
+        "reason": unavailable_reason or "not_downloaded",
+    }
+    if csv_path is None:
+        return summary
+
+    try:
+        resolved_path = csv_path.resolve(strict=True)
+        relative_path = resolved_path.relative_to(out_dir.resolve()).as_posix()
+        payload = resolved_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        summary["reason"] = f"artifact_unreadable: {exc}"
+        return summary
+
+    summary.update(
+        {
+            "status": "partial",
+            "path": relative_path,
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "row_count": 0,
+            "first_sequence": 0,
+            "last_sequence": 0,
+            "terminal_sequence": 0,
+            "reported_dropped_commits": 0,
+            "sequence_contiguous_from_one": False,
+            "drop_counter_monotonic": False,
+        }
+    )
+
+    reasons: list[str] = []
+    try:
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        summary["reason"] = "invalid_utf8"
+        return summary
+
+    metadata: dict[str, str] = {}
+    metadata_lines: list[str] = []
+    export_marker_lines: list[str] = []
+    for line in lines:
+        if line.startswith("# display_commit_schema="):
+            metadata_lines.append(line)
+            for field in line[2:].split(","):
+                key, separator, value = field.partition("=")
+                if separator:
+                    metadata[key] = value
+        elif line.startswith("# display_commit_export_schema="):
+            export_marker_lines.append(line)
+
+    summary.update(
+        {
+            "csv_schema_version": metadata.get("display_commit_schema", ""),
+            "timebase": metadata.get("timebase", ""),
+            "source": metadata.get("source", ""),
+        }
+    )
+    if metadata_lines != [DISPLAY_COMMIT_METADATA_LINE]:
+        reasons.append("metadata_invalid")
+
+    csv_lines = [line for line in lines if line and not line.startswith("#")]
+    rows: list[list[str]] = []
+    header: list[str] = []
+    if csv_lines:
+        try:
+            reader = csv.reader(csv_lines, strict=True)
+            header = next(reader, [])
+            rows = list(reader)
+        except csv.Error:
+            reasons.append("csv_parse_error")
+    if tuple(header) != DISPLAY_COMMIT_HEADER:
+        reasons.append("header_invalid")
+
+    sequences: list[int] = []
+    row_drops: list[int] = []
+    if header and "seq" in header and "dropped_commits" in header:
+        seq_index = header.index("seq")
+        dropped_index = header.index("dropped_commits")
+        for row in rows:
+            if len(row) != len(header):
+                reasons.append("row_width_invalid")
+                continue
+            try:
+                sequence = int(row[seq_index])
+                dropped = int(row[dropped_index])
+            except ValueError:
+                reasons.append("row_value_invalid")
+                continue
+            if sequence <= 0 or dropped < 0:
+                reasons.append("row_value_invalid")
+                continue
+            sequences.append(sequence)
+            row_drops.append(dropped)
+
+    summary["row_count"] = len(rows)
+    if sequences:
+        summary["first_sequence"] = sequences[0]
+        summary["last_sequence"] = sequences[-1]
+        summary["sequence_contiguous_from_one"] = sequences[0] == 1 and all(
+            following == current + 1 for current, following in zip(sequences, sequences[1:])
+        )
+        summary["drop_counter_monotonic"] = all(
+            current <= following for current, following in zip(row_drops, row_drops[1:])
+        )
+    else:
+        reasons.append("no_commit_rows")
+
+    export_marker_line = export_marker_lines[-1] if export_marker_lines else ""
+    export_marker_match = DISPLAY_COMMIT_EXPORT_MARKER.fullmatch(export_marker_line)
+    if export_marker_match:
+        terminal_sequence = int(export_marker_match.group(1))
+        terminal_drops = int(export_marker_match.group(2))
+    else:
+        terminal_sequence = 0
+        terminal_drops = 0
+    summary["terminal_sequence"] = terminal_sequence
+    summary["reported_dropped_commits"] = terminal_drops
+    if not export_marker_match:
+        reasons.append("terminal_marker_missing")
+    last_nonempty_line = next((line for line in reversed(lines) if line), "")
+    if not export_marker_match or last_nonempty_line != export_marker_line:
+        reasons.append("terminal_marker_not_last")
+    if terminal_sequence <= 0 or terminal_sequence != summary["last_sequence"]:
+        reasons.append("terminal_sequence_mismatch")
+    if terminal_drops < 0:
+        reasons.append("terminal_drop_count_invalid")
+    elif terminal_drops > 0 or any(dropped > 0 for dropped in row_drops):
+        reasons.append("reported_drops")
+    if not summary["sequence_contiguous_from_one"]:
+        reasons.append("sequence_gap")
+    if not summary["drop_counter_monotonic"]:
+        reasons.append("drop_counter_regressed")
+    if row_drops and row_drops[-1] != terminal_drops:
+        reasons.append("terminal_drop_count_mismatch")
+
+    unique_reasons = list(dict.fromkeys(reasons))
+    summary["status"] = "complete" if not unique_reasons else "partial"
+    summary["reason"] = ",".join(unique_reasons)
+    return summary
+
+
 def run_import(
     args: argparse.Namespace,
     csv_path: Path,
@@ -1989,11 +2186,13 @@ def collect_live(
     out_dir: Path,
     after_upload: Callable[[], None] | None = None,
     identity_provider: Callable[[], dict[str, Any]] | None = None,
+    artifacts: dict[str, Any] | None = None,
 ) -> tuple[
     Path,
     Path | None,
     dict[str, Any],
     str,
+    dict[str, Any],
     dict[str, Any],
     dict[str, Any],
     dict[str, Any],
@@ -2010,6 +2209,7 @@ def collect_live(
             lease_fd=lease.fd,
             after_upload=after_upload,
             identity_provider=identity_provider,
+            artifacts=artifacts,
         )
 
 
@@ -2020,11 +2220,13 @@ def _collect_live(
     lease_fd: int,
     after_upload: Callable[[], None] | None = None,
     identity_provider: Callable[[], dict[str, Any]] | None = None,
+    artifacts: dict[str, Any] | None = None,
 ) -> tuple[
     Path,
     Path | None,
     dict[str, Any],
     str,
+    dict[str, Any],
     dict[str, Any],
     dict[str, Any],
     dict[str, Any],
@@ -2080,6 +2282,16 @@ def _collect_live(
     camera = CameraCapture(out_dir / "camera", args.duration_seconds) if args.camera else None
     camera_result: dict[str, Any] = {}
     encounter_csv_path: Path | None = None
+    if artifacts is None:
+        artifacts = {}
+    artifacts.setdefault(
+        "display_commits",
+        summarize_display_commit_artifact(
+            None,
+            out_dir,
+            "not_attempted",
+        ),
+    )
     collection_completed = False
 
     def admit_camera() -> None:
@@ -2238,16 +2450,29 @@ def _collect_live(
                 raise RuntimeError("Could not derive encounter CSV path from the perf CSV path")
             encounter_csv_path = download_csv(q, out_dir, args.export_idle_timeout_seconds, encounter_sd_path)
 
-        # What the renderer committed to showing, for every window that drove the
-        # display. Best effort on purpose: firmware without the commit log is still a
-        # valid run, so a missing file is reported and never fails collection. The
-        # investigator finds it by globbing the window directory.
+        # What the renderer committed to showing. It remains optional evidence, but
+        # its exact downloaded prefix is now owned and described by window_result.
         commit_sd_path = display_commit_csv_sd_path(str(completion.get("csvPath") or ""))
         if commit_sd_path:
             try:
-                download_csv(q, out_dir, args.export_idle_timeout_seconds, commit_sd_path)
+                commit_csv_path = download_csv(q, out_dir, args.export_idle_timeout_seconds, commit_sd_path)
+                artifacts["display_commits"] = summarize_display_commit_artifact(
+                    commit_csv_path,
+                    out_dir,
+                )
             except Exception as exc:  # noqa: BLE001 - evidence is optional, collection is not
                 print(f"[bench] display commit log unavailable ({exc})", flush=True)
+                artifacts["display_commits"] = summarize_display_commit_artifact(
+                    None,
+                    out_dir,
+                    f"export_failed: {exc}",
+                )
+        else:
+            artifacts["display_commits"] = summarize_display_commit_artifact(
+                None,
+                out_dir,
+                "path_derivation_failed",
+            )
         collection_completed = True
     finally:
         primary_error = sys.exc_info()[1]
@@ -2370,6 +2595,7 @@ def _collect_live(
         emulator_result,
         camera_result,
         reconnect_preflight_result,
+        artifacts,
     )
 
 
@@ -2473,6 +2699,13 @@ def main() -> int:
         )
         return 3
 
+    artifacts: dict[str, Any] = {
+        "display_commits": summarize_display_commit_artifact(
+            None,
+            out_dir,
+            "not_attempted",
+        )
+    }
     try:
         if args.from_csv:
             source = Path(args.from_csv).resolve()
@@ -2487,6 +2720,7 @@ def main() -> int:
             reconnect_preflight_result: dict[str, Any] = {}
             camera_result: dict[str, Any] = {}
             encounter_csv_path: Path | None = None
+            artifacts = {}
         else:
             (
                 csv_path,
@@ -2496,11 +2730,13 @@ def main() -> int:
                 emulator_result,
                 camera_result,
                 reconnect_preflight_result,
+                artifacts,
             ) = collect_live(
                 args,
                 out_dir,
                 after_upload=refresh_identity if args.upload else None,
                 identity_provider=lambda: identity,
+                artifacts=artifacts,
             )
 
         import_proc = run_import(args, csv_path, out_dir, identity)
@@ -2540,6 +2776,7 @@ def main() -> int:
                 "v1_emulator": emulator_result,
                 "replay": emulator_result if args.suite == "replay" else {},
                 "camera": camera_result,
+                "artifacts": artifacts,
                 "import_returncode": import_proc.returncode,
                 "manifest_path": str(manifest_path) if manifest_path.exists() else "",
                 "scoring_path": str(scoring_path) if scoring_path.exists() else "",
@@ -2567,6 +2804,7 @@ def main() -> int:
                 ),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
                 "reconnect_preflight": exc.reconnect_preflight,
+                "artifacts": artifacts,
                 "error": str(exc),
             },
         )
@@ -2619,6 +2857,7 @@ def main() -> int:
                 "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
                 "reconnect_preflight": exc.reconnect_preflight,
+                "artifacts": artifacts,
                 "error": str(exc),
             },
         )
@@ -2647,6 +2886,7 @@ def main() -> int:
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
                 "reconnect_preflight": exc.result,
                 "reconnect_failure_kind": exc.failure_kind,
+                "artifacts": artifacts,
                 "error": str(exc),
             },
         )
@@ -2663,6 +2903,7 @@ def main() -> int:
                 "git_ref": args.git_ref,
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
+                "artifacts": artifacts,
                 "error": str(exc),
             },
         )

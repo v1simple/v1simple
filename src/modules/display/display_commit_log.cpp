@@ -17,6 +17,8 @@ constexpr const char* COMMIT_HEADER =
     "region_x,region_y,region_w,region_h,active_bands,arrows,priority_arrow,signal_bars,flash_bits,"
     "band_flash_bits,muted,soft_muted,display_on,system_status,system_test,mode_char,bogey_char,"
     "bogey_dot,bogey_char2,main_volume,mute_volume,has_junk,has_photo,has_ku,dropped_commits\n";
+constexpr const char* COMMIT_EXPORT_MARKER_FORMAT =
+    "# display_commit_export_schema=1,terminal_seq=%lu,dropped_commits=%lu\n";
 
 #ifndef UNIT_TEST
 // Peak commit rate on a replay window is ~18/s against a writer that already keeps up
@@ -285,5 +287,44 @@ void V1DisplayCommitLog::drainAndClose(uint32_t timeoutMs) {
     }
 #else
     (void)timeoutMs;
+#endif
+}
+
+bool V1DisplayCommitLog::tryDrainAndClose() {
+#ifndef UNIT_TEST
+    if (!enabled_ || !queue_) {
+        return true;
+    }
+    // Qualification calls this from the same main-loop command path that owns
+    // record(), then opens the fixed-size export before returning to that loop.
+    // The writer task is the only concurrent owner and is covered by these two
+    // counters plus the SD mutex below.
+    if (pendingWrites_.load(std::memory_order_relaxed) > 0 || uxQueueMessagesWaiting(queue_) > 0) {
+        return false;
+    }
+
+    StorageManager::SDTryLock lock(storageManager.getSDMutex());
+    if (!lock || !ensureFileReady()) {
+        return false;
+    }
+
+    char marker[128];
+    const int markerLen =
+        snprintf(marker, sizeof(marker), COMMIT_EXPORT_MARKER_FORMAT, static_cast<unsigned long>(seq_),
+                 static_cast<unsigned long>(droppedSnapshots_.load(std::memory_order_relaxed)));
+    if (markerLen <= 0 || static_cast<size_t>(markerLen) >= sizeof(marker) ||
+        persistentFile_.print(marker) != static_cast<size_t>(markerLen)) {
+        persistentFile_.close();
+        headerReady_ = false;
+        return false;
+    }
+
+    persistentFile_.flush();
+    persistentFile_.close();
+    rowsSinceFlush_ = 0;
+    lastFlushMs_ = millis();
+    return true;
+#else
+    return true;
 #endif
 }

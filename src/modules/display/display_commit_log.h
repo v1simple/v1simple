@@ -71,6 +71,7 @@ class V1DisplayCommitLog {
     void begin(bool sdAvailable);
     void record(const V1DisplayCommitSnapshot& snapshot);
     void drainAndClose(uint32_t timeoutMs);
+    bool tryDrainAndClose();
 
     bool isEnabled() const { return enabled_; }
     const char* csvPath() const { return csvPathBuf_; }

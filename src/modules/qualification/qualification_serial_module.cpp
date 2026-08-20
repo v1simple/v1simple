@@ -361,6 +361,13 @@ void QualificationSerialModule::handleGetCsv(char* args) {
         sendErrorLine("perf_sd_busy_retry");
         return;
     }
+    const char* currentDisplayCommitPath =
+        providers_.displayCommitCsvPath ? providers_.displayCommitCsvPath(providers_.ctx) : nullptr;
+    if (currentDisplayCommitPath && strcmp(requested, currentDisplayCommitPath) == 0 &&
+        (!providers_.tryDrainDisplayCommit || !providers_.tryDrainDisplayCommit(providers_.ctx))) {
+        sendErrorLine("perf_sd_busy_retry");
+        return;
+    }
     if (!openExport(requested)) {
         sendErrorLine(lastError_[0] ? lastError_ : "export_open_failed");
     }

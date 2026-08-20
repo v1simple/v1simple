@@ -34,9 +34,12 @@ from run_window import summarize_display_commit_artifact  # noqa: E402
 
 FIELDS = ("alert_visible", "frequency_mhz", "direction")
 DIRECTIONS = {"FRONT", "SIDE", "REAR"}
+RAW_LOG_KEYS = ("bench_serial", "v1replay", "stdout", "stderr")
 EVIDENCE_ORDER = (
     "bench_result",
     "window_result",
+    "logs",
+    "replay_signals",
     "identity",
     "performance",
     "encounters",
@@ -47,6 +50,12 @@ EVIDENCE_ORDER = (
 OWNER_REFS = {
     "bench_result": ["bench_result.json"],
     "window_result": ["replay/window_result.json"],
+    "logs": ["replay/window_result.json#/raw_logs"],
+    "replay_signals": [
+        "replay/window_result.json#/replay_volume_signal",
+        "replay/window_result.json#/replay_mute_signal",
+        "replay/window_result.json#/replay_mode_signal",
+    ],
     "identity": ["replay/window_result.json#/identity_manifest"],
     "performance": [
         "replay/window_result.json#/csv_path",
@@ -161,6 +170,137 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def _schema_is(value: Any, expected: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == expected
+
+
+def _owned_inline_fact(window_fact: dict[str, Any], status: str, reason: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "path": window_fact.get("path", ""),
+        "sha256": window_fact.get("sha256", ""),
+        "size_bytes": window_fact.get("size_bytes", 0),
+        "reason": reason,
+    }
+
+
+def _raw_log_evidence(
+    run: Path,
+    replay: Path,
+    window: dict[str, Any],
+    window_fact: dict[str, Any],
+) -> dict[str, Any]:
+    raw = window.get("raw_logs")
+    if not isinstance(raw, dict):
+        return {**_owned_inline_fact(window_fact, "missing", "not_owned_by_window"), "streams": {}}
+    streams = raw.get("streams")
+    if not _schema_is(raw.get("schema_version"), 1) or not isinstance(streams, dict):
+        return {**_owned_inline_fact(window_fact, "partial", "unsupported_schema"), "streams": {}}
+
+    facts: dict[str, dict[str, Any]] = {}
+    reasons: list[str] = []
+    if set(streams) != set(RAW_LOG_KEYS):
+        reasons.append("stream_set_mismatch")
+    for key in RAW_LOG_KEYS:
+        path, error = _resolve(run, replay, streams.get(key))
+        fact = _fact(run, path, "complete" if not error else _unavailable(error), error)
+        if path is not None:
+            try:
+                fact["line_count"] = len(path.read_bytes().splitlines())
+            except OSError:
+                fact.update({"status": "partial", "reason": "io_error"})
+        else:
+            fact["line_count"] = 0
+        facts[key] = fact
+        if fact["status"] != "complete":
+            reasons.append(f"stream_{fact['reason']}:{key}")
+    reason = ",".join(dict.fromkeys(reasons))
+    return {
+        **_owned_inline_fact(window_fact, "complete" if not reason else "partial", reason),
+        "streams": facts,
+    }
+
+
+def _valid_signal_event(kind: str, event: Any) -> bool:
+    if not isinstance(event, dict):
+        return False
+    replay_second = event.get("replaySecond")
+    if not isinstance(replay_second, int) or isinstance(replay_second, bool) or replay_second < 0:
+        return False
+    if kind == "volume":
+        return (
+            set(event) == {"state", "replaySecond", "mainVolume", "muteVolume"}
+            and event.get("state") == "detector_volume"
+            and all(
+                isinstance(event.get(field), int)
+                and not isinstance(event.get(field), bool)
+                and 0 <= event[field] <= 9
+                for field in ("mainVolume", "muteVolume")
+            )
+        )
+    if kind == "mute":
+        return (
+            set(event) == {"state", "replaySecond", "muted"}
+            and event.get("state") == "detector_mute"
+            and isinstance(event.get("muted"), bool)
+        )
+    return (
+        set(event) == {"state", "replaySecond", "modeChar"}
+        and event.get("state") == "detector_mode"
+        and event.get("modeChar") in {"A", "l", "L"}
+    )
+
+
+def _replay_signal_evidence(
+    window: dict[str, Any],
+    window_fact: dict[str, Any],
+) -> dict[str, Any]:
+    signals: dict[str, dict[str, Any]] = {}
+    reasons: list[str] = []
+    for kind, field in (
+        ("volume", "replay_volume_signal"),
+        ("mute", "replay_mute_signal"),
+        ("mode", "replay_mode_signal"),
+    ):
+        value = window.get(field)
+        reason = ""
+        safe_events: list[dict[str, Any]] = []
+        if not isinstance(value, dict):
+            reason = "missing_signal"
+        elif not _schema_is(value.get("schema_version"), 1) or set(value) != {"schema_version", "events"}:
+            reason = "unsupported_schema"
+        else:
+            events = value.get("events")
+            if not isinstance(events, list) or not events or len(events) > 64:
+                reason = "events_invalid"
+            else:
+                for index, event in enumerate(events):
+                    if not _valid_signal_event(kind, event):
+                        reason = f"event_invalid:{index}"
+                        break
+                    safe_events.append(dict(event))
+                replay_seconds = [event["replaySecond"] for event in safe_events]
+                if not reason and any(current <= previous for previous, current in zip(replay_seconds, replay_seconds[1:])):
+                    reason = "event_order_invalid"
+        if reason:
+            signals[kind] = {"status": "partial", "reason": reason, "event_count": 0, "events": []}
+            reasons.append(f"{kind}_{reason}")
+        else:
+            signals[kind] = {
+                "status": "complete",
+                "reason": "",
+                "event_count": len(safe_events),
+                "first_replay_second": safe_events[0]["replaySecond"],
+                "last_replay_second": safe_events[-1]["replaySecond"],
+                "events": safe_events,
+            }
+    reason = ",".join(reasons)
+    return {
+        **_owned_inline_fact(window_fact, "complete" if not reason else "partial", reason),
+        "signals": signals,
+    }
+
+
 def _valid_comparison(
     value: Any,
     video_duration: float,
@@ -272,6 +412,8 @@ def build_report(run_directory: Path) -> dict[str, Any]:
         "bench_result": _fact(run, bench_path, "complete" if not bench_error else _unavailable(bench_error), bench_error),
         "window_result": _fact(run, window_path, "complete" if not window_error else _unavailable(window_error), window_error),
     }
+    evidence["logs"] = _raw_log_evidence(run, replay, window, evidence["window_result"])
+    evidence["replay_signals"] = _replay_signal_evidence(window, evidence["window_result"])
 
     identity_path, identity_path_error = _resolve(run, replay, window.get("identity_manifest"))
     identity: dict[str, Any] = {}

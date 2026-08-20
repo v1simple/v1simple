@@ -106,6 +106,14 @@ def fixture(
     replay_dir = run_dir / "replay"
     camera_dir = replay_dir / "camera"
     camera_dir.mkdir(parents=True)
+    raw_log_names = {
+        "bench_serial": "bench_serial.log",
+        "v1replay": "v1replay.log",
+        "stdout": "run.log",
+        "stderr": "run.err",
+    }
+    for key, name in raw_log_names.items():
+        (replay_dir / name).write_bytes(f"{key} line 1\n{key} line 2\n".encode("ascii"))
 
     identity = {
         "schema_version": 2,
@@ -294,6 +302,26 @@ def fixture(
             "grade": f"grades/{GRADER}.json",
             "grade_result": "PASS",
         },
+        "raw_logs": {"schema_version": 1, "streams": raw_log_names},
+        "replay_volume_signal": {
+            "schema_version": 1,
+            "events": [
+                {
+                    "state": "detector_volume",
+                    "replaySecond": 250,
+                    "mainVolume": 7,
+                    "muteVolume": 0,
+                }
+            ],
+        },
+        "replay_mute_signal": {
+            "schema_version": 1,
+            "events": [{"state": "detector_mute", "replaySecond": 185, "muted": True}],
+        },
+        "replay_mode_signal": {
+            "schema_version": 1,
+            "events": [{"state": "detector_mode", "replaySecond": 264, "modeChar": "A"}],
+        },
         "artifacts": {"display_commits": display_summary} if own_display else {},
     }
     write_json(replay_dir / "window_result.json", window)
@@ -322,6 +350,20 @@ def test_complete_report_is_deterministic_and_advisory() -> None:
         assert_true(
             all(item["status"] == "complete" for item in report["evidence"].values()),
             f"complete fixture became partial: {report['evidence']}",
+        )
+        assert_true(
+            all(
+                stream["line_count"] == 2
+                and stream["path"].startswith("replay/")
+                and stream["sha256"]
+                for stream in report["evidence"]["logs"]["streams"].values()
+            ),
+            f"raw logs were not safely inventoried: {report['evidence']['logs']}",
+        )
+        signals = report["evidence"]["replay_signals"]["signals"]
+        assert_true(
+            [signals[kind]["event_count"] for kind in ("volume", "mute", "mode")] == [1, 1, 1],
+            f"bounded replay signals were not consumed: {signals}",
         )
         ids = {item["id"] for item in report["findings"]}
         assert_true(
@@ -353,6 +395,64 @@ def test_partial_run_points_to_failures_without_inventing_correlation() -> None:
         assert_true(by_id["evidence-display_commits"]["state"] == "unknown", "missing renderer evidence became success")
         assert_true(by_id["evidence-camera_grade"]["state"] == "unknown", "legacy grade became complete")
         assert_true("renderer-camera-correlation-unmeasured" not in by_id, "missing streams were correlated")
+
+
+def test_raw_logs_and_replay_signals_require_owned_safe_inputs() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        run_dir = fixture(root)
+        replay_dir = run_dir / "replay"
+        outside = root / "outside.log"
+        outside.write_text("SENSITIVE_SENTINEL\n", encoding="utf-8")
+        window_path = replay_dir / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["raw_logs"]["streams"]["v1replay"] = str(outside)
+        window["replay_mode_signal"]["events"] = [
+            {
+                "state": "detector_mode",
+                "replaySecond": 264,
+                "modeChar": "SENSITIVE_SENTINEL",
+            }
+        ]
+        write_json(window_path, window)
+
+        report = bench_hunt.build_report(run_dir)
+        logs = report["evidence"]["logs"]
+        signals = report["evidence"]["replay_signals"]
+        assert_true(
+            logs["status"] == "partial" and "stream_outside_run:v1replay" in logs["reason"],
+            f"outside raw log was trusted: {logs}",
+        )
+        assert_true(
+            signals["status"] == "partial"
+            and signals["signals"]["mode"]["reason"] == "event_invalid:0",
+            f"malformed replay signal was trusted: {signals}",
+        )
+        serialized = json.dumps(report)
+        assert_true("SENSITIVE_SENTINEL" not in serialized, "raw or malformed input leaked into hunt.json")
+        findings = {item["id"]: item for item in report["findings"]}
+        assert_true(findings["evidence-logs"]["state"] == "unknown", "raw log gap became functional failure")
+        assert_true(
+            findings["evidence-replay_signals"]["state"] == "unknown",
+            "malformed replay signal became functional failure",
+        )
+
+
+def test_raw_logs_and_replay_signals_reject_boolean_schema_versions() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        run_dir = fixture(Path(temp))
+        window_path = run_dir / "replay" / "window_result.json"
+        window = json.loads(window_path.read_text(encoding="utf-8"))
+        window["raw_logs"]["schema_version"] = True
+        window["replay_volume_signal"]["schema_version"] = True
+        write_json(window_path, window)
+
+        report = bench_hunt.build_report(run_dir)
+        assert_true(report["evidence"]["logs"]["status"] == "partial", "boolean log schema was accepted")
+        assert_true(
+            report["evidence"]["replay_signals"]["status"] == "partial",
+            "boolean signal schema was accepted",
+        )
 
 
 def test_malformed_performance_is_unknown() -> None:
@@ -788,6 +888,8 @@ def test_cli_failure_does_not_echo_private_paths() -> None:
 def main() -> int:
     test_complete_report_is_deterministic_and_advisory()
     test_partial_run_points_to_failures_without_inventing_correlation()
+    test_raw_logs_and_replay_signals_require_owned_safe_inputs()
+    test_raw_logs_and_replay_signals_reject_boolean_schema_versions()
     test_malformed_performance_is_unknown()
     test_reported_renderer_loss_is_confirmed_but_incomplete()
     test_stale_scoring_and_unsupported_owner_schemas_are_unknown()

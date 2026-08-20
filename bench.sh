@@ -330,6 +330,8 @@ for suite in "${suites[@]}"; do
     --identity-manifest "$identity_manifest"
     --segment "$SEGMENT"
     --post-upload-settle-seconds "$POST_UPLOAD_SETTLE_SECONDS"
+    --runner-stdout-log "$step_dir/run.log"
+    --runner-stderr-log "$step_dir/run.err"
   )
   if [[ -z "$FROM_CSV" ]]; then
     args+=(--replay-executable "$V1REPLAY_EXECUTABLE")

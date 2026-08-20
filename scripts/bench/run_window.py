@@ -79,6 +79,7 @@ REPLAY_MUTE_SIGNAL_SCHEMA = 1
 DETECTOR_MUTE_EVENT_STATE = "detector_mute"
 REPLAY_MODE_SIGNAL_SCHEMA = 1
 DETECTOR_MODE_EVENT_STATE = "detector_mode"
+RAW_LOG_SCHEMA = 1
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
 RECONNECT_PREFLIGHT_START = "reconnect_preflight_start"
@@ -474,6 +475,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suite", choices=["core", "display", "replay"], required=True)
     parser.add_argument("--duration-seconds", type=int, default=300)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--runner-stdout-log", default="")
+    parser.add_argument("--runner-stderr-log", default="")
     parser.add_argument("--port", default=os.environ.get("DEVICE_PORT", ""))
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--board-id", default=os.environ.get("BENCH_BOARD_ID", "release"))
@@ -538,6 +541,40 @@ def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
     payload.setdefault("schema_version", 3)
     payload.setdefault("timestamp_utc", utc_now())
     (out_dir / "window_result.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def resolve_runner_log_paths(args: argparse.Namespace, out_dir: Path) -> dict[str, Path]:
+    """Accept only the two exact per-suite streams owned by bench.sh."""
+    result: dict[str, Path] = {}
+    for key, attribute, name in (
+        ("stdout", "runner_stdout_log", "run.log"),
+        ("stderr", "runner_stderr_log", "run.err"),
+    ):
+        reference = str(getattr(args, attribute, "") or "")
+        if not reference:
+            continue
+        path = Path(reference).resolve()
+        if path != (out_dir / name).resolve():
+            raise ValueError(f"--{attribute.replace('_', '-')} must name {name} inside --out-dir")
+        result[key] = path
+    return result
+
+
+def build_raw_log_ownership(out_dir: Path, runner_logs: dict[str, Path]) -> dict[str, Any]:
+    """Name existing raw streams without reading or interpreting their content."""
+    candidates = {
+        "bench_serial": out_dir / "bench_serial.log",
+        "v1replay": out_dir / "v1replay.log",
+        **runner_logs,
+    }
+    return {
+        "schema_version": RAW_LOG_SCHEMA,
+        "streams": {
+            key: path.relative_to(out_dir).as_posix()
+            for key, path in candidates.items()
+            if path.is_file()
+        },
+    }
 
 
 def retain_replay_volume_signal(
@@ -2679,6 +2716,14 @@ def main() -> int:
         args.blink_profile = "scenario" if args.suite == "replay" else "steady"
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        runner_logs = resolve_runner_log_paths(args, out_dir)
+    except ValueError as exc:
+        write_window_result(
+            out_dir,
+            {"result": "COLLECTION_FAILED", "suite": args.suite, "error": str(exc)},
+        )
+        return 3
 
     identity_path = Path(args.identity_manifest).resolve()
     identity: dict[str, Any] = {}
@@ -2849,6 +2894,7 @@ def main() -> int:
                     str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
                 ),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": (
                     reconnect_preflight_result if args.suite == "replay" else {}
                 ),
@@ -2898,6 +2944,7 @@ def main() -> int:
                     str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
                 ),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.reconnect_preflight,
                 "artifacts": artifacts,
                 "error": str(exc),
@@ -2951,6 +2998,7 @@ def main() -> int:
                 ),
                 "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.reconnect_preflight,
                 "artifacts": artifacts,
                 "error": str(exc),
@@ -2979,6 +3027,7 @@ def main() -> int:
                 ),
                 "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
                 "bench_serial_log_path": str(out_dir / "bench_serial.log"),
+                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.result,
                 "reconnect_failure_kind": exc.failure_kind,
                 "artifacts": artifacts,
@@ -2999,6 +3048,7 @@ def main() -> int:
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
                 "artifacts": artifacts,
+                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
                 "error": str(exc),
             },
         )

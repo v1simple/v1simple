@@ -69,6 +69,7 @@ from run_window import (  # noqa: E402
     V1_RADIO_LEASE_PATH,
     V1RadioLease,
     _preflight_ledger_is_complete,
+    build_raw_log_ownership,
     camera_grade_required,
     display_commit_csv_sd_path,
     encounter_csv_sd_path,
@@ -78,6 +79,7 @@ from run_window import (  # noqa: E402
     retain_replay_mode_signal,
     retain_replay_mute_signal,
     retain_replay_volume_signal,
+    resolve_runner_log_paths,
     start_and_wait,
     summarize_display_commit_artifact,
     wait_for_post_upload_settle,
@@ -1650,6 +1652,53 @@ def test_live_replay_retains_one_versioned_detector_mode_stream() -> None:
     assert_true(
         non_replay_emulator_result["detector_mode_events"] == expected_mode_events,
         "non-replay detector mode evidence was consumed",
+    )
+
+
+def test_raw_log_ownership_names_only_exact_bench_streams() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        out_dir = Path(temp).resolve()
+        stdout = out_dir / "run.log"
+        stderr = out_dir / "run.err"
+        args = SimpleNamespace(runner_stdout_log=str(stdout), runner_stderr_log=str(stderr))
+        runner_logs = resolve_runner_log_paths(args, out_dir)
+        assert_true(
+            runner_logs == {"stdout": stdout, "stderr": stderr},
+            f"runner log ownership changed: {runner_logs}",
+        )
+        for name in ("bench_serial.log", "v1replay.log", "run.log", "run.err"):
+            (out_dir / name).write_text(f"{name}\n", encoding="utf-8")
+        ownership = build_raw_log_ownership(out_dir, runner_logs)
+        assert_true(
+            ownership
+            == {
+                "schema_version": 1,
+                "streams": {
+                    "bench_serial": "bench_serial.log",
+                    "v1replay": "v1replay.log",
+                    "stdout": "run.log",
+                    "stderr": "run.err",
+                },
+            },
+            f"raw log ownership is not exact and bounded: {ownership}",
+        )
+
+        bad_args = SimpleNamespace(
+            runner_stdout_log=str(out_dir.parent / "outside.log"),
+            runner_stderr_log=str(stderr),
+        )
+        try:
+            resolve_runner_log_paths(bad_args, out_dir)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("runner accepted stdout outside the window directory")
+
+    bench_source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    assert_true(
+        '--runner-stdout-log "$step_dir/run.log"' in bench_source
+        and '--runner-stderr-log "$step_dir/run.err"' in bench_source,
+        "bench does not explicitly transfer runner stream ownership to the window",
     )
 
 
@@ -4811,6 +4860,7 @@ def main() -> int:
     test_live_replay_retains_one_versioned_detector_volume_stream()
     test_live_replay_retains_one_versioned_detector_mute_stream()
     test_live_replay_retains_one_versioned_detector_mode_stream()
+    test_raw_log_ownership_names_only_exact_bench_streams()
     test_replay_blink_profile_argv_and_result()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()
     test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()

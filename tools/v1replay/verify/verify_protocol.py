@@ -882,8 +882,8 @@ struct BenchVerifier {
         check(csv == BenchScenario.expectedCSV(for: BenchScenario.make()),
               "two generated exports are byte-identical")
         check(lines.first == Substring(header), "CSV has the exact 14-column header")
-        check(lines.count == 763, "CSV has one header and 762 timeline rows")
-        check(encounter.samples.count == 762, "scenario has 762 samples")
+        check(lines.count == 775, "CSV has one header and 774 timeline rows")
+        check(encounter.samples.count == 774, "scenario has 774 samples")
         check(encounter.samples.filter { !$0.alerts.isEmpty }.count == 708,
               "scenario has 708 active table publishes")
         check(encounter.samples.filter { $0.alerts.count == 3 }.count == 30,
@@ -901,7 +901,7 @@ struct BenchVerifier {
             "idle": 15, "k_encounter": 36, "ka_encounter": 36,
             "priority_handoff": 30, "three_bogeys": 30,
             "handoff_clear": 30, "duke_shaped_approach": 555,
-            "idle_tail": 30,
+            "idle_tail": 42,
         ]
         let phaseCounts = Dictionary(grouping: encounter.samples, by: { $0.phase })
             .mapValues(\.count)
@@ -948,7 +948,57 @@ struct BenchVerifier {
         check(plateau.count == 60 && plateau.allSatisfy { $0.priorityAlert?.strength == 6 },
               "Duke-shaped approach has an exact 20-second six-bar plateau")
         check(encounter.samples[(244 * 3)...].allSatisfy { $0.alerts.isEmpty },
-              "scenario ends with a clean 10-second idle tail")
+              "scenario ends with a clean 14-second idle tail")
+
+        let volumeCheckpoints = encounter.detectorVolumeCheckpoints
+        let expectedVolumeCheckpoints = [
+            DetectorVolumeCheckpoint(replaySecond: 244, mainVolume: 4, muteVolume: 0),
+            DetectorVolumeCheckpoint(replaySecond: 250, mainVolume: 7, muteVolume: 0),
+            DetectorVolumeCheckpoint(replaySecond: 252, mainVolume: 7, muteVolume: 2),
+            DetectorVolumeCheckpoint(replaySecond: 254, mainVolume: 4, muteVolume: 2),
+            DetectorVolumeCheckpoint(replaySecond: 256, mainVolume: 4, muteVolume: 0),
+        ]
+        check(volumeCheckpoints == expectedVolumeCheckpoints,
+              "idle tail owns the exact five detector-volume checkpoints")
+        check(volumeCheckpoints.map(\.machineEventLine) == [
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":244,\"mainVolume\":4,\"muteVolume\":0}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":250,\"mainVolume\":7,\"muteVolume\":0}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":252,\"mainVolume\":7,\"muteVolume\":2}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":254,\"mainVolume\":4,\"muteVolume\":2}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":256,\"mainVolume\":4,\"muteVolume\":0}",
+        ], "detector-volume events have the exact bounded machine schema")
+
+        for (index, checkpoint) in volumeCheckpoints.enumerated() {
+            let start = checkpoint.replaySecond * 3
+            let endSecond = index + 1 < volumeCheckpoints.count
+                ? volumeCheckpoints[index + 1].replaySecond
+                : BenchScenario.durationSeconds
+            check(encounter.detectorVolumeCheckpoint(at: start) == checkpoint,
+                  "detector volume applies once at checkpoint \(checkpoint.replaySecond)")
+            check(((start + 1)..<(endSecond * 3)).allSatisfy {
+                encounter.detectorVolumeCheckpoint(at: $0) == nil
+            }, "detector volume is not reapplied inside checkpoint hold \(checkpoint.replaySecond)")
+        }
+
+        var detectorSession = V1.Session()
+        let authoredAux2 = volumeCheckpoints.map { checkpoint -> UInt8 in
+            let control = detectorSession.applyDetectorCurrentVolume(
+                main: checkpoint.mainVolume,
+                muted: checkpoint.muteVolume
+            )
+            let packet = V1.PlaybackPacketPlan.idleDisplayPacket(
+                controlState: control,
+                displayOn: true,
+                muted: false
+            )
+            check(packet.count == 15, "authored idle display packet has literal checked width")
+            return packet[12]
+        }
+        check(authoredAux2 == [0x40, 0x70, 0x72, 0x42, 0x40],
+              "detector current-volume pairs reach literal idle Aux2 bytes")
+        check(detectorSession.controlState.mainVolume == 4
+              && detectorSession.controlState.mutedVolume == 0,
+              "detector current volume restores to 4/0")
 
         let steadyFront = V1.DisplayFrame.alerting(
             bars: 1, band: .ka, direction: .front, bogeyCount: 1,
@@ -1018,6 +1068,8 @@ def check_generated_swift_bench():
                 "-module-cache-path", str(module_cache),
                 str(source_root / "V1Protocol.swift"),
                 str(source_root / "Encounter.swift"),
+                str(source_root / "Session.swift"),
+                str(source_root / "PlaybackPacketPlan.swift"),
                 str(source_root / "BenchScenario.swift"),
                 str(harness),
                 "-o", str(binary),

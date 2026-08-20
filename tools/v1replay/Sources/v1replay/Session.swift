@@ -123,6 +123,18 @@ extension V1 {
             )
         }
 
+        /// Apply a modeled physical-V1 current-volume change. Bench playback
+        /// uses this once at each authored checkpoint; it is not a V1Simple
+        /// command and does not alter any other detector control.
+        @discardableResult
+        mutating func applyDetectorCurrentVolume(main: UInt8, muted: UInt8) -> ControlState {
+            precondition(main <= 9, "detector main volume must be 0...9")
+            precondition(muted <= 9, "detector mute volume must be 0...9")
+            controlState.mainVolume = main
+            controlState.mutedVolume = muted
+            return controlState
+        }
+
         var readiness: Readiness {
             return Readiness(
                 displaySubscribed: subscriptions.contains { $0.channel == .displayShort },

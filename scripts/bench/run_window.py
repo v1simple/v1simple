@@ -73,6 +73,8 @@ QABORT_CONFIRM_TIMEOUT_S = 5.0
 HANDSHAKE_LEDGER_NAME = "handshake_ledger.jsonl"
 RECONNECT_LEDGER_NAME = "handshake_ledger_preflight.jsonl"
 RECONNECT_LOG_NAME = "v1replay_reconnect_preflight.log"
+REPLAY_VOLUME_SIGNAL_SCHEMA = 1
+DETECTOR_VOLUME_EVENT_STATE = "detector_volume"
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
 RECONNECT_PREFLIGHT_START = "reconnect_preflight_start"
@@ -532,6 +534,21 @@ def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
     payload.setdefault("schema_version", 3)
     payload.setdefault("timestamp_utc", utc_now())
     (out_dir / "window_result.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def retain_replay_volume_signal(
+    emulator_result: dict[str, Any],
+    *,
+    suite: str,
+    live: bool,
+) -> dict[str, Any] | None:
+    """Move the bounded detector-volume stream into one versioned window field."""
+    if suite != "replay" or not live:
+        return None
+    return {
+        "schema_version": REPLAY_VOLUME_SIGNAL_SCHEMA,
+        "events": emulator_result.pop("detector_volume_events", []),
+    }
 
 
 def install_signal_handlers() -> None:
@@ -1931,6 +1948,9 @@ class V1Emulator:
         elif self.process is not None:
             self.returncode = self.process.poll()
         self._close_log()
+        detector_volume_events = (
+            self._bench_events(DETECTOR_VOLUME_EVENT_STATE) if self.mode == "bench" else []
+        )
         idle_shutdown_valid = self.mode != "idle"
         if self.mode == "idle" and process_was_running and self.session_transport_owned:
             # Grade only after the child has exited and flushed the complete
@@ -1942,7 +1962,7 @@ class V1Emulator:
                 "idle V1 emulator completed without prior current-process ownership admission"
             )
         self.completed = bool(base_completed and idle_shutdown_valid)
-        return {
+        result = {
             "started": self.started,
             "completed": self.completed,
             "mode": self.mode,
@@ -1969,6 +1989,9 @@ class V1Emulator:
                 replay_started_monotonic if math.isfinite(replay_started_monotonic) else None
             ),
         }
+        if self.mode == "bench":
+            result["detector_volume_events"] = detector_volume_events
+        return result
 
     def _close_log(self) -> None:
         if self.log_handle is not None:
@@ -2739,6 +2762,11 @@ def main() -> int:
                 artifacts=artifacts,
             )
 
+        replay_volume_signal = retain_replay_volume_signal(
+            emulator_result,
+            suite=args.suite,
+            live=not bool(args.from_csv),
+        )
         import_proc = run_import(args, csv_path, out_dir, identity)
         scoring_path = out_dir / "scoring.json"
         manifest_path = out_dir / "manifest.json"
@@ -2775,6 +2803,11 @@ def main() -> int:
                 "completion": completion,
                 "v1_emulator": emulator_result,
                 "replay": emulator_result if args.suite == "replay" else {},
+                **(
+                    {"replay_volume_signal": replay_volume_signal}
+                    if replay_volume_signal is not None
+                    else {}
+                ),
                 "camera": camera_result,
                 "artifacts": artifacts,
                 "import_returncode": import_proc.returncode,

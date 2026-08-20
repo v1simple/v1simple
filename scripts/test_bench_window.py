@@ -75,6 +75,7 @@ from run_window import (  # noqa: E402
     establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
+    retain_replay_volume_signal,
     start_and_wait,
     summarize_display_commit_artifact,
     wait_for_post_upload_settle,
@@ -113,6 +114,7 @@ def write_dummy_emulator(
     emit_stopped: bool = True,
     stop_exit_code: int = 0,
     stop_events: tuple[str, ...] | None = None,
+    detector_volume_events: tuple[tuple[int, int, int], ...] = (),
 ) -> None:
     configured = "true"
     if blink_profile:
@@ -126,6 +128,20 @@ def write_dummy_emulator(
         )
         configured += "\necho 'status V1REPLAY_EVENT {\"state\":\"replay_started\",\"hostMonotonicSeconds\":12345.5}'"
     marker = 'echo \'V1REPLAY_EVENT {"state":"complete"}\'' if emit_complete else "true"
+    volume_events = "\n".join(
+        "echo 'V1REPLAY_EVENT "
+        + json.dumps(
+            {
+                "state": "detector_volume",
+                "replaySecond": replay_second,
+                "mainVolume": main_volume,
+                "muteVolume": mute_volume,
+            },
+            separators=(",", ":"),
+        )
+        + "'"
+        for replay_second, main_volume, mute_volume in detector_volume_events
+    ) or "true"
     session_transport = (
         'echo \'V1REPLAY_EVENT {"state":"session_transport","active":true}\''
         if emit_session_transport
@@ -149,6 +165,7 @@ def write_dummy_emulator(
         f"trap '{stop_commands}; exit {stop_exit_code}' TERM INT\n"
         "echo argv=$*\n"
         f"{configured}\n"
+        f"{volume_events}\n"
         f"{marker}\n"
         f"{session_transport}\n"
         "while :; do sleep 1; done\n",
@@ -1270,6 +1287,10 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
         assert_true(result["completed"] is True, f"completion marker was not honored: {result}")
         assert_true(result["mode"] == "bench", f"wrong replay mode: {result}")
         assert_true(
+            result["detector_volume_events"] == [],
+            f"missing detector events were not retained as empty evidence: {result}",
+        )
+        assert_true(
             result["replay_started_monotonic_seconds"] == 12345.5,
             f"first replay sample time was not recorded: {result}",
         )
@@ -1303,6 +1324,113 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
             unconfigured_result["completed"] is False,
             f"replay without blink provenance passed: {unconfigured_result}",
         )
+
+
+def test_live_replay_retains_one_versioned_detector_volume_stream() -> None:
+    expected_volume_events = [
+        {
+            "state": "detector_volume",
+            "replaySecond": replay_second,
+            "mainVolume": main_volume,
+            "muteVolume": mute_volume,
+        }
+        for replay_second, main_volume, mute_volume in (
+            (244, 4, 0),
+            (250, 7, 0),
+            (252, 7, 2),
+            (254, 4, 2),
+            (256, 4, 0),
+        )
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=True,
+            blink_profile="scenario",
+            blink_samples=57,
+            detector_volume_events=tuple(
+                (
+                    event["replaySecond"],
+                    event["mainVolume"],
+                    event["muteVolume"],
+                )
+                for event in expected_volume_events
+            ),
+        )
+        emulator = V1Emulator(executable, root / "replay", "replay")
+        emulator.start()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not emulator._bench_completed():
+            time.sleep(0.02)
+        emulator_result = emulator.finish(window_completed=True)
+
+    assert_true(
+        emulator_result["detector_volume_events"] == expected_volume_events,
+        f"detector volume events were not retained in order: {emulator_result}",
+    )
+    volume_signal = retain_replay_volume_signal(
+        emulator_result,
+        suite="replay",
+        live=True,
+    )
+    assert_true(
+        volume_signal == {"schema_version": 1, "events": expected_volume_events},
+        f"versioned detector volume signal was not built: {volume_signal}",
+    )
+    assert_true(
+        "detector_volume_events" not in emulator_result,
+        f"detector volume events were duplicated in emulator evidence: {emulator_result}",
+    )
+
+    for retained_events in (
+        [],
+        [{"state": "detector_volume", "mainVolume": "malformed"}],
+    ):
+        retained_result = {"detector_volume_events": retained_events}
+        retained_signal = retain_replay_volume_signal(
+            retained_result,
+            suite="replay",
+            live=True,
+        )
+        assert_true(
+            retained_signal == {"schema_version": 1, "events": retained_events},
+            f"empty or malformed detector evidence was hidden: {retained_signal}",
+        )
+        assert_true(
+            "detector_volume_events" not in retained_result,
+            f"detector evidence remained duplicated: {retained_result}",
+        )
+
+    legacy_emulator_result = {"detector_volume_events": expected_volume_events}
+    assert_true(
+        retain_replay_volume_signal(
+            legacy_emulator_result,
+            suite="replay",
+            live=False,
+        )
+        is None,
+        "offline replay unexpectedly gained the live volume contract",
+    )
+    assert_true(
+        legacy_emulator_result["detector_volume_events"] == expected_volume_events,
+        "offline replay evidence was consumed",
+    )
+    non_replay_emulator_result = {"detector_volume_events": expected_volume_events}
+    assert_true(
+        retain_replay_volume_signal(
+            non_replay_emulator_result,
+            suite="core",
+            live=True,
+        )
+        is None,
+        "non-replay window unexpectedly gained the volume contract",
+    )
+    assert_true(
+        non_replay_emulator_result["detector_volume_events"] == expected_volume_events,
+        "non-replay emulator evidence was consumed",
+    )
 
 
 def test_replay_blink_profile_argv_and_result() -> None:
@@ -4267,12 +4395,24 @@ def test_v1replay_player_uses_live_control_snapshot() -> None:
     source_dir = ROOT / "tools" / "v1replay" / "Sources" / "v1replay"
     player = (source_dir / "Player.swift").read_text()
     options = player.split("struct Options {", 1)[1].split("\n    }", 1)[0]
+    idle_method = player.split("private func sendIdleFrame()", 1)[1].split(
+        "private func sendEmptyAlertTable", 1
+    )[0]
+    active_method = player.split("private func emit(sampleAt index: Int)", 1)[1].split(
+        "/// Sleep until", 1
+    )[0]
 
     assert_true("var mode:" not in options, "Player.Options duplicates session mode")
     assert_true("var volume:" not in options, "Player.Options duplicates session volume")
     assert_true(
-        player.count("let control = peripheral.controlState") == 2,
-        "idle and active Player paths do not each read live session control state",
+        "let control = peripheral.controlState" in idle_method,
+        "idle Player path does not read live session control state",
+    )
+    assert_true(
+        "let checkpoint = encounter.detectorVolumeCheckpoint(at: index)" in active_method
+        and "control = peripheral.applyDetectorCurrentVolume(checkpoint.volume)" in active_method
+        and "control = peripheral.controlState" in active_method,
+        "active Player path does not apply checkpoint edges and otherwise retain live state",
     )
     assert_true(
         player.count("controlState: control") == 2,
@@ -4436,6 +4576,7 @@ def main() -> int:
     test_live_cleanup_stops_emulators_before_serial_and_camera()
     test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails()
     test_replay_requires_machine_completion_before_managed_stop()
+    test_live_replay_retains_one_versioned_detector_volume_stream()
     test_replay_blink_profile_argv_and_result()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()
     test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()

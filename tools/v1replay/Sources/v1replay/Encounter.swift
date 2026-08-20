@@ -40,12 +40,50 @@ struct ReplayAlert {
     }
 }
 
+/// One detector-authored current-volume pair carried by infDisplayData aux2.
+/// Saved-volume state is deliberately outside this replay stimulus.
+struct DetectorVolume: Equatable {
+    let mainVolume: UInt8
+    let muteVolume: UInt8
+
+    init(mainVolume: UInt8, muteVolume: UInt8) {
+        precondition(mainVolume <= 9, "detector main volume must be 0...9")
+        precondition(muteVolume <= 9, "detector mute volume must be 0...9")
+        self.mainVolume = mainVolume
+        self.muteVolume = muteVolume
+    }
+}
+
+/// The bounded machine-readable record emitted when an authored detector
+/// volume begins. This is intentionally specific to the fixed bench stimulus.
+struct DetectorVolumeCheckpoint: Equatable {
+    let replaySecond: Int
+    let volume: DetectorVolume
+
+    init(replaySecond: Int, mainVolume: UInt8, muteVolume: UInt8) {
+        precondition(replaySecond >= 0, "replay second must be non-negative")
+        self.replaySecond = replaySecond
+        self.volume = DetectorVolume(mainVolume: mainVolume, muteVolume: muteVolume)
+    }
+
+    var mainVolume: UInt8 { return volume.mainVolume }
+    var muteVolume: UInt8 { return volume.muteVolume }
+
+    var machineEventLine: String {
+        return "V1REPLAY_EVENT {\"state\":\"detector_volume\","
+            + "\"replaySecond\":\(replaySecond),"
+            + "\"mainVolume\":\(mainVolume),"
+            + "\"muteVolume\":\(muteVolume)}"
+    }
+}
+
 /// One replay step: the complete ordered alert table to transmit, and when.
 struct TimedSample {
     let offset: TimeInterval
     let phase: String
     let muted: Bool
     let alerts: [ReplayAlert]
+    let detectorVolume: DetectorVolume?
     let scenarioArrowBlink: Bool
     let sourceIndex: Int
 
@@ -53,6 +91,7 @@ struct TimedSample {
          phase: String,
          muted: Bool,
          alerts: [ReplayAlert],
+         detectorVolume: DetectorVolume? = nil,
          scenarioArrowBlink: Bool = false,
          sourceIndex: Int) {
         precondition((0...3).contains(alerts.count), "replay steps support zero through three alerts")
@@ -66,6 +105,7 @@ struct TimedSample {
         self.phase = phase
         self.muted = muted
         self.alerts = alerts
+        self.detectorVolume = detectorVolume
         self.scenarioArrowBlink = scenarioArrowBlink
         self.sourceIndex = sourceIndex
     }
@@ -81,6 +121,7 @@ struct TimedSample {
     fileprivate func hasSameState(as other: TimedSample) -> Bool {
         guard phase == other.phase,
               muted == other.muted,
+              detectorVolume == other.detectorVolume,
               scenarioArrowBlink == other.scenarioArrowBlink,
               alerts.count == other.alerts.count else {
             return false
@@ -298,6 +339,7 @@ struct Encounter {
                         phase: sample.phase,
                         muted: sample.muted,
                         alerts: sample.alerts,
+                        detectorVolume: sample.detectorVolume,
                         scenarioArrowBlink: sample.scenarioArrowBlink,
                         sourceIndex: sample.sourceIndex)
         }
@@ -323,6 +365,22 @@ struct Encounter {
             previous = sample
         }
         return result
+    }
+
+    func detectorVolumeCheckpoint(at index: Int) -> DetectorVolumeCheckpoint? {
+        guard samples.indices.contains(index),
+              let volume = samples[index].detectorVolume else { return nil }
+        let previous = index > samples.startIndex ? samples[index - 1].detectorVolume : nil
+        guard previous != volume else { return nil }
+        return DetectorVolumeCheckpoint(
+            replaySecond: Int(samples[index].offset),
+            mainVolume: volume.mainVolume,
+            muteVolume: volume.muteVolume
+        )
+    }
+
+    var detectorVolumeCheckpoints: [DetectorVolumeCheckpoint] {
+        return samples.indices.compactMap(detectorVolumeCheckpoint(at:))
     }
 }
 

@@ -170,6 +170,7 @@ func loadEncounter() throws -> Encounter {
             }
             return TimedSample(offset: sample.offset, phase: sample.phase,
                                muted: sample.muted, alerts: alerts,
+                               detectorVolume: sample.detectorVolume,
                                scenarioArrowBlink: sample.scenarioArrowBlink,
                                sourceIndex: sample.sourceIndex)
         }
@@ -258,7 +259,7 @@ func runHelp() {
       --idle-tail <sec>    idle frames after the encounter (default 3)
       --idle-hz <hz>       idle frame cadence (default 3)
 
-      The bench owns its 5-second lead and 10-second tail, and waits for both
+      The bench owns its 5-second lead and 14-second tail, and waits for both
       display subscription and the firmware's alert-data request before starting.
 
     \(Ansi.bold)PROTOCOL\(Ansi.reset)
@@ -643,6 +644,11 @@ func runPlay(idleOnly: Bool,
             }
         }
         sessionTransportEvents?.emit(peripheral.sessionTransportActive)
+    }
+    if machineEvents && bench {
+        player.onDetectorVolumeCheckpoint = { checkpoint in
+            console.print(checkpoint.machineEventLine)
+        }
     }
     if machineEvents && bench {
         console.print("V1REPLAY_EVENT {\"state\":\"configured\","

@@ -212,6 +212,14 @@ final class V1Peripheral: NSObject {
     var controlState: V1.Session.ControlState {
         return withState { $0.session.controlState }
     }
+    func applyDetectorCurrentVolume(_ volume: DetectorVolume) -> V1.Session.ControlState {
+        return withState {
+            $0.session.applyDetectorCurrentVolume(
+                main: volume.mainVolume,
+                muted: volume.muteVolume
+            )
+        }
+    }
 
     let queue = DispatchQueue(label: "com.v1simple.v1replay.ble")
     private let queueIdentityKey = DispatchSpecificKey<UInt8>()

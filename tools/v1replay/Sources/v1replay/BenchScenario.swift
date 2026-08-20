@@ -10,7 +10,18 @@ import Foundation
 
 enum BenchScenario {
     static let cadenceHz = 3
-    static let durationSeconds = 254
+    static let durationSeconds = 258
+    static let detectorVolumeCheckpoints = [
+        DetectorVolumeCheckpoint(replaySecond: 244, mainVolume: 4, muteVolume: 0),
+        DetectorVolumeCheckpoint(replaySecond: 250, mainVolume: 7, muteVolume: 0),
+        DetectorVolumeCheckpoint(replaySecond: 252, mainVolume: 7, muteVolume: 2),
+        DetectorVolumeCheckpoint(replaySecond: 254, mainVolume: 4, muteVolume: 2),
+        DetectorVolumeCheckpoint(replaySecond: 256, mainVolume: 4, muteVolume: 0),
+    ]
+
+    private static func detectorVolume(at second: Int) -> DetectorVolume? {
+        return detectorVolumeCheckpoints.last(where: { $0.replaySecond <= second })?.volume
+    }
 
     private static func alert(_ band: V1.Band,
                               _ frequencyMHz: UInt16,
@@ -162,6 +173,7 @@ enum BenchScenario {
                                        phase: phase,
                                        muted: false,
                                        alerts: alerts,
+                                       detectorVolume: detectorVolume(at: second),
                                        scenarioArrowBlink: scenarioArrowBlink,
                                        sourceIndex: tick))
         }
@@ -187,7 +199,7 @@ enum BenchScenario {
             "three_bogeys": 30,
             "handoff_clear": 30,
             "duke_shaped_approach": 555,
-            "idle_tail": 30,
+            "idle_tail": 42,
         ])
         precondition(samples.filter { !$0.alerts.isEmpty }.count == 708)
         precondition(samples.filter { $0.alerts.count == 3 }.count == 30)
@@ -216,6 +228,24 @@ enum BenchScenario {
         let plateauEnd = dukeStart + 140 * cadenceHz
         precondition(samples[plateauStart..<plateauEnd].allSatisfy { $0.priorityAlert?.strength == 6 })
         precondition(samples[(244 * cadenceHz)...].allSatisfy { $0.alerts.isEmpty })
+
+        precondition(samples[..<(244 * cadenceHz)].allSatisfy { $0.detectorVolume == nil })
+        let observedVolumeCheckpoints = Encounter(
+            origin: .syntheticBench,
+            samples: samples
+        ).detectorVolumeCheckpoints
+        precondition(observedVolumeCheckpoints == detectorVolumeCheckpoints)
+        for (index, checkpoint) in detectorVolumeCheckpoints.enumerated() {
+            let start = checkpoint.replaySecond * cadenceHz
+            let endSecond = index + 1 < detectorVolumeCheckpoints.count
+                ? detectorVolumeCheckpoints[index + 1].replaySecond
+                : durationSeconds
+            let end = endSecond * cadenceHz
+            precondition(samples[start..<end].allSatisfy {
+                $0.detectorVolume == checkpoint.volume
+            })
+        }
+        precondition(samples.last?.detectorVolume == DetectorVolume(mainVolume: 4, muteVolume: 0))
     }
 
     static func expectedCSV(for encounter: Encounter) -> String {

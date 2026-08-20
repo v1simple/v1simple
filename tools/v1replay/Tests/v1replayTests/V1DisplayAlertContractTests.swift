@@ -322,6 +322,63 @@ final class V1DisplayAlertContractTests: XCTestCase {
         ])
     }
 
+    func testBenchDetectorVolumeCheckpointsApplyOnceAndReachLiteralIdleAux2() throws {
+        let encounter = BenchScenario.make()
+        let expected = [
+            DetectorVolumeCheckpoint(replaySecond: 244, mainVolume: 4, muteVolume: 0),
+            DetectorVolumeCheckpoint(replaySecond: 250, mainVolume: 7, muteVolume: 0),
+            DetectorVolumeCheckpoint(replaySecond: 252, mainVolume: 7, muteVolume: 2),
+            DetectorVolumeCheckpoint(replaySecond: 254, mainVolume: 4, muteVolume: 2),
+            DetectorVolumeCheckpoint(replaySecond: 256, mainVolume: 4, muteVolume: 0),
+        ]
+        let expectedAux2: [UInt8] = [0x40, 0x70, 0x72, 0x42, 0x40]
+        let expectedLines = [
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":244,\"mainVolume\":4,\"muteVolume\":0}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":250,\"mainVolume\":7,\"muteVolume\":0}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":252,\"mainVolume\":7,\"muteVolume\":2}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":254,\"mainVolume\":4,\"muteVolume\":2}",
+            "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":256,\"mainVolume\":4,\"muteVolume\":0}",
+        ]
+
+        XCTAssertEqual(encounter.samples.count, 774)
+        XCTAssertEqual(BenchScenario.detectorVolumeCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorVolumeCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorVolumeCheckpoints.map(\.machineEventLine), expectedLines)
+        XCTAssertTrue(encounter.samples[..<(244 * 3)].allSatisfy {
+            $0.detectorVolume == nil
+        })
+
+        var session = V1.Session()
+        for (index, checkpoint) in expected.enumerated() {
+            let sampleIndex = checkpoint.replaySecond * 3
+            XCTAssertEqual(encounter.detectorVolumeCheckpoint(at: sampleIndex), checkpoint)
+            let nextSecond = index + 1 < expected.count
+                ? expected[index + 1].replaySecond
+                : BenchScenario.durationSeconds
+            for heldIndex in (sampleIndex + 1)..<(nextSecond * 3) {
+                XCTAssertNil(encounter.detectorVolumeCheckpoint(at: heldIndex))
+                XCTAssertEqual(encounter.samples[heldIndex].detectorVolume, checkpoint.volume)
+            }
+
+            let control = session.applyDetectorCurrentVolume(
+                main: checkpoint.mainVolume,
+                muted: checkpoint.muteVolume
+            )
+            let packet = V1.PlaybackPacketPlan.idleDisplayPacket(
+                controlState: control,
+                displayOn: true,
+                muted: false
+            )
+            let decoded = try IndependentFrame.decode(packet)
+            XCTAssertEqual(decoded.packetID, 0x31)
+            XCTAssertEqual(decoded.payload[7], expectedAux2[index])
+        }
+
+        XCTAssertEqual(session.controlState.mainVolume, 4)
+        XCTAssertEqual(session.controlState.mutedVolume, 0)
+        XCTAssertEqual(session.controlState.displayVolume, 0x40)
+    }
+
     func testExplicitDraftHeaderPreservesFixtureAux1() {
         let control = V1.Session.ControlState(
             mode: .advancedLogic,

@@ -77,6 +77,7 @@ final class Player {
 
     var onLog: ((String) -> Void)?
     var onReplayStarted: ((Double) -> Void)?
+    var onDetectorVolumeCheckpoint: ((DetectorVolumeCheckpoint) -> Void)?
 
     init(encounter: Encounter, peripheral: V1Peripheral, options: Options) {
         self.encounter = encounter
@@ -451,10 +452,21 @@ final class Player {
         let muted = _muteOverride ?? sample.muted
         let displayOn = _displayOn
         lock.unlock()
-        // Read one atomic protocol-state snapshot for the complete generated
-        // table/display emission. A coalesced command cannot mix old mode with
-        // new volume (or vice versa) inside one display frame.
-        let control = peripheral.controlState
+        // Apply the authored physical-V1 current pair once at its checkpoint
+        // boundary, before taking the one atomic protocol-state snapshot used
+        // by the complete table/display emission. The session then owns the
+        // held value; a later V1Simple write remains observable rather than
+        // being masked by a per-frame scenario override.
+        let checkpoint = encounter.detectorVolumeCheckpoint(at: index)
+        let control: V1.Session.ControlState
+        if let checkpoint = checkpoint {
+            control = peripheral.applyDetectorCurrentVolume(checkpoint.volume)
+        } else {
+            control = peripheral.controlState
+        }
+        if let checkpoint = checkpoint {
+            onDetectorVolumeCheckpoint?(checkpoint)
+        }
 
         let includeAlertTable = options.sendAlerts
             && (!options.requireStartAlertData || peripheral.alertDataRequested)

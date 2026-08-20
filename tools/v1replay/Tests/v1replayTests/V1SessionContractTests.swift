@@ -436,6 +436,31 @@ final class V1SessionContractTests: XCTestCase {
     }
 
     /// Public behavior ID: `V1-CONTROL-VOLUME-001`.
+    func testDetectorCurrentVolumeAppliesWithoutAnInboundCommand() {
+        var session = V1.Session()
+        let authoredPairs: [(main: UInt8, muted: UInt8, displayByte: UInt8)] = [
+            (4, 0, 0x40),
+            (7, 0, 0x70),
+            (7, 2, 0x72),
+            (4, 2, 0x42),
+            (4, 0, 0x40),
+        ]
+
+        for pair in authoredPairs {
+            let applied = session.applyDetectorCurrentVolume(
+                main: pair.main,
+                muted: pair.muted
+            )
+            XCTAssertEqual(applied.mainVolume, pair.main)
+            XCTAssertEqual(applied.mutedVolume, pair.muted)
+            XCTAssertEqual(applied.displayVolume, pair.displayByte)
+            XCTAssertEqual(applied.savedMainVolume, 4)
+            XCTAssertEqual(applied.savedMutedVolume, 0)
+            XCTAssertEqual(session.controlState, applied)
+        }
+    }
+
+    /// Public behavior ID: `V1-CONTROL-VOLUME-001`.
     func testCoalescedVolumeWriteMutatesCurrentInOrderAndKeepsSavedPair() {
         var session = V1.Session()
         let allVolume: [UInt8] = [

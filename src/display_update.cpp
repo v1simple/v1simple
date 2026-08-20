@@ -22,6 +22,7 @@
 #include "display_flush.h"
 #include "display_vol_warn.h"
 #include "modules/alp/alp_runtime_module.h"
+#include "modules/display/display_commit_log.h"
 #include "settings.h"
 #include "perf_metrics.h"
 #include "packet_parser.h"
@@ -66,6 +67,34 @@ struct DispatchRectList {
     DrawnRegion::Rect rects[DrawnRegion::MAX_RECTS]{};
     uint8_t count = 0;
 };
+
+// One record per display commit: the DisplayState the renderer consumed, the values
+// it resolved from that state, and how the result reached the panel. The snapshot is
+// copied into a zero-wait queue, so the render path never waits on storage.
+void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, uint8_t arrowsToShow, uint8_t alertCount,
+                         bool blinkPhase, bool arrowPainted, V1DisplayCommitDispatch dispatch, int16_t regionX,
+                         int16_t regionY, int16_t regionW, int16_t regionH, uint32_t commitStartUs, uint32_t pushes) {
+    if (!v1DisplayCommitLog.isEnabled()) {
+        return;
+    }
+    V1DisplayCommitSnapshot commit;
+    commit.seq = v1DisplayCommitLog.nextSeq();
+    commit.millisTs = static_cast<uint32_t>(millis());
+    commit.renderUs = static_cast<uint32_t>(micros()) - commitStartUs;
+    commit.pushes = pushes;
+    commit.path = path;
+    commit.dispatch = dispatch;
+    commit.arrowsToShow = arrowsToShow;
+    commit.blinkPhase = blinkPhase ? 1 : 0;
+    commit.arrowPainted = arrowPainted ? 1 : 0;
+    commit.alertCount = alertCount;
+    commit.regionX = regionX;
+    commit.regionY = regionY;
+    commit.regionW = regionW;
+    commit.regionH = regionH;
+    commit.state = state;
+    v1DisplayCommitLog.record(commit);
+}
 
 bool clipToFramebuffer(DrawnRegion::Rect& rect) {
     int16_t x = rect.x;
@@ -627,6 +656,8 @@ void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool to
 void V1Display::update(const DisplayState& state) {
     // Not in persisted mode
     persistedMode_ = false;
+    const uint32_t commitStartUs = static_cast<uint32_t>(micros());
+    const uint32_t commitSeqBefore = renderSeq_;
     const uint32_t nowMs = static_cast<uint32_t>(millis());
 
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Resting || dirty_.resetTracking;
@@ -767,6 +798,12 @@ void V1Display::update(const DisplayState& state) {
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting, flushDecision);
+    recordDisplayCommit(V1DisplayCommitPath::Resting, state, static_cast<uint8_t>(DIR_NONE), 0, blinkPhase_,
+                        arrowPaintedThisFrame_,
+                        flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
+                                                                                  : V1DisplayCommitDispatch::FullFlush,
+                        drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h(), commitStartUs,
+                        renderSeq_ - commitSeqBefore);
     drawnRegion_.reset();
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
@@ -792,6 +829,8 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     }
 
     persistedMode_ = true;
+    const uint32_t commitStartUs = static_cast<uint32_t>(micros());
+    const uint32_t commitSeqBefore = renderSeq_;
 
     // Preserve unflushed external indicator draws while keeping this
     // persisted frame's cache-hit decision independent from stale regions left
@@ -875,6 +914,12 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Persisted, flushDecision);
+    recordDisplayCommit(V1DisplayCommitPath::Persisted, state, static_cast<uint8_t>(state.priorityArrow), 1,
+                        blinkPhase_, arrowPaintedThisFrame_,
+                        flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
+                                                                                  : V1DisplayCommitDispatch::FullFlush,
+                        drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h(), commitStartUs,
+                        renderSeq_ - commitSeqBefore);
     drawnRegion_.reset();
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
@@ -889,6 +934,8 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 void V1Display::update(const AlertData& priority, const AlertData* allAlerts, int alertCount,
                        const DisplayState& state) {
     persistedMode_ = false;
+    const uint32_t commitStartUs = static_cast<uint32_t>(micros());
+    const uint32_t commitSeqBefore = renderSeq_;
 
     if (!priority.isValid || priority.band == BAND_NONE) {
         // Do not clear drawnRegion_ here: a lower-level external setter may
@@ -1075,8 +1122,14 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         shouldUseMultiRectDispatch(drawnRegion_, kPartialFlushAreaCap, arrowPaintedThisFrame_, multiRectDispatch);
 
     stageStartUs = micros();
+    const int16_t commitRegionX = drawnRegion_.x();
+    const int16_t commitRegionY = drawnRegion_.y();
+    const int16_t commitRegionW = drawnRegion_.w();
+    const int16_t commitRegionH = drawnRegion_.h();
+    V1DisplayCommitDispatch commitDispatch = V1DisplayCommitDispatch::None;
     if (needsFullRedraw) {
         DISPLAY_FLUSH();
+        commitDispatch = V1DisplayCommitDispatch::FullFlush;
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::FullFlushForRedraw);
     } else if (drawnRegion_.empty()) {
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
@@ -1087,23 +1140,32 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         // states; if the previous frame was a blink-off PALETTE_BG phase, a
         // missed small-window partial flush leaves the resting glyph blank.
         DISPLAY_FLUSH();
+        commitDispatch = V1DisplayCommitDispatch::FullFlush;
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::FullFlushForRedraw);
     } else if (useMultiRectDispatch) {
         for (uint8_t i = 0; i < multiRectDispatch.count; ++i) {
             const DrawnRegion::Rect& rect = multiRectDispatch.rects[i];
             flushRegion(rect.x, rect.y, rect.w, rect.h);
         }
+        commitDispatch = V1DisplayCommitDispatch::MultiRect;
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     } else if (estimatedFlushRegionUs(static_cast<uint32_t>(drawnRegion_.w()),
                                       static_cast<uint32_t>(drawnRegion_.h())) >= kFullFlushUs) {
         perfRecordDisplayUnionExceedsCap(drawnRegion_.areaPx(), drawnRegion_.rectCount(), drawnRegion_.sourceMask());
         DISPLAY_FLUSH();
+        commitDispatch = V1DisplayCommitDispatch::FullFlush;
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::UnionExceedsCap);
     } else {
         flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
+        commitDispatch = V1DisplayCommitDispatch::PartialRegion;
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     }
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
+
+    recordDisplayCommit(V1DisplayCommitPath::Live, state, static_cast<uint8_t>(arrowsToShow),
+                        static_cast<uint8_t>(alertCount < 0 ? 0 : alertCount), blinkPhase_, arrowPaintedThisFrame_,
+                        commitDispatch, commitRegionX, commitRegionY, commitRegionW, commitRegionH, commitStartUs,
+                        renderSeq_ - commitSeqBefore);
 
     // Consume the live-frame region after dispatch. This prevents the next
     // live frame from mistaking already-flushed paint for pending external

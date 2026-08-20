@@ -1209,6 +1209,18 @@ def encounter_csv_sd_path(perf_csv_sd_path: str) -> str:
     return f"/encounters/encounters_{boot_suffix}"
 
 
+def display_commit_csv_sd_path(perf_csv_sd_path: str) -> str:
+    """Where the firmware wrote this boot's display commit records."""
+    prefix = "/perf/perf_boot_"
+    if not perf_csv_sd_path.startswith(prefix) or not perf_csv_sd_path.endswith(".csv"):
+        return ""
+    boot_suffix = perf_csv_sd_path[len(prefix) :]
+    boot_identity = boot_suffix[: -len(".csv")]
+    if not boot_identity or "/" in boot_identity or ".." in boot_identity:
+        return ""
+    return f"/display_commits/display_commits_{boot_suffix}"
+
+
 def run_import(
     args: argparse.Namespace,
     csv_path: Path,
@@ -2225,6 +2237,17 @@ def _collect_live(
             if not encounter_sd_path:
                 raise RuntimeError("Could not derive encounter CSV path from the perf CSV path")
             encounter_csv_path = download_csv(q, out_dir, args.export_idle_timeout_seconds, encounter_sd_path)
+
+        # What the renderer committed to showing, for every window that drove the
+        # display. Best effort on purpose: firmware without the commit log is still a
+        # valid run, so a missing file is reported and never fails collection. The
+        # investigator finds it by globbing the window directory.
+        commit_sd_path = display_commit_csv_sd_path(str(completion.get("csvPath") or ""))
+        if commit_sd_path:
+            try:
+                download_csv(q, out_dir, args.export_idle_timeout_seconds, commit_sd_path)
+            except Exception as exc:  # noqa: BLE001 - evidence is optional, collection is not
+                print(f"[bench] display commit log unavailable ({exc})", flush=True)
         collection_completed = True
     finally:
         primary_error = sys.exc_info()[1]

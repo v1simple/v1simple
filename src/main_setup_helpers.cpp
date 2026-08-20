@@ -22,6 +22,7 @@
 #include "packet_parser.h"
 #include "perf_sd_logger.h"
 #include "modules/alp/alp_sd_logger.h"
+#include "modules/display/display_commit_log.h"
 #include "modules/encounter/v1_encounter_logger.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_publishers.h"
@@ -124,6 +125,8 @@ void prepareForShutdown(void* /*context*/) {
     perfSdLogger.drainAndClose(500);
     feedLoopTaskWatchdogDuringShutdown();
     v1EncounterLogger.drainAndClose(500);
+    feedLoopTaskWatchdogDuringShutdown();
+    v1DisplayCommitLog.drainAndClose(500);
     feedLoopTaskWatchdogDuringShutdown();
     alpSdLogger.drainAndClose(500);
     feedLoopTaskWatchdogDuringShutdown();
@@ -302,6 +305,14 @@ uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) 
     v1EncounterLogger.attach(parser);
     if (v1EncounterLogger.isEnabled()) {
         SerialLog.printf("[Encounter] SD logger enabled (%s)\n", v1EncounterLogger.csvPath());
+    }
+
+    // What the renderer committed to putting on screen, per frame. The camera records
+    // what actually appeared; this is the other half of that comparison.
+    v1DisplayCommitLog.setBootId(bootId, bootToken);
+    v1DisplayCommitLog.begin(sdEnabled);
+    if (v1DisplayCommitLog.isEnabled()) {
+        SerialLog.printf("[DisplayCommit] SD logger enabled (%s)\n", v1DisplayCommitLog.csvPath());
     }
 
     // ALP SD logger — event-level CSV for drive data capture

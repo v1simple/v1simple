@@ -1000,6 +1000,39 @@ struct BenchVerifier {
               && detectorSession.controlState.mutedVolume == 0,
               "detector current volume restores to 4/0")
 
+        let muteCheckpoints = encounter.detectorMuteCheckpoints
+        let expectedMuteCheckpoints = [
+            DetectorMuteCheckpoint(replaySecond: 185, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 189, muted: false),
+        ]
+        check(muteCheckpoints == expectedMuteCheckpoints,
+              "steady Duke plateau owns the exact detector-mute edges")
+        check(muteCheckpoints.map(\.machineEventLine) == [
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":185,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":189,\"muted\":false}",
+        ], "detector-mute events have the exact bounded machine schema")
+        check(encounter.samples[..<(185 * 3)].allSatisfy { !$0.muted }
+              && encounter.samples[(185 * 3)..<(189 * 3)].allSatisfy(\.muted)
+              && encounter.samples[(189 * 3)...].allSatisfy { !$0.muted },
+              "detector mute is held only from replay second 185 through 189")
+
+        let muteControl = V1.Session().controlState
+        let authoredMuteBits = muteCheckpoints.map { checkpoint -> [UInt8] in
+            let sample = encounter.samples[checkpoint.replaySecond * 3]
+            let packet = V1.PlaybackPacketPlan(
+                sample: sample,
+                controlState: muteControl,
+                displayOn: true,
+                muted: sample.muted,
+                blinkBogey: false,
+                blinkArrow: false
+            ).displayPacket
+            check(packet.count == 15, "authored mute display packet has literal checked width")
+            return [packet[8] & 0x10, packet[10] & 0x01, packet[12]]
+        }
+        check(authoredMuteBits == [[0x10, 0x01, 0x40], [0x00, 0x00, 0x40]],
+              "detector mute edges reach LED/audio bits without changing volume")
+
         let steadyFront = V1.DisplayFrame.alerting(
             bars: 1, band: .ka, direction: .front, bogeyCount: 1,
             muted: false, volume: 0x40, displayOn: true

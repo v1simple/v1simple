@@ -18,9 +18,17 @@ enum BenchScenario {
         DetectorVolumeCheckpoint(replaySecond: 254, mainVolume: 4, muteVolume: 2),
         DetectorVolumeCheckpoint(replaySecond: 256, mainVolume: 4, muteVolume: 0),
     ]
+    static let detectorMuteCheckpoints = [
+        DetectorMuteCheckpoint(replaySecond: 185, muted: true),
+        DetectorMuteCheckpoint(replaySecond: 189, muted: false),
+    ]
 
     private static func detectorVolume(at second: Int) -> DetectorVolume? {
         return detectorVolumeCheckpoints.last(where: { $0.replaySecond <= second })?.volume
+    }
+
+    private static func muted(at second: Int) -> Bool {
+        return detectorMuteCheckpoints.last(where: { $0.replaySecond <= second })?.muted ?? false
     }
 
     private static func alert(_ band: V1.Band,
@@ -171,7 +179,7 @@ enum BenchScenario {
             let scenarioArrowBlink = alerts.count > 1
             samples.append(TimedSample(offset: Double(tick) / Double(cadenceHz),
                                        phase: phase,
-                                       muted: false,
+                                       muted: muted(at: second),
                                        alerts: alerts,
                                        detectorVolume: detectorVolume(at: second),
                                        scenarioArrowBlink: scenarioArrowBlink,
@@ -246,6 +254,25 @@ enum BenchScenario {
             })
         }
         precondition(samples.last?.detectorVolume == DetectorVolume(mainVolume: 4, muteVolume: 0))
+
+        let observedMuteCheckpoints = Encounter(
+            origin: .syntheticBench,
+            samples: samples
+        ).detectorMuteCheckpoints
+        precondition(observedMuteCheckpoints == detectorMuteCheckpoints)
+        let beforeMute = samples[..<(185 * cadenceHz)]
+        let mutedPlateau = samples[(185 * cadenceHz)..<(189 * cadenceHz)]
+        let afterMute = samples[(189 * cadenceHz)...]
+        precondition(beforeMute.allSatisfy { !$0.muted })
+        precondition(mutedPlateau.allSatisfy(\.muted))
+        precondition(afterMute.allSatisfy { !$0.muted })
+        for sample in mutedPlateau {
+            precondition(sample.phase == "duke_shaped_approach")
+            precondition(sample.priorityAlert?.frequencyMHz == 34_700)
+            precondition(sample.priorityAlert?.band.mask == V1.Band.ka.mask)
+            precondition(sample.priorityAlert?.direction.rawValue == V1.Direction.front.rawValue)
+            precondition(sample.priorityAlert?.strength == 6)
+        }
     }
 
     static func expectedCSV(for encounter: Encounter) -> String {

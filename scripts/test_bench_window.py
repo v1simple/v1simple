@@ -75,6 +75,7 @@ from run_window import (  # noqa: E402
     establish_reconnect_readiness,
     establish_serial_fence,
     run_reconnect_preflight,
+    retain_replay_mute_signal,
     retain_replay_volume_signal,
     start_and_wait,
     summarize_display_commit_artifact,
@@ -115,6 +116,7 @@ def write_dummy_emulator(
     stop_exit_code: int = 0,
     stop_events: tuple[str, ...] | None = None,
     detector_volume_events: tuple[tuple[int, int, int], ...] = (),
+    detector_mute_events: tuple[tuple[int, bool], ...] = (),
 ) -> None:
     configured = "true"
     if blink_profile:
@@ -142,6 +144,19 @@ def write_dummy_emulator(
         + "'"
         for replay_second, main_volume, mute_volume in detector_volume_events
     ) or "true"
+    mute_events = "\n".join(
+        "echo 'V1REPLAY_EVENT "
+        + json.dumps(
+            {
+                "state": "detector_mute",
+                "replaySecond": replay_second,
+                "muted": muted,
+            },
+            separators=(",", ":"),
+        )
+        + "'"
+        for replay_second, muted in detector_mute_events
+    ) or "true"
     session_transport = (
         'echo \'V1REPLAY_EVENT {"state":"session_transport","active":true}\''
         if emit_session_transport
@@ -166,6 +181,7 @@ def write_dummy_emulator(
         "echo argv=$*\n"
         f"{configured}\n"
         f"{volume_events}\n"
+        f"{mute_events}\n"
         f"{marker}\n"
         f"{session_transport}\n"
         "while :; do sleep 1; done\n",
@@ -1291,6 +1307,10 @@ def test_replay_requires_machine_completion_before_managed_stop() -> None:
             f"missing detector events were not retained as empty evidence: {result}",
         )
         assert_true(
+            result["detector_mute_events"] == [],
+            f"missing detector mute events were not retained as empty evidence: {result}",
+        )
+        assert_true(
             result["replay_started_monotonic_seconds"] == 12345.5,
             f"first replay sample time was not recorded: {result}",
         )
@@ -1430,6 +1450,95 @@ def test_live_replay_retains_one_versioned_detector_volume_stream() -> None:
     assert_true(
         non_replay_emulator_result["detector_volume_events"] == expected_volume_events,
         "non-replay emulator evidence was consumed",
+    )
+
+
+def test_live_replay_retains_one_versioned_detector_mute_stream() -> None:
+    expected_mute_events = [
+        {"state": "detector_mute", "replaySecond": 185, "muted": True},
+        {"state": "detector_mute", "replaySecond": 189, "muted": False},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        executable = root / "v1replay"
+        write_dummy_emulator(
+            executable,
+            emit_complete=True,
+            blink_profile="scenario",
+            blink_samples=57,
+            detector_mute_events=((185, True), (189, False)),
+        )
+        emulator = V1Emulator(executable, root / "replay", "replay")
+        emulator.start()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not emulator._bench_completed():
+            time.sleep(0.02)
+        emulator_result = emulator.finish(window_completed=True)
+
+    assert_true(
+        emulator_result["detector_mute_events"] == expected_mute_events,
+        f"detector mute events were not retained in order: {emulator_result}",
+    )
+    mute_signal = retain_replay_mute_signal(
+        emulator_result,
+        suite="replay",
+        live=True,
+    )
+    assert_true(
+        mute_signal == {"schema_version": 1, "events": expected_mute_events},
+        f"versioned detector mute signal was not built: {mute_signal}",
+    )
+    assert_true(
+        "detector_mute_events" not in emulator_result,
+        f"detector mute events were duplicated in emulator evidence: {emulator_result}",
+    )
+
+    for retained_events in (
+        [],
+        [{"state": "detector_mute", "muted": "malformed"}],
+    ):
+        retained_result = {"detector_mute_events": retained_events}
+        retained_signal = retain_replay_mute_signal(
+            retained_result,
+            suite="replay",
+            live=True,
+        )
+        assert_true(
+            retained_signal == {"schema_version": 1, "events": retained_events},
+            f"empty or malformed detector mute evidence was hidden: {retained_signal}",
+        )
+        assert_true(
+            "detector_mute_events" not in retained_result,
+            f"detector mute evidence remained duplicated: {retained_result}",
+        )
+
+    legacy_emulator_result = {"detector_mute_events": expected_mute_events}
+    assert_true(
+        retain_replay_mute_signal(
+            legacy_emulator_result,
+            suite="replay",
+            live=False,
+        )
+        is None,
+        "offline replay unexpectedly gained the live mute contract",
+    )
+    assert_true(
+        legacy_emulator_result["detector_mute_events"] == expected_mute_events,
+        "offline replay mute evidence was consumed",
+    )
+    non_replay_emulator_result = {"detector_mute_events": expected_mute_events}
+    assert_true(
+        retain_replay_mute_signal(
+            non_replay_emulator_result,
+            suite="core",
+            live=True,
+        )
+        is None,
+        "non-replay window unexpectedly gained the mute contract",
+    )
+    assert_true(
+        non_replay_emulator_result["detector_mute_events"] == expected_mute_events,
+        "non-replay detector mute evidence was consumed",
     )
 
 
@@ -4415,6 +4524,12 @@ def test_v1replay_player_uses_live_control_snapshot() -> None:
         "active Player path does not apply checkpoint edges and otherwise retain live state",
     )
     assert_true(
+        "let muteCheckpoint = encounter.detectorMuteCheckpoint(at: index)" in active_method
+        and "_muteOverride = muteCheckpoint.muted" in active_method
+        and "onDetectorMuteCheckpoint?(muteCheckpoint)" in active_method,
+        "active Player path does not apply and report detector mute edges once",
+    )
+    assert_true(
         player.count("controlState: control") == 2,
         "idle and active Player paths do not pass their live control snapshot",
     )
@@ -4577,6 +4692,7 @@ def main() -> int:
     test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails()
     test_replay_requires_machine_completion_before_managed_stop()
     test_live_replay_retains_one_versioned_detector_volume_stream()
+    test_live_replay_retains_one_versioned_detector_mute_stream()
     test_replay_blink_profile_argv_and_result()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()
     test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()

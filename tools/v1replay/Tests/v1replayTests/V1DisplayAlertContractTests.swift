@@ -379,6 +379,51 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertEqual(session.controlState.displayVolume, 0x40)
     }
 
+    func testBenchDetectorMuteEdgesReachLiteralAlertBits() throws {
+        let encounter = BenchScenario.make()
+        let expected = [
+            DetectorMuteCheckpoint(replaySecond: 185, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 189, muted: false),
+        ]
+        XCTAssertEqual(BenchScenario.detectorMuteCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorMuteCheckpoints, expected)
+        XCTAssertEqual(encounter.detectorMuteCheckpoints.map(\.machineEventLine), [
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":185,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":189,\"muted\":false}",
+        ])
+
+        let control = V1.Session().controlState
+        for checkpoint in expected {
+            let sampleIndex = checkpoint.replaySecond * BenchScenario.cadenceHz
+            let sample = encounter.samples[sampleIndex]
+            XCTAssertEqual(encounter.detectorMuteCheckpoint(at: sampleIndex), checkpoint)
+            XCTAssertEqual(sample.muted, checkpoint.muted)
+            XCTAssertEqual(sample.priorityAlert?.frequencyMHz, 34_700)
+            XCTAssertEqual(sample.priorityAlert?.band.mask, V1.Band.ka.mask)
+            XCTAssertEqual(sample.priorityAlert?.direction.rawValue, V1.Direction.front.rawValue)
+            XCTAssertEqual(sample.priorityAlert?.strength, 6)
+
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample,
+                controlState: control,
+                displayOn: true,
+                muted: sample.muted,
+                blinkBogey: false,
+                blinkArrow: false
+            )
+            let decoded = try IndependentFrame.decode(plan.displayPacket)
+            XCTAssertEqual(decoded.packetID, 0x31)
+            XCTAssertEqual(decoded.payload[3] & 0x10, checkpoint.muted ? 0x10 : 0x00)
+            XCTAssertEqual(decoded.payload[5] & 0x01, checkpoint.muted ? 0x01 : 0x00)
+            XCTAssertEqual(decoded.payload[7], 0x40)
+        }
+
+        XCTAssertTrue(encounter.samples[(185 * 3)..<(189 * 3)].allSatisfy(\.muted))
+        XCTAssertTrue(encounter.samples[(189 * 3)...].allSatisfy { !$0.muted })
+        XCTAssertNil(encounter.detectorMuteCheckpoint(at: 185 * 3 + 1))
+        XCTAssertNil(encounter.detectorMuteCheckpoint(at: 189 * 3 + 1))
+    }
+
     func testExplicitDraftHeaderPreservesFixtureAux1() {
         let control = V1.Session.ControlState(
             mode: .advancedLogic,

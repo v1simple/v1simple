@@ -78,6 +78,7 @@ final class Player {
     var onLog: ((String) -> Void)?
     var onReplayStarted: ((Double) -> Void)?
     var onDetectorVolumeCheckpoint: ((DetectorVolumeCheckpoint) -> Void)?
+    var onDetectorMuteCheckpoint: ((DetectorMuteCheckpoint) -> Void)?
 
     init(encounter: Encounter, peripheral: V1Peripheral, options: Options) {
         self.encounter = encounter
@@ -448,10 +449,20 @@ final class Player {
         if options.waitForAlertData && !transportReady() { return false }
         let sample = encounter.samples[index]
 
+        let muteCheckpoint = encounter.detectorMuteCheckpoint(at: index)
         lock.lock()
+        // A physical detector mute edge updates the live modeled state once.
+        // Held samples then observe later V1Simple commands instead of forcing
+        // the scenario value on every frame.
+        if let muteCheckpoint = muteCheckpoint {
+            _muteOverride = muteCheckpoint.muted
+        }
         let muted = _muteOverride ?? sample.muted
         let displayOn = _displayOn
         lock.unlock()
+        if let muteCheckpoint = muteCheckpoint {
+            onDetectorMuteCheckpoint?(muteCheckpoint)
+        }
         // Apply the authored physical-V1 current pair once at its checkpoint
         // boundary, before taking the one atomic protocol-state snapshot used
         // by the complete table/display emission. The session then owns the

@@ -4017,6 +4017,67 @@ def test_strict_camera_ownership_and_confidence_are_required() -> None:
         assert_true("legacy ownership" in proc.stdout, proc.stdout)
 
 
+def test_camera_comparisons_do_not_change_the_bench_verdict() -> None:
+    for grade_result, grade_errors, expected_returncode in (
+        ("PASS", (), 0),
+        ("FAIL", (), 2),
+        ("INCONCLUSIVE", ("camera registration failed",), 3),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(
+                root,
+                "replay",
+                camera_result="CAPTURED",
+                camera_grade_result=grade_result,
+                camera_grade_errors=grade_errors,
+            )
+            before = root / "before.json"
+            before_proc = run_score(
+                root,
+                "replay",
+                camera_suites=("replay",),
+                out_path=before,
+            )
+            assert_true(
+                before_proc.returncode == expected_returncode,
+                before_proc.stdout + before_proc.stderr,
+            )
+
+            grade_path = (
+                root
+                / "replay"
+                / "camera"
+                / "grades"
+                / f"{CURRENT_GRADER_FINGERPRINT}.json"
+            )
+            grade = json.loads(grade_path.read_text(encoding="utf-8"))
+            grade["encounter_comparisons"] = [
+                {
+                    "expected": {"frequency_mhz": 24150},
+                    "observed": {"frequency_mhz": 35500},
+                    "outcome": {"frequency_mhz": {"state": "mismatch"}},
+                }
+            ]
+            write_json(grade_path, grade)
+
+            after = root / "after.json"
+            after_proc = run_score(
+                root,
+                "replay",
+                camera_suites=("replay",),
+                out_path=after,
+            )
+            assert_true(
+                after_proc.returncode == expected_returncode,
+                after_proc.stdout + after_proc.stderr,
+            )
+            assert_true(
+                before.read_bytes() == after.read_bytes(),
+                f"camera comparisons changed the {grade_result} bench result",
+            )
+
+
 def test_strict_camera_bytes_and_window_identity_are_required() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -4222,6 +4283,7 @@ def main() -> int:
     test_explicit_legacy_window_preserves_pre_graceful_stop_scoring()
     test_requested_replay_camera_separates_product_and_evidence_failures()
     test_strict_camera_ownership_and_confidence_are_required()
+    test_camera_comparisons_do_not_change_the_bench_verdict()
     test_strict_camera_bytes_and_window_identity_are_required()
     test_only_replay_camera_grade_is_required_by_the_full_bench()
     test_camera_preflight_evidence_failure_needs_no_metrics_artifacts()

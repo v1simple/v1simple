@@ -930,6 +930,9 @@ def _encounter_consensus(
     direction, direction_ratio = _consensus(directions)
     return {
         "encounter": encounter,
+        "video_time_s": offset_s + encounter.time_s,
+        "sample_start_time_s": min((item.time_s for item in nearby), default=None),
+        "sample_end_time_s": max((item.time_s for item in nearby), default=None),
         "nearby_count": len(nearby),
         "visible_count": sum(item.visible_pixels >= 80 for item in nearby),
         "alert": alert,
@@ -938,6 +941,57 @@ def _encounter_consensus(
         "frequency_consensus_ratio": frequency_ratio,
         "direction": direction,
         "direction_consensus_ratio": direction_ratio,
+    }
+
+
+def _comparison_outcome(observed: Any, expected: Any) -> dict[str, str]:
+    if observed is None:
+        return {"state": "abstain", "reason": "no_consensus"}
+    if observed == expected:
+        return {"state": "match"}
+    return {"state": "mismatch", "reason": "observed_differs_from_expected"}
+
+
+def _encounter_comparison(summary: dict[str, Any]) -> dict[str, Any]:
+    encounter = summary["encounter"]
+    expected = {
+        "alert_visible": True,
+        "frequency_mhz": encounter.frequency_mhz,
+        "direction": encounter.direction,
+    }
+    observed = {
+        "alert_visible": summary["alert"],
+        "frequency_mhz": summary["frequency"],
+        "direction": summary["direction"],
+    }
+    sample_start = summary["sample_start_time_s"]
+    sample_end = summary["sample_end_time_s"]
+    return {
+        "encounter_id": encounter.encounter_id,
+        "event": encounter.event,
+        "replay_time_seconds": round(encounter.time_s, 3),
+        "video_consensus_window": {
+            "center_seconds": round(float(summary["video_time_s"]), 3),
+            "first_sample_seconds": (
+                round(float(sample_start), 3) if sample_start is not None else None
+            ),
+            "last_sample_seconds": (
+                round(float(sample_end), 3) if sample_end is not None else None
+            ),
+        },
+        "sample_count": summary["nearby_count"],
+        "visible_sample_count": summary["visible_count"],
+        "expected": expected,
+        "observed": observed,
+        "consensus_ratio": {
+            "alert_visible": round(float(summary["alert_consensus_ratio"]), 4),
+            "frequency_mhz": round(float(summary["frequency_consensus_ratio"]), 4),
+            "direction": round(float(summary["direction_consensus_ratio"]), 4),
+        },
+        "outcome": {
+            field: _comparison_outcome(observed[field], expected[field])
+            for field in expected
+        },
     }
 
 
@@ -1000,6 +1054,7 @@ def grade_replay(
         return {
             "result": "INCONCLUSIVE",
             "alignment": alignment,
+            "encounter_comparisons": [],
             "confidence": {
                 "result": "INCONCLUSIVE",
                 "gates": {"alignment": _gate(False)},
@@ -1015,6 +1070,7 @@ def grade_replay(
         _encounter_consensus(observations, encounter, offset_s)
         for encounter in stable_encounters
     ]
+    comparisons = [_encounter_comparison(item) for item in summaries]
     alert_summaries = [item for item in summaries if item["alert"] is not None]
     frequency_summaries = [item for item in summaries if item["frequency"] is not None]
     direction_summaries = [item for item in summaries if item["direction"] is not None]
@@ -1100,6 +1156,7 @@ def grade_replay(
         return {
             "result": "INCONCLUSIVE",
             "alignment": alignment,
+            "encounter_comparisons": comparisons,
             "confidence": {"result": "INCONCLUSIVE", "gates": gates},
             "checks": {},
             "diagnostics": diagnostics,
@@ -1160,6 +1217,7 @@ def grade_replay(
     return {
         "result": result,
         "alignment": alignment,
+        "encounter_comparisons": comparisons,
         "confidence": {"result": "PASS", "gates": gates},
         "checks": checks,
         "diagnostics": [],
@@ -1198,6 +1256,8 @@ def grade_camera(
         "diagnostics": [],
         "errors": [],
     }
+    if suite == "replay":
+        payload["encounter_comparisons"] = []
     try:
         if camera_result.get("result") != "CAPTURED":
             raise RuntimeError("camera capture did not complete")

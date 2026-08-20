@@ -292,6 +292,10 @@ def test_missing_legacy_timing_abstains_before_decode() -> None:
             grade["diagnostics"][0]["code"] == "timing_anchor_missing",
             f"missing timing diagnostic was imprecise: {grade}",
         )
+        assert_true(
+            grade["encounter_comparisons"] == [],
+            f"missing timing manufactured encounter comparisons: {grade}",
+        )
 
 
 def test_malformed_grade_is_a_conflict() -> None:

@@ -3684,6 +3684,49 @@ def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     observations, encounters = matching_replay_fixture(offset)
     passed = grade_replay(observations, encounters, offset)
     assert_true(passed["result"] == "PASS", f"matching camera/log evidence failed: {passed}")
+    comparisons = passed["encounter_comparisons"]
+    assert_true(
+        len(comparisons) == passed["confidence"]["gates"]["stable_encounter_windows"]["compared"],
+        "camera grade discarded stable encounter comparisons",
+    )
+    first = comparisons[0]
+    assert_true(
+        first
+        == {
+            "encounter_id": 1,
+            "event": "SAMPLE",
+            "replay_time_seconds": 6.0,
+            "video_consensus_window": {
+                "center_seconds": 8.0,
+                "first_sample_seconds": 7.333,
+                "last_sample_seconds": 8.667,
+            },
+            "sample_count": 5,
+            "visible_sample_count": 5,
+            "expected": {
+                "alert_visible": True,
+                "frequency_mhz": 24150,
+                "direction": "FRONT",
+            },
+            "observed": {
+                "alert_visible": True,
+                "frequency_mhz": 24150,
+                "direction": "FRONT",
+            },
+            "consensus_ratio": {
+                "alert_visible": 1.0,
+                "frequency_mhz": 1.0,
+                "direction": 1.0,
+            },
+            "outcome": {
+                "alert_visible": {"state": "match"},
+                "frequency_mhz": {"state": "match"},
+                "direction": {"state": "match"},
+            },
+        },
+        f"camera comparison lost expected/observed evidence: {first}",
+    )
+    json.dumps(passed)
     adjustment = passed["alignment"]["hint_adjustment_seconds"]
     assert_true(
         abs(adjustment) < MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S,
@@ -3702,6 +3745,22 @@ def test_camera_grade_rejects_visual_state_that_disagrees_with_log() -> None:
     ]
     failed = grade_replay(wrong, encounters, offset)
     assert_true(failed["result"] == "FAIL", f"camera/log disagreement passed: {failed}")
+    wrong_first = failed["encounter_comparisons"][0]
+    assert_true(
+        wrong_first["outcome"]
+        == {
+            "alert_visible": {"state": "match"},
+            "frequency_mhz": {
+                "state": "mismatch",
+                "reason": "observed_differs_from_expected",
+            },
+            "direction": {
+                "state": "mismatch",
+                "reason": "observed_differs_from_expected",
+            },
+        },
+        f"camera comparison did not retain mismatches: {wrong_first}",
+    )
     assert_true(
         failed["alignment"] == passed["alignment"],
         "frequency/direction answers changed alert/rest alignment",
@@ -3725,6 +3784,11 @@ def test_replay_alignment_requires_hint_and_rejects_boundary() -> None:
             alignment["diagnostic"]["code"] == "timing_anchor_missing",
             f"wrong missing-hint diagnostic: {alignment}",
         )
+    missing_hint_grade = grade_replay(observations, encounters, None)
+    assert_true(
+        missing_hint_grade["encounter_comparisons"] == [],
+        f"missing alignment manufactured encounter comparisons: {missing_hint_grade}",
+    )
 
     # Process launch precedes BLE transport readiness. The measured fresh-boot
     # delay remains valid while a larger clock error still reaches the bound.
@@ -3779,6 +3843,14 @@ def test_replay_camera_abstains_for_unreadable_or_ambiguous_answers() -> None:
         {"frequency_observations_insufficient", "direction_observations_insufficient"}
         <= unreadable_codes,
         f"missing unreadable diagnostics: {unreadable_grade}",
+    )
+    unreadable_first = unreadable_grade["encounter_comparisons"][0]
+    assert_true(
+        unreadable_first["outcome"]["frequency_mhz"]
+        == {"state": "abstain", "reason": "no_consensus"}
+        and unreadable_first["outcome"]["direction"]
+        == {"state": "abstain", "reason": "no_consensus"},
+        f"camera comparison did not retain abstentions: {unreadable_first}",
     )
 
     frequencies = (24150, 34700, 35500)
@@ -3869,6 +3941,15 @@ def test_replay_consensus_grades_stable_windows_not_planned_transitions() -> Non
     assert_true(
         grade["confidence"]["gates"]["encounter_consensus"]["ambiguous"] == 0,
         f"stable windows remained ambiguous: {grade}",
+    )
+    comparisons = grade["encounter_comparisons"]
+    assert_true(
+        len(comparisons) + stable_gate["transition_rows_excluded"] == len(encounters),
+        f"stable and excluded encounter rows were not conserved: {grade}",
+    )
+    assert_true(
+        all(item["event"] == "SAMPLE" for item in comparisons),
+        f"planned transition rows leaked into comparisons: {comparisons}",
     )
     for check in (
         "logged_alerts_visible",

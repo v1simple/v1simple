@@ -4,7 +4,7 @@ import Foundation
 // v1replay — a Mac that pretends to be a Valentine One Gen2 over BLE.
 //
 //   v1replay demo
-//   v1replay bench
+//   v1replay bench [--scenario /path/outside/git/replay-input.json]
 //   v1replay play /path/outside/any/git/replay-input.json
 //   v1replay export --synthetic --format lightblue
 //   v1replay export --bench --format csv
@@ -12,7 +12,7 @@ import Foundation
 //   v1replay idle
 // =============================================================================
 
-let toolVersion = "1.3.0"
+let toolVersion = "1.4.0"
 
 // MARK: - Minimal argument parsing (no external packages: this must build offline)
 
@@ -147,8 +147,8 @@ func makeArrowBlinkProfile(benchDefault: Bool) throws -> ArrowBlinkProfile {
     return profile
 }
 
-func loadEncounter() throws -> Encounter {
-    guard let path = args.positional.first else {
+func loadEncounter(path selectedPath: String? = nil) throws -> Encounter {
+    guard let path = selectedPath ?? args.positional.first else {
         throw ReplayError.message(
             "no external replay input given; use 'v1replay demo' for generated data"
         )
@@ -171,6 +171,7 @@ func loadEncounter() throws -> Encounter {
             return TimedSample(offset: sample.offset, phase: sample.phase,
                                muted: sample.muted, alerts: alerts,
                                detectorVolume: sample.detectorVolume,
+                               detectorMode: sample.detectorMode,
                                scenarioArrowBlink: sample.scenarioArrowBlink,
                                sourceIndex: sample.sourceIndex)
         }
@@ -184,8 +185,11 @@ func loadEncounter() throws -> Encounter {
 
 func validateBenchOptions() throws {
     _ = try makeArrowBlinkProfile(benchDefault: true)
-    if args.bool("synthetic") || !args.positional.isEmpty {
-        throw ReplayError.message("bench cannot be combined with synthetic or external input")
+    if args.bool("synthetic") {
+        throw ReplayError.message("bench cannot be combined with synthetic")
+    }
+    if !args.positional.isEmpty {
+        throw ReplayError.message("bench external input uses --scenario PATH")
     }
     if args.bool("no-alerts") {
         throw ReplayError.message("bench requires alert-table packets; remove --no-alerts")
@@ -196,8 +200,8 @@ func validateBenchOptions() throws {
     if args.bool("always-alerts") {
         throw ReplayError.message("bench requires the firmware alert-data readiness handshake; remove --always-alerts")
     }
-    if args.optionalString("rate") != nil {
-        throw ReplayError.message("bench has a fixed 3 Hz cadence; remove --rate")
+    if args.optionalString("rate") != nil && args.optionalString("scenario") == nil {
+        throw ReplayError.message("--rate requires an external --scenario in bench mode")
     }
 }
 
@@ -229,7 +233,7 @@ func runHelp() {
 
     \(Ansi.bold)USAGE\(Ansi.reset)
       v1replay demo [options]                      play an in-memory synthetic ramp
-      v1replay bench [options]                     play the deterministic multi-alert bench
+      v1replay bench [--scenario external.json]    managed replay with built-in or external data
       v1replay play <external.json> [options]      replay private input stored outside Git
       v1replay idle [options]                      advertise and stream idle frames only
       v1replay export --synthetic [options]        print generated packets, no Bluetooth
@@ -240,8 +244,9 @@ func runHelp() {
 
     \(Ansi.bold)PRIVACY BOUNDARY\(Ansi.reset)
       External replay input is rejected if it is anywhere inside a Git checkout.
-      Input paths and metadata are never printed. The tool writes no capture or
-      export files; export output is stdout only.
+      Private input paths are never printed or copied into machine events.
+      --scenario-evidence writes only resolved replay values to its requested
+      run-artifact path; export output remains stdout only.
 
     \(Ansi.bold)PLAYBACK\(Ansi.reset)
       --speed <x>          playback rate multiplier (default 1.0)
@@ -250,6 +255,9 @@ func runHelp() {
       --paused             start paused (step through with 'n')
       --exit-on-complete   stop after one complete replay (for bench automation)
       --machine-events     emit stable completion events for an external runner
+      --scenario <path>    external encounter for managed bench playback
+      --scenario-evidence P
+                           write path-free resolved scenario JSON for investigation
       --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
       --handshake-only     runner preflight: one clear alert row, then stay quiet
       --handshake-notification-hold-ms N
@@ -259,8 +267,9 @@ func runHelp() {
       --idle-tail <sec>    idle frames after the encounter (default 3)
       --idle-hz <hz>       idle frame cadence (default 3)
 
-      The bench owns its 5-second lead and 14-second tail, and waits for both
-      display subscription and the firmware's alert-data request before starting.
+      Managed bench playback uses timing and idle periods from the selected
+      scenario, and waits for both display subscription and the firmware's
+      alert-data request before starting.
 
     \(Ansi.bold)PROTOCOL\(Ansi.reset)
       --name <string>      advertised local name (default V1G-REPLAY)
@@ -424,7 +433,11 @@ func runExport() throws {
 
     let encounter: Encounter
     if bench {
-        encounter = BenchScenario.make()
+        if let scenarioPath = args.optionalString("scenario") {
+            encounter = try loadEncounter(path: scenarioPath)
+        } else {
+            encounter = BenchScenario.make()
+        }
     } else if args.bool("synthetic") {
         encounter = Encounter.syntheticDemo()
     } else {
@@ -531,6 +544,12 @@ func runPlay(idleOnly: Bool,
     if args.bool("handshake-only") && !bench {
         throw ReplayError.message("--handshake-only is available only in bench mode")
     }
+    if !bench && args.optionalString("scenario") != nil {
+        throw ReplayError.message("--scenario is available only in bench mode")
+    }
+    if idleOnly && args.optionalString("scenario-evidence") != nil {
+        throw ReplayError.message("--scenario-evidence requires replay playback")
+    }
     if bench { try validateBenchOptions() }
     let replyHeader = try makeHeader()
     let informationHeader = try makeInformationHeader()
@@ -542,11 +561,20 @@ func runPlay(idleOnly: Bool,
     if idleOnly {
         encounter = Encounter.idle()
     } else if bench {
-        encounter = BenchScenario.make()
+        if let scenarioPath = args.optionalString("scenario") {
+            encounter = try loadEncounter(path: scenarioPath)
+        } else {
+            encounter = BenchScenario.make()
+        }
     } else if synthetic {
         encounter = Encounter.syntheticDemo()
     } else {
         encounter = try loadEncounter()
+    }
+    let resolvedScenarioData = try encounter.resolvedScenarioEvidenceData()
+    let resolvedScenarioSha256 = sha256Hex(resolvedScenarioData)
+    let scenarioEvidence = try args.optionalString("scenario-evidence").map {
+        try encounter.writeResolvedScenarioEvidence(path: $0)
     }
 
     var peripheralConfig = V1Peripheral.Config()
@@ -597,9 +625,10 @@ func runPlay(idleOnly: Bool,
                      : "06 06 — steady, paint stays parse-driven")
                   + "\(Ansi.reset)")
     let arrowBlinkSamples = playerOptions.arrowBlinkProfile.sampleCount(in: encounter)
+    let arrowBlinkSource = playerOptions.arrowBlinkProfile.sourceLabel(for: encounter.origin)
     console.print("\(Ansi.dim)arrow   \(playerOptions.arrowBlinkProfile.rawValue) — "
                   + "\(arrowBlinkSamples)/\(encounter.samples.count) samples, "
-                  + "source \(playerOptions.arrowBlinkProfile.sourceLabel)"
+                  + "source \(arrowBlinkSource)"
                   + "\(Ansi.reset)")
     if !idleOnly {
         let histogram = encounter.strengthHistogram
@@ -613,7 +642,13 @@ func runPlay(idleOnly: Bool,
     console.print("\(Ansi.dim)keys     space pause · n step · r restart · [ ] speed · . next change · m mute · q quit\(Ansi.reset)")
     console.print("")
 
-    let peripheral = V1Peripheral(config: peripheralConfig)
+    let machineEvents = args.bool("machine-events")
+    let notificationEventHandler: ((ReplayNotificationEvent) -> Void)? =
+        machineEvents ? { event in console.print(event.machineEventLine) } : nil
+    let peripheral = V1Peripheral(
+        config: peripheralConfig,
+        onNotificationEvent: notificationEventHandler
+    )
     let player = Player(encounter: encounter, peripheral: peripheral, options: playerOptions)
 
     peripheral.onLog = { message in console.log("\(Ansi.cyan)ble\(Ansi.reset)  \(message)") }
@@ -625,7 +660,6 @@ func runPlay(idleOnly: Bool,
         player.setDisplayOn(on)
         console.log("\(Ansi.cyan)ble\(Ansi.reset)  v1simple asked for display \(on ? "ON" : "OFF")")
     }
-    let machineEvents = args.bool("machine-events")
     let sessionTransportEvents = machineEvents
         ? BooleanMachineEventEmitter { active in
             console.print("V1REPLAY_EVENT {\"state\":\"session_transport\","
@@ -645,33 +679,40 @@ func runPlay(idleOnly: Bool,
         }
         sessionTransportEvents?.emit(peripheral.sessionTransportActive)
     }
-    if machineEvents && bench {
+    if machineEvents && !idleOnly {
         player.onDetectorVolumeCheckpoint = { checkpoint in
             console.print(checkpoint.machineEventLine)
         }
     }
-    if machineEvents && bench {
+    if machineEvents && !idleOnly {
         player.onDetectorMuteCheckpoint = { checkpoint in
             console.print(checkpoint.machineEventLine)
         }
     }
-    if machineEvents && bench {
+    if machineEvents && !idleOnly {
         player.onDetectorModeCheckpoint = { checkpoint in
             console.print(checkpoint.machineEventLine)
         }
     }
-    if machineEvents && bench {
+    if machineEvents && !idleOnly {
         player.onStimulusRequested = { stimulus in
             console.print(stimulus.machineEventLine)
         }
     }
-    if machineEvents && bench {
-        console.print("V1REPLAY_EVENT {\"state\":\"configured\","
-                      + "\"blinkProfile\":\"\(playerOptions.arrowBlinkProfile.rawValue)\","
-                      + "\"blinkSource\":\"\(playerOptions.arrowBlinkProfile.sourceLabel)\","
-                      + "\"blinkSamples\":\(arrowBlinkSamples),"
-                      + "\"totalSamples\":\(encounter.samples.count),"
-                      + "\"cadenceHz\":\(BenchScenario.cadenceHz)}")
+    if machineEvents, let scenarioEvidence {
+        console.print(scenarioEvidence.machineEventLine)
+    }
+    if machineEvents && !idleOnly {
+        console.print(ReplayConfiguredEvent(
+            blinkProfile: playerOptions.arrowBlinkProfile.rawValue,
+            blinkSource: arrowBlinkSource,
+            blinkSamples: arrowBlinkSamples,
+            totalSamples: encounter.samples.count,
+            durationSeconds: encounter.duration,
+            cadenceHz: encounter.uniformCadenceHz,
+            scenarioOrigin: encounter.origin.evidenceName,
+            scenarioSha256: resolvedScenarioSha256
+        ).machineEventLine)
     }
     player.onLog = { message in
         console.log("\(Ansi.blue)play\(Ansi.reset) \(message)")
@@ -688,9 +729,9 @@ func runPlay(idleOnly: Bool,
         player.ensureHandshakeOnlyClear()
     }
     player.onReplayStarted = { hostMonotonicSeconds in
-        if machineEvents && bench {
-            console.log("V1REPLAY_EVENT {\"state\":\"replay_started\","
-                        + "\"hostMonotonicSeconds\":\(hostMonotonicSeconds)}")
+        if machineEvents && !idleOnly {
+            console.print("V1REPLAY_EVENT {\"state\":\"replay_started\","
+                          + "\"hostMonotonicSeconds\":\(hostMonotonicSeconds)}")
         }
     }
 

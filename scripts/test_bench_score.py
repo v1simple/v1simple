@@ -291,6 +291,8 @@ def write_reconnect_logs(
                 ">>> QSTATUS",
                 FENCE_RESPONSE,
                 "HOST_BOUNDARY reconnect_pre_qstart_fence_complete",
+                ">>> QSTATUS",
+                FENCE_RESPONSE,
                 ">>> QSTART core 300",
                 'QRESP {"ok":true,"state":"running","suite":"core"}',
                 'QEVENT {"ok":true,"state":"done","suite":"core","finalized":true}',
@@ -2768,6 +2770,7 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         "HOST_BOUNDARY reconnect_preflight_fence_begin",
         "[BLE] V1 disconnected; cleared LCD BLE state at 101 ms",
         "HOST_BOUNDARY reconnect_pre_qstart_fence_begin",
+        "HOST_BOUNDARY reconnect_pre_qstart_fence_complete",
     ):
         def insert_fence_error(lines: list[str], anchor: str = anchor) -> list[str]:
             result = list(lines)
@@ -3241,6 +3244,67 @@ def test_replay_encounter_artifact_and_logical_failures_are_classified() -> None
         proc = run_score(root, "replay")
         assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
         assert_true("truncated or has empty required fields" in proc.stdout, proc.stdout)
+
+
+def test_replay_encounter_accepts_empty_end_and_scenario_sized_tables() -> None:
+    rows = canonical_encounter_rows()
+    final_end = next(
+        row
+        for row in rows
+        if row["encounter_id"] == 2 and row["event"] == "END"
+    )
+    final_end.update(
+        {
+            "v1_index": 0,
+            "alert_count": 0,
+            "band": "None",
+            "frequency_mhz": 0,
+            "direction": "NONE",
+            "front_raw": 0,
+            "rear_raw": 0,
+            "front_bars": 0,
+            "rear_bars": 0,
+            "priority": 0,
+            "junk": 0,
+            "photo_type": 0,
+        }
+    )
+
+    # A separate, complete table larger than the authored three-alert
+    # checkpoint must remain valid evidence when scenarios gain more data.
+    source = canonical_encounter_rows()[0]
+    for v1_index in range(1, 16):
+        rows.append(
+            {
+                **source,
+                "millis": 1_000 + v1_index,
+                "encounter_id": 3,
+                "sample_seq": 1,
+                "event": "START",
+                "v1_index": v1_index,
+                "alert_count": 15,
+                "priority": int(v1_index == 1),
+            }
+        )
+    rows.append(
+        {
+            **final_end,
+            "millis": 1_100,
+            "encounter_id": 3,
+            "sample_seq": 2,
+        }
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "replay")
+        write_encounter_csv(root / "replay" / "encounters_test.csv", rows)
+        proc = run_score(root, "replay")
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        encounter = result["windows"][0]["replay_checks"]["encounter_checks"]
+        assert_true(encounter["result"] == "PASS", f"unexpected encounter result: {encounter}")
+        assert_true(encounter["closure_found"] is True, f"missing empty-table closure: {encounter}")
 
 
 def test_replay_encounter_semantic_mutants_are_actionable_failures() -> None:
@@ -4274,6 +4338,7 @@ def main() -> int:
     test_replay_handshake_semantic_mutants_are_actionable_failures()
     test_replay_requires_a_readable_same_window_encounter_csv()
     test_replay_encounter_artifact_and_logical_failures_are_classified()
+    test_replay_encounter_accepts_empty_end_and_scenario_sized_tables()
     test_replay_encounter_semantic_mutants_are_actionable_failures()
     test_replay_scores_only_qstart_and_replacement_connection_sessions()
     test_replay_mismatch_is_actionable_failure()

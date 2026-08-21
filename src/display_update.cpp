@@ -71,9 +71,10 @@ struct DispatchRectList {
 // One record per display commit: the DisplayState the renderer consumed, the values
 // it resolved from that state, and how the result reached the panel. The snapshot is
 // copied into a zero-wait queue, so the render path never waits on storage.
-void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, uint8_t arrowsToShow, uint8_t alertCount,
-                         bool blinkPhase, bool arrowPainted, V1DisplayCommitDispatch dispatch, int16_t regionX,
-                         int16_t regionY, int16_t regionW, int16_t regionH, uint32_t commitStartUs, uint32_t pushes) {
+void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, const AlertData* priority,
+                         uint8_t arrowsToShow, uint8_t alertCount, bool blinkPhase, bool arrowPainted,
+                         V1DisplayCommitDispatch dispatch, int16_t regionX, int16_t regionY, int16_t regionW,
+                         int16_t regionH, uint32_t commitStartUs, uint32_t pushes) {
     if (!v1DisplayCommitLog.isEnabled()) {
         return;
     }
@@ -93,6 +94,13 @@ void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, ui
     commit.regionW = regionW;
     commit.regionH = regionH;
     commit.state = state;
+    if (priority) {
+        commit.priority = *priority;
+    }
+    // This digest names the complete parser-published table retained in the
+    // encounter CSV. The composer may reorder/filter that table before render;
+    // priority + alertCount + owning composer code describe that smaller view.
+    commit.alertTableDigest = state.causal.alertTableDigest;
     v1DisplayCommitLog.record(commit);
 }
 
@@ -798,7 +806,7 @@ void V1Display::update(const DisplayState& state) {
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting, flushDecision);
-    recordDisplayCommit(V1DisplayCommitPath::Resting, state, static_cast<uint8_t>(DIR_NONE), 0, blinkPhase_,
+    recordDisplayCommit(V1DisplayCommitPath::Resting, state, nullptr, static_cast<uint8_t>(DIR_NONE), 0, blinkPhase_,
                         arrowPaintedThisFrame_,
                         flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
                                                                                   : V1DisplayCommitDispatch::FullFlush,
@@ -914,7 +922,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
         perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
     perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Persisted, flushDecision);
-    recordDisplayCommit(V1DisplayCommitPath::Persisted, state, static_cast<uint8_t>(state.priorityArrow), 1,
+    recordDisplayCommit(V1DisplayCommitPath::Persisted, state, &alert, static_cast<uint8_t>(state.priorityArrow), 1,
                         blinkPhase_, arrowPaintedThisFrame_,
                         flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
                                                                                   : V1DisplayCommitDispatch::FullFlush,
@@ -1162,7 +1170,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     }
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
-    recordDisplayCommit(V1DisplayCommitPath::Live, state, static_cast<uint8_t>(arrowsToShow),
+    recordDisplayCommit(V1DisplayCommitPath::Live, state, &priority, static_cast<uint8_t>(arrowsToShow),
                         static_cast<uint8_t>(alertCount < 0 ? 0 : alertCount), blinkPhase_, arrowPaintedThisFrame_,
                         commitDispatch, commitRegionX, commitRegionY, commitRegionW, commitRegionH, commitStartUs,
                         renderSeq_ - commitSeqBefore);

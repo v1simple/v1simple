@@ -12,11 +12,19 @@
 namespace {
 constexpr const char* COMMIT_DIR_PATH = "/display_commits";
 constexpr const char* COMMIT_HEADER =
-    "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+    "# display_commit_schema=2,timebase=millis,source=renderer_commit,"
+    "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
+    "complete_alert_rows=encounter_csv_by_session_revision_digest\n"
     "seq,millis,path,dispatch,render_us,pushes,arrows_to_show,blink_phase,arrow_painted,alert_count,"
     "region_x,region_y,region_w,region_h,active_bands,arrows,priority_arrow,signal_bars,flash_bits,"
     "band_flash_bits,muted,soft_muted,display_on,system_status,system_test,mode_char,bogey_char,"
-    "bogey_dot,bogey_char2,main_volume,mute_volume,has_junk,has_photo,has_ku,dropped_commits\n";
+    "bogey_dot,bogey_char2,main_volume,mute_volume,has_junk,has_photo,has_ku,dropped_commits,"
+    "bogey_byte,bogey_byte2,bogey_dot2,has_mode,has_display_on,has_v1_version,v1_firmware_version,has_volume_data,"
+    "v1_priority_index,saved_main_volume,saved_mute_volume,has_saved_volume,qualification_session_token,"
+    "state_revision,alert_revision,state_event_seq,state_rx_first_seq,state_rx_last_seq,"
+    "alert_event_seq,alert_rx_first_seq,alert_rx_last_seq,alert_table_fnv1a32,priority_valid,priority_v1_index,"
+    "priority_band,priority_frequency_mhz,priority_direction,priority_front_raw,priority_rear_raw,priority_front_bars,"
+    "priority_rear_bars,priority_flag,priority_junk,priority_photo_type,priority_raw_band_bits,priority_is_ku\n";
 constexpr const char* COMMIT_EXPORT_MARKER_FORMAT =
     "# display_commit_export_schema=1,terminal_seq=%lu,dropped_commits=%lu\n";
 
@@ -84,6 +92,7 @@ void V1DisplayCommitLog::begin(bool sdAvailable) {
     seq_ = 0;
     droppedSnapshots_.store(0, std::memory_order_relaxed);
     pendingWrites_.store(0, std::memory_order_relaxed);
+    qualificationSessionToken_.store(0, std::memory_order_relaxed);
 
     if (!sdAvailable) {
         return;
@@ -111,6 +120,15 @@ void V1DisplayCommitLog::begin(bool sdAvailable) {
     enabled_ = true;
 }
 
+void V1DisplayCommitLog::beginQualificationSession(uint32_t sessionToken) {
+    qualificationSessionToken_.store(sessionToken, std::memory_order_release);
+}
+
+void V1DisplayCommitLog::endQualificationSession(uint32_t sessionToken) {
+    uint32_t expected = sessionToken;
+    (void)qualificationSessionToken_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+}
+
 void V1DisplayCommitLog::record(const V1DisplayCommitSnapshot& snapshot) {
     if (!enabled_) {
         return;
@@ -120,6 +138,7 @@ void V1DisplayCommitLog::record(const V1DisplayCommitSnapshot& snapshot) {
     // happened, so every surviving record carries the running total.
     V1DisplayCommitSnapshot stamped = snapshot;
     stamped.droppedSnapshots = droppedSnapshots_.load(std::memory_order_relaxed);
+    stamped.qualificationSessionToken = qualificationSessionToken_.load(std::memory_order_acquire);
     enqueueSnapshot(stamped);
 }
 
@@ -147,10 +166,12 @@ bool V1DisplayCommitLog::formatCsvLine(const V1DisplayCommitSnapshot& snapshot, 
         return false;
     }
     const DisplayState& state = snapshot.state;
+    const AlertData& priority = snapshot.priority;
     const int written = snprintf(
         out, outLen,
         "%lu,%lu,%s,%s,%lu,%lu,%u,%u,%u,%u,%d,%d,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%c,%c,%u,%c,%u,%u,%u,%u,%u,"
-        "%lu\n",
+        "%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%u,%08lX,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%08lX,%u,%u,%u,"
+        "%lu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
         static_cast<unsigned long>(snapshot.seq), static_cast<unsigned long>(snapshot.millisTs),
         pathName(snapshot.path), dispatchName(snapshot.dispatch), static_cast<unsigned long>(snapshot.renderUs),
         static_cast<unsigned long>(snapshot.pushes), static_cast<unsigned>(snapshot.arrowsToShow),
@@ -164,7 +185,27 @@ bool V1DisplayCommitLog::formatCsvLine(const V1DisplayCommitSnapshot& snapshot, 
         printableChar(state.modeChar), printableChar(state.bogeyCounterChar), state.bogeyCounterDot ? 1u : 0u,
         printableChar(state.bogeyCounterChar2), static_cast<unsigned>(state.mainVolume),
         static_cast<unsigned>(state.muteVolume), state.hasJunkAlert ? 1u : 0u, state.hasPhotoAlert ? 1u : 0u,
-        state.hasKuAlert ? 1u : 0u, static_cast<unsigned long>(snapshot.droppedSnapshots));
+        state.hasKuAlert ? 1u : 0u, static_cast<unsigned long>(snapshot.droppedSnapshots),
+        static_cast<unsigned>(state.bogeyCounterByte), static_cast<unsigned>(state.bogeyCounterByte2),
+        state.bogeyCounterDot2 ? 1u : 0u, state.hasMode ? 1u : 0u, state.hasDisplayOn ? 1u : 0u,
+        state.hasV1Version ? 1u : 0u, static_cast<unsigned long>(state.v1FirmwareVersion),
+        state.hasVolumeData ? 1u : 0u, static_cast<unsigned>(state.v1PriorityIndex),
+        static_cast<unsigned>(state.savedMainVolume), static_cast<unsigned>(state.savedMuteVolume),
+        state.hasSavedVolume ? 1u : 0u, static_cast<unsigned long>(snapshot.qualificationSessionToken),
+        static_cast<unsigned long>(state.causal.stateRevision), static_cast<unsigned long>(state.causal.alertRevision),
+        static_cast<unsigned long>(state.causal.stateSource.eventSeq),
+        static_cast<unsigned long>(state.causal.stateSource.rxFirstSeq),
+        static_cast<unsigned long>(state.causal.stateSource.rxLastSeq),
+        static_cast<unsigned long>(state.causal.alertSource.eventSeq),
+        static_cast<unsigned long>(state.causal.alertSource.rxFirstSeq),
+        static_cast<unsigned long>(state.causal.alertSource.rxLastSeq),
+        static_cast<unsigned long>(snapshot.alertTableDigest), priority.isValid ? 1u : 0u,
+        static_cast<unsigned>(priority.v1Index), static_cast<unsigned>(priority.band),
+        static_cast<unsigned long>(priority.frequency), static_cast<unsigned>(priority.direction),
+        static_cast<unsigned>(priority.frontRawStrength), static_cast<unsigned>(priority.rearRawStrength),
+        static_cast<unsigned>(priority.frontStrength), static_cast<unsigned>(priority.rearStrength),
+        priority.isPriority ? 1u : 0u, priority.isJunk ? 1u : 0u, static_cast<unsigned>(priority.photoType),
+        static_cast<unsigned>(priority.rawBandBits), priority.isKu ? 1u : 0u);
     return written > 0 && static_cast<size_t>(written) < outLen;
 }
 
@@ -181,7 +222,7 @@ bool V1DisplayCommitLog::appendSnapshot(const V1DisplayCommitSnapshot& snapshot)
         return false;
     }
 
-    char line[320];
+    char line[640];
     if (!formatCsvLine(snapshot, line, sizeof(line)) || persistentFile_.print(line) != strlen(line)) {
         persistentFile_.close();
         headerReady_ = false;

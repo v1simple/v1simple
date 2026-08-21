@@ -17,6 +17,7 @@
 #include "battery_manager.h"
 #include "ble_bond_backup_writer.h"
 #include "ble_client.h"
+#include "build_metadata.h"
 #include "display.h"
 #include "display_mode.h"
 #include "packet_parser.h"
@@ -393,11 +394,12 @@ void configureUiInteractionModules(QuietCoordinatorModule& quietCoordinator) {
 void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason) {
     const V1Settings& bootSettings = settingsManager.get();
     const char* scenario = "default";
-    extern const char* getBuildGitSha();
     const char* gitSha = getBuildGitSha();
+    const char* imageId = getRuntimeImageId();
     const char* resetStr = resetReasonToString(resetReason);
-    SerialLog.printf("BOOT bootId=%lu reset=%s git=%s scenario=%s wifiMaster=%s\n", static_cast<unsigned long>(bootId),
-                     resetStr, gitSha, scenario, bootSettings.enableWifi ? "on" : "off");
+    SerialLog.printf("BOOT bootId=%lu dutMillis=%lu reset=%s git=%s image=%s scenario=%s wifiMaster=%s\n",
+                     static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()), resetStr, gitSha,
+                     imageId, scenario, bootSettings.enableWifi ? "on" : "off");
 }
 
 void logBootSummaryAndWifiStartup(uint32_t bootId, esp_reset_reason_t resetReason) {

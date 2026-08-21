@@ -195,6 +195,75 @@ def test_resumable_skip_does_not_extract_frames() -> None:
         assert_true(counts["skipped"] == 1 and counts["graded"] == 0, f"capture was not skipped: {counts}")
 
 
+def test_current_grade_refresh_preserves_stale_owned_evidence() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp)
+        camera_dir, manifest = manifest_fixture(corpus)
+        publish_capture_manifest(camera_dir, manifest)
+        stale_fingerprint = "0" * 64
+        publish_grade(
+            camera_dir,
+            manifest,
+            stale_fingerprint,
+            grade_fixture(manifest, stale_fingerprint),
+        )
+        immutable_paths = [
+            camera_dir / "capture_manifest.json",
+            camera_dir / "grades" / f"{stale_fingerprint}.json",
+            *(camera_dir / str(manifest["identity"]["artifacts"][key]["path"]) for key in (
+                "video",
+                "session_start_still",
+                "bright_still",
+                "dim_still",
+            )),
+        ]
+        before = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in immutable_paths
+        }
+        original = camera_regrade_module.grade_camera
+
+        def fake_grade(**kwargs: object) -> dict:
+            return grade_fixture(manifest, str(kwargs["grader_fingerprint"]))
+
+        camera_regrade_module.grade_camera = fake_grade  # type: ignore[assignment]
+        try:
+            counts, returncode = camera_regrade_module.regrade_corpus(corpus)
+        finally:
+            camera_regrade_module.grade_camera = original
+
+        current_fingerprint = current_grader_fingerprint(ROOT)
+        current_grade = load_owned_grade(camera_dir, manifest, current_fingerprint)
+        after = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in immutable_paths
+        }
+        assert_true(returncode == 0, f"current grade refresh failed: {counts}")
+        assert_true(
+            counts["graded"] == 1 and counts["skipped"] == 0,
+            f"stale grade was mistaken for the current grade: {counts}",
+        )
+        assert_true(current_grade is not None, "current fingerprint grade was not appended")
+        assert_true(before == after, "refresh rewrote captured media or its prior owned grade")
+
+
+def test_bench_refreshes_camera_grade_immediately_before_scoring() -> None:
+    source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    refresh = source.index('python3 "$ROOT_DIR/scripts/bench/camera_regrade.py"')
+    score = source.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
+    refresh_block = source[refresh:score]
+    assert_true(refresh < score, "bench scoring can run before the current camera grade refresh")
+    assert_true(
+        '--corpus-root "$RUN_DIR"' in refresh_block,
+        "camera grade refresh does not target only the captured run",
+    )
+    assert_true(
+        'camera_regrade_status=${PIPESTATUS[0]}' in refresh_block
+        and "scoring captured evidence anyway" in refresh_block,
+        "camera refresh failure can replace or suppress the evidence verdict",
+    )
+
+
 def test_owned_bytes_are_verified_before_resume() -> None:
     for artifact, relative in (
         ("video", Path("camera/evidence_exp50.mov")),
@@ -404,6 +473,8 @@ def main() -> int:
     test_capture_id_stability_and_sensitivity()
     test_immutable_publication_and_conflicts()
     test_resumable_skip_does_not_extract_frames()
+    test_current_grade_refresh_preserves_stale_owned_evidence()
+    test_bench_refreshes_camera_grade_immediately_before_scoring()
     test_owned_bytes_are_verified_before_resume()
     test_legacy_preservation_and_relocation()
     test_missing_legacy_timing_abstains_before_decode()

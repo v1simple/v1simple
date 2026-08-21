@@ -83,6 +83,23 @@ REPLAY_STIMULUS_SCHEMA = 1
 REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
 REPLAY_STIMULUS_NAME = "replay_stimulus.ndjson"
 RAW_LOG_SCHEMA = 1
+BENCH_TIMELINE_NAME = "bench_timeline.ndjson"
+BUILD_UPLOAD_ARTIFACTS_NAME = "build_upload_artifacts.json"
+BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / "waveshare-349"
+# esp_app_get_elf_sha256() exposes the prefix retained by the firmware's
+# CONFIG_APP_RETRIEVE_LEN_ELF_SHA=9 setting. Keep the full ELF SHA-256 in the
+# file inventory, but compare QSTATUS runtimeImageId with this lowercase prefix.
+RUNTIME_IMAGE_ID_HEX_LENGTH = 9
+RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
+BUILD_UPLOAD_FILES = (
+    "bootloader.bin",
+    "partitions.bin",
+    "firmware.bin",
+    "firmware.elf",
+    "littlefs.bin",
+)
+REPLAY_SCENARIO_EVIDENCE_NAME = "replay_scenario.json"
+RECONNECT_SCENARIO_EVIDENCE_NAME = "replay_scenario_preflight.json"
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
 RECONNECT_PREFLIGHT_START = "reconnect_preflight_start"
@@ -135,9 +152,47 @@ DISPLAY_COMMIT_HEADER = (
     "has_photo",
     "has_ku",
     "dropped_commits",
+    "bogey_byte",
+    "bogey_byte2",
+    "bogey_dot2",
+    "has_mode",
+    "has_display_on",
+    "has_v1_version",
+    "v1_firmware_version",
+    "has_volume_data",
+    "v1_priority_index",
+    "saved_main_volume",
+    "saved_mute_volume",
+    "has_saved_volume",
+    "qualification_session_token",
+    "state_revision",
+    "alert_revision",
+    "state_event_seq",
+    "state_rx_first_seq",
+    "state_rx_last_seq",
+    "alert_event_seq",
+    "alert_rx_first_seq",
+    "alert_rx_last_seq",
+    "alert_table_fnv1a32",
+    "priority_valid",
+    "priority_v1_index",
+    "priority_band",
+    "priority_frequency_mhz",
+    "priority_direction",
+    "priority_front_raw",
+    "priority_rear_raw",
+    "priority_front_bars",
+    "priority_rear_bars",
+    "priority_flag",
+    "priority_junk",
+    "priority_photo_type",
+    "priority_raw_band_bits",
+    "priority_is_ku",
 )
 DISPLAY_COMMIT_METADATA_LINE = (
-    "# display_commit_schema=1,timebase=millis,source=renderer_commit"
+    "# display_commit_schema=2,timebase=millis,source=renderer_commit,"
+    "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
+    "complete_alert_rows=encounter_csv_by_session_revision_digest"
 )
 DISPLAY_COMMIT_EXPORT_MARKER = re.compile(
     r"# display_commit_export_schema=1,terminal_seq=(0|[1-9][0-9]*),"
@@ -515,6 +570,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="v1replay executable used as the V1 emulator after QSTART acknowledgement",
     )
+    parser.add_argument(
+        "--scenario",
+        default="",
+        help="Optional scenario passed through to managed v1replay without host-side parsing",
+    )
     blink_group = parser.add_mutually_exclusive_group()
     blink_group.add_argument(
         "--blink-profile",
@@ -538,6 +598,123 @@ def parse_args() -> argparse.Namespace:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class BenchTimeline:
+    """Append host-clock observations as they occur; never infer missing events."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = path.open("x", encoding="utf-8")
+        self.record("timeline_opened")
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        self.handle.write(
+            json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+            + "\n"
+        )
+        self.handle.flush()
+
+    def record(
+        self,
+        event: str,
+        *,
+        host_monotonic_ns: int | None = None,
+        **fields: Any,
+    ) -> int:
+        observed = time.monotonic_ns() if host_monotonic_ns is None else host_monotonic_ns
+        self._write(
+            {
+                "schema_version": 1,
+                "event": event,
+                "host_monotonic_ns": observed,
+                **fields,
+            }
+        )
+        return observed
+
+    def record_external(self, payload: dict[str, Any], source: str) -> None:
+        observed = time.monotonic_ns()
+        envelope = {
+            **payload,
+            "schema_version": 1,
+            "timeline_source": source,
+            "observer_host_monotonic_ns": observed,
+        }
+        envelope.setdefault("source", source)
+        self._write(envelope)
+
+    def close(self) -> None:
+        if self.handle.closed:
+            return
+        self.record("timeline_closed")
+        self.handle.close()
+
+
+def retain_build_upload_artifacts(
+    out_dir: Path,
+    build_dir: Path = BUILD_OUTPUT_DIR,
+    *,
+    upload_performed: bool = False,
+) -> dict[str, Any]:
+    """Record hashes of the exact local images left by the successful upload build."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for name in BUILD_UPLOAD_FILES:
+        path = build_dir / name
+        if not path.is_file():
+            missing.append(name)
+            continue
+        try:
+            source_path = path.resolve().relative_to(ROOT).as_posix()
+        except ValueError:
+            source_path = path.name
+        files.append(
+            {
+                "name": name,
+                "source_path": source_path,
+                "size_bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    firmware_elf_sha256 = next(
+        (item["sha256"] for item in files if item["name"] == "firmware.elf"),
+        "",
+    )
+    expected_runtime_image_id = firmware_elf_sha256[:RUNTIME_IMAGE_ID_HEX_LENGTH]
+    payload = {
+        "schema_version": 1,
+        "kind": "bench_build_upload_artifacts",
+        "upload_performed": upload_performed,
+        "expected_runtime_image_id": expected_runtime_image_id,
+        "expected_runtime_image_id_basis": RUNTIME_IMAGE_ID_BASIS,
+        "expected_runtime_image_id_hex_length": RUNTIME_IMAGE_ID_HEX_LENGTH,
+        "files": files,
+        "missing": missing,
+    }
+    path = out_dir / BUILD_UPLOAD_ARTIFACTS_NAME
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "path": path.name,
+        "sha256": sha256_file(path),
+        "size_bytes": path.stat().st_size,
+        "upload_performed": upload_performed,
+        "expected_runtime_image_id": expected_runtime_image_id,
+        "expected_runtime_image_id_basis": RUNTIME_IMAGE_ID_BASIS,
+        "expected_runtime_image_id_hex_length": RUNTIME_IMAGE_ID_HEX_LENGTH,
+        "files": files,
+        "missing": missing,
+    }
 
 
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
@@ -757,7 +934,13 @@ def wait_for_post_upload_settle(
 
 
 class BenchSerial:
-    def __init__(self, port: str, baud: int, log_path: Path):
+    def __init__(
+        self,
+        port: str,
+        baud: int,
+        log_path: Path,
+        timeline: BenchTimeline | None = None,
+    ):
         if serial is None:
             raise RuntimeError("pyserial is required for live bench collection")
         self.port = port
@@ -776,6 +959,8 @@ class BenchSerial:
         self.ser.reset_input_buffer()
         self.boot_marker_count = 0
         self.disconnect_cleanup_count = 0
+        self.timeline = timeline
+        self.last_receive_monotonic_ns: int | None = None
 
     def close(self) -> None:
         try:
@@ -784,12 +969,32 @@ class BenchSerial:
         finally:
             self.log.close()
 
-    def write_command(self, command: str) -> None:
+    def write_command(self, command: str) -> int:
         line = command.rstrip("\r\n") + "\n"
         self.log.write(f">>> {line}")
         self.log.flush()
-        self.ser.write(line.encode("utf-8"))
-        self.ser.flush()
+        sent = time.monotonic_ns()
+        try:
+            self.ser.write(line.encode("utf-8"))
+            self.ser.flush()
+        except Exception as exc:
+            if self.timeline is not None:
+                self.timeline.record(
+                    "serial_send",
+                    host_monotonic_ns=sent,
+                    line=line.rstrip("\n"),
+                    status="failed",
+                    error=type(exc).__name__,
+                )
+            raise
+        if self.timeline is not None:
+            self.timeline.record(
+                "serial_send",
+                host_monotonic_ns=sent,
+                line=line.rstrip("\n"),
+                status="sent",
+            )
+        return sent
 
     def read_line(self, timeout_s: float) -> str:
         deadline = time.monotonic() + timeout_s
@@ -797,9 +1002,17 @@ class BenchSerial:
             raw = self.ser.readline()
             if not raw:
                 continue
+            received = time.monotonic_ns()
             text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            self.last_receive_monotonic_ns = received
             self.log.write(text + "\n")
             self.log.flush()
+            if self.timeline is not None:
+                self.timeline.record(
+                    "serial_receive",
+                    host_monotonic_ns=received,
+                    line=text,
+                )
             if text.startswith(BOOT_PREFIX):
                 self.boot_marker_count += 1
             if text.startswith(V1_DISCONNECT_CLEANUP_PREFIX):
@@ -866,6 +1079,53 @@ def establish_serial_fence(q: BenchSerial, timeout_s: float = 5.0) -> dict[str, 
     ):
         raise RuntimeError(f"reconnect serial fence was not ready: {payload}")
     return payload
+
+
+def capture_qstatus_round_trip(
+    q: BenchSerial,
+    phase: str,
+    timeout_s: float = 5.0,
+) -> dict[str, Any]:
+    """Record a designated status exchange without making it a new admission gate."""
+    timeline = getattr(q, "timeline", None)
+    if timeline is None:
+        return {}
+    sent = time.monotonic_ns()
+    received: int | None = None
+    try:
+        observed_send = q.write_command("QSTATUS")
+        if isinstance(observed_send, int) and not isinstance(observed_send, bool):
+            sent = observed_send
+        line = q.read_protocol_line(("QRESP ", "QERR "), timeout_s)
+        received = getattr(q, "last_receive_monotonic_ns", None) or time.monotonic_ns()
+        prefix = "QRESP " if line.startswith("QRESP ") else "QERR "
+        payload = parse_json_line(line, prefix)
+        status = "observed" if prefix == "QRESP " else "device_error"
+        if timeline is not None:
+            timeline.record(
+                "qstatus_round_trip",
+                phase=phase,
+                status=status,
+                request="QSTATUS",
+                response_prefix=prefix.strip(),
+                response=payload,
+                send_host_monotonic_ns=sent,
+                receive_host_monotonic_ns=received,
+                duration_ns=max(0, received - sent),
+            )
+        return payload
+    except Exception as exc:  # evidence gap remains visible without replacing the bench result
+        if timeline is not None:
+            timeline.record(
+                "qstatus_round_trip",
+                phase=phase,
+                status="failed",
+                request="QSTATUS",
+                send_host_monotonic_ns=sent,
+                receive_host_monotonic_ns=received,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return {}
 
 
 def establish_reconnect_readiness(
@@ -1402,6 +1662,55 @@ def encounter_csv_sd_path(perf_csv_sd_path: str) -> str:
     return f"/encounters/encounters_{boot_suffix}"
 
 
+def panic_sidecar_path(perf_csv_path: str) -> str:
+    """Return the adjacent panic sidecar name without interpreting its contents."""
+    return perf_csv_path[: -len(".csv")] + ".panic.jsonl" if perf_csv_path.endswith(".csv") else ""
+
+
+def file_artifact(path: Path | None, reason: str = "") -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {"status": "unavailable", "path": "", "reason": reason}
+    return {
+        "status": "captured",
+        "path": path.name,
+        "sha256": sha256_file(path),
+        "size_bytes": path.stat().st_size,
+        "reason": "",
+    }
+
+
+def panic_sidecar_artifact(path: Path | None, reason: str = "") -> dict[str, Any]:
+    return file_artifact(path, reason)
+
+
+def collect_optional_sd_artifact(
+    q: BenchSerial,
+    out_dir: Path,
+    idle_timeout_s: int,
+    sd_path: str,
+    label: str,
+) -> dict[str, Any]:
+    """Download one device-reported file while leaving absence/failure descriptive."""
+    if not sd_path:
+        return file_artifact(None, "device_path_unavailable")
+    try:
+        path = download_csv(q, out_dir, idle_timeout_s, sd_path)
+    except Exception as exc:  # optional evidence never replaces the bench result
+        print(f"[bench] {label} unavailable ({exc})", flush=True)
+        return file_artifact(None, f"export_failed: {exc}")
+    return file_artifact(path)
+
+
+def retain_import_panic_sidecar(source_csv: Path, copied_csv: Path) -> dict[str, Any]:
+    source = source_csv.with_suffix(".panic.jsonl")
+    if not source.is_file():
+        return panic_sidecar_artifact(None, "source_sidecar_missing")
+    destination = copied_csv.with_suffix(".panic.jsonl")
+    if source.resolve() != destination.resolve():
+        shutil.copy2(source, destination)
+    return panic_sidecar_artifact(destination)
+
+
 def display_commit_csv_sd_path(perf_csv_sd_path: str) -> str:
     """Where the firmware wrote this boot's display commit records."""
     prefix = "/perf/perf_boot_"
@@ -1478,6 +1787,8 @@ def summarize_display_commit_artifact(
             "csv_schema_version": metadata.get("display_commit_schema", ""),
             "timebase": metadata.get("timebase", ""),
             "source": metadata.get("source", ""),
+            "alert_table_digest": metadata.get("alert_table_digest", ""),
+            "complete_alert_rows": metadata.get("complete_alert_rows", ""),
         }
     )
     if metadata_lines != [DISPLAY_COMMIT_METADATA_LINE]:
@@ -1705,6 +2016,8 @@ class V1Emulator:
         handshake_only: bool = False,
         handshake_notification_hold_ms: int = 0,
         lease_fd: int | None = None,
+        scenario: str = "",
+        machine_event: Callable[[dict[str, Any]], None] | None = None,
     ):
         if (
             not isinstance(handshake_notification_hold_ms, int)
@@ -1727,8 +2040,18 @@ class V1Emulator:
         self.handshake_only = handshake_only
         self.handshake_notification_hold_ms = handshake_notification_hold_ms
         self.lease_fd = lease_fd
+        self.scenario = scenario
+        self.machine_event = machine_event
+        self.machine_events_observed = 0
+        self.machine_event_observation_error = ""
         self.blink_profile = blink_profile or ("scenario" if suite == "replay" else "steady")
         self.log_path = out_dir / (RECONNECT_LOG_NAME if handshake_only else "v1replay.log")
+        scenario_name = (
+            RECONNECT_SCENARIO_EVIDENCE_NAME
+            if handshake_only
+            else REPLAY_SCENARIO_EVIDENCE_NAME
+        )
+        self.scenario_evidence_path = out_dir / scenario_name if self.mode == "bench" else None
         ledger_name = RECONNECT_LEDGER_NAME if handshake_only else HANDSHAKE_LEDGER_NAME
         self.handshake_ledger_path = out_dir / ledger_name if self.mode == "bench" else None
         self.process: subprocess.Popen[bytes] | None = None
@@ -1753,19 +2076,22 @@ class V1Emulator:
                 raise RuntimeError("replay handshake ledger path is unavailable")
             if self.handshake_ledger_path.exists():
                 raise RuntimeError("refusing to reuse an existing replay handshake ledger")
+            if self.scenario_evidence_path is None or self.scenario_evidence_path.exists():
+                raise RuntimeError("refusing to reuse existing replay scenario evidence")
         if self.log_path.exists():
             raise RuntimeError("refusing to overwrite an existing V1 emulator log")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_handle = self.log_path.open("wb")
-        command = [
-            str(self.executable),
-            self.mode,
-            "--machine-events",
-            "--owner-pid",
-            str(os.getpid()),
-        ]
+        command = [str(self.executable), self.mode]
         if self.mode == "bench":
-            command.extend(["--blink-profile", self.blink_profile])
+            if self.scenario:
+                command.extend(["--scenario", self.scenario])
+            assert self.scenario_evidence_path is not None
+            command.extend(["--scenario-evidence", str(self.scenario_evidence_path)])
+        command.extend(["--machine-events", "--owner-pid", str(os.getpid())])
+        if self.mode == "bench":
+            assert self.handshake_ledger_path is not None
+            command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])
             if self.handshake_only:
                 command.extend(["--handshake-only", "--log-packets"])
                 if self.handshake_notification_hold_ms > 0:
@@ -1775,8 +2101,7 @@ class V1Emulator:
                             str(self.handshake_notification_hold_ms),
                         ]
                     )
-            assert self.handshake_ledger_path is not None
-            command.extend(["--handshake-ledger", str(self.handshake_ledger_path)])
+            command.extend(["--blink-profile", self.blink_profile])
         self.process = subprocess.Popen(
             command,
             cwd=self.executable.parent.parent,
@@ -1839,9 +2164,17 @@ class V1Emulator:
             "handshake_ledger": (
                 self.handshake_ledger_path.name if self.handshake_ledger_path is not None else ""
             ),
+            "scenario_evidence": (
+                self.scenario_evidence_path.name
+                if self.scenario_evidence_path is not None
+                and self.scenario_evidence_path.is_file()
+                else ""
+            ),
+            "machine_event_timeline_error": self.machine_event_observation_error,
         }
 
     def health_problem(self) -> str:
+        self._observe_machine_events()
         if self.process is None:
             return "v1replay did not start"
         code = self.process.poll()
@@ -1851,6 +2184,7 @@ class V1Emulator:
         return ""
 
     def _bench_completed(self) -> bool:
+        self._observe_machine_events()
         try:
             return self.COMPLETE_MARKER in self.log_path.read_bytes()
         except OSError:
@@ -1861,31 +2195,16 @@ class V1Emulator:
         return events[-1] if events else {}
 
     def _bench_events(self, state: str) -> list[dict[str, Any]]:
-        try:
-            lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return []
-        prefix = "V1REPLAY_EVENT "
-        decoder = json.JSONDecoder()
-        events: list[dict[str, Any]] = []
-        for line in lines:
-            marker = line.find(prefix)
-            if marker < 0:
-                continue
-            try:
-                event, _end = decoder.raw_decode(line[marker + len(prefix) :])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(event, dict) and event.get("state") == state:
-                events.append(event)
-        return events
+        self._observe_machine_events()
+        return [event for event in self._read_machine_events(strict=False) if event["state"] == state]
 
-    def _ordered_machine_events(self) -> list[dict[str, Any]]:
-        """Read the complete child-authored event stream after process exit."""
+    def _read_machine_events(self, *, strict: bool) -> list[dict[str, Any]]:
         try:
             lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
-            raise RuntimeError("could not read the V1 emulator machine-event log") from exc
+            if strict:
+                raise RuntimeError("could not read the V1 emulator machine-event log") from exc
+            return []
         prefix = "V1REPLAY_EVENT "
         decoder = json.JSONDecoder()
         events: list[dict[str, Any]] = []
@@ -1897,23 +2216,58 @@ class V1Emulator:
             try:
                 event, end = decoder.raw_decode(payload)
             except (json.JSONDecodeError, TypeError) as exc:
-                raise RuntimeError(
-                    f"malformed V1 emulator machine event at log line {line_number}"
-                ) from exc
+                if strict:
+                    raise RuntimeError(
+                        f"malformed V1 emulator machine event at log line {line_number}"
+                    ) from exc
+                continue
             if payload[end:].strip():
-                raise RuntimeError(
-                    f"trailing data in V1 emulator machine event at log line {line_number}"
-                )
+                if strict:
+                    raise RuntimeError(
+                        f"trailing data in V1 emulator machine event at log line {line_number}"
+                    )
+                continue
             if not isinstance(event, dict):
-                raise RuntimeError(
-                    f"V1 emulator machine event at log line {line_number} is not an object"
-                )
+                if strict:
+                    raise RuntimeError(
+                        f"V1 emulator machine event at log line {line_number} is not an object"
+                    )
+                continue
             if not isinstance(event.get("state"), str) or not event.get("state"):
-                raise RuntimeError(
-                    f"V1 emulator machine event at log line {line_number} has no valid state"
-                )
+                if strict:
+                    raise RuntimeError(
+                        f"V1 emulator machine event at log line {line_number} has no valid state"
+                    )
+                continue
             events.append(event)
         return events
+
+    def _observe_machine_events(self) -> None:
+        events = self._read_machine_events(strict=False)
+        if len(events) <= self.machine_events_observed:
+            return
+        pending = events[self.machine_events_observed :]
+        if self.machine_event is None or self.machine_event_observation_error:
+            self.machine_events_observed = len(events)
+            return
+        for event in pending:
+            try:
+                self.machine_event(dict(event))
+            except Exception as exc:  # evidence loss stays visible without changing bench behavior
+                self.machine_event_observation_error = f"{type(exc).__name__}: {exc}"
+                print(
+                    "[bench] replay machine-event timeline write failed "
+                    f"({self.machine_event_observation_error})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self.machine_events_observed = len(events)
+                return
+            self.machine_events_observed += 1
+
+    def _ordered_machine_events(self) -> list[dict[str, Any]]:
+        """Read the complete child-authored event stream after process exit."""
+        return self._read_machine_events(strict=True)
 
     def _grade_managed_shutdown(self) -> tuple[list[dict[str, Any]], int, int]:
         """Prove graceful withdrawal from the complete child-authored event stream."""
@@ -2052,16 +2406,22 @@ class V1Emulator:
             replay_started_monotonic = math.nan
         try:
             total_samples = int(configuration.get("totalSamples") or 0)
-            cadence_hz = int(configuration.get("cadenceHz") or 0)
             blink_samples = int(configuration.get("blinkSamples") or 0)
         except (TypeError, ValueError):
             total_samples = 0
-            cadence_hz = 0
             blink_samples = -1
+        cadence_value = configuration.get("cadenceHz")
+        cadence_hz: float | None = None
+        cadence_valid = False
+        if cadence_value is None:
+            cadence_valid = configuration.get("scenarioOrigin") == "external"
+        elif isinstance(cadence_value, (int, float)) and not isinstance(cadence_value, bool):
+            cadence_hz = float(cadence_value)
+            cadence_valid = math.isfinite(cadence_hz) and cadence_hz > 0
         configuration_valid = self.mode != "bench" or (
             configuration.get("blinkProfile") == self.blink_profile
             and total_samples > 0
-            and cadence_hz > 0
+            and cadence_valid
             and blink_samples >= 0
         )
         base_completed = bool(
@@ -2107,7 +2467,7 @@ class V1Emulator:
             "blink_profile": str(configuration.get("blinkProfile") or self.blink_profile),
             "blink_source": str(configuration.get("blinkSource") or ""),
             "blink_samples": blink_samples,
-            "blink_nominal_seconds": (blink_samples / cadence_hz) if cadence_hz else 0.0,
+            "blink_nominal_seconds": (blink_samples / cadence_hz) if cadence_hz else None,
             "total_samples": total_samples,
             "cadence_hz": cadence_hz,
             "managed_stop": self.managed_stop,
@@ -2123,6 +2483,13 @@ class V1Emulator:
             "handshake_ledger": (
                 self.handshake_ledger_path.name if self.handshake_ledger_path is not None else ""
             ),
+            "scenario_evidence": (
+                self.scenario_evidence_path.name
+                if self.scenario_evidence_path is not None
+                and self.scenario_evidence_path.is_file()
+                else ""
+            ),
+            "machine_event_timeline_error": self.machine_event_observation_error,
             "replay_started_monotonic_seconds": (
                 replay_started_monotonic if math.isfinite(replay_started_monotonic) else None
             ),
@@ -2160,10 +2527,13 @@ class V1Emulator:
         if self.process is not None:
             self.returncode = self.process.poll()
         self._close_log()
-        if managed_stop_requested:
-            self.graceful_stop_confirmed = False
-            self._managed_shutdown_evidence = self._grade_managed_shutdown()
-            self.graceful_stop_confirmed = True
+        try:
+            if managed_stop_requested:
+                self.graceful_stop_confirmed = False
+                self._managed_shutdown_evidence = self._grade_managed_shutdown()
+                self.graceful_stop_confirmed = True
+        finally:
+            self._observe_machine_events()
 
 
 def run_reconnect_preflight(
@@ -2398,6 +2768,8 @@ def _collect_live(
     protocol_log = out_dir / "bench_serial.log"
     reserved_evidence = [
         protocol_log,
+        out_dir / BENCH_TIMELINE_NAME,
+        out_dir / BUILD_UPLOAD_ARTIFACTS_NAME,
         out_dir / "window_result.json",
         out_dir / "v1replay.log",
         out_dir / "import_stdout.log",
@@ -2411,6 +2783,8 @@ def _collect_live(
                 out_dir / HANDSHAKE_LEDGER_NAME,
                 out_dir / RECONNECT_LOG_NAME,
                 out_dir / RECONNECT_LEDGER_NAME,
+                out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
+                out_dir / RECONNECT_SCENARIO_EVIDENCE_NAME,
             ]
         )
     if args.camera:
@@ -2421,41 +2795,58 @@ def _collect_live(
             "refusing to reuse existing live evidence: " + ", ".join(existing_evidence)
         )
 
+    if artifacts is None:
+        artifacts = {}
+    artifacts.setdefault(
+        "display_commits",
+        summarize_display_commit_artifact(None, out_dir, "not_attempted"),
+    )
+
     port = wait_for_port(args.port)
     if args.upload:
         print("[bench] uploading firmware/filesystem before first window", flush=True)
         run_upload(port, args.skip_web)
+        artifacts["build_upload"] = retain_build_upload_artifacts(
+            out_dir,
+            upload_performed=True,
+        )
         if after_upload is not None:
             after_upload()
         port = wait_for_port(port, 30)
         time.sleep(2)
         wait_for_post_upload_settle(args.post_upload_settle_seconds)
+    else:
+        artifacts["build_upload"] = retain_build_upload_artifacts(out_dir)
 
     q: BenchSerial | None = None
     completion: dict[str, Any] = {}
+    scenario = str(getattr(args, "scenario", "") or "")
+    timeline = BenchTimeline(out_dir / BENCH_TIMELINE_NAME)
+    if "build_upload" in artifacts:
+        timeline.record(
+            "build_upload_artifacts",
+            artifact_path=str(artifacts["build_upload"].get("path") or ""),
+        )
     emulator = V1Emulator(
         Path(args.replay_executable).resolve(),
         out_dir,
         args.suite,
         args.blink_profile,
         lease_fd=lease_fd,
+        scenario=scenario,
+        machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
     )
     emulator_result: dict[str, Any] = {}
     reconnect_preflight_result: dict[str, Any] = {}
     reconnect_preflight: V1Emulator | None = None
     camera = CameraCapture(out_dir / "camera", args.duration_seconds) if args.camera else None
+    if camera is not None:
+        camera.timeline_event = lambda payload: timeline.record_external(
+            payload,
+            "camera_recorder",
+        )
     camera_result: dict[str, Any] = {}
     encounter_csv_path: Path | None = None
-    if artifacts is None:
-        artifacts = {}
-    artifacts.setdefault(
-        "display_commits",
-        summarize_display_commit_artifact(
-            None,
-            out_dir,
-            "not_attempted",
-        ),
-    )
     collection_completed = False
 
     def admit_camera() -> None:
@@ -2484,7 +2875,7 @@ def _collect_live(
         if args.suite != "replay":
             admit_camera()
         print(f"[bench] opening serial port {port}; protocol log: {protocol_log}", flush=True)
-        q = BenchSerial(port, args.baud, protocol_log)
+        q = BenchSerial(port, args.baud, protocol_log, timeline)
         ready = wait_ready(q, args.ready_timeout_seconds)
         if args.suite == "replay":
             ready = establish_reconnect_readiness(q, args.ready_timeout_seconds)
@@ -2502,6 +2893,11 @@ def _collect_live(
                 args.blink_profile,
                 handshake_only=True,
                 lease_fd=lease_fd,
+                scenario=scenario,
+                machine_event=lambda payload: timeline.record_external(
+                    payload,
+                    "v1replay_reconnect_preflight",
+                ),
             )
             reconnect_preflight_result = run_reconnect_preflight(
                 q,
@@ -2542,6 +2938,7 @@ def _collect_live(
             raise failure
 
         require_healthy_replay_camera()
+        capture_qstatus_round_trip(q, "pre_window")
 
         completion = start_and_wait(
             q,
@@ -2569,6 +2966,7 @@ def _collect_live(
                 )
             ),
         )
+        post_window_status = capture_qstatus_round_trip(q, "post_window")
         if (
             args.suite == "replay"
             and boot_count_before_reconnect is not None
@@ -2595,7 +2993,7 @@ def _collect_live(
                 try:
                     port = wait_for_port(port, 10)
                     print(f"[bench] recovery export attempt {attempt}/{args.export_retries}", flush=True)
-                    q = BenchSerial(port, args.baud, protocol_log)
+                    q = BenchSerial(port, args.baud, protocol_log, timeline)
                     ready = wait_ready(q, args.ready_timeout_seconds)
                     print(f"[bench] recovery protocol ready: {ready}", flush=True)
                     csv_path = download_csv(q, out_dir, args.export_recovery_idle_timeout_seconds, sd_path)
@@ -2608,6 +3006,20 @@ def _collect_live(
                     time.sleep(1)
             else:
                 raise RuntimeError(f"CSV export recovery failed: {last_error}") from last_error
+        artifacts["causal_trace"] = collect_optional_sd_artifact(
+            q,
+            out_dir,
+            args.export_idle_timeout_seconds,
+            str(post_window_status.get("causalTracePath") or ""),
+            "causal trace",
+        )
+        artifacts["panic_sidecar"] = collect_optional_sd_artifact(
+            q,
+            out_dir,
+            args.export_idle_timeout_seconds,
+            panic_sidecar_path(str(completion.get("csvPath") or "")),
+            "panic sidecar",
+        )
         if args.suite == "replay":
             encounter_sd_path = encounter_csv_sd_path(str(completion.get("csvPath") or ""))
             if not encounter_sd_path:
@@ -2738,6 +3150,20 @@ def _collect_live(
                 )
             except Exception as exc:  # noqa: BLE001 - aggregate every cleanup failure
                 cleanup_errors.append(("camera", exc))
+        try:
+            timeline.close()
+            artifacts["bench_timeline"] = {
+                "path": timeline.path.name,
+                "sha256": sha256_file(timeline.path),
+                "size_bytes": timeline.path.stat().st_size,
+            }
+        except Exception as exc:  # noqa: BLE001 - timeline loss is visible but non-gating
+            print(f"[bench] timeline finalization failed ({exc})", flush=True)
+            artifacts["bench_timeline"] = {
+                "status": "failed",
+                "path": timeline.path.name if timeline.path.exists() else "",
+                "reason": str(exc),
+            }
         if cleanup_errors:
             cleanup_detail = "; ".join(
                 f"{owner}: {error}" for owner, error in cleanup_errors
@@ -2844,6 +3270,16 @@ def main() -> int:
             },
         )
         return 3
+    if getattr(args, "scenario", "") and (args.suite != "replay" or args.from_csv):
+        write_window_result(
+            out_dir,
+            {
+                "result": "COLLECTION_FAILED",
+                "suite": args.suite,
+                "error": "--scenario requires a live replay suite",
+            },
+        )
+        return 3
     if not args.from_csv and not args.replay_executable:
         write_window_result(
             out_dir,
@@ -2892,7 +3328,9 @@ def main() -> int:
             reconnect_preflight_result: dict[str, Any] = {}
             camera_result: dict[str, Any] = {}
             encounter_csv_path: Path | None = None
-            artifacts = {}
+            artifacts = {
+                "panic_sidecar": retain_import_panic_sidecar(source, csv_path),
+            }
         else:
             (
                 csv_path,

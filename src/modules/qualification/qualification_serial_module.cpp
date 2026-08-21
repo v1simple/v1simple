@@ -66,6 +66,9 @@ void QualificationSerialModule::begin(Stream* io, const Providers& providers) {
     durationMs_ = 0;
     startedAtMs_ = 0;
     finalizingAtMs_ = 0;
+    qualificationSessionToken_ = 0;
+    evidenceSessionActive_ = false;
+    evidenceDrained_ = true;
     finalSnapshotQueued_ = false;
     finalizedOk_ = false;
     commandLen_ = 0;
@@ -182,6 +185,9 @@ void QualificationSerialModule::serviceRun() {
         if (providers_.tryDrainPerf) {
             (void)providers_.tryDrainPerf(providers_.ctx);
         }
+        if (!evidenceDrained_ && providers_.tryDrainEvidence) {
+            evidenceDrained_ = providers_.tryDrainEvidence(providers_.ctx);
+        }
         return;
     }
 
@@ -190,7 +196,11 @@ void QualificationSerialModule::serviceRun() {
     }
 
     const uint32_t now = nowMs();
-    const bool drained = providers_.tryDrainPerf && providers_.tryDrainPerf(providers_.ctx);
+    const bool perfDrained = providers_.tryDrainPerf && providers_.tryDrainPerf(providers_.ctx);
+    if (!evidenceDrained_) {
+        evidenceDrained_ = !providers_.tryDrainEvidence || providers_.tryDrainEvidence(providers_.ctx);
+    }
+    const bool drained = perfDrained && evidenceDrained_;
     if (drained) {
         finishRun(true, "done");
         return;
@@ -368,6 +378,15 @@ void QualificationSerialModule::handleGetCsv(char* args) {
         sendErrorLine("perf_sd_busy_retry");
         return;
     }
+    const char* currentCausalTracePath =
+        providers_.causalTraceCsvPath ? providers_.causalTraceCsvPath(providers_.ctx) : nullptr;
+    if (currentCausalTracePath && strcmp(requested, currentCausalTracePath) == 0 && !evidenceDrained_) {
+        evidenceDrained_ = providers_.tryDrainEvidence && providers_.tryDrainEvidence(providers_.ctx);
+        if (!evidenceDrained_) {
+            sendErrorLine("evidence_busy_retry");
+            return;
+        }
+    }
     if (!openExport(requested)) {
         sendErrorLine(lastError_[0] ? lastError_ : "export_open_failed");
     }
@@ -458,6 +477,7 @@ void QualificationSerialModule::handleAbort() {
     }
     state_ = State::Error;
     setError("aborted");
+    endEvidenceSession();
     sendStatusLine(kPrefixResp, false, "aborted");
     clearQualificationModeOverride();
 }
@@ -549,6 +569,13 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
     mode_ = mode;
     durationMs_ = durationSeconds * 1000UL;
     startedAtMs_ = nowMs();
+    qualificationSessionToken_ = providers_.newSessionToken ? providers_.newSessionToken(providers_.ctx) : 0;
+    if (qualificationSessionToken_ == 0) {
+        qualificationSessionToken_ = startedAtMs_ ^ durationMs_ ^ 0xA5C39E71UL;
+        if (qualificationSessionToken_ == 0) {
+            qualificationSessionToken_ = 1;
+        }
+    }
     finalizingAtMs_ = 0;
     finalSnapshotQueued_ = false;
     finalizedOk_ = false;
@@ -556,6 +583,11 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
     copyString(csvPath_, sizeof(csvPath_), providers_.perfCsvPath(providers_.ctx));
 
     providers_.startPerfSession(providers_.ctx);
+    if (providers_.beginEvidenceSession) {
+        providers_.beginEvidenceSession(qualificationSessionToken_, startedAtMs_, providers_.ctx);
+        evidenceSessionActive_ = true;
+    }
+    evidenceDrained_ = providers_.tryDrainEvidence == nullptr;
     providers_.setSdCapturePaused(false, providers_.ctx);
     (void)providers_.enqueueSnapshotNow(providers_.ctx);
 
@@ -580,16 +612,28 @@ void QualificationSerialModule::enterFinalizing(const char* reason) {
     if (providers_.setSdCapturePaused) {
         providers_.setSdCapturePaused(true, providers_.ctx);
     }
+    endEvidenceSession();
     finalizingAtMs_ = nowMs();
     state_ = State::Finalizing;
     sendStatusLine(kPrefixEvent, true, reason ? reason : "finalizing");
 }
 
 void QualificationSerialModule::finishRun(bool ok, const char* message) {
+    endEvidenceSession();
     finalizedOk_ = ok;
     state_ = ok ? State::Done : State::Error;
     sendStatusLine(kPrefixEvent, ok, message);
     clearQualificationModeOverride();
+}
+
+void QualificationSerialModule::endEvidenceSession() {
+    if (!evidenceSessionActive_) {
+        return;
+    }
+    if (providers_.endEvidenceSession) {
+        providers_.endEvidenceSession(qualificationSessionToken_, nowMs(), providers_.ctx);
+    }
+    evidenceSessionActive_ = false;
 }
 
 void QualificationSerialModule::clearQualificationModeOverride() {
@@ -685,6 +729,7 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     if (!io_) {
         return;
     }
+    const uint32_t statusDutMillis = nowMs();
     io_->print(prefix ? prefix : kPrefixResp);
     io_->print("{\"ok\":");
     io_->print(ok ? "true" : "false");
@@ -697,10 +742,25 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     io_->print(",\"durationMs\":");
     io_->print(durationMs_);
     io_->print(",\"elapsedMs\":");
-    const uint32_t elapsed = startedAtMs_ == 0 ? 0 : static_cast<uint32_t>(nowMs() - startedAtMs_);
+    const uint32_t elapsed = startedAtMs_ == 0 ? 0 : static_cast<uint32_t>(statusDutMillis - startedAtMs_);
     io_->print(elapsed);
+    io_->print(",\"dutMillis\":");
+    io_->print(statusDutMillis);
+    io_->print(",\"startedAtDutMillis\":");
+    io_->print(startedAtMs_);
+    io_->print(",\"sessionToken\":\"");
+    char tokenBuf[9];
+    snprintf(tokenBuf, sizeof(tokenBuf), "%08lX", static_cast<unsigned long>(qualificationSessionToken_));
+    io_->print(tokenBuf);
+    io_->print('"');
     io_->print(",\"csvPath\":");
     printJsonString(csvPath_);
+    io_->print(",\"causalTracePath\":");
+    printJsonString(providers_.causalTraceCsvPath ? providers_.causalTraceCsvPath(providers_.ctx) : "");
+    io_->print(",\"gitSha\":");
+    printJsonString(providers_.buildGitSha ? providers_.buildGitSha(providers_.ctx) : "unknown");
+    io_->print(",\"runtimeImageId\":");
+    printJsonString(providers_.runtimeImageId ? providers_.runtimeImageId(providers_.ctx) : "unknown");
     io_->print(",\"finalSnapshotQueued\":");
     io_->print(finalSnapshotQueued_ ? "true" : "false");
     io_->print(",\"finalized\":");

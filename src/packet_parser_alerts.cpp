@@ -4,6 +4,7 @@
 
 #include "packet_parser.h"
 #include "band_utils.h"
+#include "causal_evidence_types.h"
 #include <algorithm>
 
 #ifndef UNIT_TEST
@@ -38,6 +39,7 @@ void PacketParser::resetAlertAssembly() {
 }
 
 void PacketParser::resetAlertState() {
+    currentCausalIdentity_ = V1CausalIdentity{};
     resetAlertStateAt(static_cast<uint32_t>(millis()));
 }
 
@@ -51,6 +53,7 @@ void PacketParser::resetAlertStateAt(uint32_t nowMs) {
     clearAlertCache();
     clearPublishedAlerts();
     if (hadPublishedAlerts) {
+        publishAlertRevision();
         notifyAlertTableObserver(nowMs);
     }
 }
@@ -212,9 +215,16 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     uint8_t alertIndex = (payload[0] >> 4) & 0x0F;
     uint8_t receivedAlertCount = payload[0] & 0x0F;
     if (receivedAlertCount == 0) {
+        const bool hadPublishedAlerts = alertCount_ > 0;
+        const bool arrowsChanged = displayState_.arrows != DIR_NONE;
+        // The empty alert publication owns this arrow clear too. Apply it
+        // before advancing the revision observed by downstream consumers.
+        displayState_.arrows = DIR_NONE;
         resetAlertStateAt(nowMs);
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
-        displayState_.arrows = DIR_NONE;
+        if (!hadPublishedAlerts && arrowsChanged) {
+            publishStateRevision();
+        }
         // Preserve muted; its authoritative state comes from
         // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
         // Clearing it here races the display packet path and causes
@@ -536,6 +546,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // display-state flag so the renderer can re-label the K cell as "Ku"
     // while a Ku alert is active.  Cleared above on count=0 alert tables.
     displayState_.hasKuAlert = anyKu;
+
+    publishAlertRevision();
 
     PARSER_PERF_INC(alertTablePublishes);
     if (receivedAlertCount == 3) {

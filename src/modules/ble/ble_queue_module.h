@@ -9,6 +9,7 @@
 #include "ble_log_rate_limit.h"
 #include "ble_client.h"
 #include "packet_parser.h"
+#include "causal_evidence_types.h"
 
 class SystemEventBus;
 class DisplayPreviewModule;
@@ -58,8 +59,15 @@ class BleQueueModule {
     // Drain queue, frame packets, parse, and forward to display pipeline.
     void process();
 
+    using CausalTraceObserver = void (*)(const V1CausalTraceRecord& record, void* context);
+    void setCausalTraceObserver(CausalTraceObserver observer, void* context = nullptr) {
+        causalTraceObserver_ = observer;
+        causalTraceObserverContext_ = context;
+    }
+
     unsigned long getLastRxMillis() const { return lastRxMillis_; }
     bool isBackpressured() const { return backpressureActive_; }
+    uint32_t causalSourceLossCount() const { return causalSourceLosses_.load(std::memory_order_relaxed); }
 
 #ifdef UNIT_TEST
     bool enqueueStampedForTest(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
@@ -72,6 +80,13 @@ class BleQueueModule {
         uint16_t charUUID;
         uint32_t tsMs;
         uint32_t sessionGeneration;
+        uint32_t rxSeq;
+    };
+
+    struct RxSpan {
+        size_t begin = 0;
+        size_t end = 0;
+        V1CausalIdentity identity{};
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -84,17 +99,28 @@ class BleQueueModule {
     std::atomic<bool> acceptNotifications_{false};
     std::atomic<uint32_t> sessionGeneration_{0};
     std::vector<uint8_t> rxBuffer_;
+    std::vector<RxSpan> rxSpans_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;
     uint32_t lastNotifyTsMs_ = 0;
     uint32_t lastParsedTsMs_ = 0;     // Timestamp of last successful parse (for display latency)
     bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
-    uint32_t parsedEventSeq_ = 0;
+    uint32_t causalEventSeq_ = 0;
+    std::atomic<uint32_t> rxSeq_{0};
+    std::atomic<uint32_t> causalSourceLosses_{0};
     bool backpressureActive_ = false;
     BleLogRateLimitState tooLargeWarningLog_;
     BleLogRateLimitState missingEndWarningLog_;
 
     Config config_;
+    CausalTraceObserver causalTraceObserver_ = nullptr;
+    void* causalTraceObserverContext_ = nullptr;
     void refreshBackpressureState();
+    bool appendRxPacket(const BLEDataPacket& packet, V1CausalIdentity& identity);
+    void compactRxState();
+    void clearRxState();
+    V1CausalIdentity identityForFrame(size_t frameBegin, size_t frameLength) const;
+    void emitFramingReject(size_t begin, size_t length, V1CausalOutcome outcome);
+    void emitCausalTrace(const V1CausalTraceRecord& record) const;
 };

@@ -30,6 +30,13 @@ class QualificationSerialModule {
         bool (*tryResolvePerfExportSize)(size_t physicalBytes, size_t& selectedBytes, void* ctx) = nullptr;
         const char* (*displayCommitCsvPath)(void* ctx) = nullptr;
         bool (*tryDrainDisplayCommit)(void* ctx) = nullptr;
+        const char* (*causalTraceCsvPath)(void* ctx) = nullptr;
+        bool (*tryDrainEvidence)(void* ctx) = nullptr;
+        void (*beginEvidenceSession)(uint32_t sessionToken, uint32_t startedAtDutMs, void* ctx) = nullptr;
+        void (*endEvidenceSession)(uint32_t sessionToken, uint32_t endedAtDutMs, void* ctx) = nullptr;
+        uint32_t (*newSessionToken)(void* ctx) = nullptr;
+        const char* (*buildGitSha)(void* ctx) = nullptr;
+        const char* (*runtimeImageId)(void* ctx) = nullptr;
         void (*setSdCapturePaused)(bool paused, void* ctx) = nullptr;
         void (*startDisplayPreview)(uint32_t durationMs, void* ctx) = nullptr;
         void (*cancelDisplayPreview)(void* ctx) = nullptr;
@@ -73,6 +80,9 @@ class QualificationSerialModule {
     uint32_t durationMs_ = 0;
     uint32_t startedAtMs_ = 0;
     uint32_t finalizingAtMs_ = 0;
+    uint32_t qualificationSessionToken_ = 0;
+    bool evidenceSessionActive_ = false;
+    bool evidenceDrained_ = true;
     bool finalSnapshotQueued_ = false;
     bool finalizedOk_ = false;
     char csvPath_[kPathBufferLen] = {0};
@@ -108,6 +118,7 @@ class QualificationSerialModule {
     void enterFinalizing(const char* reason);
     void finishRun(bool ok, const char* message);
     void clearQualificationModeOverride();
+    void endEvidenceSession();
     bool openExport(const char* path);
     void closeExport();
     void setError(const char* message);

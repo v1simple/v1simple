@@ -27,6 +27,12 @@ class PacketParser {
     bool parse(const uint8_t* data, size_t length);
     bool parse(const uint8_t* data, size_t length, uint32_t nowMs);
 
+    // BLE framing sets this immediately before parse(). Successful semantic
+    // publications copy it into DisplayState::causal; ordinary direct parser
+    // callers keep the all-zero identity.
+    void setCausalIdentity(const V1CausalIdentity& identity) { currentCausalIdentity_ = identity; }
+    const V1SemanticRevisionEvidence& getCausalEvidence() const { return displayState_.causal; }
+
     // Get current display state
     const DisplayState& getDisplayState() const { return displayState_; }
 
@@ -87,6 +93,7 @@ class PacketParser {
     std::array<uint32_t, MAX_ALERTS + 1> alertTableFirstSeenMs_;
     AlertTableObserver alertTableObserver_ = nullptr;
     void* alertTableObserverContext_ = nullptr;
+    V1CausalIdentity currentCausalIdentity_{};
 
     // Packet parsing helpers
     bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs);
@@ -98,6 +105,8 @@ class PacketParser {
     void clearPublishedAlerts();
     void resetAlertStateAt(uint32_t nowMs);
     void notifyAlertTableObserver(uint32_t nowMs);
+    void publishStateRevision();
+    void publishAlertRevision();
 
     // Data extraction
     Band decodeBand(uint8_t bandArrow) const;

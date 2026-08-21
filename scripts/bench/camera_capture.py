@@ -11,7 +11,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 # The open-aperture AR0234 profile converges to 5 ms in aperture-priority mode.
@@ -102,7 +102,12 @@ def evaluate_camera_profile_frames(preflight: bytes, video: bytes) -> dict[str, 
 class CameraCapture:
     """Own the native recorder process and evidence files for a single suite."""
 
-    def __init__(self, out_dir: Path, expected_duration_s: int):
+    def __init__(
+        self,
+        out_dir: Path,
+        expected_duration_s: int,
+        timeline_event: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self.out_dir = out_dir.resolve()
         self.expected_duration_s = expected_duration_s
         self.camera_name = os.environ.get("BENCH_CAMERA_NAME", "Global Shutter Camera")
@@ -131,6 +136,7 @@ class CameraCapture:
         self.preflight_stop_path = self.out_dir / ".camera_preflight_stop"
         self.preflight_finished_path = self.out_dir / ".camera_preflight_finished.json"
         self.recording_ready_path = self.out_dir / ".camera_recording_ready.json"
+        self.first_frame_path = self.out_dir / ".camera_first_frame.json"
         self.failure_marker_path = self.out_dir / ".camera_recording_failed.json"
         self.stats_marker_path = self.out_dir / ".camera_recording_stats.json"
         self.swift_module_cache = (
@@ -144,12 +150,14 @@ class CameraCapture:
         )
         self.process: subprocess.Popen[bytes] | None = None
         self.recording_started_monotonic: float | None = None
+        self.timeline_event = timeline_event
         self.log_handle: Any = None
         self.errors: list[str] = []
         self.recorder_session: dict[str, Any] = {}
         self.recorder_failure: dict[str, Any] = {}
         self.recorder_stats: dict[str, Any] = {}
         self.recorder_returncode: int | None = None
+        self.first_frame_event: dict[str, Any] = {}
         self.profile_readback: dict[str, Any] = {}
 
     def profile(self) -> dict[str, Any]:
@@ -179,6 +187,7 @@ class CameraCapture:
             "recorder_failure": self.recorder_failure,
             "recorder_stats": self.recorder_stats,
             "recorder_returncode": self.recorder_returncode,
+            "first_frame_event": self.first_frame_event,
             "expected_duration_seconds": self.expected_duration_s,
             "errors": self.errors,
         }
@@ -420,6 +429,28 @@ class CameraCapture:
                 if message not in self.errors:
                     self.errors.append(message)
 
+    def _ingest_first_frame_event(self) -> None:
+        payload = self._read_json_object(
+            self.first_frame_path,
+            "camera first-frame timing marker",
+        )
+        host_ns = payload.get("host_monotonic_ns")
+        pts_zero = payload.get("pts_zero_seconds")
+        if (
+            payload.get("event") != "first_frame"
+            or not isinstance(host_ns, int)
+            or isinstance(host_ns, bool)
+            or host_ns <= 0
+            or not isinstance(pts_zero, (int, float))
+            or isinstance(pts_zero, bool)
+            or abs(float(pts_zero)) > 0.000_001
+        ):
+            raise RuntimeError("camera first-frame timing marker is malformed")
+        self.first_frame_event = payload
+        self.recording_started_monotonic = host_ns / 1_000_000_000
+        if self.timeline_event is not None:
+            self.timeline_event(dict(payload))
+
     def health_problem(self) -> str:
         """Return a stable live failure without weakening final capture validation."""
         if self.failure_marker_path.is_file():
@@ -487,6 +518,8 @@ class CameraCapture:
                 str(self.preflight_finished_path),
                 "--recording-ready",
                 str(self.recording_ready_path),
+                "--first-frame-marker",
+                str(self.first_frame_path),
                 "--failure-marker",
                 str(self.failure_marker_path),
                 "--stats-marker",
@@ -531,7 +564,7 @@ class CameraCapture:
                 CAMERA_RECORDING_READY_TIMEOUT_S,
                 "recording readiness",
             )
-            self.recording_started_monotonic = time.monotonic()
+            self._ingest_first_frame_event()
             self._extract_video_still(self.native_preflight_path, self.preflight_path, 0.5)
             self._write_result("RECORDING")
             return True

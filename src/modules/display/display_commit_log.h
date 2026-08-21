@@ -49,6 +49,10 @@ struct V1DisplayCommitSnapshot {
     uint32_t renderUs = 0;         // resolve + paint + dispatch duration
     uint32_t pushes = 0;           // physical panel transfers this commit caused
     uint32_t droppedSnapshots = 0; // commits lost to queue pressure, cumulative
+    uint32_t qualificationSessionToken = 0;
+    // Parser-published table digest: joins this commit's alert revision to the
+    // complete semantic rows in the encounter CSV.
+    uint32_t alertTableDigest = 0;
     V1DisplayCommitPath path = V1DisplayCommitPath::Live;
     V1DisplayCommitDispatch dispatch = V1DisplayCommitDispatch::None;
     uint8_t arrowsToShow = 0; // resolved visible arrow set, after the priority-arrow setting
@@ -63,6 +67,10 @@ struct V1DisplayCommitSnapshot {
     // reach pixels; keeping the struct means widening that projection later is a
     // formatter change, not another firmware change.
     DisplayState state{};
+    // Full priority semantics supplied to the renderer. The complete ordered
+    // all-alert input is joined through alertRevision + alertTableDigest to the
+    // per-alert encounter rows, avoiding a 15-alert copy in every queue item.
+    AlertData priority{};
 };
 
 class V1DisplayCommitLog {
@@ -70,6 +78,8 @@ class V1DisplayCommitLog {
     void setBootId(uint32_t bootId, uint32_t bootToken = 0);
     void begin(bool sdAvailable);
     void record(const V1DisplayCommitSnapshot& snapshot);
+    void beginQualificationSession(uint32_t sessionToken);
+    void endQualificationSession(uint32_t sessionToken);
     void drainAndClose(uint32_t timeoutMs);
     bool tryDrainAndClose();
 
@@ -100,6 +110,7 @@ class V1DisplayCommitLog {
     uint32_t seq_ = 0;
     std::atomic<uint32_t> droppedSnapshots_{0};
     std::atomic<uint32_t> pendingWrites_{0};
+    std::atomic<uint32_t> qualificationSessionToken_{0};
     char csvPathBuf_[64] = {0};
 
 #ifndef UNIT_TEST
@@ -113,7 +124,7 @@ class V1DisplayCommitLog {
     uint32_t lastFlushMs_ = 0;
 #else
     uint32_t commitsWritten_ = 0;
-    char lastLineBuf_[320] = {0};
+    char lastLineBuf_[640] = {0};
 #endif
 };
 

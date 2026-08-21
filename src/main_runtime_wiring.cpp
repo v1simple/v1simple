@@ -4,10 +4,12 @@
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <algorithm>
+#include <esp_system.h>
 
 #include "battery_manager.h"
 #include "audio_beep.h"
 #include "ble_client.h"
+#include "build_metadata.h"
 #include "config.h"
 #include "display.h"
 #include "display_driver.h"
@@ -42,6 +44,7 @@
 #include "modules/display/display_pipeline_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
+#include "modules/encounter/v1_encounter_logger.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/obd/obd_ble_client.h"
 #include "modules/obd/obd_runtime_module.h"
@@ -319,6 +322,8 @@ static void configureSystemLoopCoreModules() {
                               &systemEventBus)) {
         fatalBootError("BLE queue init failed", true);
     }
+    bleQueueModule.setCausalTraceObserver(
+        [](const V1CausalTraceRecord& record, void*) { v1EncounterLogger.recordCausalTrace(record); });
     configureConnectionRuntimeModule();
     connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule,
                                 &systemEventBus);
@@ -466,6 +471,24 @@ static void configureQualificationSerialModule() {
     };
     providers.displayCommitCsvPath = [](void*) { return v1DisplayCommitLog.csvPath(); };
     providers.tryDrainDisplayCommit = [](void*) { return v1DisplayCommitLog.tryDrainAndClose(); };
+    providers.causalTraceCsvPath = [](void*) { return v1EncounterLogger.causalTraceCsvPath(); };
+    providers.tryDrainEvidence = [](void*) {
+        const bool encounterReady = v1EncounterLogger.tryDrainQualificationEvidence();
+        const bool displayReady = v1DisplayCommitLog.tryDrainAndClose();
+        return encounterReady && displayReady;
+    };
+    providers.beginEvidenceSession = [](uint32_t sessionToken, uint32_t startedAtDutMs, void*) {
+        v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
+                                                    bleQueueModule.causalSourceLossCount());
+        v1DisplayCommitLog.beginQualificationSession(sessionToken);
+    };
+    providers.endEvidenceSession = [](uint32_t sessionToken, uint32_t endedAtDutMs, void*) {
+        v1DisplayCommitLog.endQualificationSession(sessionToken);
+        v1EncounterLogger.endQualificationSession(sessionToken, endedAtDutMs, bleQueueModule.causalSourceLossCount());
+    };
+    providers.newSessionToken = [](void*) { return static_cast<uint32_t>(esp_random()); };
+    providers.buildGitSha = [](void*) { return getBuildGitSha(); };
+    providers.runtimeImageId = [](void*) { return getRuntimeImageId(); };
     providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
     providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
     providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };

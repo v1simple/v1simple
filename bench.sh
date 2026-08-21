@@ -25,6 +25,7 @@ PROMOTE_BASELINE=0
 COMPARE_TO=()
 BLINK_PROFILE="scenario"
 BLINK_PROFILE_SET=0
+SCENARIO=""
 LEGACY_BLINK_ARROW=0
 WRAPPER_SHUTDOWN_GRACE_SECONDS=75
 
@@ -48,6 +49,7 @@ Options:
   --blink-profile PROFILE Priority-arrow stimulus for replay: scenario (default),
                           steady (negative control), or stress (always blink).
   --blink-arrow           Legacy alias for --blink-profile stress.
+  --scenario PATH         Pass an external replay scenario through to v1replay.
   --camera                Capture every live window; gate only replay camera evidence.
   --duration-seconds N    Window duration (default: 300).
   --replay-duration-seconds N
@@ -91,6 +93,9 @@ while [[ $# -gt 0 ]]; do
       BLINK_PROFILE="$2"; BLINK_PROFILE_SET=1; shift 2 ;;
     --blink-arrow)
       LEGACY_BLINK_ARROW=1; shift ;;
+    --scenario)
+      [[ $# -lt 2 ]] && { echo "Missing value for --scenario" >&2; exit 3; }
+      SCENARIO="$2"; shift 2 ;;
     --camera)
       CAPTURE_CAMERA=1; shift ;;
     --duration-seconds)
@@ -163,6 +168,10 @@ esac
 
 if [[ "$BLINK_PROFILE_SET" -eq 1 && "$RUN_REPLAY" -ne 1 ]]; then
   echo "--blink-profile requires a selected replay suite" >&2
+  exit 3
+fi
+if [[ -n "$SCENARIO" && "$RUN_REPLAY" -ne 1 ]]; then
+  echo "--scenario requires a selected replay suite" >&2
   exit 3
 fi
 
@@ -337,6 +346,7 @@ for suite in "${suites[@]}"; do
     args+=(--replay-executable "$V1REPLAY_EXECUTABLE")
   fi
   [[ "$suite" == "replay" ]] && args+=(--blink-profile "$BLINK_PROFILE")
+  [[ "$suite" == "replay" && -n "$SCENARIO" ]] && args+=(--scenario "$SCENARIO")
   [[ "$CAPTURE_CAMERA" -eq 1 ]] && args+=(--camera)
   [[ -n "$PORT" ]] && args+=(--port "$PORT")
   [[ "$USE_BASELINE" -eq 1 && "${#COMPARE_TO[@]}" -eq 0 && "$suite" != "replay" ]] \
@@ -373,6 +383,19 @@ elif [[ -e "$ARTIFACT_ROOT/$BOARD_ID/latest" ]]; then
   exit 3
 fi
 ln -s "runs/$(basename "$RUN_DIR")" "$ARTIFACT_ROOT/$BOARD_ID/latest"
+
+if [[ "$CAPTURE_CAMERA" -eq 1 && "$RUN_REPLAY" -eq 1 \
+      && -f "$RUN_DIR/replay/camera/capture_manifest.json" ]]; then
+  echo "==> refresh replay camera grade for current code" | tee -a "$RUN_LOG"
+  camera_regrade_status=0
+  python3 "$ROOT_DIR/scripts/bench/camera_regrade.py" \
+    --corpus-root "$RUN_DIR" 2>&1 | tee -a "$RUN_LOG"
+  camera_regrade_status=${PIPESTATUS[0]}
+  if [[ "$camera_regrade_status" -ne 0 ]]; then
+    echo "Camera regrade failed (exit=$camera_regrade_status); scoring captured evidence anyway" \
+      | tee -a "$RUN_LOG" >&2
+  fi
+fi
 
 score_args=(python3 "$ROOT_DIR/tools/bench_score.py" --run-dir "$RUN_DIR")
 for suite in "${suites[@]}"; do
@@ -425,4 +448,13 @@ EOF
 fi
 
 echo "Latest artifacts: $ARTIFACT_ROOT/$BOARD_ID/latest" | tee -a "$RUN_LOG"
+echo "==> bench investigation (non-gating; bench exit remains $score_status)" | tee -a "$RUN_LOG"
+investigation_status=0
+python3 "$ROOT_DIR/tools/bench_investigate.py" "$RUN_DIR" \
+  --local-provider "${BENCH_INVESTIGATOR_LOCAL_PROVIDER:-ollama}" \
+  --model "${BENCH_INVESTIGATOR_MODEL:-qwen3-vl:8b}" \
+  || investigation_status=$?
+if [[ "$investigation_status" -ne 0 ]]; then
+  echo "Bench investigation backend failed (exit=$investigation_status); bench exit remains $score_status" >&2
+fi
 exit "$score_status"

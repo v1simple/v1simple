@@ -166,6 +166,7 @@ final class V1Peripheral: NSObject {
     var onHandshakeClearDelivered: (() -> Void)?
     var onMuteCommand: ((Bool) -> Void)?
     var onDisplayPowerCommand: ((Bool) -> Void)?
+    var onNotificationEvent: ((ReplayNotificationEvent) -> Void)?
 
     /// Proxy hook. Receives every inbound write before it is parsed, with the
     /// characteristic it arrived on preserved. Returning true suppresses the
@@ -248,6 +249,7 @@ final class V1Peripheral: NSObject {
         let characteristic: CBMutableCharacteristic
         let handshakeEpoch: Int?
         let purpose: NotificationPurpose
+        let evidence: ReplayNotificationIdentity
     }
 
     private var pending: [PendingNotification] = []
@@ -258,12 +260,14 @@ final class V1Peripheral: NSObject {
     private var shortSubscriberIDs: Set<UUID> = []
     private var handshakeSubscriberID: UUID?
     private var handshakeClearDelivery = HandshakeClearDeliveryState()
+    private var globalTxSequence: UInt64 = 0
     private var serviceAdded = false
     private var isStopping = false
     private let handshakeLedger: HandshakeLedger?
     private var handshakeNotificationHold: HandshakeNotificationHoldState
 
-    init(config: Config) {
+    init(config: Config,
+         onNotificationEvent: ((ReplayNotificationEvent) -> Void)? = nil) {
         self.config = config
         self.handshakeLedger = config.handshakeLedger
         self.handshakeNotificationHold = HandshakeNotificationHoldState(
@@ -281,18 +285,33 @@ final class V1Peripheral: NSObject {
         sessionConfig.userBytes = config.userBytes
         self.state = State(session: V1.Session(config: sessionConfig))
         super.init()
+        self.onNotificationEvent = onNotificationEvent
         queue.setSpecific(key: queueIdentityKey, value: queueIdentityValue)
         manager = CBPeripheralManager(delegate: self, queue: queue, options: nil)
     }
 
     // MARK: - Transmission
 
-    func sendDisplay(_ bytes: [UInt8]) {
-        send(bytes, to: displayChar)
+    func sendDisplay(_ bytes: [UInt8],
+                     stimulusSequence: Int? = nil,
+                     emissionOrdinal: Int? = nil) {
+        send(
+            bytes,
+            to: displayChar,
+            stimulusSequence: stimulusSequence,
+            emissionOrdinal: emissionOrdinal
+        )
     }
 
-    func sendLong(_ bytes: [UInt8]) {
-        send(bytes, to: longNotifyChar)
+    func sendLong(_ bytes: [UInt8],
+                  stimulusSequence: Int? = nil,
+                  emissionOrdinal: Int? = nil) {
+        send(
+            bytes,
+            to: longNotifyChar,
+            stimulusSequence: stimulusSequence,
+            emissionOrdinal: emissionOrdinal
+        )
     }
 
     /// Mirror a notification from the real V1 onto the matching characteristic.
@@ -308,18 +327,27 @@ final class V1Peripheral: NSObject {
         }
     }
 
-    private func send(_ bytes: [UInt8], to characteristic: CBMutableCharacteristic?) {
+    private func send(_ bytes: [UInt8],
+                      to characteristic: CBMutableCharacteristic?,
+                      stimulusSequence: Int? = nil,
+                      emissionOrdinal: Int? = nil) {
         guard let characteristic = characteristic else { return }
         let data = Data(bytes)
+        let requestedHostMonotonicNs = hostMonotonicNanoseconds()
         queue.async {
             guard !self.isStopping else { return }
             self.lastValues[characteristic.uuid] = data
-            self.appendPending(PendingNotification(
+            let notification = self.makePendingNotification(
                 data: data,
                 characteristic: characteristic,
                 handshakeEpoch: self.handshakeLedger?.activeEpoch,
-                purpose: .ordinary
-            ))
+                purpose: .ordinary,
+                stimulusSequence: stimulusSequence,
+                emissionOrdinal: emissionOrdinal,
+                requestedHostMonotonicNs: requestedHostMonotonicNs
+            )
+            self.appendPending(notification)
+            self.onNotificationEvent?(notification.evidence.requestedEvent)
             self.flush()
             if self.config.logPackets {
                 self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
@@ -333,6 +361,7 @@ final class V1Peripheral: NSObject {
     /// onto that same queue. Repeated calls retry without appending a duplicate.
     func ensureHandshakeClear(_ bytes: [UInt8]) {
         let data = Data(bytes)
+        let requestedHostMonotonicNs = hostMonotonicNanoseconds()
         let ensure = {
             guard !self.isStopping,
                   self.handshakeSubscriberID != nil,
@@ -344,12 +373,17 @@ final class V1Peripheral: NSObject {
                 break
             case .enqueue:
                 self.lastValues[characteristic.uuid] = data
-                self.appendPending(PendingNotification(
+                let notification = self.makePendingNotification(
                     data: data,
                     characteristic: characteristic,
                     handshakeEpoch: self.handshakeLedger?.activeEpoch,
-                    purpose: .handshakeClear
-                ))
+                    purpose: .handshakeClear,
+                    stimulusSequence: nil,
+                    emissionOrdinal: nil,
+                    requestedHostMonotonicNs: requestedHostMonotonicNs
+                )
+                self.appendPending(notification)
+                self.onNotificationEvent?(notification.evidence.requestedEvent)
                 if self.config.logPackets {
                     self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
                 }
@@ -372,6 +406,33 @@ final class V1Peripheral: NSObject {
             withState { $0.notifiesDropped += 1 }
         }
         pending.append(notification)
+    }
+
+    private func makePendingNotification(
+        data: Data,
+        characteristic: CBMutableCharacteristic,
+        handshakeEpoch: Int?,
+        purpose: NotificationPurpose,
+        stimulusSequence: Int?,
+        emissionOrdinal: Int?,
+        requestedHostMonotonicNs: UInt64
+    ) -> PendingNotification {
+        globalTxSequence &+= 1
+        precondition(globalTxSequence > 0, "global TX sequence exhausted")
+        return PendingNotification(
+            data: data,
+            characteristic: characteristic,
+            handshakeEpoch: handshakeEpoch,
+            purpose: purpose,
+            evidence: ReplayNotificationIdentity(
+                globalTxSequence: globalTxSequence,
+                stimulusSequence: stimulusSequence,
+                emissionOrdinal: emissionOrdinal,
+                characteristic: Self.shortName(characteristic.uuid),
+                payload: data,
+                requestedHostMonotonicNs: requestedHostMonotonicNs
+            )
+        )
     }
 
     private func discardPendingHandshakeClear() {
@@ -422,6 +483,11 @@ final class V1Peripheral: NSObject {
             ) else { return }
             pending.removeFirst()
             withState { $0.notifiesSent += 1 }
+            onNotificationEvent?(
+                item.evidence.acceptedEvent(
+                    hostMonotonicNs: hostMonotonicNanoseconds()
+                )
+            )
             let firstHandshakeClearDelivery = item.purpose == .handshakeClear
                 && handshakeClearDelivery.confirmDelivery()
             handshakeLedger?.recordDelivered(

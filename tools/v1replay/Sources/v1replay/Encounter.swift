@@ -207,9 +207,13 @@ enum ArrowBlinkProfile: String, CaseIterable {
         return encounter.samples.filter(shouldBlink).count
     }
 
-    var sourceLabel: String {
+    func sourceLabel(for origin: Encounter.Origin) -> String {
         switch self {
-        case .scenario: return "generated_multi_alert_assumption"
+        case .scenario:
+            switch origin {
+            case .syntheticBench: return "generated_multi_alert_assumption"
+            case .externalInput, .syntheticDemo: return "resolved_scenario"
+            }
         case .steady, .stress: return "explicit_control"
         }
     }

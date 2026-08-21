@@ -51,6 +51,20 @@ V1DisplayCommitSnapshot makeCommit() {
     commit.state.hasJunkAlert = false;
     commit.state.hasPhotoAlert = false;
     commit.state.hasKuAlert = false;
+    commit.state.causal.stateRevision = 17;
+    commit.state.causal.alertRevision = 9;
+    commit.state.causal.stateSource.eventSeq = 31;
+    commit.state.causal.stateSource.rxFirstSeq = 40;
+    commit.state.causal.stateSource.rxLastSeq = 41;
+    commit.state.causal.alertSource.eventSeq = 29;
+    commit.state.causal.alertSource.rxFirstSeq = 37;
+    commit.state.causal.alertSource.rxLastSeq = 39;
+    commit.state.causal.alertTableDigest = 0x89ABCDEF;
+    commit.priority = AlertData::create(BAND_KA, DIR_FRONT, 6, 2, 34700, true, true);
+    commit.priority.v1Index = 3;
+    commit.priority.frontRawStrength = 0xB2;
+    commit.priority.rearRawStrength = 0x82;
+    commit.alertTableDigest = commit.state.causal.alertTableDigest;
     return commit;
 }
 
@@ -71,14 +85,17 @@ void test_commit_log_records_resolved_state_and_dispatch() {
     V1DisplayCommitLog log;
     log.setBootId(62, 0x180a49da);
     log.begin(true);
+    log.beginQualificationSession(0x0BADF00D);
 
     log.record(makeCommit());
 
     TEST_ASSERT_EQUAL_STRING("/display_commits/display_commits_62-180a49da.csv", log.csvPath());
     TEST_ASSERT_EQUAL_UINT32(1, log.testCommitCount());
-    TEST_ASSERT_EQUAL_STRING(
-        "1,84000,LIVE,PARTIAL,1234,1,1,1,1,2,350,22,105,136,2,1,1,6,1,0,0,0,1,1,0,A,2,0,2,5,0,0,0,0,0\n",
-        log.testGetLastLine());
+    const char* legacyPrefix =
+        "1,84000,LIVE,PARTIAL,1234,1,1,1,1,2,350,22,105,136,2,1,1,6,1,0,0,0,1,1,0,A,2,0,2,5,0,0,0,0,0,";
+    TEST_ASSERT_EQUAL_STRING_LEN(legacyPrefix, log.testGetLastLine(), std::strlen(legacyPrefix));
+    TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",0BADF00D,17,9,31,40,41,29,37,39,89ABCDEF,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",1,3,2,34700,1,178,130,6,2,1,0,0,0,0\n"));
 }
 
 void test_commit_log_keeps_flash_bits_and_dispatch_independent() {
@@ -135,7 +152,7 @@ void test_commit_log_reports_its_own_losses_inside_the_record() {
     TEST_ASSERT_EQUAL_UINT32(2, log.testDroppedCount());
     const std::string line = log.testGetLastLine();
     TEST_ASSERT_TRUE(line.size() > 2);
-    TEST_ASSERT_EQUAL_STRING(",2\n", line.substr(line.size() - 3).c_str());
+    TEST_ASSERT_NOT_NULL(std::strstr(line.c_str(), ",0,2,0,0,"));
 }
 
 void test_commit_log_is_inert_without_storage() {
@@ -193,6 +210,15 @@ void test_commit_log_export_drain_is_nonblocking_and_writes_a_terminal_fence() {
     TEST_ASSERT_EQUAL(std::string::npos, body.find("vTaskDelay"));
 }
 
+void test_render_commit_digest_joins_the_parser_published_alert_table() {
+    // The encounter rows retain the parser-published table. The display evidence
+    // must name that same table, even when the composer filters or reorders cards.
+    const std::string source = readProjectFile("src/display_update.cpp");
+    TEST_ASSERT_FALSE(source.empty());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("commit.alertTableDigest = state.causal.alertTableDigest"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("v1AlertTableFnv1a32(allAlerts, alertCount)"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_commit_log_records_resolved_state_and_dispatch);
@@ -203,5 +229,6 @@ int main() {
     RUN_TEST(test_commit_log_hands_out_monotonic_sequence_ids);
     RUN_TEST(test_commit_log_never_blocks_the_render_path);
     RUN_TEST(test_commit_log_export_drain_is_nonblocking_and_writes_a_terminal_fence);
+    RUN_TEST(test_render_commit_digest_joins_the_parser_published_alert_table);
     return UNITY_END();
 }

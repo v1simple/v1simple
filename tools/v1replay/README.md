@@ -16,7 +16,9 @@ the supplied path and refuses to open it when any parent directory contains a
 
 - never prints input paths, filenames, source labels, notes, or timestamps;
 - discards absolute timestamps after deriving relative playback offsets;
-- never copies or normalizes input;
+- never includes the private input path in replay evidence;
+- writes path-free resolved scenario values only when `--scenario-evidence` is
+  explicitly given;
 - writes exports to standard output only; and
 - runs a source-tree safety check before every build.
 
@@ -55,21 +57,24 @@ Generated stimuli require no data file:
 .build/v1replay bench --blink-profile steady
 .build/v1replay bench --blink-profile stress
 .build/v1replay bench --exit-on-complete
+.build/v1replay bench --scenario /external/input.json \
+  --scenario-evidence /external/run/replay_scenario.json --machine-events
 .build/v1replay export --bench --format csv
 .build/v1replay export --synthetic --format lightblue
 .build/v1replay idle
 .build/v1replay crib
 ```
 
-`bench` is the Phase 0 stimulus. It runs at approximately 3 Hz for 254 seconds
+Without `--scenario`, `bench` uses the generated Phase 0 stimulus. It runs at
+approximately 3 Hz for 276 seconds
 and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
 three-row alert tables, card removal and restoration, a long Ka approach, and a
-10-second resting tail. The scenario owns those idle periods, so generic
+32-second resting tail. The scenario owns those idle periods, so generic
 `--idle-lead` and `--idle-tail` values are not added to it. It waits for the
 display subscription and the firmware's alert-data request before starting;
 if either becomes unavailable during playback, its clock pauses until both are
-ready again. `--no-alerts`, `--no-wait`, `--always-alerts`, and `--rate` are
-therefore rejected for this fixed-cadence command.
+ready again. `--no-alerts`, `--no-wait`, and `--always-alerts` are therefore
+rejected for managed playback.
 `--exit-on-complete` closes the peripheral and returns after the resting tail.
 The unified bench instead uses `--machine-events`, keeps the peripheral alive
 through the end of the firmware metrics window, and then stops its process group.
@@ -109,6 +114,19 @@ Git checkout:
 ```bash
 .build/v1replay play /path/outside/any/git/replay-input.json
 ```
+
+The same input can drive the managed bench transport:
+
+```bash
+.build/v1replay bench --scenario /path/outside/any/git/replay-input.json
+```
+
+Managed external playback uses the encounter's resolved offsets and idle samples,
+waits for the display subscription and alert-data request, and freezes that
+timeline if readiness is lost. `--scenario-evidence <output>` writes the exact
+resolved sample values used for packet construction as JSON. The document and its
+`scenario_resolved` machine event contain a SHA-256 hash, counts, and a generic
+origin token, but never the private input path.
 
 Relative `offsetSeconds` values are preferred. Legacy ISO-8601 `timestamp`
 values are accepted for compatibility, converted to relative offsets in memory,
@@ -282,6 +300,16 @@ consumption remains unclaimed. Each ledger models one logical short-notify
 session; concurrent short subscribers end the active evidence epoch instead of
 being merged.
 
+With `--machine-events`, every queued notification emits
+`notification_requested`; every successful CoreBluetooth `updateValue` emits
+`notification_accepted`. Both records carry a process-global TX sequence,
+the whole-notification FNV-1a32 digest used by DUT causal traces,
+optional stimulus sequence and emission ordinal, characteristic, exact payload
+hex, SHA-256 digest, and host monotonic nanoseconds. The shared identities join
+repeated equal packets without treating payload equality as causality.
+CoreBluetooth acceptance means the host stack accepted the update for delivery;
+it does not prove DUT receipt, parsing, rendering, or pixels.
+
 The tool advertises the V1 service, four core characteristics, and two
 compatibility additions. It answers the handshake v1simple performs on connect
 and emits display and alert-table rows. Alert rows wait for
@@ -325,6 +353,9 @@ they are not synthetic pass/fail proof.
 ```bash
 python3 verify/check_publication_safety.py
 python3 verify/verify_protocol.py
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  CLANG_MODULE_CACHE_PATH=.build/clang-cache \
+  xcrun swift test --disable-sandbox
 ```
 
 The publication check enforces the source-only tree and scans publishable text

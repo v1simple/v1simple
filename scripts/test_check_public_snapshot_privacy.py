@@ -256,6 +256,18 @@ def test_index_mode_scans_staged_content_not_head() -> None:
         assert [finding.rule for finding in findings] == ["non-public-email"]
 
 
+def test_force_added_bench_artifacts_are_rejected_by_path() -> None:
+    with tempfile.TemporaryDirectory(prefix="snapshot-privacy-") as raw:
+        repo = make_repo(Path(raw))
+        evidence = repo / ".artifacts" / "bench" / "run" / "causal_trace.csv"
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text("seq,dut_ms,payload_digest\n1,42,00000000\n", encoding="utf-8")
+        git(repo, "add", "-f", ".artifacts/bench/run/causal_trace.csv")
+
+        findings = checker.scan_repository(repo, index=True, local_terms=[])
+        assert [finding.rule for finding in findings] == ["tracked-private-data-path"]
+
+
 def test_revision_mode_scans_committed_binary_metadata() -> None:
     with tempfile.TemporaryDirectory(prefix="snapshot-privacy-") as raw:
         repo = make_repo(Path(raw))
@@ -505,6 +517,7 @@ def main() -> int:
         test_mac_heuristic_separates_fixtures_from_real_addresses,
         test_new_binary_media_requires_an_explicit_public_allowlist_entry,
         test_index_mode_scans_staged_content_not_head,
+        test_force_added_bench_artifacts_are_rejected_by_path,
         test_revision_mode_scans_committed_binary_metadata,
         test_local_blocklist_matches_are_reported_without_the_term,
         test_absent_local_blocklist_is_silently_skipped,

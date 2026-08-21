@@ -102,7 +102,15 @@ PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
 # past .gitignore. The replay tool has an intentionally closed source-only tree;
 # additions require an explicit guard update and review.
 PRIVATE_DATA_PATH_PARTS = frozenset(
-    {".private", "captures", "encounters", "recordings", "replay-input", "replay-exports"}
+    {
+        ".artifacts",
+        ".private",
+        "captures",
+        "encounters",
+        "recordings",
+        "replay-input",
+        "replay-exports",
+    }
 )
 REPLAY_ROOT = PurePosixPath("tools/v1replay")
 REPLAY_EXACT_ALLOWED = frozenset(

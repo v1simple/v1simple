@@ -1575,6 +1575,16 @@ def score_reconnect_raw_evidence(
             return handshake_collection_failure(
                 "replay reconnect serial log is missing a bounded post-cleanup QSTATUS/QRESP fence"
             )
+    pre_window_status, pre_window_status_error = status_fence_result(
+        pre_qstart_complete + 1,
+        qstart,
+    )
+    if pre_window_status_error:
+        return handshake_collection_failure(pre_window_status_error)
+    if not pre_window_status:
+        return handshake_collection_failure(
+            "replay reconnect serial log is missing its bounded pre-window QSTATUS/QRESP exchange"
+        )
     scoped_commands = [
         index
         for index in range(boundary + 1, qstart)
@@ -1590,6 +1600,7 @@ def score_reconnect_raw_evidence(
         for begin, complete in (
             (post_cleanup_begin, post_cleanup_complete),
             (pre_qstart_begin, pre_qstart_complete),
+            (pre_qstart_complete, qstart),
         )
         for index in range(begin + 1, complete)
         if lines[index] == ">>> QSTATUS"
@@ -1599,6 +1610,7 @@ def score_reconnect_raw_evidence(
         for begin, complete in (
             (post_cleanup_begin, post_cleanup_complete),
             (pre_qstart_begin, pre_qstart_complete),
+            (pre_qstart_complete, qstart),
         )
         for index in range(begin + 1, complete)
         if lines[index].startswith("QRESP ")
@@ -1907,9 +1919,9 @@ def score_replay_encounter_csv(csv_path: Path) -> dict[str, Any]:
                 return encounter_collection_failure(
                     f"replay encounter CSV row {row_number} has an invalid encounter identity"
                 )
-            if row["alert_count"] not in {1, 2, 3}:
+            if row["alert_count"] < 0:
                 return encounter_semantic_failure(
-                    f"replay encounter CSV row {row_number} has alert_count outside 1...3"
+                    f"replay encounter CSV row {row_number} has a negative alert_count"
                 )
             if row["priority"] not in {0, 1}:
                 return encounter_semantic_failure(
@@ -1965,14 +1977,24 @@ def score_replay_encounter_csv(csv_path: Path) -> dict[str, Any]:
         event = next(iter(events))
         count = next(iter(counts))
         indices = [row["v1_index"] for row in rows]
-        if len(rows) != count:
-            return encounter_semantic_failure(
-                "replay encounter snapshot cardinality does not match alert_count"
-            )
-        if indices != list(range(1, count + 1)):
-            return encounter_semantic_failure(
-                "replay encounter snapshot requires ordered unique one-based v1_index values"
-            )
+        # The qualification logger persists an empty published table as one
+        # END sentinel row. Non-empty tables remain one row per alert; their
+        # own alert_count and ordered indices prove completeness without
+        # coupling the evidence reader to a particular replay scenario size.
+        if count == 0:
+            if event != "END" or len(rows) != 1 or indices != [0] or rows[0]["priority"] != 0:
+                return encounter_semantic_failure(
+                    "replay encounter zero-alert snapshot requires one non-priority END sentinel with v1_index 0"
+                )
+        else:
+            if len(rows) != count:
+                return encounter_semantic_failure(
+                    "replay encounter snapshot cardinality does not match alert_count"
+                )
+            if indices != list(range(1, count + 1)):
+                return encounter_semantic_failure(
+                    "replay encounter snapshot requires ordered unique one-based v1_index values"
+                )
         if any(row["dropped_snapshots"] != 0 for row in rows):
             return encounter_collection_failure(
                 "replay encounter snapshot reports dropped snapshots"
@@ -1982,7 +2004,9 @@ def score_replay_encounter_csv(csv_path: Path) -> dict[str, Any]:
                 "replay encounter active snapshot requires exactly one priority row"
             )
         group["event"] = event
-        group["signature"] = tuple(encounter_row_signature(row) for row in rows)
+        group["signature"] = (
+            () if count == 0 else tuple(encounter_row_signature(row) for row in rows)
+        )
 
     groups_by_encounter: dict[int, list[dict[str, Any]]] = {}
     for group in groups:
@@ -2006,7 +2030,10 @@ def score_replay_encounter_csv(csv_path: Path) -> dict[str, Any]:
                 if event == "END":
                     if expected_index == len(EXPECTED_REPLAY_CHECKPOINTS):
                         final_signature = EXPECTED_REPLAY_CHECKPOINTS[-1][1]
-                        if signature != final_signature:
+                        # Schema-2 qualification evidence closes a lifecycle
+                        # with the parser-published empty table. Retain the
+                        # legacy repeated-final-table form for older artifacts.
+                        if signature not in {(), final_signature}:
                             candidate_failure = (
                                 "replay encounter END does not close the final authored one-row state"
                             )

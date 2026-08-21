@@ -115,6 +115,8 @@ def write_dummy_emulator(
     emit_complete: bool,
     blink_profile: str = "",
     blink_samples: int = 0,
+    cadence_hz: float | None = 3,
+    scenario_origin: str = "",
     emit_session_transport: bool = True,
     emit_session_transport_loss: bool = False,
     emit_stopped: bool = True,
@@ -128,11 +130,13 @@ def write_dummy_emulator(
     configured = "true"
     if blink_profile:
         source = "generated_multi_alert_assumption" if blink_profile == "scenario" else "explicit_control"
+        cadence_field = "" if cadence_hz is None else f',"cadenceHz":{cadence_hz}'
+        origin_field = f',"scenarioOrigin":"{scenario_origin}"' if scenario_origin else ""
         configured = (
             "echo 'V1REPLAY_EVENT "
             f'{{"state":"configured","blinkProfile":"{blink_profile}",'
             f'"blinkSource":"{source}","blinkSamples":{blink_samples},'
-            '"totalSamples":828,"cadenceHz":3}'
+            f'"totalSamples":828{cadence_field}{origin_field}}}'
             "'"
         )
         configured += "\necho 'status V1REPLAY_EVENT {\"state\":\"replay_started\",\"hostMonotonicSeconds\":12345.5}'"
@@ -1802,10 +1806,12 @@ def test_replay_blink_profile_argv_and_result() -> None:
             result = emulator.finish(window_completed=True)
             log = (out_dir / "v1replay.log").read_text(encoding="utf-8")
             expected_ledger = out_dir / "handshake_ledger.jsonl"
+            expected_scenario = out_dir / "replay_scenario.json"
             expected_argv = (
-                f"argv=bench --machine-events --owner-pid {os.getpid()} "
-                f"--blink-profile {blink_profile} "
-                f"--handshake-ledger {expected_ledger}"
+                f"argv=bench --scenario-evidence {expected_scenario} "
+                f"--machine-events --owner-pid {os.getpid()} "
+                f"--handshake-ledger {expected_ledger} "
+                f"--blink-profile {blink_profile}"
             )
             assert_true(expected_argv in log, f"unexpected replay argv: {log!r}")
             assert_true(
@@ -1820,6 +1826,36 @@ def test_replay_blink_profile_argv_and_result() -> None:
             assert_true(
                 result["blink_nominal_seconds"] == blink_samples / 3,
                 f"wrong nominal blink duration: {result}",
+            )
+
+
+def test_replay_external_scenario_preserves_optional_fractional_cadence() -> None:
+    for cadence_hz in (2.5, None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            executable = root / "v1replay"
+            out_dir = root / "replay"
+            write_dummy_emulator(
+                executable,
+                emit_complete=True,
+                blink_profile="scenario",
+                blink_samples=4,
+                cadence_hz=cadence_hz,
+                scenario_origin="external",
+            )
+            emulator = V1Emulator(executable, out_dir, "replay", "scenario")
+            emulator.start()
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and not emulator._bench_completed():
+                time.sleep(0.02)
+            result = emulator.finish(window_completed=True)
+
+            assert_true(result["completed"], f"external cadence was rejected: {result}")
+            assert_true(result["cadence_hz"] == cadence_hz, f"cadence changed: {result}")
+            expected_blink_seconds = 4 / cadence_hz if cadence_hz else None
+            assert_true(
+                result["blink_nominal_seconds"] == expected_blink_seconds,
+                f"irregular blink timing was invented: {result}",
             )
 
 
@@ -2758,10 +2794,11 @@ def test_reconnect_preflight_process_uses_separate_quiet_artifacts() -> None:
         try:
             emulator.start()
             expected = (
-                f"argv=bench --machine-events --owner-pid {os.getpid()} "
-                "--blink-profile scenario --handshake-only "
-                "--log-packets "
-                f"--handshake-ledger {root / 'replay' / RECONNECT_LEDGER_NAME}"
+                f"argv=bench --scenario-evidence "
+                f"{root / 'replay' / 'replay_scenario_preflight.json'} "
+                f"--machine-events --owner-pid {os.getpid()} "
+                f"--handshake-ledger {root / 'replay' / RECONNECT_LEDGER_NAME} "
+                "--handshake-only --log-packets --blink-profile scenario"
             )
             deadline = time.monotonic() + 1
             log = ""
@@ -3474,6 +3511,18 @@ def test_camera_profile_is_reapplied_after_recorder_open() -> None:
 
         def _wait_for_marker(self, _path: Path, _timeout_s: float, label: str) -> dict[str, object]:
             events.append(f"ready:{label}")
+            if label == "recording readiness":
+                self.first_frame_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "event": "first_frame",
+                            "host_monotonic_ns": 123_456_789_000,
+                            "pts_zero_seconds": 0.0,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
             return {"result": "READY"}
 
         def _validate_live_profile(self) -> dict[str, int | bool]:
@@ -4598,21 +4647,36 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         "band_flash_bits", "muted", "soft_muted", "display_on", "system_status", "system_test",
         "mode_char", "bogey_char", "bogey_dot", "bogey_char2", "main_volume", "mute_volume",
         "has_junk", "has_photo", "has_ku", "dropped_commits",
+        "bogey_byte", "bogey_byte2", "bogey_dot2", "has_mode", "has_display_on",
+        "has_v1_version", "v1_firmware_version", "has_volume_data", "v1_priority_index",
+        "saved_main_volume", "saved_mute_volume", "has_saved_volume",
+        "qualification_session_token", "state_revision", "alert_revision", "state_event_seq",
+        "state_rx_first_seq", "state_rx_last_seq", "alert_event_seq", "alert_rx_first_seq",
+        "alert_rx_last_seq", "alert_table_fnv1a32", "priority_valid", "priority_v1_index",
+        "priority_band", "priority_frequency_mhz", "priority_direction", "priority_front_raw",
+        "priority_rear_raw", "priority_front_bars", "priority_rear_bars", "priority_flag",
+        "priority_junk", "priority_photo_type", "priority_raw_band_bits", "priority_is_ku",
     ]
+    metadata = (
+        "# display_commit_schema=2,timebase=millis,source=renderer_commit,"
+        "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
+        "complete_alert_rows=encounter_csv_by_session_revision_digest"
+    )
 
     def row(sequence: int, dropped: int) -> str:
         values = ["0"] * len(header)
         values[0] = str(sequence)
         values[2] = "LIVE"
         values[3] = "PARTIAL"
-        values[-1] = str(dropped)
+        values[header.index("dropped_commits")] = str(dropped)
         return ",".join(values)
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         csv_path = out_dir / "display_commits_61-cbab7c22.csv"
         payload = (
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(header)
             + "\n"
             + row(1, 0)
@@ -4632,9 +4696,20 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         assert_true(summary["last_sequence"] == 2, f"wrong last renderer sequence: {summary}")
         assert_true(summary["terminal_sequence"] == 2, f"terminal renderer fence was lost: {summary}")
         assert_true(summary["reported_dropped_commits"] == 0, f"wrong renderer losses: {summary}")
+        assert_true(summary["csv_schema_version"] == "2", f"wrong renderer schema: {summary}")
+        assert_true(
+            summary["alert_table_digest"]
+            == "fnv1a32(count_then_ordered_alert_fields_no_padding)",
+            f"renderer digest contract was lost: {summary}",
+        )
+        assert_true(
+            summary["complete_alert_rows"] == "encounter_csv_by_session_revision_digest",
+            f"renderer encounter join contract was lost: {summary}",
+        )
 
         csv_path.write_text(
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(header)
             + "\n"
             + row(1, 0)
@@ -4649,7 +4724,8 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         assert_true("reported_drops" in partial["reason"], f"renderer loss was hidden: {partial}")
 
         csv_path.write_text(
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(header)
             + "\n"
             + row(1, 0)
@@ -4664,7 +4740,8 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         renamed_header = list(header)
         renamed_header[10] = "renamed_region_x"
         csv_path.write_text(
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(renamed_header)
             + "\n"
             + row(1, 0)
@@ -4676,7 +4753,8 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         assert_true("header_invalid" in wrong_schema["reason"], f"schema drift was hidden: {wrong_schema}")
 
         malformed_payload = (
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(header)
             + '\n"unterminated\n'
             + "# display_commit_export_schema=1,terminal_seq=1,dropped_commits=0\n"
@@ -4693,7 +4771,8 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
         assert_true(len(malformed["sha256"]) == 64, f"malformed renderer lost its hash: {malformed}")
 
         csv_path.write_text(
-            "# display_commit_schema=1,timebase=millis,source=renderer_commit\n"
+            metadata
+            + "\n"
             + ",".join(header)
             + "\n"
             + row(1, 0)
@@ -4828,7 +4907,10 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
         "handshake-only polling fallback bypasses the shared clear ensure path",
     )
     assert_true(
-        peripheral_ensure.count("self.appendPending(PendingNotification(") == 1
+        peripheral_ensure.count("let notification = self.makePendingNotification(") == 1
+        and peripheral_ensure.count("self.appendPending(notification)") == 1
+        and peripheral_ensure.index("let notification = self.makePendingNotification(")
+        < peripheral_ensure.index("self.appendPending(notification)")
         and "case .retryPending:\n                break" in peripheral_ensure,
         "a pre-delivery start can append a duplicate canonical clear",
     )
@@ -4941,6 +5023,7 @@ def main() -> int:
     test_live_replay_retains_one_versioned_detector_mode_stream()
     test_raw_log_ownership_names_only_exact_bench_streams()
     test_replay_blink_profile_argv_and_result()
+    test_replay_external_scenario_preserves_optional_fractional_cadence()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()
     test_reconnect_preflight_ledger_accepts_only_bounded_timed_pre_stream_retries()
     test_reconnect_preflight_ledger_rejects_unverifiable_timing()

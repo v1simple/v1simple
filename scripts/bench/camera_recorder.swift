@@ -21,6 +21,7 @@ struct Options {
     let preflightStop: URL
     let preflightFinished: URL
     let recordingReady: URL
+    let firstFrameMarker: URL
     let failureMarker: URL
     let statsMarker: URL
     let finalizeTimeoutSeconds: TimeInterval
@@ -87,6 +88,7 @@ func parseOptions() -> Options {
         preflightStop: URL(fileURLWithPath: argument("--preflight-stop")),
         preflightFinished: URL(fileURLWithPath: argument("--preflight-finished")),
         recordingReady: URL(fileURLWithPath: argument("--recording-ready")),
+        firstFrameMarker: URL(fileURLWithPath: argument("--first-frame-marker")),
         failureMarker: URL(fileURLWithPath: argument("--failure-marker")),
         statsMarker: URL(fileURLWithPath: argument("--stats-marker")),
         finalizeTimeoutSeconds: finalizeTimeoutSeconds,
@@ -339,6 +341,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let frameRate: Int32
     private var outputURL: URL?
     private var readyMarker: URL?
+    private var firstFrameMarker: URL?
     private var failureMarker: URL?
     private var statsMarker: URL?
     private var phase = ""
@@ -362,6 +365,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func startRecording(
         to outputURL: URL,
         readyMarker: URL,
+        firstFrameMarker: URL?,
         failureMarker: URL,
         statsMarker: URL,
         phase: String
@@ -371,6 +375,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             try? FileManager.default.removeItem(at: statsMarker)
             self.outputURL = outputURL
             self.readyMarker = readyMarker
+            self.firstFrameMarker = firstFrameMarker
             self.failureMarker = failureMarker
             self.statsMarker = statsMarker
             self.phase = phase
@@ -468,6 +473,27 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if pixelBufferAdaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
                 frameCount += 1
                 if frameCount == 1, let readyMarker {
+                    if let firstFrameMarker {
+                        do {
+                            let hostSeconds = CMTimeGetSeconds(hostTime)
+                            guard hostSeconds.isFinite, hostSeconds >= 0 else {
+                                throw NSError(domain: "v1simple.camera", code: 4)
+                            }
+                            try writeMarker(firstFrameMarker, [
+                                "schema_version": 1,
+                                "event": "first_frame",
+                                "host_monotonic_ns": Int64((hostSeconds * 1_000_000_000).rounded()),
+                                "pts_zero_seconds": CMTimeGetSeconds(presentationTime),
+                            ])
+                        } catch {
+                            recordFailure(
+                                code: "first_frame_marker_failed",
+                                message: "first appended frame timing marker could not be written",
+                                error: error
+                            )
+                            return
+                        }
+                    }
                     do {
                         try writeMarker(readyMarker, ["result": "READY"])
                     } catch {
@@ -642,6 +668,7 @@ for url in [
     options.preflightStop,
     options.preflightFinished,
     options.recordingReady,
+    options.firstFrameMarker,
     options.failureMarker,
     options.statsMarker,
 ] {
@@ -766,6 +793,7 @@ while !fileManager.fileExists(atPath: options.startMarker.path) {
 recorder.startRecording(
     to: options.preflightOutput,
     readyMarker: options.preflightReady,
+    firstFrameMarker: nil,
     failureMarker: options.failureMarker,
     statsMarker: options.statsMarker,
     phase: "preflight"
@@ -803,6 +831,7 @@ do {
 recorder.startRecording(
     to: options.output,
     readyMarker: options.recordingReady,
+    firstFrameMarker: options.firstFrameMarker,
     failureMarker: options.failureMarker,
     statsMarker: options.statsMarker,
     phase: "recording"

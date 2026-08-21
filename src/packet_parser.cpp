@@ -10,6 +10,7 @@
  */
 
 #include "packet_parser.h"
+#include "causal_evidence_types.h"
 #include "config.h"
 #include "perf_metrics.h" // perfRecordV1FirmwareVersion
 
@@ -151,8 +152,13 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     size_t payloadLen = (length > 6) ? length - 6 : 0; // drop start/dest/src/id/len/end
 
     switch (packetId) {
-    case PACKET_ID_DISPLAY_DATA:
-        return parseDisplayData(payload, payloadLen);
+    case PACKET_ID_DISPLAY_DATA: {
+        const bool parsed = parseDisplayData(payload, payloadLen);
+        if (parsed) {
+            publishStateRevision();
+        }
+        return parsed;
+    }
     case PACKET_ID_ALERT_DATA: {
         const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
         return parseAlertData(payload, payloadLen, alertNowMs);
@@ -165,11 +171,13 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // Update display power state (dark mode enabled)
         displayState_.displayOn = false;
         displayState_.hasDisplayOn = true;
+        publishStateRevision();
         return true;
     case PACKET_ID_TURN_ON_DISPLAY: // 0x33 - ACK for display on
         // Update display power state (dark mode disabled)
         displayState_.displayOn = true;
         displayState_.hasDisplayOn = true;
+        publishStateRevision();
         return true;
     case PACKET_ID_MUTE_ON:          // 0x34 - ACK for mute on
     case PACKET_ID_MUTE_OFF:         // 0x35 - ACK for mute off
@@ -228,6 +236,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                         Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n", major, minor, rev1,
                                       rev2, ctrl, version);
                     }
+                    publishStateRevision();
                 }
             }
         }
@@ -259,6 +268,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             if (canonicalShape && canonicalValues) {
                 perfRecordV1AllVolumeParsed();
             }
+            publishStateRevision();
         }
         return true;
     }
@@ -275,6 +285,20 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // Unknown packet - silently ignore in hot path
         return false;
     }
+}
+
+void PacketParser::publishStateRevision() {
+    ++displayState_.causal.stateRevision;
+    displayState_.causal.stateSource = currentCausalIdentity_;
+}
+
+void PacketParser::publishAlertRevision() {
+    ++displayState_.causal.alertRevision;
+    displayState_.causal.alertSource = currentCausalIdentity_;
+    displayState_.causal.alertTableDigest = v1AlertTableFnv1a32(alerts_.data(), alertCount_);
+    // Alert publication also changes priority/junk/photo/Ku fields inside the
+    // renderer's DisplayState input, so it is a state publication as well.
+    publishStateRevision();
 }
 
 bool PacketParser::validatePacket(const uint8_t* data, size_t length) {

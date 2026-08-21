@@ -17,21 +17,6 @@
 static constexpr size_t RX_BUFFER_MAX = 1024;
 static constexpr size_t RX_COMPACT_THRESHOLD = RX_BUFFER_MAX / 2;
 
-static void compactRxBuffer(std::vector<uint8_t>& rxBuffer, size_t& readPos) {
-    if (readPos == 0) {
-        return;
-    }
-    if (readPos >= rxBuffer.size()) {
-        rxBuffer.clear();
-        readPos = 0;
-        return;
-    }
-    const size_t unread = rxBuffer.size() - readPos;
-    memmove(rxBuffer.data(), rxBuffer.data() + readPos, unread);
-    rxBuffer.resize(unread);
-    readPos = 0;
-}
-
 // RX overflow policy: a chunk is admitted whole or not at all.
 //
 // This buffer reassembles a *framed* byte stream (ESP_PACKET_START .. length ..
@@ -57,29 +42,6 @@ static void compactRxBuffer(std::vector<uint8_t>& rxBuffer, size_t& readPos) {
 // Refusing input cannot wedge the buffer: process() compacts consumed bytes every
 // cycle and clears the buffer outright when no start marker is present, so space is
 // reclaimed as soon as the parser catches up.
-static size_t appendRxClamped(std::vector<uint8_t>& rxBuffer, size_t& readPos, const uint8_t* data, size_t length) {
-    if (!data || length == 0) {
-        return 0;
-    }
-
-    if (readPos > 0) {
-        const size_t unread = (readPos < rxBuffer.size()) ? (rxBuffer.size() - readPos) : 0;
-        if (rxBuffer.size() >= RX_BUFFER_MAX || (unread + length) > RX_BUFFER_MAX) {
-            compactRxBuffer(rxBuffer, readPos);
-        }
-    }
-
-    const size_t unread = (readPos < rxBuffer.size()) ? (rxBuffer.size() - readPos) : 0;
-    if (unread >= RX_BUFFER_MAX || (unread + length) > RX_BUFFER_MAX) {
-        // Does not fit whole after compaction - drop the whole chunk.
-        return 0;
-    }
-    const size_t oldSize = rxBuffer.size();
-    rxBuffer.resize(oldSize + length);
-    memcpy(rxBuffer.data() + oldSize, data, length);
-    return length;
-}
-
 bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,
                            DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus,
                            Config cfg) {
@@ -96,12 +58,15 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     }
 
     rxBuffer_.clear();
+    rxSpans_.clear();
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
     lastParsedTsMs_ = 0;
     hadSuccessfulParse_ = false;
-    parsedEventSeq_ = 0;
+    causalEventSeq_ = 0;
+    rxSeq_.store(0, std::memory_order_relaxed);
+    causalSourceLosses_.store(0, std::memory_order_relaxed);
     backpressureActive_ = false;
     tooLargeWarningLog_ = BleLogRateLimitState{};
     missingEndWarningLog_ = BleLogRateLimitState{};
@@ -127,6 +92,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
         backpressureActive_ = false;
         return false;
     }
+    rxSpans_.reserve(config_.queueDepth + 4);
     rxBufferReady_ = true;
     backpressureActive_ = false;
     return true;
@@ -153,12 +119,22 @@ void BleQueueModule::openSession(uint32_t sessionGeneration) {
 void BleQueueModule::closeSession() {
     acceptNotifications_.store(false, std::memory_order_release);
 
+    uint32_t discardedNotifications = 0;
     BLEDataPacket discarded;
     while (queueHandle_ && xQueueReceive(queueHandle_, &discarded, 0) == pdTRUE) {
+        ++discardedNotifications;
     }
 
-    rxBuffer_.clear();
-    rxReadPos_ = 0;
+    const size_t unreadBytes = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
+    if (discardedNotifications > 0) {
+        causalSourceLosses_.fetch_add(discardedNotifications, std::memory_order_relaxed);
+    }
+    if (unreadBytes > 0) {
+        causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
+        emitFramingReject(rxReadPos_, unreadBytes, V1CausalOutcome::SessionClosedIncomplete);
+    }
+
+    clearRxState();
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
     lastParsedTsMs_ = 0;
@@ -184,24 +160,28 @@ bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t ch
         pkt.charUUID = charUUID;
         pkt.tsMs = millis();
         pkt.sessionGeneration = sessionGeneration;
+        pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
 
         // closeSession() can race this callback between its first admission
         // check and packet construction. Recheck before publishing; if it
         // races after this point, process() rejects the stamped generation.
         if (!acceptNotifications_.load(std::memory_order_acquire) ||
             sessionGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
+            causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
 
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
         if (result != pdTRUE) {
             PERF_INC(queueDrops);
+            causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
         }
         UBaseType_t depth = uxQueueMessagesWaiting(queueHandle_);
         PERF_MAX(queueHighWater, depth);
         return result == pdTRUE;
     } else if (length > sizeof(BLEDataPacket::data)) {
         PERF_INC(oversizeDrops);
+        causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
     }
     return false;
 }
@@ -218,9 +198,133 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
     pkt.charUUID = charUUID;
     pkt.tsMs = millis();
     pkt.sessionGeneration = sessionGeneration;
+    pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
     return xQueueSend(queueHandle_, &pkt, 0) == pdTRUE;
 }
 #endif
+
+void BleQueueModule::emitCausalTrace(const V1CausalTraceRecord& record) const {
+    if (causalTraceObserver_) {
+        V1CausalTraceRecord stamped = record;
+        if (stamped.stageDutMillis == 0) {
+            stamped.stageDutMillis =
+                stamped.stage == V1CausalStage::Rx ? stamped.identity.dutMillis : static_cast<uint32_t>(millis());
+        }
+        stamped.sourceLossCount = causalSourceLosses_.load(std::memory_order_relaxed);
+        causalTraceObserver_(stamped, causalTraceObserverContext_);
+    }
+}
+
+void BleQueueModule::clearRxState() {
+    rxBuffer_.clear();
+    rxSpans_.clear();
+    rxReadPos_ = 0;
+}
+
+void BleQueueModule::compactRxState() {
+    if (rxReadPos_ == 0) {
+        return;
+    }
+    const size_t shift = std::min(rxReadPos_, rxBuffer_.size());
+    if (shift >= rxBuffer_.size()) {
+        clearRxState();
+        return;
+    }
+    const size_t unread = rxBuffer_.size() - shift;
+    memmove(rxBuffer_.data(), rxBuffer_.data() + shift, unread);
+    rxBuffer_.resize(unread);
+    rxReadPos_ = 0;
+
+    size_t writeIndex = 0;
+    for (const RxSpan& span : rxSpans_) {
+        if (span.end <= shift) {
+            continue;
+        }
+        RxSpan adjusted = span;
+        adjusted.begin = adjusted.begin > shift ? adjusted.begin - shift : 0;
+        adjusted.end -= shift;
+        rxSpans_[writeIndex++] = adjusted;
+    }
+    rxSpans_.resize(writeIndex);
+}
+
+bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet, V1CausalIdentity& identity) {
+    identity = V1CausalIdentity{};
+    identity.dutMillis = packet.tsMs;
+    identity.bleSessionGeneration = packet.sessionGeneration;
+    identity.rxFirstSeq = packet.rxSeq;
+    identity.rxLastSeq = packet.rxSeq;
+    identity.characteristic = packet.charUUID;
+    identity.payloadLength = static_cast<uint16_t>(packet.length);
+    identity.payloadDigest = v1Fnv1a32(packet.data, packet.length);
+
+    if (packet.length == 0) {
+        return false;
+    }
+    if (rxReadPos_ > 0) {
+        const size_t unread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
+        if (rxBuffer_.size() >= RX_BUFFER_MAX || (unread + packet.length) > RX_BUFFER_MAX) {
+            compactRxState();
+        }
+    }
+    const size_t unread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
+    if (unread >= RX_BUFFER_MAX || (unread + packet.length) > RX_BUFFER_MAX) {
+        return false;
+    }
+    const size_t begin = rxBuffer_.size();
+    rxBuffer_.resize(begin + packet.length);
+    memcpy(rxBuffer_.data() + begin, packet.data, packet.length);
+    rxSpans_.push_back(RxSpan{begin, begin + packet.length, identity});
+    return true;
+}
+
+V1CausalIdentity BleQueueModule::identityForFrame(size_t frameBegin, size_t frameLength) const {
+    V1CausalIdentity identity;
+    const size_t frameEnd = frameBegin + frameLength;
+    bool found = false;
+    for (const RxSpan& span : rxSpans_) {
+        if (span.end <= frameBegin || span.begin >= frameEnd) {
+            continue;
+        }
+        if (!found) {
+            identity = span.identity;
+            identity.rxFirstSeq = span.identity.rxFirstSeq;
+            found = true;
+        }
+        identity.rxLastSeq = span.identity.rxLastSeq;
+        identity.dutMillis = span.identity.dutMillis;
+        identity.bleSessionGeneration = span.identity.bleSessionGeneration;
+        identity.characteristic = span.identity.characteristic;
+    }
+    if (found) {
+        identity.payloadLength = static_cast<uint16_t>(std::min<size_t>(frameLength, UINT16_MAX));
+        identity.payloadDigest = v1Fnv1a32(rxBuffer_.data() + frameBegin, frameLength);
+    }
+    return identity;
+}
+
+void BleQueueModule::emitFramingReject(size_t begin, size_t length, V1CausalOutcome outcome) {
+    if (length == 0 || begin >= rxBuffer_.size()) {
+        return;
+    }
+    const size_t boundedLength = std::min(length, rxBuffer_.size() - begin);
+    V1CausalTraceRecord record;
+    record.identity = identityForFrame(begin, boundedLength);
+    record.identity.eventSeq = ++causalEventSeq_;
+    record.stage = V1CausalStage::Framing;
+    record.outcome = outcome;
+    record.payloadUnit = V1CausalPayloadUnit::Candidate;
+    if (boundedLength > 3 && rxBuffer_[begin] == ESP_PACKET_START) {
+        record.packetId = rxBuffer_[begin + 3];
+    }
+    if (parser_) {
+        const V1SemanticRevisionEvidence& evidence = parser_->getCausalEvidence();
+        record.stateRevision = evidence.stateRevision;
+        record.alertRevision = evidence.alertRevision;
+        record.alertTableDigest = evidence.alertTableDigest;
+    }
+    emitCausalTrace(record);
+}
 
 void BleQueueModule::refreshBackpressureState() {
     const size_t unreadBytes = (rxReadPos_ < rxBuffer_.size()) ? (rxBuffer_.size() - rxReadPos_) : 0;
@@ -236,6 +340,7 @@ void BleQueueModule::process() {
     UBaseType_t queueDepthBeforeDrain = 0;
     bool parsedEventPending = false;
     uint16_t parsedEventDetail = 0;
+    uint32_t parsedEventSignalSeq = 0;
 
     BLEDataPacket pkt;
     uint32_t latestPktTs = 0;
@@ -245,9 +350,25 @@ void BleQueueModule::process() {
 
     while (queueHandle_ && xQueueReceive(queueHandle_, &pkt, 0) == pdTRUE) {
         if (!sessionOpen || pkt.sessionGeneration != activeSessionGeneration) {
+            causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        appendRxClamped(rxBuffer_, rxReadPos_, pkt.data, pkt.length);
+        V1CausalIdentity notificationIdentity;
+        const bool appended = appendRxPacket(pkt, notificationIdentity);
+        if (!appended) {
+            causalSourceLosses_.fetch_add(1, std::memory_order_relaxed);
+        }
+        V1CausalTraceRecord rxRecord;
+        rxRecord.identity = notificationIdentity;
+        rxRecord.stage = V1CausalStage::Rx;
+        rxRecord.outcome = appended ? V1CausalOutcome::Accepted : V1CausalOutcome::BufferDropped;
+        rxRecord.payloadUnit = V1CausalPayloadUnit::Notification;
+        rxRecord.alertTableDigest = parser_ ? parser_->getCausalEvidence().alertTableDigest : 0;
+        if (parser_) {
+            rxRecord.stateRevision = parser_->getCausalEvidence().stateRevision;
+            rxRecord.alertRevision = parser_->getCausalEvidence().alertRevision;
+        }
+        emitCausalTrace(rxRecord);
         latestPktTs = pkt.tsMs;
     }
 
@@ -263,8 +384,7 @@ void BleQueueModule::process() {
     const uint32_t parseTimestampMs = lastNotifyTsMs_;
 
     if (rxReadPos_ >= rxBuffer_.size()) {
-        rxBuffer_.clear();
-        rxReadPos_ = 0;
+        clearRxState();
         refreshBackpressureState();
         return;
     }
@@ -334,11 +454,13 @@ void BleQueueModule::process() {
                 ? dataBegin
                 : static_cast<const uint8_t*>(memchr(dataBegin, ESP_PACKET_START, availableBytes));
         if (startPtr == nullptr) {
-            rxBuffer_.clear();
-            rxReadPos_ = 0;
+            emitFramingReject(rxReadPos_, availableBytes, V1CausalOutcome::ResyncNoStart);
+            clearRxState();
             break;
         }
         if (startPtr != dataBegin) {
+            const size_t discardedPrefix = static_cast<size_t>(startPtr - dataBegin);
+            emitFramingReject(rxReadPos_, discardedPrefix, V1CausalOutcome::ResyncDiscardedPrefix);
             rxReadPos_ = static_cast<size_t>(startPtr - rxBuffer_.data());
             continue;
         }
@@ -348,6 +470,7 @@ void BleQueueModule::process() {
 
         uint8_t lenField = rxBuffer_[rxReadPos_ + 4];
         if (lenField == 0) {
+            emitFramingReject(rxReadPos_, MIN_HEADER_SIZE, V1CausalOutcome::ResyncZeroLength);
             PERF_INC(parseResyncs);
             rxReadPos_++;
             continue;
@@ -355,6 +478,7 @@ void BleQueueModule::process() {
 
         size_t packetSize = 6 + lenField;
         if (packetSize > MAX_PACKET_SIZE) {
+            emitFramingReject(rxReadPos_, std::min(availableBytes, packetSize), V1CausalOutcome::ResyncTooLarge);
             if (!loggedTooLargeWarning) {
                 if (shouldLogBleConnectionEvent(tooLargeWarningLog_, parseTimestampMs, kBleResyncLogMinIntervalMs)) {
                     Serial.printf("[BLE] WARN: BLE packet too large (%u bytes) - resyncing\n", (unsigned)packetSize);
@@ -369,6 +493,7 @@ void BleQueueModule::process() {
             break;
         }
         if (rxBuffer_[rxReadPos_ + packetSize - 1] != ESP_PACKET_END) {
+            emitFramingReject(rxReadPos_, packetSize, V1CausalOutcome::ResyncMissingEnd);
             if (!loggedMissingEndWarning) {
                 if (shouldLogBleConnectionEvent(missingEndWarningLog_, parseTimestampMs, kBleResyncLogMinIntervalMs)) {
                     Serial.println("[BLE] WARN: Packet missing end marker - resyncing");
@@ -381,19 +506,63 @@ void BleQueueModule::process() {
         }
 
         const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
+        V1CausalIdentity frameIdentity = identityForFrame(rxReadPos_, packetSize);
+        frameIdentity.eventSeq = ++causalEventSeq_;
+        const uint8_t packetId = packetPtr[3];
 
         if (packetSize >= 12 && packetPtr[3] == PACKET_ID_RESP_USER_BYTES && profiles_) {
             uint8_t userBytes[6];
             memcpy(userBytes, &packetPtr[5], 6);
             ble_->onUserBytesReceived(userBytes);
             profiles_->setCurrentSettings(userBytes);
+            V1CausalTraceRecord handledRecord;
+            handledRecord.identity = frameIdentity;
+            handledRecord.stage = V1CausalStage::Parse;
+            handledRecord.outcome = V1CausalOutcome::Handled;
+            handledRecord.payloadUnit = V1CausalPayloadUnit::Frame;
+            handledRecord.packetId = packetId;
+            handledRecord.parseOk = true;
+            if (parser_) {
+                handledRecord.stateRevision = parser_->getCausalEvidence().stateRevision;
+                handledRecord.alertRevision = parser_->getCausalEvidence().alertRevision;
+                handledRecord.alertTableDigest = parser_->getCausalEvidence().alertTableDigest;
+            }
+            emitCausalTrace(handledRecord);
             rxReadPos_ += packetSize;
             packetsProcessedThisCycle++;
             continue;
         }
 
-        uint8_t packetId = packetPtr[3];
-        bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs);
+        const V1SemanticRevisionEvidence beforeEvidence = parser_->getCausalEvidence();
+        parser_->setCausalIdentity(frameIdentity);
+        const uint32_t frameDutMillis = frameIdentity.dutMillis != 0 ? frameIdentity.dutMillis : parseTimestampMs;
+        bool parseOk = parser_->parse(packetPtr, packetSize, frameDutMillis);
+        const V1SemanticRevisionEvidence afterEvidence = parser_->getCausalEvidence();
+
+        V1CausalTraceRecord parseRecord;
+        parseRecord.identity = frameIdentity;
+        parseRecord.stage = V1CausalStage::Parse;
+        parseRecord.outcome = parseOk ? V1CausalOutcome::Parsed : V1CausalOutcome::Rejected;
+        parseRecord.payloadUnit = V1CausalPayloadUnit::Frame;
+        parseRecord.packetId = packetId;
+        parseRecord.parseOk = parseOk;
+        parseRecord.stateRevision = afterEvidence.stateRevision;
+        parseRecord.alertRevision = afterEvidence.alertRevision;
+        parseRecord.alertTableDigest = afterEvidence.alertTableDigest;
+        emitCausalTrace(parseRecord);
+
+        if (afterEvidence.stateRevision != beforeEvidence.stateRevision) {
+            V1CausalTraceRecord publishRecord = parseRecord;
+            publishRecord.stage = V1CausalStage::PublishState;
+            publishRecord.outcome = V1CausalOutcome::Published;
+            emitCausalTrace(publishRecord);
+        }
+        if (afterEvidence.alertRevision != beforeEvidence.alertRevision) {
+            V1CausalTraceRecord publishRecord = parseRecord;
+            publishRecord.stage = V1CausalStage::PublishAlerts;
+            publishRecord.outcome = V1CausalOutcome::Published;
+            emitCausalTrace(publishRecord);
+        }
 
         if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
             const DisplayState& state = parser_->getDisplayState();
@@ -426,9 +595,10 @@ void BleQueueModule::process() {
             // Set flag and timestamp for main loop to drive display pipeline
             // This decouples BLE processing from slow display updates
             hadSuccessfulParse_ = true;
-            lastParsedTsMs_ = lastNotifyTsMs_;
+            lastParsedTsMs_ = frameDutMillis;
             parsedEventPending = true;
             parsedEventDetail = packetId;
+            parsedEventSignalSeq = frameIdentity.eventSeq;
         }
     }
 
@@ -436,16 +606,19 @@ void BleQueueModule::process() {
         SystemEvent event;
         event.type = SystemEventType::BLE_FRAME_PARSED;
         event.tsMs = lastParsedTsMs_;
-        event.seq = ++parsedEventSeq_;
+        event.seq = parsedEventSignalSeq;
         event.detail = parsedEventDetail;
         bus_->publish(event);
     }
 
+    rxSpans_.erase(
+        std::remove_if(rxSpans_.begin(), rxSpans_.end(), [this](const RxSpan& span) { return span.end <= rxReadPos_; }),
+        rxSpans_.end());
+
     if (rxReadPos_ >= rxBuffer_.size()) {
-        rxBuffer_.clear();
-        rxReadPos_ = 0;
+        clearRxState();
     } else if (rxReadPos_ >= RX_COMPACT_THRESHOLD) {
-        compactRxBuffer(rxBuffer_, rxReadPos_);
+        compactRxState();
     }
 
     refreshBackpressureState();

@@ -40,13 +40,15 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             displayOn: true,
             arrowBlink: true,
             plan: plan,
-            requestedHostMonotonicSeconds: 123.5
+            requestedHostMonotonicNs: 123_500_000_000
         )
 
         XCTAssertEqual(event.state, "stimulus_requested")
         XCTAssertEqual(event.schemaVersion, 1)
         XCTAssertEqual(event.stimulusSequence, 9)
         XCTAssertEqual(event.sourceIndex, 41)
+        XCTAssertEqual(event.requestedHostMonotonicNs, 123_500_000_000)
+        XCTAssertEqual(event.requestedHostMonotonicSeconds, 123.5)
         XCTAssertEqual(event.expected.phase, "changed_scenario")
         XCTAssertEqual(event.expected.modeChar, "A")
         XCTAssertEqual(event.expected.mainVolume, 7)

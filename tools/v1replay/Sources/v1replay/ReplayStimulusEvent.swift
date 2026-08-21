@@ -67,6 +67,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
     let sourceIndex: Int
     let replayOffsetSeconds: Double
     let requestedHostMonotonicSeconds: Double
+    let requestedHostMonotonicNs: UInt64
     let expected: ExpectedDisplay
     let notifications: [NotificationRequest]
 
@@ -77,12 +78,14 @@ struct ReplayStimulusEvent: Encodable, Equatable {
          displayOn: Bool,
          arrowBlink: Bool,
          plan: V1.PlaybackPacketPlan,
-         requestedHostMonotonicSeconds: Double) {
+         requestedHostMonotonicNs: UInt64) {
         precondition(sequence > 0, "stimulus sequence must be positive")
         stimulusSequence = sequence
         sourceIndex = sample.sourceIndex
         replayOffsetSeconds = sample.offset
-        self.requestedHostMonotonicSeconds = requestedHostMonotonicSeconds
+        self.requestedHostMonotonicNs = requestedHostMonotonicNs
+        requestedHostMonotonicSeconds =
+            Double(requestedHostMonotonicNs) / 1_000_000_000.0
         expected = ExpectedDisplay(
             phase: sample.phase,
             alerts: sample.alerts.map(Alert.init),

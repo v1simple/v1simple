@@ -2,7 +2,7 @@ import Foundation
 
 @inline(__always)
 func nowSeconds() -> Double {
-    return Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000.0
+    return Double(hostMonotonicNanoseconds()) / 1_000_000_000.0
 }
 
 // =============================================================================
@@ -388,12 +388,22 @@ final class Player {
         return true
     }
 
-    private func send(_ emission: V1.PlaybackPacketPlan.Emission) {
+    private func send(_ emission: V1.PlaybackPacketPlan.Emission,
+                      stimulusSequence: Int,
+                      emissionOrdinal: Int) {
         switch emission.channel {
         case .displayShort:
-            peripheral.sendDisplay(emission.bytes)
+            peripheral.sendDisplay(
+                emission.bytes,
+                stimulusSequence: stimulusSequence,
+                emissionOrdinal: emissionOrdinal
+            )
         case .displayLong:
-            peripheral.sendLong(emission.bytes)
+            peripheral.sendLong(
+                emission.bytes,
+                stimulusSequence: stimulusSequence,
+                emissionOrdinal: emissionOrdinal
+            )
         }
     }
 
@@ -501,24 +511,32 @@ final class Player {
             checksum: options.checksum,
             includeAlertTable: includeAlertTable
         )
-        for emission in plan.emissions { send(emission) }
         let sent = plan.emissions.count
-        let requestedAt = nowSeconds()
         stimulusSequence += 1
+        let currentStimulusSequence = stimulusSequence
+        let requestedAtNs = hostMonotonicNanoseconds()
+        let requestedAt = Double(requestedAtNs) / 1_000_000_000.0
         if !reportedReplayStart {
             reportedReplayStart = true
             onReplayStarted?(requestedAt)
         }
         onStimulusRequested?(ReplayStimulusEvent(
-            sequence: stimulusSequence,
+            sequence: currentStimulusSequence,
             sample: sample,
             controlState: control,
             muted: muted,
             displayOn: displayOn,
             arrowBlink: arrowBlink,
             plan: plan,
-            requestedHostMonotonicSeconds: requestedAt
+            requestedHostMonotonicNs: requestedAtNs
         ))
+        for (ordinal, emission) in plan.emissions.enumerated() {
+            send(
+                emission,
+                stimulusSequence: currentStimulusSequence,
+                emissionOrdinal: ordinal
+            )
+        }
 
         lock.lock()
         _packetsSent += sent

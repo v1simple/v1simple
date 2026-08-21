@@ -452,20 +452,6 @@
       "regress_pct": null
     },
     {
-      "metric": "event_drop_delta",
-      "run_kind": "real_fw_soak",
-      "selector": {},
-      "unit": "count",
-      "aggregation": "last",
-      "direction": "lower_better",
-      "score_level": "hard",
-      "required": true,
-      "absolute_min": 0,
-      "absolute_max": 0,
-      "regress_abs": null,
-      "regress_pct": null
-    },
-    {
       "metric": "oversize_drops_delta",
       "run_kind": "real_fw_soak",
       "selector": {},
@@ -1105,20 +1091,6 @@
     },
     {
       "metric": "connect_burst_disp_render_peak_us",
-      "run_kind": "real_fw_soak",
-      "selector": {},
-      "unit": "us",
-      "aggregation": "last",
-      "direction": "lower_better",
-      "score_level": "info",
-      "required": false,
-      "absolute_min": 0,
-      "absolute_max": null,
-      "regress_abs": null,
-      "regress_pct": null
-    },
-    {
-      "metric": "connect_burst_display_gap_recover_peak_us",
       "run_kind": "real_fw_soak",
       "selector": {},
       "unit": "us",

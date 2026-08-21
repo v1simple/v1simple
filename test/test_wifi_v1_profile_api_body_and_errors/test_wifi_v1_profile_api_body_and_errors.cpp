@@ -39,10 +39,8 @@ struct FakeRuntime {
 
     int parseSettingsCalls = 0;
     int saveCalls = 0;
-    int writeUserBytesCalls = 0;
     int backupCalls = 0;
     bool connected = true;
-    bool writeUserBytesResult = true;
 };
 
 WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
@@ -76,12 +74,6 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.backupToSdCtx = &rt;
     runtime.v1Connected = [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; };
     runtime.v1ConnectedCtx = &rt;
-    runtime.writeUserBytes = [](const uint8_t /*inBytes*/[6], void* ctx) {
-        auto* rtp = static_cast<FakeRuntime*>(ctx);
-        rtp->writeUserBytesCalls++;
-        return rtp->writeUserBytesResult;
-    };
-    runtime.writeUserBytesCtx = &rt;
     return runtime;
 }
 
@@ -211,18 +203,6 @@ void test_profile_save_accepts_payload_just_under_the_cap() {
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
 }
 
-void test_profile_push_rejects_oversize_payload_without_writing() {
-    WebServer server(80);
-    FakeRuntime rt;
-    server.setArg("plain", oversizeBody(4200));
-
-    WifiV1ProfileApiService::handleApiSettingsPush(server, makeRuntime(rt), alwaysAllow, nullptr);
-
-    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
-    TEST_ASSERT_TRUE(responseContains(server, "Payload too large"));
-    TEST_ASSERT_EQUAL_INT(0, rt.writeUserBytesCalls);
-}
-
 // ---------------------------------------------------------------------------
 // Request-body allocation contract
 // ---------------------------------------------------------------------------
@@ -235,8 +215,8 @@ void test_post_handlers_bind_the_request_body_exactly_once_per_handler() {
         int maxArgCalls; // one per handler that reads a body
     };
     const Expectation sources[] = {
-        // save, delete, push
-        {"src/modules/wifi/wifi_v1_profile_api_service.cpp", 3},
+        // save and delete
+        {"src/modules/wifi/wifi_v1_profile_api_service.cpp", 2},
         // restore (backup-now takes no body)
         {"src/modules/wifi/backup_api_service.cpp", 1},
     };
@@ -283,7 +263,6 @@ int main() {
     RUN_TEST(test_plain_save_error_still_reports_error_field_verbatim);
     RUN_TEST(test_profile_save_rejects_oversize_payload_without_saving);
     RUN_TEST(test_profile_save_accepts_payload_just_under_the_cap);
-    RUN_TEST(test_profile_push_rejects_oversize_payload_without_writing);
     RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);
     RUN_TEST(test_body_cap_comments_do_not_claim_the_transport_risk_is_closed);
     return UNITY_END();

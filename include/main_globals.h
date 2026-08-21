@@ -146,7 +146,6 @@ extern DisplayRestoreModule displayRestoreModule;
 
 #if defined(PERF_METRICS) && defined(PERF_MONITORING)
 extern PerfLatency perfLatency;
-extern bool perfDebugEnabled;
 #endif
 
 // ============================================================================

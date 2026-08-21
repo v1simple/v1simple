@@ -326,26 +326,18 @@ def test_current_grade_refresh_preserves_stale_owned_evidence() -> None:
         assert_true(before == after, "refresh rewrote captured media or its prior owned grade")
 
 
-def test_bench_refreshes_camera_grade_immediately_before_scoring() -> None:
-    source = (ROOT / "bench.sh").read_text(encoding="utf-8")
-    camera_regrade = source.index('python3 "$ROOT_DIR/scripts/bench/camera_regrade.py"')
-    refresh = source.rindex(
-        'python3 "$ROOT_DIR/scripts/bench/run_logged.py"',
-        0,
-        camera_regrade,
-    )
-    score = source.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
-    refresh_block = source[refresh:score]
-    assert_true(camera_regrade < score, "bench scoring can run before the current camera grade refresh")
+def test_fresh_capture_owns_its_grade_before_bench_scoring() -> None:
+    capture_owner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
+    grade = capture_owner.index("camera_grade = grade_camera(")
+    publish = capture_owner.index("grade_path, _created = publish_grade(", grade)
+    assert_true(grade < publish, "capture owner does not publish the grade it computed")
+
+    bench = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    score = bench.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
+    assert_true('wait "$CURRENT_PID"' in bench[:score], "bench scores before the capture window completes")
     assert_true(
-        '--corpus-root "$RUN_DIR"' in refresh_block,
-        "camera grade refresh does not target only the captured run",
-    )
-    assert_true(
-        'scripts/bench/run_logged.py"' in refresh_block
-        and '|| camera_regrade_status=$?' in refresh_block
-        and "scoring captured evidence anyway" in refresh_block,
-        "camera refresh is not privacy-managed without replacing the evidence verdict",
+        'scripts/bench/camera_regrade.py"' not in bench,
+        "fresh bench runs still regrade evidence already graded by the capture owner",
     )
 
 
@@ -628,7 +620,7 @@ def main() -> int:
     test_camera_publication_preserves_owned_hashes_but_scrubs_digest_narrative()
     test_resumable_skip_does_not_extract_frames()
     test_current_grade_refresh_preserves_stale_owned_evidence()
-    test_bench_refreshes_camera_grade_immediately_before_scoring()
+    test_fresh_capture_owns_its_grade_before_bench_scoring()
     test_owned_bytes_are_verified_before_resume()
     test_legacy_preservation_and_relocation()
     test_missing_legacy_timing_abstains_before_decode()

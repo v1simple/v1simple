@@ -18,20 +18,13 @@
 #include "settings.h"
 #include "modules/wifi/backup_snapshot_cache.h"
 #include "modules/wifi/wifi_ap_lifecycle_policy.h"
+#include "modules/wifi/wifi_audio_settings_runtime.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_client_api_service.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_status_api_service.h"
 
 namespace WifiDisplayColorsApiService {
-struct Runtime;
-}
-
-namespace WifiQuietApiService {
-struct Runtime;
-}
-
-namespace WifiAudioApiService {
 struct Runtime;
 }
 
@@ -67,7 +60,6 @@ struct Runtime;
 
 class ObdRuntimeModule;
 class SpeedSourceSelector;
-class AlpRuntimeModule;
 class GpsRuntimeModule;
 
 // WiFi service state (AP may be enabled or disabled while service is active)
@@ -196,14 +188,6 @@ class WiFiManager {
         getPushStatusJsonCtx_ = ctx;
     }
 
-    // Callback for manual push-now requests routed through the shared executor.
-    void setPushNowCallback(
-        WifiAutoPushApiService::PushNowQueueResult (*fn)(const WifiAutoPushApiService::PushNowRequest&, void*),
-        void* ctx) {
-        queuePushNow_ = fn;
-        queuePushNowCtx_ = ctx;
-    }
-
     // V1 connection state used to defer WiFi client operations.
     void setV1ConnectedCallback(bool (*fn)(void*), void* ctx) {
         isV1Connected_ = fn;
@@ -215,9 +199,6 @@ class WiFiManager {
         obdRuntime_ = obd;
         speedSelector_ = speed;
     }
-
-    // ALP runtime dependency (used by /api/alp/status)
-    void setAlpRuntime(AlpRuntimeModule* alp) { alpRuntime_ = alp; }
 
     // GPS runtime dependency (used by /api/gps/status)
     void setGpsRuntime(GpsRuntimeModule* gps) { gpsRuntime_ = gps; }
@@ -359,14 +340,10 @@ class WiFiManager {
     void* getFilesystemCtx_ = nullptr;
     String (*getPushStatusJson_)(void* ctx) = nullptr;
     void* getPushStatusJsonCtx_ = nullptr;
-    WifiAutoPushApiService::PushNowQueueResult (*queuePushNow_)(const WifiAutoPushApiService::PushNowRequest&,
-                                                                void* ctx) = nullptr;
-    void* queuePushNowCtx_ = nullptr;
     bool (*isV1Connected_)(void* ctx) = nullptr; // Returns true when V1 is connected (defer WiFi ops until then)
     void* isV1ConnectedCtx_ = nullptr;
     ObdRuntimeModule* obdRuntime_ = nullptr;
     SpeedSourceSelector* speedSelector_ = nullptr;
-    AlpRuntimeModule* alpRuntime_ = nullptr;
     GpsRuntimeModule* gpsRuntime_ = nullptr;
     bool maintenanceBootMode_ = false;
 
@@ -396,8 +373,7 @@ class WiFiManager {
     bool stopSetupModeImmediate(bool emergencyLowDma);
     WifiAutoPushApiService::Runtime makeAutoPushRuntime();
     WifiDisplayColorsApiService::Runtime makeDisplayColorsRuntime();
-    WifiQuietApiService::Runtime makeQuietRuntime();
-    WifiAudioApiService::Runtime makeAudioRuntime();
+    WifiAudioSettingsRuntime makeAudioRuntime();
     WifiStatusApiService::StatusRuntime makeStatusRuntime();
     WifiSettingsApiService::Runtime makeSettingsRuntime();
     WifiClientApiService::Runtime makeWifiClientRuntime();

@@ -1,2 +1,0 @@
-# BLE hot-path contract violations (expected to stay empty)
-

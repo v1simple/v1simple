@@ -517,7 +517,7 @@ class AlpRuntimeModule {
     bool updateCurrentEvent(uint32_t nowMs);
 
     // ── Event bus publishing ──────────────────────────────────────────
-    void publishStateChangeEvent(uint32_t nowMs, uint16_t detail);
+    void publishDisplayEdge();
 
     // ── Internal methods ─────────────────────────────────────────────
     void transitionTo(AlpState newState, uint32_t nowMs);

@@ -490,9 +490,6 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
 
     logMaintenanceHeapSnapshot("pre_wifi");
     wifiManager.setMaintenanceBootMode(true);
-    wifiManager.setObdDependencies(&obdRuntimeModule, &speedSourceSelector);
-    wifiManager.setAlpRuntime(&alpRuntimeModule);
-    wifiManager.setGpsRuntime(&gpsRuntimeModule);
     configureWifiRuntimeModule();
 
     initializeTouchAndDisplayControls();
@@ -747,10 +744,16 @@ void loop() {
     unsigned long loopStartUs = micros();
     audio_process_amp_timeout();
     unsigned long now = millis();
-    const LoopConnectionEarlyPhaseValues loopConnectionEarlyValues = processLoopConnectionEarlyPhase(
-        now, micros(), mainRuntimeState.lastLoopUs, mainRuntimeState.bootSplashHoldActive,
-        mainRuntimeState.bootSplashHoldUntilMs, mainRuntimeState.initialScanningScreenShown,
-        powerModule.ownsDisplayPresentation());
+    LoopConnectionEarlyContext loopConnectionEarlyContext;
+    loopConnectionEarlyContext.nowMs = now;
+    loopConnectionEarlyContext.nowUs = micros();
+    loopConnectionEarlyContext.lastLoopUs = mainRuntimeState.lastLoopUs;
+    loopConnectionEarlyContext.bootSplashHoldActive = mainRuntimeState.bootSplashHoldActive;
+    loopConnectionEarlyContext.bootSplashHoldUntilMs = mainRuntimeState.bootSplashHoldUntilMs;
+    loopConnectionEarlyContext.initialScanningScreenShown = mainRuntimeState.initialScanningScreenShown;
+    loopConnectionEarlyContext.presentationSuppressed = powerModule.ownsDisplayPresentation();
+    const LoopConnectionEarlyResult loopConnectionEarlyValues =
+        loopConnectionEarlyModule.process(loopConnectionEarlyContext);
 
     mainRuntimeState.bootSplashHoldActive = loopConnectionEarlyValues.bootSplashHoldActive;
     mainRuntimeState.initialScanningScreenShown = loopConnectionEarlyValues.initialScanningScreenShown;
@@ -761,7 +764,7 @@ void loop() {
     bool overloadThisLoop = loopConnectionEarlyValues.overloadThisLoop;
 
     // Process battery/power and touch UI.
-    const bool settingsEarlyReturn = shouldReturnEarlyFromLoopPowerTouchPhase(now, loopStartUs);
+    const bool settingsEarlyReturn = shouldReturnEarlyFromLoopPowerTouchPhase(now);
     servicePowerDisplayOwnership(now);
     const bool powerPresentationOwned = powerModule.ownsDisplayPresentation();
     bool alpProcessedThisLoop = false;
@@ -938,7 +941,7 @@ void loop() {
     mainRuntimeState.wifiAutoStartDone = loopWifiValues.wifiAutoStartDone;
     mainRuntimeState.wifiManualStartIntentLatched = loopWifiValues.wifiManualStartIntentLatched;
 
-    loopTelemetryModule.process(loopStartUs);
+    loopTelemetryModule.process();
 
     const LoopFinalizePhaseValues loopFinalizeValues =
         processLoopFinalizePhase(mainRuntimeState.bootSplashHoldActive,

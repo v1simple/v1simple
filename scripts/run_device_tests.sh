@@ -5,7 +5,6 @@
 # Usage:
 #   ./scripts/run_device_tests.sh              # Boot, heap, and event bus
 #   ./scripts/run_device_tests.sh --quick      # Boot and heap
-#   ./scripts/run_device_tests.sh --full       # Boot, heap, and event bus
 #
 set -euo pipefail
 
@@ -21,9 +20,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --quick)
       MODE="quick"
-      ;;
-    --full)
-      MODE="full"
       ;;
     --cooldown-seconds)
       if [[ $# -lt 2 ]]; then
@@ -50,12 +46,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: $0 [--quick | --full] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
+      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
       echo ""
       echo "Modes:"
       echo "  (default)  Run boot, heap, and event-bus suites"
       echo "  --quick    Run boot and heap suites"
-      echo "  --full     Run boot, heap, and event-bus suites"
       echo "Options:"
       echo "  --cooldown-seconds N"
       echo "             Wait N seconds between suites (default: ${DEVICE_SUITE_COOLDOWN_SECONDS:-5})"
@@ -70,7 +65,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "Usage: $0 [--quick | --full] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]" >&2
+      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]" >&2
       echo "" >&2
       echo "Unknown option: $1" >&2
       exit 2
@@ -244,10 +239,6 @@ case "$MODE" in
     SUITES=("${CORE_SUITES[@]}" "${CONCURRENCY_SUITES[@]}")
     echo "==> Device mode: boot, heap, and event bus"
     ;;
-  full)
-    SUITES=("${CORE_SUITES[@]}" "${CONCURRENCY_SUITES[@]}")
-    echo "==> Full mode: boot, heap, and event bus"
-    ;;
 esac
 
 echo "==> Planned suite order:"
@@ -411,18 +402,11 @@ score_manifest() {
     "$MANIFEST_JSON" \
     --catalog "$ROOT_DIR/tools/hardware_metric_catalog.json" \
     ${compare_args[@]+"${compare_args[@]}"} \
-    --json > "$SCORING_JSON"
+    --json-out "$SCORING_JSON" > "$SUMMARY_MD"
   scorer_status=$?
   set -e
 
   if [[ "$scorer_status" -le 2 ]]; then
-    set +e
-    python3 "$ROOT_DIR/tools/score_hardware_run.py" \
-      "$MANIFEST_JSON" \
-      --catalog "$ROOT_DIR/tools/hardware_metric_catalog.json" \
-      ${compare_args[@]+"${compare_args[@]}"} > "$SUMMARY_MD"
-    set -e
-
     python3 - "$MANIFEST_JSON" "$SCORING_JSON" <<'PY'
 import json
 import sys

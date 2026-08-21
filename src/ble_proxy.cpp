@@ -57,19 +57,19 @@ void V1BLEClient::deferLastV1Address(const char* addr, const char* advertisedNam
 }
 
 uint32_t V1BLEClient::getPhoneCmdDropsOverflow() const {
-    return perfPhoneCmdDropMetricsSnapshot().overflow;
+    return perfCounters.phoneCmdDropsOverflow.load(std::memory_order_relaxed);
 }
 
 uint32_t V1BLEClient::getPhoneCmdDropsInvalid() const {
-    return perfPhoneCmdDropMetricsSnapshot().invalid;
+    return perfCounters.phoneCmdDropsInvalid.load(std::memory_order_relaxed);
 }
 
 uint32_t V1BLEClient::getPhoneCmdDropsBleFail() const {
-    return perfPhoneCmdDropMetricsSnapshot().bleFail;
+    return perfCounters.phoneCmdDropsBleFail.load(std::memory_order_relaxed);
 }
 
 uint32_t V1BLEClient::getPhoneCmdDropsLockBusy() const {
-    return perfPhoneCmdDropMetricsSnapshot().lockBusy;
+    return perfCounters.phoneCmdDropsLockBusy.load(std::memory_order_relaxed);
 }
 
 bool V1BLEClient::enqueueProxyCallbackEvent(const ProxyCallbackEvent& event) {
@@ -724,7 +724,6 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     if (proxyQueueCount_ > proxyMetrics_.queueHighWater) {
         proxyMetrics_.queueHighWater = proxyQueueCount_;
     }
-    PERF_MAX(proxyQueueHighWater, proxyQueueCount_);
 
     if (bleNotifyMutex_) {
         proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
@@ -826,7 +825,6 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
     proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, true);
-    PERF_MAX(phoneCmdQueueHighWater, phone2v1QueueCount_);
 
     proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
     xSemaphoreGive(phoneCmdMutex_);

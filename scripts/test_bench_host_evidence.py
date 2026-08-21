@@ -335,7 +335,8 @@ def test_replay_machine_events_are_copied_once_without_reinterpretation() -> Non
 
 def test_bench_automatic_investigation_is_local_only_and_non_gating() -> None:
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
-    score = source.index('"${score_args[@]}" | tee -a "$RUN_LOG"')
+    score_setup = source.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
+    score = source.index('-- "${score_args[@]}" || score_status=$?', score_setup)
     investigation = source.index('python3 "$ROOT_DIR/tools/bench_investigate.py"')
     final_exit = source.index('exit "$score_status"', investigation)
     invocation = source[investigation:final_exit]

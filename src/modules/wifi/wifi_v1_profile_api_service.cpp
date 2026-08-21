@@ -1,23 +1,11 @@
 #include "wifi_v1_profile_api_service.h"
 
-#include <cstring>
-
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
 #include "wifi_json_document.h"
-#include "../../settings.h"
-#include "../../v1_profile_push_policy.h"
-#include "v1_settings_json.h"
 
 namespace WifiV1ProfileApiService {
-
-static void sendMaintenanceModeError(WebServer& server) {
-    WifiJson::Document doc;
-    doc["error"] = "maintenance_mode";
-    doc["message"] = "V1 push/pull not available in maintenance mode";
-    WifiApiResponse::sendJsonDocument(server, 409, doc);
-}
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
     std::vector<String> profileNames;
@@ -207,130 +195,6 @@ void handleApiCurrentSettings(WebServer& server, const Runtime& runtime) {
     }
 
     WifiApiResponse::sendJsonDocument(server, 200, doc);
-}
-
-void handleApiSettingsPull(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                           void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
-        return;
-
-    if (runtime.maintenanceBootActive) {
-        sendMaintenanceModeError(server);
-        return;
-    }
-
-    if (!runtime.v1Connected || !runtime.v1Connected(runtime.v1ConnectedCtx)) {
-        server.send(503, "application/json", "{\"error\":\"V1 not connected\"}");
-        return;
-    }
-
-    bool requested = false;
-    if (runtime.requestUserBytes) {
-        requested = runtime.requestUserBytes(runtime.requestUserBytesCtx);
-    }
-    if (requested) {
-        // Response will come async via BLE callback
-        server.send(200, "application/json",
-                    "{\"success\":true,\"message\":\"Request sent. Check current settings.\"}");
-    } else {
-        server.send(500, "application/json", "{\"error\":\"Failed to send request\"}");
-    }
-}
-
-void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                           void* rateLimitCtx) {
-    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
-        return;
-
-    if (runtime.maintenanceBootActive) {
-        sendMaintenanceModeError(server);
-        return;
-    }
-
-    if (!runtime.v1Connected || !runtime.v1Connected(runtime.v1ConnectedCtx)) {
-        server.send(503, "application/json", "{\"error\":\"V1 not connected\"}");
-        return;
-    }
-
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
-        return;
-    }
-
-    // Same story as the save handler: WebServer already buffered the body, so
-    // this is a semantic/application cap on what we will parse, NOT a bound on
-    // the transport allocation.
-    const String body = server.arg("plain");
-    Serial.printf("[V1Settings] Push request accepted (%u bytes)\n", static_cast<unsigned>(body.length()));
-    if (body.length() > 4096) {
-        server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
-        return;
-    }
-
-    WifiJson::Document doc;
-    DeserializationError err = deserializeJson(doc, body.c_str());
-    if (err) {
-        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    uint8_t bytes[6];
-    bool displayOn = true;
-
-    // Check if pushing a profile by name
-    String profileName = doc["name"] | "";
-    const JsonVariantConst rawBytes = doc["bytes"];
-    if (!profileName.isEmpty()) {
-        if (!runtime.loadProfileSettings ||
-            !runtime.loadProfileSettings(profileName, bytes, displayOn, runtime.loadProfileSettingsCtx)) {
-            server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
-            return;
-        }
-        Serial.printf("[V1Settings] Pushing profile bytes: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1],
-                      bytes[2], bytes[3], bytes[4], bytes[5]);
-    }
-    // Check for bytes array
-    else if (!rawBytes.isUnbound()) {
-        if (!V1SettingsJson::parseRawBytes(rawBytes, bytes)) {
-            server.send(400, "application/json", "{\"error\":\"Invalid bytes array\"}");
-            return;
-        }
-        displayOn = doc["displayOn"] | true;
-        Serial.println("[V1Settings] Using raw bytes from request");
-    }
-    // Parse from individual settings
-    else {
-        JsonObject settingsObj = doc["settings"].as<JsonObject>();
-        if (settingsObj.isNull()) {
-            settingsObj = doc.as<JsonObject>();
-        }
-        if (!runtime.parseSettingsJson ||
-            !runtime.parseSettingsJson(settingsObj, bytes, runtime.parseSettingsJsonCtx)) {
-            server.send(400, "application/json", "{\"error\":\"Invalid settings\"}");
-            return;
-        }
-        displayOn = doc["displayOn"] | true;
-        Serial.printf("[V1Settings] Built bytes from settings: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1],
-                      bytes[2], bytes[3], bytes[4], bytes[5]);
-    }
-
-    bool writeOk = false;
-    if (runtime.getSettings) {
-        V1ProfilePushPolicy::applyBeforePush(runtime.getSettings(runtime.getSettingsCtx), bytes);
-    }
-    if (runtime.writeUserBytes) {
-        writeOk = runtime.writeUserBytes(bytes, runtime.writeUserBytesCtx);
-    }
-    if (writeOk) {
-        Serial.println("[V1Settings] Push sent successfully");
-        if (runtime.setDisplayOn) {
-            runtime.setDisplayOn(displayOn, runtime.setDisplayOnCtx);
-        }
-        server.send(200, "application/json", "{\"success\":true,\"message\":\"Settings sent to V1\"}");
-    } else {
-        Serial.println("[V1Settings] Push FAILED - write command rejected");
-        server.send(500, "application/json", "{\"error\":\"Write command failed - check V1 connection\"}");
-    }
 }
 
 } // namespace WifiV1ProfileApiService

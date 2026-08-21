@@ -57,7 +57,6 @@ struct PerfSdSnapshot {
     uint32_t bleFollowupRequestVersionMaxUs;                  // Window max connect-burst version request duration
     uint32_t bleConnectStableCallbackMaxUs;                   // Window max stable-connect callback duration
     uint32_t bleProxyStartMaxUs;                              // Window max proxy advertising start duration
-    uint32_t displayGapRecoverMaxUs;                          // Window max display alert-gap recovery duration
     uint32_t displayFullRenderCount;                          // Session full live renders
     uint32_t displayRestingFullRenderCount;                   // Session full resting renders
     uint32_t displayRestingIncrementalRenderCount;            // Session incremental resting renders
@@ -212,13 +211,11 @@ struct PerfSdSnapshot {
     uint32_t obdConnectCallMaxUs;                 // Window max inline OBD BLE connect() duration
     uint32_t obdSecurityStartCallMaxUs;           // Window max inline OBD BLE security-start duration
     uint32_t obdDiscoveryCallMaxUs;               // Window max inline OBD BLE discovery duration
-    uint32_t obdSubscribeCallMaxUs;               // Window max inline OBD BLE subscribe duration
     uint32_t obdWriteCallMaxUs;                   // Window max inline OBD BLE command write duration
     uint32_t obdRssiCallMaxUs;                    // Window max inline OBD BLE RSSI read duration
     uint32_t obdPollErrors;                       // OBD poll errors this window
     uint32_t obdStaleCount;                       // OBD stale speed readings this window
     uint32_t perfDrop;                            // Perf snapshot drops since session start
-    uint32_t eventBusDrops;                       // System event-bus drops since session start
     uint32_t wifiHandleClientMaxUs;               // Window max HTTP client servicing duration
     uint32_t wifiMaintenanceMaxUs;                // Window max WiFi maintenance duration
     uint32_t wifiStatusCheckMaxUs;                // Window max STA status check duration
@@ -280,187 +277,4 @@ struct PerfSdSnapshot {
 
     // V1 connected-readback evidence (schema v46 — appended)
     uint32_t v1AllVolumeParsed; // Canonical RESPALLVOLUME packets parsed since boot/reset
-};
-
-enum class PerfRuntimeSnapshotMode : uint8_t {
-    PreserveWindowPeaks = 0,
-    CaptureAndResetWindowPeaks = 1,
-};
-
-struct PerfRuntimeWifiAutoStartSnapshot {
-    const char* gate = "unknown";
-    uint8_t gateCode = 0;
-    bool enableWifi = false;
-    bool bleConnected = false;
-    uint32_t v1ConnectedAtMs = 0;
-    uint32_t msSinceV1Connect = 0;
-    uint32_t settleMs = 0;
-    uint32_t bootTimeoutMs = 0;
-    bool canStartDma = false;
-    bool wifiAutoStartDone = false;
-    bool bleSettled = false;
-    bool bootTimeoutReached = false;
-    bool shouldAutoStart = false;
-    bool startTriggered = false;
-    bool startSucceeded = false;
-};
-
-struct PerfRuntimeSettingsPersistenceSnapshot {
-    uint32_t backupRevision = 0;
-    bool deferredBackupPending = false;
-    bool deferredBackupRetryScheduled = false;
-    bool deferredBackupHasNextAttempt = false;
-    uint32_t deferredBackupNextAttemptAtMs = 0;
-    uint32_t deferredBackupDelayMs = 0;
-    bool perfLoggingEnabled = false;
-    const char* perfLoggingPath = "";
-};
-
-struct PerfRuntimeSpeedSourceSnapshot {
-    const char* selected = "none";
-    bool selectedValueValid = false;
-    float selectedMph = 0.0f;
-    uint32_t selectedAgeMs = 0;
-    uint32_t sourceSwitches = 0;
-    uint32_t gpsSelections = 0;
-    uint32_t noSourceSelections = 0;
-};
-
-struct PerfRuntimeHeapSnapshot {
-    uint32_t heapFree = 0;
-    uint32_t heapMinFree = 0;
-    uint32_t heapLargest = 0;
-    uint32_t heapInternalFree = 0;
-    uint32_t heapInternalFreeMin = 0;
-    uint32_t heapInternalLargest = 0;
-    uint32_t heapInternalLargestMin = 0;
-    uint32_t heapDmaFree = 0;
-    uint32_t heapDmaFreeMin = 0;
-    uint32_t heapDmaLargest = 0;
-    uint32_t heapDmaLargestMin = 0;
-};
-
-struct PerfRuntimePsramSnapshot {
-    uint32_t total = 0;
-    uint32_t free = 0;
-    uint32_t largest = 0;
-};
-
-struct PerfRuntimeSdContentionSnapshot {
-    uint32_t tryLockFails = 0;
-    uint32_t dmaStarvation = 0;
-};
-
-struct PerfRuntimeProxySnapshot {
-    uint32_t sendCount = 0;
-    uint32_t dropCount = 0;
-    uint32_t errorCount = 0;
-    uint32_t queueHighWater = 0;
-    bool connected = false;
-    bool advertising = false;
-    uint32_t advertisingOnTransitions = 0;
-    uint32_t advertisingOffTransitions = 0;
-    uint32_t advertisingLastTransitionMs = 0;
-    uint32_t advertisingLastTransitionReasonCode = 0;
-    const char* advertisingLastTransitionReason = "unknown";
-};
-
-struct PerfRuntimeEventBusSnapshot {
-    uint32_t publishCount = 0;
-    uint32_t dropCount = 0;
-    uint32_t size = 0;
-};
-
-struct PerfRuntimeConnectionCycleSnapshot {
-    const char* state = "unknown";
-    uint8_t stateCode = 0;
-    uint32_t transitionsTotal = 0;
-    uint32_t timeInStateMs = 0;
-    uint32_t teardownDurationMs = 0;
-    uint32_t obdRetryAttemptsTotal = 0;
-    uint32_t wifiManualPhoneKicksTotal = 0;
-    bool proxyNoClientLatched = false;
-};
-
-struct PhoneCmdDropMetricsSnapshot {
-    uint32_t overflow = 0;
-    uint32_t invalid = 0;
-    uint32_t bleFail = 0;
-    uint32_t lockBusy = 0;
-};
-
-struct PerfRuntimeMetricsSnapshot {
-    PerfSdSnapshot flat;
-    PhoneCmdDropMetricsSnapshot phoneCmdDrops;
-    uint32_t uptimeMs = 0;
-    uint32_t connectionDispatchRuns = 0;
-    uint32_t connectionCadenceDisplayDue = 0;
-    uint32_t connectionCadenceHoldScanDwell = 0;
-    uint32_t connectionStateProcessRuns = 0;
-    uint32_t connectionStateWatchdogForces = 0;
-    uint32_t connectionStateProcessGapMaxMs = 0;
-    uint32_t bleScanStateEntries = 0;
-    uint32_t bleScanStateExits = 0;
-    uint32_t bleScanTargetFound = 0;
-    uint32_t bleScanNoTargetExits = 0;
-    uint32_t bleScanDwellMaxMs = 0;
-    uint32_t uuid128FallbackHits = 0;
-    uint32_t wifiStopGraceful = 0;
-    uint32_t wifiStopImmediate = 0;
-    uint32_t wifiStopManual = 0;
-    uint32_t wifiStopTimeout = 0;
-    uint32_t wifiStopNoClients = 0;
-    uint32_t wifiStopNoClientsAuto = 0;
-    uint32_t wifiStopLowDma = 0;
-    uint32_t wifiStopPoweroff = 0;
-    uint32_t wifiStopOther = 0;
-    uint32_t wifiApDropLowDma = 0;
-    uint32_t wifiApDropIdleSta = 0;
-    uint32_t wifiApUpTransitions = 0;
-    uint32_t wifiApDownTransitions = 0;
-    uint32_t wifiProcessMaxUs = 0;
-    const char* bleState = "unknown";
-    uint8_t bleStateCode = 0;
-    const char* subscribeStep = "unknown";
-    uint8_t subscribeStepCode = 0;
-    bool connectInProgress = false;
-    bool asyncConnectPending = false;
-    bool pendingDisconnectCleanup = false;
-    bool proxyAdvertising = false;
-    uint32_t proxyAdvertisingOnTransitions = 0;
-    uint32_t proxyAdvertisingOffTransitions = 0;
-    uint32_t proxyAdvertisingLastTransitionMs = 0;
-    uint32_t proxyAdvertisingLastTransitionReasonCode = 0;
-    const char* proxyAdvertisingLastTransitionReason = "unknown";
-    bool wifiPriorityMode = false;
-    uint32_t loopMaxPrevWindowUs = 0;
-    uint32_t wifiMaxPrevWindowUs = 0;
-    uint32_t bleProcessMaxPrevWindowUs = 0;
-    uint32_t dispPipeMaxPrevWindowUs = 0;
-    uint32_t wifiApActive = 0;
-    uint32_t wifiApLastTransitionMs = 0;
-    uint32_t wifiApLastTransitionReasonCode = 0;
-    const char* wifiApLastTransitionReason = "unknown";
-    uint32_t perfSdLockFail = 0;
-    uint32_t perfSdDirFail = 0;
-    uint32_t perfSdOpenFail = 0;
-    uint32_t perfSdHeaderFail = 0;
-    uint32_t perfSdMarkerFail = 0;
-    uint32_t perfSdWriteFail = 0;
-    bool monitoringEnabled = false;
-    bool metricsEnabled = true;
-    bool debugEnabled = false;
-    uint32_t latencyMinUs = 0;
-    uint32_t latencyAvgUs = 0;
-    uint32_t latencyMaxUs = 0;
-    uint32_t latencySamples = 0;
-    PerfRuntimeWifiAutoStartSnapshot wifiAutoStart;
-    PerfRuntimeSettingsPersistenceSnapshot settingsPersistence;
-    PerfRuntimeSpeedSourceSnapshot speedSource;
-    PerfRuntimeHeapSnapshot heap;
-    PerfRuntimePsramSnapshot psram;
-    PerfRuntimeSdContentionSnapshot sdContention;
-    PerfRuntimeProxySnapshot proxy;
-    PerfRuntimeEventBusSnapshot eventBus;
-    PerfRuntimeConnectionCycleSnapshot connectionCycle;
 };

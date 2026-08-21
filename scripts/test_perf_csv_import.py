@@ -18,8 +18,9 @@ FIXTURES_DIR = ROOT / "test" / "fixtures" / "perf"
 sys.path.insert(0, str(TOOLS_DIR))
 
 import import_perf_csv  # type: ignore  # noqa: E402
+import metric_schema  # type: ignore  # noqa: E402
 
-CURRENT_HEADER_SCHEMA = 47
+CURRENT_HEADER_SCHEMA = metric_schema.CURRENT_PERF_CSV_SCHEMA
 HARDWARE_SCORING_FINGERPRINT = "a" * 64
 DIRECT_SPEED_COLUMNS = {
     "speedSourceSelected",
@@ -171,8 +172,6 @@ def base_row(millis: int, *, connected: bool, header_columns: list[str]) -> dict
         row["largestDmaMin"] = 15000
     if "perfDrop" in row:
         row["perfDrop"] = 0
-    if "eventBusDrops" in row:
-        row["eventBusDrops"] = 0
     if "speedSourceSelected" in row:
         row["speedSourceSelected"] = 0
     if "speedSourceValid" in row:
@@ -294,7 +293,7 @@ def test_dma_fragmentation_uses_current_values() -> None:
         95,
     )
     assert_true(abs(metrics["dma_fragmentation_pct_p95"][0] - float(expected)) < 0.01, "fragmentation must use current freeDma/largestDma values")
-    assert_true("perf_drop_delta" in unsupported and "event_drop_delta" in unsupported, "legacy schema should mark drop deltas unsupported")
+    assert_true("perf_drop_delta" in unsupported, "legacy schema should mark perf drops unsupported")
 
 
 def test_sd_start_runtime_split_uses_fixed_window(tmpdir: Path) -> None:
@@ -400,7 +399,6 @@ def test_connect_burst_peaks_do_not_invent_stability_from_csv_windows() -> None:
         row["bleConnectStableCallbackMax_us"] = [0, 640, 0, 0, 0][index]
         row["bleProxyStartMax_us"] = [0, 660, 0, 0, 0][index]
         row["dispMax_us"] = [0, 18000, 27000, 0, 0][index]
-        row["displayGapRecoverMax_us"] = [0, 0, 1200, 0, 0][index]
         row["displayBaseFrameMax_us"] = [0, 0, 0, 0, 0][index]
         row["displayStatusStripMax_us"] = [0, 10, 4150, 0, 0][index]
         row["displayFrequencyMax_us"] = [0, 30, 0, 0, 0][index]
@@ -440,25 +438,25 @@ def test_notify_pipeline_completion_requires_schema_47_columns() -> None:
         row["notifyToDisplayPipelineCompleteTotalCount"] = sample_count
         current_rows.append(row)
 
-    metrics, _peaks, unsupported = import_perf_csv.extract_metrics(current_rows, CURRENT_HEADER_SCHEMA)
-    assert_true(
-        metrics["notify_to_display_pipeline_complete_max_ms"][0] == 55.0,
-        f"wrong pipeline-complete max: {metrics}",
-    )
-    assert_true(
-        metrics["notify_to_display_pipeline_complete_sample_count"][0] == 5.0,
-        f"wrong pipeline-complete sample count: {metrics}",
-    )
-    assert_true(
-        "notify_to_display_pipeline_complete_max_ms" not in unsupported,
-        f"schema 47 metric unexpectedly unsupported: {unsupported}",
-    )
+    for schema in (47, CURRENT_HEADER_SCHEMA):
+        metrics, _peaks, unsupported = import_perf_csv.extract_metrics(current_rows, schema)
+        assert_true(
+            metrics["notify_to_display_pipeline_complete_max_ms"][0] == 55.0,
+            f"wrong pipeline-complete max for schema {schema}: {metrics}",
+        )
+        assert_true(
+            metrics["notify_to_display_pipeline_complete_sample_count"][0] == 5.0,
+            f"wrong pipeline-complete sample count for schema {schema}: {metrics}",
+        )
+        assert_true(
+            "notify_to_display_pipeline_complete_max_ms" not in unsupported,
+            f"schema {schema} metric unexpectedly unsupported: {unsupported}",
+        )
 
     historical_rows = [
         {
             "millis": 0,
             "perfDrop": 0,
-            "eventBusDrops": 0,
             "notifyToDisplayMax_ms": 25,
             "notifyToDisplayTotalCount": 4,
         }
@@ -503,10 +501,9 @@ def test_legacy_import_reports_partial_coverage(tmpdir: Path) -> None:
     assert_true(manifest["source_type"] == "perf_csv", "legacy import should set source_type")
     assert_true(manifest["source_schema"] == 12, f"wrong source schema: {manifest}")
     assert_true(manifest["coverage_status"] == "partial_legacy_import", f"wrong coverage status: {manifest}")
-    assert_true(set(["perf_drop_delta", "event_drop_delta", "samples_to_stable", "time_to_stable_ms"]).issubset(set(manifest["unsupported_metrics"])), f"unsupported metrics missing: {manifest}")
+    assert_true(set(["perf_drop_delta", "samples_to_stable", "time_to_stable_ms"]).issubset(set(manifest["unsupported_metrics"])), f"unsupported metrics missing: {manifest}")
     unsupported_metrics = {metric["metric"] for metric in scoring["metrics"] if metric["classification"] == "unsupported"}
     assert_true("perf_drop_delta" in unsupported_metrics, "legacy scoring should mark perf_drop_delta unsupported")
-    assert_true("event_drop_delta" in unsupported_metrics, "legacy scoring should mark event_drop_delta unsupported")
     assert_true(scoring["summary"]["hard_failures"] == 0, f"legacy unsupported fields must not hard-fail: {scoring}")
     comparison = (out_dir / "comparison.txt").read_text(encoding="utf-8")
     assert_true("coverage_status: partial_legacy_import" in comparison, "comparison should show coverage status")
@@ -691,7 +688,7 @@ def test_import_publications_scrub_board_and_external_source_labels(tmpdir: Path
     )
 
 
-def test_schema13_import_supports_drop_metrics(tmpdir: Path) -> None:
+def test_schema13_import_supports_perf_drop_metric(tmpdir: Path) -> None:
     csv_path = tmpdir / "schema13.csv"
     out_dir = tmpdir / "schema13_out"
     write_capture(
@@ -706,7 +703,7 @@ def test_schema13_import_supports_drop_metrics(tmpdir: Path) -> None:
                 duration_ms=60000,
                 connected=True,
                 drive_like=True,
-                end_overrides={"perfDrop": 0, "eventBusDrops": 0},
+                end_overrides={"perfDrop": 0},
             )
         ],
     )
@@ -717,7 +714,6 @@ def test_schema13_import_supports_drop_metrics(tmpdir: Path) -> None:
     metric_names = {metric["metric"] for metric in scoring["metrics"] if metric["classification"] != "unsupported"}
     assert_true(manifest["coverage_status"] == "full_runtime_gates", f"wrong coverage status: {manifest}")
     assert_true("perf_drop_delta" in metric_names, "schema13 import should emit perf_drop_delta")
-    assert_true("event_drop_delta" in metric_names, "schema13 import should emit event_drop_delta")
     assert_true("perf_drop_delta" not in set(manifest["unsupported_metrics"]), "schema13 perf_drop_delta should not be unsupported")
     diagnostics = json.loads((out_dir / "import_diagnostics.json").read_text(encoding="utf-8"))
     assert_true("loop_max_peak_us" in diagnostics["peaks"], "peak diagnostics missing loop_max_peak_us")
@@ -1141,7 +1137,7 @@ def test_peak_diagnostics_surface_named_connect_burst_root_causes(tmpdir: Path) 
         {
             "dispPipeMax_us": 76400,
             "dispMax_us": 12000,
-            "displayGapRecoverMax_us": 65000,
+            "displayFlushSubphaseMax_us": 65000,
             "bleProcessMax_us": 600,
             "loopMax_us": 82000,
         }
@@ -1168,8 +1164,8 @@ def test_peak_diagnostics_surface_named_connect_burst_root_causes(tmpdir: Path) 
     assert_true(loop_diag["root_cause_hint"] == "connect-burst BLE subphase: proxy advertising start", f"loop root cause hint wrong: {loop_diag}")
     assert_true(loop_diag["connect_burst_ble_subphase_column"] == "bleProxyStartMax_us", f"loop connect-burst column wrong: {loop_diag}")
     assert_true(ble_diag["root_cause_hint"] == "connect-burst BLE subphase: proxy advertising start", f"ble root cause hint wrong: {ble_diag}")
-    assert_true(disp_diag["root_cause_hint"] == "connect-burst display subphase: display gap recovery", f"display root cause hint wrong: {disp_diag}")
-    assert_true(disp_diag["connect_burst_display_subphase_column"] == "displayGapRecoverMax_us", f"display connect-burst column wrong: {disp_diag}")
+    assert_true(disp_diag["root_cause_hint"] == "connect-burst display subphase: display flush", f"display root cause hint wrong: {disp_diag}")
+    assert_true(disp_diag["connect_burst_display_subphase_column"] == "displayFlushSubphaseMax_us", f"display connect-burst column wrong: {disp_diag}")
 
 
 def test_leading_rows_form_implicit_segment(tmpdir: Path) -> None:
@@ -1299,6 +1295,63 @@ def test_import_compare_to_baseline_scores_run_variance(tmpdir: Path) -> None:
     assert_true("comparison: run_variance" in comparison, f"comparison should show baseline mode: {comparison}")
 
 
+def test_panic_sidecar_is_parsed_in_process(tmpdir: Path) -> None:
+    panic_path = tmpdir / "capture.panic.jsonl"
+    panic_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "wasCrash": False,
+                            "hasPanicFile": False,
+                            "lastResetReason": "power_on",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "wasCrash": True,
+                            "hasPanicFile": True,
+                            "lastResetReason": "panic",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary, result = import_perf_csv._panic_summary(panic_path)
+    assert_true(result == "FAIL", str((summary, result)))
+    assert_true(summary["runtime_crash_detected"] is True, str(summary))
+    assert_true(summary["preexisting_crash_state"] is False, str(summary))
+    assert_true(summary["state_change_count"] == 1, str(summary))
+    assert_true(summary["raw_kv"]["last_reset_reason"] == "panic", str(summary))
+
+    panic_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "wasCrash": True,
+                    "hasPanicFile": True,
+                    "lastResetReason": "panic",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary, result = import_perf_csv._panic_summary(panic_path)
+    assert_true(result == "PASS_WITH_WARNINGS", str((summary, result)))
+    assert_true(summary["preexisting_crash_state"] is True, str(summary))
+
+
 def main() -> int:
     test_firmware_session_marker_uses_importer_boot_id_key()
     test_dma_fragmentation_uses_current_values()
@@ -1312,7 +1365,7 @@ def main() -> int:
         test_sd_start_runtime_split_uses_fixed_window(tmpdir)
         test_legacy_import_reports_partial_coverage(tmpdir)
         test_import_publications_scrub_board_and_external_source_labels(tmpdir)
-        test_schema13_import_supports_drop_metrics(tmpdir)
+        test_schema13_import_supports_perf_drop_metric(tmpdir)
         test_segment_selection_and_listing_prefers_direct_speed_evidence_when_available(tmpdir)
         test_segment_selection_without_direct_speed_column_falls_back_to_longest_connected(tmpdir)
         test_segment_selection_compat_optional_speed_column_still_supported(tmpdir)
@@ -1327,6 +1380,7 @@ def main() -> int:
         test_truncated_row_is_rejected(tmpdir)
         test_gps_utc_timestamp_is_accepted(tmpdir)
         test_import_compare_to_baseline_scores_run_variance(tmpdir)
+        test_panic_sidecar_is_parsed_in_process(tmpdir)
 
     print("[perf-csv-import] integration tests passed")
     return 0

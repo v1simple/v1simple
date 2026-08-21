@@ -291,9 +291,11 @@ def test_device_lane_owns_only_the_three_surviving_suites() -> None:
                 "device PlatformIO filter must match the surviving set exactly")
     assert_true('SUITES=("${CORE_SUITES[@]}")' in runner,
                 "quick mode must select only the core boot/heap suites")
-    assert_true(runner.count('SUITES=("${CORE_SUITES[@]}" "${CONCURRENCY_SUITES[@]}")') == 2,
-                "default and full modes must select core plus event-bus suites")
-    expected_usage = "[--quick | --full] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
+    assert_true(runner.count('SUITES=("${CORE_SUITES[@]}" "${CONCURRENCY_SUITES[@]}")') == 1,
+                "default mode must select core plus event-bus suites exactly once")
+    assert_true("--full" not in runner, "duplicate full/default device mode returned")
+    assert_true(runner.count("score_hardware_run.py") == 1, "device results must be scored once")
+    expected_usage = "[--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
     assert_true(runner.count(expected_usage) == 2,
                 "device runner help and error usage must expose only the supported option shape")
 

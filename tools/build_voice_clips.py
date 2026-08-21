@@ -40,7 +40,7 @@ def num2word(n):
     return TENW[t] if o == 0 else f"{TENW[t]} {ONES[o]}"
 
 def freq_clips():
-    # name -> spoken text (matches the original generate_freq_audio.sh wording)
+    # name -> spoken text for generated frequency clips
     c = {"band_ka":"K A","band_k":"K","band_x":"X","band_laser":"Laser",
          "dir_ahead":"ahead","dir_behind":"behind","dir_side":"side","bogeys":"bogeys"}
     for d in range(10): c[f"digit_{d}"] = ONES[d]

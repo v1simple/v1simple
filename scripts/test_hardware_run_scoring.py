@@ -138,7 +138,6 @@ def standard_soak_records(
         soak_metric(track, "parse_failures_delta", 0),
         soak_metric(track, "queue_drops_delta", 0),
         soak_metric(track, "perf_drop_delta", 0),
-        soak_metric(track, "event_drop_delta", 0),
         soak_metric(track, "oversize_drops_delta", 0),
         soak_metric(track, "loop_max_peak_us", 200000),
         soak_metric(track, "flush_max_peak_us", 30000),
@@ -494,7 +493,6 @@ def test_selector_and_track_matching(tmpdir: Path) -> None:
             soak_metric("drive_wifi_ap", "parse_failures_delta", 0),
             soak_metric("drive_wifi_ap", "queue_drops_delta", 0),
             soak_metric("drive_wifi_ap", "perf_drop_delta", 0),
-            soak_metric("drive_wifi_ap", "event_drop_delta", 0),
             soak_metric("drive_wifi_ap", "oversize_drops_delta", 0),
             soak_metric("drive_wifi_ap", "loop_max_peak_us", 200000),
             soak_metric("drive_wifi_ap", "flush_max_peak_us", 30000),
@@ -677,63 +675,6 @@ def test_baseline_requires_matching_hardware_scoring_identity(tmpdir: Path) -> N
     assert_true(mixed["baseline_manifest"]["run_id"] == "matching", str(mixed))
 
 
-def test_import_drive_log_legacy_manifests_retain_baseline_comparison(tmpdir: Path) -> None:
-    case_dir = tmpdir / "drive_log_legacy_baseline"
-    input_dir = case_dir / "input"
-    input_dir.mkdir(parents=True)
-    source_fixture = ROOT / "test" / "fixtures" / "perf" / "core_soak_connect_burst_reduced.metrics.jsonl"
-    (input_dir / "metrics.jsonl").write_bytes(source_fixture.read_bytes())
-
-    baseline_dir = case_dir / "baseline"
-    current_dir = case_dir / "current"
-    common_args = [
-        sys.executable,
-        str(ROOT / "tools" / "import_drive_log.py"),
-        "--input",
-        str(input_dir),
-        "--board-id",
-        "release",
-        "--env",
-        "parsed-drive-log",
-        "--suite-or-profile",
-        "drive_wifi_ap",
-        "--stress-class",
-        "core",
-    ]
-    baseline = subprocess.run(
-        [*common_args, "--out-dir", str(baseline_dir)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert_true(baseline.returncode in {0, 1, 2}, baseline.stdout + baseline.stderr)
-    baseline_manifest_path = baseline_dir / "manifest.json"
-    baseline_manifest = json.loads(baseline_manifest_path.read_text(encoding="utf-8"))
-    assert_true(
-        "hardware_scoring_fingerprint" not in baseline_manifest,
-        f"legacy drive-log manifest unexpectedly declared a scoring identity: {baseline_manifest}",
-    )
-
-    current = subprocess.run(
-        [
-            *common_args,
-            "--out-dir",
-            str(current_dir),
-            "--compare-to",
-            str(baseline_manifest_path),
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert_true(current.returncode in {0, 1, 2}, current.stdout + current.stderr)
-    scoring = json.loads((current_dir / "scoring.json").read_text(encoding="utf-8"))
-    assert_true(scoring["comparison_kind"] == "run_variance", str(scoring))
-    assert_true(scoring["baseline_window"]["candidate_count"] == 1, str(scoring))
-
-
 def test_lab_no_external_activity_downgrades_packet_count_gates(tmpdir: Path) -> None:
     case_dir = tmpdir / "lab_no_external_activity"
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -801,7 +742,6 @@ def test_drive_wifi_ap_loop_peak_is_informational(tmpdir: Path) -> None:
         soak_metric("drive_wifi_ap", "parse_failures_delta", 0),
         soak_metric("drive_wifi_ap", "queue_drops_delta", 0),
         soak_metric("drive_wifi_ap", "perf_drop_delta", 0),
-        soak_metric("drive_wifi_ap", "event_drop_delta", 0),
         soak_metric("drive_wifi_ap", "oversize_drops_delta", 0),
         soak_metric("drive_wifi_ap", "loop_max_peak_us", 220000),
         soak_metric("drive_wifi_ap", "flush_max_peak_us", 30000),
@@ -1915,7 +1855,6 @@ def test_connect_burst_metrics_are_cataloged(tmpdir: Path) -> None:
             soak_metric("drive_wifi_ap", "parse_failures_delta", 0),
             soak_metric("drive_wifi_ap", "queue_drops_delta", 0),
             soak_metric("drive_wifi_ap", "perf_drop_delta", 0),
-            soak_metric("drive_wifi_ap", "event_drop_delta", 0),
             soak_metric("drive_wifi_ap", "oversize_drops_delta", 0),
             soak_metric("drive_wifi_ap", "flush_max_peak_us", 30000),
             soak_metric("drive_wifi_ap", "loop_max_peak_us", 70000),
@@ -1948,7 +1887,6 @@ def test_connect_burst_metrics_are_cataloged(tmpdir: Path) -> None:
             soak_metric("drive_wifi_ap", "connect_burst_ble_connect_stable_callback_peak_us", 0),
             soak_metric("drive_wifi_ap", "connect_burst_ble_proxy_start_peak_us", 0),
             soak_metric("drive_wifi_ap", "connect_burst_disp_render_peak_us", 47000),
-            soak_metric("drive_wifi_ap", "connect_burst_display_gap_recover_peak_us", 0),
             soak_metric("drive_wifi_ap", "connect_burst_display_frequency_peak_us", 14000),
             soak_metric("drive_wifi_ap", "connect_burst_display_flush_subphase_peak_us", 21000),
             soak_metric("drive_wifi_ap", "display_partial_flush_area_peak_px", 8192),
@@ -2165,7 +2103,6 @@ def main() -> int:
         test_passing_baseline_wins_over_failing(tmpdir)
         test_selector_and_track_matching(tmpdir)
         test_baseline_requires_matching_hardware_scoring_identity(tmpdir)
-        test_import_drive_log_legacy_manifests_retain_baseline_comparison(tmpdir)
         test_lab_no_external_activity_downgrades_packet_count_gates(tmpdir)
         test_drive_wifi_ap_loop_peak_is_informational(tmpdir)
         test_dma_largest_uses_fixed_absolute_threshold(tmpdir)

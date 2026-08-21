@@ -6,11 +6,6 @@
 class LoopTelemetryModule {
   public:
     struct Providers {
-        uint32_t (*microsNow)(void* ctx) = nullptr;
-        void* microsContext = nullptr;
-        void (*recordLoopJitterUs)(void* ctx, uint32_t jitterUs) = nullptr;
-        void* loopJitterContext = nullptr;
-
         void (*refreshDmaCache)(void* ctx) = nullptr;
         void* dmaCacheContext = nullptr;
 
@@ -28,7 +23,7 @@ class LoopTelemetryModule {
     };
 
     void begin(const Providers& hooks);
-    void process(uint32_t loopStartUs);
+    void process();
 
     // Visible for testing: how often heap is sampled (every Nth loop).
     static constexpr uint8_t HEAP_SAMPLE_DIVISOR = 8;

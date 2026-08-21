@@ -4,13 +4,10 @@
 Enforced invariants:
 1) BLE callback bodies avoid forbidden operations in hot paths.
 2) parser->parse() is only called from BleQueueModule::process().
-
-Use --update to rewrite expected snapshot.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 import sys
 from dataclasses import dataclass
@@ -25,7 +22,6 @@ BLE_CALLBACK_FILES: Tuple[Path, ...] = (
     ROOT / "src" / "modules" / "obd" / "obd_ble_client.cpp",
 )
 BLE_QUEUE_FILE = ROOT / "src" / "modules" / "ble" / "ble_queue_module.cpp"
-CONTRACT_FILE = ROOT / "test" / "contracts" / "ble_hot_path_contract.txt"
 
 SOURCE_SCAN_ROOT = ROOT / "src"
 
@@ -167,26 +163,6 @@ def extract_function_body(
     return None
 
 
-def read_expected_lines(path: Path) -> List[str]:
-    if not path.exists():
-        return []
-    lines: List[str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        lines.append(line)
-    return lines
-
-
-def write_lines(path: Path, header: str, lines: List[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [header, ""]
-    payload.extend(lines)
-    payload.append("")
-    path.write_text("\n".join(payload), encoding="utf-8")
-
-
 def make_callback_violations(
     source: str,
     masked_source: str,
@@ -280,32 +256,7 @@ def make_parser_parse_violations(ble_queue_process: FunctionBody) -> List[str]:
     return violations
 
 
-def print_diff(expected: List[str], actual: List[str]) -> None:
-    expected_set = set(expected)
-    actual_set = set(actual)
-    missing = sorted(expected_set - actual_set)
-    extra = sorted(actual_set - expected_set)
-
-    print("[contract] ble-hot-path snapshot mismatch")
-    if missing:
-        print("  missing:")
-        for row in missing:
-            print(f"    - {row}")
-    if extra:
-        print("  extra:")
-        for row in extra:
-            print(f"    + {row}")
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--update",
-        action="store_true",
-        help="rewrite expected contract snapshot from current source",
-    )
-    args = parser.parse_args()
-
     callback_sources: List[Tuple[Path, str, str]] = []
     for path in BLE_CALLBACK_FILES:
         if not path.exists():
@@ -340,38 +291,13 @@ def main() -> int:
         )
     )
     actual = sorted(set(violations))
-
-    if args.update:
-        write_lines(
-            CONTRACT_FILE,
-            "# BLE hot-path contract violations (expected to stay empty)",
-            actual,
-        )
-        print(f"Updated {CONTRACT_FILE}")
-        if actual:
-            print("[contract] BLE hot-path contract has violations; resolve before merge.")
-            for row in actual:
-                print(f"  - {row}")
-            return 1
-        return 0
-
-    expected = read_expected_lines(CONTRACT_FILE)
-    ok = True
-    if expected != actual:
-        print_diff(expected, actual)
-        ok = False
-
     if actual:
         print("[contract] BLE hot-path violations detected")
         for row in actual:
             print(f"  - {row}")
-        ok = False
-
-    if not ok:
-        print("\nRun with --update only when intentionally changing contract.")
         return 1
 
-    print("[contract] BLE hot-path contract matches (0 violations)")
+    print("[contract] BLE hot-path guard passed (0 violations)")
     return 0
 
 

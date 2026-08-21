@@ -56,18 +56,10 @@ void assertPhoneCmdDropMetrics(const V1BLEClient& client,
                                uint32_t invalid,
                                uint32_t bleFail,
                                uint32_t lockBusy) {
-    const PhoneCmdDropMetricsSnapshot snapshot = perfPhoneCmdDropMetricsSnapshot();
-    JsonDocument doc;
-    perfAppendPhoneCmdDropMetrics(doc, snapshot);
-
     TEST_ASSERT_EQUAL_UINT32(overflow, client.getPhoneCmdDropsOverflow());
     TEST_ASSERT_EQUAL_UINT32(invalid, client.getPhoneCmdDropsInvalid());
     TEST_ASSERT_EQUAL_UINT32(bleFail, client.getPhoneCmdDropsBleFail());
     TEST_ASSERT_EQUAL_UINT32(lockBusy, client.getPhoneCmdDropsLockBusy());
-    TEST_ASSERT_EQUAL_UINT32(overflow, doc["phoneCmdDropsOverflow"].as<uint32_t>());
-    TEST_ASSERT_EQUAL_UINT32(invalid, doc["phoneCmdDropsInvalid"].as<uint32_t>());
-    TEST_ASSERT_EQUAL_UINT32(bleFail, doc["phoneCmdDropsBleFail"].as<uint32_t>());
-    TEST_ASSERT_EQUAL_UINT32(lockBusy, doc["phoneCmdDropsLockBusy"].as<uint32_t>());
 }
 
 SemaphoreHandle_t g_releaseNotifyMutex = nullptr;

@@ -14,20 +14,6 @@ namespace ObdApiService {
 
 namespace {
 
-const char* commandKindName(ObdCommandKind kind) {
-    switch (kind) {
-    case ObdCommandKind::AT_INIT:
-        return "at_init";
-    case ObdCommandKind::SANITY:
-        return "sanity";
-    case ObdCommandKind::SPEED:
-        return "speed";
-    case ObdCommandKind::NONE:
-    default:
-        return "none";
-    }
-}
-
 constexpr size_t MAX_OBD_DEVICE_NAME_LEN = 32;
 
 bool isHex(char c) {
@@ -68,13 +54,6 @@ String sanitizeObdDeviceName(const String& raw) {
         value.trim();
     }
     return value;
-}
-
-void sendMaintenanceModeError(WebServer& server) {
-    WifiJson::Document doc;
-    doc["error"] = "maintenance_mode";
-    doc["message"] = "OBD runtime endpoints are not available in maintenance mode";
-    WifiApiResponse::sendJsonDocument(server, 409, doc);
 }
 
 void sendRuntimeUnavailableError(WebServer& server) {
@@ -143,54 +122,6 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiStatus(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtime& runtime) {
-    if (runtime.markUiActivity)
-        runtime.markUiActivity(runtime.ctx);
-    if (runtime.maintenanceBootActive) {
-        sendMaintenanceModeError(server);
-        return;
-    }
-    if (!obdRuntime) {
-        sendRuntimeUnavailableError(server);
-        return;
-    }
-    ObdRuntimeStatus status = obdRuntime->snapshot(millis());
-    WifiJson::Document doc;
-    doc["enabled"] = status.enabled;
-    doc["connected"] = status.connected;
-    doc["securityReady"] = status.securityReady;
-    doc["encrypted"] = status.encrypted;
-    doc["bonded"] = status.bonded;
-    doc["speedValid"] = status.speedValid;
-    doc["speedMph"] = status.speedMph;
-    doc["speedAgeMs"] = status.speedAgeMs;
-    doc["rssi"] = status.rssi;
-    doc["scanInProgress"] = status.scanInProgress;
-    doc["manualScanPending"] = status.manualScanPending;
-    doc["savedAddressValid"] = status.savedAddressValid;
-    doc["savedAddress"] = status.savedAddressValid ? String(obdRuntime->getSavedAddress()) : "";
-    doc["connectAttempts"] = status.connectAttempts;
-    doc["connectSuccesses"] = status.connectSuccesses;
-    doc["connectFailures"] = status.connectFailures;
-    doc["securityRepairs"] = status.securityRepairs;
-    doc["initRetries"] = status.initRetries;
-    doc["pollCount"] = status.pollCount;
-    doc["pollErrors"] = status.pollErrors;
-    doc["staleSpeedCount"] = status.staleSpeedCount;
-    doc["consecutiveErrors"] = status.consecutiveErrors;
-    doc["bufferOverflows"] = status.bufferOverflows;
-    doc["commandInFlight"] = commandKindName(status.commandInFlight);
-    doc["commandInFlightRaw"] = static_cast<int>(status.commandInFlight);
-    doc["lastConnectStartMs"] = status.lastConnectStartMs;
-    doc["lastConnectSuccessMs"] = status.lastConnectSuccessMs;
-    doc["lastFailureMs"] = status.lastFailureMs;
-    doc["lastBleError"] = status.lastBleError;
-    doc["lastSecurityError"] = status.lastSecurityError;
-    doc["lastFailureRaw"] = static_cast<int>(status.lastFailure);
-    doc["state"] = static_cast<int>(status.state);
-    WifiApiResponse::sendJsonDocument(server, 200, doc);
-}
-
 void handleApiDevicesList(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsManager& settings,
                           const Runtime& runtime) {
     if (runtime.markUiActivity)
@@ -240,43 +171,6 @@ void handleApiDeviceNameSave(WebServer& server, SettingsManager& settings, const
                                                 : SettingsPersistMode::ImmediateNvsDeferredBackup);
 
     server.send(200, "application/json", "{\"success\":true}");
-}
-
-void handleApiScan(WebServer& server, ObdRuntimeModule* obdRuntime, const Runtime& runtime) {
-    if (runtime.markUiActivity)
-        runtime.markUiActivity(runtime.ctx);
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
-        return;
-    if (runtime.maintenanceBootActive) {
-        sendMaintenanceModeError(server);
-        return;
-    }
-    if (!obdRuntime) {
-        sendRuntimeUnavailableError(server);
-        return;
-    }
-    if (!obdRuntime->isEnabled()) {
-        WifiJson::Document doc;
-        doc["success"] = false;
-        doc["message"] = "OBD is disabled";
-        WifiApiResponse::sendJsonDocument(server, 409, doc);
-        return;
-    }
-    if (!obdRuntime->requestManualPairScan(millis())) {
-        WifiJson::Document doc;
-        doc["success"] = false;
-        doc["message"] = "OBD scan already requested or in progress";
-        WifiApiResponse::sendJsonDocument(server, 409, doc);
-        return;
-    }
-
-    const ObdRuntimeStatus status = obdRuntime->snapshot(millis());
-    WifiJson::Document doc;
-    doc["success"] = true;
-    doc["requested"] = true;
-    doc["scanInProgress"] = status.scanInProgress;
-    doc["message"] = status.scanInProgress ? "OBD scan already running" : "OBD scan requested";
-    WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
 void handleApiForget(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsManager& settings,

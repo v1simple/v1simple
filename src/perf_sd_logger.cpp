@@ -22,7 +22,7 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 47; // corrects notify timing to display-pipeline completion
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 48; // removes obsolete timing and event-bus columns
 static constexpr char PERF_CSV_HEADER[] =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
@@ -30,7 +30,7 @@ static constexpr char PERF_CSV_HEADER[] =
     "fadeSkipEqual,fadeSkipNoBaseline,fadeSkipNotFaded,fadeLastDecision,fadeLastCurrentVol,fadeLastOriginalVol,"
     "fadeLastDecisionMs,speedVolDrop,speedVolRestore,speedVolRetry,bleScanStartMs,bleTargetFoundMs,bleConnectStartMs,"
     "bleConnectedMs,bleFirstRxMs,bleFollowupRequestAlertMax_us,bleFollowupRequestVersionMax_us,"
-    "bleConnectStableCallbackMax_us,bleProxyStartMax_us,displayGapRecoverMax_us,displayFullRenderCount,"
+    "bleConnectStableCallbackMax_us,bleProxyStartMax_us,displayFullRenderCount,"
     "displayRestingFullRenderCount,displayRestingIncrementalRenderCount,displayPersistedRenderCount,"
     "displayPreviewRenderCount,displayRestoreRenderCount,displayLiveScenarioRenderCount,"
     "displayRestingScenarioRenderCount,displayPersistedScenarioRenderCount,displayPreviewScenarioRenderCount,"
@@ -74,7 +74,7 @@ static constexpr char PERF_CSV_HEADER[] =
     "prioritySelectInvalidChosen,alertTablePublishes,alertTablePublishes3Bogey,alertTableRowReplacements,"
     "alertTableAssemblyTimeouts,parserRowsBandNone,parserRowsKuRaw,displayLiveInvalidPrioritySkips,"
     "displayLiveFallbackToUsable,obdMax_us,obdConnectCallMax_us,obdSecurityStartCallMax_us,obdDiscoveryCallMax_us,"
-    "obdSubscribeCallMax_us,obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,obdStaleCount,perfDrop,eventBusDrops,"
+    "obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,obdStaleCount,perfDrop,"
     "wifiHandleClientMax_us,wifiMaintenanceMax_us,wifiStatusCheckMax_us,wifiTimeoutCheckMax_us,wifiHeapGuardMax_us,"
     "wifiApStaPollMax_us,wifiStopHttpServerMax_us,wifiStopStaDisconnectMax_us,wifiStopApDisableMax_us,"
     "wifiStopModeOffMax_us,wifiStartPreflightMax_us,wifiStartApBringupMax_us,freeDmaMin,largestDmaMin,bleState,"
@@ -941,7 +941,6 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleFollowupRequestVersionMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleConnectStableCallbackMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleProxyStartMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.displayGapRecoverMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displayFullRenderCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displayRestingFullRenderCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displayRestingIncrementalRenderCount) &&
@@ -1094,13 +1093,11 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdConnectCallMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdSecurityStartCallMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdDiscoveryCallMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdSubscribeCallMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdWriteCallMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdRssiCallMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdPollErrors) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdStaleCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.perfDrop) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.eventBusDrops) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiHandleClientMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiMaintenanceMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStatusCheckMaxUs) &&

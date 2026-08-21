@@ -73,12 +73,10 @@ def write_fixture(root: Path) -> None:
         "tools/bench_score.py": b"camera scoring integration\n",
         "tools/hardware_metric_catalog.json": b"{}\n",
         "tools/hardware_report_utils.py": b"reporting\n",
-        "tools/import_drive_log.py": b"drive importer\n",
         "tools/import_perf_csv.py": b"CSV importer\n",
         "tools/metric_derivation.py": b"metric derivation\n",
         "tools/metric_schema.py": b"metric schema\n",
         "tools/score_hardware_run.py": b"hardware scorer\n",
-        "tools/soak_parse_metrics.py": b"soak metrics parser\n",
         "tools/soak_parse_panic.py": b"panic parser\n",
         "bench.sh": b"camera gate entrypoint\n",
     }
@@ -212,12 +210,10 @@ def test_hardware_scoring_inputs_change_only_hardware_identity(root: Path) -> No
     for relative in (
         "tools/hardware_metric_catalog.json",
         "tools/hardware_report_utils.py",
-        "tools/import_drive_log.py",
         "tools/import_perf_csv.py",
         "tools/metric_derivation.py",
         "tools/metric_schema.py",
         "tools/score_hardware_run.py",
-        "tools/soak_parse_metrics.py",
         "tools/soak_parse_panic.py",
     ):
         before = identity(root)

@@ -469,9 +469,7 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
                                        v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
     }
 
-    const unsigned long voiceStartUs = micros();
     const VoiceAction voiceAction = voice_->process(voiceCtx);
-    perfRecordDisplayVoiceUs(micros() - voiceStartUs);
 
     if (!voiceAction.hasAction()) {
         return;

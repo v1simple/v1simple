@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,11 +19,20 @@ def assert_true(condition: bool, message: str) -> None:
 
 
 def main() -> int:
+    catalog = json.loads((ROOT / "tools" / "hardware_metric_catalog.json").read_text(encoding="utf-8"))
+    catalog_units: dict[str, str] = {}
+    for row in catalog["metrics"]:
+        previous = catalog_units.setdefault(row["metric"], row["unit"])
+        assert_true(previous == row["unit"], f"conflicting catalog units for {row['metric']}")
+    assert_true(
+        metric_schema.CANONICAL_METRIC_UNITS == catalog_units,
+        "metric units must have exactly one source of truth in the hardware catalog",
+    )
+
     legacy_unsupported = metric_schema.unsupported_metrics_for_perf_csv(12, {"millis", "rx"})
     assert_true(
         {
             "perf_drop_delta",
-            "event_drop_delta",
             "samples_to_stable",
             "time_to_stable_ms",
             "connect_burst_samples_to_stable",
@@ -38,7 +48,7 @@ def main() -> int:
         f"legacy coverage status mismatch: {legacy_unsupported}",
     )
 
-    schema13_unsupported = metric_schema.unsupported_metrics_for_perf_csv(13, {"perfDrop", "eventBusDrops", "millis"})
+    schema13_unsupported = metric_schema.unsupported_metrics_for_perf_csv(13, {"perfDrop", "millis"})
     assert_true(
         schema13_unsupported
         == {
@@ -57,7 +67,7 @@ def main() -> int:
     )
 
     unmarked_unsupported = metric_schema.unsupported_metrics_for_perf_csv(
-        0, {"perfDrop", "eventBusDrops", "millis"}
+        0, {"perfDrop", "millis"}
     )
     assert_true(
         unmarked_unsupported
@@ -80,7 +90,6 @@ def main() -> int:
         47,
         {
             "perfDrop",
-            "eventBusDrops",
             "notifyToDisplayPipelineCompleteMax_ms",
             "notifyToDisplayPipelineCompleteTotalCount",
         },

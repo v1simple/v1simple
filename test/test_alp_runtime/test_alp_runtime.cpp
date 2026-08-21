@@ -2921,7 +2921,7 @@ void test_sd_logger_begin_warms_storage_at_boot() {
 
 // ── Event bus publishing tests ──────────────────────────────────────
 
-void test_transitionTo_publishes_alp_state_changed_event() {
+void test_transitionTo_publishes_display_edge() {
     resetModule();
     SystemEventBus bus;
     bus.reset();
@@ -2931,21 +2931,12 @@ void test_transitionTo_publishes_alp_state_changed_event() {
     alpRuntimeModule.testSetState(AlpState::LISTENING);
     alpRuntimeModule.testTransitionTo(AlpState::ALERT_ACTIVE, 1000);
 
-    SystemEvent event;
-    bool found_state_enter = false;
-    while (bus.consumeByType(SystemEventType::ALP_STATE_CHANGED, event)) {
-        if (event.detail == 0x10) {
-            found_state_enter = true;
-            TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SystemEventType::ALP_STATE_CHANGED),
-                                    static_cast<uint8_t>(event.type));
-            TEST_ASSERT_EQUAL_UINT32(1000, event.tsMs);
-            break;
-        }
-    }
-    TEST_ASSERT_TRUE(found_state_enter);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, bus.getPublishCount());
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
+    TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
 
-void test_transitionTo_leaving_alert_active_publishes_0x11() {
+void test_transitionTo_leaving_alert_active_publishes_display_edge() {
     resetModule();
     SystemEventBus bus;
     bus.reset();
@@ -2955,12 +2946,10 @@ void test_transitionTo_leaving_alert_active_publishes_0x11() {
     alpRuntimeModule.testSetState(AlpState::ALERT_ACTIVE);
     alpRuntimeModule.testTransitionTo(AlpState::TEARDOWN, 2000);
 
-    SystemEvent event;
-    TEST_ASSERT_TRUE(bus.consumeByType(SystemEventType::ALP_STATE_CHANGED, event));
-    TEST_ASSERT_EQUAL_UINT16(0x11, event.detail);
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
-void test_session_open_publishes_0x01() {
+void test_session_open_publishes_display_edge() {
     resetModule();
     SystemEventBus bus;
     bus.reset();
@@ -2975,19 +2964,11 @@ void test_session_open_publishes_0x01() {
     inject(trigger, sizeof(trigger));
     processAt(2000);
 
-    // Should have published session open (0x01) and state transitions
-    SystemEvent event;
-    bool found_session_open = false;
-    while (bus.consumeByType(SystemEventType::ALP_STATE_CHANGED, event)) {
-        if (event.detail == 0x01) {
-            found_session_open = true;
-            break;
-        }
-    }
-    TEST_ASSERT_TRUE(found_session_open);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, bus.getPublishCount());
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
-void test_session_close_publishes_0x02() {
+void test_session_close_publishes_display_edge() {
     resetModule();
     SystemEventBus bus;
     bus.reset();
@@ -3005,23 +2986,15 @@ void test_session_close_publishes_0x02() {
     // Transition from TEARDOWN to LISTENING to close the existing session.
     alpRuntimeModule.testSetState(AlpState::TEARDOWN);
 
-    // Clear the bus from earlier events
-    SystemEvent tmp;
-    while (bus.consume(tmp)) { }
+    // Clear the latch from earlier changes.
+    bus.consumeAlpStateChanged();
+    const uint32_t publishCountBeforeClose = bus.getPublishCount();
 
     // Now trigger the closing transition
     alpRuntimeModule.testTransitionTo(AlpState::LISTENING, 6000);
 
-    // Should have published session close (0x02)
-    SystemEvent event;
-    bool found_session_close = false;
-    while (bus.consumeByType(SystemEventType::ALP_STATE_CHANGED, event)) {
-        if (event.detail == 0x02) {
-            found_session_close = true;
-            break;
-        }
-    }
-    TEST_ASSERT_TRUE(found_session_close);
+    TEST_ASSERT_GREATER_THAN_UINT32(publishCountBeforeClose, bus.getPublishCount());
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
 void test_no_bus_wired_is_safe() {
@@ -3411,11 +3384,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_batches_flushes);
     RUN_TEST(test_sd_logger_begin_warms_storage_at_boot);
 
-    // Event bus publishing
-    RUN_TEST(test_transitionTo_publishes_alp_state_changed_event);
-    RUN_TEST(test_transitionTo_leaving_alert_active_publishes_0x11);
-    RUN_TEST(test_session_open_publishes_0x01);
-    RUN_TEST(test_session_close_publishes_0x02);
+    // Display-edge publishing
+    RUN_TEST(test_transitionTo_publishes_display_edge);
+    RUN_TEST(test_transitionTo_leaving_alert_active_publishes_display_edge);
+    RUN_TEST(test_session_open_publishes_display_edge);
+    RUN_TEST(test_session_close_publishes_display_edge);
     RUN_TEST(test_no_bus_wired_is_safe);
     RUN_TEST(test_process_loop_does_not_spam_events);
 

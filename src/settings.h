@@ -571,32 +571,6 @@ struct DeviceSettingsUpdate {
     bool gpsLogUtcToAlp = true;
 };
 
-struct QuietSettingsUpdate {
-    bool hasAlertVolumeFadeEnabled = false;
-    bool alertVolumeFadeEnabled = false;
-
-    bool hasAlertVolumeFadeDelaySec = false;
-    uint8_t alertVolumeFadeDelaySec = 0;
-
-    bool hasAlertVolumeFadeVolume = false;
-    uint8_t alertVolumeFadeVolume = 0;
-
-    bool hasSpeedMuteEnabled = false;
-    bool speedMuteEnabled = false;
-
-    bool hasSpeedMuteThresholdMph = false;
-    uint8_t speedMuteThresholdMph = 0;
-
-    bool hasSpeedMuteHysteresisMph = false;
-    uint8_t speedMuteHysteresisMph = 0;
-
-    bool hasSpeedMuteVolume = false;
-    uint8_t speedMuteVolume = 0;
-
-    bool hasStealthEnabled = false;
-    bool stealthEnabled = false;
-};
-
 struct AudioSettingsUpdate {
     bool hasVoiceAlertMode = false;
     VoiceAlertMode voiceAlertMode = VOICE_MODE_DISABLED;
@@ -907,8 +881,6 @@ class SettingsManager {
 
     void applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
                                    SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void applyQuietSettingsUpdate(const QuietSettingsUpdate& update,
-                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
                                     SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void resetDisplaySettings(SettingsPersistMode persistMode = SettingsPersistMode::Immediate);

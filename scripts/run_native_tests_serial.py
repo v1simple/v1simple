@@ -148,7 +148,7 @@ def main() -> int:
             f"with build root {build_root}"
         )
         result = subprocess.run(
-            ["pio", "test", "-e", env, "-f", test_name],
+            [os.environ.get("PIO_CMD", "pio"), "test", "-e", env, "-f", test_name],
             cwd=ROOT,
             env=child_env,
         )

@@ -21,7 +21,7 @@ const vitestGlobals = {
 
 export default [
     {
-        ignores: ['.svelte-kit/', 'build/', 'coverage/', 'node_modules/']
+        ignores: ['.svelte-kit/', 'build/', 'node_modules/']
     },
 
     js.configs.recommended,

@@ -4,12 +4,7 @@ void LoopTelemetryModule::begin(const Providers& hooks) {
     providers = hooks;
 }
 
-void LoopTelemetryModule::process(uint32_t loopStartUs) {
-    if (providers.recordLoopJitterUs && providers.microsNow) {
-        const uint32_t jitterUs = static_cast<uint32_t>(providers.microsNow(providers.microsContext) - loopStartUs);
-        providers.recordLoopJitterUs(providers.loopJitterContext, jitterUs);
-    }
-
+void LoopTelemetryModule::process() {
     // Heap introspection is expensive (~4 heap_caps calls).  The data only
     // feeds min-watermark tracking, so sub-second cadence is more than enough.
     if (++heapSampleSkip_ < HEAP_SAMPLE_DIVISOR) {

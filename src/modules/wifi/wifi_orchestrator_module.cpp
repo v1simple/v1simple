@@ -1,7 +1,5 @@
 #include "wifi_orchestrator_module.h"
 
-#include "settings_sanitize.h"
-
 WifiOrchestrator::WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser,
                                    StorageManager& storageManager, AutoPushModule& autoPushModule)
     : wifiManager(wifiManager), bleClient(bleClient), parser(parser), storageManager(storageManager),
@@ -62,40 +60,6 @@ void WifiOrchestrator::configureCallbacks() {
         [](void* ctx) {
             auto* self = static_cast<WifiOrchestrator*>(ctx);
             return self->autoPushModule.getStatusJson();
-        },
-        this);
-
-    wifiManager.setPushNowCallback(
-        [](const WifiAutoPushApiService::PushNowRequest& request, void* ctx) {
-            auto* self = static_cast<WifiOrchestrator*>(ctx);
-            AutoPushModule::PushNowRequest pushRequest;
-            pushRequest.slotIndex = request.slot;
-            pushRequest.activateSlot = true;
-            pushRequest.hasProfileOverride = request.hasProfileOverride;
-            pushRequest.hasModeOverride = request.hasModeOverride;
-
-            if (request.hasProfileOverride) {
-                pushRequest.profileName = sanitizeProfileNameValue(request.profileName);
-            }
-            if (request.hasModeOverride) {
-                pushRequest.mode = normalizeV1ModeValue(request.mode);
-            }
-
-            switch (self->autoPushModule.queuePushNow(pushRequest)) {
-            case AutoPushModule::QueueResult::QUEUED:
-                return WifiAutoPushApiService::PushNowQueueResult::QUEUED;
-            case AutoPushModule::QueueResult::V1_NOT_CONNECTED:
-                return WifiAutoPushApiService::PushNowQueueResult::V1_NOT_CONNECTED;
-            case AutoPushModule::QueueResult::ALREADY_IN_PROGRESS:
-                return WifiAutoPushApiService::PushNowQueueResult::ALREADY_IN_PROGRESS;
-            case AutoPushModule::QueueResult::NO_PROFILE_CONFIGURED:
-                return WifiAutoPushApiService::PushNowQueueResult::NO_PROFILE_CONFIGURED;
-            case AutoPushModule::QueueResult::INVALID_VOLUME_PAIR:
-                return WifiAutoPushApiService::PushNowQueueResult::INVALID_VOLUME_PAIR;
-            case AutoPushModule::QueueResult::PROFILE_LOAD_FAILED:
-            default:
-                return WifiAutoPushApiService::PushNowQueueResult::PROFILE_LOAD_FAILED;
-            }
         },
         this);
 

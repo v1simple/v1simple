@@ -16,33 +16,6 @@
 #include "settings.h"
 #include "wifi_manager.h"
 
-LoopConnectionEarlyPhaseValues processLoopConnectionEarlyPhase(const unsigned long nowMs, const unsigned long nowUs,
-                                                               const unsigned long lastLoopUs,
-                                                               const bool currentBootSplashHoldActive,
-                                                               const unsigned long currentBootSplashHoldUntilMs,
-                                                               const bool currentInitialScanningScreenShown,
-                                                               const bool presentationSuppressed) {
-    LoopConnectionEarlyContext loopConnectionEarlyCtx;
-    loopConnectionEarlyCtx.nowMs = nowMs;
-    loopConnectionEarlyCtx.nowUs = nowUs;
-    loopConnectionEarlyCtx.lastLoopUs = lastLoopUs;
-    loopConnectionEarlyCtx.bootSplashHoldActive = currentBootSplashHoldActive;
-    loopConnectionEarlyCtx.bootSplashHoldUntilMs = currentBootSplashHoldUntilMs;
-    loopConnectionEarlyCtx.initialScanningScreenShown = currentInitialScanningScreenShown;
-    loopConnectionEarlyCtx.presentationSuppressed = presentationSuppressed;
-    const LoopConnectionEarlyResult loopConnectionEarlyResult =
-        loopConnectionEarlyModule.process(loopConnectionEarlyCtx);
-
-    LoopConnectionEarlyPhaseValues values;
-    values.bootSplashHoldActive = loopConnectionEarlyResult.bootSplashHoldActive;
-    values.initialScanningScreenShown = loopConnectionEarlyResult.initialScanningScreenShown;
-    values.bleConnectedNow = loopConnectionEarlyResult.bleConnectedNow;
-    values.bleBackpressure = loopConnectionEarlyResult.bleBackpressure;
-    values.skipNonCoreThisLoop = loopConnectionEarlyResult.skipNonCoreThisLoop;
-    values.overloadThisLoop = loopConnectionEarlyResult.overloadThisLoop;
-    return values;
-}
-
 LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bool currentBootReady,
                                              const unsigned long bootReadyDeadlineMs, const bool skipNonCoreThisLoop,
                                              const bool overloadThisLoop, const bool presentationSuppressed) {
@@ -164,10 +137,9 @@ unsigned long processLoopSettingsEarlyReturnPhase(const unsigned long nowMs, con
     return loopTailModule.process(false, loopStartUs, true);
 }
 
-bool shouldReturnEarlyFromLoopPowerTouchPhase(const unsigned long nowMs, const unsigned long loopStartUs) {
+bool shouldReturnEarlyFromLoopPowerTouchPhase(const unsigned long nowMs) {
     LoopPowerTouchContext loopPowerTouchCtx;
     loopPowerTouchCtx.nowMs = nowMs;
-    loopPowerTouchCtx.loopStartUs = loopStartUs;
     loopPowerTouchCtx.bootButtonPressed = (digitalRead(BOOT_BUTTON_GPIO) == LOW);
     const LoopPowerTouchResult loopPowerTouchResult = loopPowerTouchModule.process(loopPowerTouchCtx);
     return loopPowerTouchResult.shouldReturnEarly;

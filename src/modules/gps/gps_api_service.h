@@ -25,11 +25,4 @@ inline void handleApiConfigSave(WebServer& server, SettingsManager& settings, Gp
     handleApiConfigSave(server, settings, &gpsRuntime, runtime);
 }
 
-// GET /api/gps/status — returns live GpsRuntimeStatus snapshot as JSON.
-void handleApiStatus(WebServer& server, GpsRuntimeModule* gpsRuntime, const Runtime& runtime);
-
-inline void handleApiStatus(WebServer& server, GpsRuntimeModule& gpsRuntime, const Runtime& runtime) {
-    handleApiStatus(server, &gpsRuntime, runtime);
-}
-
 } // namespace GpsApiService

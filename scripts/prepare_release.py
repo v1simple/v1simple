@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Prepare an idempotent semantic-version release commit.
+"""Choose the semantic version for an exact, already-tested release commit.
 
-The release workflow calls this before its production firmware build.
-It derives the next version from immutable ``vN.N.N`` tags, updates the
-firmware version and changelog, and writes GitHub Actions step outputs.  Only a
-tag positively matched to the same GitHub Actions run may be reused. It also
-reports the newest strict semantic-version tag so an older retry cannot roll
-the live installer backward. Automatic releases use the reviewed bump in
-``.release-bump`` and restore that policy to ``patch`` after consuming a
-``minor`` or ``major`` request.
+Normal releases increment the newest strict ``vMAJOR.MINOR.PATCH`` tag by one
+patch. A reviewed ``FIRMWARE_VERSION`` set to exactly the next minor or major
+selects that larger bump. The script never edits the checkout: Release injects
+the selected version while building and tags the tested commit directly.
+
+Only an annotated tag carrying the current GitHub Actions run ID may resume an
+interrupted publication. The newest strict tag is also reported so an older
+retry cannot replace a newer Pages installer.
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import os
 import re
 import subprocess
@@ -24,28 +23,20 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REPOSITORY = "v1simple/v1simple"
-DEFAULT_BUMP = "patch"
-RELEASE_BUMP_FILE = ".release-bump"
-RELEASE_BUMPS = ("patch", "minor", "major")
 SEMVER_RE = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\."
     r"(?P<minor>0|[1-9][0-9]*)\."
     r"(?P<patch>0|[1-9][0-9]*)$"
 )
 CONFIG_VERSION_RE = re.compile(
-    r'^(?P<prefix>\s*#define\s+FIRMWARE_VERSION\s+")'
-    r'(?P<version>[^"]+)'
-    r'(?P<suffix>"\s*)$',
+    r'^\s*#define\s+FIRMWARE_VERSION\s+"(?P<version>[^"]+)"\s*$',
     re.MULTILINE,
 )
-UNRELEASED_HEADING_RE = re.compile(r"^## \[Unreleased\]\s*$", re.MULTILINE)
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RUN_ID_RE = re.compile(r"^[1-9][0-9]*$")
 
 
 class ReleasePreparationError(RuntimeError):
-    """A release cannot be prepared without violating version invariants."""
+    """A release cannot be selected without violating version invariants."""
 
 
 @dataclass(frozen=True, order=True)
@@ -100,23 +91,18 @@ def strict_version_tags(root: Path) -> list[VersionTag]:
     tags: list[VersionTag] = []
     for raw in git(root, "tag", "--list").stdout.splitlines():
         name = raw.strip()
-        if not name.startswith("v"):
-            continue
-        match = SEMVER_RE.fullmatch(name[1:])
-        if match:
+        if name.startswith("v") and SEMVER_RE.fullmatch(name[1:]):
             tags.append(VersionTag(Version.parse(name[1:]), name))
     return sorted(tags, key=lambda item: item.version)
 
 
 def resolve_commit(root: Path, ref: str) -> str | None:
     result = git(root, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def release_for_run_id(root: Path, run_id: str) -> tuple[VersionTag, str] | None:
-    """Find the unique annotated semver tag published by a workflow run."""
+    """Find the unique annotated semantic-version tag published by one run."""
 
     if not RUN_ID_RE.fullmatch(run_id):
         raise ReleasePreparationError(f"invalid GitHub Actions run ID: {run_id!r}")
@@ -136,7 +122,7 @@ def release_for_run_id(root: Path, run_id: str) -> tuple[VersionTag, str] | None
             continue
         commit = resolve_commit(root, tag.name)
         if commit is None:
-            raise ReleasePreparationError(f"could not resolve release tag {tag.name} to a commit")
+            raise ReleasePreparationError(f"could not resolve release tag {tag.name}")
         matches.append((tag, commit))
 
     if len(matches) > 1:
@@ -156,91 +142,94 @@ def require_ancestor(root: Path, ancestor: str, descendant: str) -> None:
             f"latest release tag {ancestor} is not an ancestor of {descendant}; "
             "refusing a branched release"
         )
-    detail = result.stderr.strip() or "git merge-base failed"
-    raise ReleasePreparationError(detail)
+    raise ReleasePreparationError(result.stderr.strip() or "git merge-base failed")
 
 
-def read_config_version(config_path: Path) -> tuple[str, Version]:
-    text = config_path.read_text(encoding="utf-8")
-    matches = list(CONFIG_VERSION_RE.finditer(text))
+def read_config_version(config_path: Path) -> Version:
+    matches = list(CONFIG_VERSION_RE.finditer(config_path.read_text(encoding="utf-8")))
     if len(matches) != 1:
         raise ReleasePreparationError(
             f"{config_path} must contain exactly one plain FIRMWARE_VERSION definition"
         )
-    raw = matches[0].group("version")
-    return text, Version.parse(raw)
+    return Version.parse(matches[0].group("version"))
 
 
-def update_config_version(text: str, version: Version) -> str:
-    updated, count = CONFIG_VERSION_RE.subn(
-        lambda match: f'{match.group("prefix")}{version}{match.group("suffix")}',
-        text,
-    )
-    if count != 1:
-        raise ReleasePreparationError("could not update the unique FIRMWARE_VERSION definition")
-    return updated
+def next_version(latest: Version, source: Version) -> tuple[Version, str]:
+    """Select patch by default; accept only an exact reviewed minor/major jump."""
 
-
-def resolve_release_bump(root: Path, requested: str) -> tuple[str, Path | None]:
-    if requested != "auto":
-        return requested, None
-
-    policy_path = root / RELEASE_BUMP_FILE
-    if not policy_path.is_file():
-        return DEFAULT_BUMP, None
-
-    selected = policy_path.read_text(encoding="utf-8").strip()
-    if selected not in RELEASE_BUMPS:
-        allowed = ", ".join(RELEASE_BUMPS)
+    candidates = {
+        "patch": latest.bump("patch"),
+        "minor": latest.bump("minor"),
+        "major": latest.bump("major"),
+    }
+    if source == candidates["minor"]:
+        return source, "minor"
+    if source == candidates["major"]:
+        return source, "major"
+    if source > candidates["patch"]:
         raise ReleasePreparationError(
-            f"{RELEASE_BUMP_FILE} must contain exactly one of: {allowed}"
+            f"FIRMWARE_VERSION {source} is not the next patch, minor, or major after {latest}"
         )
-    return selected, policy_path
+    return candidates["patch"], "patch"
 
 
-def version_heading(version: Version) -> re.Pattern[str]:
-    return re.compile(rf"^## \[{re.escape(str(version))}\](?:\s|$)", re.MULTILINE)
+def prepare_release(root: Path, resume_tag: str = "") -> dict[str, str]:
+    root = root.resolve()
+    config_path = root / "include" / "config.h"
+    if not config_path.is_file():
+        raise ReleasePreparationError("release root must contain include/config.h")
+    if git(root, "status", "--porcelain").stdout.strip():
+        raise ReleasePreparationError("release selection requires a clean working tree")
 
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    source = read_config_version(config_path)
+    tags = strict_version_tags(root)
+    latest = tags[-1] if tags else None
+    resume_tag = resume_tag.strip()
 
-def update_changelog(
-    text: str,
-    version: Version,
-    release_date: str,
-    repository: str,
-    previous_tag: str | None,
-) -> str:
-    if version_heading(version).search(text):
-        updated = text
+    if resume_tag:
+        if not resume_tag.startswith("v") or not SEMVER_RE.fullmatch(resume_tag[1:]):
+            raise ReleasePreparationError(
+                f"invalid resume tag {resume_tag!r}; expected vMAJOR.MINOR.PATCH"
+            )
+        resume_commit = resolve_commit(root, resume_tag)
+        if resume_commit != head:
+            found = resume_commit or "missing"
+            raise ReleasePreparationError(
+                f"resume tag {resume_tag} resolves to {found}, expected HEAD {head}"
+            )
+        target = Version.parse(resume_tag[1:])
+        bump = "rerun"
+        mode = "rerun"
+    elif latest is None:
+        target = source
+        bump = "initial"
+        mode = "initial"
     else:
-        unreleased = UNRELEASED_HEADING_RE.search(text)
-        if not unreleased:
-            raise ReleasePreparationError("CHANGELOG.md is missing the ## [Unreleased] heading")
-        remaining = text[unreleased.end() :].lstrip("\n")
-        release_intro = (
-            f"## [{version}] - {release_date}\n\n"
-            "Changes are summarized in the generated GitHub release notes.\n\n"
-        )
-        updated = text[: unreleased.end()] + "\n\n" + release_intro + remaining
+        require_ancestor(root, latest.name, head)
+        target, bump = next_version(latest.version, source)
+        mode = "new"
+        target_tag = f"v{target}"
+        existing = resolve_commit(root, target_tag)
+        if existing is not None:
+            raise ReleasePreparationError(
+                f"release tag {target_tag} already exists at {existing}; "
+                "only the workflow run recorded in that tag may reuse it"
+            )
 
-    unreleased_url = f"https://github.com/{repository}/compare/v{version}...HEAD"
-    unreleased_link = re.compile(r"^\[Unreleased\]:\s+\S+\s*$", re.MULTILINE)
-    if unreleased_link.search(updated):
-        updated = unreleased_link.sub(f"[Unreleased]: {unreleased_url}", updated, count=1)
-    else:
-        updated = updated.rstrip() + f"\n\n[Unreleased]: {unreleased_url}\n"
-
-    release_link_re = re.compile(
-        rf"^\[{re.escape(str(version))}\]:\s+\S+\s*$",
-        re.MULTILINE,
+    values = {
+        "version": str(target),
+        "tag": f"v{target}",
+        "source_version": str(source),
+        "previous_tag": latest.name if latest else "",
+        "mode": mode,
+        "bump": bump,
+    }
+    print(
+        f"Release version: source={source}, selected={target}, mode={mode}, "
+        f"bump={bump}, previous_tag={values['previous_tag'] or 'none'}"
     )
-    if not release_link_re.search(updated):
-        release_url = f"https://github.com/{repository}/releases/tag/v{version}"
-        marker = f"[Unreleased]: {unreleased_url}"
-        updated = updated.replace(marker, marker + f"\n[{version}]: {release_url}", 1)
-
-    if previous_tag and previous_tag == f"v{version}":
-        raise ReleasePreparationError("previous tag unexpectedly equals the prepared release tag")
-    return updated
+    return values
 
 
 def write_outputs(path: Path | None, values: dict[str, str]) -> None:
@@ -251,133 +240,17 @@ def write_outputs(path: Path | None, values: dict[str, str]) -> None:
             output.write(f"{key}={value}\n")
 
 
-def prepare_release(
-    root: Path,
-    bump: str,
-    release_date: str,
-    repository: str,
-    resume_tag: str = "",
-) -> dict[str, str]:
-    root = root.resolve()
-    config_path = root / "include" / "config.h"
-    changelog_path = root / "CHANGELOG.md"
-    if not config_path.is_file() or not changelog_path.is_file():
-        raise ReleasePreparationError("release root must contain include/config.h and CHANGELOG.md")
-    if not REPOSITORY_RE.fullmatch(repository):
-        raise ReleasePreparationError(f"invalid GitHub repository name: {repository!r}")
-    try:
-        dt.date.fromisoformat(release_date)
-    except ValueError as exc:
-        raise ReleasePreparationError(
-            f"invalid release date {release_date!r}; expected YYYY-MM-DD"
-        ) from exc
-    dirty = git(root, "status", "--porcelain").stdout.strip()
-    if dirty:
-        raise ReleasePreparationError(
-            "release preparation requires a clean working tree before version files are updated"
-        )
-
-    selected_bump, bump_policy_path = resolve_release_bump(root, bump)
-
-    head = git(root, "rev-parse", "HEAD").stdout.strip()
-    config_text, current = read_config_version(config_path)
-    tags = strict_version_tags(root)
-    latest = tags[-1] if tags else None
-
-    resume_tag = resume_tag.strip()
-    if resume_tag:
-        if not resume_tag.startswith("v") or not SEMVER_RE.fullmatch(resume_tag[1:]):
-            raise ReleasePreparationError(
-                f"invalid resume tag {resume_tag!r}; expected vMAJOR.MINOR.PATCH"
-            )
-        resume_version = Version.parse(resume_tag[1:])
-        resume_commit = resolve_commit(root, resume_tag)
-        if resume_commit != head:
-            found = resume_commit or "missing"
-            raise ReleasePreparationError(
-                f"resume tag {resume_tag} resolves to {found}, expected HEAD {head}"
-            )
-        if resume_version != current:
-            raise ReleasePreparationError(
-                f"resume tag {resume_tag} does not match FIRMWARE_VERSION {current}"
-            )
-        target = current
-        mode = "rerun"
-    elif latest is None:
-        target = current
-        mode = "initial"
-    else:
-        require_ancestor(root, latest.name, head)
-        if current != latest.version:
-            raise ReleasePreparationError(
-                f"FIRMWARE_VERSION {current} must match latest release tag {latest.name}; "
-                "the workflow owns version bumps"
-            )
-        target = latest.version.bump(selected_bump)
-        mode = "new"
-
-    target_tag = f"v{target}"
-    target_tag_commit = resolve_commit(root, target_tag)
-    if target_tag_commit and target_tag_commit != head:
-        raise ReleasePreparationError(
-            f"release tag {target_tag} already points at {target_tag_commit}; refusing to move it"
-        )
-
-    changelog_text = changelog_path.read_text(encoding="utf-8")
-    if mode == "rerun":
-        if not version_heading(target).search(changelog_text):
-            raise ReleasePreparationError(
-                f"tag {target_tag} points at HEAD but CHANGELOG.md lacks version {target}"
-            )
-        changed = False
-    else:
-        new_config = update_config_version(config_text, target)
-        new_changelog = update_changelog(
-            changelog_text,
-            target,
-            release_date,
-            repository,
-            latest.name if latest else None,
-        )
-        changed = new_config != config_text or new_changelog != changelog_text
-        config_path.write_text(new_config, encoding="utf-8")
-        changelog_path.write_text(new_changelog, encoding="utf-8")
-        if bump_policy_path is not None and selected_bump != DEFAULT_BUMP:
-            bump_policy_path.write_text(DEFAULT_BUMP + "\n", encoding="utf-8")
-            changed = True
-
-    values = {
-        "version": str(target),
-        "tag": target_tag,
-        "previous_tag": latest.name if latest else "",
-        "mode": mode,
-        "bump": selected_bump,
-        "files_changed": "true" if changed else "false",
-    }
-    print(
-        f"Release version: {current} -> {target} "
-        f"(mode={mode}, requested_bump={bump}, selected_bump={selected_bump}, "
-        f"previous_tag={values['previous_tag'] or 'none'})"
-    )
-    return values
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     operation = parser.add_mutually_exclusive_group(required=True)
-    operation.add_argument("--bump", choices=("auto", *RELEASE_BUMPS))
+    operation.add_argument("--prepare", action="store_true")
     operation.add_argument("--lookup-run-id", metavar="RUN_ID")
     operation.add_argument("--latest-tag", action="store_true")
     parser.add_argument(
         "--resume-tag",
         default="",
         help="Reuse this tag only after --lookup-run-id matched the same workflow run",
-    )
-    parser.add_argument("--date", default=dt.datetime.now(dt.timezone.utc).date().isoformat())
-    parser.add_argument(
-        "--repository",
-        default=os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPOSITORY),
     )
     parser.add_argument(
         "--github-output",
@@ -392,17 +265,13 @@ def main() -> int:
     try:
         if args.latest_tag:
             if args.resume_tag:
-                raise ReleasePreparationError(
-                    "--resume-tag is valid only with the --bump operation"
-                )
+                raise ReleasePreparationError("--resume-tag is valid only with --prepare")
             tags = strict_version_tags(args.root.resolve())
             values = {"latest_tag": tags[-1].name if tags else ""}
             print(values["latest_tag"])
         elif args.lookup_run_id:
             if args.resume_tag:
-                raise ReleasePreparationError(
-                    "--resume-tag is valid only with the --bump operation"
-                )
+                raise ReleasePreparationError("--resume-tag is valid only with --prepare")
             match = release_for_run_id(args.root.resolve(), args.lookup_run_id)
             values = {
                 "resume_tag": match[0].name if match else "",
@@ -416,13 +285,7 @@ def main() -> int:
             else:
                 print(f"No prior publication found for run {args.lookup_run_id}")
         else:
-            values = prepare_release(
-                args.root,
-                args.bump,
-                args.date,
-                args.repository,
-                args.resume_tag,
-            )
+            values = prepare_release(args.root, args.resume_tag)
         write_outputs(args.github_output, values)
     except (OSError, ReleasePreparationError) as exc:
         print(f"[release-version] {exc}", file=sys.stderr)
@@ -431,4 +294,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

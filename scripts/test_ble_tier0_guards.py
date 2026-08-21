@@ -263,7 +263,7 @@ def test_hot_path_skips_declarations() -> None:
 
 
 def test_hot_path_contract_passes_on_the_live_tree() -> None:
-    """The Tier-0 hot-path gate runs over real source and must be green."""
+    """The Tier-0 hot-path guard runs over real source and must be green."""
     script = "check_ble_hot_path_contract.py"
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / script)],

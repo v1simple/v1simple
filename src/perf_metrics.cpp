@@ -36,7 +36,6 @@ PerfLatency perfLatency;
 #endif
 
 #if PERF_METRICS && PERF_MONITORING
-bool perfDebugEnabled = false;
 uint32_t perfLastReportMs = 0;
 #endif
 
@@ -57,33 +56,6 @@ std::atomic<uint8_t> sConnectionCycleProxyNoClientLatched{0};
 static std::atomic<uint8_t> sDisplayRenderScenario{static_cast<uint8_t>(PerfDisplayRenderScenario::None)};
 static std::atomic<bool> sSdCapturePaused{false};
 portMUX_TYPE sPerfSnapshotMux = portMUX_INITIALIZER_UNLOCKED;
-
-void perfMetricsInit() {
-    perfCounters.reset();
-    perfExtended.reset();
-    sDmaFreeCapMin = UINT32_MAX;
-    sDmaLargestCapMin = UINT32_MAX;
-    sPrevWindowLoopMaxUs.store(0, std::memory_order_relaxed);
-    sPrevWindowWifiMaxUs.store(0, std::memory_order_relaxed);
-    sPrevWindowBleProcessMaxUs.store(0, std::memory_order_relaxed);
-    sPrevWindowDispPipeMaxUs.store(0, std::memory_order_relaxed);
-    sConnectionCycleStateCode.store(0, std::memory_order_relaxed);
-    sConnectionCycleTimeInStateMs.store(0, std::memory_order_relaxed);
-    sConnectionCycleTransitionsTotal.store(0, std::memory_order_relaxed);
-    sConnectionCycleTeardownDurationMs.store(0, std::memory_order_relaxed);
-    sConnectionCycleObdRetryAttemptsTotal.store(0, std::memory_order_relaxed);
-    sConnectionCycleWifiManualPhoneKicksTotal.store(0, std::memory_order_relaxed);
-    sConnectionCycleProxyNoClientLatched.store(0, std::memory_order_relaxed);
-    sDisplayRenderScenario.store(static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
-    sSdCapturePaused.store(false, std::memory_order_relaxed);
-#if PERF_METRICS
-    perfLatency.reset();
-#if PERF_MONITORING
-    perfDebugEnabled = false;
-    perfLastReportMs = millis();
-#endif
-#endif
-}
 
 void perfMetricsReset() {
     perfCounters.reset();
@@ -621,11 +593,6 @@ void perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase subphase, uint3
             perfExtended.displayArrowsIconsMaxUs = us;
         }
         break;
-    case PerfDisplayRenderSubphase::Cards:
-        if (us > perfExtended.displayCardsMaxUs) {
-            perfExtended.displayCardsMaxUs = us;
-        }
-        break;
     case PerfDisplayRenderSubphase::Flush:
         if (us > perfExtended.displayFlushSubphaseMaxUs) {
             perfExtended.displayFlushSubphaseMaxUs = us;
@@ -727,18 +694,6 @@ void perfRecordDispPipeUs(uint32_t us) {
     portEXIT_CRITICAL(&sPerfSnapshotMux);
 }
 
-void perfRecordDisplayVoiceUs(uint32_t us) {
-    if (us > perfExtended.displayVoiceMaxUs) {
-        perfExtended.displayVoiceMaxUs = us;
-    }
-}
-
-void perfRecordDisplayGapRecoverUs(uint32_t us) {
-    if (us > perfExtended.displayGapRecoverMaxUs) {
-        perfExtended.displayGapRecoverMaxUs = us;
-    }
-}
-
 void perfRecordTouchUs(uint32_t us) {
     if (us > perfExtended.touchMaxUs) {
         perfExtended.touchMaxUs = us;
@@ -766,12 +721,6 @@ void perfRecordObdSecurityStartCallUs(uint32_t us) {
 void perfRecordObdDiscoveryCallUs(uint32_t us) {
     if (us > perfExtended.obdDiscoveryCallMaxUs) {
         perfExtended.obdDiscoveryCallMaxUs = us;
-    }
-}
-
-void perfRecordObdSubscribeCallUs(uint32_t us) {
-    if (us > perfExtended.obdSubscribeCallMaxUs) {
-        perfExtended.obdSubscribeCallMaxUs = us;
     }
 }
 
@@ -977,15 +926,4 @@ void perfMetricsSetSdCapturePaused(bool paused) {
 
 bool perfMetricsIsSdCapturePaused() {
     return sSdCapturePaused.load(std::memory_order_relaxed);
-}
-
-void perfMetricsSetDebug(bool enabled) {
-#if PERF_METRICS && PERF_MONITORING
-    perfDebugEnabled = enabled;
-    if (enabled) {
-        perfLastReportMs = millis(); // Reset report timer
-    }
-#else
-    (void)enabled;
-#endif
 }

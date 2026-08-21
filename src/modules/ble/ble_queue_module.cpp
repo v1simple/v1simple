@@ -4,7 +4,6 @@
 #include <cstring>
 
 #include "config.h"
-#include "modules/system/system_event_bus.h"
 #include "perf_metrics.h"
 
 #ifndef UNIT_TEST
@@ -43,14 +42,12 @@ static constexpr size_t RX_COMPACT_THRESHOLD = RX_BUFFER_MAX / 2;
 // cycle and clears the buffer outright when no start marker is present, so space is
 // reclaimed as soon as the parser catches up.
 bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,
-                           DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus,
-                           Config cfg) {
+                           DisplayPreviewModule* previewModule, PowerModule* powerModule, Config cfg) {
     ble_ = bleClient;
     parser_ = parserPtr;
     profiles_ = profileMgr;
     preview_ = previewModule;
     power_ = powerModule;
-    bus_ = eventBus;
     config_ = cfg;
 
     if (queueHandle_ != nullptr) {
@@ -338,9 +335,6 @@ void BleQueueModule::refreshBackpressureState() {
 void BleQueueModule::process() {
     bool previewActive = preview_ && preview_->isRunning();
     UBaseType_t queueDepthBeforeDrain = 0;
-    bool parsedEventPending = false;
-    uint16_t parsedEventDetail = 0;
-    uint32_t parsedEventSignalSeq = 0;
 
     BLEDataPacket pkt;
     uint32_t latestPktTs = 0;
@@ -596,19 +590,7 @@ void BleQueueModule::process() {
             // This decouples BLE processing from slow display updates
             hadSuccessfulParse_ = true;
             lastParsedTsMs_ = frameDutMillis;
-            parsedEventPending = true;
-            parsedEventDetail = packetId;
-            parsedEventSignalSeq = frameIdentity.eventSeq;
         }
-    }
-
-    if (parsedEventPending && bus_) {
-        SystemEvent event;
-        event.type = SystemEventType::BLE_FRAME_PARSED;
-        event.tsMs = lastParsedTsMs_;
-        event.seq = parsedEventSignalSeq;
-        event.detail = parsedEventDetail;
-        bus_->publish(event);
     }
 
     rxSpans_.erase(

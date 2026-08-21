@@ -25,7 +25,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <atomic>
 
 // ============================================================================
@@ -64,28 +63,26 @@
 // ============================================================================
 struct PerfCounters {
     // Packet flow
-    std::atomic<uint32_t> rxPackets{0};              // Total BLE notifications received
-    std::atomic<uint32_t> rxBytes{0};                // Total bytes received
-    std::atomic<uint32_t> queueDrops{0};             // Packets dropped (queue full)
-    std::atomic<uint32_t> oversizeDrops{0};          // Packets dropped (too large for buffer)
-    std::atomic<uint32_t> queueHighWater{0};         // Max queue depth seen
-    std::atomic<uint32_t> proxyQueueHighWater{0};    // Max proxy queue depth
-    std::atomic<uint32_t> phoneCmdQueueHighWater{0}; // Max phone→V1 cmd queue depth
-    std::atomic<uint32_t> phoneCmdDropsOverflow{0};  // Phone→V1 queue overflow drops
-    std::atomic<uint32_t> phoneCmdDropsInvalid{0};   // Phone→V1 malformed packet drops
-    std::atomic<uint32_t> phoneCmdDropsBleFail{0};   // Phone→V1 hard BLE send failures
-    std::atomic<uint32_t> phoneCmdDropsLockBusy{0};  // Phone→V1 queue lock-busy drops
-    std::atomic<uint32_t> parseSuccesses{0};         // Successfully parsed packets
-    std::atomic<uint32_t> parseFailures{0};          // Parse failures (resync)
-    std::atomic<uint32_t> parseResyncs{0};           // Framing-level resyncs (bad length/size/end marker)
-    std::atomic<uint32_t> v1AllVolumeParsed{0};      // Canonical RESPALLVOLUME packets parsed since boot/reset
-    std::atomic<uint32_t> perfDrop{0};               // Perf SD snapshot drops (queue full)
-    std::atomic<uint32_t> perfSdLockFail{0};         // Perf SD writer lock failures
-    std::atomic<uint32_t> perfSdDirFail{0};          // Perf SD dir ensure failures
-    std::atomic<uint32_t> perfSdOpenFail{0};         // Perf SD file open failures
-    std::atomic<uint32_t> perfSdHeaderFail{0};       // Perf SD CSV header write failures
-    std::atomic<uint32_t> perfSdMarkerFail{0};       // Perf SD session marker write failures
-    std::atomic<uint32_t> perfSdWriteFail{0};        // Perf SD data line write failures
+    std::atomic<uint32_t> rxPackets{0};             // Total BLE notifications received
+    std::atomic<uint32_t> rxBytes{0};               // Total bytes received
+    std::atomic<uint32_t> queueDrops{0};            // Packets dropped (queue full)
+    std::atomic<uint32_t> oversizeDrops{0};         // Packets dropped (too large for buffer)
+    std::atomic<uint32_t> queueHighWater{0};        // Max queue depth seen
+    std::atomic<uint32_t> phoneCmdDropsOverflow{0}; // Phone→V1 queue overflow drops
+    std::atomic<uint32_t> phoneCmdDropsInvalid{0};  // Phone→V1 malformed packet drops
+    std::atomic<uint32_t> phoneCmdDropsBleFail{0};  // Phone→V1 hard BLE send failures
+    std::atomic<uint32_t> phoneCmdDropsLockBusy{0}; // Phone→V1 queue lock-busy drops
+    std::atomic<uint32_t> parseSuccesses{0};        // Successfully parsed packets
+    std::atomic<uint32_t> parseFailures{0};         // Parse failures (resync)
+    std::atomic<uint32_t> parseResyncs{0};          // Framing-level resyncs (bad length/size/end marker)
+    std::atomic<uint32_t> v1AllVolumeParsed{0};     // Canonical RESPALLVOLUME packets parsed since boot/reset
+    std::atomic<uint32_t> perfDrop{0};              // Perf SD snapshot drops (queue full)
+    std::atomic<uint32_t> perfSdLockFail{0};        // Perf SD writer lock failures
+    std::atomic<uint32_t> perfSdDirFail{0};         // Perf SD dir ensure failures
+    std::atomic<uint32_t> perfSdOpenFail{0};        // Perf SD file open failures
+    std::atomic<uint32_t> perfSdHeaderFail{0};      // Perf SD CSV header write failures
+    std::atomic<uint32_t> perfSdMarkerFail{0};      // Perf SD session marker write failures
+    std::atomic<uint32_t> perfSdWriteFail{0};       // Perf SD data line write failures
 
     // Connection
     std::atomic<uint32_t> reconnects{0};                     // BLE reconnection count
@@ -180,11 +177,6 @@ struct PerfCounters {
     std::atomic<uint32_t> parserRowsKuRaw{0};                 // Alert rows with Ku raw band bit (0x10)
     std::atomic<uint32_t> displayLiveInvalidPrioritySkips{0}; // Live display update early-returned invalid priority
     std::atomic<uint32_t> displayLiveFallbackToUsable{0};     // Live display used fallback usable alert
-    std::atomic<uint32_t> voiceAnnouncePriority{0};           // Voice priority announcements emitted
-    std::atomic<uint32_t> voiceAnnounceDirection{0};          // Voice direction/bogey announcements emitted
-    std::atomic<uint32_t> voiceAnnounceSecondary{0};          // Voice secondary announcements emitted
-    std::atomic<uint32_t> voiceAnnounceEscalation{0};         // Voice escalation announcements emitted
-    std::atomic<uint32_t> voiceDirectionThrottled{0};         // Voice direction announcements suppressed by throttle
     std::atomic<uint32_t> powerAutoPowerArmed{0};             // Auto power-off armed on first V1 data
     std::atomic<uint32_t> powerAutoPowerTimerStart{0};        // Auto power-off timer started
     std::atomic<uint32_t> powerAutoPowerTimerCancel{0};       // Auto power-off timer cancelled on reconnect
@@ -203,8 +195,6 @@ struct PerfCounters {
         queueDrops.store(0, std::memory_order_relaxed);
         oversizeDrops.store(0, std::memory_order_relaxed);
         queueHighWater.store(0, std::memory_order_relaxed);
-        proxyQueueHighWater.store(0, std::memory_order_relaxed);
-        phoneCmdQueueHighWater.store(0, std::memory_order_relaxed);
         phoneCmdDropsOverflow.store(0, std::memory_order_relaxed);
         phoneCmdDropsInvalid.store(0, std::memory_order_relaxed);
         phoneCmdDropsBleFail.store(0, std::memory_order_relaxed);
@@ -306,11 +296,6 @@ struct PerfCounters {
         parserRowsKuRaw.store(0, std::memory_order_relaxed);
         displayLiveInvalidPrioritySkips.store(0, std::memory_order_relaxed);
         displayLiveFallbackToUsable.store(0, std::memory_order_relaxed);
-        voiceAnnouncePriority.store(0, std::memory_order_relaxed);
-        voiceAnnounceDirection.store(0, std::memory_order_relaxed);
-        voiceAnnounceSecondary.store(0, std::memory_order_relaxed);
-        voiceAnnounceEscalation.store(0, std::memory_order_relaxed);
-        voiceDirectionThrottled.store(0, std::memory_order_relaxed);
         powerAutoPowerArmed.store(0, std::memory_order_relaxed);
         powerAutoPowerTimerStart.store(0, std::memory_order_relaxed);
         powerAutoPowerTimerCancel.store(0, std::memory_order_relaxed);
@@ -450,8 +435,7 @@ enum class PerfDisplayRenderSubphase : uint8_t {
     Frequency = 2,
     BandsBars = 3,
     ArrowsIcons = 4,
-    Cards = 5,
-    Flush = 6,
+    Flush = 5,
 };
 
 enum class PerfDisplayFlushDecisionPath : uint8_t {
@@ -531,7 +515,6 @@ struct PerfExtendedMetrics {
     uint32_t obdConnectCallMaxUs = 0;
     uint32_t obdSecurityStartCallMaxUs = 0;
     uint32_t obdDiscoveryCallMaxUs = 0;
-    uint32_t obdSubscribeCallMaxUs = 0;
     uint32_t obdWriteCallMaxUs = 0;
     uint32_t obdRssiCallMaxUs = 0;
     uint32_t perfReportMaxUs = 0;           // perfMetricsCheckReport snapshot + enqueue
@@ -563,8 +546,6 @@ struct PerfExtendedMetrics {
     uint32_t bleFollowupRequestVersionMaxUs = 0;                  // Max REQUEST_VERSION followup duration
     uint32_t bleConnectStableCallbackMaxUs = 0;                   // Max stable-connect callback duration
     uint32_t bleProxyStartMaxUs = 0;                              // Max proxy advertising start duration
-    uint32_t displayVoiceMaxUs = 0;                               // Max voice-decision branch duration
-    uint32_t displayGapRecoverMaxUs = 0;                          // Max alert-gap recovery request duration
     uint32_t displayFullRenderCount = 0;                          // Full live render count
     uint32_t displayRestingFullRenderCount = 0;                   // Full resting render count
     uint32_t displayRestingIncrementalRenderCount = 0;            // Incremental resting render count
@@ -644,7 +625,6 @@ struct PerfExtendedMetrics {
     uint32_t displayFrequencyMaxUs = 0;                      // Frequency stage max
     uint32_t displayBandsBarsMaxUs = 0;                      // Bands + bars stage max
     uint32_t displayArrowsIconsMaxUs = 0;                    // Arrows + icons stage max
-    uint32_t displayCardsMaxUs = 0;                          // Card-row stage max
     uint32_t displayFlushSubphaseMaxUs = 0;                  // Inner render flush stage max
     uint32_t displayLiveRenderMaxUs = 0;                     // Scenario-tagged live render max
     uint32_t displayRestingRenderMaxUs = 0;                  // Scenario-tagged resting render max
@@ -694,7 +674,6 @@ struct PerfExtendedMetrics {
         obdConnectCallMaxUs = 0;
         obdSecurityStartCallMaxUs = 0;
         obdDiscoveryCallMaxUs = 0;
-        obdSubscribeCallMaxUs = 0;
         obdWriteCallMaxUs = 0;
         obdRssiCallMaxUs = 0;
         perfReportMaxUs = 0;
@@ -726,8 +705,6 @@ struct PerfExtendedMetrics {
         bleFollowupRequestVersionMaxUs = 0;
         bleConnectStableCallbackMaxUs = 0;
         bleProxyStartMaxUs = 0;
-        displayVoiceMaxUs = 0;
-        displayGapRecoverMaxUs = 0;
         displayFullRenderCount = 0;
         displayRestingFullRenderCount = 0;
         displayRestingIncrementalRenderCount = 0;
@@ -805,7 +782,6 @@ struct PerfExtendedMetrics {
         displayFrequencyMaxUs = 0;
         displayBandsBarsMaxUs = 0;
         displayArrowsIconsMaxUs = 0;
-        displayCardsMaxUs = 0;
         displayFlushSubphaseMaxUs = 0;
         displayLiveRenderMaxUs = 0;
         displayRestingRenderMaxUs = 0;
@@ -865,14 +841,11 @@ void perfRecordBleConnectStableCallbackUs(uint32_t us);
 void perfRecordBleProxyStartUs(uint32_t us);
 void perfRecordBleProcessUs(uint32_t us);
 void perfRecordDispPipeUs(uint32_t us);
-void perfRecordDisplayVoiceUs(uint32_t us);
-void perfRecordDisplayGapRecoverUs(uint32_t us);
 void perfRecordTouchUs(uint32_t us);
 void perfRecordPerfReportUs(uint32_t us);
 void perfRecordObdConnectCallUs(uint32_t us);
 void perfRecordObdSecurityStartCallUs(uint32_t us);
 void perfRecordObdDiscoveryCallUs(uint32_t us);
-void perfRecordObdSubscribeCallUs(uint32_t us);
 void perfRecordObdWriteCallUs(uint32_t us);
 void perfRecordObdRssiCallUs(uint32_t us);
 // Records transitions among the actively emitted display states
@@ -960,31 +933,11 @@ void perfSetConnectionCycleSnapshot(uint8_t stateCode, uint32_t timeInStateMs, u
 
 const char* perfConnectionCycleStateName(uint8_t stateCode);
 
-void perfCaptureRuntimeMetricsSnapshot(PerfRuntimeMetricsSnapshot& snapshot,
-                                       PerfRuntimeSnapshotMode mode = PerfRuntimeSnapshotMode::PreserveWindowPeaks);
-
-inline PhoneCmdDropMetricsSnapshot perfPhoneCmdDropMetricsSnapshot() {
-    PhoneCmdDropMetricsSnapshot snapshot;
-    snapshot.overflow = perfCounters.phoneCmdDropsOverflow.load(std::memory_order_relaxed);
-    snapshot.invalid = perfCounters.phoneCmdDropsInvalid.load(std::memory_order_relaxed);
-    snapshot.bleFail = perfCounters.phoneCmdDropsBleFail.load(std::memory_order_relaxed);
-    snapshot.lockBusy = perfCounters.phoneCmdDropsLockBusy.load(std::memory_order_relaxed);
-    return snapshot;
-}
-
-inline void perfAppendPhoneCmdDropMetrics(JsonDocument& doc, const PhoneCmdDropMetricsSnapshot& snapshot) {
-    doc["phoneCmdDropsOverflow"] = snapshot.overflow;
-    doc["phoneCmdDropsInvalid"] = snapshot.invalid;
-    doc["phoneCmdDropsBleFail"] = snapshot.bleFail;
-    doc["phoneCmdDropsLockBusy"] = snapshot.lockBusy;
-}
-
 #if PERF_METRICS
 extern PerfLatency perfLatency;
 #endif
 
 #if PERF_METRICS && PERF_MONITORING
-extern bool perfDebugEnabled;     // Runtime debug print enable
 extern uint32_t perfLastReportMs; // Last report timestamp
 #endif
 
@@ -1033,32 +986,16 @@ extern uint32_t perfLastReportMs; // Last report timestamp
 #define PERF_STAGE_TIME(stage, value) ((void)0)
 #endif
 
-// Threshold alert (immediate print if exceeded)
-#if PERF_VERBOSE
-#define PERF_ALERT_IF_SLOW(latencyUs)                                                                                  \
-    do {                                                                                                               \
-        if (perfDebugEnabled && (latencyUs) > (PERF_LATENCY_ALERT_MS * 1000)) {                                        \
-            Serial.printf("[PERF ALERT] latency=%luus\n", (unsigned long)(latencyUs));                                 \
-        }                                                                                                              \
-    } while (0)
-#else
-#define PERF_ALERT_IF_SLOW(latencyUs) ((void)0)
-#endif
-
 #else // PERF_METRICS == 0 or PERF_MONITORING == 0
 
 #define PERF_SAMPLE_LATENCY(startUs, endUs) ((void)0)
 #define PERF_STAGE_TIME(stage, value) ((void)0)
-#define PERF_ALERT_IF_SLOW(latencyUs) ((void)0)
 
 #endif // PERF_METRICS && PERF_MONITORING
 
 // ============================================================================
 // API functions
 // ============================================================================
-
-// Initialize metrics system
-void perfMetricsInit();
 
 // Reset all metrics
 void perfMetricsReset();
@@ -1078,6 +1015,3 @@ bool perfMetricsEnqueueSnapshotNow();
 // Pause/resume SD CSV snapshot emission without disabling in-RAM counters.
 void perfMetricsSetSdCapturePaused(bool paused);
 bool perfMetricsIsSdCapturePaused();
-
-// Enable/disable debug prints at runtime
-void perfMetricsSetDebug(bool enabled);

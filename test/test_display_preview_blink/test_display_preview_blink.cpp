@@ -33,7 +33,6 @@ static int g_renderScenarioSets = 0;
 static PerfDisplayRenderScenario g_lastScenario = PerfDisplayRenderScenario::None;
 void perfRecordDisplayRenderUs(uint32_t /*us*/) {}
 void perfRecordDisplayScenarioRenderUs(uint32_t /*us*/) {}
-void perfRecordDisplayVoiceUs(uint32_t /*us*/) {}
 void perfSetDisplayRenderScenario(PerfDisplayRenderScenario scenario) {
     ++g_renderScenarioSets;
     g_lastScenario = scenario;

@@ -16,8 +16,6 @@ namespace {
 struct FakeRuntime {
     WifiAutoPushApiService::SlotUpdateRequest update;
     int updateCalls = 0;
-    WifiAutoPushApiService::PushNowQueueResult queueResult =
-        WifiAutoPushApiService::PushNowQueueResult::QUEUED;
 };
 
 WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
@@ -41,10 +39,6 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         return true;
     };
     runtime.applySlotUpdateCtx = &fake;
-    runtime.queuePushNow = [](const WifiAutoPushApiService::PushNowRequest&, void* ctx) {
-        return static_cast<FakeRuntime*>(ctx)->queueResult;
-    };
-    runtime.queuePushNowCtx = &fake;
     return runtime;
 }
 
@@ -107,30 +101,6 @@ void test_slot_save_can_explicitly_disable_volume_pair() {
     TEST_ASSERT_EQUAL_UINT8(0xFF, fake.update.muteVolume);
 }
 
-void test_push_now_returns_queued_not_applied() {
-    WebServer server(80);
-    FakeRuntime fake;
-    server.setArg("slot", "0");
-
-    WifiAutoPushApiService::handleApiPushNow(server, makeRuntime(fake), alwaysAllow, nullptr);
-
-    TEST_ASSERT_EQUAL_INT(202, server.lastStatusCode);
-    TEST_ASSERT_TRUE(contains(server.lastBody, "\"result\":\"queued\""));
-    TEST_ASSERT_TRUE(contains(server.lastBody, "/api/autopush/status"));
-}
-
-void test_push_now_reports_invalid_volume_contract() {
-    WebServer server(80);
-    FakeRuntime fake;
-    fake.queueResult = WifiAutoPushApiService::PushNowQueueResult::INVALID_VOLUME_PAIR;
-    server.setArg("slot", "0");
-
-    WifiAutoPushApiService::handleApiPushNow(server, makeRuntime(fake), alwaysAllow, nullptr);
-
-    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
-    TEST_ASSERT_TRUE(contains(server.lastBody, "configured together"));
-}
-
 void test_status_api_preserves_terminal_result() {
     WebServer server(80);
     FakeRuntime fake;
@@ -147,8 +117,6 @@ int main() {
     RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
     RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
     RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);
-    RUN_TEST(test_push_now_returns_queued_not_applied);
-    RUN_TEST(test_push_now_reports_invalid_volume_contract);
     RUN_TEST(test_status_api_preserves_terminal_result);
     return UNITY_END();
 }

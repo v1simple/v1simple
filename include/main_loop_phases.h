@@ -13,15 +13,6 @@
 #include "modules/system/loop_power_touch_module.h"
 #include "modules/system/loop_runtime_snapshot_module.h"
 
-struct LoopConnectionEarlyPhaseValues {
-    bool bootSplashHoldActive = false;
-    bool initialScanningScreenShown = false;
-    bool bleConnectedNow = false;
-    bool bleBackpressure = false;
-    bool skipNonCoreThisLoop = false;
-    bool overloadThisLoop = false;
-};
-
 struct LoopIngestPhaseValues {
     bool enableWifi = true;
     bool bootReady = false;
@@ -41,11 +32,6 @@ struct LoopFinalizePhaseValues {
     bool bleConnectedNow = false;
     unsigned long lastLoopUs = 0;
 };
-
-LoopConnectionEarlyPhaseValues
-processLoopConnectionEarlyPhase(unsigned long nowMs, unsigned long nowUs, unsigned long lastLoopUs,
-                                bool currentBootSplashHoldActive, unsigned long currentBootSplashHoldUntilMs,
-                                bool currentInitialScanningScreenShown, bool presentationSuppressed);
 
 LoopIngestPhaseValues processLoopIngestPhase(unsigned long nowMs, bool currentBootReady,
                                              unsigned long bootReadyDeadlineMs, bool skipNonCoreThisLoop,
@@ -72,4 +58,4 @@ LoopFinalizePhaseValues processLoopFinalizePhase(bool bootSplashHoldActive, bool
 
 unsigned long processLoopSettingsEarlyReturnPhase(unsigned long nowMs, unsigned long loopStartUs, bool bleConnected);
 
-bool shouldReturnEarlyFromLoopPowerTouchPhase(unsigned long nowMs, unsigned long loopStartUs);
+bool shouldReturnEarlyFromLoopPowerTouchPhase(unsigned long nowMs);

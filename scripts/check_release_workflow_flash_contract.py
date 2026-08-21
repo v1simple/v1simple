@@ -15,10 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORMIO_INI = ROOT / "platformio.ini"
 PRODUCTION_BUILD = ROOT / "scripts" / "build_production_artifacts.sh"
 RELEASE_YML = ROOT / ".github" / "workflows" / "release.yml"
-RELEASE_BUMP_POLICY = ROOT / ".release-bump"
+CONFIG_H = ROOT / "include" / "config.h"
+BUILD_METADATA = ROOT / "scripts" / "get_git_sha.py"
 PARTITIONS = ROOT / "partitions_v1.csv"
 ENV = "waveshare-349"
-VALID_RELEASE_BUMPS = {"patch", "minor", "major"}
 
 
 def env_value(key: str) -> str:
@@ -131,36 +131,61 @@ def check_production_build(errors: list[str]) -> None:
             "dependencies before the first firmware command"
         )
 
-    checker = "python3 scripts/check_release_workflow_flash_contract.py"
     build = "./scripts/build_production_artifacts.sh"
+    version_check = "python3 scripts/check_release_firmware_version.py"
     merge = "Merge firmware for ESP Web Tools"
-    for required in (checker, build, merge):
+    for required in (build, version_check, merge):
         require_contains(release_text, required, ".github/workflows/release.yml", errors)
-    ordered = (release_text.find(checker), release_text.find(build), release_text.find(merge))
+    ordered = (
+        release_text.find(build),
+        release_text.find(version_check),
+        release_text.find(merge),
+    )
     if -1 not in ordered and list(ordered) != sorted(ordered):
-        errors.append("release.yml must validate its artifact contract, build, then package firmware")
+        errors.append("release.yml must build, verify the embedded version, then package firmware")
 
 
-def check_version_policy(errors: list[str]) -> None:
-    """Guard the reviewed one-release bump and its automatic patch reset."""
-
-    try:
-        bump = RELEASE_BUMP_POLICY.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        errors.append(f"unable to read .release-bump: {exc}")
-        return
-    if bump not in VALID_RELEASE_BUMPS:
-        allowed = ", ".join(sorted(VALID_RELEASE_BUMPS))
-        errors.append(f".release-bump must contain exactly one of: {allowed}")
+def check_version_and_publication(errors: list[str]) -> None:
+    """Guard read-only version selection and exact tested-commit publication."""
 
     release_text = RELEASE_YML.read_text(encoding="utf-8")
     for required in (
-        "RELEASE_BUMP: auto",
-        "git add include/config.h CHANGELOG.md .release-bump",
-        'if [ "$(cat .release-bump)" != "patch" ]; then',
-        'EXPECTED_FILES="$(printf \'%s\\n\' .release-bump CHANGELOG.md include/config.h)"',
+        "python3 scripts/prepare_release.py",
+        "--prepare",
+        "V1_RELEASE_VERSION:",
+        "steps.version.outputs.version",
+        "python3 scripts/check_release_firmware_version.py",
+        "RELEASE_SHA: ${{ steps.base.outputs.sha }}",
+        'if [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]; then',
+        'if [ "$EXISTING_SHA" != "$RELEASE_SHA" ]; then',
+        "it will not be moved",
+        "Release-Run-ID: $RELEASE_RUN_ID",
+        "push --atomic origin",
     ):
-        require_contains(release_text, required, ".github/workflows/release.yml version policy", errors)
+        require_contains(
+            release_text,
+            required,
+            ".github/workflows/release.yml version/publication contract",
+            errors,
+        )
+    for forbidden in (".release-bump", "CHANGELOG.md", "chore(release): prepare"):
+        if forbidden in release_text:
+            errors.append(
+                f".github/workflows/release.yml retains generated-commit choreography: {forbidden!r}"
+            )
+
+    config_text = CONFIG_H.read_text(encoding="utf-8")
+    guard = "#ifndef FIRMWARE_VERSION\n#define FIRMWARE_VERSION"
+    require_contains(config_text, guard, "include/config.h release override", errors)
+
+    metadata_text = BUILD_METADATA.read_text(encoding="utf-8")
+    for required in ("V1_RELEASE_VERSION", '("FIRMWARE_VERSION",'):
+        require_contains(
+            metadata_text,
+            required,
+            "scripts/get_git_sha.py release override",
+            errors,
+        )
 
 
 def check_flash_and_package(errors: list[str]) -> None:
@@ -245,7 +270,7 @@ def check_flash_and_package(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     check_production_build(errors)
-    check_version_policy(errors)
+    check_version_and_publication(errors)
     check_flash_and_package(errors)
     if errors:
         print("[release] production artifact contract failed:")

@@ -4,120 +4,35 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import json
+from pathlib import Path
 
-CURRENT_PERF_CSV_SCHEMA = 47
+CURRENT_PERF_CSV_SCHEMA = 48
 MIN_DROP_COUNTER_SCHEMA = 13
 MIN_NOTIFY_PIPELINE_COMPLETE_SCHEMA = 47
 
-CANONICAL_METRIC_UNITS: dict[str, str] = {
-    "metrics_ok_samples": "count",
-    "rx_packets_delta": "count",
-    "parse_successes_delta": "count",
-    "parse_failures_delta": "count",
-    "parse_resyncs_delta": "count",
-    "queue_drops_delta": "count",
-    "perf_drop_delta": "count",
-    "event_drop_delta": "count",
-    "oversize_drops_delta": "count",
-    "display_drive_activity_delta": "count",
-    "display_updates_delta": "count",
-    "display_skips_delta": "count",
-    "reconnects_delta": "count",
-    "disconnects_delta": "count",
-    "ble_mutex_timeout_delta": "count",
-    "wifi_connect_deferred_delta": "count",
-    "loop_max_peak_us": "us",
-    "flush_max_peak_us": "us",
-    "wifi_max_peak_us": "us",
-    "ble_drain_max_peak_us": "us",
-    "sd_max_peak_us": "us",
-    "sd_start_max_peak_us": "us",
-    "sd_runtime_max_peak_us": "us",
-    "fs_max_peak_us": "us",
-    "queue_high_water_peak": "count",
-    "ble_process_max_peak_us": "us",
-    "disp_pipe_max_peak_us": "us",
-    "dma_free_min_bytes": "bytes",
-    "dma_largest_min_bytes": "bytes",
-    "wifi_p95_us": "us",
-    "disp_pipe_p95_us": "us",
-    "dma_fragmentation_pct_p95": "percent",
-    "samples_to_stable": "count",
-    "time_to_stable_ms": "ms",
-    "connect_burst_samples_to_stable": "count",
-    "connect_burst_time_to_stable_ms": "ms",
-    "connect_burst_pre_ble_process_peak_us": "us",
-    "connect_burst_pre_disp_pipe_peak_us": "us",
-    "connect_burst_ble_followup_request_alert_peak_us": "us",
-    "connect_burst_ble_followup_request_version_peak_us": "us",
-    "connect_burst_ble_connect_stable_callback_peak_us": "us",
-    "connect_burst_ble_proxy_start_peak_us": "us",
-    "connect_burst_disp_render_peak_us": "us",
-    "connect_burst_display_gap_recover_peak_us": "us",
-    "connect_burst_display_base_frame_peak_us": "us",
-    "connect_burst_display_status_strip_peak_us": "us",
-    "connect_burst_display_frequency_peak_us": "us",
-    "connect_burst_display_bands_bars_peak_us": "us",
-    "connect_burst_display_arrows_icons_peak_us": "us",
-    "connect_burst_display_flush_subphase_peak_us": "us",
-    "display_full_flush_count_delta": "count",
-    "display_partial_flush_count_delta": "count",
-    "display_partial_flush_area_peak_px": "px",
-    "display_flush_max_area_px": "px",
-    "display_partial_flush_logical_width_peak_px": "px",
-    "display_partial_flush_logical_height_peak_px": "px",
-    "display_partial_flush_row_calls_peak": "count",
-    "display_partial_flush_pixels_per_row_peak_px": "px",
-    "display_partial_flush_us_peak_us": "us",
-    "display_partial_flush_worst_us_logical_width_px": "px",
-    "display_partial_flush_worst_us_logical_height_px": "px",
-    "display_partial_flush_worst_us_area_px": "px",
-    "display_partial_flush_would_full_rows64_count_delta": "count",
-    "display_partial_flush_would_full_rows128_count_delta": "count",
-    "display_partial_flush_would_full_rows256_count_delta": "count",
-    "display_union_exceeds_cap_area_peak_px": "px",
-    "display_union_exceeds_cap_rect_count_peak": "count",
-    "display_union_exceeds_cap_area_peak_source_mask": "bitmask",
-    "display_union_exceeds_cap_with_frequency_count_delta": "count",
-    "display_union_exceeds_cap_with_bands_bars_count_delta": "count",
-    "display_union_exceeds_cap_with_arrows_count_delta": "count",
-    "display_union_exceeds_cap_with_status_count_delta": "count",
-    "display_union_exceeds_cap_with_indicators_count_delta": "count",
-    "display_union_exceeds_cap_with_external_count_delta": "count",
-    "display_union_exceeds_cap_unclassified_count_delta": "count",
-    "display_resting_flush_reason_full_redraw_count_delta": "count",
-    "display_resting_flush_reason_pending_external_count_delta": "count",
-    "display_resting_flush_reason_painted_count_delta": "count",
-    "display_resting_flush_reason_cache_hit_count_delta": "count",
-    "display_persisted_flush_reason_full_redraw_count_delta": "count",
-    "display_persisted_flush_reason_pending_external_count_delta": "count",
-    "display_persisted_flush_reason_painted_count_delta": "count",
-    "display_persisted_flush_reason_cache_hit_count_delta": "count",
-    "display_status_volume_paint_count_delta": "count",
-    "display_status_rssi_paint_count_delta": "count",
-    "display_status_profile_paint_count_delta": "count",
-    "display_status_battery_paint_count_delta": "count",
-    "display_status_ble_proxy_paint_count_delta": "count",
-    "display_status_wifi_paint_count_delta": "count",
-    "display_status_obd_paint_count_delta": "count",
-    "display_status_gps_paint_count_delta": "count",
-    "display_status_alp_paint_count_delta": "count",
-    "display_base_frame_peak_us": "us",
-    "display_status_strip_peak_us": "us",
-    "display_frequency_peak_us": "us",
-    "display_bands_bars_peak_us": "us",
-    "display_arrows_icons_peak_us": "us",
-    "display_flush_subphase_peak_us": "us",
-    "display_live_render_peak_us": "us",
-    "display_resting_render_peak_us": "us",
-    "display_persisted_render_peak_us": "us",
-    "display_preview_render_peak_us": "us",
-    "display_restore_render_peak_us": "us",
-    "display_preview_first_render_peak_us": "us",
-    "display_preview_steady_render_peak_us": "us",
-    "notify_to_display_pipeline_complete_max_ms": "ms",
-    "notify_to_display_pipeline_complete_sample_count": "count",
-}
+CATALOG_PATH = Path(__file__).with_name("hardware_metric_catalog.json")
+
+
+def load_catalog_units(path: Path = CATALOG_PATH) -> dict[str, str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("metrics") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"Invalid hardware metric catalog: {path}")
+
+    units: dict[str, str] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not isinstance(row.get("metric"), str) or not isinstance(row.get("unit"), str):
+            raise RuntimeError(f"Invalid metric catalog entry at index {index}: {path}")
+        metric = row["metric"]
+        unit = row["unit"]
+        if metric in units and units[metric] != unit:
+            raise RuntimeError(f"Conflicting units for {metric}: {units[metric]} and {unit}")
+        units[metric] = unit
+    return units
+
+
+CANONICAL_METRIC_UNITS = load_catalog_units()
 
 CSV_DELTA_COLUMNS = {
     "rx_packets_delta": "rx",
@@ -126,7 +41,6 @@ CSV_DELTA_COLUMNS = {
     "parse_resyncs_delta": "parseResync",
     "queue_drops_delta": "qDrop",
     "perf_drop_delta": "perfDrop",
-    "event_drop_delta": "eventBusDrops",
     "oversize_drops_delta": "oversizeDrops",
     "display_updates_delta": "displayUpdates",
     "display_skips_delta": "displaySkips",
@@ -227,7 +141,6 @@ CSV_CONNECT_BURST_PEAK_COLUMNS = {
     "connect_burst_ble_connect_stable_callback_peak_us": "bleConnectStableCallbackMax_us",
     "connect_burst_ble_proxy_start_peak_us": "bleProxyStartMax_us",
     "connect_burst_disp_render_peak_us": "dispMax_us",
-    "connect_burst_display_gap_recover_peak_us": "displayGapRecoverMax_us",
     "connect_burst_display_base_frame_peak_us": "displayBaseFrameMax_us",
     "connect_burst_display_status_strip_peak_us": "displayStatusStripMax_us",
     "connect_burst_display_frequency_peak_us": "displayFrequencyMax_us",
@@ -244,7 +157,7 @@ PERF_CSV_ALWAYS_UNSUPPORTED_METRICS = frozenset(
         "connect_burst_time_to_stable_ms",
     }
 )
-PERF_CSV_LEGACY_UNSUPPORTED_METRICS = frozenset({"perf_drop_delta", "event_drop_delta"})
+PERF_CSV_LEGACY_UNSUPPORTED_METRICS = frozenset({"perf_drop_delta"})
 PERF_CSV_NOTIFY_PIPELINE_COMPLETE_METRICS = frozenset(
     {
         "notify_to_display_pipeline_complete_max_ms",
@@ -353,7 +266,6 @@ SOAK_TREND_METRIC_NAMES = (
     "parse_resyncs_delta",
     "queue_drops_delta",
     "perf_drop_delta",
-    "event_drop_delta",
     "oversize_drops_delta",
     "display_drive_activity_delta",
     "display_updates_delta",
@@ -387,7 +299,6 @@ SOAK_TREND_METRIC_NAMES = (
     "connect_burst_ble_connect_stable_callback_peak_us",
     "connect_burst_ble_proxy_start_peak_us",
     "connect_burst_disp_render_peak_us",
-    "connect_burst_display_gap_recover_peak_us",
     "connect_burst_display_base_frame_peak_us",
     "connect_burst_display_status_strip_peak_us",
     "connect_burst_display_frequency_peak_us",
@@ -465,7 +376,6 @@ SOAK_TREND_METRIC_KV_ALIASES = {
     "connect_burst_ble_connect_stable_callback_peak_us": "connect_burst_ble_connect_stable_callback_peak",
     "connect_burst_ble_proxy_start_peak_us": "connect_burst_ble_proxy_start_peak",
     "connect_burst_disp_render_peak_us": "connect_burst_disp_render_peak",
-    "connect_burst_display_gap_recover_peak_us": "connect_burst_display_gap_recover_peak",
     "connect_burst_display_base_frame_peak_us": "connect_burst_display_base_frame_peak",
     "connect_burst_display_status_strip_peak_us": "connect_burst_display_status_strip_peak",
     "connect_burst_display_frequency_peak_us": "connect_burst_display_frequency_peak",
@@ -496,7 +406,7 @@ def unsupported_metrics_for_perf_csv(source_schema: int, columns: Iterable[str])
     column_set = set(columns)
     unsupported = set(PERF_CSV_ALWAYS_UNSUPPORTED_METRICS)
     schema_is_legacy = source_schema != 0 and source_schema < MIN_DROP_COUNTER_SCHEMA
-    if schema_is_legacy or not {"perfDrop", "eventBusDrops"} <= column_set:
+    if schema_is_legacy or "perfDrop" not in column_set:
         unsupported.update(PERF_CSV_LEGACY_UNSUPPORTED_METRICS)
     notify_schema_is_legacy = source_schema != 0 and source_schema < MIN_NOTIFY_PIPELINE_COMPLETE_SCHEMA
     if notify_schema_is_legacy or not PERF_CSV_NOTIFY_PIPELINE_COMPLETE_COLUMNS <= column_set:

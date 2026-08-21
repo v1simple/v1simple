@@ -20,14 +20,13 @@
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_audio_api_service.h"
 #include "modules/wifi/wifi_maintenance_write_policy.h"
+#include "modules/wifi/wifi_split_boot_api_response.h"
 #include "modules/wifi/wifi_static_path_guard.h"
 #include "modules/wifi/wifi_v1_profile_api_service.h"
 #include "modules/wifi/wifi_v1_devices_api_service.h"
 #include "modules/speed/speed_source_selector.h"
 #include "modules/obd/obd_api_service.h"
 #include "modules/obd/obd_runtime_module.h"
-#include "modules/alp/alp_api_service.h"
-#include "modules/alp/alp_runtime_module.h"
 #include "modules/gps/gps_api_service.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "battery_manager.h"
@@ -186,16 +185,16 @@ bool WiFiManager::setupWebServer() {
     server_.on("/api/v1/pull", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        WifiV1ProfileApiService::handleApiSettingsPull(
-            server_, makeV1ProfileRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+        if (!checkRateLimit())
+            return;
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::V1_PUSH_PULL);
     });
     server_.on("/api/v1/push", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        WifiV1ProfileApiService::handleApiSettingsPush(
-            server_, makeV1ProfileRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+        if (!checkRateLimit())
+            return;
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::V1_PUSH_PULL);
     });
     server_.on("/api/v1/current", HTTP_GET,
                [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
@@ -243,9 +242,9 @@ bool WiFiManager::setupWebServer() {
     server_.on("/api/autopush/push", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        WifiAutoPushApiService::handleApiPushNow(
-            server_, makeAutoPushRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+        if (!checkRateLimit())
+            return;
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::AUTO_PUSH_NOW);
     });
     server_.on("/api/autopush/status", HTTP_GET,
                [this]() { WifiAutoPushApiService::handleApiStatus(server_, makeAutoPushRuntime()); });
@@ -293,11 +292,11 @@ bool WiFiManager::setupWebServer() {
 
     // Quiet-driving settings routes
     server_.on("/api/quiet/settings", HTTP_GET,
-               [this]() { WifiQuietApiService::handleApiGet(server_, makeQuietRuntime()); });
+               [this]() { WifiQuietApiService::handleApiGet(server_, makeAudioRuntime()); });
     server_.on("/api/quiet/settings", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        WifiQuietApiService::handleApiSave(server_, makeQuietRuntime());
+        WifiQuietApiService::handleApiSave(server_, makeAudioRuntime());
     });
 
     // Settings backup/restore API routes
@@ -441,8 +440,10 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
     // OBD API routes
-    server_.on("/api/obd/status", HTTP_GET,
-               [this]() { ObdApiService::handleApiStatus(server_, obdRuntime_, makeObdRuntime()); });
+    server_.on("/api/obd/status", HTTP_GET, [this]() {
+        markUiActivity();
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::OBD_RUNTIME);
+    });
     server_.on("/api/obd/devices", HTTP_GET, [this]() {
         ObdApiService::handleApiDevicesList(server_, obdRuntime_, settingsManager, makeObdRuntime());
     });
@@ -456,7 +457,10 @@ bool WiFiManager::setupWebServer() {
     server_.on("/api/obd/scan", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        ObdApiService::handleApiScan(server_, obdRuntime_, makeObdRuntime());
+        markUiActivity();
+        if (!checkRateLimit())
+            return;
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::OBD_RUNTIME);
     });
     server_.on("/api/obd/forget", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
@@ -471,9 +475,8 @@ bool WiFiManager::setupWebServer() {
 
     // ALP API routes — runtime status snapshot for diagnostics/UI
     server_.on("/api/alp/status", HTTP_GET, [this]() {
-        AlpApiService::handleApiStatus(
-            server_, alpRuntime_, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this,
-            mainRuntimeState.maintenanceBootActive);
+        markUiActivity();
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::ALP_STATUS);
     });
 
     // GPS API routes — config + status
@@ -493,11 +496,8 @@ bool WiFiManager::setupWebServer() {
         GpsApiService::handleApiConfigSave(server_, settingsManager, gpsRuntime_, r);
     });
     server_.on("/api/gps/status", HTTP_GET, [this]() {
-        GpsApiService::Runtime r;
-        r.ctx = this;
-        r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
-        r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
-        GpsApiService::handleApiStatus(server_, gpsRuntime_, r);
+        markUiActivity();
+        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::GPS_STATUS);
     });
 
     // onNotFound is registered earlier for the remaining LittleFS assets.

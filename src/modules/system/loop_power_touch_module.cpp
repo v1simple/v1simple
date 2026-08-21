@@ -32,14 +32,10 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
 
     result.shouldReturnEarly = true;
 
-    if (providers.recordLoopJitterUs && providers.microsNow) {
-        providers.recordLoopJitterUs(providers.loopJitterContext,
-                                     providers.microsNow(providers.microsContext) - ctx.loopStartUs);
-    }
-
     // The normal telemetry phase is skipped by the settings-mode early return.
-    // Keep loop jitter every tick, but mirror LoopTelemetryModule's bounded
-    // heap/DMA cadence because those probes are comparatively expensive.
+    // Mirror LoopTelemetryModule's bounded heap/DMA cadence because those
+    // probes are comparatively expensive. The common loop tail records the
+    // complete loop duration after this phase returns.
     if (++heapSampleSkip_ < HEAP_SAMPLE_DIVISOR) {
         return result;
     }

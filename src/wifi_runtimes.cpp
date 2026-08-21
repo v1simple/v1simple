@@ -14,8 +14,6 @@
 #include "v1_devices.h"
 #include "battery_manager.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
-#include "modules/wifi/wifi_quiet_api_service.h"
-#include "modules/wifi/wifi_audio_api_service.h"
 #include "modules/wifi/wifi_display_colors_api_service.h"
 #include "modules/wifi/wifi_settings_api_service.h"
 #include "modules/wifi/wifi_status_api_service.h"
@@ -189,16 +187,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             (void)settingsManager.applyAutoPushStateUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
         nullptr,
-        [](const WifiAutoPushApiService::PushNowRequest& request, void* ctx) {
-            auto* mgr = static_cast<WiFiManager*>(ctx);
-            if (!mgr->queuePushNow_) {
-                return WifiAutoPushApiService::PushNowQueueResult::PROFILE_LOAD_FAILED;
-            }
-            return mgr->queuePushNow_(request, mgr->queuePushNowCtx_);
-        },
-        this,
     };
-    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
     return runtime;
 }
 
@@ -228,19 +217,8 @@ WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
     };
 }
 
-WifiQuietApiService::Runtime WiFiManager::makeQuietRuntime() {
-    WifiQuietApiService::Runtime r;
-    r.ctx = this;
-    r.getSettings = [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); };
-    r.applySettingsUpdate = [](const QuietSettingsUpdate& update, void* /*ctx*/) {
-        settingsManager.applyQuietSettingsUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-    };
-    r.checkRateLimit = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); };
-    return r;
-}
-
-WifiAudioApiService::Runtime WiFiManager::makeAudioRuntime() {
-    WifiAudioApiService::Runtime r;
+WifiAudioSettingsRuntime WiFiManager::makeAudioRuntime() {
+    WifiAudioSettingsRuntime r;
     r.ctx = this;
     r.getSettings = [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); };
     r.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* /*ctx*/) {
@@ -410,16 +388,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         nullptr,
-        [](const String& name, uint8_t outBytes[6], bool& displayOn, void* /*ctx*/) {
-            V1Profile profile;
-            if (!v1ProfileManager.loadProfile(name, profile)) {
-                return false;
-            }
-            memcpy(outBytes, profile.settings.bytes, 6);
-            displayOn = profile.displayOn;
-            return true;
-        },
-        nullptr,
         [](const JsonObject& settingsObj, uint8_t outBytes[6], void* /*ctx*/) {
             V1UserSettings settings;
             if (!v1ProfileManager.jsonToSettings(settingsObj, settings)) {
@@ -446,16 +414,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         nullptr,
         [](const String& name, void* /*ctx*/) { return v1ProfileManager.deleteProfile(name); },
         nullptr,
-        [](void* /*ctx*/) { return bleClient.requestUserBytes(); },
-        nullptr,
-        [](const uint8_t inBytes[6], void* /*ctx*/) {
-            return bleClient.writeUserBytesVerified(inBytes, 3) == V1BLEClient::VERIFY_OK;
-        },
-        nullptr,
-        [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); },
-        nullptr,
-        [](bool displayOn, void* /*ctx*/) { bleClient.setDisplayOn(displayOn); },
-        nullptr,
         [](void* /*ctx*/) { return v1ProfileManager.hasCurrentSettings(); },
         nullptr,
         [](void* /*ctx*/) { return v1ProfileManager.settingsToJson(v1ProfileManager.getCurrentSettings()); },
@@ -464,7 +422,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         nullptr,
         [](void* /*ctx*/) { settingsManager.requestDeferredBackupFromCurrentState(); },
         nullptr,
-        mainRuntimeState.maintenanceBootActive,
     };
 }
 

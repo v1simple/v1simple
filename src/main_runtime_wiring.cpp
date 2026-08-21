@@ -119,7 +119,6 @@ static WifiOrchestrator& getWifiOrchestrator() {
 
 void configureWifiRuntimeModule() {
     wifiManager.setObdDependencies(&obdRuntimeModule, &speedSourceSelector);
-    wifiManager.setAlpRuntime(&alpRuntimeModule);
     wifiManager.setGpsRuntime(&gpsRuntimeModule);
     getWifiOrchestrator().ensureCallbacksConfigured();
     if (!wifiStatusObservabilityCallbackConfigured) {
@@ -318,15 +317,13 @@ void configureAlertDisplayPipeline() {
 
 static void configureSystemLoopCoreModules() {
     systemEventBus.reset();
-    if (!bleQueueModule.begin(&bleClient, &parser, &v1ProfileManager, &displayPreviewModule, &powerModule,
-                              &systemEventBus)) {
+    if (!bleQueueModule.begin(&bleClient, &parser, &v1ProfileManager, &displayPreviewModule, &powerModule)) {
         fatalBootError("BLE queue init failed", true);
     }
     bleQueueModule.setCausalTraceObserver(
         [](const V1CausalTraceRecord& record, void*) { v1EncounterLogger.recordCausalTrace(record); });
     configureConnectionRuntimeModule();
-    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule,
-                                &systemEventBus);
+    connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
     connectionStateModule.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, &displayPipelineModule);
     configureConnectionStateDispatchModule();
     configurePeriodicMaintenanceModule();

@@ -390,14 +390,10 @@ bool AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
 
 // ── Event bus publishing ──────────────────────────────────────────────
 
-void AlpRuntimeModule::publishStateChangeEvent(uint32_t nowMs, uint16_t detail) {
+void AlpRuntimeModule::publishDisplayEdge() {
     if (!bus_)
         return;
-    SystemEvent e;
-    e.type = SystemEventType::ALP_STATE_CHANGED;
-    e.tsMs = nowMs;
-    e.detail = detail;
-    bus_->publish(e);
+    bus_->publishAlpStateChanged();
 }
 
 // ── State transitions ────────────────────────────────────────────────
@@ -486,7 +482,7 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
         session_ = AlertSession{};
         session_.active = true;
         updateCurrentEvent(nowMs);
-        publishStateChangeEvent(nowMs, 0x01);
+        publishDisplayEdge();
         session_.startMs = nowMs;
         session_.isWarmUp = flagWarmUp;
         session_.modeAtOpen = lastHbByte1_;
@@ -536,25 +532,15 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
         }
         session_.active = false;
         updateCurrentEvent(nowMs);
-        publishStateChangeEvent(nowMs, 0x02);
+        publishDisplayEdge();
         session_.endMs = nowMs;
     }
 
     state_ = newState;
 
     // ── Publish state-change event to display pipeline ──────────────────
-    uint16_t detail = 0x00;
-    if (newState == AlpState::ALERT_ACTIVE) {
-        detail = 0x10;
-    } else if (oldState == AlpState::ALERT_ACTIVE) {
-        detail = 0x11;
-    } else if (newState == AlpState::NOISE_WINDOW) {
-        detail = 0x12;
-    } else if (oldState == AlpState::NOISE_WINDOW) {
-        detail = 0x13;
-    }
     updateCurrentEvent(nowMs);
-    publishStateChangeEvent(nowMs, detail);
+    publishDisplayEdge();
 }
 
 // ── UART drain ───────────────────────────────────────────────────────
@@ -756,7 +742,7 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
             ALP_LOG("WARM_UP: LID deploy observed — unmarking session as real");
             session_.isWarmUp = false;
             updateCurrentEvent(nowMs);
-            publishStateChangeEvent(nowMs, 0x01);
+            publishDisplayEdge();
             if (sdLogger_) {
                 sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, session_.gun, "lid_deploy",
                                            sessionDirectionName(session_));
@@ -838,7 +824,7 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
                 ALP_LOG("WARM_UP: heartbeat -> 01 (Targeted) — unmarking session as real");
                 session_.isWarmUp = false;
                 updateCurrentEvent(nowMs);
-                publishStateChangeEvent(nowMs, 0x01);
+                publishDisplayEdge();
                 if (sdLogger_) {
                     sdLogger_->logSessionEvent(nowMs, "WARMUP_RELEASE", state_, session_.gun, "hb_targeted",
                                                sessionDirectionName(session_));
@@ -864,7 +850,7 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, 
             ALP_LOG("WARM_UP: heartbeat %02X -> %02X (DLI/LID engage) — unmarking session as real", prevByte1, b1);
             session_.isWarmUp = false;
             updateCurrentEvent(nowMs);
-            publishStateChangeEvent(nowMs, 0x01);
+            publishDisplayEdge();
             if (sdLogger_) {
                 char reason[24];
                 snprintf(reason, sizeof(reason), "hb_%02X_to_%02X", prevByte1, b1);

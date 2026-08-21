@@ -8,7 +8,6 @@ class PacketParser;
 class V1Display;
 class PowerModule;
 class BleQueueModule;
-class SystemEventBus;
 class AlertPersistenceModule;
 
 /**
@@ -26,8 +25,7 @@ class ConnectionStateModule {
     using DisplayOwnerRestoreCallback = bool (*)(void* context, uint32_t nowMs);
 
     void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule,
-               BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence,
-               SystemEventBus* eventBus = nullptr);
+               BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence);
     void setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCallback callback, void* context);
 
     // Call once per loop iteration; returns true if connected
@@ -48,7 +46,6 @@ class ConnectionStateModule {
     PowerModule* power_ = nullptr;
     BleQueueModule* bleQueue_ = nullptr;
     AlertPersistenceModule* alertPersistence_ = nullptr;
-    SystemEventBus* bus_ = nullptr;
 
     bool wasConnected_ = false;
     // Connection admission/power/event state is committed by the immediate

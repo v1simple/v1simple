@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
-"""Inject GIT_SHA only into build_metadata.cpp so incremental builds stay cached.
+"""Inject build metadata supplied outside the tracked source tree.
 
-Used as a PlatformIO extra_script (pre:).  Applies a per-source CPPDEFINE
-so the macro never touches any other translation unit.
+GIT_SHA is applied only to build_metadata.cpp so incremental builds stay
+cached. Release may also supply V1_RELEASE_VERSION; that selected semantic
+version must reach every translation unit that consumes FIRMWARE_VERSION.
 """
-import subprocess, os
+import os
+import re
+import subprocess
 
 Import("env")  # noqa: F821  — PlatformIO SCons global
+
+release_version = os.environ.get("V1_RELEASE_VERSION", "")
+if release_version:
+    if re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", release_version) is None:
+        print(f"Error: invalid V1_RELEASE_VERSION: {release_version!r}")
+        env.Exit(2)
+    env.Append(CPPDEFINES=[("FIRMWARE_VERSION", '\\"' + release_version + '\\"')])
 
 try:
     sha = subprocess.check_output(

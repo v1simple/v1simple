@@ -78,7 +78,6 @@ static void recordHeapStatsSample(void*, uint32_t freeHeap, uint32_t largestHeap
 void configureLoopPowerTouchModule() {
     LoopPowerTouchModule::Providers loopPowerTouchProviders;
     loopPowerTouchProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
-    loopPowerTouchProviders.microsNow = [](void*) -> uint32_t { return micros(); };
     loopPowerTouchProviders.runPowerProcess = ProviderCallbackBindings::member<PowerModule, &PowerModule::process>;
     loopPowerTouchProviders.powerContext = &powerModule;
     loopPowerTouchProviders.readPresentationSuppressed =
@@ -88,7 +87,6 @@ void configureLoopPowerTouchModule() {
         ProviderCallbackBindings::member<TouchUiModule, &TouchUiModule::process>;
     loopPowerTouchProviders.touchUiContext = &touchUiModule;
     loopPowerTouchProviders.recordTouchUs = [](void*, uint32_t elapsedUs) { perfRecordTouchUs(elapsedUs); };
-    loopPowerTouchProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) { perfRecordLoopJitterUs(jitterUs); };
     loopPowerTouchProviders.refreshDmaCache = refreshStorageDmaHeapCache;
     loopPowerTouchProviders.readFreeHeap = readCurrentFreeHeap;
     loopPowerTouchProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;
@@ -180,7 +178,6 @@ void configureLoopTailModule() {
 
 void configureLoopTelemetryModule() {
     LoopTelemetryModule::Providers loopTelemetryProviders;
-    loopTelemetryProviders.microsNow = [](void*) -> uint32_t { return micros(); };
     loopTelemetryProviders.refreshDmaCache = refreshStorageDmaHeapCache;
     loopTelemetryProviders.readFreeHeap = readCurrentFreeHeap;
     loopTelemetryProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;

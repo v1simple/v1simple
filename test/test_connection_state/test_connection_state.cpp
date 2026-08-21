@@ -107,9 +107,7 @@ static ConnectionStateSerialCapture connectionStateSerialCapture;
 // Compile the REAL module too: the replica below pins the logic pattern, but
 // only the real translation unit exercises the actual
 // src/modules/ble/connection_state_module.cpp (a 2026-07-09 review found this
-// suite exercised the copy only). The event bus has no mock; the real header
-// is native-safe.
-#include "../../src/modules/system/system_event_bus.h"
+// suite exercised the copy only).
 #define Serial connectionStateSerialCapture
 #include "../../src/modules/ble/connection_state_module.cpp"
 #undef Serial
@@ -499,14 +497,13 @@ void test_real_module_disconnect_clears_ble_display_state() {
 
 void test_real_module_immediate_connect_defers_display_but_commits_state() {
     ConnectionStateModule real;
-    SystemEventBus eventBus;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, &eventBus);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
 
     // Models onV1ConnectImmediate(), which runs synchronously inside
-    // V1BLEClient::process(). Session admission, power state and the event must
+    // V1BLEClient::process(). Session admission and power state must
     // commit now, but a full display transition must not run in that callback.
     real.handleConnected(1000, 7);
 
@@ -517,18 +514,11 @@ void test_real_module_immediate_connect_defers_display_but_commits_state() {
     TEST_ASSERT_TRUE(powerModule.lastConnectionState);
     TEST_ASSERT_EQUAL(0, display.showRestingCalls);
 
-    SystemEvent event;
-    TEST_ASSERT_TRUE(eventBus.consume(event));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SystemEventType::BLE_CONNECTED), static_cast<uint8_t>(event.type));
-    TEST_ASSERT_EQUAL_UINT32(1000, event.tsMs);
-    TEST_ASSERT_FALSE(eventBus.consume(event));
-
     // Normal connection-state dispatch runs only after the boot/preview/dwell
     // gates release. Presentation happens once at that safe boundary.
     TEST_ASSERT_TRUE(real.process(1050));
     TEST_ASSERT_EQUAL(1, display.showRestingCalls);
     TEST_ASSERT_EQUAL(1, powerModule.onV1ConnectionChangeCalls);
-    TEST_ASSERT_FALSE(eventBus.consume(event));
     TEST_ASSERT_TRUE(real.process(1100));
     TEST_ASSERT_EQUAL(1, display.showRestingCalls);
 }

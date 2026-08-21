@@ -125,7 +125,6 @@ run_step "clang-format check" python3 scripts/check_clang_format.py
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
-run_step "Release bump selector regression suite" python3 scripts/test_release_bump.py
 
 section "Privacy"
 # The guards run first, then the tests that prove the guards still work. A
@@ -137,14 +136,14 @@ run_step "Privacy hook regression suite" python3 scripts/test_public_privacy_hoo
 run_step "Scanner parity with the internal repository" python3 scripts/test_scanner_parity.py
 run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
 run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
-run_step "v1replay generated protocol verification" python3 tools/v1replay/verify/verify_protocol.py
+run_step "v1replay producer-to-firmware protocol contract" python3 tools/v1replay/verify/verify_protocol.py
 
 section "Tier-0 Invariants"
 # Same reasoning as the privacy section, applied where the stakes are highest:
 # these two guards report success by finding nothing, so one that silently
 # stopped detecting is indistinguishable from a clean tree. The regression suite
 # plants known violations and proves each guard still catches them.
-run_step "BLE hot-path snapshot contract" python3 scripts/check_ble_hot_path_contract.py
+run_step "BLE hot-path invariant guard" python3 scripts/check_ble_hot_path_contract.py
 run_step "BLE deletion safety contract" python3 scripts/check_ble_deletion_contract.py
 run_step "Tier-0 guard regression suite" python3 scripts/test_ble_tier0_guards.py
 
@@ -163,14 +162,13 @@ section "Python Regression Tests"
 # script and workflow regressions in the full gate without expanding --fast.
 run_step "Bench identity regression suite" python3 scripts/test_bench_identity.py
 run_step "Bench qualification policy regression suite" python3 scripts/test_bench_policy.py
-run_step "Phase-B improvement controller regression suite" python3 scripts/test_improve.py
-run_step "Phase-B disposable Git dry-run regression suite" python3 scripts/test_improve_git_dryrun.py
+run_step "Bench host evidence regression suite" python3 scripts/test_bench_host_evidence.py
+run_step "Bench investigator regression suite" python3 scripts/test_bench_investigate.py
+run_step "Bench investigation video regression suite" python3 scripts/test_bench_investigation_video.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
-run_step "Bench blink cadence regression suite" python3 scripts/test_bench_blink_cadence.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
-run_step "Reconnect stress regression suite" python3 scripts/test_reconnect_stress.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "PlatformIO test-delay hook self-check" python3 scripts/test_delay.py
@@ -182,7 +180,6 @@ run_step "Performance CSV import regression suite" python3 scripts/test_perf_csv
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
 run_step "Device test runner regression suite" python3 scripts/test_run_device_tests_script.py
-run_step "Soak metric parser regression suite" python3 scripts/test_soak_parse_metrics.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
 
 section "Host Tools"

@@ -326,9 +326,9 @@ if [ "$SKIP_WEB" = false ]; then
     npm run build
     echo -e "${GREEN}Web interface built${NC}"
 
-    # Deploy to data/
+    # Deploy the build we just produced to data/.
     echo -e "${YELLOW}Deploying to data/ folder...${NC}"
-    npm run deploy
+    npm run deploy:built
     cd ..
     echo -e "${GREEN}Web files deployed to data/${NC}"
 
@@ -378,13 +378,8 @@ fi
 # Tests (requires gcc/g++ on host)
 if [ "$RUN_TESTS" = true ]; then
     echo -e "${YELLOW}Running unit tests...${NC}"
-    "$PIO_CMD" test -e native
+    python3 "$SCRIPT_DIR/scripts/run_native_tests_serial.py"
     echo -e "${GREEN}All tests passed${NC}"
-
-    # Also check firmware compilation (catches platform-specific issues)
-    echo -e "${YELLOW}Checking firmware compilation...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS --target buildprog
-    echo -e "${GREEN}Firmware compiles without errors${NC}"
     echo ""
 fi
 

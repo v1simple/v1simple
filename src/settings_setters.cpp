@@ -502,39 +502,6 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     }
 }
 
-void SettingsManager::applyQuietSettingsUpdate(const QuietSettingsUpdate& update, SettingsPersistMode persistMode) {
-    bool changed = false;
-    if (update.hasAlertVolumeFadeEnabled) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeEnabled, update.alertVolumeFadeEnabled);
-    }
-    if (update.hasAlertVolumeFadeDelaySec) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeDelaySec, clampU8(update.alertVolumeFadeDelaySec, 1, 10));
-    }
-    if (update.hasAlertVolumeFadeVolume) {
-        changed |= assignIfChanged(settings_.alertVolumeFadeVolume, clampU8(update.alertVolumeFadeVolume, 1, 9));
-    }
-    if (update.hasSpeedMuteEnabled) {
-        changed |= assignIfChanged(settings_.speedMuteEnabled, update.speedMuteEnabled);
-    }
-    if (update.hasSpeedMuteThresholdMph) {
-        changed |= assignIfChanged(settings_.speedMuteThresholdMph, clampU8(update.speedMuteThresholdMph, 5, 60));
-    }
-    if (update.hasSpeedMuteHysteresisMph) {
-        changed |= assignIfChanged(settings_.speedMuteHysteresisMph, clampU8(update.speedMuteHysteresisMph, 1, 10));
-    }
-    if (update.hasSpeedMuteVolume) {
-        const uint8_t val = (update.speedMuteVolume <= 9) ? update.speedMuteVolume : 0;
-        changed |= assignIfChanged(settings_.speedMuteVolume, val);
-    }
-    if (update.hasStealthEnabled) {
-        changed |= assignIfChanged(settings_.stealthEnabled, update.stealthEnabled);
-    }
-
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
-    }
-}
-
 void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 

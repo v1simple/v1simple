@@ -10,12 +10,10 @@
 #ifndef UNIT_TEST
 #include "perf_metrics.h"
 #define PARSER_PERF_INC(counter) PERF_INC(counter)
-#define PARSER_TRACE_ENABLED() (perfDebugEnabled)
 #else
 #define PARSER_PERF_INC(counter)                                                                                       \
     do {                                                                                                               \
     } while (0)
-#define PARSER_TRACE_ENABLED() (false)
 #endif
 
 namespace {
@@ -281,10 +279,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     const bool indexValidOneBased = (alertIndex >= 1 && alertIndex <= receivedAlertCount);
     const bool indexValidZeroBased = (alertIndex < receivedAlertCount);
     if (!indexValidOneBased && !indexValidZeroBased) {
-        if (PARSER_TRACE_ENABLED()) {
-            Serial.printf("[AlertAsm] drop idx=%u cnt=%u (invalid raw index)\n", static_cast<unsigned>(alertIndex),
-                          static_cast<unsigned>(receivedAlertCount));
-        }
         return true;
     }
     const size_t rawSlot = static_cast<size_t>(alertIndex);
@@ -334,36 +328,14 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     const size_t rowsOneBased = countRowsForMode(false);
     const bool completeZeroBased = (rowsZeroBased == receivedAlertCount);
     const bool completeOneBased = (rowsOneBased == receivedAlertCount);
-    const size_t rowsForCount = std::max(rowsZeroBased, rowsOneBased);
-
-    if (PARSER_TRACE_ENABLED()) {
-        Serial.printf("[AlertRow] idx=%u cnt=%u rawSlot=%u rows0=%u rows1=%u repl=%u raw0=0x%02X f=%u bandArrow=0x%02X "
-                      "aux0=0x%02X\n",
-                      static_cast<unsigned>(alertIndex), static_cast<unsigned>(receivedAlertCount),
-                      static_cast<unsigned>(rawSlot), static_cast<unsigned>(rowsZeroBased),
-                      static_cast<unsigned>(rowsOneBased), replacingRow ? 1u : 0u, static_cast<unsigned>(payload[0]),
-                      static_cast<unsigned>(combineMSBLSB(payload[1], payload[2])), static_cast<unsigned>(payload[5]),
-                      static_cast<unsigned>(payload[6]));
-    }
 
     // Rolling raw-index cache: only publish when at least one full scheme is ready.
     if (!completeZeroBased && !completeOneBased) {
         if ((alertTableFirstSeenMs_[receivedAlertCount] != 0) &&
             ((nowMs - alertTableFirstSeenMs_[receivedAlertCount]) > kAlertAssemblyTimeoutMs)) {
             PARSER_PERF_INC(alertTableAssemblyTimeouts);
-            if (PARSER_TRACE_ENABLED()) {
-                Serial.printf("[AlertAsm] timeout cnt=%u rows=%u/%u ageMs=%lu\n",
-                              static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsForCount),
-                              static_cast<unsigned>(receivedAlertCount),
-                              static_cast<unsigned long>(nowMs - alertTableFirstSeenMs_[receivedAlertCount]));
-            }
             clearAlertCacheForCount(receivedAlertCount);
             return true;
-        }
-        if (PARSER_TRACE_ENABLED()) {
-            Serial.printf("[AlertAsm] partial rows=%u/%u (rows0=%u rows1=%u)\n", static_cast<unsigned>(rowsForCount),
-                          static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsZeroBased),
-                          static_cast<unsigned>(rowsOneBased));
         }
         return true;
     }
@@ -375,13 +347,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     AlertIndexMode decodeMode = completeZeroBased ? AlertIndexMode::ZeroBased : AlertIndexMode::OneBased;
     if (completeZeroBased && completeOneBased) {
         PARSER_PERF_INC(prioritySelectAmbiguousIndex);
-    }
-
-    if (PARSER_TRACE_ENABLED()) {
-        const char* mode = (decodeMode == AlertIndexMode::ZeroBased) ? "zero" : "one";
-        Serial.printf("[AlertAsm] publish mode=%s cnt=%u rows0=%u rows1=%u\n", mode,
-                      static_cast<unsigned>(receivedAlertCount), static_cast<unsigned>(rowsZeroBased),
-                      static_cast<unsigned>(rowsOneBased));
     }
 
     std::array<AlertData, MAX_ALERTS> nextAlerts{};
@@ -398,15 +363,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
                               alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
                               ((nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs);
         if (!rowFresh) {
-            if (PARSER_TRACE_ENABLED()) {
-                Serial.printf("[AlertAsm] missing row rawIdx=%u cnt=%u rows=%u ageMs=%lu\n",
-                              static_cast<unsigned>(expectedRawIndex), static_cast<unsigned>(receivedAlertCount),
-                              static_cast<unsigned>(rowsForCount),
-                              static_cast<unsigned long>(
-                                  (expectedRawIndex < RAW_ALERT_INDEX_SLOTS && alertChunkPresent_[expectedRawIndex])
-                                      ? (nowMs - alertChunkRxMs_[expectedRawIndex])
-                                      : 0));
-            }
             return true;
         }
 
@@ -525,14 +481,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
         if (!isUsableAlert(priorityIdx)) {
             PARSER_PERF_INC(prioritySelectInvalidChosen);
-        }
-
-        if (PARSER_TRACE_ENABLED()) {
-            const char* src = (source == PrioritySource::RowFlag)       ? "rowFlag"
-                              : (source == PrioritySource::FirstUsable) ? "firstUsable"
-                                                                        : "firstEntry";
-            Serial.printf("[AlertPri] src=%s idx=%u cnt=%u rowFlagIdx=%d\n", src, static_cast<unsigned>(priorityIdx),
-                          static_cast<unsigned>(alertCount_), priorityFromRowFlag);
         }
 
         displayState_.v1PriorityIndex = priorityIdx;

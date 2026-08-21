@@ -1,7 +1,6 @@
 node_modules/
 build/
 .svelte-kit/
-coverage/
 .env
 .env.*
 !.env.example

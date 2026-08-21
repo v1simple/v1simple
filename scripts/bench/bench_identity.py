@@ -115,10 +115,8 @@ HARDWARE_SCORING_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
         "tools/metric_schema.py",
     ),
     "metric_import": (
-        "tools/import_drive_log.py",
         "tools/import_perf_csv.py",
         "tools/metric_derivation.py",
-        "tools/soak_parse_metrics.py",
         "tools/soak_parse_panic.py",
     ),
     "metric_score": ("tools/score_hardware_run.py",),

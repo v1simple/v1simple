@@ -482,10 +482,7 @@ void test_alp_only_display_update_does_not_reuse_stale_v1_timestamp() {
     probe.display.displayClockValues[0] = 100;
     probe.display.displayClockValues[1] = 145;
 
-    SystemEvent alpEvent;
-    alpEvent.type = SystemEventType::ALP_STATE_CHANGED;
-    alpEvent.tsMs = 95;
-    probe.eventBus.publish(alpEvent);
+    probe.eventBus.publishAlpStateChanged();
 
     LoopDisplayModule module;
     LoopDisplayModule::Providers providers;

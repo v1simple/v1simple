@@ -263,7 +263,7 @@ void test_perf_sd_logger_reserve_source_contract_is_fail_safe_and_measured() {
     const std::string source = readProjectFile("src/perf_sd_logger.cpp");
     TEST_ASSERT_FALSE(source.empty());
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 47"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 48"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         source.find("notifyToDisplayPipelineCompleteMax_ms,notifyToDisplayPipelineCompleteTotalCount"));

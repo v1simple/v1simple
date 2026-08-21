@@ -15,7 +15,9 @@
 #include "display_driver.h"
 
 // Firmware Version
+#ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "1.2.3"
+#endif
 
 // BLE Configuration
 #define V1_SERVICE_UUID "92A0AFF4-9E05-11E2-AA59-F23C91AEC05E"

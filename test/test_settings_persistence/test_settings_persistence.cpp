@@ -1362,25 +1362,25 @@ void test_backup_restore_heals_legacy_proxy_obd_conflict_to_obd_mode() {
     TEST_ASSERT_FALSE(manager.get().proxyBLE);
 }
 
-void test_quiet_batch_update_skips_noop_persist_and_saves_once_on_change() {
+void test_audio_shared_fields_update_skips_noop_persist_and_saves_once_on_change() {
     SettingsManager manager;
 
-    QuietSettingsUpdate emptyUpdate;
-    manager.applyQuietSettingsUpdate(emptyUpdate);
+    AudioSettingsUpdate emptyUpdate;
+    manager.applyAudioSettingsUpdate(emptyUpdate);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
 
-    QuietSettingsUpdate sameValueUpdate;
+    AudioSettingsUpdate sameValueUpdate;
     sameValueUpdate.hasAlertVolumeFadeEnabled = true;
     sameValueUpdate.alertVolumeFadeEnabled = manager.get().alertVolumeFadeEnabled;
-    manager.applyQuietSettingsUpdate(sameValueUpdate);
+    manager.applyAudioSettingsUpdate(sameValueUpdate);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
 
-    QuietSettingsUpdate changedUpdate;
+    AudioSettingsUpdate changedUpdate;
     changedUpdate.hasAlertVolumeFadeEnabled = true;
     changedUpdate.alertVolumeFadeEnabled = !manager.get().alertVolumeFadeEnabled;
-    manager.applyQuietSettingsUpdate(changedUpdate);
+    manager.applyAudioSettingsUpdate(changedUpdate);
     TEST_ASSERT_EQUAL_UINT32(2u, manager.backupRevision());
     TEST_ASSERT_TRUE(activeNamespaceOrEmpty().length() > 0);
 }
@@ -2014,7 +2014,7 @@ int main() {
     RUN_TEST(test_obd_mode_disables_proxy_setting);
     RUN_TEST(test_load_heals_legacy_proxy_obd_conflict_to_obd_mode);
     RUN_TEST(test_backup_restore_heals_legacy_proxy_obd_conflict_to_obd_mode);
-    RUN_TEST(test_quiet_batch_update_skips_noop_persist_and_saves_once_on_change);
+    RUN_TEST(test_audio_shared_fields_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_display_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_writer);
     RUN_TEST(test_touch_setters_persist_nvs_without_taking_blocking_sd_lock);

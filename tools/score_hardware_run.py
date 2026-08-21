@@ -83,6 +83,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional baseline manifest for run-to-run or commit-to-commit comparison (repeat for a baseline window)",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text")
+    parser.add_argument("--json-out", help="Also write the JSON result to this path")
     return parser.parse_args()
 
 
@@ -1002,19 +1003,21 @@ def main() -> int:
     except Exception as exc:
         safe_error = redact_artifact_text(str(exc))
         print(f"ERROR: {safe_error}", file=sys.stderr)
-        # Emit minimal valid JSON to stdout so shell redirection never
-        # leaves scoring.json as a 0-byte file (which breaks trend
-        # comparison downstream).
+        # Preserve a machine-readable error for callers that requested JSON.
+        error_payload = {
+            "schema_version": SCORING_SCHEMA_VERSION,
+            "result": "ERROR",
+            "comparison_kind": "error",
+            "summary": {"reason": safe_error},
+        }
+        if args.json_out:
+            Path(args.json_out).write_text(json.dumps(error_payload, indent=2) + "\n", encoding="utf-8")
         if args.json:
-            error_payload = {
-                "schema_version": SCORING_SCHEMA_VERSION,
-                "result": "ERROR",
-                "comparison_kind": "error",
-                "summary": {"reason": safe_error},
-            }
             print(json.dumps(error_payload, indent=2))
         return 3
 
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if args.json:
         print(json.dumps(result, indent=2))
     else:

@@ -5,15 +5,6 @@
 #include "settings.h"
 #include "../perf/debug_macros.h"
 
-#ifndef UNIT_TEST
-#include "perf_metrics.h"
-#define VOICE_PERF_INC(counter) PERF_INC(counter)
-#else
-#define VOICE_PERF_INC(counter)                                                                                        \
-    do {                                                                                                               \
-    } while (0)
-#endif
-
 // ============================================================================
 // Constructor and Initialization
 // ============================================================================
@@ -180,7 +171,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         updateLastAnnounced(priority.band, priority.direction, currentFreq, (uint8_t)ctx.alertCount, ctx.now);
         markPriorityAnnounced(ctx.now);
         markAlertAnnounced(priority.band, currentFreq);
-        VOICE_PERF_INC(voiceAnnouncePriority);
 
         return action;
     }
@@ -195,7 +185,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         updateLastAnnouncedDirection(priority.direction, (uint8_t)ctx.alertCount);
 
         if (throttled) {
-            VOICE_PERF_INC(voiceDirectionThrottled);
             return action;
         }
 
@@ -207,7 +196,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
 
         updateLastAnnouncedTime(ctx.now);
         markPriorityAnnounced(ctx.now);
-        VOICE_PERF_INC(voiceAnnounceDirection);
 
         return action;
     }
@@ -250,7 +238,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
 
             markAlertAnnounced(alert.band, alertFreq);
             updateLastAnnouncedTime(ctx.now);
-            VOICE_PERF_INC(voiceAnnounceSecondary);
 
             return action;
         }
@@ -328,7 +315,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
                     action.sideCount = sideCount;
 
                     updateLastAnnouncedTime(ctx.now);
-                    VOICE_PERF_INC(voiceAnnounceEscalation);
 
                     return action;
                 }

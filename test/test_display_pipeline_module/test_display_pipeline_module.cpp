@@ -27,7 +27,6 @@ static char g_lastDisplayLogEvent[24] = "";
 static char g_lastDisplayLogDetail[224] = "";
 void perfRecordDisplayRenderUs(uint32_t /*us*/) {}
 void perfRecordDisplayScenarioRenderUs(uint32_t /*us*/) {}
-void perfRecordDisplayVoiceUs(uint32_t /*us*/) {}
 void perfSetDisplayRenderScenario(PerfDisplayRenderScenario /*scenario*/) {}
 PerfDisplayRenderScenario perfGetDisplayRenderScenario() { return PerfDisplayRenderScenario::None; }
 void perfClearDisplayRenderScenario() {}

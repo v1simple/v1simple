@@ -17,9 +17,7 @@
     "prepare": "svelte-kit sync",
     "lint": "prettier --check . && eslint . && svelte-check",
     "format": "prettier --write .",
-    "test": "vitest run",
-    "test:unit": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
@@ -30,7 +28,6 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/svelte": "^5.4.2",
     "@types/node": "^22.20.1",
-    "@vitest/coverage-v8": "^4.1.10",
     "daisyui": "^5.7.16",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",

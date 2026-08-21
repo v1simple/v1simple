@@ -9,7 +9,6 @@
 #include "modules/ble/ble_queue_module.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/power/power_module.h"
-#include "modules/system/system_event_bus.h"
 #include "packet_parser.h"
 #endif
 
@@ -19,14 +18,13 @@
 
 void ConnectionStateModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Display* displayPtr,
                                   PowerModule* powerModule, BleQueueModule* bleQueueModule,
-                                  AlertPersistenceModule* alertPersistence, SystemEventBus* eventBus) {
+                                  AlertPersistenceModule* alertPersistence) {
     ble_ = bleClient;
     parser_ = parserPtr;
     display_ = displayPtr;
     power_ = powerModule;
     bleQueue_ = bleQueueModule;
     alertPersistence_ = alertPersistence;
-    bus_ = eventBus;
     wasConnected_ = false;
     connectedPresentationPending_ = false;
     disconnectPresentationPending_ = false;
@@ -67,24 +65,12 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
     if (alertPersistence_) {
         alertPersistence_->clearPersistence();
     }
-    if (bus_) {
-        SystemEvent staleFrame;
-        while (bus_->consumeByType(SystemEventType::BLE_FRAME_PARSED, staleFrame)) {
-        }
-    }
-
     if (hadUsableConnection) {
         if (power_) {
             power_->onV1ConnectionChange(false);
         }
         disconnectDisplayCleanupPending_ = true;
         disconnectPresentationPending_ = true;
-        if (bus_) {
-            SystemEvent event;
-            event.type = SystemEventType::BLE_DISCONNECTED;
-            event.tsMs = static_cast<uint32_t>(nowMs);
-            bus_->publish(event);
-        }
     }
 
     wasConnected_ = false;
@@ -119,12 +105,6 @@ void ConnectionStateModule::handleConnected(unsigned long nowMs, uint32_t sessio
     disconnectDisplayCleanupPending_ = false;
     if (power_) {
         power_->onV1ConnectionChange(true);
-    }
-    if (bus_) {
-        SystemEvent event;
-        event.type = SystemEventType::BLE_CONNECTED;
-        event.tsMs = static_cast<uint32_t>(nowMs);
-        bus_->publish(event);
     }
     wasConnected_ = true;
     observedSessionGeneration_ = sessionGeneration;

@@ -11,7 +11,6 @@
 #include "packet_parser.h"
 #include "causal_evidence_types.h"
 
-class SystemEventBus;
 class DisplayPreviewModule;
 class PowerModule;
 class V1ProfileManager;
@@ -25,8 +24,7 @@ class BleQueueModule {
     };
 
     bool begin(V1BLEClient* bleClient, PacketParser* parser, V1ProfileManager* profileMgr,
-               DisplayPreviewModule* previewModule, PowerModule* powerModule, SystemEventBus* eventBus = nullptr,
-               Config cfg = Config());
+               DisplayPreviewModule* previewModule, PowerModule* powerModule, Config cfg = Config());
 
     // Release the FreeRTOS queue created by begin(). The firmware never tears
     // this module down (the queue lives for the life of the device), but
@@ -94,7 +92,6 @@ class BleQueueModule {
     V1ProfileManager* profiles_ = nullptr;
     DisplayPreviewModule* preview_ = nullptr;
     PowerModule* power_ = nullptr;
-    SystemEventBus* bus_ = nullptr;
     QueueHandle_t queueHandle_ = nullptr;
     std::atomic<bool> acceptNotifications_{false};
     std::atomic<uint32_t> sessionGeneration_{0};

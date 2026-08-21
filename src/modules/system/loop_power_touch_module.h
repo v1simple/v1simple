@@ -4,7 +4,6 @@
 
 struct LoopPowerTouchContext {
     uint32_t nowMs = 0;
-    uint32_t loopStartUs = 0;
     bool bootButtonPressed = false;
 };
 
@@ -20,8 +19,6 @@ class LoopPowerTouchModule {
     struct Providers {
         uint32_t (*timestampUs)(void* ctx) = nullptr;
         void* timestampContext = nullptr;
-        uint32_t (*microsNow)(void* ctx) = nullptr;
-        void* microsContext = nullptr;
 
         void (*runPowerProcess)(void* ctx, uint32_t nowMs) = nullptr;
         void* powerContext = nullptr;
@@ -32,8 +29,6 @@ class LoopPowerTouchModule {
 
         void (*recordTouchUs)(void* ctx, uint32_t elapsedUs) = nullptr;
         void* touchPerfContext = nullptr;
-        void (*recordLoopJitterUs)(void* ctx, uint32_t jitterUs) = nullptr;
-        void* loopJitterContext = nullptr;
 
         void (*refreshDmaCache)(void* ctx) = nullptr;
         void* dmaCacheContext = nullptr;

@@ -120,10 +120,28 @@ def test_build_failure_happens_before_erase() -> None:
     assert_true(calls == ["run -e waveshare-349"], f"erase ran after failed build: {calls}")
 
 
+def test_build_reuses_frontend_and_firmware_outputs() -> None:
+    source = (ROOT / "build.sh").read_text(encoding="utf-8")
+    assert_true("npm run deploy:built" in source, "build.sh must deploy the frontend it just built")
+    assert_true("npm run deploy\n" not in source, "build.sh still rebuilds the frontend during deploy")
+    assert_true("--target buildprog" not in source, "--test still rebuilds firmware after the normal build")
+
+
+def test_build_uses_the_authoritative_native_runner() -> None:
+    source = (ROOT / "build.sh").read_text(encoding="utf-8")
+    assert_true(
+        'python3 "$SCRIPT_DIR/scripts/run_native_tests_serial.py"' in source,
+        "--test bypasses the isolated native-suite runner",
+    )
+    assert_true('"$PIO_CMD" test -e native' not in source, "--test still uses aggregate PlatformIO tests")
+
+
 def main() -> int:
     test_reset_contract()
     test_reset_rejects_missing_confirmation()
     test_build_failure_happens_before_erase()
+    test_build_reuses_frontend_and_firmware_outputs()
+    test_build_uses_the_authoritative_native_runner()
     print("build reset tests: PASS")
     return 0
 

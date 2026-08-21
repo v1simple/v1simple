@@ -27,14 +27,6 @@ struct SlotsSnapshot {
     SlotConfig slots[3];
 };
 
-struct PushNowRequest {
-    int slot = 0;
-    bool hasProfileOverride = false;
-    String profileName;
-    bool hasModeOverride = false;
-    int mode = 0;
-};
-
 struct SlotUpdateRequest {
     int slot = 0;
     bool hasName = false;
@@ -62,15 +54,6 @@ struct SlotUpdateRequest {
 struct ActivationRequest {
     int slot = 0;
     bool enable = true;
-};
-
-enum class PushNowQueueResult : uint8_t {
-    QUEUED = 0,
-    V1_NOT_CONNECTED,
-    ALREADY_IN_PROGRESS,
-    NO_PROFILE_CONFIGURED,
-    PROFILE_LOAD_FAILED,
-    INVALID_VOLUME_PAIR,
 };
 
 struct Runtime {
@@ -110,9 +93,6 @@ struct Runtime {
     void* setActiveSlotCtx = nullptr;
     void (*setAutoPushEnabled)(bool enabled, void* ctx) = nullptr;
     void* setAutoPushEnabledCtx = nullptr;
-    PushNowQueueResult (*queuePushNow)(const PushNowRequest& request, void* ctx) = nullptr;
-    void* queuePushNowCtx = nullptr;
-    bool maintenanceBootActive = false;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);
@@ -124,7 +104,5 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
 
 void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                        void* rateLimitCtx);
-
-void handleApiPushNow(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
 } // namespace WifiAutoPushApiService

@@ -18,7 +18,9 @@ class IdentityGateWorkflowTests(unittest.TestCase):
 
         self.assertIn("push:", text)
         self.assertIn("pull_request:", text)
+        self.assertIn("workflow_dispatch:", text)
         self.assertIn('tags: ["v*"]', text)
+        self.assertNotIn("branches: [main]", text)
         self.assertIn("fetch-depth: 0", text)
         self.assertIn(
             "python3 scripts/check_public_commit_metadata.py --revision=--all",

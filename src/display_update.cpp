@@ -786,9 +786,7 @@ void V1Display::update(const DisplayState& state) {
 
     // Clear any persisted card slots
     AlertData emptyPriority;
-    stageStartUs = micros();
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, effectiveMuted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
@@ -902,9 +900,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 
     // Clear card area
     AlertData emptyPriority;
-    stageStartUs = micros();
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
@@ -1064,9 +1060,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         elementCaches_.cards.invalidate();
     }
 
-    stageStartUs = micros();
     drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Cards, micros() - stageStartUs);
 
     // Region-union partial-flush dispatch (steady-state optimization).
     //

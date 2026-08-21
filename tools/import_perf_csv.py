@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import import_drive_log  # type: ignore
 import score_hardware_run  # type: ignore
+import soak_parse_panic  # type: ignore
 from hardware_report_utils import write_comparison_text, write_comparison_tsv  # type: ignore
 from metric_derivation import percentile  # type: ignore
 from metric_schema import (  # type: ignore
@@ -79,7 +79,6 @@ ATTRIBUTION_COLUMNS = (
     "bleFollowupRequestVersionMax_us",
     "bleConnectStableCallbackMax_us",
     "bleProxyStartMax_us",
-    "displayGapRecoverMax_us",
     "displayFullRenderCount",
     "displayRestingFullRenderCount",
     "displayRestingIncrementalRenderCount",
@@ -165,7 +164,6 @@ ATTRIBUTION_COLUMNS = (
     "obdConnectCallMax_us",
     "obdSecurityStartCallMax_us",
     "obdDiscoveryCallMax_us",
-    "obdSubscribeCallMax_us",
     "obdWriteCallMax_us",
     "obdRssiCallMax_us",
     "fsMax_us",
@@ -180,7 +178,6 @@ OBD_SYNC_CALL_COLUMNS = (
     ("obdConnectCallMax_us", "connect"),
     ("obdSecurityStartCallMax_us", "security start"),
     ("obdDiscoveryCallMax_us", "service discovery"),
-    ("obdSubscribeCallMax_us", "notification subscribe"),
     ("obdWriteCallMax_us", "command write"),
     ("obdRssiCallMax_us", "RSSI read"),
 )
@@ -207,7 +204,6 @@ CONNECT_BURST_BLE_COLUMNS = (
 )
 CONNECT_BURST_DISPLAY_COLUMNS = (
     ("dispMax_us", "display render"),
-    ("displayGapRecoverMax_us", "display gap recovery"),
     ("displayBaseFrameMax_us", "display base frame"),
     ("displayStatusStripMax_us", "display status strip"),
     ("displayFrequencyMax_us", "display frequency"),
@@ -683,10 +679,9 @@ def _row_is_connect_burst_event(row: dict[str, int]) -> bool:
 def _connect_burst_row_window(rows: list[dict[str, int]]) -> tuple[int, int] | None:
     """Return a bounded first-connected diagnostic window as [start, end).
 
-    SD CSV imports do not have the richer JSONL threshold arguments used by
-    ``soak_parse_metrics.py``. The importer therefore uses three rows only to
-    retain bounded peak diagnostics around the first CONNECTED/COMPLETE row.
-    It cannot determine when the system became stable from those rows.
+    The importer uses three rows to retain bounded peak diagnostics around the
+    first CONNECTED/COMPLETE row. It cannot determine when the system became
+    stable from those rows alone.
     """
     for index, row in enumerate(rows):
         if _row_is_connect_burst_event(row):
@@ -1320,9 +1315,10 @@ def _panic_summary(panic_path: Path | None) -> tuple[dict[str, Any], str]:
             "state_change_count": None,
         }, "PASS"
 
-    panic_kv, raw_panic_kv = import_drive_log.run_kv_parser(import_drive_log.SOAK_PARSE_PANIC, panic_path)
-    runtime_crash = import_drive_log.panic_runtime_crash_detected(panic_kv)
-    preexisting_crash = import_drive_log.panic_preexisting_crash_state(panic_kv)
+    panic_summary = soak_parse_panic.parse_panic_jsonl(panic_path)
+    raw_panic_kv = soak_parse_panic.render_kv(panic_summary)
+    runtime_crash = soak_parse_panic.runtime_crash_detected(panic_summary)
+    preexisting_crash = soak_parse_panic.preexisting_crash_state(panic_summary)
     if runtime_crash:
         base_result = "FAIL"
     elif preexisting_crash:
@@ -1333,10 +1329,10 @@ def _panic_summary(panic_path: Path | None) -> tuple[dict[str, Any], str]:
         "present": True,
         "runtime_crash_detected": runtime_crash,
         "preexisting_crash_state": preexisting_crash,
-        "state_change_count": import_drive_log.integer(panic_kv.get("state_change_count", "")),
-        "first_was_crash": import_drive_log.integer(panic_kv.get("first_was_crash", "")),
-        "last_was_crash": import_drive_log.integer(panic_kv.get("last_was_crash", "")),
-        "raw_kv": panic_kv,
+        "state_change_count": panic_summary["state_change_count"],
+        "first_was_crash": panic_summary["first_was_crash"],
+        "last_was_crash": panic_summary["last_was_crash"],
+        "raw_kv": panic_summary,
         "path": panic_path.name,
         "parsed_text": raw_panic_kv,
     }, base_result
@@ -1442,7 +1438,6 @@ def append_import_sections(
                     "bleFollowupRequestVersionMax_us",
                     "bleConnectStableCallbackMax_us",
                     "bleProxyStartMax_us",
-                                    "displayGapRecoverMax_us",
                 ):
                     if field in top_row:
                         detail_fields.append(f"{field}={top_row[field]}")

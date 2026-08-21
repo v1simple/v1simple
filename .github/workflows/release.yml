@@ -1,17 +1,17 @@
 name: Release
 
 # Every successful push-origin CI run on public main publishes the next release
-# automatically. The reviewed .release-bump policy selects patch, minor, or
-# major and resets to patch when a larger bump is consumed. Recover interrupted
-# CI or publication by rerunning the original Actions run so the triggering run
-# and release marker stay stable.
+# automatically. Strict tags select the next patch; a reviewed FIRMWARE_VERSION
+# set to exactly the next minor or major selects that larger bump. Recover an
+# interrupted publication by rerunning the original Actions run so the release
+# marker stays stable.
 #
 # Steps:
 #   1. Bind the successful CI workflow run to its exact main commit
 #   2. Select that commit (or the same run's recorded release on retry)
-#   3. Calculate, validate, and commit the semantic-version bump locally
-#   4. Build the exact production artifacts once
-#   5. Atomically publish the tested commit and tag
+#   3. Select the semantic version without changing the checkout
+#   4. Build the exact production artifacts with that version
+#   5. Atomically publish the tag on the tested main commit
 #   6. Create or update the GitHub Release with generated notes
 #   7. Deploy the web installer to GitHub Pages
 
@@ -111,60 +111,11 @@ jobs:
       - name: Prepare release version
         id: version
         env:
-          # The bump is reviewed on main rather than supplied by an untrusted
-          # workflow input. prepare_release.py validates .release-bump and
-          # restores it to patch after consuming a minor or major request.
-          RELEASE_BUMP: auto
           RESUME_TAG: ${{ steps.resume.outputs.resume_tag }}
         run: |
           python3 scripts/prepare_release.py \
-            --bump "$RELEASE_BUMP" \
+            --prepare \
             --resume-tag "$RESUME_TAG"
-
-      - name: Create local release commit
-        id: release_commit
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- include/config.h CHANGELOG.md .release-bump; then
-            git add include/config.h CHANGELOG.md .release-bump
-            git diff --cached --check
-            git commit -m "chore(release): prepare $RELEASE_TAG"
-          fi
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::Release preparation left unexpected working-tree changes."
-            git status --short
-            exit 1
-          fi
-          RELEASE_SHA="$(git rev-parse HEAD)"
-          if [ "$RELEASE_SHA" != "$BASE_SHA" ]; then
-            if [ "$(git rev-parse "$RELEASE_SHA^")" != "$BASE_SHA" ]; then
-              echo "::error::Release commit must be a direct child of the verified base."
-              exit 1
-            fi
-            EXPECTED_FILES="$(printf '%s\n' CHANGELOG.md include/config.h)"
-            if ! git diff --quiet "$BASE_SHA" "$RELEASE_SHA" -- .release-bump; then
-              if [ "$(cat .release-bump)" != "patch" ]; then
-                echo "::error::Consumed release bump policy must reset to patch."
-                exit 1
-              fi
-              EXPECTED_FILES="$(printf '%s\n' .release-bump CHANGELOG.md include/config.h)"
-            fi
-            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$RELEASE_SHA" | sort)"
-            if [ "$CHANGED_FILES" != "$EXPECTED_FILES" ]; then
-              echo "::error::Release commit changed files outside the version contract."
-              git diff --name-status "$BASE_SHA" "$RELEASE_SHA"
-              exit 1
-            fi
-            if [ "$(git log -1 --format=%s "$RELEASE_SHA")" != "chore(release): prepare $RELEASE_TAG" ]; then
-              echo "::error::Release commit subject does not match $RELEASE_TAG."
-              exit 1
-            fi
-          fi
-          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
@@ -197,7 +148,18 @@ jobs:
       - name: Build and validate production artifacts
         env:
           PLATFORMIO_RUN_JOBS: '1'
+          V1_RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: ./scripts/build_production_artifacts.sh
+
+      - name: Validate release firmware version
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_VERSION: ${{ steps.version.outputs.source_version }}
+        run: |
+          python3 scripts/check_release_firmware_version.py \
+            --firmware .pio/build/waveshare-349/firmware.bin \
+            --expected "$EXPECTED_VERSION" \
+            --source "$SOURCE_VERSION"
 
       - name: Merge firmware for ESP Web Tools
         env:
@@ -269,13 +231,13 @@ jobs:
         with:
           path: release/pages
 
-      - name: Publish release commit and tag
+      - name: Publish release tag
         id: publish
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_RUN_ID: ${{ github.run_id }}
-          RELEASE_SHA: ${{ steps.release_commit.outputs.sha }}
+          RELEASE_SHA: ${{ steps.base.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           if [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]; then
@@ -294,6 +256,11 @@ jobs:
             EXISTING_SHA="$(git rev-parse "$RELEASE_TAG^{commit}")"
             if [ "$EXISTING_SHA" != "$RELEASE_SHA" ]; then
               echo "::error::Tag $RELEASE_TAG already exists at $EXISTING_SHA; it will not be moved."
+              exit 1
+            fi
+            if ! git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" \
+              | grep -Fxq "Release-Run-ID: $RELEASE_RUN_ID"; then
+              echo "::error::$RELEASE_TAG does not carry this run's publication marker."
               exit 1
             fi
             echo "Tag $RELEASE_TAG already points at tested commit $RELEASE_SHA; reusing it."
@@ -383,9 +350,9 @@ jobs:
             echo "## Released ${{ steps.version.outputs.tag }}"
             echo ""
             echo "- Exact main commit passed authoritative CI before automatic semantic-version publication"
-            echo "- Firmware version and changelog prepared automatically"
-            echo "- Tested release commit: ${{ steps.publish.outputs.sha }}"
-            echo "- Release commit and tag published atomically or safely reused"
+            echo "- Selected firmware version embedded and verified without changing that commit"
+            echo "- Tested main commit: ${{ steps.publish.outputs.sha }}"
+            echo "- Annotated tag published atomically with the unchanged main ref or safely reused"
             echo "- GitHub Release published with firmware, filesystem, merged installer binary, and ESP Web Tools manifest"
             echo "- Third-party notices and runtime license texts published with the release and installer"
             echo "- Image-info report uploaded with the workflow artifacts"

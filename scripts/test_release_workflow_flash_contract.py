@@ -15,24 +15,43 @@ class ReleaseArtifactContractTests(unittest.TestCase):
     def test_live_release_artifact_contract_passes(self) -> None:
         errors: list[str] = []
         contract.check_production_build(errors)
-        contract.check_version_policy(errors)
+        contract.check_version_and_publication(errors)
         contract.check_flash_and_package(errors)
         self.assertEqual(errors, [])
 
-    def test_rejects_release_bump_policy_that_cannot_reset_to_patch(self) -> None:
+    def test_rejects_release_without_build_version_injection(self) -> None:
         release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
-        required = 'if [ "$(cat .release-bump)" != "patch" ]; then'
+        required = "V1_RELEASE_VERSION:"
         self.assertIn(required, release_text)
-        release_text = release_text.replace(required, "if false; then", 1)
+        release_text = release_text.replace(required, "REMOVED_RELEASE_VERSION:", 1)
 
-        with tempfile.TemporaryDirectory(prefix="release_bump_policy_") as temporary:
+        with tempfile.TemporaryDirectory(prefix="release_version_injection_") as temporary:
             candidate = Path(temporary) / "release.yml"
             candidate.write_text(release_text, encoding="utf-8")
             errors: list[str] = []
             with mock.patch.object(contract, "RELEASE_YML", candidate):
-                contract.check_version_policy(errors)
+                contract.check_version_and_publication(errors)
 
-        self.assertTrue(any("release-bump" in error for error in errors), errors)
+        self.assertTrue(any(required in error for error in errors), errors)
+
+    def test_release_sha_is_the_exact_tested_base(self) -> None:
+        release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
+        required = "RELEASE_SHA: ${{ steps.base.outputs.sha }}"
+        self.assertIn(required, release_text)
+        release_text = release_text.replace(
+            required,
+            "RELEASE_SHA: ${{ steps.version.outputs.tag }}",
+            1,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="release_tested_sha_") as temporary:
+            candidate = Path(temporary) / "release.yml"
+            candidate.write_text(release_text, encoding="utf-8")
+            errors: list[str] = []
+            with mock.patch.object(contract, "RELEASE_YML", candidate):
+                contract.check_version_and_publication(errors)
+
+        self.assertTrue(any(required in error for error in errors), errors)
 
     def test_rejects_packaging_before_production_build(self) -> None:
         release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
@@ -50,25 +69,25 @@ class ReleaseArtifactContractTests(unittest.TestCase):
             with mock.patch.object(contract, "RELEASE_YML", candidate):
                 contract.check_production_build(errors)
 
-        self.assertTrue(any("build, then package" in error for error in errors), errors)
+        self.assertTrue(any("build, verify" in error for error in errors), errors)
 
-    def test_rejects_workflow_that_does_not_run_artifact_checker_first(self) -> None:
+    def test_rejects_packaging_before_embedded_version_check(self) -> None:
         release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
-        checker = "python3 scripts/check_release_workflow_flash_contract.py"
-        build = "./scripts/build_production_artifacts.sh"
-        self.assertLess(release_text.index(checker), release_text.index(build))
-        release_text = release_text.replace(checker, "CHECKER_PLACEHOLDER", 1)
-        release_text = release_text.replace(build, checker, 1)
-        release_text = release_text.replace("CHECKER_PLACEHOLDER", build, 1)
+        version_check = "python3 scripts/check_release_firmware_version.py"
+        merge = "Merge firmware for ESP Web Tools"
+        self.assertLess(release_text.index(version_check), release_text.index(merge))
+        release_text = release_text.replace(version_check, "VERSION_CHECK_PLACEHOLDER", 1)
+        release_text = release_text.replace(merge, version_check, 1)
+        release_text = release_text.replace("VERSION_CHECK_PLACEHOLDER", merge, 1)
 
-        with tempfile.TemporaryDirectory(prefix="release_checker_order_") as temporary:
+        with tempfile.TemporaryDirectory(prefix="release_version_order_") as temporary:
             candidate = Path(temporary) / "release.yml"
             candidate.write_text(release_text, encoding="utf-8")
             errors: list[str] = []
             with mock.patch.object(contract, "RELEASE_YML", candidate):
                 contract.check_production_build(errors)
 
-        self.assertTrue(any("artifact contract, build" in error for error in errors), errors)
+        self.assertTrue(any("verify the embedded version" in error for error in errors), errors)
 
     def test_rejects_missing_littlefs_compatibility_check(self) -> None:
         production_text = contract.PRODUCTION_BUILD.read_text(encoding="utf-8")

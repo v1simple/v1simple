@@ -391,22 +391,6 @@ elif [[ -e "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest" ]]; then
 fi
 ln -s "runs/$(basename "$RUN_DIR")" "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest"
 
-if [[ "$CAPTURE_CAMERA" -eq 1 && "$RUN_REPLAY" -eq 1 \
-      && -f "$RUN_DIR/replay/camera/capture_manifest.json" ]]; then
-  echo "==> refresh replay camera grade for current code" | tee -a "$RUN_LOG"
-  camera_regrade_status=0
-  python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
-    --stdout "$RUN_DIR/camera_regrade.log" \
-    --stderr "$RUN_DIR/camera_regrade.err" \
-    --combined "$RUN_LOG" \
-    -- python3 "$ROOT_DIR/scripts/bench/camera_regrade.py" \
-      --corpus-root "$RUN_DIR" || camera_regrade_status=$?
-  if [[ "$camera_regrade_status" -ne 0 ]]; then
-    echo "Camera regrade failed (exit=$camera_regrade_status); scoring captured evidence anyway" \
-      | tee -a "$RUN_LOG" >&2
-  fi
-fi
-
 score_args=(python3 "$ROOT_DIR/tools/bench_score.py" --run-dir "$RUN_DIR")
 for suite in "${suites[@]}"; do
   score_args+=(--suite "$suite")

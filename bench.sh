@@ -210,13 +210,20 @@ if [[ -n "$FROM_CSV" ]]; then
   fi
 fi
 
+SAFE_BOARD_ID="$(PYTHONPATH="$ROOT_DIR/scripts/bench" python3 -c \
+  'import sys; from artifact_privacy import privacy_safe_identifier; print(privacy_safe_identifier(sys.argv[1], namespace="board"))' \
+  "$BOARD_ID")" || {
+  echo "Unable to create the private-safe board identity" >&2
+  exit 3
+}
+
 GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 GIT_SHA_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 GIT_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 GIT_WORKTREE_CLEAN=1
 [[ -n "$(git status --porcelain 2>/dev/null)" ]] && GIT_WORKTREE_CLEAN=0
 TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
-RUN_DIR="$ARTIFACT_ROOT/$BOARD_ID/runs/${TIMESTAMP}_${GIT_SHA_SHORT}"
+RUN_DIR="$ARTIFACT_ROOT/$SAFE_BOARD_ID/runs/${TIMESTAMP}_${GIT_SHA_SHORT}"
 if [[ -e "$RUN_DIR" ]]; then
   suffix=2
   while [[ -e "${RUN_DIR}_${suffix}" ]]; do
@@ -236,7 +243,7 @@ V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
 
 echo "==========================================" | tee -a "$RUN_LOG"
 echo " bench" | tee -a "$RUN_LOG"
-echo "  board:      $BOARD_ID" | tee -a "$RUN_LOG"
+echo "  board:      $SAFE_BOARD_ID" | tee -a "$RUN_LOG"
 echo "  suites:     ${suites[*]}" | tee -a "$RUN_LOG"
 echo "  duration:   ${DURATION_SECONDS}s" | tee -a "$RUN_LOG"
 [[ "$RUN_REPLAY" -eq 1 ]] && echo "  replay:     ${REPLAY_DURATION_SECONDS}s metrics window" | tee -a "$RUN_LOG"
@@ -268,7 +275,7 @@ fi
   && echo "  promote:    core/display on PASS for future matching runs" | tee -a "$RUN_LOG"
 echo "  obd/proxy:  not part of bench gate" | tee -a "$RUN_LOG"
 echo "  git clean:  $GIT_WORKTREE_CLEAN" | tee -a "$RUN_LOG"
-echo "  artifacts:  $RUN_DIR" | tee -a "$RUN_LOG"
+echo "  artifacts:  current run (see the latest link after completion)" | tee -a "$RUN_LOG"
 echo "==========================================" | tee -a "$RUN_LOG"
 echo | tee -a "$RUN_LOG"
 
@@ -332,7 +339,7 @@ for suite in "${suites[@]}"; do
     --suite "$suite"
     --duration-seconds "$suite_duration"
     --out-dir "$step_dir"
-    --board-id "$BOARD_ID"
+    --board-id "$SAFE_BOARD_ID"
     --git-sha "$GIT_SHA"
     --git-ref "$GIT_REF"
     --git-worktree-clean "$GIT_WORKTREE_CLEAN"
@@ -376,21 +383,24 @@ for suite in "${suites[@]}"; do
   echo | tee -a "$RUN_LOG"
 done
 
-if [[ -L "$ARTIFACT_ROOT/$BOARD_ID/latest" ]]; then
-  rm "$ARTIFACT_ROOT/$BOARD_ID/latest"
-elif [[ -e "$ARTIFACT_ROOT/$BOARD_ID/latest" ]]; then
-  echo "Refusing to replace non-symlink latest path: $ARTIFACT_ROOT/$BOARD_ID/latest" >&2
+if [[ -L "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest" ]]; then
+  rm "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest"
+elif [[ -e "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest" ]]; then
+  echo "Refusing to replace a non-symlink latest artifact path for $SAFE_BOARD_ID" >&2
   exit 3
 fi
-ln -s "runs/$(basename "$RUN_DIR")" "$ARTIFACT_ROOT/$BOARD_ID/latest"
+ln -s "runs/$(basename "$RUN_DIR")" "$ARTIFACT_ROOT/$SAFE_BOARD_ID/latest"
 
 if [[ "$CAPTURE_CAMERA" -eq 1 && "$RUN_REPLAY" -eq 1 \
       && -f "$RUN_DIR/replay/camera/capture_manifest.json" ]]; then
   echo "==> refresh replay camera grade for current code" | tee -a "$RUN_LOG"
   camera_regrade_status=0
-  python3 "$ROOT_DIR/scripts/bench/camera_regrade.py" \
-    --corpus-root "$RUN_DIR" 2>&1 | tee -a "$RUN_LOG"
-  camera_regrade_status=${PIPESTATUS[0]}
+  python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
+    --stdout "$RUN_DIR/camera_regrade.log" \
+    --stderr "$RUN_DIR/camera_regrade.err" \
+    --combined "$RUN_LOG" \
+    -- python3 "$ROOT_DIR/scripts/bench/camera_regrade.py" \
+      --corpus-root "$RUN_DIR" || camera_regrade_status=$?
   if [[ "$camera_regrade_status" -ne 0 ]]; then
     echo "Camera regrade failed (exit=$camera_regrade_status); scoring captured evidence anyway" \
       | tee -a "$RUN_LOG" >&2
@@ -402,8 +412,12 @@ for suite in "${suites[@]}"; do
   score_args+=(--suite "$suite")
   [[ "$CAPTURE_CAMERA" -eq 1 && "$suite" == "replay" ]] && score_args+=(--camera-suite "$suite")
 done
-"${score_args[@]}" | tee -a "$RUN_LOG"
-score_status=${PIPESTATUS[0]}
+score_status=0
+python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
+  --stdout "$RUN_DIR/score.log" \
+  --stderr "$RUN_DIR/score.err" \
+  --combined "$RUN_LOG" \
+  -- "${score_args[@]}" || score_status=$?
 
 if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
   if [[ "$score_status" -eq 0 ]]; then
@@ -413,7 +427,7 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
       baseline_dir="$(python3 "$ROOT_DIR/scripts/bench/bench_identity.py" baseline-dir \
         --identity "$identity_manifest" \
         --baseline-root "$BASELINE_ROOT" \
-        --board-id "$BOARD_ID")"
+        --board-id "$SAFE_BOARD_ID")"
       mkdir -p "$baseline_dir"
       cp "$identity_manifest" "$baseline_dir/identity.json"
       cp "$RUN_DIR/$suite/manifest.json" "$baseline_dir/manifest.json"
@@ -427,9 +441,9 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
       cat > "$baseline_dir/baseline_metadata.json" <<EOF
 {
   "schema_version": 3,
-  "promoted_from": "$RUN_DIR/$suite",
+  "promoted_from": "runs/$(basename "$RUN_DIR")/$suite",
   "promoted_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "board_id": "$BOARD_ID",
+  "board_id": "$SAFE_BOARD_ID",
   "suite": "$suite",
   "product_fingerprint": "$product_fingerprint",
   "grader_fingerprint": "$grader_fingerprint",
@@ -440,14 +454,14 @@ if [[ "$PROMOTE_BASELINE" -eq 1 ]]; then
 }
 EOF
     done
-    echo "Promoted future-run core/display baselines under: $BASELINE_ROOT/$BOARD_ID" | tee -a "$RUN_LOG"
+    echo "Promoted future-run core/display baselines for this board." | tee -a "$RUN_LOG"
     echo "Current manifests retain the baseline comparison available when they were scored." | tee -a "$RUN_LOG"
   else
     echo "Baseline promotion skipped: bench result was not PASS (exit=$score_status)" | tee -a "$RUN_LOG"
   fi
 fi
 
-echo "Latest artifacts: $ARTIFACT_ROOT/$BOARD_ID/latest" | tee -a "$RUN_LOG"
+echo "Latest artifacts: selected artifact root / $SAFE_BOARD_ID / latest" | tee -a "$RUN_LOG"
 echo "==> bench investigation (non-gating; bench exit remains $score_status)" | tee -a "$RUN_LOG"
 investigation_status=0
 python3 "$ROOT_DIR/tools/bench_investigate.py" "$RUN_DIR" \

@@ -36,7 +36,6 @@ void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
             obj["name"] = profile.name;
             obj["description"] = profile.description;
             obj["displayOn"] = profile.displayOn;
-            Serial.printf("[V1Profiles]   - %s: %s\n", profile.name.c_str(), profile.description.c_str());
         }
     }
 
@@ -80,7 +79,7 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
         return;
     }
-    Serial.printf("[V1Settings] Save request body: %s\n", body.c_str());
+    Serial.printf("[V1Settings] Save request body accepted (%u bytes)\n", static_cast<unsigned>(body.length()));
 
     WifiJson::Document doc;
     DeserializationError err = deserializeJson(doc, body.c_str());
@@ -127,10 +126,10 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
         }
-        Serial.printf("[V1Profiles] Profile '%s' saved successfully\n", name.c_str());
+        Serial.println("[V1Profiles] Profile saved successfully");
         server.send(200, "application/json", "{\"success\":true}");
     } else {
-        Serial.printf("[V1Profiles] Failed to save profile '%s': %s\n", name.c_str(), saveError.c_str());
+        Serial.println("[V1Profiles] Failed to save profile");
         // saveError is filesystem/profile-store text and can contain quotes or
         // backslashes; build the response through ArduinoJson so it is escaped
         // and the UI's res.json() cannot throw on a malformed body.
@@ -262,7 +261,7 @@ void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*che
     // this is a semantic/application cap on what we will parse, NOT a bound on
     // the transport allocation.
     const String body = server.arg("plain");
-    Serial.printf("[V1Settings] Push request: %s\n", body.c_str());
+    Serial.printf("[V1Settings] Push request accepted (%u bytes)\n", static_cast<unsigned>(body.length()));
     if (body.length() > 4096) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
         return;
@@ -287,8 +286,8 @@ void handleApiSettingsPush(WebServer& server, const Runtime& runtime, bool (*che
             server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
             return;
         }
-        Serial.printf("[V1Settings] Pushing profile '%s': %02X %02X %02X %02X %02X %02X\n", profileName.c_str(),
-                      bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+        Serial.printf("[V1Settings] Pushing profile bytes: %02X %02X %02X %02X %02X %02X\n", bytes[0], bytes[1],
+                      bytes[2], bytes[3], bytes[4], bytes[5]);
     }
     // Check for bytes array
     else if (!rawBytes.isUnbound()) {

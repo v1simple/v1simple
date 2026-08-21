@@ -55,10 +55,22 @@ inline size_t& entryLimit() {
     return g_entryLimit;
 }
 
+inline std::unordered_map<std::string, size_t>& missingStringReadCounts() {
+    static std::unordered_map<std::string, size_t> g_counts;
+    return g_counts;
+}
+
+inline std::unordered_map<std::string, size_t>& missingRemoveCounts() {
+    static std::unordered_map<std::string, size_t> g_counts;
+    return g_counts;
+}
+
 inline void reset() {
     store().clear();
     failWrites() = false;
     entryLimit() = 0;
+    missingStringReadCounts().clear();
+    missingRemoveCounts().clear();
 }
 
 inline void set_fail_writes(bool enabled) {
@@ -67,6 +79,16 @@ inline void set_fail_writes(bool enabled) {
 
 inline void set_entry_limit(size_t limit) {
     entryLimit() = limit;
+}
+
+inline size_t missingStringReadCount(const char* key) {
+    const auto it = missingStringReadCounts().find(key ? key : "");
+    return it == missingStringReadCounts().end() ? 0 : it->second;
+}
+
+inline size_t missingRemoveCount(const char* key) {
+    const auto it = missingRemoveCounts().find(key ? key : "");
+    return it == missingRemoveCounts().end() ? 0 : it->second;
 }
 
 inline NamespaceStore& ensureNamespace(const std::string& name) {
@@ -212,7 +234,11 @@ public:
         if (!started_ || readOnly_ || !key) {
             return false;
         }
-        return mock_preferences::ensureNamespace(namespaceName_).erase(key) > 0;
+        const bool removed = mock_preferences::ensureNamespace(namespaceName_).erase(key) > 0;
+        if (!removed) {
+            ++mock_preferences::missingRemoveCounts()[key];
+        }
+        return removed;
     }
 
     bool isKey(const char* key) const {
@@ -281,6 +307,9 @@ public:
     }
 
     String getString(const char* key, const String& defaultValue = String()) const {
+        if (started_ && key && !mock_preferences::namespaceHasKey(namespaceName_.c_str(), key)) {
+            ++mock_preferences::missingStringReadCounts()[key];
+        }
         return mock_preferences::getString(namespaceName_.c_str(), key, defaultValue.c_str());
     }
 

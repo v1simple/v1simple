@@ -2894,8 +2894,9 @@ void test_sd_logger_begin_warms_storage_at_boot() {
     // Warm-at-boot contract: production begin() pre-creates /alp, the CSV, and
     // its header during setup, under the SD lock, so successful warm-up keeps
     // the first logged row from paying FAT-allocation cost on the shared SD path
-    // (observed as bimodal ~47 ms notify-to-display peaks when an alert lands
-    // inside the first-write window). Warm-up failure must stay non-fatal.
+    // (observed historically as bimodal ~47 ms schema-46 dispatch-time peaks
+    // when an alert lands inside the first-write window). Schema-47 pipeline-
+    // completion measurements are not comparable. Warm-up failure must stay non-fatal.
     const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
     TEST_ASSERT_FALSE(source.empty());
 

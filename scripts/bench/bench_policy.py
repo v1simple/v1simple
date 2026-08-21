@@ -29,6 +29,7 @@ from camera_artifacts import (
     verify_capture_files,
 )
 from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
+from artifact_privacy import privacy_safe_identifier
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -258,9 +259,11 @@ def _strict_replay_evidence(
     grader_fingerprint: str,
     product_fingerprint: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    declared_run_dir = Path(str(bench_result.get("run_dir") or ""))
     run_dir = bench_result_path.resolve().parent
-    if not declared_run_dir.is_absolute() or declared_run_dir.resolve() != run_dir:
+    declared_run_dir = Path(str(bench_result.get("run_dir") or ""))
+    if not declared_run_dir.is_absolute():
+        declared_run_dir = bench_result_path.parent / declared_run_dir
+    if declared_run_dir.resolve() != run_dir:
         raise QualificationError("bench result run_dir does not own its artifact location")
     camera_dir = run_dir / "replay" / "camera"
     try:
@@ -306,7 +309,7 @@ def build_qualification_record(
     """Validate a full batch and create its accepted qualification record."""
     bench_result_path = bench_result_path.resolve()
     bench_result = _read_json(bench_result_path)
-    if bench_result.get("kind") != "bench_result" or bench_result.get("schema_version") != 4:
+    if bench_result.get("kind") != "bench_result" or bench_result.get("schema_version") != 5:
         raise QualificationError("candidate is not a current bench result")
     if bench_result.get("result") != "PASS":
         raise QualificationError("candidate full batch did not PASS")
@@ -375,10 +378,11 @@ def build_qualification_record(
         "repository_ref": str(current_traceability.get("repository_ref") or ""),
         "worktree_clean": True,
     }
+    safe_board_id = privacy_safe_identifier(board_id, namespace="board")
     record = {
         "schema_version": QUALIFICATION_SCHEMA_VERSION,
         "kind": "bench_qualification",
-        "board_id": board_id,
+        "board_id": safe_board_id,
         "product_fingerprint": product,
         "grader_fingerprint": grader,
         "hardware_scoring_fingerprint": hardware_scoring,
@@ -410,7 +414,10 @@ def _accepted_capture_with_current_grade(
         raise QualificationError("prior accepted bench result is missing or changed")
     bench_result = _read_json(bench_result_path)
     run_dir = bench_result_path.resolve().parent
-    if Path(str(bench_result.get("run_dir") or "")).resolve() != run_dir:
+    declared_run_dir = Path(str(bench_result.get("run_dir") or ""))
+    if not declared_run_dir.is_absolute():
+        declared_run_dir = bench_result_path.parent / declared_run_dir
+    if declared_run_dir.resolve() != run_dir:
         raise QualificationError("prior bench result no longer owns its run directory")
     camera_dir = run_dir / "replay" / "camera"
     try:
@@ -445,13 +452,12 @@ def _validate_regrade_report(
     accepted_capture_id: str,
 ) -> None:
     if (
-        report.get("schema_version") != 1
+        report.get("schema_version") != 2
         or report.get("kind") != "bench_camera_regrade_report"
         or report.get("completed") is not True
         or report.get("dry_run") is not False
         or report.get("grader_fingerprint") != current_grader
-        or report.get("path_base") != "corpus_root"
-        or report.get("corpus_root") != "."
+        or report.get("scope") != "complete_corpus_inventory"
     ):
         raise QualificationError("regrade report is incomplete or owns the wrong grader")
     counts = report.get("counts")
@@ -488,23 +494,26 @@ def _validate_regrade_report(
     captures = report.get("captures")
     if not isinstance(captures, list) or len(captures) != counts["discovered"]:
         raise QualificationError("regrade report capture inventory is incomplete")
-    seen_paths: set[str] = set()
+    seen_indexes: set[int] = set()
     seen_capture_ids: set[str] = set()
     status_counts = {"graded": 0, "skipped": 0}
     result_counts = {"PASS": 0, "FAIL": 0, "INCONCLUSIVE": 0}
     for item in captures:
         if not isinstance(item, dict):
             raise QualificationError("regrade report contains a malformed capture entry")
-        capture_path = _safe_relative_path(item.get("capture_path"), "regrade capture path")
-        capture_path_text = capture_path.as_posix()
-        if capture_path.parts[-2:] != ("replay", "camera"):
-            raise QualificationError("regrade capture path does not name a replay camera directory")
+        capture_index = item.get("capture_index")
+        if (
+            not isinstance(capture_index, int)
+            or isinstance(capture_index, bool)
+            or capture_index < 1
+        ):
+            raise QualificationError("regrade report contains an invalid capture index")
         capture_id = str(item.get("capture_id") or "")
         if not _valid_digest(capture_id):
             raise QualificationError("regrade report contains an invalid capture ID")
-        if capture_path_text in seen_paths or capture_id in seen_capture_ids:
+        if capture_index in seen_indexes or capture_id in seen_capture_ids:
             raise QualificationError("regrade report contains duplicate capture ownership")
-        seen_paths.add(capture_path_text)
+        seen_indexes.add(capture_index)
         seen_capture_ids.add(capture_id)
 
         result = str(item.get("result") or "")
@@ -522,16 +531,18 @@ def _validate_regrade_report(
 
         grade = item.get("grade") if isinstance(item.get("grade"), dict) else {}
         status = str(grade.get("status") or "")
-        if status not in status_counts or grade.get("ownership_valid") is not True:
+        grade_id = str(grade.get("grade_id") or "")
+        expected_grade_id = hashlib.sha256(
+            f"{capture_id}:{current_grader}".encode("ascii")
+        ).hexdigest()
+        if (
+            status not in status_counts
+            or grade.get("ownership_valid") is not True
+            or grade.get("grader_fingerprint") != current_grader
+            or not _valid_digest(grade_id)
+            or grade_id != expected_grade_id
+        ):
             raise QualificationError("regrade report contains invalid grade ownership")
-        grade_path = _safe_relative_path(grade.get("path"), "regrade grade path")
-        expected_grade_path = PurePosixPath(
-            capture_path_text,
-            "grades",
-            f"{current_grader}.json",
-        )
-        if grade_path != expected_grade_path:
-            raise QualificationError("regrade grade path does not match its capture and grader")
         status_counts[status] += 1
         result_counts[result] += 1
 
@@ -720,7 +731,9 @@ def build_grader_revalidation_record(
     record = {
         "schema_version": QUALIFICATION_SCHEMA_VERSION,
         "kind": "bench_qualification",
-        "board_id": prior.get("board_id", "release"),
+        "board_id": privacy_safe_identifier(
+            prior.get("board_id", "release"), namespace="board"
+        ),
         "product_fingerprint": prior["product_fingerprint"],
         "grader_fingerprint": current_grader,
         "hardware_scoring_fingerprint": prior["hardware_scoring_fingerprint"],
@@ -862,6 +875,7 @@ def _commands(
     board_id: str,
     current: Mapping[str, Any],
 ) -> list[str]:
+    board_id = privacy_safe_identifier(board_id, namespace="board")
     parameters = current.get("scenario_parameters")
     if not isinstance(parameters, dict):
         parameters = {}
@@ -907,6 +921,7 @@ def build_plan(
     qualification_path: Path,
     board_id: str,
 ) -> dict[str, Any]:
+    board_id = privacy_safe_identifier(board_id, namespace="board")
     action, reason = classify_policy(current, accepted, invalid_reason=invalid_reason)
     return {
         "schema_version": PLAN_SCHEMA_VERSION,

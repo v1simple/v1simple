@@ -45,8 +45,11 @@ class LoopDisplayModule {
         void (*recordDispPipeUs)(void* ctx, uint32_t elapsedUs) = nullptr;
         void* dispPipePerfContext = nullptr;
 
-        void (*recordNotifyToDisplayMs)(void* ctx, uint32_t elapsedMs) = nullptr;
-        void* notifyPerfContext = nullptr;
+        // Records V1 notification arrival to completed display-pipeline latency.
+        // A sample is emitted only after runDisplayPipeline returns and a fresh
+        // readDisplayNowMs value is available.
+        void (*recordNotifyToDisplayPipelineCompleteMs)(void* ctx, uint32_t elapsedMs) = nullptr;
+        void* notifyPipelineCompletePerfContext = nullptr;
     };
 
     void begin(const Providers& hooks);

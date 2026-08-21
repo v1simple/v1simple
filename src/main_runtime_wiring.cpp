@@ -489,6 +489,8 @@ static void configureQualificationSerialModule() {
     providers.newSessionToken = [](void*) { return static_cast<uint32_t>(esp_random()); };
     providers.buildGitSha = [](void*) { return getBuildGitSha(); };
     providers.runtimeImageId = [](void*) { return getRuntimeImageId(); };
+    providers.displayBrightness = [](void*) { return settingsManager.get().brightness; };
+    providers.displayMutedColorRgb565 = [](void*) { return settingsManager.get().colorMuted; };
     providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
     providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
     providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };

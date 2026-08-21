@@ -424,8 +424,14 @@ def write_metrics_jsonl(path: Path) -> None:
             "displayPartialFlushWouldFullRows256Count": 0,
         },
     ]
-    for row, metrics in zip(rows, partial_shape_metrics):
+    notify_pipeline_complete_max_ms = [0, 71, 32, 28, 19]
+    notify_pipeline_complete_total_count = [0, 1, 1, 2, 3]
+    for index, (row, metrics) in enumerate(zip(rows, partial_shape_metrics)):
         row["data"].update(metrics)
+        row["data"]["notifyToDisplayPipelineCompleteMaxMs"] = notify_pipeline_complete_max_ms[index]
+        row["data"]["notifyToDisplayPipelineCompleteTotalCount"] = (
+            notify_pipeline_complete_total_count[index]
+        )
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
@@ -507,11 +513,49 @@ def test_synthetic_fixture_tracks_root_causes_and_settle_window() -> None:
     assert_true(parsed["display_restore_render_peak"] == "13000", f"wrong restore render peak: {parsed}")
     assert_true(parsed["display_preview_first_render_peak"] == "19000", f"wrong first preview peak: {parsed}")
     assert_true(parsed["display_preview_steady_render_peak"] == "11000", f"wrong steady preview peak: {parsed}")
+    assert_true(
+        parsed["notify_to_display_pipeline_complete_max_ms"] == "71",
+        f"wrong pipeline-complete notification peak: {parsed}",
+    )
+    assert_true(
+        parsed["notify_to_display_pipeline_complete_sample_count"] == "3",
+        f"wrong pipeline-complete notification count: {parsed}",
+    )
+
+
+def test_legacy_dispatch_fields_do_not_alias_pipeline_completion() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "legacy.metrics.jsonl"
+        path.write_text(
+            json.dumps(
+                {
+                    "ts": "2026-03-18T11:29:37Z",
+                    "ok": True,
+                    "data": {
+                        "notifyToDisplayMaxMs": 71,
+                        "notifyToDisplayTotalCount": 3,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        parsed = parse_metrics(path)
+
+    assert_true(
+        parsed["notify_to_display_pipeline_complete_max_ms"] == "",
+        f"legacy dispatch peak was aliased to pipeline completion: {parsed}",
+    )
+    assert_true(
+        parsed["notify_to_display_pipeline_complete_sample_count"] == "",
+        f"legacy dispatch count was aliased to pipeline completion: {parsed}",
+    )
 
 
 def main() -> int:
     test_reduced_fixture_surfaces_unstable_connect_burst()
     test_synthetic_fixture_tracks_root_causes_and_settle_window()
+    test_legacy_dispatch_fields_do_not_alias_pipeline_completion()
     return 0
 
 

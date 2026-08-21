@@ -296,7 +296,7 @@ void V1BLEClient::adoptV1AdvertisedNameForProxy(const char* advertisedName) {
     if (proxyServerInitialized_) {
         configureProxyAdvertisingPayload(proxyName_.c_str());
     }
-    Serial.printf("[BLE] Proxy advertising name auto-set from V1: %s\n", proxyName_.c_str());
+    Serial.println("[BLE] Proxy advertising name auto-set from V1");
 }
 
 void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {

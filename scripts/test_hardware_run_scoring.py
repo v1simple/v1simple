@@ -159,7 +159,7 @@ def standard_soak_records(
         soak_metric(track, "wifi_p95_us", 1800),
         soak_metric(track, "disp_pipe_p95_us", disp_pipe_p95_us),
         soak_metric(track, "dma_fragmentation_pct_p95", 18),
-        soak_metric(track, "notify_to_display_max_ms", 25),
+        soak_metric(track, "notify_to_display_pipeline_complete_max_ms", 25),
     ]
     if display_drive_activity_delta is not None:
         records.append(soak_metric(track, "display_drive_activity_delta", display_drive_activity_delta))
@@ -822,7 +822,7 @@ def test_drive_wifi_ap_loop_peak_is_informational(tmpdir: Path) -> None:
         soak_metric("drive_wifi_ap", "wifi_p95_us", 1800),
         soak_metric("drive_wifi_ap", "disp_pipe_p95_us", 21000),
         soak_metric("drive_wifi_ap", "dma_fragmentation_pct_p95", 18),
-        soak_metric("drive_wifi_ap", "notify_to_display_max_ms", 25),
+        soak_metric("drive_wifi_ap", "notify_to_display_pipeline_complete_max_ms", 25),
     ]
     baseline_records = [dict(item) for item in current_records]
     for record in baseline_records:
@@ -958,8 +958,10 @@ def test_multi_baseline_median_ignores_failed_candidates(tmpdir: Path) -> None:
     )
 
     for name, dma_value, result_name in baseline_specs:
-        metrics_path = case_dir / f"{name}.ndjson"
-        manifest_path = case_dir / f"{name}.json"
+        baseline_dir = case_dir / name
+        baseline_dir.mkdir()
+        metrics_path = baseline_dir / "metrics.ndjson"
+        manifest_path = baseline_dir / "manifest.json"
         write_metrics(metrics_path, standard_soak_records(dma_largest_min_bytes=dma_value))
         write_manifest(
             manifest_path,
@@ -984,6 +986,7 @@ def test_multi_baseline_median_ignores_failed_candidates(tmpdir: Path) -> None:
     baseline_window = result["baseline_window"]
 
     assert_true(result["result"] == "PASS", f"median baseline should keep clean DMA run passing: {result}")
+    assert_true(result["schema_version"] == 2, f"scoring schema did not advance: {result}")
     assert_true(dma_metric["baseline_value"] == 21492, f"expected median DMA baseline of 21492: {dma_metric}")
     assert_true(baseline_window["strategy"] == "median_last_3_trustworthy", f"unexpected baseline strategy: {baseline_window}")
     assert_true(baseline_window["candidate_count"] == 3, f"failed baseline should be ignored: {baseline_window}")
@@ -994,6 +997,17 @@ def test_multi_baseline_median_ignores_failed_candidates(tmpdir: Path) -> None:
     assert_true(
         result["baseline_manifest"]["run_id"] == "baseline_latest",
         f"newest passing baseline should remain provenance anchor: {result}",
+    )
+    assert_true(
+        "path" not in result["baseline_manifest"]
+        and result["baseline_manifest"]["baseline_id"] == "baseline_latest",
+        f"baseline anchor retained a misleading host filename: {result['baseline_manifest']}",
+    )
+    candidate_ids = [candidate["baseline_id"] for candidate in baseline_window["candidates"]]
+    assert_true(
+        len(set(candidate_ids)) == 3
+        and all("path" not in candidate for candidate in baseline_window["candidates"]),
+        f"same-named baseline manifests were not distinguished safely: {baseline_window}",
     )
 
 
@@ -1412,7 +1426,11 @@ def test_catalog_rejects_advisory_bound_outside_hard_limit(tmpdir: Path) -> None
 def test_catalog_contains_functional_budgets_and_latency_diagnostics() -> None:
     policies = score_hardware_run.load_catalog(CATALOG_PATH)
 
-    notify = [policy for policy in policies if policy.metric == "notify_to_display_max_ms"]
+    notify = [
+        policy
+        for policy in policies
+        if policy.metric == "notify_to_display_pipeline_complete_max_ms"
+    ]
     assert_true(len(notify) == 2, f"expected one notify policy per drive profile: {notify}")
     assert_true(
         all(
@@ -1476,12 +1494,12 @@ def test_notify_latency_is_diagnostic_not_a_verdict(tmpdir: Path) -> None:
     )
     current_records = [dict(record) for record in baseline_records]
     for record in current_records:
-        if record["metric"] == "notify_to_display_max_ms":
+        if record["metric"] == "notify_to_display_pipeline_complete_max_ms":
             record["value"] = 113
     missing_records = [
         dict(record)
         for record in current_records
-        if record["metric"] != "notify_to_display_max_ms"
+        if record["metric"] != "notify_to_display_pipeline_complete_max_ms"
     ]
     dropped_records = [dict(record) for record in current_records]
     for record in dropped_records:
@@ -1507,7 +1525,7 @@ def test_notify_latency_is_diagnostic_not_a_verdict(tmpdir: Path) -> None:
         "base_result": "PASS",
         "tracks": ["drive_wifi_ap"],
         "source_type": "perf_csv",
-        "source_schema": 46,
+        "source_schema": 47,
     }
     for path, run_id, git_sha, metrics_file in (
         (baseline_manifest_path, "notify-baseline", "base123", baseline_metrics_path.name),
@@ -1532,7 +1550,11 @@ def test_notify_latency_is_diagnostic_not_a_verdict(tmpdir: Path) -> None:
     assert_true(scored["result"] == "PASS", f"raw notify latency alone changed the verdict: {scored}")
     assert_true(scored["summary"]["hard_failures"] == 0, f"raw notify latency hard-failed: {scored}")
     assert_true(scored["summary"]["advisory_failures"] == 0, f"raw notify latency warned: {scored}")
-    notify = next(metric for metric in scored["metrics"] if metric["metric"] == "notify_to_display_max_ms")
+    notify = next(
+        metric
+        for metric in scored["metrics"]
+        if metric["metric"] == "notify_to_display_pipeline_complete_max_ms"
+    )
     assert_true(notify["score_level"] == "info", f"notify latency is not informational: {notify}")
     assert_true(notify["absolute_state"] == "n/a", f"notify latency retained a value threshold: {notify}")
     assert_true(notify["advisory_state"] == "n/a", f"notify latency retained an advisory gate: {notify}")
@@ -1613,7 +1635,7 @@ def test_sd_latency_is_required_diagnostic_not_a_verdict(tmpdir: Path) -> None:
         "base_result": "PASS",
         "tracks": ["drive_wifi_ap"],
         "source_type": "perf_csv",
-        "source_schema": 46,
+        "source_schema": 47,
     }
     for path, run_id, git_sha, metrics_file in (
         (baseline_manifest_path, "sd-baseline", "base123", baseline_metrics_path.name),
@@ -1934,7 +1956,7 @@ def test_connect_burst_metrics_are_cataloged(tmpdir: Path) -> None:
             soak_metric("drive_wifi_ap", "display_frequency_peak_us", 14000),
             soak_metric("drive_wifi_ap", "display_flush_subphase_peak_us", 21000),
             soak_metric("drive_wifi_ap", "display_restore_render_peak_us", 13000),
-            soak_metric("drive_wifi_ap", "notify_to_display_max_ms", 25),
+            soak_metric("drive_wifi_ap", "notify_to_display_pipeline_complete_max_ms", 25),
         ],
     )
 
@@ -2079,7 +2101,7 @@ def test_extract_device_metrics_smoke(tmpdir: Path) -> None:
 
 def _spread_policy(direction: str = "lower_better", regress_abs=None, regress_pct=0.10):
     return score_hardware_run.MetricPolicy(
-        metric="notify_to_display_max_ms",
+        metric="notify_to_display_pipeline_complete_max_ms",
         run_kind="real_fw_soak",
         selector={},
         unit="ms",
@@ -2100,10 +2122,10 @@ def _spread_policy(direction: str = "lower_better", regress_abs=None, regress_pc
 def test_observed_spread_absorbs_noise_but_not_a_real_regression() -> None:
     """A peak metric that swings on its own must not be called a regression.
 
-    The motivating case: notify_to_display_max_ms moved 10 -> 26 ms between two
-    bench runs whose firmware was byte-identical. Compared against a single
-    sample that reads as a 160% regression; compared against the observed
-    spread of the same binary it is ordinary variance.
+    The historical schema-46 dispatch metric ``notify_to_display_max_ms`` moved
+    10 -> 26 ms between two bench runs whose firmware was byte-identical. That
+    motivates the generic spread behavior tested here; it is not a baseline for
+    the schema-47 pipeline-completion metric used by this policy.
     """
 
     policy = _spread_policy()

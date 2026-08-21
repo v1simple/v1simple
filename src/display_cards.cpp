@@ -39,6 +39,24 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
 
     unsigned long now = millis();
 
+    // Card 0 shares a small corner with the wider "Ku" band label.  Bands
+    // render before cards, so removing card 0 must restore any Ku pixels its
+    // background clear exposes in this same frame; otherwise the valid band
+    // cache would leave the label clipped indefinitely.
+    auto restoreKuAfterCard0Clear = [&]() {
+        auto& bands = elementCaches_.bands;
+        if (!bands.valid || (bands.lastMask & BAND_KU) == 0) {
+            return;
+        }
+        const uint8_t visibleBandMask = bands.lastMask;
+        const bool bandsMuted = bands.lastMuted;
+        bands.invalidate();
+        drawBandIndicators(visibleBandMask, bandsMuted, 0);
+        if (dirty_.gpsIndicator) {
+            drawGpsIndicator();
+        }
+    };
+
     // Track profile changes - clear cards when profile rotates
     if (settings.activeSlot != elementCaches_.cards.lastProfileSlot) {
         elementCaches_.cards.lastProfileSlot = settings.activeSlot;
@@ -83,6 +101,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             FILL_RECT(cardsClearRect.x, cardsClearRect.y, cardsClearRect.w, cardsClearRect.h, PALETTE_BG);
             drawnRegion_.add(DisplayLayout::kSecondaryCardsRect.x, DisplayLayout::kSecondaryCardsRect.y,
                              DisplayLayout::kSecondaryCardsRect.w, DisplayLayout::kSecondaryCardsRect.h);
+            restoreKuAfterCard0Clear();
         }
         // Reset last drawn count so next time cards appear, change is detected.
         elementCaches_.cards.lastDrawnCount = 0;
@@ -364,6 +383,9 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
                 FILL_RECT(cardRect.x, cardRect.y, cardRect.w, cardRect.h, PALETTE_BG);
                 drawnRegion_.add(cardRect.x, cardRect.y, cardRect.w, cardRect.h);
                 elementCaches_.cards.lastDrawnPositions[i].band = BAND_NONE;
+                if (i == 0) {
+                    restoreKuAfterCard0Clear();
+                }
             }
             continue;
         }

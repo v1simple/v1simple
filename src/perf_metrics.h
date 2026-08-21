@@ -479,7 +479,7 @@ enum class PerfDisplayStatusPaint : uint8_t {
 };
 
 struct PerfExtendedMetrics {
-    PerfHistogramMs notifyToDisplayMs;
+    PerfHistogramMs notifyToDisplayPipelineCompleteMs;
     uint32_t loopMaxUs = 0;
     // V1 firmware version reported via RESP_VERSION
     // (PacketParser populates DisplayState.v1FirmwareVersion; we mirror it
@@ -655,7 +655,7 @@ struct PerfExtendedMetrics {
     uint32_t displayPreviewSteadyRenderMaxUs = 0;            // Later preview-frame render max
 
     void reset() {
-        notifyToDisplayMs.reset();
+        notifyToDisplayPipelineCompleteMs.reset();
         loopMaxUs = 0;
         minFreeHeap = UINT32_MAX;
         minLargestBlock = UINT32_MAX;
@@ -819,7 +819,7 @@ struct PerfExtendedMetrics {
 
 extern PerfExtendedMetrics perfExtended;
 
-void perfRecordNotifyToDisplayMs(uint32_t ms);
+void perfRecordNotifyToDisplayPipelineCompleteMs(uint32_t ms);
 void perfRecordLoopJitterUs(uint32_t us);
 void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock, uint32_t freeDma, uint32_t largestDma);
 void perfRecordWifiProcessUs(uint32_t us);

@@ -415,11 +415,11 @@ def write_replay_csv(path: Path, *, publishes: int = 708) -> None:
     end = {**qstart, "millis": 300_000, **exact, "v1AllVolumeParsed": 1}
     path.write_text(
         ",".join(columns)
-        + "\n#session_start,seq=1,bootId=1,uptime_ms=10,token=QSTART,schema=46\n"
+        + "\n#session_start,seq=1,bootId=1,uptime_ms=10,token=QSTART,schema=47\n"
         + ",".join(str(qstart[column]) for column in columns)
         + "\n"
         + ",".join(columns)
-        + "\n#session_start,seq=2,bootId=1,uptime_ms=20,token=REPLACEMENT,schema=46\n"
+        + "\n#session_start,seq=2,bootId=1,uptime_ms=20,token=REPLACEMENT,schema=47\n"
         + ",".join(str(replacement[column]) for column in columns)
         + "\n"
         + ",".join(str(end[column]) for column in columns)
@@ -703,7 +703,8 @@ def test_no_baseline_language_does_not_make_bench_fail() -> None:
         assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
         result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
         assert_true(result["result"] == "PASS", f"unexpected result: {result}")
-        assert_true(result["schema_version"] == 4, f"unexpected schema: {result}")
+        assert_true(result["schema_version"] == 5, f"unexpected schema: {result}")
+        assert_true(result["run_dir"] == ".", f"run directory was not private: {result}")
         assert_true(
             result["hardware_scoring_fingerprint"]
             == CURRENT_HARDWARE_SCORING_FINGERPRINT,
@@ -715,6 +716,38 @@ def test_no_baseline_language_does_not_make_bench_fail() -> None:
         assert_true("top budget pressure:" in proc.stdout, f"bench output should surface budget pressure: {proc.stdout}")
         assert_true("ble_process_max_peak_us" in proc.stdout, f"bench output should name top pressure metric: {proc.stdout}")
         assert_true("display_preview_render_peak_us" not in proc.stdout, f"optional missing metrics are not actionable PASS evidence: {proc.stdout}")
+
+
+def test_bench_result_and_summary_publish_only_safe_relative_paths() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(root, "core")
+        write_window(root, "display")
+        private_home = "/Users/" + "private-owner/missing-manifest.json"
+        private_device = "/dev/cu." + "private-device"
+        for suite, private_path in (("core", private_home), ("display", private_device)):
+            window_path = root / suite / "window_result.json"
+            window = json.loads(window_path.read_text(encoding="utf-8"))
+            window["manifest_path"] = private_path
+            write_json(window_path, window)
+
+        proc = run_score(root, "core", "display")
+        assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
+        result_text = (root / "bench_result.json").read_text(encoding="utf-8")
+        summary_text = (root / "bench_summary.txt").read_text(encoding="utf-8")
+        published = result_text + summary_text
+        for private_value in (str(root), private_home, private_device):
+            assert_true(private_value not in published, "bench publication retained a private path")
+        result = json.loads(result_text)
+        assert_true(
+            [window["artifact_dir"] for window in result["windows"]] == ["core", "display"],
+            f"window artifact paths were not run-relative: {result}",
+        )
+        assert_true(
+            ("/Users/" + "<redacted-user>") in published
+            and ("/dev/" + "<redacted-device>") in published,
+            f"safe evidence markers were lost: {published}",
+        )
 
 
 def test_hardware_scoring_identity_is_owned_end_to_end() -> None:
@@ -1012,7 +1045,7 @@ def test_replay_exact_invariants_are_part_of_the_verdict() -> None:
         all_volume = checks["all_volume_consumption"]
         assert_true(all_volume["result"] == "PASS", f"missing parse proof: {all_volume}")
         assert_true(all_volume["observed_delta"] == 1, f"wrong parse delta: {all_volume}")
-        assert_true(all_volume["selected_schema"] == 46, f"wrong parse schema: {all_volume}")
+        assert_true(all_volume["selected_schema"] == 47, f"wrong parse schema: {all_volume}")
         encounter = checks["encounter_checks"]
         assert_true(encounter["result"] == "PASS", f"unexpected encounter checks: {encounter}")
         assert_true(encounter["matched_checkpoints"] == 4, f"missing checkpoints: {encounter}")
@@ -1090,7 +1123,7 @@ def test_replay_all_volume_consumption_mutants_are_fail_closed() -> None:
         earned_fields[-1] = "1"
         preflight = [
             lines[0],
-            "#session_start,seq=1,bootId=1,uptime_ms=1,token=PREFLIGHT,schema=46",
+            "#session_start,seq=1,bootId=1,uptime_ms=1,token=PREFLIGHT,schema=47",
             ",".join(zero_fields),
             ",".join(earned_fields),
         ]
@@ -1167,8 +1200,8 @@ def test_replay_all_volume_consumption_mutants_are_fail_closed() -> None:
             write_window(root, "replay")
             csv_path = root / "replay" / "perf.csv"
             lines = csv_path.read_text(encoding="utf-8").splitlines()
-            lines[1] = lines[1].replace("schema=46", f"schema={schemas[0]}")
-            lines[4] = lines[4].replace("schema=46", f"schema={schemas[1]}")
+            lines[1] = lines[1].replace("schema=47", f"schema={schemas[0]}")
+            lines[4] = lines[4].replace("schema=47", f"schema={schemas[1]}")
             csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             proc = run_score(root, "replay")
             assert_true(proc.returncode == 3, proc.stdout + proc.stderr)
@@ -3523,7 +3556,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
             for seq, rows in enumerate(sessions, start=1):
                 marker_seq = seqs[seq - 1] if seqs is not None else seq
                 boot_id = boot_ids[seq - 1] if boot_ids is not None else 1
-                schema = schemas[seq - 1] if schemas is not None else 46
+                schema = schemas[seq - 1] if schemas is not None else 47
                 uptime = (
                     uptimes[seq - 1]
                     if uptimes is not None
@@ -3578,11 +3611,11 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
                 "\n".join(
                     [
                         ",".join(columns),
-                        "#session_start,seq=1,bootId=1,uptime_ms=35000,token=QSTART,schema=46",
+                        "#session_start,seq=1,bootId=1,uptime_ms=35000,token=QSTART,schema=47",
                         row(35_000, 0, 0),
                         row(40_000, 200, 30),
                         ",".join(replacement_columns),
-                        "#session_start,seq=2,bootId=1,uptime_ms=45000,token=REPLACEMENT,schema=46",
+                        "#session_start,seq=2,bootId=1,uptime_ms=45000,token=REPLACEMENT,schema=47",
                         without_missing_column(row(45_000, 200, 30)),
                         without_missing_column(row(300_000, 708, 30)),
                     ]
@@ -3718,7 +3751,7 @@ def test_replay_scores_only_qstart_and_replacement_connection_sessions() -> None
         replacement_first = lines.index(row(45_000, 200, 30))
         lines.insert(
             replacement_first + 1,
-            "#session_start,seq=3,bootId=1,uptime_ms=45000,token=INJECTED,schema=46",
+            "#session_start,seq=3,bootId=1,uptime_ms=45000,token=INJECTED,schema=47",
         )
         csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         proc = run_score(root, "replay")
@@ -4314,6 +4347,7 @@ def test_live_camera_recorder_failure_needs_no_metrics_artifacts() -> None:
 
 def main() -> int:
     test_no_baseline_language_does_not_make_bench_fail()
+    test_bench_result_and_summary_publish_only_safe_relative_paths()
     test_hardware_scoring_identity_is_owned_end_to_end()
     test_baseline_only_regression_is_comparison_not_verdict()
     test_required_missing_metric_remains_a_hard_failure()

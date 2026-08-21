@@ -139,6 +139,25 @@ def main() -> int:
     except (OSError, RuntimeError):
         errors.append("private term list is missing or unreadable")
 
+    identity_key_override = os.environ.get("V1SIMPLE_PRIVACY_IDENTITY_KEY_FILE")
+    identity_key_path = (
+        Path(identity_key_override)
+        if identity_key_override
+        else terms_path.with_name("privacy_identity.key")
+    )
+    if identity_key_path.exists():
+        try:
+            key_stat = identity_key_path.stat()
+            if (
+                not identity_key_path.is_file()
+                or identity_key_path.is_symlink()
+                or stat.S_IMODE(key_stat.st_mode) & 0o077
+                or key_stat.st_size != 32
+            ):
+                errors.append("private identity key is not an owner-only 32-byte file")
+        except OSError:
+            errors.append("private identity key is unreadable")
+
     checks = (
         [sys.executable, "scripts/check_public_commit_metadata.py", "--identity-only"],
         [sys.executable, "scripts/check_public_commit_metadata.py", "--revision=--all"],
@@ -163,7 +182,7 @@ def main() -> int:
 
     print(
         "[local-privacy-setup] local identity, hooks, private terms, index, "
-        "history, and push destination are safe"
+        "history, identity alias key, and push destination are safe"
     )
     return 0
 

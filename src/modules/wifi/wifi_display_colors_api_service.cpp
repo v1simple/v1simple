@@ -51,9 +51,6 @@ void handleApiSave(WebServer& server, const Runtime& runtime, bool (*checkRateLi
     Serial.println("[HTTP] POST /api/display/settings");
 #ifndef UNIT_TEST
     Serial.printf("[HTTP] Args count: %d\n", server.args());
-    for (int i = 0; i < server.args(); i++) {
-        Serial.printf("[HTTP] Arg %s = %s\n", server.argName(i).c_str(), server.arg(i).c_str());
-    }
 #endif
 
     const V1Settings& s = runtime.getSettings(runtime.getSettingsCtx);

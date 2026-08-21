@@ -5,7 +5,8 @@ report for a developer who will use it to find and fix real defects. It is not a
 bench verdict, release gate, artifact-presence checker, or restatement of existing
 scores.
 
-Return only JSON that conforms to `tools/bench_investigation.schema.json`.
+Return only JSON that conforms to `tools/bench_investigation.schema.json`, with
+`schema_version` set to `2`.
 
 ## Core standard
 
@@ -45,14 +46,33 @@ be useful leads, but their descriptions must say that attribution is a hypothesi
 
 ## Build the evidence map
 
-Inventory all readable files below the supplied run with run-relative paths,
-sizes, and SHA-256 hashes. Populate `coverage.artifacts` honestly:
+The runner supplies the complete run-relative artifact inventory, sizes, and
+runner-owned SHA-256 hashes. Do not spend the first pass transcribing that
+inventory. Before broad exploration, return a schema-valid lead checkpoint that
+follows the strongest recorded discrepancy through its raw support and
+counterevidence into the tightest owning-code location available. Use bounded
+reads and searches; never stream a large log, trace, table, or binary into model
+context merely to claim coverage. If no defect is established, preserve the
+grounded observation as unresolved or report the honestly limited coverage.
+
+Populate `coverage.artifacts` only for artifacts you semantically examined, using
+at least one resolvable selector (a whole-file selector is valid) for every
+reviewed claim:
 
 - `reviewed` means the cited portions were semantically examined;
 - `partially_reviewed` names the examined portions and what was not reviewed;
 - `skipped` explains why the input was intentionally not examined;
 - `unreadable` records the read or decode error;
 - `unfamiliar` preserves an artifact whose meaning is not established.
+
+Set `coverage.attachments` to an empty array; the runner replaces that field with
+the exact sheets it supplied before publishing the report. The runner also adds
+every model-omitted inventory item as `skipped` and marks execution partial. This
+lets the model publish useful grounded results before expanding coverage without
+pretending that unexamined evidence was reviewed. Artifact path, hash, byte count,
+and kind are runner-owned; the model supplies only semantic status, notes, and
+selectors. A path absent from the runner inventory is omitted rather than
+published as an artifact.
 
 For reviewed code, record the exact revision, repository-relative path, symbol,
 and tight line range in `coverage.code`. Do not list whole modules when a smaller
@@ -131,11 +151,14 @@ first/last PTS, nominal cadence, and bounded locations of abnormal gaps; unsampl
 edges remain explicit. Exact regular point locations are not supplied to the model.
 Never turn the summary into whole-duration visual coverage or ignore a recorded gap.
 
-The attachment manifest binds each image to its source video, purpose, interval,
-and row-major ordered cell labels. A cell's `nominal_requested_pts_seconds` is a
-requested sampling label, not a measured source-frame PTS. Preserve its explicit
-`pts_uncertainty_seconds` and `pts_uncertainty_interval`; do not use the nominal
-label for exact timing or latency.
+The runner-owned attachment manifest binds each supplied image index and durable
+run-relative sheet path/hash to its canonical source video path/hash, represented
+interval, and row-major ordered cells. Temporary extraction filenames are not
+evidence and must never appear in a selector. A cell's
+`nominal_requested_pts_seconds` is a requested sampling label, not a measured
+source-frame PTS. Preserve its explicit `pts_uncertainty_seconds` and
+`pts_uncertainty_interval`; do not use the nominal label for exact timing or
+latency.
 
 If the overview or other evidence identifies a PTS interval that needs denser
 inspection, add a bounded entry to top-level `video_requests` with the video's
@@ -146,9 +169,14 @@ the supplied frames answer the question, cite the reviewed PTS/frame interval in
 `coverage.video_intervals` and the finding or unresolved evidence; leave
 `video_requests` empty unless more extraction is still needed.
 
-A video observation must state its PTS interval. When relating it to another
-clock, cite the applicable clock mapping and retain its uncertainty. Never turn an
-approximate anchor into exact notification-to-pixel latency.
+A `reviewed` or `partially_reviewed` video observation must state its PTS interval
+and cite one supplied `attachment_index` plus the exact zero-based `cell_indices`
+that show it. The PTS range must encompass those cells' uncertainty and remain
+inside the sheet's represented interval. An `unsampled` coverage interval may omit
+attachment fields because it explicitly claims no visual review. When relating
+video to another clock, cite the applicable clock mapping and retain its
+uncertainty. Never turn an approximate anchor into exact notification-to-pixel
+latency.
 
 ## Classify conclusions
 
@@ -189,18 +217,23 @@ SHA-256 hash. Include only the selector fields applicable to its `kind`:
 - `ndjson`: one-based physical line range plus an event key/value when useful;
 - `csv`: one-based data-record range after comments/header plus stable key columns;
 - `log`: one-based physical line range;
-- `video`: PTS interval and frame interval when frame numbers are known.
+- `video`: source-video PTS interval, `attachment_index`, and `cell_indices`; use
+  frame indices only when the manifest says source positions were measured.
 
 Keep ranges tight. The selector description states exactly what the selected
 record proves. Use `findings[].evidence` and `unresolved[].evidence` for run
 artifacts; use their `code` arrays for repository source. Code selectors always
-name the inspected revision, path, symbol, and line range. The symbol is the
-model's owner label; the runner resolves its revision, path, and line range. For
-artifacts, the runner resolves paths, hashes, `json_pointer` values, rows, lines,
-and video PTS/frame ranges. If a
+name the inspected revision, path, symbol, line range, and `selection_sha256`.
+Compute `selection_sha256` over UTF-8 text made from the selected physical lines
+joined by LF with one final LF. The symbol is the model's owner label; the runner
+resolves revision, path, line range, and selected-line digest. For artifacts, the
+runner resolves paths, hashes, `json_pointer` values, rows, lines, and attached
+video sheets/cells with their PTS uncertainty. If a
 citation does not resolve, it records the citation error in `coverage` and
 downgrades only the affected result's causal claim; it does not reject the rest
-of the report.
+of the report. Invalid selectors are not retained. A lead with no resolvable
+primary artifact evidence is omitted with an explicit execution error rather than
+published as an ungrounded unresolved item.
 
 ## Output discipline
 

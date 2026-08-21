@@ -200,11 +200,9 @@ void onV1Connected() {
     }
 
     const AutoPushSlot& slot = settingsManager.getSlot(selection.selectedSlotIndex);
-    SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u addr='%s' "
-                     "profile='%s' mode=%d\n",
+    SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u mode=%d\n",
                      s.autoPushEnabled ? "on" : "off", selection.activeSlotIndex, selection.selectedSlotIndex,
-                     static_cast<unsigned>(selection.deviceDefaultProfile), selection.connectedAddress.c_str(),
-                     slot.profileName.c_str(), static_cast<int>(slot.mode));
+                     static_cast<unsigned>(selection.deviceDefaultProfile), static_cast<int>(slot.mode));
     if (!s.autoPushEnabled) {
         return;
     }

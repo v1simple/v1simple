@@ -99,8 +99,7 @@ bool restoreWifiClientPasswordObfFromBackupDoc(const JsonDocument& doc, const St
 
     const String backupSsid = doc["wifiClientSSID"] | "";
     if (backupSsid.length() > 0 && backupSsid != expectedSsid) {
-        Serial.printf("[Settings] WARN: Skipping WiFi client password restore; SSID mismatch (want='%s' got='%s')\n",
-                      expectedSsid.c_str(), backupSsid.c_str());
+        Serial.println("[Settings] WARN: Skipping WiFi client password restore; SSID mismatch");
         return false;
     }
 
@@ -143,8 +142,7 @@ bool restoreLegacyStationPasswordFromBackupDoc(const JsonDocument& doc, const St
 
     const String backupSsid = legacyWifiClientSsidFromBackupDoc(doc);
     if (backupSsid.length() > 0 && backupSsid != expectedSsid) {
-        Serial.printf("[Settings] WARN: Skipping legacy station password restore; SSID mismatch (want='%s' got='%s')\n",
-                      expectedSsid.c_str(), backupSsid.c_str());
+        Serial.println("[Settings] WARN: Skipping legacy station password restore; SSID mismatch");
         return false;
     }
 
@@ -230,9 +228,13 @@ void clearWifiStaSlotPasswordsForRestore(bool clearSdSecret) {
     Preferences prefs;
     if (prefs.begin(WIFI_CLIENT_NS, false)) {
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-            prefs.remove(kNvsWifiStaSlotPassword[i]);
+            if (prefs.isKey(kNvsWifiStaSlotPassword[i])) {
+                prefs.remove(kNvsWifiStaSlotPassword[i]);
+            }
         }
-        prefs.remove(kNvsWifiPassword);
+        if (prefs.isKey(kNvsWifiPassword)) {
+            prefs.remove(kNvsWifiPassword);
+        }
         prefs.end();
     }
     if (clearSdSecret) {
@@ -309,7 +311,6 @@ static constexpr int kProfileRestoreWatchdogFeedInterval = 4;
 SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
                                                                const SettingsRestoreWatchdog& watchdog) {
     SettingsBackupApplyResult result;
-
     // Fed at restore phase boundaries only — see SettingsRestoreWatchdog.
     auto feedWatchdog = [&watchdog]() {
         if (watchdog.feed) {
@@ -631,7 +632,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         if (isValidBleAddress(addr)) {
             settings_.obdSavedAddress = addr;
         } else {
-            Serial.printf("[Settings] WARN: Invalid OBD saved address in backup: '%s' — skipping\n", addr.c_str());
+            Serial.println("[Settings] WARN: Invalid OBD saved address in backup — skipping");
             settings_.obdSavedAddress = "";
         }
     }
@@ -743,8 +744,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             if (saveResult.success) {
                 profilesRestored++;
             } else {
-                Serial.printf("[Settings] Failed to restore profile '%s': %s\n", profile.name.c_str(),
-                              saveResult.error.c_str());
+                Serial.println("[Settings] Failed to restore one profile");
             }
         }
     }

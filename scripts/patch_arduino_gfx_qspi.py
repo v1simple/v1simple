@@ -15,11 +15,11 @@ Raising ESP32QSPI_MAX_PIXELS_AT_ONCE 1024 -> 4096 (commit 683f944) cut 108
 transactions to 27 and moved max flush ~57 -> ~47 ms, which puts per-transaction
 overhead near 123 us and leaves ~44 ms in the pack-and-transfer body.
 
-This matters because peak notify-to-display latency is bounded by exactly one
-in-flight render: across 1302 bench windows the metric tracks the largest
-render in the window and never exceeds it (ceiling 65 ms against renders that
-reach 72 ms). The display pipeline runs on the main loop, so a V1 notification
-arriving during a flush waits for it to finish.
+This matters to the schema-47 notification-to-display-pipeline-completion
+measurement because that interval ends only after the triggered display
+pipeline returns. A full-frame flush performed by that pipeline is therefore
+inside the measured interval. The schema-46 dispatch-time observation used
+different semantics and cannot be compared with it.
 
 The patch makes two changes to writePixels and nothing else:
 

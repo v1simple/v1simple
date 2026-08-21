@@ -214,8 +214,8 @@ void perfSetConnectionCycleSnapshot(uint8_t stateCode, uint32_t timeInStateMs, u
     sConnectionCycleProxyNoClientLatched.store(proxyNoClientLatched ? 1 : 0, std::memory_order_relaxed);
 }
 
-void perfRecordNotifyToDisplayMs(uint32_t ms) {
-    addLatencySample(perfExtended.notifyToDisplayMs, ms);
+void perfRecordNotifyToDisplayPipelineCompleteMs(uint32_t ms) {
+    addLatencySample(perfExtended.notifyToDisplayPipelineCompleteMs, ms);
 }
 
 void perfRecordLoopJitterUs(uint32_t us) {

@@ -17,12 +17,15 @@ coding agent. This is the configuration verified on the connected bench machine:
 ```text
 OLLAMA_NO_CLOUD=1 OLLAMA_NOHISTORY=1 OLLAMA_HOST=127.0.0.1:11434 \
   OLLAMA_CONTEXT_LENGTH=98304 OLLAMA_FLASH_ATTENTION=1 \
-  OLLAMA_KV_CACHE_TYPE=q4_0 ollama serve
+  OLLAMA_KV_CACHE_TYPE=q4_0 OLLAMA_NUM_PARALLEL=1 \
+  OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=30m ollama serve
 ```
 
-The runner also rejects Ollama model tags ending in `:cloud` or `-cloud`. Larger
-context windows consume more memory; a higher-precision KV cache can be selected
-on machines where it fits.
+This is the tested service configuration, not a completion guarantee: on a full
+connected corpus the 98,304-token context filled and the selected model timed out
+after one hour without a finding. The runner also rejects Ollama model tags
+ending in `:cloud` or `-cloud`. Larger context windows consume more memory; a
+higher-precision KV cache can be selected on machines where it fits.
 
 `bench.sh` invokes that local form after collection and scoring. Its provider and
 model can be changed with `BENCH_INVESTIGATOR_LOCAL_PROVIDER` and
@@ -45,7 +48,8 @@ opting in.
 
 ## Report contract
 
-The command atomically replaces `<run>/investigation.json`. The report contains:
+The command atomically replaces `<run>/investigation.json`. Schema version 2 of
+the report contains:
 
 - `execution_status`: runner-owned state recording whether model execution
   completed, failed, or returned partial results, without claiming investigation
@@ -65,12 +69,21 @@ The command atomically replaces `<run>/investigation.json`. The report contains:
 Artifact selectors include a run-relative path, content hash, and the applicable
 JSON Pointer, NDJSON line/event, CSV row/key, log line, or video PTS/frame interval.
 Code selectors include revision, repository-relative path, symbol, and a tight
-line range. The runner resolves cited paths and ranges before publication. An
-invalid citation downgrades only its affected finding and is recorded in
-`coverage`; it does not discard other useful results. If the run identity cannot
+line range plus the exact selected-line hash. Reviewed or partially reviewed video
+selectors also name the durable attached sheet and cells that represent their PTS
+uncertainty. The runner resolves cited paths, hashes, ranges, sheets, and cells before publication;
+it strips invalid selectors and omits a lead only when no primary artifact
+evidence remains. Other useful results remain intact. If the run identity cannot
 be matched to inspected source, code attribution remains a hypothesis.
 
 A no-finding report is useful only when `coverage` shows what was truly examined.
+The runner appends any readable model-omitted run artifact as runner-hashed
+`skipped` coverage; unreadable inputs remain explicit with null metadata where
+the size or digest could not be obtained. It conservatively merges duplicate
+rows to one row per artifact and records partial execution, so inputs cannot
+silently disappear or contradict themselves. Published path, available digest,
+available byte count, and kind always come from the runner inventory;
+nonexistent model-authored paths are omitted and recorded.
 Existing scores and camera grades are leads; the investigator must follow them
 back to raw records, video, stimulus, and owning code before making a finding.
 
@@ -108,6 +121,8 @@ does not decide whether pixels are correct. The model may request higher-rate PT
 intervals based on any evidence it finds, and the runner repeats extraction and
 review within explicit resource bounds. The report records reviewed and unsampled
 PTS intervals, the anchor used to relate them to other clocks, and the uncertainty.
+Only sheets actually supplied to the model are retained under content-addressed
+run-relative paths and recorded in the runner-owned attachment manifest.
 Expected display state comes from independently decoded stimulus and owning code,
 never solely from parser-derived encounter data.
 
@@ -190,6 +205,28 @@ V1 is demonstrated by these outcomes:
   with actual evidence coverage and findings or concrete unresolved causes, and
   demonstrates the added causal/timing evidence on real hardware. A backend-error
   report alone does not satisfy this outcome.
+
+## Current evaluation result
+
+The V1 product outcome is not yet met. A connected replay/camera run passed its
+bench, replay, camera, and collection checks, but the local model exhausted the
+tested context and timed out after one hour. The resulting schema-valid failure
+report contained no finding. A later connected run passed collection again, but
+its investigation was stopped during extraction before model invocation, so it
+does not validate the revised lead-first prompt.
+
+Independent targeted review of those same videos and causal traces found a real
+renderer defect twice: a band-clear rectangle erased 13 by 11 pixels from card
+slot 0 about 30 ms after the card was drawn, then the card cache skipped the
+repair. The automatic investigator did not find it. The same review found no
+actionable scheduling or display-pipeline waste: visible publishes joined to
+display commits, queues and loss counters stayed healthy, and the few broad
+pushes were too rare to justify extra firmware complexity.
+
+This round also misclassified the deliberately dark muted palette as a defect.
+That change was removed. Future semantic investigation must establish intended
+behavior from owning code and product context before recommending a visual
+change; visibility alone is not evidence of incorrectness.
 
 ## Explicit non-goals
 

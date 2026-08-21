@@ -65,7 +65,10 @@ String sanitizeApPasswordValue(const String& raw) {
 }
 
 String sanitizeLastV1AddressValue(const String& raw) {
-    return clampStringLength(raw, MAX_V1_ADDRESS_LEN);
+    String value = clampStringLength(raw, MAX_V1_ADDRESS_LEN);
+    value.trim();
+    value.toUpperCase();
+    return value;
 }
 
 String sanitizeObdSavedNameValue(const String& raw) {
@@ -216,7 +219,8 @@ void SettingsManager::load() {
     const bool wifiClientEnabledKeyPresent = preferences_.isKey(kNvsWifiClientEnabled);
     const bool wifiClientSsidKeyPresent = preferences_.isKey(kNvsWifiClientSsid);
     settings_.wifiClientEnabled = preferences_.getBool(kNvsWifiClientEnabled, false);
-    const String legacyWifiClientSsid = sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiClientSsid, ""));
+    const String legacyWifiClientSsid =
+        wifiClientSsidKeyPresent ? sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiClientSsid, "")) : "";
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         WifiStaSlot& slot = settings_.wifiStaSlots[i];
         slot.ssid = sanitizeWifiClientSsidValue(preferences_.getString(kNvsWifiStaSlotSsid[i], ""));
@@ -246,8 +250,8 @@ void SettingsManager::load() {
     // Record the resolved WiFi client configuration for diagnostics.
     Serial.printf("[Settings] WiFi client keys: enabledKey=%s ssidKey=%s\n", wifiClientEnabledKeyPresent ? "yes" : "no",
                   wifiClientSsidKeyPresent ? "yes" : "no");
-    Serial.printf("[Settings] WiFi client: enabled=%s, SSID='%s'\n", settings_.wifiClientEnabled ? "true" : "false",
-                  settings_.wifiClientSSID.c_str());
+    Serial.printf("[Settings] WiFi client: enabled=%s, configured=%s\n", settings_.wifiClientEnabled ? "true" : "false",
+                  settings_.wifiClientSSID.length() > 0 ? "yes" : "no");
 
     settings_.proxyBLE = preferences_.getBool(kNvsProxyBle, true);
     settings_.proxyName = sanitizeProxyNameValue(preferences_.getString(kNvsProxyName, "V1-Proxy"));
@@ -377,7 +381,9 @@ void SettingsManager::load() {
     settings_.slot1_highway.mode = normalizeV1ModeValue(preferences_.getInt(kNvsSlot1Mode, V1_MODE_UNKNOWN));
     settings_.slot2_comfort.profileName = sanitizeProfileNameValue(preferences_.getString(kNvsSlot2Profile, ""));
     settings_.slot2_comfort.mode = normalizeV1ModeValue(preferences_.getInt(kNvsSlot2Mode, V1_MODE_UNKNOWN));
-    settings_.lastV1Address = sanitizeLastV1AddressValue(preferences_.getString(kNvsLastV1Address, ""));
+    settings_.lastV1Address = preferences_.isKey(kNvsLastV1Address)
+                                  ? sanitizeLastV1AddressValue(preferences_.getString(kNvsLastV1Address, ""))
+                                  : "";
     settings_.autoPowerOffMinutes = clampU8(preferences_.getUChar(kNvsAutoPowerOff, 0), 0, 60);
     settings_.apTimeoutMinutes = clampApTimeoutValue(preferences_.getUChar(kNvsApTimeout, 0));
 
@@ -385,8 +391,7 @@ void SettingsManager::load() {
     settings_.obdEnabled = preferences_.getBool(kNvsObdEnabled, false);
     settings_.obdSavedAddress = preferences_.getString(kNvsObdAddress, "");
     if (!isValidBleAddress(settings_.obdSavedAddress)) {
-        Serial.printf("[Settings] WARN: Invalid OBD saved address in NVS: '%s' — clearing\n",
-                      settings_.obdSavedAddress.c_str());
+        Serial.println("[Settings] WARN: Invalid OBD saved address in NVS — clearing");
         settings_.obdSavedAddress = "";
     }
     settings_.obdSavedName = sanitizeObdSavedNameValue(preferences_.getString(kNvsObdName, ""));

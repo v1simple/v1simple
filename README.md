@@ -365,10 +365,12 @@ drop counters, parser failures, receive/display continuity, reboots, and the
 gated replay camera contract. SD peaks remain in the scoring artifacts, with
 compatible-baseline trends in the comparison artifacts, for diagnosis.
 
-When supported by the source, `notify_to_display_max_ms` is likewise diagnostic
-telemetry, not a standalone product verdict. It measures BLE notification
-arrival to display-pipeline dispatch; it does not measure when changed pixels
-become visible. Recorded evidence has not established a raw maximum that
+When supported by the source, `notify_to_display_pipeline_complete_max_ms` is
+likewise diagnostic telemetry, not a standalone product verdict. Starting with
+perf CSV schema 47, it measures BLE notification arrival through return from the
+display pipeline. It still does not measure when changed pixels become visible,
+and the earlier `notify_to_display_max_ms` dispatch-time metric is intentionally
+not comparable. No validated schema-47 evidence has yet established a raw maximum that
 independently causes packet loss, parser failure, a stale or incorrect display,
 or a missed replay encounter. The value and compatible-baseline trend remain
 available for diagnosis, while direct receive, drop, replay-semantic, and

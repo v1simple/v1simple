@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
 import sys
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -176,6 +179,82 @@ def test_immutable_publication_and_conflicts() -> None:
             raise AssertionError("conflicting append-only grade was overwritten")
 
 
+def test_camera_publishers_scrub_private_failure_details_before_hashing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        camera_dir, result, encounter = camera_fixture(Path(tmp) / "run" / "replay")
+        private = (
+            "/Users/"
+            + "private-owner/workspace /dev/cu."
+            + "private-port AA:BB:CC:DD:EE:FF SSID='private-network'"
+        )
+        result["camera_name"] = "Private Owner Camera"
+        result["errors"] = [private]
+        manifest = build_capture_manifest(
+            camera_dir=camera_dir,
+            camera_result=result,
+            suite="replay",
+            product_fingerprint="a" * 64,
+            scenario_fingerprint="b" * 64,
+            encounter_csv_path=encounter,
+            timing_anchor={"kind": "fixture", "detail": private},
+            traceability={"repository_sha": "1" * 40, "detail": private},
+        )
+        assert_true(
+            manifest["identity"]["camera"]["name"] == "<redacted-name>",
+            f"private camera name survived: {manifest}",
+        )
+        manifest_path, _created = publish_capture_manifest(camera_dir, manifest)
+
+        fingerprint = current_grader_fingerprint(ROOT)
+        grade = grade_fixture(manifest, fingerprint)
+        grade["diagnostics"] = [{"code": "fixture", "message": private}]
+        grade_path, _created = publish_grade(camera_dir, manifest, fingerprint, grade)
+
+        report_path = camera_dir / "privacy_report.json"
+        publish_immutable_json(report_path, {"message": private})
+        persisted = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (manifest_path, grade_path, report_path)
+        )
+        for private_value in (
+            "private-owner",
+            "cu.private-port",
+            "AA:BB:CC:DD:EE:FF",
+            "private-network",
+            "Private Owner Camera",
+        ):
+            assert_true(private_value not in persisted, f"private camera data survived: {persisted}")
+
+
+def test_camera_publication_preserves_owned_hashes_but_scrubs_digest_narrative() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        private_digest = "ab" * 32
+        terms_path = root / "terms.txt"
+        terms_path.write_text(private_digest + "\n", encoding="utf-8")
+        report_path = root / "camera" / "digest_report.json"
+        previous = os.environ.get("V1SIMPLE_PRIVACY_TERMS")
+        os.environ["V1SIMPLE_PRIVACY_TERMS"] = str(terms_path)
+        try:
+            publish_immutable_json(
+                report_path,
+                {
+                    "grade_id": private_digest,
+                    "input_hashes": {"video": private_digest},
+                    "diagnostic": private_digest,
+                },
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("V1SIMPLE_PRIVACY_TERMS", None)
+            else:
+                os.environ["V1SIMPLE_PRIVACY_TERMS"] = previous
+        published = json.loads(report_path.read_text(encoding="utf-8"))
+        assert_true(published["grade_id"] == private_digest, str(published))
+        assert_true(published["input_hashes"]["video"] == private_digest, str(published))
+        assert_true(published["diagnostic"] == "<redacted-private-term>", str(published))
+
+
 def test_resumable_skip_does_not_extract_frames() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         corpus = Path(tmp)
@@ -249,18 +328,24 @@ def test_current_grade_refresh_preserves_stale_owned_evidence() -> None:
 
 def test_bench_refreshes_camera_grade_immediately_before_scoring() -> None:
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
-    refresh = source.index('python3 "$ROOT_DIR/scripts/bench/camera_regrade.py"')
+    camera_regrade = source.index('python3 "$ROOT_DIR/scripts/bench/camera_regrade.py"')
+    refresh = source.rindex(
+        'python3 "$ROOT_DIR/scripts/bench/run_logged.py"',
+        0,
+        camera_regrade,
+    )
     score = source.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
     refresh_block = source[refresh:score]
-    assert_true(refresh < score, "bench scoring can run before the current camera grade refresh")
+    assert_true(camera_regrade < score, "bench scoring can run before the current camera grade refresh")
     assert_true(
         '--corpus-root "$RUN_DIR"' in refresh_block,
         "camera grade refresh does not target only the captured run",
     )
     assert_true(
-        'camera_regrade_status=${PIPESTATUS[0]}' in refresh_block
+        'scripts/bench/run_logged.py"' in refresh_block
+        and '|| camera_regrade_status=$?' in refresh_block
         and "scoring captured evidence anyway" in refresh_block,
-        "camera refresh failure can replace or suppress the evidence verdict",
+        "camera refresh is not privacy-managed without replacing the evidence verdict",
     )
 
 
@@ -412,12 +497,40 @@ def test_invalid_owned_grade_cannot_complete_regrade() -> None:
         assert_true(
             capture["ownership_valid"] is True
             and capture["grade"]["ownership_valid"] is True
-            and capture["grade"]["path"].endswith(f"grades/{fingerprint}.json"),
+            and capture["grade"]["grader_fingerprint"] == fingerprint
+            and capture["grade"]["grade_id"] == invalid["grade_id"],
             f"owned invalid grade lost provenance: {capture}",
         )
         assert_true(
             "invalid current camera grade result" in capture["diagnostic"],
             f"invalid-grade diagnostic was imprecise: {capture}",
+        )
+
+
+def test_regrade_failure_report_sanitizes_diagnostics_before_returning() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        camera_dir, manifest = manifest_fixture(corpus)
+        publish_capture_manifest(camera_dir, manifest)
+        original = camera_regrade_module.grade_camera
+        private_home = "/Users/" + "private-owner/project"
+        private_device = "/dev/cu." + "private-camera"
+        camera_regrade_module.grade_camera = lambda **_kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
+            RuntimeError(f"decode failed in {corpus / 'private'} at {private_home} via {private_device}")
+        )
+        try:
+            report, returncode = camera_regrade_module.build_regrade_report(corpus)
+        finally:
+            camera_regrade_module.grade_camera = original
+
+        serialized = json.dumps(report)
+        assert_true(returncode == 2 and report["completed"] is False, f"failure looked complete: {report}")
+        for private_value in (str(corpus), private_home, private_device):
+            assert_true(private_value not in serialized, "regrade report retained private diagnostics")
+        assert_true(
+            ("/Users/" + "<redacted-user>") in serialized
+            and ("/dev/" + "<redacted-device>") in serialized,
+            f"regrade diagnostic redaction lost its markers: {report}",
         )
 
 
@@ -446,9 +559,16 @@ def test_regrade_completion_report_is_owned_and_immutable() -> None:
             and capture["grade"]["status"] == "skipped",
             f"owned grade was not reported: {capture}",
         )
-        assert_true(not Path(capture["capture_path"]).is_absolute(), f"absolute path leaked: {capture}")
+        assert_true(
+            report["schema_version"] == 2
+            and report["scope"] == "complete_corpus_inventory"
+            and capture["capture_index"] == 1
+            and "capture_path" not in capture
+            and "path" not in capture["grade"],
+            f"regrade report retained filesystem identity: {report}",
+        )
 
-        report_path = Path(tmp) / "report-v1.json"
+        report_path = Path(tmp) / "report-v2.json"
         assert_true(publish_immutable_json(report_path, report), "new report was not published")
         assert_true(not publish_immutable_json(report_path, report), "identical report was rewritten")
         conflicting = json.loads(json.dumps(report))
@@ -469,9 +589,43 @@ def test_regrade_completion_report_is_owned_and_immutable() -> None:
         )
 
 
+def test_regrade_cli_scrubs_immutable_report_conflict_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        corpus = root / "corpus"
+        private_term = "Private" + "ReportDestination"
+        terms_path = root / "terms.txt"
+        terms_path.write_text(private_term + "\n", encoding="utf-8")
+        report_path = root / f"{private_term}.json"
+        report_path.write_text("{}\n", encoding="utf-8")
+        previous = os.environ.get("V1SIMPLE_PRIVACY_TERMS")
+        os.environ["V1SIMPLE_PRIVACY_TERMS"] = str(terms_path)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                returncode = camera_regrade_module.main(
+                    ["--corpus-root", str(corpus), "--report", str(report_path)]
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("V1SIMPLE_PRIVACY_TERMS", None)
+            else:
+                os.environ["V1SIMPLE_PRIVACY_TERMS"] = previous
+        output = stdout.getvalue() + stderr.getvalue()
+        assert_true(returncode == 2, output)
+        assert_true(private_term not in output and "Traceback" not in output, output)
+        assert_true(
+            "<redacted-private-term>" in output or "<redacted-host-path>" in output,
+            output,
+        )
+
+
 def main() -> int:
     test_capture_id_stability_and_sensitivity()
     test_immutable_publication_and_conflicts()
+    test_camera_publishers_scrub_private_failure_details_before_hashing()
+    test_camera_publication_preserves_owned_hashes_but_scrubs_digest_narrative()
     test_resumable_skip_does_not_extract_frames()
     test_current_grade_refresh_preserves_stale_owned_evidence()
     test_bench_refreshes_camera_grade_immediately_before_scoring()
@@ -480,7 +634,9 @@ def main() -> int:
     test_missing_legacy_timing_abstains_before_decode()
     test_malformed_grade_is_a_conflict()
     test_invalid_owned_grade_cannot_complete_regrade()
+    test_regrade_failure_report_sanitizes_diagnostics_before_returning()
     test_regrade_completion_report_is_owned_and_immutable()
+    test_regrade_cli_scrubs_immutable_report_conflict_path()
     print("camera artifact tests passed")
     return 0
 

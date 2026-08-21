@@ -394,8 +394,8 @@ bool ObdRuntimeModule::autoHealBondIfAllowed(uint32_t nowMs, const char* context
     }
 
 #ifndef UNIT_TEST
-    Serial.printf("[OBD] auto-heal bond during %s addr=%s lastBleError=%d (%s) lastSecurityError=%d (%s)\n",
-                  context ? context : "unknown", savedAddress_, getBleLastError(), bleReasonName(getBleLastError()),
+    Serial.printf("[OBD] auto-heal bond during %s lastBleError=%d (%s) lastSecurityError=%d (%s)\n",
+                  context ? context : "unknown", getBleLastError(), bleReasonName(getBleLastError()),
                   getBleSecurityFailure(), bleReasonName(getBleSecurityFailure()));
 #endif
 

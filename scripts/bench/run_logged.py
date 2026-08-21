@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
+from artifact_privacy import redact_artifact_bytes
+
 
 MANAGED_SHUTDOWN_GRACE_SECONDS = 70.0
 MANAGED_V1_RADIO_LEASE_FD_ENV = "V1SIMPLE_MANAGED_V1_LEASE_FD"
@@ -67,12 +69,13 @@ def copy_stream(
         chunk = source.readline()
         if not chunk:
             break
-        terminal.write(chunk)
+        safe_chunk = redact_artifact_bytes(chunk)
+        terminal.write(safe_chunk)
         terminal.flush()
-        own_log.write(chunk)
+        own_log.write(safe_chunk)
         own_log.flush()
         with combined_lock:
-            combined_log.write(chunk)
+            combined_log.write(safe_chunk)
             combined_log.flush()
 
 
@@ -117,7 +120,9 @@ def main() -> int:
                 pass_fds=pass_fds,
             )
         except (OSError, ValueError) as exc:
-            message = f"managed command could not start: {exc}\n".encode("utf-8", errors="replace")
+            message = redact_artifact_bytes(
+                f"managed command could not start: {exc}\n".encode("utf-8", errors="replace")
+            )
             sys.stderr.buffer.write(message)
             stderr_log.write(message)
             combined_log.write(message)

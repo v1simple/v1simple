@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
+from camera_contract import EXPECTED_CAMERA_NAME
+
 
 # The open-aperture AR0234 profile converges to 5 ms in aperture-priority mode.
 # Keep the value in the contract and verify the live readback before recording;
@@ -173,7 +176,7 @@ class CameraCapture:
             "capture_backend": self.capture_backend,
         }
 
-    def _write_result(self, result: str, **extra: Any) -> None:
+    def _write_result(self, result: str, **extra: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema_version": 2,
             "kind": "bench_camera_evidence",
@@ -193,7 +196,29 @@ class CameraCapture:
         }
         payload.update(extra)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        safe_payload = sanitize_artifact_value(payload, run_dir=self.out_dir)
+        if safe_payload.get("camera_name") != EXPECTED_CAMERA_NAME:
+            safe_payload["camera_name"] = REDACTED_NAME
+        self.errors = list(safe_payload.get("errors") or [])
+        self.result_path.write_text(json.dumps(safe_payload, indent=2) + "\n", encoding="utf-8")
+        return safe_payload
+
+    def _sanitize_text_artifact(self, path: Path) -> None:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            safe = sanitize_artifact_value(raw, run_dir=self.out_dir)
+            if safe != raw:
+                path.write_text(safe, encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"could not privacy-sanitize camera text artifact {path.name}"
+            ) from exc
 
     def _require_tools(self) -> None:
         missing: list[str] = []
@@ -605,6 +630,14 @@ class CameraCapture:
         if self.log_handle is not None:
             self.log_handle.close()
             self.log_handle = None
+        for path in (
+            self.log_path,
+            self.failure_marker_path,
+            self.stats_marker_path,
+            self.session_ready_path,
+            self.first_frame_path,
+        ):
+            self._sanitize_text_artifact(path)
         self._ingest_recorder_artifacts()
         if self.recorder_returncode not in {None, 0} and not self.recorder_failure:
             message = f"camera recorder exited with code {self.recorder_returncode}"
@@ -626,8 +659,8 @@ class CameraCapture:
             "visually_graded": False,
             "profile_validation": {},
         }
-        self._write_result("CAPTURE_FAILED", **payload)
-        return {"result": "CAPTURE_FAILED", **payload, "errors": list(self.errors)}
+        safe_result = self._write_result("CAPTURE_FAILED", **payload)
+        return safe_result
 
     def _probe_video(self) -> dict[str, Any]:
         assert self.ffprobe is not None
@@ -759,5 +792,4 @@ class CameraCapture:
             "visually_graded": False,
             "profile_validation": profile_validation,
         }
-        self._write_result(result, **payload)
-        return {"result": result, **payload, "errors": list(self.errors)}
+        return self._write_result(result, **payload)

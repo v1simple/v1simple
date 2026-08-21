@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
 from bench_identity import current_grader_fingerprint
 from camera_artifacts import CameraArtifactConflict, sha256_file
 from camera_capture import CALIBRATION_VIDEO_TIME_S, CameraCapture, utc_now
@@ -55,6 +56,12 @@ def _publish_immutable_json(path: Path, payload: dict[str, Any]) -> bool:
         temporary.unlink(missing_ok=True)
 
 
+def _publish_safe_payload(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = sanitize_artifact_value(payload, run_dir=path.parent)
+    _publish_immutable_json(path, safe_payload)
+    return safe_payload
+
+
 def _source_still(camera: CameraCapture) -> dict[str, Any]:
     source = {"name": camera.preflight_path.name, "sha256": "", "size_bytes": 0}
     if camera.preflight_path.is_file():
@@ -90,7 +97,11 @@ def _base_payload(camera: CameraCapture) -> dict[str, Any]:
         "kind": "bench_camera_preflight",
         "timestamp_utc": utc_now(),
         "camera": {
-            "name": camera.camera_name,
+            "name": (
+                camera.camera_name
+                if camera.camera_name == EXPECTED_CAMERA_NAME
+                else REDACTED_NAME
+            ),
             "device_index": camera.camera_device_index,
             "profile": camera.profile(),
             "exposure_time_abs": camera.profile()["video_exposure_time_abs"],
@@ -121,7 +132,7 @@ def _profile_diagnostic(camera: CameraCapture) -> dict[str, Any] | None:
         "code": "camera_profile_mismatch",
         "message": "configured camera does not match the fixed capture profile",
         "measured": {
-            "camera_name": camera.camera_name,
+            "camera_name": REDACTED_NAME,
             "profile": actual_profile,
             "mismatched_fields": mismatched_fields,
         },
@@ -137,8 +148,7 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
     profile_diagnostic = _profile_diagnostic(camera)
     if profile_diagnostic is not None:
         payload = _failure_payload(camera, profile_diagnostic)
-        _publish_immutable_json(camera.preflight_result_path, payload)
-        return payload
+        return _publish_safe_payload(camera.preflight_result_path, payload)
     if not camera.start():
         payload = _failure_payload(
             camera,
@@ -149,8 +159,7 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
                 "thresholds": {"started_required": True},
             },
         )
-        _publish_immutable_json(camera.preflight_result_path, payload)
-        return payload
+        return _publish_safe_payload(camera.preflight_result_path, payload)
 
     try:
         offset_x, offset_y, registration = calibrate_display_crop(
@@ -182,7 +191,7 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
             "diagnostics": [],
         }
         try:
-            _publish_immutable_json(camera.preflight_result_path, payload)
+            payload = _publish_safe_payload(camera.preflight_result_path, payload)
         except Exception:
             camera.abort("preflight_artifact_publish_failed")
             raise
@@ -190,7 +199,7 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
 
     payload = _failure_payload(camera, diagnostic)
     try:
-        _publish_immutable_json(camera.preflight_result_path, payload)
+        payload = _publish_safe_payload(camera.preflight_result_path, payload)
     finally:
         camera.abort(str(diagnostic["code"]))
     return payload
@@ -230,7 +239,11 @@ def run_camera_smoke(
         "result": "PASS" if passed else "INCONCLUSIVE",
         "grader_fingerprint": current_grader_fingerprint(),
         "camera": {
-            "name": camera.camera_name,
+            "name": (
+                camera.camera_name
+                if camera.camera_name == EXPECTED_CAMERA_NAME
+                else REDACTED_NAME
+            ),
             "device_index": camera.camera_device_index,
             "profile": camera.profile(),
         },
@@ -256,7 +269,7 @@ def run_camera_smoke(
             }
         ],
     }
-    _publish_immutable_json(out_dir / SMOKE_NAME, payload)
+    payload = _publish_safe_payload(out_dir / SMOKE_NAME, payload)
     return payload, 0 if passed else 3
 
 

@@ -31,19 +31,30 @@ void LoopDisplayModule::process(const LoopDisplayContext& ctx) {
 
     bool pipelineRanThisLoop = false;
     if (parsedResult.runDisplayPipeline) {
-        if (providers.recordNotifyToDisplayMs && parsedSignal.parsedTsMs != 0 &&
-            displayNowMs >= parsedSignal.parsedTsMs) {
-            providers.recordNotifyToDisplayMs(providers.notifyPerfContext, displayNowMs - parsedSignal.parsedTsMs);
-        }
-
+        bool hasDisplayPipelineCompletedAtMs = false;
+        uint32_t displayPipelineCompletedAtMs = 0;
         if (providers.runDisplayPipeline) {
-            if (providers.timestampUs && providers.recordDispPipeUs) {
-                const uint32_t startUs = providers.timestampUs(providers.timestampContext);
-                providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
-                providers.recordDispPipeUs(providers.dispPipePerfContext,
-                                           providers.timestampUs(providers.timestampContext) - startUs);
-            } else {
-                providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
+            const bool measurePipelineDuration = providers.timestampUs && providers.recordDispPipeUs;
+            const uint32_t pipelineStartedAtUs =
+                measurePipelineDuration ? providers.timestampUs(providers.timestampContext) : 0;
+            providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
+            const uint32_t pipelineCompletedAtUs =
+                measurePipelineDuration ? providers.timestampUs(providers.timestampContext) : 0;
+
+            if (providers.readDisplayNowMs && providers.recordNotifyToDisplayPipelineCompleteMs &&
+                parsedSignal.parsedTsMs != 0) {
+                displayPipelineCompletedAtMs = providers.readDisplayNowMs(providers.displayNowContext);
+                hasDisplayPipelineCompletedAtMs = true;
+            }
+            if (measurePipelineDuration) {
+                providers.recordDispPipeUs(providers.dispPipePerfContext, pipelineCompletedAtUs - pipelineStartedAtUs);
+            }
+        }
+        if (hasDisplayPipelineCompletedAtMs) {
+            if (displayPipelineCompletedAtMs >= parsedSignal.parsedTsMs) {
+                providers.recordNotifyToDisplayPipelineCompleteMs(providers.notifyPipelineCompletePerfContext,
+                                                                  displayPipelineCompletedAtMs -
+                                                                      parsedSignal.parsedTsMs);
             }
         }
         pipelineRanThisLoop = true;

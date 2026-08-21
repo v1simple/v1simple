@@ -347,10 +347,25 @@ def test_decode_and_start_failures_stop_cleanly() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         decode_camera = FakeCamera(Path(tmp) / "decode", 300)
         decoded = with_calibrator(
-            lambda *_args: (_ for _ in ()).throw(RuntimeError("invalid JPEG")),
+            lambda *_args: (_ for _ in ()).throw(
+                RuntimeError(
+                    "invalid JPEG /Users/"
+                    + "private-owner/workspace /dev/cu."
+                    + "private-port AA:BB:CC:DD:EE:FF SSID='private-network'"
+                )
+            ),
             lambda: run_camera_preflight(decode_camera),
         )
         assert_true(decoded["diagnostics"][0]["code"] == "preflight_decode_failed", f"{decoded}")
+        persisted = decode_camera.preflight_result_path.read_text(encoding="utf-8")
+        for private_value in (
+            "private-owner",
+            "cu.private-port",
+            "AA:BB:CC:DD:EE:FF",
+            "private-network",
+        ):
+            assert_true(private_value not in persisted, f"private camera error survived: {persisted}")
+            assert_true(private_value not in json.dumps(decoded), f"returned camera error survived: {decoded}")
         assert_true(
             decode_camera.abort_calls == 1 and not decode_camera.running,
             "decode refusal leaked recorder",
@@ -386,9 +401,9 @@ def test_profile_mismatch_refuses_before_camera_start() -> None:
             f"wrong camera name passed: {wrong_result}",
         )
         assert_true(
-            wrong_diagnostic["measured"]["camera_name"] == "Uncalibrated Camera"
+            wrong_diagnostic["measured"]["camera_name"] == "<redacted-name>"
             and wrong_diagnostic["thresholds"]["expected_camera_name"] == "Global Shutter Camera",
-            f"camera name diagnostic was imprecise: {wrong_result}",
+            f"camera name diagnostic was not private: {wrong_result}",
         )
         assert_true(wrong_camera.start_calls == 0, "uncalibrated camera name opened camera")
 

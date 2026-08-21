@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,6 +25,7 @@ from camera_artifacts import (
     verify_capture_files,
 )
 from camera_grade import grade_camera
+from artifact_privacy import sanitize_artifact_value
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,16 +86,16 @@ def regrade_corpus(
     }
     for camera_dir in inventory_camera_dirs(corpus_root):
         counts["discovered"] += 1
-        relative_camera = camera_dir.relative_to(corpus_root).as_posix()
         entry: dict[str, Any] = {
-            "capture_path": relative_camera,
+            "capture_index": counts["discovered"],
             "capture_id": "",
             "result": "",
             "confidence_result": "",
             "ownership_valid": False,
             "grade": {
                 "status": "inventory_only" if dry_run else "missing",
-                "path": "",
+                "grader_fingerprint": grader_fingerprint,
+                "grade_id": "",
                 "ownership_valid": False,
             },
             "diagnostic": "",
@@ -102,7 +104,6 @@ def regrade_corpus(
             current_path = grade_path(camera_dir, grader_fingerprint)
             if current_path.is_file():
                 counts["skipped"] += 1
-                entry["grade"]["path"] = current_path.relative_to(corpus_root).as_posix()
             report_entries.append(entry)
             continue
         counts["processed"] += 1
@@ -122,13 +123,12 @@ def regrade_corpus(
             entry["capture_id"] = str(capture.get("capture_id") or "")
             verify_capture_files(camera_dir, capture)
             current_grade_path = grade_path(camera_dir, grader_fingerprint)
-            if current_grade_path.exists():
-                entry["grade"]["path"] = current_grade_path.relative_to(corpus_root).as_posix()
             try:
                 existing = load_owned_grade(camera_dir, capture, grader_fingerprint)
                 if existing is not None:
                     entry["ownership_valid"] = True
                     entry["grade"]["ownership_valid"] = True
+                    entry["grade"]["grade_id"] = str(existing.get("grade_id") or "")
                     validate_resumable_grade(existing)
             except CameraArtifactError as exc:
                 if current_grade_path.exists():
@@ -150,7 +150,8 @@ def regrade_corpus(
                 )
                 entry["grade"] = {
                     "status": "skipped",
-                    "path": current_grade_path.relative_to(corpus_root).as_posix(),
+                    "grader_fingerprint": grader_fingerprint,
+                    "grade_id": str(existing.get("grade_id") or ""),
                     "ownership_valid": True,
                 }
                 report_entries.append(entry)
@@ -172,7 +173,7 @@ def regrade_corpus(
                 encounter_csv_path=encounter,
                 timeline_start_video_s=timeline_start,
             )
-            published_path, _created = publish_grade(
+            _published_path, _created = publish_grade(
                 camera_dir,
                 capture,
                 grader_fingerprint,
@@ -191,7 +192,8 @@ def regrade_corpus(
             )
             entry["grade"] = {
                 "status": "graded",
-                "path": published_path.relative_to(corpus_root).as_posix(),
+                "grader_fingerprint": grader_fingerprint,
+                "grade_id": str(grade.get("grade_id") or ""),
                 "ownership_valid": True,
             }
             report_entries.append(entry)
@@ -209,6 +211,7 @@ def regrade_corpus(
 
 
 def build_regrade_report(corpus_root: Path, *, dry_run: bool = False) -> tuple[dict[str, Any], int]:
+    corpus_root = corpus_root.resolve()
     entries: list[dict[str, Any]] = []
     counts, returncode = regrade_corpus(corpus_root, dry_run=dry_run, entries=entries)
     accounted = counts["graded"] + counts["skipped"] + counts["conflict"] + counts["incompatible"]
@@ -220,27 +223,30 @@ def build_regrade_report(corpus_root: Path, *, dry_run: bool = False) -> tuple[d
         and counts["conflict"] == 0
         and counts["incompatible"] == 0
     )
-    return (
-        {
-            "schema_version": 1,
-            "kind": "bench_camera_regrade_report",
-            "completed": completed,
-            "dry_run": dry_run,
-            "grader_fingerprint": current_grader_fingerprint(ROOT),
-            "path_base": "corpus_root",
-            "corpus_root": ".",
-            "counts": counts,
-            "captures": entries,
-        },
-        returncode,
-    )
+    report = {
+        "schema_version": 2,
+        "kind": "bench_camera_regrade_report",
+        "completed": completed,
+        "dry_run": dry_run,
+        "grader_fingerprint": current_grader_fingerprint(ROOT),
+        "scope": "complete_corpus_inventory",
+        "counts": counts,
+        "captures": entries,
+    }
+    return sanitize_artifact_value(report, run_dir=corpus_root), returncode
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    report, returncode = build_regrade_report(Path(args.corpus_root), dry_run=args.dry_run)
+    corpus_root = Path(args.corpus_root).resolve()
+    report, returncode = build_regrade_report(corpus_root, dry_run=args.dry_run)
     if args.report:
-        publish_immutable_json(Path(args.report).resolve(), report)
+        try:
+            publish_immutable_json(Path(args.report).resolve(), report)
+        except (CameraArtifactError, OSError, TypeError, ValueError) as exc:
+            safe_error = sanitize_artifact_value(str(exc), run_dir=corpus_root)
+            print(f"camera regrade report publication failed: {safe_error}", file=sys.stderr)
+            return 2
     print(json.dumps(report, indent=2, sort_keys=True))
     return returncode
 

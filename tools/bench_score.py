@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 from bench_identity import current_grader_fingerprint  # noqa: E402
+from artifact_privacy import sanitize_artifact_value  # noqa: E402
 from camera_artifacts import (  # noqa: E402
     CAPTURE_MANIFEST_NAME,
     CameraArtifactError,
@@ -3174,9 +3175,9 @@ def main() -> int:
         for window in windows
     }
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "kind": "bench_result",
-        "run_dir": str(run_dir),
+        "run_dir": ".",
         "git_sha": next(iter(git_shas)) if len(git_shas) == 1 else "",
         "git_ref": next(iter(git_refs)) if len(git_refs) == 1 else "",
         "product_fingerprint": (
@@ -3195,8 +3196,9 @@ def main() -> int:
         "result": result,
         "windows": windows,
     }
-    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    text = render_text(payload)
+    safe_payload = sanitize_artifact_value(payload, run_dir=run_dir)
+    out_path.write_text(json.dumps(safe_payload, indent=2) + "\n", encoding="utf-8")
+    text = render_text(safe_payload)
     if resolved_out_path == canonical_result_path:
         canonical_summary_path.write_text(text, encoding="utf-8")
     sys.stdout.write(text)

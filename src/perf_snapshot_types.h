@@ -274,9 +274,9 @@ struct PerfSdSnapshot {
     bool gpsStableHasFix;              // GPS has stable fix (with hysteresis)
     uint32_t gpsEnableTransitions;     // Number of enable/disable transitions
 
-    // Notify-to-display end-to-end latency histogram (schema v38 — appended)
-    uint32_t notifyToDisplayMaxMs;      // Window max notify→display latency in ms
-    uint32_t notifyToDisplayTotalCount; // Window total samples recorded
+    // V1 notification arrival to completed display-pipeline latency (schema v47).
+    uint32_t notifyToDisplayPipelineCompleteMaxMs;      // Window maximum in milliseconds
+    uint32_t notifyToDisplayPipelineCompleteTotalCount; // Window samples recorded
 
     // V1 connected-readback evidence (schema v46 — appended)
     uint32_t v1AllVolumeParsed; // Canonical RESPALLVOLUME packets parsed since boot/reset

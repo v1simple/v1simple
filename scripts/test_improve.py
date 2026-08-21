@@ -1197,7 +1197,9 @@ def test_target_policy() -> None:
     assert_true(improve.valid_digest(digest), "catalog digest is invalid")
     expect_error(
         lambda: improve.resolve_target_policy(
-            ROOT / "tools" / "hardware_metric_catalog.json", "replay", "notify_to_display_max_ms"
+            ROOT / "tools" / "hardware_metric_catalog.json",
+            "replay",
+            "notify_to_display_pipeline_complete_max_ms",
         ),
         improve.InvalidInput,
         "Informational".lower(),
@@ -1341,10 +1343,10 @@ def write_owned_suite_fixture(
         for metric, value in (("disp_pipe_p95_us", 100.0), ("disp_pipe_max_peak_us", 120.0))
     ]
     scoring = {
-        "schema_version": 1,
+        "schema_version": improve.SCORING_SCHEMA_VERSION,
         "result": "NO_BASELINE",
         "manifest": {
-            "path": str(suite_dir / "manifest.json"),
+            "path": "manifest.json",
             **{
                 key: manifest[key]
                 for key in (
@@ -1864,8 +1866,9 @@ def test_bench_result_arm_identity() -> None:
 
     def fixture(sha: str) -> dict:
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "kind": "bench_result",
+            "run_dir": ".",
             "result": "PASS",
             "git_sha": sha,
             "git_worktree_clean": True,

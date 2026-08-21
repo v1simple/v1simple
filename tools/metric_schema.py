@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-CURRENT_PERF_CSV_SCHEMA = 22
+CURRENT_PERF_CSV_SCHEMA = 47
 MIN_DROP_COUNTER_SCHEMA = 13
+MIN_NOTIFY_PIPELINE_COMPLETE_SCHEMA = 47
 
 CANONICAL_METRIC_UNITS: dict[str, str] = {
     "metrics_ok_samples": "count",
@@ -114,8 +115,8 @@ CANONICAL_METRIC_UNITS: dict[str, str] = {
     "display_restore_render_peak_us": "us",
     "display_preview_first_render_peak_us": "us",
     "display_preview_steady_render_peak_us": "us",
-    "notify_to_display_max_ms": "ms",
-    "notify_to_display_sample_count": "count",
+    "notify_to_display_pipeline_complete_max_ms": "ms",
+    "notify_to_display_pipeline_complete_sample_count": "count",
 }
 
 CSV_DELTA_COLUMNS = {
@@ -235,8 +236,27 @@ CSV_CONNECT_BURST_PEAK_COLUMNS = {
     "connect_burst_display_flush_subphase_peak_us": "displayFlushSubphaseMax_us",
 }
 
-PERF_CSV_ALWAYS_UNSUPPORTED_METRICS = frozenset({"samples_to_stable", "time_to_stable_ms"})
+PERF_CSV_ALWAYS_UNSUPPORTED_METRICS = frozenset(
+    {
+        "samples_to_stable",
+        "time_to_stable_ms",
+        "connect_burst_samples_to_stable",
+        "connect_burst_time_to_stable_ms",
+    }
+)
 PERF_CSV_LEGACY_UNSUPPORTED_METRICS = frozenset({"perf_drop_delta", "event_drop_delta"})
+PERF_CSV_NOTIFY_PIPELINE_COMPLETE_METRICS = frozenset(
+    {
+        "notify_to_display_pipeline_complete_max_ms",
+        "notify_to_display_pipeline_complete_sample_count",
+    }
+)
+PERF_CSV_NOTIFY_PIPELINE_COMPLETE_COLUMNS = frozenset(
+    {
+        "notifyToDisplayPipelineCompleteMax_ms",
+        "notifyToDisplayPipelineCompleteTotalCount",
+    }
+)
 
 DISPLAY_COUNTER_DELTA_MAPPINGS = (
     ("displayFullRenderCount", "display_full_render_count_delta"),
@@ -419,8 +439,8 @@ SOAK_TREND_METRIC_NAMES = (
     "display_restore_render_peak_us",
     "display_preview_first_render_peak_us",
     "display_preview_steady_render_peak_us",
-    "notify_to_display_max_ms",
-    "notify_to_display_sample_count",
+    "notify_to_display_pipeline_complete_max_ms",
+    "notify_to_display_pipeline_complete_sample_count",
 )
 
 SOAK_TREND_METRIC_UNITS = {name: CANONICAL_METRIC_UNITS[name] for name in SOAK_TREND_METRIC_NAMES}
@@ -478,6 +498,9 @@ def unsupported_metrics_for_perf_csv(source_schema: int, columns: Iterable[str])
     schema_is_legacy = source_schema != 0 and source_schema < MIN_DROP_COUNTER_SCHEMA
     if schema_is_legacy or not {"perfDrop", "eventBusDrops"} <= column_set:
         unsupported.update(PERF_CSV_LEGACY_UNSUPPORTED_METRICS)
+    notify_schema_is_legacy = source_schema != 0 and source_schema < MIN_NOTIFY_PIPELINE_COMPLETE_SCHEMA
+    if notify_schema_is_legacy or not PERF_CSV_NOTIFY_PIPELINE_COMPLETE_COLUMNS <= column_set:
+        unsupported.update(PERF_CSV_NOTIFY_PIPELINE_COMPLETE_METRICS)
     return unsupported
 
 

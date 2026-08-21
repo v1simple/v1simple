@@ -15,6 +15,14 @@ from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
+SCORING_SCHEMA_VERSION = 2
+sys.path.insert(0, str(ROOT / "scripts" / "bench"))
+
+from artifact_privacy import (  # type: ignore  # noqa: E402
+    privacy_safe_identifier,
+    redact_artifact_text,
+    sanitize_artifact_value,
+)
 
 # Packet/parse count gates prove that an external proxy/OBD data source was
 # present. They are valid physical-coverage evidence, but they are not runtime
@@ -833,15 +841,17 @@ def score_run(
     elif comparison_kind == "no_baseline":
         final_result = "NO_BASELINE"
 
-    return {
-        "schema_version": 1,
+    result = {
+        "schema_version": SCORING_SCHEMA_VERSION,
         "manifest": {
-            "path": str(manifest_path),
+            "path": manifest_path.name,
             "run_id": manifest["run_id"],
             "git_sha": manifest["git_sha"],
             "git_ref": manifest["git_ref"],
             "run_kind": manifest["run_kind"],
-            "board_id": manifest["board_id"],
+            "board_id": privacy_safe_identifier(
+                manifest["board_id"], namespace="board"
+            ),
             "env": manifest["env"],
             "lane": manifest["lane"],
             "suite_or_profile": manifest["suite_or_profile"],
@@ -856,7 +866,7 @@ def score_run(
             "selected_segment": manifest.get("selected_segment"),
         },
         "baseline_manifest": None if baseline_manifest is None else {
-            "path": str(selected_candidates[0]["path"]),
+            "baseline_id": str(baseline_manifest["run_id"]),
             "run_id": baseline_manifest["run_id"],
             "git_sha": baseline_manifest["git_sha"],
             "git_ref": baseline_manifest["git_ref"],
@@ -869,7 +879,7 @@ def score_run(
             "candidate_count": len(selected_candidates) if baseline_candidates else 0,
             "candidates": [
                 {
-                    "path": str(candidate["path"]),
+                    "baseline_id": str(candidate["manifest"]["run_id"]),
                     "run_id": str(candidate["manifest"].get("run_id", "")),
                     "git_sha": str(candidate["manifest"].get("git_sha", "")),
                     "git_ref": str(candidate["manifest"].get("git_ref", "")),
@@ -903,6 +913,7 @@ def score_run(
             ),
         ),
     }
+    return sanitize_artifact_value(result, run_dir=manifest_path.parent)
 
 
 def render_human(result: dict[str, Any]) -> str:
@@ -989,16 +1000,17 @@ def main() -> int:
     try:
         result = score_run(manifest_path, catalog_path, baseline_paths)
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        safe_error = redact_artifact_text(str(exc))
+        print(f"ERROR: {safe_error}", file=sys.stderr)
         # Emit minimal valid JSON to stdout so shell redirection never
         # leaves scoring.json as a 0-byte file (which breaks trend
         # comparison downstream).
         if args.json:
             error_payload = {
-                "schema_version": 1,
+                "schema_version": SCORING_SCHEMA_VERSION,
                 "result": "ERROR",
                 "comparison_kind": "error",
-                "summary": {"reason": str(exc)},
+                "summary": {"reason": safe_error},
             }
             print(json.dumps(error_payload, indent=2))
         return 3

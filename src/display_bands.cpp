@@ -171,19 +171,58 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     }
     perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::BandSetChange);
 
+    // The K/X clear windows reach into the top-left of card position 0.  When
+    // that card is already on the framebuffer, subtract its rectangle from
+    // band background clears; drawSecondaryAlertCards() may legitimately hit
+    // its cache and skip repainting later in this frame.  With no drawn card,
+    // retain the original full clear so L/Ka/K/Ku/X cleanup is unchanged.
+    const DisplayLayout::DisplayRect card0Rect = DisplayLayout::cardRect(0);
+    const bool protectCard0 = elementCaches_.cards.lastDrawnPositions[0].band != BAND_NONE;
+    auto paintBandClear = [&](int16_t rectY, int16_t rectW, int16_t rectH) {
+        auto paint = [&](int16_t px, int16_t py, int16_t pw, int16_t ph) {
+            if (pw <= 0 || ph <= 0) {
+                return;
+            }
+            drawnRegion_.add(px, py, pw, ph, DisplayDirtyRegionSource::Bands);
+            FILL_RECT(px, py, pw, ph, PALETTE_BG);
+        };
+
+        const int16_t rectRight = static_cast<int16_t>(clearX + rectW);
+        const int16_t rectBottom = static_cast<int16_t>(rectY + rectH);
+        const int16_t cardRight = static_cast<int16_t>(card0Rect.x + card0Rect.w);
+        const int16_t cardBottom = static_cast<int16_t>(card0Rect.y + card0Rect.h);
+        const bool overlapsCard = protectCard0 && clearX < cardRight && rectRight > card0Rect.x && rectY < cardBottom &&
+                                  rectBottom > card0Rect.y;
+        if (!overlapsCard) {
+            paint(clearX, rectY, rectW, rectH);
+            return;
+        }
+
+        const int16_t overlapTop = std::max<int16_t>(rectY, card0Rect.y);
+        const int16_t overlapBottom = std::min<int16_t>(rectBottom, cardBottom);
+        paint(clearX, rectY, rectW, static_cast<int16_t>(overlapTop - rectY));
+        paint(clearX, overlapTop, static_cast<int16_t>(card0Rect.x - clearX),
+              static_cast<int16_t>(overlapBottom - overlapTop));
+        paint(cardRight, overlapTop, static_cast<int16_t>(rectRight - cardRight),
+              static_cast<int16_t>(overlapBottom - overlapTop));
+        paint(clearX, overlapBottom, rectW, static_cast<int16_t>(rectBottom - overlapBottom));
+    };
+
     if (forceFullStack) {
-        drawnRegion_.add(clearX, unionY, static_cast<int16_t>(clearW), static_cast<int16_t>(unionH),
-                         DisplayDirtyRegionSource::Bands);
-        FILL_RECT(clearX, unionY, clearW, unionH, PALETTE_BG);
+        paintBandClear(unionY, static_cast<int16_t>(clearW), static_cast<int16_t>(unionH));
     } else {
         for (int i = 0; i < kBandCellCount; ++i) {
             if (!cellChanged[i]) {
                 continue;
             }
-            drawnRegion_.add(clearX, clearY[i], static_cast<int16_t>(clearW), static_cast<int16_t>(kBandLabelClearH),
-                             DisplayDirtyRegionSource::Bands);
-            FILL_RECT(clearX, clearY[i], clearW, kBandLabelClearH, PALETTE_BG);
+            paintBandClear(clearY[i], static_cast<int16_t>(clearW), static_cast<int16_t>(kBandLabelClearH));
         }
+    }
+
+    // "Ku" is wider than the K/X glyphs and its tail reaches card 0.  Keep
+    // that label intact, then let the later card pass restore its own pixels.
+    if (protectCard0 && kuActive && (forceFullStack || cellChanged[2])) {
+        elementCaches_.cards.forceRedraw = true;
     }
 
     for (int i = 0; i < kBandCellCount; ++i) {

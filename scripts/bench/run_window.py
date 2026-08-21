@@ -41,6 +41,11 @@ if str(TOOLS_DIR) not in sys.path:
 
 import score_hardware_run  # type: ignore  # noqa: E402
 
+from artifact_privacy import (
+    privacy_safe_identifier,
+    redact_artifact_text,
+    sanitize_artifact_value,
+)
 from bench_identity import (
     baseline_directory,
     build_identity_manifest,
@@ -82,7 +87,7 @@ DETECTOR_MODE_EVENT_STATE = "detector_mode"
 REPLAY_STIMULUS_SCHEMA = 1
 REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
 REPLAY_STIMULUS_NAME = "replay_stimulus.ndjson"
-RAW_LOG_SCHEMA = 1
+SANITIZED_LOG_SCHEMA = 1
 BENCH_TIMELINE_NAME = "bench_timeline.ndjson"
 BUILD_UPLOAD_ARTIFACTS_NAME = "build_upload_artifacts.json"
 BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / "waveshare-349"
@@ -613,13 +618,15 @@ class BenchTimeline:
 
     def __init__(self, path: Path):
         self.path = path
+        self.run_dir = path.parent
         path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = path.open("x", encoding="utf-8")
         self.record("timeline_opened")
 
     def _write(self, payload: dict[str, Any]) -> None:
+        safe_payload = sanitize_artifact_value(payload, run_dir=self.run_dir)
         self.handle.write(
-            json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+            json.dumps(safe_payload, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
             + "\n"
         )
         self.handle.flush()
@@ -720,7 +727,11 @@ def retain_build_upload_artifacts(
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
     payload.setdefault("schema_version", 3)
     payload.setdefault("timestamp_utc", utc_now())
-    (out_dir / "window_result.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    safe_payload = sanitize_artifact_value(payload, run_dir=out_dir)
+    (out_dir / "window_result.json").write_text(
+        json.dumps(safe_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def resolve_runner_log_paths(args: argparse.Namespace, out_dir: Path) -> dict[str, Path]:
@@ -740,15 +751,17 @@ def resolve_runner_log_paths(args: argparse.Namespace, out_dir: Path) -> dict[st
     return result
 
 
-def build_raw_log_ownership(out_dir: Path, runner_logs: dict[str, Path]) -> dict[str, Any]:
-    """Name existing raw streams without reading or interpreting their content."""
+def build_sanitized_log_ownership(out_dir: Path, runner_logs: dict[str, Path]) -> dict[str, Any]:
+    """Name exact persisted streams and state their privacy transformation."""
     candidates = {
         "bench_serial": out_dir / "bench_serial.log",
         "v1replay": out_dir / "v1replay.log",
         **runner_logs,
     }
     return {
-        "schema_version": RAW_LOG_SCHEMA,
+        "schema_version": SANITIZED_LOG_SCHEMA,
+        "content": "privacy_sanitized",
+        "transformation": "artifact_privacy_redaction",
         "streams": {
             key: path.relative_to(out_dir).as_posix()
             for key, path in candidates.items()
@@ -971,7 +984,8 @@ class BenchSerial:
 
     def write_command(self, command: str) -> int:
         line = command.rstrip("\r\n") + "\n"
-        self.log.write(f">>> {line}")
+        safe_line = redact_artifact_text(line)
+        self.log.write(f">>> {safe_line}")
         self.log.flush()
         sent = time.monotonic_ns()
         try:
@@ -982,7 +996,7 @@ class BenchSerial:
                 self.timeline.record(
                     "serial_send",
                     host_monotonic_ns=sent,
-                    line=line.rstrip("\n"),
+                    line=safe_line.rstrip("\n"),
                     status="failed",
                     error=type(exc).__name__,
                 )
@@ -991,7 +1005,7 @@ class BenchSerial:
             self.timeline.record(
                 "serial_send",
                 host_monotonic_ns=sent,
-                line=line.rstrip("\n"),
+                line=safe_line.rstrip("\n"),
                 status="sent",
             )
         return sent
@@ -1004,14 +1018,15 @@ class BenchSerial:
                 continue
             received = time.monotonic_ns()
             text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            safe_text = redact_artifact_text(text)
             self.last_receive_monotonic_ns = received
-            self.log.write(text + "\n")
+            self.log.write(safe_text + "\n")
             self.log.flush()
             if self.timeline is not None:
                 self.timeline.record(
                     "serial_receive",
                     host_monotonic_ns=received,
-                    line=text,
+                    line=safe_text,
                 )
             if text.startswith(BOOT_PREFIX):
                 self.boot_marker_count += 1
@@ -1647,7 +1662,7 @@ def download_csv(q: BenchSerial, out_dir: Path, idle_timeout_s: int, sd_path: st
     if expected_size and expected_size != len(payload):
         raise RuntimeError(f"CSV size mismatch: header={expected_size} downloaded={len(payload)}")
     csv_path.write_bytes(payload)
-    print(f"[bench] downloaded CSV to {csv_path} ({len(payload)} bytes)", flush=True)
+    print(f"[bench] downloaded CSV {csv_path.name} ({len(payload)} bytes)", flush=True)
     return csv_path
 
 
@@ -1923,7 +1938,8 @@ def run_import(
                 baseline_identity = load_identity_manifest(compatible_identity_path)
             except Exception as exc:  # noqa: BLE001 - optional baseline must not abort collection
                 print(
-                    f"[bench] invalid identity-keyed baseline ignored: {compatible_dir}: {exc}",
+                    "[bench] invalid identity-keyed baseline ignored: "
+                    f"{redact_artifact_text(str(exc))}",
                     flush=True,
                 )
             else:
@@ -1971,34 +1987,30 @@ def run_import(
                         )
                     except Exception as exc:  # noqa: BLE001 - optional baseline must not abort collection
                         print(
-                            f"[bench] invalid identity-keyed baseline ignored: "
-                            f"{compatible_dir}: {exc}",
+                            "[bench] invalid identity-keyed baseline ignored: "
+                            f"{redact_artifact_text(str(exc))}",
                             flush=True,
                         )
                     else:
                         baselines.append(str(compatible_manifest))
-                        print(
-                            f"[bench] using compatible baseline: {compatible_manifest}",
-                            flush=True,
-                        )
+                        print("[bench] using compatible baseline", flush=True)
                 else:
-                    print(
-                        f"[bench] incompatible identity-keyed baseline ignored: {compatible_dir}",
-                        flush=True,
-                    )
+                    print("[bench] incompatible identity-keyed baseline ignored", flush=True)
         elif compatible_manifest.is_file():
-            print(f"[bench] baseline without identity manifest ignored: {compatible_dir}", flush=True)
+            print("[bench] baseline without identity manifest ignored", flush=True)
         elif (legacy_dir / "manifest.json").is_file():
             print(
-                f"[bench] legacy baseline ignored (explicit adoption required): {legacy_dir}",
+                "[bench] legacy baseline ignored (explicit adoption required)",
                 flush=True,
             )
     for baseline in baselines:
         if baseline:
             cmd.extend(["--compare-to", baseline])
     proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False)
-    (out_dir / "import_stdout.log").write_text(proc.stdout, encoding="utf-8")
-    (out_dir / "import_stderr.log").write_text(proc.stderr, encoding="utf-8")
+    safe_stdout = sanitize_artifact_value(proc.stdout, run_dir=out_dir)
+    safe_stderr = sanitize_artifact_value(proc.stderr, run_dir=out_dir)
+    (out_dir / "import_stdout.log").write_text(safe_stdout, encoding="utf-8")
+    (out_dir / "import_stderr.log").write_text(safe_stderr, encoding="utf-8")
     return proc
 
 
@@ -2112,7 +2124,7 @@ class V1Emulator:
         )
         self.started_monotonic = time.monotonic()
         self.started = True
-        print(f"[bench] launched V1 emulator mode={self.mode}; log: {self.log_path}", flush=True)
+        print(f"[bench] launched V1 emulator mode={self.mode}", flush=True)
 
     def wait_for_handshake_ready(self, timeout_s: float) -> None:
         if self.handshake_ledger_path is None:
@@ -2506,6 +2518,19 @@ class V1Emulator:
             self.log_handle.close()
             self.log_handle = None
 
+    def _sanitize_log(self) -> None:
+        try:
+            raw = self.log_path.read_text(encoding="utf-8", errors="replace")
+            safe = sanitize_artifact_value(raw, run_dir=self.log_path.parent)
+            if safe != raw:
+                self.log_path.write_text(safe, encoding="utf-8")
+        except OSError as exc:
+            try:
+                self.log_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise RuntimeError("could not privacy-sanitize the V1 emulator log") from exc
+
     def stop(self) -> None:
         managed_stop_requested = self.process is not None and self.process.poll() is None
         if managed_stop_requested:
@@ -2534,6 +2559,7 @@ class V1Emulator:
                 self.graceful_stop_confirmed = True
         finally:
             self._observe_machine_events()
+            self._sanitize_log()
 
 
 def run_reconnect_preflight(
@@ -2869,17 +2895,20 @@ def _collect_live(
             failure = CameraPreflightFailure(preflight, camera_result)
             failure.reconnect_preflight = dict(reconnect_preflight_result)
             raise failure
-        print(f"[bench] camera preflight passed; recording: {camera.video_path}", flush=True)
+        print("[bench] camera preflight passed; recording started", flush=True)
 
     try:
         if args.suite != "replay":
             admit_camera()
-        print(f"[bench] opening serial port {port}; protocol log: {protocol_log}", flush=True)
+        print(
+            f"[bench] opening serial port {redact_artifact_text(port)}; protocol log retained in run artifacts",
+            flush=True,
+        )
         q = BenchSerial(port, args.baud, protocol_log, timeline)
         ready = wait_ready(q, args.ready_timeout_seconds)
         if args.suite == "replay":
             ready = establish_reconnect_readiness(q, args.ready_timeout_seconds)
-        print(f"[bench] protocol ready: {ready}", flush=True)
+        print("[bench] protocol ready", flush=True)
         boot_count_before_reconnect: int | None = None
         cleanup_count_before_reconnect: int | None = None
         expected_cleanup_count: int | None = None
@@ -3158,7 +3187,10 @@ def _collect_live(
                 "size_bytes": timeline.path.stat().st_size,
             }
         except Exception as exc:  # noqa: BLE001 - timeline loss is visible but non-gating
-            print(f"[bench] timeline finalization failed ({exc})", flush=True)
+            print(
+                f"[bench] timeline finalization failed ({redact_artifact_text(str(exc))})",
+                flush=True,
+            )
             artifacts["bench_timeline"] = {
                 "status": "failed",
                 "path": timeline.path.name if timeline.path.exists() else "",
@@ -3197,6 +3229,7 @@ def camera_grade_required(suite: str, camera_result: dict[str, Any]) -> bool:
 def main() -> int:
     install_signal_handlers()
     args = parse_args()
+    args.board_id = privacy_safe_identifier(args.board_id, namespace="board")
     blink_profile_was_selected = args.blink_profile is not None or args.blink_arrow
     if args.blink_arrow:
         args.blink_profile = "stress"
@@ -3319,7 +3352,9 @@ def main() -> int:
             source = Path(args.from_csv).resolve()
             if not source.is_file():
                 raise RuntimeError(f"CSV not found: {source}")
-            csv_path = out_dir / source.name
+            csv_path = out_dir / "source.csv"
+            if csv_path.exists() and source != csv_path:
+                raise RuntimeError("neutral import source already exists")
             if source != csv_path:
                 shutil.copy2(source, csv_path)
             completion: dict[str, Any] = {"source": "from_csv"}
@@ -3387,20 +3422,24 @@ def main() -> int:
                 "duration_seconds": args.duration_seconds,
                 "post_upload_settle_seconds": args.post_upload_settle_seconds if args.upload else 0,
                 "segment": args.segment,
-                "port": port,
-                "csv_path": str(csv_path),
-                "encounter_csv_path": str(encounter_csv_path) if encounter_csv_path else "",
+                "port": redact_artifact_text(port),
+                "csv_path": csv_path.relative_to(out_dir).as_posix(),
+                "encounter_csv_path": (
+                    encounter_csv_path.relative_to(out_dir).as_posix()
+                    if encounter_csv_path
+                    else ""
+                ),
                 "handshake_ledger_path": (
-                    str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""
+                    HANDSHAKE_LEDGER_NAME if args.suite == "replay" else ""
                 ),
                 "reconnect_preflight_handshake_ledger_path": (
-                    str(out_dir / RECONNECT_LEDGER_NAME) if args.suite == "replay" else ""
+                    RECONNECT_LEDGER_NAME if args.suite == "replay" else ""
                 ),
                 "reconnect_preflight_log_path": (
-                    str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
+                    RECONNECT_LOG_NAME if args.suite == "replay" else ""
                 ),
-                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
-                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
+                "bench_serial_log_path": "bench_serial.log",
+                "sanitized_logs": build_sanitized_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": (
                     reconnect_preflight_result if args.suite == "replay" else {}
                 ),
@@ -3430,8 +3469,8 @@ def main() -> int:
                 "camera": camera_result,
                 "artifacts": artifacts,
                 "import_returncode": import_proc.returncode,
-                "manifest_path": str(manifest_path) if manifest_path.exists() else "",
-                "scoring_path": str(scoring_path) if scoring_path.exists() else "",
+                "manifest_path": manifest_path.name if manifest_path.exists() else "",
+                "scoring_path": scoring_path.name if scoring_path.exists() else "",
             },
         )
         return 0 if import_proc.returncode < 3 else 3
@@ -3449,19 +3488,22 @@ def main() -> int:
                 "camera": exc.camera_result,
                 "camera_failure_stage": "preflight",
                 "reconnect_preflight_handshake_ledger_path": (
-                    str(out_dir / RECONNECT_LEDGER_NAME) if args.suite == "replay" else ""
+                    RECONNECT_LEDGER_NAME if args.suite == "replay" else ""
                 ),
                 "reconnect_preflight_log_path": (
-                    str(out_dir / RECONNECT_LOG_NAME) if args.suite == "replay" else ""
+                    RECONNECT_LOG_NAME if args.suite == "replay" else ""
                 ),
-                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
-                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
+                "bench_serial_log_path": "bench_serial.log",
+                "sanitized_logs": build_sanitized_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.reconnect_preflight,
                 "artifacts": artifacts,
-                "error": str(exc),
+                "error": redact_artifact_text(str(exc)),
             },
         )
-        print(f"[bench] camera preflight inconclusive: {exc}", file=sys.stderr)
+        print(
+            f"[bench] camera preflight inconclusive: {redact_artifact_text(str(exc))}",
+            file=sys.stderr,
+        )
         return 3
     except CameraEvidenceFailure as exc:
         try:
@@ -3504,18 +3546,19 @@ def main() -> int:
                 "camera": camera_result,
                 "camera_failure_stage": "recording",
                 "camera_failure_kind": failure_code,
-                "reconnect_preflight_handshake_ledger_path": str(
-                    out_dir / RECONNECT_LEDGER_NAME
-                ),
-                "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
-                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
-                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
+                "reconnect_preflight_handshake_ledger_path": RECONNECT_LEDGER_NAME,
+                "reconnect_preflight_log_path": RECONNECT_LOG_NAME,
+                "bench_serial_log_path": "bench_serial.log",
+                "sanitized_logs": build_sanitized_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.reconnect_preflight,
                 "artifacts": artifacts,
-                "error": str(exc),
+                "error": redact_artifact_text(str(exc)),
             },
         )
-        print(f"[bench] camera recorder evidence failed: {exc}", file=sys.stderr)
+        print(
+            f"[bench] camera recorder evidence failed: {redact_artifact_text(str(exc))}",
+            file=sys.stderr,
+        )
         return 3
     except ReconnectPreflightFailure as exc:
         write_window_result(
@@ -3533,19 +3576,20 @@ def main() -> int:
                 "git_ref": args.git_ref,
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
-                "reconnect_preflight_handshake_ledger_path": str(
-                    out_dir / RECONNECT_LEDGER_NAME
-                ),
-                "reconnect_preflight_log_path": str(out_dir / RECONNECT_LOG_NAME),
-                "bench_serial_log_path": str(out_dir / "bench_serial.log"),
-                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
+                "reconnect_preflight_handshake_ledger_path": RECONNECT_LEDGER_NAME,
+                "reconnect_preflight_log_path": RECONNECT_LOG_NAME,
+                "bench_serial_log_path": "bench_serial.log",
+                "sanitized_logs": build_sanitized_log_ownership(out_dir, runner_logs),
                 "reconnect_preflight": exc.result,
                 "reconnect_failure_kind": exc.failure_kind,
                 "artifacts": artifacts,
-                "error": str(exc),
+                "error": redact_artifact_text(str(exc)),
             },
         )
-        print(f"[bench] reconnect preflight failed: {exc}", file=sys.stderr)
+        print(
+            f"[bench] reconnect preflight failed: {redact_artifact_text(str(exc))}",
+            file=sys.stderr,
+        )
         return 3
     except Exception as exc:  # noqa: BLE001 - top-level artifact capture
         write_window_result(
@@ -3559,11 +3603,14 @@ def main() -> int:
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 **identity_summary(),
                 "artifacts": artifacts,
-                "raw_logs": build_raw_log_ownership(out_dir, runner_logs),
-                "error": str(exc),
+                "sanitized_logs": build_sanitized_log_ownership(out_dir, runner_logs),
+                "error": redact_artifact_text(str(exc)),
             },
         )
-        print(f"[bench] collection failed: {exc}", file=sys.stderr)
+        print(
+            f"[bench] collection failed: {redact_artifact_text(str(exc))}",
+            file=sys.stderr,
+        )
         return 3
 
 

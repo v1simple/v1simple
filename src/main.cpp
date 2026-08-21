@@ -332,8 +332,7 @@ static void initializeBlePreInitAndScan(const CheckpointLogger& logBootCheckpoin
         bleClient.onV1Connected(onV1Connected);
         logBootCheckpoint("ble_callbacks_registered");
         const V1Settings& bleScanSettings = settingsManager.get();
-        SerialLog.printf("Starting BLE scan for V1 (proxy: %s, name: %s)\n",
-                         bleScanSettings.proxyBLE ? "enabled" : "disabled", bleScanSettings.proxyName.c_str());
+        SerialLog.printf("Starting BLE scan for V1 (proxy: %s)\n", bleScanSettings.proxyBLE ? "enabled" : "disabled");
         logBootCheckpoint("ble_scan_begin");
         const unsigned long bleScanStartMs = millis();
         if (!bleClient.begin(bleScanSettings.proxyBLE, bleScanSettings.proxyName.c_str())) {

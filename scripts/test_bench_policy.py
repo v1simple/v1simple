@@ -283,9 +283,9 @@ def full_batch_fixture(
             }
         windows.append(window)
     result = {
-        "schema_version": 4,
+        "schema_version": 5,
         "kind": "bench_result",
-        "run_dir": str(run_dir.resolve()),
+        "run_dir": ".",
         "git_sha": CLEAN_TRACE["repository_sha"],
         "git_ref": "main",
         "product_fingerprint": PRODUCT,
@@ -572,13 +572,12 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         publish_grade(camera_dir, capture, NEW_GRADER, current_grade)
 
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "bench_camera_regrade_report",
             "completed": True,
             "dry_run": False,
             "grader_fingerprint": NEW_GRADER,
-            "path_base": "corpus_root",
-            "corpus_root": ".",
+            "scope": "complete_corpus_inventory",
             "counts": {
                 "discovered": 1,
                 "processed": 1,
@@ -592,14 +591,17 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
             },
             "captures": [
                 {
-                    "capture_path": "run/replay/camera",
+                    "capture_index": 1,
                     "capture_id": capture["capture_id"],
                     "result": "PASS",
                     "confidence_result": "PASS",
                     "ownership_valid": True,
                     "grade": {
                         "status": "graded",
-                        "path": f"run/replay/camera/grades/{NEW_GRADER}.json",
+                        "grader_fingerprint": NEW_GRADER,
+                        "grade_id": hashlib.sha256(
+                            f"{capture['capture_id']}:{NEW_GRADER}".encode("ascii")
+                        ).hexdigest(),
                         "ownership_valid": True,
                     },
                     "diagnostic": "",
@@ -726,14 +728,17 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         fake_unowned["counts"].update({"discovered": 2, "processed": 2, "graded": 2, "pass": 2})
         fake_unowned["captures"].append(
             {
-                "capture_path": "fake/replay/camera",
+                "capture_index": 2,
                 "capture_id": "d" * 64,
                 "result": "PASS",
                 "confidence_result": "PASS",
                 "ownership_valid": False,
                 "grade": {
                     "status": "graded",
-                    "path": f"fake/replay/camera/grades/{NEW_GRADER}.json",
+                    "grader_fingerprint": NEW_GRADER,
+                    "grade_id": hashlib.sha256(
+                        f"{'d' * 64}:{NEW_GRADER}".encode("ascii")
+                    ).hexdigest(),
                     "ownership_valid": False,
                 },
                 "diagnostic": "",
@@ -750,9 +755,9 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
             ),
             "unowned",
         )
-        unsafe = copy.deepcopy(report)
-        unsafe["captures"][0]["capture_path"] = "../replay/camera"
-        write_json(report_path, unsafe)
+        invalid_index = copy.deepcopy(report)
+        invalid_index["captures"][0]["capture_index"] = 0
+        write_json(report_path, invalid_index)
         expect_error(
             lambda: build_grader_revalidation_record(
                 prior_path,
@@ -761,14 +766,17 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
                 current_identity=current,
                 current_traceability=CLEAN_TRACE,
             ),
-            "safe normalized relative path",
+            "invalid capture index",
         )
-        duplicate_path = copy.deepcopy(report)
-        duplicate_path["counts"].update({"discovered": 2, "processed": 2, "graded": 2, "pass": 2})
-        duplicate_entry = copy.deepcopy(duplicate_path["captures"][0])
+        duplicate_index = copy.deepcopy(report)
+        duplicate_index["counts"].update({"discovered": 2, "processed": 2, "graded": 2, "pass": 2})
+        duplicate_entry = copy.deepcopy(duplicate_index["captures"][0])
         duplicate_entry["capture_id"] = "d" * 64
-        duplicate_path["captures"].append(duplicate_entry)
-        write_json(report_path, duplicate_path)
+        duplicate_entry["grade"]["grade_id"] = hashlib.sha256(
+            f"{'d' * 64}:{NEW_GRADER}".encode("ascii")
+        ).hexdigest()
+        duplicate_index["captures"].append(duplicate_entry)
+        write_json(report_path, duplicate_index)
         expect_error(
             lambda: build_grader_revalidation_record(
                 prior_path,
@@ -782,8 +790,7 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         duplicate_id = copy.deepcopy(report)
         duplicate_id["counts"].update({"discovered": 2, "processed": 2, "graded": 2, "pass": 2})
         duplicate_entry = copy.deepcopy(duplicate_id["captures"][0])
-        duplicate_entry["capture_path"] = "other/replay/camera"
-        duplicate_entry["grade"]["path"] = f"other/replay/camera/grades/{NEW_GRADER}.json"
+        duplicate_entry["capture_index"] = 2
         duplicate_id["captures"].append(duplicate_entry)
         write_json(report_path, duplicate_id)
         expect_error(
@@ -798,6 +805,9 @@ def test_grader_revalidation_converges_and_rejects_incomplete_evidence() -> None
         )
         wrong_capture = copy.deepcopy(report)
         wrong_capture["captures"][0]["capture_id"] = "d" * 64
+        wrong_capture["captures"][0]["grade"]["grade_id"] = hashlib.sha256(
+            f"{'d' * 64}:{NEW_GRADER}".encode("ascii")
+        ).hexdigest()
         write_json(report_path, wrong_capture)
         expect_error(
             lambda: build_grader_revalidation_record(

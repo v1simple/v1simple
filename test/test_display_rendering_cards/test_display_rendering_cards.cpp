@@ -24,6 +24,13 @@ SerialClass Serial;
 
 V1Display* g_displayInstance = nullptr;
 SettingsManager settingsManager;
+int bandIndicatorDrawCount = 0;
+uint8_t lastBandIndicatorMask = 0;
+bool lastBandIndicatorMuted = false;
+int gpsIndicatorDrawCount = 0;
+int bandIndicatorDrawOrder = 0;
+int gpsIndicatorDrawOrder = 0;
+int drawOrder = 0;
 
 V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
@@ -60,6 +67,25 @@ uint16_t V1Display::getBandColor(Band band) {
     }
 }
 
+bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t) {
+    bandIndicatorDrawCount++;
+    bandIndicatorDrawOrder = ++drawOrder;
+    lastBandIndicatorMask = bandMask;
+    lastBandIndicatorMuted = muted;
+    elementCaches_.bands.lastMask = bandMask;
+    elementCaches_.bands.lastMuted = muted;
+    elementCaches_.bands.lastPaletteRevision = paletteRevision_;
+    elementCaches_.bands.valid = true;
+    dirty_.gpsIndicator = true;
+    return true;
+}
+
+void V1Display::drawGpsIndicator() {
+    gpsIndicatorDrawCount++;
+    gpsIndicatorDrawOrder = ++drawOrder;
+    dirty_.gpsIndicator = false;
+}
+
 #include "../../src/display_cards.cpp"
 
 V1Display display;
@@ -79,6 +105,13 @@ void resetDisplayForTest() {
     canvas()->resetCounters();
     mockMillis = 1000;
     mockMicros = 1000;
+    bandIndicatorDrawCount = 0;
+    lastBandIndicatorMask = 0;
+    lastBandIndicatorMuted = false;
+    gpsIndicatorDrawCount = 0;
+    bandIndicatorDrawOrder = 0;
+    gpsIndicatorDrawOrder = 0;
+    drawOrder = 0;
 }
 
 AlertData cardAlert() {
@@ -156,6 +189,10 @@ void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     cards.slots[0].alert = cardAlert();
     cards.slots[0].lastSeen = mockMillis;
     cards.lastPriority = cardAlert();
+    auto& bands = display.ut_elementCaches().bands;
+    bands.lastMask = static_cast<uint8_t>(BAND_K | BAND_KU);
+    bands.lastMuted = true;
+    bands.valid = true;
 
     AlertData emptyPriority;
     display.ut_drawSecondaryAlertCards(nullptr, 0, emptyPriority, false);
@@ -170,6 +207,10 @@ void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     TEST_ASSERT_EQUAL_UINT32(0u, cards.lastDrawnPositions[0].frequency);
     TEST_ASSERT_EQUAL_UINT32(0u, cards.slots[0].lastSeen);
     TEST_ASSERT_FALSE(cards.lastPriority.isValid);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, bandIndicatorDrawCount,
+        "whole-row card clear must restore an exposed Ku label in the same frame");
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), lastBandIndicatorMask);
+    TEST_ASSERT_TRUE(lastBandIndicatorMuted);
 }
 
 // Regression: the composer feeds a live alert list where the priority leads.
@@ -266,6 +307,45 @@ void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remai
         "expiring the last card must repaint (clear) its screen position");
 
     settingsManager.slotAlertPersistSec[0] = 0;
+}
+
+void test_removing_card0_restores_exposed_ku_label_in_same_frame() {
+    AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+    AlertData secondary = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
+    AlertData both[2] = {priority, secondary};
+    display.ut_drawSecondaryAlertCards(both, 2, priority, false);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+
+    auto& bands = display.ut_elementCaches().bands;
+    bands.lastMask = static_cast<uint8_t>(BAND_K | BAND_KU);
+    bands.lastMuted = false;
+    bands.valid = true;
+    auto& gps = display.ut_elementCaches().gps;
+    gps.valid = true;
+    gps.lastShown = true;
+    gps.lastSats = 7;
+    bandIndicatorDrawCount = 0;
+    gpsIndicatorDrawCount = 0;
+    drawOrder = 0;
+
+    AlertData onlyPriority[1] = {priority};
+    mockMillis += 100;
+    display.ut_drawSecondaryAlertCards(onlyPriority, 1, priority, false);
+
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT8(BAND_NONE, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, bandIndicatorDrawCount,
+        "card-0 removal must restore an exposed Ku label before the owning flush");
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), lastBandIndicatorMask);
+    TEST_ASSERT_FALSE(lastBandIndicatorMuted);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().bands.valid);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, gpsIndicatorDrawCount,
+        "card-0 removal must repaint GPS after the nested full-stack band redraw");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(bandIndicatorDrawOrder, gpsIndicatorDrawOrder,
+        "GPS must be restored after bands in the same card-removal frame");
+    TEST_ASSERT_TRUE(gps.valid);
+    TEST_ASSERT_TRUE(gps.lastShown);
+    TEST_ASSERT_EQUAL_UINT8(7, gps.lastSats);
 }
 
 void test_visual_preview_bypasses_profile_card_grace() {
@@ -370,6 +450,7 @@ int main(int, char**) {
     RUN_TEST(test_priority_frequency_jitter_does_not_admit_ghost_card);
     RUN_TEST(test_secondary_frequency_jitter_refreshes_slot_without_duplicate);
     RUN_TEST(test_secondary_card_expires_and_clears_after_grace_when_only_priority_remains);
+    RUN_TEST(test_removing_card0_restores_exposed_ku_label_in_same_frame);
     RUN_TEST(test_visual_preview_bypasses_profile_card_grace);
     RUN_TEST(test_card_meter_projects_vr_strength_onto_six_segments);
     RUN_TEST(test_card_meter_paints_every_segment_exactly_once_per_frame);

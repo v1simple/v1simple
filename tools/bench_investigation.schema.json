@@ -9,7 +9,7 @@
     "coverage", "findings", "unresolved", "model", "video_requests"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "kind": { "const": "bench_investigation" },
     "generated_at_utc": { "type": "string", "format": "date-time" },
     "execution_status": { "$ref": "#/$defs/execution_status" },
@@ -82,14 +82,21 @@
         "start_pts_s": { "type": "number", "minimum": 0 },
         "end_pts_s": { "type": "number", "minimum": 0 },
         "start_frame": { "type": "integer", "minimum": 0 },
-        "end_frame": { "type": "integer", "minimum": 0 }
+        "end_frame": { "type": "integer", "minimum": 0 },
+        "attachment_index": { "type": "integer", "minimum": 1 },
+        "cell_indices": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 0 }
+        }
       }
     },
     "code_selector": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "revision", "path", "symbol", "line_start", "line_end", "description"
+        "revision", "path", "symbol", "line_start", "line_end",
+        "selection_sha256", "description"
       ],
       "properties": {
         "revision": { "type": "string", "minLength": 1 },
@@ -101,6 +108,7 @@
         "symbol": { "type": "string", "minLength": 1 },
         "line_start": { "type": "integer", "minimum": 1 },
         "line_end": { "type": "integer", "minimum": 1 },
+        "selection_sha256": { "$ref": "#/$defs/sha256" },
         "description": { "type": "string", "minLength": 1 }
       }
     },
@@ -164,6 +172,69 @@
         }
       }
     },
+    "pts_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "start_pts_seconds", "end_pts_seconds" ],
+      "properties": {
+        "start_pts_seconds": { "type": "number", "minimum": 0 },
+        "end_pts_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "attachment_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell_index", "cell_label", "nominal_requested_pts_seconds",
+        "source_pts_measured", "pts_uncertainty_seconds",
+        "pts_uncertainty_interval"
+      ],
+      "properties": {
+        "cell_index": { "type": "integer", "minimum": 0 },
+        "cell_label": { "type": "string", "minLength": 1 },
+        "nominal_requested_pts_seconds": { "type": "number", "minimum": 0 },
+        "source_pts_measured": { "type": "boolean" },
+        "pts_uncertainty_seconds": { "type": "number", "minimum": 0 },
+        "pts_uncertainty_interval": { "$ref": "#/$defs/pts_interval" }
+      }
+    },
+    "attachment_sheet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attachment_index", "pass", "sheet_path", "sheet_sha256",
+        "source_video_path", "source_video_sha256", "purpose", "interval",
+        "layout", "cells"
+      ],
+      "properties": {
+        "attachment_index": { "type": "integer", "minimum": 1 },
+        "pass": { "type": "integer", "minimum": 1 },
+        "sheet_path": {
+          "type": "string",
+          "pattern": "^investigation_sheets/[0-9a-f]{64}\\.(jpg|jpeg|png)$"
+        },
+        "sheet_sha256": { "$ref": "#/$defs/sha256" },
+        "source_video_path": { "type": "string", "minLength": 1 },
+        "source_video_sha256": { "$ref": "#/$defs/sha256" },
+        "purpose": { "type": "string", "minLength": 1 },
+        "interval": { "$ref": "#/$defs/pts_interval" },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [ "columns", "rows", "cell_order" ],
+          "properties": {
+            "columns": { "type": "integer", "minimum": 1 },
+            "rows": { "type": "integer", "minimum": 1 },
+            "cell_order": { "const": "row_major" }
+          }
+        },
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/attachment_cell" }
+        }
+      }
+    },
     "artifact_coverage": {
       "type": "object",
       "additionalProperties": false,
@@ -197,7 +268,7 @@
       "additionalProperties": false,
       "required": [ "status", "selector", "notes" ],
       "properties": {
-        "status": { "enum": [ "reviewed", "unsampled" ] },
+        "status": { "enum": [ "reviewed", "partially_reviewed", "unsampled" ] },
         "selector": { "$ref": "#/$defs/evidence_selector" },
         "notes": {
           "type": "array",
@@ -236,9 +307,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "artifacts", "code", "video_intervals", "clock_mappings", "notes"
+        "attachments", "artifacts", "code", "video_intervals", "clock_mappings",
+        "notes"
       ],
       "properties": {
+        "attachments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attachment_sheet" }
+        },
         "artifacts": {
           "type": "array",
           "items": { "$ref": "#/$defs/artifact_coverage" }

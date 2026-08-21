@@ -37,6 +37,8 @@ class QualificationSerialModule {
         uint32_t (*newSessionToken)(void* ctx) = nullptr;
         const char* (*buildGitSha)(void* ctx) = nullptr;
         const char* (*runtimeImageId)(void* ctx) = nullptr;
+        uint8_t (*displayBrightness)(void* ctx) = nullptr;
+        uint16_t (*displayMutedColorRgb565)(void* ctx) = nullptr;
         void (*setSdCapturePaused)(bool paused, void* ctx) = nullptr;
         void (*startDisplayPreview)(uint32_t durationMs, void* ctx) = nullptr;
         void (*cancelDisplayPreview)(void* ctx) = nullptr;

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import import_perf_csv  # type: ignore  # noqa: E402
 
-CURRENT_HEADER_SCHEMA = 30
+CURRENT_HEADER_SCHEMA = 47
 HARDWARE_SCORING_FINGERPRINT = "a" * 64
 DIRECT_SPEED_COLUMNS = {
     "speedSourceSelected",
@@ -52,8 +53,8 @@ HEADER_COLUMNS = list(
             "cmdPaceNotYet",
             "dispMax_us",
             "obdMax_us",
-            "notifyToDisplayMax_ms",
-            "notifyToDisplayTotalCount",
+            "notifyToDisplayPipelineCompleteMax_ms",
+            "notifyToDisplayPipelineCompleteTotalCount",
             *sorted(DIRECT_SPEED_COLUMNS),
             *sorted(CONNECTION_CYCLE_COLUMNS),
             *import_perf_csv.ATTRIBUTION_COLUMNS,
@@ -248,6 +249,7 @@ def run_import(
     csv_path: Path,
     out_dir: Path,
     *extra_args: str,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -273,6 +275,7 @@ def run_import(
         text=True,
         capture_output=True,
         check=False,
+        env=environment,
     )
 
 
@@ -384,7 +387,7 @@ def test_display_peak_metrics_are_imported_from_csv_windows() -> None:
     )
 
 
-def test_connect_burst_and_flush_metrics_are_imported_from_csv_windows() -> None:
+def test_connect_burst_peaks_do_not_invent_stability_from_csv_windows() -> None:
     rows: list[dict[str, int]] = []
     for index in range(5):
         row = base_row(index * 1000, connected=True, header_columns=HEADER_COLUMNS)
@@ -410,10 +413,14 @@ def test_connect_burst_and_flush_metrics_are_imported_from_csv_windows() -> None
         row["displayFlushMaxAreaPx"] = [0, 153664, 0, 0, 0][index]
         rows.append(row)
 
-    metrics, _peaks, _unsupported = import_perf_csv.extract_metrics(rows, CURRENT_HEADER_SCHEMA)
+    metrics, _peaks, unsupported = import_perf_csv.extract_metrics(rows, CURRENT_HEADER_SCHEMA)
 
-    assert_true(metrics["connect_burst_samples_to_stable"][0] == 3.0, f"wrong burst sample count: {metrics}")
-    assert_true(metrics["connect_burst_time_to_stable_ms"][0] == 2000.0, f"wrong burst settle time: {metrics}")
+    assert_true("connect_burst_samples_to_stable" not in metrics, f"CSV invented burst stability: {metrics}")
+    assert_true("connect_burst_time_to_stable_ms" not in metrics, f"CSV invented burst settle time: {metrics}")
+    assert_true(
+        {"connect_burst_samples_to_stable", "connect_burst_time_to_stable_ms"} <= set(unsupported),
+        f"missing explicit CSV stability limitations: {unsupported}",
+    )
     assert_true(metrics["connect_burst_pre_ble_process_peak_us"][0] == 48100.0, f"wrong burst ble peak: {metrics}")
     assert_true(metrics["connect_burst_pre_disp_pipe_peak_us"][0] == 37600.0, f"wrong burst display pipe peak: {metrics}")
     assert_true(metrics["connect_burst_ble_proxy_start_peak_us"][0] == 660.0, f"wrong proxy start peak: {metrics}")
@@ -423,6 +430,52 @@ def test_connect_burst_and_flush_metrics_are_imported_from_csv_windows() -> None
     assert_true(metrics["display_partial_flush_count_delta"][0] == 8.0, f"wrong partial flush delta: {metrics}")
     assert_true(metrics["display_partial_flush_area_peak_px"][0] == 29890.0, f"wrong partial flush area peak: {metrics}")
     assert_true(metrics["display_flush_max_area_px"][0] == 153664.0, f"wrong flush max area: {metrics}")
+
+
+def test_notify_pipeline_completion_requires_schema_47_columns() -> None:
+    current_rows: list[dict[str, int]] = []
+    for index, (latency_ms, sample_count) in enumerate(((41, 2), (55, 3))):
+        row = base_row(index * 1000, connected=True, header_columns=HEADER_COLUMNS)
+        row["notifyToDisplayPipelineCompleteMax_ms"] = latency_ms
+        row["notifyToDisplayPipelineCompleteTotalCount"] = sample_count
+        current_rows.append(row)
+
+    metrics, _peaks, unsupported = import_perf_csv.extract_metrics(current_rows, CURRENT_HEADER_SCHEMA)
+    assert_true(
+        metrics["notify_to_display_pipeline_complete_max_ms"][0] == 55.0,
+        f"wrong pipeline-complete max: {metrics}",
+    )
+    assert_true(
+        metrics["notify_to_display_pipeline_complete_sample_count"][0] == 5.0,
+        f"wrong pipeline-complete sample count: {metrics}",
+    )
+    assert_true(
+        "notify_to_display_pipeline_complete_max_ms" not in unsupported,
+        f"schema 47 metric unexpectedly unsupported: {unsupported}",
+    )
+
+    historical_rows = [
+        {
+            "millis": 0,
+            "perfDrop": 0,
+            "eventBusDrops": 0,
+            "notifyToDisplayMax_ms": 25,
+            "notifyToDisplayTotalCount": 4,
+        }
+    ]
+    historical_metrics, _peaks, historical_unsupported = import_perf_csv.extract_metrics(historical_rows, 46)
+    assert_true(
+        "notify_to_display_pipeline_complete_max_ms" not in historical_metrics,
+        f"schema 46 start-time metric was aliased to completion: {historical_metrics}",
+    )
+    assert_true(
+        {
+            "notify_to_display_pipeline_complete_max_ms",
+            "notify_to_display_pipeline_complete_sample_count",
+        }
+        <= set(historical_unsupported),
+        f"schema 46 limitation was not recorded: {historical_unsupported}",
+    )
 
 
 def test_legacy_import_reports_partial_coverage(tmpdir: Path) -> None:
@@ -458,6 +511,184 @@ def test_legacy_import_reports_partial_coverage(tmpdir: Path) -> None:
     comparison = (out_dir / "comparison.txt").read_text(encoding="utf-8")
     assert_true("coverage_status: partial_legacy_import" in comparison, "comparison should show coverage status")
     assert_true("UNSUPPORTED" in comparison, "comparison should show unsupported metrics")
+    assert_true(
+        manifest.get("source_input") is None
+        and manifest["source_origin"] == "external_input"
+        and len(manifest["source_sha256"]) == 64,
+        f"external source identity was not neutral and content-addressed: {manifest}",
+    )
+    assert_true(scoring["manifest"]["path"] == "manifest.json", f"scorer leaked a path: {scoring}")
+    persisted = "\n".join(
+        (out_dir / name).read_text(encoding="utf-8")
+        for name in (
+            "segments.json",
+            "import_diagnostics.json",
+            "manifest.json",
+            "scoring.json",
+            "comparison.txt",
+        )
+    )
+    assert_true(str(tmpdir) not in persisted, f"import artifacts retained a host path: {persisted}")
+
+
+def test_import_publications_scrub_board_and_external_source_labels(tmpdir: Path) -> None:
+    private_term = "Board" + "PrivateTerm"
+    second_private_term = "Second" + "PrivateBoard"
+    csv_path = tmpdir / f"{private_term}-capture.csv"
+    out_dir = tmpdir / "privacy_out"
+    second_out_dir = tmpdir / "privacy_out_second"
+    reordered_out_dir = tmpdir / "privacy_out_reordered"
+    terms_path = tmpdir / "privacy-terms.txt"
+    terms_path.write_text(
+        private_term.lower()
+        + "\n"
+        + second_private_term.lower()
+        + "\nwarnings\n",
+        encoding="utf-8",
+    )
+    mode_coverage_path = tmpdir / "mode-coverage.json"
+    mode_coverage_path.write_text(
+        json.dumps(
+            {
+                private_term: "retained diagnostic value",
+                "password": "synthetic-value-without-a-secret-pattern",
+                "token": "synthetic-dynamic-token",
+                "api_token": "synthetic-api-token",
+                "authorization_header": "synthetic-header-value",
+                "nested": {
+                    "wifi_password": "synthetic-wifi-value",
+                    "secret": "synthetic-secret-value",
+                    "authorization": "synthetic-authorization-value",
+                },
+                "reasons": [],
+                "warnings": ["no_proxy_activity_observed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_capture(
+        csv_path,
+        header_columns=HEADER_COLUMNS,
+        sessions=[
+            make_session(
+                seq=1,
+                token="PRIVATE1",
+                schema=CURRENT_HEADER_SCHEMA,
+                header_columns=HEADER_COLUMNS,
+                duration_ms=60000,
+                connected=True,
+                drive_like=True,
+            )
+        ],
+    )
+    result = run_import(
+        csv_path,
+        out_dir,
+        "--board-id",
+        private_term,
+        "--mode-coverage-json",
+        str(mode_coverage_path),
+        environment={**os.environ, "V1SIMPLE_PRIVACY_TERMS": str(terms_path)},
+    )
+    assert_true(result.returncode != 3, f"privacy import failed: {result.stderr}")
+    second_result = run_import(
+        csv_path,
+        second_out_dir,
+        "--board-id",
+        second_private_term,
+        "--compare-to",
+        str(out_dir / "manifest.json"),
+        environment={**os.environ, "V1SIMPLE_PRIVACY_TERMS": str(terms_path)},
+    )
+    assert_true(second_result.returncode != 3, f"second privacy import failed: {second_result.stderr}")
+    terms_path.write_text(
+        ("Inserted" + "PrivateTerm").lower()
+        + "\n"
+        + second_private_term.lower()
+        + "\n"
+        + private_term.lower()
+        + "\n",
+        encoding="utf-8",
+    )
+    reordered_result = run_import(
+        csv_path,
+        reordered_out_dir,
+        "--board-id",
+        private_term,
+        "--compare-to",
+        str(out_dir / "manifest.json"),
+        environment={**os.environ, "V1SIMPLE_PRIVACY_TERMS": str(terms_path)},
+    )
+    assert_true(
+        reordered_result.returncode != 3,
+        f"reordered privacy import failed: {reordered_result.stderr}",
+    )
+    published = result.stdout + result.stderr
+    for name in (
+        "segments.json",
+        "import_diagnostics.json",
+        "manifest.json",
+        "scoring.json",
+        "comparison.txt",
+        "comparison.tsv",
+    ):
+        published += (out_dir / name).read_text(encoding="utf-8")
+    assert_true(
+        private_term.lower() not in published.lower()
+        and csv_path.name.lower() not in published.lower(),
+        "import publications retained a private board or source label",
+    )
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    scoring = json.loads((out_dir / "scoring.json").read_text(encoding="utf-8"))
+    second_manifest = json.loads((second_out_dir / "manifest.json").read_text(encoding="utf-8"))
+    second_scoring = json.loads((second_out_dir / "scoring.json").read_text(encoding="utf-8"))
+    reordered_manifest = json.loads(
+        (reordered_out_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    reordered_scoring = json.loads(
+        (reordered_out_dir / "scoring.json").read_text(encoding="utf-8")
+    )
+    assert_true(
+        manifest["board_id"].startswith("private-board-")
+        and second_manifest["board_id"].startswith("private-board-")
+        and manifest["board_id"] != second_manifest["board_id"],
+        f"private boards lost distinct non-PII identities: {manifest} {second_manifest}",
+    )
+    assert_true(scoring["manifest"]["board_id"] == manifest["board_id"], str(scoring))
+    assert_true(
+        second_scoring["manifest"]["board_id"] == second_manifest["board_id"]
+        and second_scoring["comparison_kind"] == "no_baseline",
+        f"distinct private boards were compared as compatible: {second_scoring}",
+    )
+    assert_true(
+        reordered_manifest["board_id"] == manifest["board_id"]
+        and reordered_scoring["comparison_kind"] != "no_baseline",
+        f"private board identity changed when local terms were reordered: "
+        f"{manifest} {reordered_manifest} {reordered_scoring}",
+    )
+    assert_true(
+        manifest["source_origin"] == "external_input"
+        and manifest.get("source_input") is None
+        and len(manifest["source_sha256"]) == 64,
+        str(manifest),
+    )
+    assert_true(
+        private_term not in manifest["mode_coverage"]
+        and manifest["mode_coverage"]["<redacted-private-term>"]
+        == "retained diagnostic value"
+        and manifest["mode_coverage"]["password"] == "<redacted-credential>"
+        and all(
+            manifest["mode_coverage"][field] == "<redacted-credential>"
+            for field in ("token", "api_token", "authorization_header")
+        )
+        and manifest["mode_coverage"]["warnings"]
+        == ["no_proxy_activity_observed"]
+        and all(
+            value == "<redacted-credential>"
+            for value in manifest["mode_coverage"]["nested"].values()
+        ),
+        f"mode coverage bypassed recursive artifact privacy: {manifest}",
+    )
 
 
 def test_schema13_import_supports_drop_metrics(tmpdir: Path) -> None:
@@ -1072,13 +1303,15 @@ def main() -> int:
     test_firmware_session_marker_uses_importer_boot_id_key()
     test_dma_fragmentation_uses_current_values()
     test_display_peak_metrics_are_imported_from_csv_windows()
-    test_connect_burst_and_flush_metrics_are_imported_from_csv_windows()
+    test_connect_burst_peaks_do_not_invent_stability_from_csv_windows()
+    test_notify_pipeline_completion_requires_schema_47_columns()
     print("[perf-csv-import] metric derivation tests passed")
 
     with tempfile.TemporaryDirectory(prefix="perf_csv_import_") as tmp:
         tmpdir = Path(tmp)
         test_sd_start_runtime_split_uses_fixed_window(tmpdir)
         test_legacy_import_reports_partial_coverage(tmpdir)
+        test_import_publications_scrub_board_and_external_source_labels(tmpdir)
         test_schema13_import_supports_drop_metrics(tmpdir)
         test_segment_selection_and_listing_prefers_direct_speed_evidence_when_available(tmpdir)
         test_segment_selection_without_direct_speed_column_falls_back_to_longest_connected(tmpdir)

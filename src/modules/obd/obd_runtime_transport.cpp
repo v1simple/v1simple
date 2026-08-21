@@ -742,8 +742,7 @@ void ObdRuntimeModule::pumpTransportResults() {
             if (transportDisconnectPending_ && result.requestId == pendingDisconnectRequestId_) {
                 transportDisconnectQueued_ = false;
                 if (result.bondDeleteAttempted && !result.bondDeleted) {
-                    Serial.printf("[OBD] WARN: transport-owned bond delete failed addr=%s\n",
-                                  pendingDisconnectAddress_);
+                    Serial.println("[OBD] WARN: transport-owned bond delete failed");
                 } else if (result.bondDeleteAttempted) {
                     // Refresh only after transport-owned deletion completes;
                     // doing this when the control was merely queued would

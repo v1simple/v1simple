@@ -67,7 +67,7 @@ void V1ProfileManager::recoverInterruptedSaves() {
     // Remove incomplete .tmp files (interrupted during write)
     for (const String& tmp : tmpFiles) {
         String fullPath = profileDir_ + "/" + tmp;
-        Serial.printf("[V1Profiles] Removing incomplete temp file: %s\n", fullPath.c_str());
+        Serial.println("[V1Profiles] Removing incomplete temp file");
         fs_->remove(fullPath);
     }
 
@@ -89,8 +89,7 @@ void V1ProfileManager::recoverInterruptedSaves() {
             // Main file missing! Restore from backup
             String bakPath = profileDir_ + "/" + bak;
             String jsonPath = profileDir_ + "/" + jsonName;
-            Serial.printf("[V1Profiles] RECOVERY: Main file missing, restoring from backup: %s -> %s\n",
-                          bakPath.c_str(), jsonPath.c_str());
+            Serial.println("[V1Profiles] RECOVERY: Main file missing, restoring from backup");
             if (fs_->rename(bakPath, jsonPath)) {
                 Serial.println("[V1Profiles] Recovery successful!");
             } else {
@@ -173,7 +172,7 @@ size_t V1ProfileManager::migrateProfilesFrom(fs::FS* sourceFs) {
         String tmpPath = targetPath + ".tmpimport";
         File out = fs_->open(tmpPath, FILE_WRITE);
         if (!out) {
-            Serial.printf("[V1Profiles] Migration skipped (write open failed): %s\n", targetPath.c_str());
+            Serial.println("[V1Profiles] Migration skipped (write open failed)");
             entry.close();
             continue;
         }
@@ -196,17 +195,17 @@ size_t V1ProfileManager::migrateProfilesFrom(fs::FS* sourceFs) {
 
         if (!ok) {
             fs_->remove(tmpPath);
-            Serial.printf("[V1Profiles] Migration skipped (copy failed): %s\n", targetPath.c_str());
+            Serial.println("[V1Profiles] Migration skipped (copy failed)");
             continue;
         }
         if (!fs_->rename(tmpPath, targetPath)) {
             fs_->remove(tmpPath);
-            Serial.printf("[V1Profiles] Migration skipped (rename failed): %s\n", targetPath.c_str());
+            Serial.println("[V1Profiles] Migration skipped (rename failed)");
             continue;
         }
 
         migrated++;
-        Serial.printf("[V1Profiles] Migrated profile file: %s\n", targetPath.c_str());
+        Serial.println("[V1Profiles] Migrated profile file");
     }
     dir.close();
     return migrated;
@@ -270,7 +269,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
     if (!file) {
         // Try to recover from backup file
         if (fs_->exists(bakPath)) {
-            Serial.printf("[V1Profiles] Main file missing, attempting recovery from backup: %s\n", bakPath.c_str());
+            Serial.println("[V1Profiles] Main file missing, attempting recovery from backup");
             // Rename backup to main file
             if (fs_->rename(bakPath, path)) {
                 Serial.println("[V1Profiles] Restored profile from backup!");
@@ -279,7 +278,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
         }
 
         if (!file) {
-            Serial.printf("[V1Profiles] Profile not found: %s (no backup available)\n", path.c_str());
+            Serial.println("[V1Profiles] Profile not found (no backup available)");
             return false;
         }
     }
@@ -406,7 +405,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
             s.setMrct(doc["mrct"]);
     }
 
-    Serial.printf("[V1Profiles] Loaded profile: %s\n", name.c_str());
+    Serial.println("[V1Profiles] Loaded profile");
     return true;
 }
 
@@ -424,7 +423,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
     // Step 1: Write to temporary file (don't truncate original yet)
     File file = fs_->open(tmpPath, FILE_WRITE);
     if (!file) {
-        lastError_ = "Failed to create temp file: " + tmpPath;
+        lastError_ = "Failed to create temp file";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
         return ProfileSaveResult(false, lastError_);
     }
@@ -528,16 +527,16 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
         }
         // Rename current to backup (for rollback capability)
         if (!fs_->rename(path, bakPath)) {
-            Serial.printf("[V1Profiles] Warning: Could not create backup: %s\n", bakPath.c_str());
+            Serial.println("[V1Profiles] Warning: Could not create backup");
             // Continue anyway - this is not fatal
         } else {
-            Serial.printf("[V1Profiles] Created backup: %s\n", bakPath.c_str());
+            Serial.println("[V1Profiles] Created backup");
         }
     }
 
     // Step 5: Rename temp to final
     if (!fs_->rename(tmpPath, path)) {
-        lastError_ = "Failed to rename temp to final: " + tmpPath + " -> " + path;
+        lastError_ = "Failed to rename temp to final";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
 
         // Try to restore from backup
@@ -552,8 +551,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
 
     // Step 6: Remove backup after successful save (optional - keep for extra safety)
 
-    Serial.printf("[V1Profiles] Saved profile: %s (%u bytes, CRC: %08lX)\n", profile.name.c_str(), written,
-                  static_cast<unsigned long>(crc));
+    Serial.printf("[V1Profiles] Saved profile (%u bytes, CRC: %08lX)\n", written, static_cast<unsigned long>(crc));
     bumpCatalogRevision();
     return ProfileSaveResult(true);
 }
@@ -585,7 +583,7 @@ bool V1ProfileManager::deleteProfile(const String& name) {
     }
 
     if (ok && removedAny) {
-        Serial.printf("[V1Profiles] Deleted profile: %s\n", name.c_str());
+        Serial.println("[V1Profiles] Deleted profile");
         bumpCatalogRevision();
     }
     return ok && removedAny;
@@ -619,7 +617,7 @@ bool V1ProfileManager::renameProfile(const String& oldName, const String& newNam
 
     // Guard: refuse to overwrite a different existing profile.
     if (fs_->exists(newPath)) {
-        lastError_ = "Rename target already exists: " + newName;
+        lastError_ = "Rename target already exists";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
         return false;
     }

@@ -238,8 +238,8 @@ void configureLoopDisplayModule() {
         static_cast<V1BLEClient*>(ctx)->noteDisplayPipelineDuration(elapsedUs);
     };
     loopDisplayProviders.dispPipePerfContext = &bleClient;
-    loopDisplayProviders.recordNotifyToDisplayMs = [](void*, uint32_t elapsedMs) {
-        perfRecordNotifyToDisplayMs(elapsedMs);
+    loopDisplayProviders.recordNotifyToDisplayPipelineCompleteMs = [](void*, uint32_t elapsedMs) {
+        perfRecordNotifyToDisplayPipelineCompleteMs(elapsedMs);
     };
     loopDisplayModule.begin(loopDisplayProviders);
 }

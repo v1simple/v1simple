@@ -11,8 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
+from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
 from bench_identity import canonical_bytes
-from camera_contract import camera_evidence_contract
+from camera_contract import EXPECTED_CAMERA_NAME, camera_evidence_contract
 
 
 CAPTURE_MANIFEST_SCHEMA_VERSION = 2
@@ -108,14 +109,22 @@ def build_capture_manifest(
     traceability: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     camera_dir = camera_dir.resolve()
+    safe_camera_result = sanitize_artifact_value(dict(camera_result), run_dir=camera_dir)
+    if safe_camera_result.get("camera_name") != EXPECTED_CAMERA_NAME:
+        safe_camera_result["camera_name"] = REDACTED_NAME
+    safe_timing_anchor = sanitize_artifact_value(
+        dict(timing_anchor) if isinstance(timing_anchor, Mapping) else None,
+        run_dir=camera_dir,
+    )
+    safe_traceability = sanitize_artifact_value(dict(traceability or {}), run_dir=camera_dir)
     artifacts: dict[str, Any] = {}
     for field in ("video", "session_start_still", "bright_still", "dim_still"):
-        path = _resolve_named_file(camera_dir, camera_result.get(field))
+        path = _resolve_named_file(camera_dir, safe_camera_result.get(field))
         if path is None:
             raise CameraArtifactIncompatible(f"camera {field} is missing")
         extra = {}
         if field == "video":
-            extra["duration_seconds"] = camera_result.get("video_duration_seconds")
+            extra["duration_seconds"] = safe_camera_result.get("video_duration_seconds")
         artifacts[field] = _file_entry(path, camera_dir, **extra)
     if encounter_csv_path is not None:
         artifacts["encounter_csv"] = _file_entry(encounter_csv_path, camera_dir)
@@ -133,50 +142,54 @@ def build_capture_manifest(
             "registration": preflight.get("registration") or {},
         }
 
-    normalized_anchor = dict(timing_anchor) if isinstance(timing_anchor, Mapping) else None
+    normalized_anchor = safe_timing_anchor
     identity = {
         "schema_version": 1,
         "suite": suite,
         "product_fingerprint": str(product_fingerprint or ""),
         "scenario_fingerprint": str(scenario_fingerprint or ""),
         "camera": {
-            "name": camera_result.get("camera_name"),
-            "device_index": camera_result.get("camera_device_index"),
-            "profile": camera_result.get("profile") if isinstance(camera_result.get("profile"), dict) else {},
+            "name": safe_camera_result.get("camera_name"),
+            "device_index": safe_camera_result.get("camera_device_index"),
+            "profile": (
+                safe_camera_result.get("profile")
+                if isinstance(safe_camera_result.get("profile"), dict)
+                else {}
+            ),
         },
-        "expected_duration_seconds": camera_result.get("expected_duration_seconds"),
+        "expected_duration_seconds": safe_camera_result.get("expected_duration_seconds"),
         "timing_anchor": normalized_anchor,
         "artifacts": artifacts,
     }
     capture_id = hashlib.sha256(canonical_bytes(identity)).hexdigest()
     capture = {
-        "result": camera_result.get("result"),
-        "video": str(camera_result.get("video") or ""),
-        "video_duration_seconds": camera_result.get("video_duration_seconds"),
-        "session_start_still": str(camera_result.get("session_start_still") or ""),
-        "bright_still": str(camera_result.get("bright_still") or ""),
-        "dim_still": str(camera_result.get("dim_still") or ""),
-        "camera_name": camera_result.get("camera_name"),
-        "camera_device_index": camera_result.get("camera_device_index"),
+        "result": safe_camera_result.get("result"),
+        "video": str(safe_camera_result.get("video") or ""),
+        "video_duration_seconds": safe_camera_result.get("video_duration_seconds"),
+        "session_start_still": str(safe_camera_result.get("session_start_still") or ""),
+        "bright_still": str(safe_camera_result.get("bright_still") or ""),
+        "dim_still": str(safe_camera_result.get("dim_still") or ""),
+        "camera_name": safe_camera_result.get("camera_name"),
+        "camera_device_index": safe_camera_result.get("camera_device_index"),
         "profile": identity["camera"]["profile"],
-        "expected_duration_seconds": camera_result.get("expected_duration_seconds"),
-        "profile_validation": camera_result.get("profile_validation") or {},
-        "errors": list(camera_result.get("errors") or []),
+        "expected_duration_seconds": safe_camera_result.get("expected_duration_seconds"),
+        "profile_validation": safe_camera_result.get("profile_validation") or {},
+        "errors": list(safe_camera_result.get("errors") or []),
     }
     return {
         "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "kind": "bench_camera_capture",
         "capture_id": capture_id,
-        "result": camera_result.get("result"),
-        "timestamp_utc": camera_result.get("timestamp_utc"),
+        "result": safe_camera_result.get("result"),
+        "timestamp_utc": safe_camera_result.get("timestamp_utc"),
         "identity": identity,
         "capture": capture,
         "timing_anchor": normalized_anchor,
-        "profile_validation": camera_result.get("profile_validation") or {},
+        "profile_validation": safe_camera_result.get("profile_validation") or {},
         "preflight": preflight_summary,
         "evidence_contract": camera_evidence_contract(suite),
-        "traceability": dict(traceability or {}),
-        "errors": list(camera_result.get("errors") or []),
+        "traceability": safe_traceability,
+        "errors": list(safe_camera_result.get("errors") or []),
     }
 
 
@@ -266,9 +279,10 @@ def _publish_exclusive_json(path: Path, payload: Mapping[str, Any]) -> bool:
 
 
 def publish_capture_manifest(camera_dir: Path, manifest: Mapping[str, Any]) -> tuple[Path, bool]:
-    validate_capture_manifest(manifest)
+    safe_manifest = sanitize_artifact_value(dict(manifest), run_dir=camera_dir)
+    validate_capture_manifest(safe_manifest)
     path = camera_dir / CAPTURE_MANIFEST_NAME
-    return path, _publish_exclusive_json(path, manifest)
+    return path, _publish_exclusive_json(path, safe_manifest)
 
 
 def capture_input_hashes(manifest: Mapping[str, Any]) -> dict[str, str]:
@@ -361,14 +375,16 @@ def publish_grade(
     grader_fingerprint: str,
     grade: Mapping[str, Any],
 ) -> tuple[Path, bool]:
-    validate_grade_ownership(grade, manifest, grader_fingerprint)
+    safe_grade = sanitize_artifact_value(dict(grade), run_dir=camera_dir)
+    validate_grade_ownership(safe_grade, manifest, grader_fingerprint)
     path = grade_path(camera_dir, grader_fingerprint)
-    return path, _publish_exclusive_json(path, grade)
+    return path, _publish_exclusive_json(path, safe_grade)
 
 
 def publish_immutable_json(path: Path, payload: Mapping[str, Any]) -> bool:
     """Publish an immutable JSON report with the same exclusive contract as evidence."""
-    return _publish_exclusive_json(path, payload)
+    safe_payload = sanitize_artifact_value(dict(payload), run_dir=path.parent)
+    return _publish_exclusive_json(path, safe_payload)
 
 
 def load_or_adapt_capture(

@@ -437,7 +437,7 @@ void SettingsManager::setLastV1Address(const String& addr) {
         // A confirmed connection uses one dedicated NVS fallback key when the
         // filesystem store is unavailable. Explicit settings saves and
         // graceful shutdown still capture the compatibility field as well.
-        Serial.printf("Updated runtime V1 address: %s\n", safeAddr.c_str());
+        Serial.println("Updated runtime V1 address");
     }
 }
 
@@ -793,7 +793,7 @@ bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, Se
         if (isValidBleAddress(update.savedAddress)) {
             changed |= assignIfChanged(settings_.obdSavedAddress, update.savedAddress);
         } else {
-            Serial.printf("[Settings] WARN: Rejecting invalid OBD address update: '%s'\n", update.savedAddress.c_str());
+            Serial.println("[Settings] WARN: Rejecting invalid OBD address update");
         }
     }
     if (update.hasSavedName) {

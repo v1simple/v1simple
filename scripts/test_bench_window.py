@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,21 @@ import camera_capture as camera_capture_module  # noqa: E402
 import camera_grade as camera_grade_module  # noqa: E402
 import run_logged as run_logged_module  # noqa: E402
 import run_window as run_window_module  # noqa: E402
+from artifact_privacy import (  # noqa: E402
+    REDACTED_CREDENTIAL,
+    REDACTED_DEVICE_PATH,
+    REDACTED_EMAIL,
+    REDACTED_HOME_USER,
+    REDACTED_MAC,
+    REDACTED_NETWORK,
+    REDACTED_PRIVATE_TERM,
+    REDACTED_PROFILE,
+    REDACTED_PUBLIC_IP,
+    privacy_safe_identifier,
+    redact_artifact_bytes,
+    redact_artifact_text,
+    sanitize_artifact_value,
+)
 from camera_capture import (  # noqa: E402
     CALIBRATION_PATCH,
     FRAME_BYTES,
@@ -70,7 +86,7 @@ from run_window import (  # noqa: E402
     V1_RADIO_LEASE_PATH,
     V1RadioLease,
     _preflight_ledger_is_complete,
-    build_raw_log_ownership,
+    build_sanitized_log_ownership,
     camera_grade_required,
     display_commit_csv_sd_path,
     encounter_csv_sd_path,
@@ -1735,7 +1751,7 @@ def test_live_replay_publishes_one_immutable_generic_stimulus_ledger() -> None:
     assert_true(offline["stimulus_events"] == events, "offline stimulus evidence was consumed")
 
 
-def test_raw_log_ownership_names_only_exact_bench_streams() -> None:
+def test_sanitized_log_ownership_names_only_exact_bench_streams() -> None:
     with tempfile.TemporaryDirectory() as temp:
         out_dir = Path(temp).resolve()
         stdout = out_dir / "run.log"
@@ -1748,11 +1764,13 @@ def test_raw_log_ownership_names_only_exact_bench_streams() -> None:
         )
         for name in ("bench_serial.log", "v1replay.log", "run.log", "run.err"):
             (out_dir / name).write_text(f"{name}\n", encoding="utf-8")
-        ownership = build_raw_log_ownership(out_dir, runner_logs)
+        ownership = build_sanitized_log_ownership(out_dir, runner_logs)
         assert_true(
             ownership
             == {
                 "schema_version": 1,
+                "content": "privacy_sanitized",
+                "transformation": "artifact_privacy_redaction",
                 "streams": {
                     "bench_serial": "bench_serial.log",
                     "v1replay": "v1replay.log",
@@ -1760,7 +1778,7 @@ def test_raw_log_ownership_names_only_exact_bench_streams() -> None:
                     "stderr": "run.err",
                 },
             },
-            f"raw log ownership is not exact and bounded: {ownership}",
+            f"sanitized log ownership is not exact and bounded: {ownership}",
         )
 
         bad_args = SimpleNamespace(
@@ -1808,9 +1826,9 @@ def test_replay_blink_profile_argv_and_result() -> None:
             expected_ledger = out_dir / "handshake_ledger.jsonl"
             expected_scenario = out_dir / "replay_scenario.json"
             expected_argv = (
-                f"argv=bench --scenario-evidence {expected_scenario} "
+                f"argv=bench --scenario-evidence {expected_scenario.name} "
                 f"--machine-events --owner-pid {os.getpid()} "
-                f"--handshake-ledger {expected_ledger} "
+                f"--handshake-ledger {expected_ledger.name} "
                 f"--blink-profile {blink_profile}"
             )
             assert_true(expected_argv in log, f"unexpected replay argv: {log!r}")
@@ -2831,7 +2849,7 @@ def test_handshake_ledger_runner_and_delivery_wiring_are_pinned() -> None:
     )
     assert_true(
         '"handshake_ledger_path": (' in runner
-        and 'str(out_dir / HANDSHAKE_LEDGER_NAME) if args.suite == "replay" else ""' in runner,
+        and 'HANDSHAKE_LEDGER_NAME if args.suite == "replay" else ""' in runner,
         "replay window_result does not retain the same-window handshake ledger",
     )
     initial_ready = runner.index("ready = wait_ready(q, args.ready_timeout_seconds)")
@@ -3246,6 +3264,348 @@ def test_run_logged_forwards_first_signal_received_during_startup() -> None:
         forwarded == [signal.SIGTERM],
         f"startup/repeated signals were lost or multiply forwarded: {forwarded}",
     )
+
+
+def test_artifact_redaction_removes_private_values_without_touching_causal_evidence() -> None:
+    digest = "ab" * 32
+    payload = "02 00 FE 12 34 56"
+    raw = (
+        "[AutoPush] addr='AA:BB:CC:DD:EE:FF' profile='fixture-profile' "
+        f"payload={payload} sha256={digest} port=/dev/cu.fixtureXXX home=/Users/user/workspace "
+        "SSID='fixture-network'\n"
+    )
+
+    safe = redact_artifact_text(raw)
+
+    assert_true(REDACTED_MAC in safe, f"MAC was not redacted: {safe}")
+    assert_true(REDACTED_DEVICE_PATH in safe, f"device path was not redacted: {safe}")
+    assert_true(REDACTED_HOME_USER in safe, f"home-directory owner was not redacted: {safe}")
+    assert_true(REDACTED_PROFILE in safe, f"profile was not redacted: {safe}")
+    assert_true(REDACTED_NETWORK in safe, f"SSID was not redacted: {safe}")
+    assert_true(payload in safe and digest in safe, f"causal payload/hash changed: {safe}")
+    assert_true(redact_artifact_bytes(raw.encode("ascii")) == safe.encode("ascii"), "byte/text redaction drifted")
+
+
+def test_artifact_redaction_covers_local_terms_and_unlabelled_runtime_pii() -> None:
+    private_term = "Private" + "BenchTerm"
+    private_email = "operator" + "@" + "private.example.com"
+    public_ip = ".".join(("8", "8", "8", "8"))
+    credential = "live-" + "credential-value"
+    credential_label = "pass" + "word"
+    raw = (
+        f"Network {private_term} failed for {private_email}; public={public_ip}; "
+        f"{credential_label}='{credential}'"
+    )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        terms_path = Path(temporary) / "terms.txt"
+        digest = "ab" + ("3" * 62)
+        runtime_id = "ab" + ("1" * 7)
+        repository_sha = "ab" + ("2" * 38)
+        terms_path.write_text(
+            f"# local only\n{runtime_id}\n{repository_sha}\n{digest}\n"
+            f"{private_term.lower()}\n",
+            encoding="utf-8",
+        )
+        previous = os.environ.get("V1SIMPLE_PRIVACY_TERMS")
+        os.environ["V1SIMPLE_PRIVACY_TERMS"] = str(terms_path)
+        try:
+            safe = redact_artifact_text(raw)
+            safe_bytes = redact_artifact_bytes(raw.encode("utf-8")).decode("utf-8")
+            sheet_path = f"investigation_sheets/{digest}.jpg"
+            safe_metadata = sanitize_artifact_value(
+                {
+                    "expected_runtime_image_id": runtime_id,
+                    "runtimeImageId": runtime_id,
+                    "traceability": {
+                        "repository_sha": repository_sha,
+                        "recorded_revision": repository_sha,
+                        "recorded_revisions": [repository_sha],
+                        "inspected_revision": repository_sha,
+                    },
+                    "selector": {"revision": repository_sha},
+                    "grade_id": digest,
+                    "input_hashes": {"video": digest},
+                    "sheet_path": sheet_path,
+                    "narrative": f"unlabelled {runtime_id} private evidence",
+                    "digest_narrative": digest,
+                    "password": "synthetic-value-without-a-secret-pattern",
+                    "wifi_password": "synthetic-wifi-value",
+                    "secret": "synthetic-secret-value",
+                    "authorization": "synthetic-authorization-value",
+                    "token": "causal-segment-token",
+                    "qualification_session_token": "causal-session-token",
+                },
+                run_dir=Path(temporary),
+            )
+            safe_untrusted_mapping = sanitize_artifact_value(
+                {
+                    private_term: "first private-key value",
+                    private_term.upper(): "second private-key value",
+                },
+                run_dir=Path(temporary),
+                sanitize_mapping_keys=True,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("V1SIMPLE_PRIVACY_TERMS", None)
+            else:
+                os.environ["V1SIMPLE_PRIVACY_TERMS"] = previous
+
+    for private_value in (private_term, private_email, public_ip, credential):
+        assert_true(private_value not in safe, "runtime PII survived artifact redaction")
+    for marker in (
+        REDACTED_PRIVATE_TERM,
+        REDACTED_EMAIL,
+        REDACTED_PUBLIC_IP,
+        REDACTED_CREDENTIAL,
+    ):
+        assert_true(marker in safe, f"runtime PII marker was lost: {marker}")
+    assert_true(safe_bytes == safe, "byte/text runtime PII redaction drifted")
+    assert_true(
+        safe_metadata["expected_runtime_image_id"] == runtime_id
+        and safe_metadata["runtimeImageId"] == runtime_id
+        and safe_metadata["traceability"]["repository_sha"] == repository_sha,
+        f"validated machine identities were corrupted: {safe_metadata}",
+    )
+    assert_true(
+        safe_metadata["traceability"]["recorded_revision"] == repository_sha
+        and safe_metadata["traceability"]["recorded_revisions"] == [repository_sha]
+        and safe_metadata["traceability"]["inspected_revision"] == repository_sha
+        and safe_metadata["selector"]["revision"] == repository_sha
+        and safe_metadata["grade_id"] == digest
+        and safe_metadata["input_hashes"]["video"] == digest
+        and safe_metadata["sheet_path"] == sheet_path,
+        f"validated digest/revision/path metadata was corrupted: {safe_metadata}",
+    )
+    assert_true(
+        runtime_id not in safe_metadata["narrative"]
+        and REDACTED_PRIVATE_TERM in safe_metadata["narrative"],
+        f"narrative local term was not redacted: {safe_metadata}",
+    )
+    assert_true(
+        safe_metadata["digest_narrative"] == REDACTED_PRIVATE_TERM,
+        f"digest-shaped narrative bypassed privacy redaction: {safe_metadata}",
+    )
+    assert_true(
+        safe_untrusted_mapping[REDACTED_PRIVATE_TERM] == "first private-key value"
+        and safe_untrusted_mapping[f"{REDACTED_PRIVATE_TERM}#2"]
+        == "second private-key value",
+        "private mapping keys were not safely retained after a collision: "
+        f"{safe_untrusted_mapping}",
+    )
+    assert_true(
+        all(
+            safe_metadata[field] == REDACTED_CREDENTIAL
+            for field in ("password", "wifi_password", "secret", "authorization")
+        )
+        and safe_metadata["token"] == "causal-segment-token"
+        and safe_metadata["qualification_session_token"] == "causal-session-token",
+        f"credential-named field bypassed privacy redaction: {safe_metadata}",
+    )
+
+
+def test_private_identifier_is_stable_idempotent_and_path_safe() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        terms_path = root / "terms.txt"
+        raw_board = "Board" + "PrivacyFixture"
+        terms_path.write_text("Privacy\n", encoding="utf-8")
+        with temporary_environment("V1SIMPLE_PRIVACY_TERMS", str(terms_path)):
+            first = privacy_safe_identifier(raw_board, namespace="board")
+            digest_fragment = first[-64:][7:13]
+            terms_path.write_text(f"Privacy\n{digest_fragment}\n", encoding="utf-8")
+            second = privacy_safe_identifier(first, namespace="board")
+            unsafe_path = privacy_safe_identifier("..", namespace="board")
+        assert_true(first == second, f"safe board identity was transformed twice: {first} {second}")
+        assert_true(
+            first.startswith("private-board-") and len(first) == len("private-board-") + 64,
+            f"private board alias is not canonical: {first}",
+        )
+        assert_true(
+            unsafe_path not in {".", ".."} and "/" not in unsafe_path and "\\" not in unsafe_path,
+            f"unsafe board identifier survived as a path component: {unsafe_path}",
+        )
+
+
+def test_window_result_uses_relative_paths_and_scrubs_nested_errors() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "replay"
+        out_dir.mkdir()
+        private_error = (
+            "cannot open /Users/"
+            + "private-owner/workspace on /dev/cu."
+            + "private-port"
+        )
+        run_window_module.write_window_result(
+            out_dir,
+            {
+                "result": "COLLECTION_FAILED",
+                "csv_path": str(out_dir / "perf.csv"),
+                "camera": {
+                    "manifest": str(out_dir / "camera" / "capture_manifest.json"),
+                    "errors": [private_error],
+                },
+                "peer": "AA:BB:CC:DD:EE:FF",
+            },
+        )
+
+        persisted = (out_dir / "window_result.json").read_text(encoding="utf-8")
+        payload = json.loads(persisted)
+        assert_true(payload["csv_path"] == "perf.csv", f"CSV path was not relative: {payload}")
+        assert_true(
+            payload["camera"]["manifest"] == "camera/capture_manifest.json",
+            f"nested run path was not relative: {payload}",
+        )
+        assert_true("private-owner" not in persisted, f"home owner survived: {persisted}")
+        assert_true("cu.private-port" not in persisted, f"device path survived: {persisted}")
+        assert_true("AA:BB:CC:DD:EE:FF" not in persisted, f"MAC survived: {persisted}")
+        assert_true(REDACTED_HOME_USER in persisted, f"home redaction missing: {persisted}")
+        assert_true(REDACTED_DEVICE_PATH in persisted, f"device redaction missing: {persisted}")
+        assert_true(REDACTED_MAC in persisted, f"MAC redaction missing: {persisted}")
+
+
+def test_owned_timeline_and_child_logs_use_the_same_privacy_boundary() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "replay"
+        out_dir.mkdir()
+        private = (
+            f"artifact={out_dir / 'owned.json'} home=/Users/"
+            + "private-owner/workspace port=/dev/cu."
+            + "private-port peer=AA:BB:CC:DD:EE:FF"
+        )
+
+        timeline = run_window_module.BenchTimeline(out_dir / "bench_timeline.ndjson")
+        timeline.record("fixture", detail=private)
+        timeline.close()
+
+        emulator = V1Emulator(Path(tmp) / "v1replay", out_dir, "replay")
+        emulator.log_path.write_text(private + "\n", encoding="utf-8")
+        emulator._sanitize_log()
+
+        camera = CameraCapture(out_dir / "camera", 1)
+        camera.errors = [private]
+        camera._write_result("CAPTURE_FAILED")
+
+        persisted = "\n".join(
+            (
+                (out_dir / "bench_timeline.ndjson").read_text(encoding="utf-8"),
+                emulator.log_path.read_text(encoding="utf-8"),
+                camera.result_path.read_text(encoding="utf-8"),
+            )
+        )
+        assert_true(str(out_dir) not in persisted, f"run path survived: {persisted}")
+        assert_true("private-owner" not in persisted, f"home owner survived: {persisted}")
+        assert_true("cu.private-port" not in persisted, f"device path survived: {persisted}")
+        assert_true("AA:BB:CC:DD:EE:FF" not in persisted, f"MAC survived: {persisted}")
+        assert_true("owned.json" in persisted, f"run-relative evidence was lost: {persisted}")
+
+
+def test_bench_serial_keeps_raw_protocol_but_persists_only_redacted_copies() -> None:
+    class FakeTimeline:
+        def __init__(self) -> None:
+            self.records: list[tuple[str, dict[str, object]]] = []
+
+        def record(self, event: str, **fields: object) -> int:
+            self.records.append((event, fields))
+            return 1
+
+    class FakeSerialDevice:
+        def __init__(self, received: bytes) -> None:
+            self.received = received
+            self.writes: list[bytes] = []
+
+        def readline(self) -> bytes:
+            received, self.received = self.received, b""
+            return received
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(data)
+            return len(data)
+
+        def flush(self) -> None:
+            return None
+
+    received = "[AutoPush] addr='AA:BB:CC:DD:EE:FF' profile='fixture-profile' payload=02 00 FE"
+    timeline = FakeTimeline()
+    device = FakeSerialDevice((received + "\n").encode("ascii"))
+    serial = run_window_module.BenchSerial.__new__(run_window_module.BenchSerial)
+    serial.ser = device
+    serial.log = io.StringIO()
+    serial.timeline = timeline
+    serial.boot_marker_count = 0
+    serial.disconnect_cleanup_count = 0
+    serial.last_receive_monotonic_ns = None
+
+    returned = serial.read_line(0.1)
+
+    assert_true(returned == received, f"serial parser did not receive raw text: {returned}")
+    persisted_receive = serial.log.getvalue()
+    assert_true(
+        REDACTED_MAC in persisted_receive and REDACTED_PROFILE in persisted_receive,
+        f"serial receive log retained private values: {persisted_receive}",
+    )
+    assert_true(timeline.records[-1][1]["line"] != received, "timeline retained raw serial receive text")
+
+    command = "QSET addr=AA:BB:CC:DD:EE:FF profile='fixture-profile'"
+    serial.write_command(command)
+
+    assert_true(device.writes[-1] == (command + "\n").encode("ascii"), "DUT command was redacted before send")
+    assert_true(command not in serial.log.getvalue(), "protocol log retained a raw outgoing command")
+    assert_true(timeline.records[-1][1]["line"] != command, "timeline retained a raw outgoing command")
+
+
+def test_run_logged_redacts_every_output_sink() -> None:
+    raw = b"MAC: AA:BB:CC:DD:EE:FF port=/dev/cu.fixtureXXX\n"
+    terminal = io.BytesIO()
+    own_log = io.BytesIO()
+    combined_log = io.BytesIO()
+
+    run_logged_module.copy_stream(io.BytesIO(raw), terminal, own_log, combined_log, threading.Lock())
+
+    expected = redact_artifact_bytes(raw)
+    assert_true(expected != raw, "fixture did not exercise redaction")
+    for label, sink in (("terminal", terminal), ("own", own_log), ("combined", combined_log)):
+        assert_true(sink.getvalue() == expected, f"{label} sink did not receive the same safe line")
+
+
+def test_run_logged_redacts_process_start_failure() -> None:
+    original_parse_args = run_logged_module.parse_args
+    original_popen = run_logged_module.subprocess.Popen
+    original_signal = run_logged_module.signal.signal
+    original_stderr = run_logged_module.sys.stderr
+    terminal = io.BytesIO()
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_logged_module.parse_args = lambda: SimpleNamespace(  # type: ignore[assignment]
+                stdout=str(root / "stdout.log"),
+                stderr=str(root / "stderr.log"),
+                combined=str(root / "combined.log"),
+                command=["fixture"],
+            )
+            run_logged_module.signal.signal = lambda *_args: None  # type: ignore[assignment]
+
+            def fail_to_start(*_args: object, **_kwargs: object) -> None:
+                raise OSError("cannot open /dev/cu.fixtureXXX for /Users/user/workspace")
+
+            run_logged_module.subprocess.Popen = fail_to_start  # type: ignore[assignment]
+            run_logged_module.sys.stderr = SimpleNamespace(buffer=terminal)  # type: ignore[assignment]
+            returncode = run_logged_module.main()
+
+            stderr_log = (root / "stderr.log").read_bytes()
+            combined_log = (root / "combined.log").read_bytes()
+    finally:
+        run_logged_module.parse_args = original_parse_args
+        run_logged_module.subprocess.Popen = original_popen
+        run_logged_module.signal.signal = original_signal
+        run_logged_module.sys.stderr = original_stderr
+
+    assert_true(returncode == 3, f"start failure exit was not retained: {returncode}")
+    for label, sink in (("terminal", terminal.getvalue()), ("stderr", stderr_log), ("combined", combined_log)):
+        assert_true(REDACTED_DEVICE_PATH.encode() in sink, f"{label} retained the device path")
+        assert_true(REDACTED_HOME_USER.encode() in sink, f"{label} retained the home-directory owner")
 
 
 def test_run_logged_preserves_campaign_radio_lease_descriptor() -> None:
@@ -3699,7 +4059,17 @@ def test_importer_receives_hardware_scoring_identity_and_rejects_stale_baseline(
 
         def fake_run(cmd, **_kwargs):
             captured.extend(str(item) for item in cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+            private_stderr = (
+                "cannot open /Users/"
+                + "private-owner/workspace on /dev/cu."
+                + "private-port\n"
+            )
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=f"artifacts: {out_dir}/manifest.json AA:BB:CC:DD:EE:FF\n",
+                stderr=private_stderr,
+            )
 
         run_window_module.subprocess.run = fake_run
         try:
@@ -3716,6 +4086,14 @@ def test_importer_receives_hardware_scoring_identity_and_rejects_stale_baseline(
             "--compare-to" not in captured,
             f"scoring-incompatible automatic baseline was admitted: {captured}",
         )
+        persisted_import_logs = (
+            (out_dir / "import_stdout.log").read_text(encoding="utf-8")
+            + (out_dir / "import_stderr.log").read_text(encoding="utf-8")
+        )
+        assert_true(str(out_dir) not in persisted_import_logs, persisted_import_logs)
+        assert_true("private-owner" not in persisted_import_logs, persisted_import_logs)
+        assert_true("cu.private-port" not in persisted_import_logs, persisted_import_logs)
+        assert_true("AA:BB:CC:DD:EE:FF" not in persisted_import_logs, persisted_import_logs)
 
         (baseline_dir / "identity.json").write_text(
             json.dumps(identity),
@@ -3759,7 +4137,7 @@ def test_importer_receives_hardware_scoring_identity_and_rejects_stale_baseline(
             "scoring_file": "scoring.json",
             "tracks": ["drive_wifi_off"],
             "source_type": "perf_csv",
-            "source_schema": 46,
+            "source_schema": 47,
         }
         (baseline_dir / "manifest.json").write_text(
             json.dumps(baseline_manifest),
@@ -5021,7 +5399,7 @@ def main() -> int:
     test_live_replay_retains_one_versioned_detector_mute_stream()
     test_live_replay_publishes_one_immutable_generic_stimulus_ledger()
     test_live_replay_retains_one_versioned_detector_mode_stream()
-    test_raw_log_ownership_names_only_exact_bench_streams()
+    test_sanitized_log_ownership_names_only_exact_bench_streams()
     test_replay_blink_profile_argv_and_result()
     test_replay_external_scenario_preserves_optional_fractional_cadence()
     test_reconnect_preflight_ledger_requires_one_bounded_epoch()
@@ -5048,6 +5426,14 @@ def main() -> int:
     test_live_camera_failure_is_serialized_as_evidence_failure()
     test_camera_stop_timeout_exceeds_native_finalize_timeout()
     test_run_logged_forwards_first_signal_received_during_startup()
+    test_artifact_redaction_removes_private_values_without_touching_causal_evidence()
+    test_artifact_redaction_covers_local_terms_and_unlabelled_runtime_pii()
+    test_private_identifier_is_stable_idempotent_and_path_safe()
+    test_window_result_uses_relative_paths_and_scrubs_nested_errors()
+    test_owned_timeline_and_child_logs_use_the_same_privacy_boundary()
+    test_bench_serial_keeps_raw_protocol_but_persists_only_redacted_copies()
+    test_run_logged_redacts_every_output_sink()
+    test_run_logged_redacts_process_start_failure()
     test_run_logged_preserves_campaign_radio_lease_descriptor()
     test_camera_probe_failure_retains_sanitized_diagnostics()
     test_early_recorder_exit_is_latched_as_capture_failure()

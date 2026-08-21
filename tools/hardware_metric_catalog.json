@@ -509,7 +509,7 @@
       "regress_pct": 0.10
     },
     {
-      "metric": "notify_to_display_max_ms",
+      "metric": "notify_to_display_pipeline_complete_max_ms",
       "run_kind": "real_fw_soak",
       "selector": { "suite_or_profile": "drive_wifi_off" },
       "unit": "ms",
@@ -524,7 +524,7 @@
       "regress_pct": 0.20
     },
     {
-      "metric": "notify_to_display_max_ms",
+      "metric": "notify_to_display_pipeline_complete_max_ms",
       "run_kind": "real_fw_soak",
       "selector": { "suite_or_profile": "drive_wifi_ap" },
       "unit": "ms",
@@ -539,7 +539,7 @@
       "regress_pct": 0.20
     },
     {
-      "metric": "notify_to_display_sample_count",
+      "metric": "notify_to_display_pipeline_complete_sample_count",
       "run_kind": "real_fw_soak",
       "selector": { "suite_or_profile": "drive_wifi_off" },
       "unit": "count",
@@ -553,7 +553,7 @@
       "regress_pct": null
     },
     {
-      "metric": "notify_to_display_sample_count",
+      "metric": "notify_to_display_pipeline_complete_sample_count",
       "run_kind": "real_fw_soak",
       "selector": { "suite_or_profile": "drive_wifi_ap" },
       "unit": "count",

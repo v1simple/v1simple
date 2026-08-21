@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -31,6 +32,13 @@ from metric_schema import (  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
+sys.path.insert(0, str(ROOT / "scripts" / "bench"))
+
+from artifact_privacy import (  # type: ignore  # noqa: E402
+    privacy_safe_identifier,
+    redact_artifact_text,
+    sanitize_artifact_value,
+)
 TOP_ROW_FIELDS = (
     "disc",
     "reconn",
@@ -38,6 +46,25 @@ TOP_ROW_FIELDS = (
     "parseOK",
     "displayUpdates",
 )
+MODE_COVERAGE_SCHEMA_KEYS = frozenset(
+    {
+        "mode",
+        "policy",
+        "ok",
+        "reasons",
+        "warnings",
+        "proxy_rows",
+        "obd_rows",
+    }
+)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 ATTRIBUTION_COLUMNS = (
     "bleState",
     "subscribeStep",
@@ -633,7 +660,7 @@ def render_segment_listing(
         return "  ".join(value.ljust(widths[idx]) for idx, value in enumerate(values))
 
     lines = [
-        f"source: {csv_path}",
+        f"source: {csv_path.name}",
         f"selector: {selector}",
         "",
         fmt(["SEL", "SEG", "TOKEN", "SCHEMA", "ROWS", "DUR_S", "RX_DELTA", "SPEED_ROWS", "DRIVE"]),
@@ -654,27 +681,18 @@ def _row_is_connect_burst_event(row: dict[str, int]) -> bool:
 
 
 def _connect_burst_row_window(rows: list[dict[str, int]]) -> tuple[int, int] | None:
-    """Return the first-connected burst window as [start, end).
+    """Return a bounded first-connected diagnostic window as [start, end).
 
     SD CSV imports do not have the richer JSONL threshold arguments used by
-    ``soak_parse_metrics.py``. The firmware CSV already records the relevant
-    per-window peak columns, so the importer anchors the window at the first
-    CONNECTED/COMPLETE row and keeps the same default three-sample settle
-    horizon used by the JSONL soak parser. That is enough to stop the hardware
-    catalog from treating these available columns as missing while preserving
-    the intended "first connected burst" scope.
+    ``soak_parse_metrics.py``. The importer therefore uses three rows only to
+    retain bounded peak diagnostics around the first CONNECTED/COMPLETE row.
+    It cannot determine when the system became stable from those rows.
     """
     for index, row in enumerate(rows):
         if _row_is_connect_burst_event(row):
             end = min(len(rows), index + CONNECT_BURST_STABLE_CONSECUTIVE_SAMPLES)
             return index, max(index + 1, end)
     return None
-
-
-def _connect_burst_time_to_stable_ms(rows: list[dict[str, int]], start: int, end: int) -> float | None:
-    if end <= start or not _has_column(rows, "millis"):
-        return None
-    return float(max(0, int(rows[end - 1].get("millis", 0)) - int(rows[start].get("millis", 0))))
 
 
 def _delta_metric(rows: list[dict[str, int]], column: str) -> Optional[float]:
@@ -1176,16 +1194,6 @@ def extract_metrics(
     if connect_burst_window is not None:
         start, end = connect_burst_window
         burst_rows = rows[start:end]
-        metrics["connect_burst_samples_to_stable"] = (
-            float(len(burst_rows)),
-            metric_unit("connect_burst_samples_to_stable"),
-        )
-        time_to_stable = _connect_burst_time_to_stable_ms(rows, start, end)
-        if time_to_stable is not None:
-            metrics["connect_burst_time_to_stable_ms"] = (
-                time_to_stable,
-                metric_unit("connect_burst_time_to_stable_ms"),
-            )
         for metric_name, column in CSV_CONNECT_BURST_PEAK_COLUMNS.items():
             value = _peak_metric(burst_rows, column)
             if value is not None:
@@ -1241,20 +1249,26 @@ def extract_metrics(
                 metric_unit("dma_fragmentation_pct_p95"),
             )
 
-    if _has_column(rows, "notifyToDisplayMax_ms"):
-        notify_max = _peak_metric(rows, "notifyToDisplayMax_ms")
+    notify_max_metric = "notify_to_display_pipeline_complete_max_ms"
+    if notify_max_metric not in unsupported_metrics and _has_column(rows, "notifyToDisplayPipelineCompleteMax_ms"):
+        notify_max = _peak_metric(rows, "notifyToDisplayPipelineCompleteMax_ms")
         if notify_max is not None:
-            metrics["notify_to_display_max_ms"] = (
+            metrics[notify_max_metric] = (
                 notify_max,
-                metric_unit("notify_to_display_max_ms"),
+                metric_unit(notify_max_metric),
             )
-    if _has_column(rows, "notifyToDisplayTotalCount"):
+    notify_count_metric = "notify_to_display_pipeline_complete_sample_count"
+    if notify_count_metric not in unsupported_metrics and _has_column(
+        rows, "notifyToDisplayPipelineCompleteTotalCount"
+    ):
         # Per-window sample count is reset each reporting window, so sum
         # rather than delta to get total samples observed across the run.
-        notify_samples = float(sum(int(row.get("notifyToDisplayTotalCount", 0)) for row in rows))
-        metrics["notify_to_display_sample_count"] = (
+        notify_samples = float(
+            sum(int(row.get("notifyToDisplayPipelineCompleteTotalCount", 0)) for row in rows)
+        )
+        metrics[notify_count_metric] = (
             notify_samples,
-            metric_unit("notify_to_display_sample_count"),
+            metric_unit(notify_count_metric),
         )
 
     return metrics, peak_diagnostics, sorted(unsupported_metrics)
@@ -1323,7 +1337,7 @@ def _panic_summary(panic_path: Path | None) -> tuple[dict[str, Any], str]:
         "first_was_crash": import_drive_log.integer(panic_kv.get("first_was_crash", "")),
         "last_was_crash": import_drive_log.integer(panic_kv.get("last_was_crash", "")),
         "raw_kv": panic_kv,
-        "path": str(panic_path),
+        "path": panic_path.name,
         "parsed_text": raw_panic_kv,
     }, base_result
 
@@ -1357,7 +1371,7 @@ def append_import_sections(
         "",
         "## Imported CSV",
         "",
-        f"- Source CSV: `{csv_path}`",
+        f"- Source CSV: `{csv_path.name}`",
         f"- Source schema: `{source_schema}`",
         f"- Coverage status: `{coverage_status}`",
         f"- Selected segment: `{selected_segment['session_index']}`"
@@ -1506,14 +1520,15 @@ def main() -> int:
     args = parse_args()
     csv_path = Path(args.input).resolve()
     if not csv_path.exists():
-        print(f"ERROR: file not found: {csv_path}", file=sys.stderr)
+        print("ERROR: input CSV not found", file=sys.stderr)
         return 3
+    source_sha256 = sha256_file(csv_path)
 
     selector = _selector_arg(args)
     try:
         sessions = load_sessions(csv_path)
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {redact_artifact_text(str(exc))}", file=sys.stderr)
         return 3
     if not sessions:
         print("ERROR: no sessions found in CSV", file=sys.stderr)
@@ -1522,15 +1537,25 @@ def main() -> int:
     try:
         session_meta, rows, selected_summary, summaries, effective_selector = select_segment(sessions, selector)
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {redact_artifact_text(str(exc))}", file=sys.stderr)
         return 3
 
     if args.list_segments:
-        print(render_segment_listing(summaries, selected_summary.session_index, effective_selector, csv_path), end="")
+        print(
+            render_segment_listing(
+                summaries,
+                selected_summary.session_index,
+                effective_selector,
+                Path("source.csv"),
+            ),
+            end="",
+        )
         return 0
 
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    source_is_run_owned = csv_path == (out_dir / "source.csv").resolve()
+    source_label = "source.csv" if source_is_run_owned else "external_csv"
 
     source_schema = selected_summary.schema
     profile = args.profile
@@ -1538,18 +1563,20 @@ def main() -> int:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     git_sha = args.git_sha or "unknown"
     git_ref = args.git_ref or "unknown"
-    board_id = args.board_id or "unknown"
+    board_id = privacy_safe_identifier(args.board_id or "unknown", namespace="board")
     stress_class = args.stress_class
-    run_id = f"perf_csv_import_{timestamp}_{selected_summary.token or 'unknown'}"
+    run_id = f"perf_csv_import_{timestamp}_session_{selected_summary.session_index}"
 
     segments_payload = {
-        "source": str(csv_path),
+        "source": source_label,
+        "source_sha256": source_sha256,
         "segment_selector": selector,
         "effective_segment_selector": effective_selector,
         "selected_segment": selected_summary.to_dict(),
         "sessions": [summary.to_dict() for summary in summaries],
     }
     segments_path = out_dir / "segments.json"
+    segments_payload = sanitize_artifact_value(segments_payload, run_dir=out_dir)
     segments_path.write_text(json.dumps(segments_payload, indent=2) + "\n", encoding="utf-8")
 
     metrics, peak_diagnostics, unsupported_metrics = extract_metrics(rows, source_schema)
@@ -1575,7 +1602,10 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 3
     if panic_summary.get("present") and panic_summary.get("parsed_text"):
-        (out_dir / "parsed_panic_kv.txt").write_text(str(panic_summary["parsed_text"]), encoding="utf-8")
+        (out_dir / "parsed_panic_kv.txt").write_text(
+            redact_artifact_text(str(panic_summary["parsed_text"])),
+            encoding="utf-8",
+        )
 
     coverage_status = coverage_status_for_unsupported_metrics(unsupported_metrics)
     selected_segment_payload = {
@@ -1585,7 +1615,8 @@ def main() -> int:
     }
     diagnostics = {
         "source_files": {
-            "csv": str(csv_path),
+            "csv": source_label,
+            "csv_sha256": source_sha256,
             "panic_jsonl": panic_summary.get("path", ""),
         },
         "source_schema": source_schema,
@@ -1602,6 +1633,7 @@ def main() -> int:
         },
     }
     diagnostics_path = out_dir / "import_diagnostics.json"
+    diagnostics = sanitize_artifact_value(diagnostics, run_dir=out_dir)
     diagnostics_path.write_text(json.dumps(diagnostics, indent=2) + "\n", encoding="utf-8")
 
     manifest_path = out_dir / "manifest.json"
@@ -1626,7 +1658,8 @@ def main() -> int:
         "metrics_file": "metrics.ndjson",
         "scoring_file": "scoring.json",
         "tracks": [suite_or_profile],
-        "source_input": str(csv_path),
+        "source_origin": "run_owned_copy" if source_is_run_owned else "external_input",
+        "source_sha256": source_sha256,
         "source_type": "perf_csv",
         "source_schema": source_schema,
         "selected_segment": selected_segment_payload,
@@ -1637,27 +1670,45 @@ def main() -> int:
         "rows": len(rows),
         "duration_s": selected_summary.duration_s,
     }
+    if source_is_run_owned:
+        manifest["source_input"] = source_label
     if args.mode_coverage_json:
         mode_coverage_path = Path(args.mode_coverage_json).resolve()
         try:
             mode_coverage = json.loads(mode_coverage_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"ERROR: failed to read --mode-coverage-json {mode_coverage_path}: {exc}", file=sys.stderr)
+            print(
+                f"ERROR: failed to read --mode-coverage-json: "
+                f"{redact_artifact_text(str(exc))}",
+                file=sys.stderr,
+            )
             return 3
         if not isinstance(mode_coverage, dict):
-            print(f"ERROR: --mode-coverage-json {mode_coverage_path} did not contain a JSON object", file=sys.stderr)
+            safe_path = redact_artifact_text(str(mode_coverage_path))
+            print(
+                f"ERROR: --mode-coverage-json {safe_path} did not contain a JSON object",
+                file=sys.stderr,
+            )
             return 3
+        mode_coverage = sanitize_artifact_value(
+            mode_coverage,
+            run_dir=out_dir,
+            sanitize_mapping_keys=True,
+            trusted_mapping_keys=MODE_COVERAGE_SCHEMA_KEYS,
+        )
         manifest["mode_coverage"] = mode_coverage
     if panic_summary.get("present"):
-        manifest["source_panic_jsonl"] = str(panic_path)
+        manifest["source_panic_jsonl"] = panic_path.name
+    manifest = sanitize_artifact_value(manifest, run_dir=out_dir)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     baseline_paths = [Path(path).resolve() for path in args.compare_to if path]
     try:
         scored = score_hardware_run.score_run(manifest_path, CATALOG_PATH, baseline_paths)
     except Exception as exc:
-        print(f"ERROR: scoring failed: {exc}", file=sys.stderr)
+        print(f"ERROR: scoring failed: {redact_artifact_text(str(exc))}", file=sys.stderr)
         return 3
+    scored = sanitize_artifact_value(scored, run_dir=out_dir)
 
     scoring_path = out_dir / "scoring.json"
     comparison_txt = out_dir / "comparison.txt"
@@ -1667,7 +1718,7 @@ def main() -> int:
     write_comparison_tsv(scored, comparison_tsv)
     append_import_sections(
         comparison_txt,
-        csv_path=csv_path,
+        csv_path=Path(source_label),
         source_schema=source_schema,
         coverage_status=coverage_status,
         unsupported_metrics=unsupported_metrics,
@@ -1677,13 +1728,19 @@ def main() -> int:
         sd_latency_split=sd_latency_split,
         panic_summary=panic_summary,
     )
+    for path in (comparison_txt, comparison_tsv):
+        path.write_text(
+            redact_artifact_text(path.read_text(encoding="utf-8")),
+            encoding="utf-8",
+        )
 
     manifest["result"] = scored["result"]
+    manifest = sanitize_artifact_value(manifest, run_dir=out_dir)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     summary = scored["summary"]
     print(
-        f"Source: {csv_path.name} segment {selected_summary.session_index}/{len(summaries)} "
+        f"Source: {source_label} segment {selected_summary.session_index}/{len(summaries)} "
         f"({len(rows)} rows, {selected_summary.duration_s:.1f}s)"
     )
     print(f"Segment selector: {effective_selector}")
@@ -1708,7 +1765,7 @@ def main() -> int:
             f"boundary_only={','.join(boundary_only) if boundary_only else 'none'} "
             f"steady_state={','.join(steady_state) if steady_state else 'none'}"
         )
-    print(f"Artifacts: {out_dir}")
+    print("Artifacts: selected output directory")
 
     result = str(scored["result"])
     if result == "FAIL":

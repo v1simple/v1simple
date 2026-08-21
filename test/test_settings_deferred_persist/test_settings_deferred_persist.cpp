@@ -193,7 +193,7 @@ void test_save_flushes_immediately_and_clears_deferred_persist() {
 void test_last_v1_address_does_not_schedule_full_settings_persist() {
     SettingsManager manager;
 
-    manager.setLastV1Address("AA:BB:CC:DD:EE:FF");
+    manager.setLastV1Address("  aa:bb:cc:dd:ee:ff  ");
 
     TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.get().lastV1Address.c_str());
     TEST_ASSERT_FALSE(manager.deferredPersistPending());
@@ -209,6 +209,13 @@ void test_last_v1_address_does_not_schedule_full_settings_persist() {
     TEST_ASSERT_EQUAL_STRING(
         "AA:BB:CC:DD:EE:FF",
         mock_preferences::getString(activeNs.c_str(), "lastV1Addr", "").c_str());
+
+    const bool persistPendingBeforeCaseOnlyUpdate = manager.deferredPersistPending();
+    const bool backupPendingBeforeCaseOnlyUpdate = manager.deferredBackupPending();
+    manager.setLastV1Address("AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.get().lastV1Address.c_str());
+    TEST_ASSERT_EQUAL(persistPendingBeforeCaseOnlyUpdate, manager.deferredPersistPending());
+    TEST_ASSERT_EQUAL(backupPendingBeforeCaseOnlyUpdate, manager.deferredBackupPending());
 }
 
 void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
@@ -226,6 +233,7 @@ void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
     TEST_ASSERT_EQUAL_STRING(
         "AA:BB:CC:DD:EE:FF",
         mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingStringReadCount(kNvsLastConnectedV1Address));
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
     TEST_ASSERT_FALSE(manager.deferredPersistPending());
     TEST_ASSERT_FALSE(manager.deferredBackupPending());

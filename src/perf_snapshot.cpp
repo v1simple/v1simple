@@ -127,7 +127,7 @@ struct PerfExtendedSnapshot {
 };
 
 static void resetPerfExtendedWindowPeaks() {
-    perfExtended.notifyToDisplayMs.reset();
+    perfExtended.notifyToDisplayPipelineCompleteMs.reset();
     perfExtended.loopMaxUs = 0;
     perfExtended.bleDrainMaxUs = 0;
     perfExtended.displayRenderMaxUs = 0;
@@ -310,8 +310,8 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.dmaLargestMin = extended.dmaLargestMin;
 
     flat.loopMaxUs = metrics.loopMaxUs;
-    flat.notifyToDisplayMaxMs = metrics.notifyToDisplayMs.maxMs;
-    flat.notifyToDisplayTotalCount = metrics.notifyToDisplayMs.total;
+    flat.notifyToDisplayPipelineCompleteMaxMs = metrics.notifyToDisplayPipelineCompleteMs.maxMs;
+    flat.notifyToDisplayPipelineCompleteTotalCount = metrics.notifyToDisplayPipelineCompleteMs.total;
     flat.bleDrainMaxUs = metrics.bleDrainMaxUs;
     flat.dispMaxUs = metrics.displayRenderMaxUs;
     flat.bleProcessMaxUs = metrics.bleProcessMaxUs;

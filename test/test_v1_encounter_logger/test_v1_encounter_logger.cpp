@@ -257,15 +257,31 @@ void test_encounter_logger_begin_warms_storage_at_boot() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("storage warm-up deferred to first alert"));
 }
 
-void test_qualification_status_exposes_dut_session_trace_and_resident_image_identity() {
+void test_qualification_status_exposes_identity_and_effective_display_settings() {
     const std::string qualification = readProjectFile("src/modules/qualification/qualification_serial_module.cpp");
+    const std::string qualificationHeader =
+        readProjectFile("src/modules/qualification/qualification_serial_module.h");
+    const std::string runtimeWiring = readProjectFile("src/main_runtime_wiring.cpp");
     const std::string buildMetadata = readProjectFile("src/build_metadata.cpp");
     TEST_ASSERT_FALSE(qualification.empty());
+    TEST_ASSERT_FALSE(qualificationHeader.empty());
+    TEST_ASSERT_FALSE(runtimeWiring.empty());
     TEST_ASSERT_FALSE(buildMetadata.empty());
     TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"dutMillis\\\""));
     TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"sessionToken\\\""));
     TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"causalTracePath\\\""));
     TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"runtimeImageId\\\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"displaySettings\\\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"brightness\\\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(qualification.c_str(), "\\\"colorMutedRgb565\\\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(qualificationHeader.c_str(), "displayBrightness"));
+    TEST_ASSERT_NOT_NULL(std::strstr(qualificationHeader.c_str(), "displayMutedColorRgb565"));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        runtimeWiring.c_str(),
+        "providers.displayBrightness = [](void*) { return settingsManager.get().brightness; }"));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        runtimeWiring.c_str(),
+        "providers.displayMutedColorRgb565 = [](void*) { return settingsManager.get().colorMuted; }"));
     TEST_ASSERT_NOT_NULL(std::strstr(buildMetadata.c_str(), "esp_app_get_elf_sha256"));
 }
 
@@ -295,7 +311,7 @@ int main() {
     RUN_TEST(test_qualification_trace_retains_distinct_prestart_state_and_alert_sources);
     RUN_TEST(test_qualification_trace_does_not_invent_baselines_for_zero_sources);
     RUN_TEST(test_encounter_logger_begin_warms_storage_at_boot);
-    RUN_TEST(test_qualification_status_exposes_dut_session_trace_and_resident_image_identity);
+    RUN_TEST(test_qualification_status_exposes_identity_and_effective_display_settings);
     RUN_TEST(test_causal_trace_names_preparser_framing_rejections_and_stage_clock);
     return UNITY_END();
 }

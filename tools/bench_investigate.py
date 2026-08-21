@@ -12,12 +12,13 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ INSTRUCTION_PATH = ROOT / "tools" / "bench_investigator_prompt.md"
 AGENTS_PATH = ROOT / "AGENTS.md"
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".mkv"}
 IGNORED_OUTPUTS = {"investigation.json", "investigation_debug.json"}
+ATTACHMENT_DIRECTORY = "investigation_sheets"
 MAX_INITIAL_IMAGES = 8
 MAX_ATTACHED_IMAGES = 12
 MAX_SAMPLED_GAP_ANOMALIES = 32
@@ -88,6 +90,22 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def code_selection_sha256(content: str, start: int, end: int) -> str | None:
+    lines = content.splitlines()
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 1
+        or start > end
+        or end > len(lines)
+    ):
+        return None
+    normalized = "\n".join(lines[start - 1 : end]) + "\n"
+    return sha256_bytes(normalized.encode("utf-8"))
 
 
 def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -256,16 +274,40 @@ def artifact_kind(path: Path) -> str:
 def discover_artifacts(run_dir: Path) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     for path in sorted(run_dir.rglob("*")):
-        if path.name in IGNORED_OUTPUTS or path.name.startswith(".investigation."):
+        if path.is_symlink():
             continue
-        if path.is_symlink() or not path.is_file():
+        relative = path.relative_to(run_dir).as_posix()
+        if (
+            path.name in IGNORED_OUTPUTS
+            or path.name.startswith(".investigation.")
+            or ATTACHMENT_DIRECTORY in Path(relative).parts
+        ):
             continue
+        size: int | None = None
+        digest: str | None = None
+        status = "readable"
         try:
-            relative = path.relative_to(run_dir).as_posix()
-            size = path.stat().st_size
+            metadata = path.stat()
         except OSError:
-            continue
-        artifacts.append({"path": relative, "size_bytes": size, "kind": artifact_kind(path)})
+            status = "unreadable"
+        else:
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            size = metadata.st_size
+        if status == "readable":
+            try:
+                digest = sha256_file(path)
+            except OSError:
+                status = "unreadable"
+        artifacts.append(
+            {
+                "path": relative,
+                "sha256": digest,
+                "size_bytes": size,
+                "kind": artifact_kind(path),
+                "status": status,
+            }
+        )
     return artifacts
 
 
@@ -287,11 +329,110 @@ def append_bounded_attachments(
     return max(0, len(unique) - available)
 
 
-def ordered_attachment_manifest(attachments: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {"attachment_index": index, **item["manifest"]}
-        for index, item in enumerate(attachments, 1)
-    ]
+def _atomic_copy(source: Path, destination: Path) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output, source.open("rb") as source_handle:
+            shutil.copyfileobj(source_handle, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def attachment_root(run_dir: Path, *, create: bool) -> Path | None:
+    resolved_run = run_dir.resolve()
+    root = resolved_run / ATTACHMENT_DIRECTORY
+    if root.is_symlink():
+        raise InvestigationError(
+            "attachment_directory_invalid",
+            f"{ATTACHMENT_DIRECTORY} must not be a symlink",
+        )
+    if create:
+        try:
+            root.mkdir(exist_ok=True)
+        except OSError as exc:
+            raise InvestigationError(
+                "attachment_directory_invalid",
+                f"Could not create {ATTACHMENT_DIRECTORY}: {type(exc).__name__}",
+            ) from exc
+    elif not root.exists():
+        return None
+    if not root.is_dir() or root.is_symlink() or root.resolve() != resolved_run / ATTACHMENT_DIRECTORY:
+        raise InvestigationError(
+            "attachment_directory_invalid",
+            f"{ATTACHMENT_DIRECTORY} is not a contained directory",
+        )
+    return root
+
+
+def persist_attachment_manifest(
+    run_dir: Path, attachments: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    root = attachment_root(run_dir, create=True)
+    assert root is not None
+    manifest: list[dict[str, Any]] = []
+    for index, item in enumerate(attachments, 1):
+        image = item.get("file")
+        metadata = item.get("manifest")
+        if not isinstance(image, Path) or not image.is_file() or not isinstance(metadata, Mapping):
+            raise InvestigationError("attachment_invalid", f"Attachment {index} is unavailable")
+        digest = sha256_file(image)
+        suffix = image.suffix.lower() if image.suffix.lower() in {".jpg", ".jpeg", ".png"} else ".jpg"
+        relative = f"{ATTACHMENT_DIRECTORY}/{digest}{suffix}"
+        destination = root / f"{digest}{suffix}"
+        if not destination.is_file() or sha256_file(destination) != digest:
+            _atomic_copy(image, destination)
+        manifest.append(
+            {
+                **copy.deepcopy(dict(metadata)),
+                "attachment_index": index,
+                "sheet_path": relative,
+                "sheet_sha256": digest,
+            }
+        )
+    return manifest
+
+
+def prune_attachment_files(
+    run_dir: Path, attachment_manifest: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    try:
+        root = attachment_root(run_dir, create=False)
+    except InvestigationError as exc:
+        return [f"{exc.code}: {exc}"]
+    if root is None:
+        return []
+    retained = {
+        Path(str(item.get("sheet_path"))).name
+        for item in attachment_manifest
+        if Path(str(item.get("sheet_path"))).parent.as_posix() == ATTACHMENT_DIRECTORY
+    }
+    errors: list[str] = []
+    try:
+        paths = list(root.iterdir())
+    except OSError as exc:
+        return [f"attachment directory unreadable: {type(exc).__name__}"]
+    for path in paths:
+        try:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or not re.fullmatch(r"[0-9a-f]{64}\.(?:jpg|jpeg|png)", path.name)
+                or path.name in retained
+            ):
+                continue
+            path.unlink()
+        except OSError as exc:
+            errors.append(f"{path.name}: {type(exc).__name__}")
+    return errors
 
 
 def bounded_video_paths(paths: Sequence[str], remaining_run_budget: int) -> tuple[list[str], list[str]]:
@@ -515,6 +656,11 @@ def extract_video_evidence(
     remaining_run_budget: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[str]]:
     inspect_video = load_video_helper()
+    artifact_hashes = {
+        str(item.get("path")): item.get("sha256")
+        for item in artifacts
+        if isinstance(item.get("path"), str)
+    }
     by_video: dict[str, list[dict[str, float]]] = {}
     for request in requests:
         path = request.get("path")
@@ -556,6 +702,16 @@ def extract_video_evidence(
         if video is None:
             results.append({"path": relative, "status": "failed", "error": "video_missing"})
             continue
+        recorded_video_sha256 = artifact_hashes.get(relative)
+        source_video_sha256 = sha256_file(video)
+        if (
+            not isinstance(recorded_video_sha256, str)
+            or source_video_sha256 != recorded_video_sha256
+        ):
+            results.append(
+                {"path": relative, "status": "failed", "error": "video_hash_changed"}
+            )
+            continue
         output = workspace / f"video_{index:03d}"
         try:
             evidence = inspect_video(
@@ -583,14 +739,26 @@ def extract_video_evidence(
             if image is None:
                 continue
             purpose = sheet.get("purpose", "unspecified")
+            interval = sheet.get("interval")
+            layout = sheet.get("layout")
+            cells = sheet.get("cells")
+            if (
+                not isinstance(interval, Mapping)
+                or not isinstance(layout, Mapping)
+                or not isinstance(cells, list)
+            ):
+                continue
             attachment = (
                 {
                     "file": image,
                     "manifest": {
                         "pass": pass_number,
-                        "video_path": relative,
-                        "filename": sheet["filename"],
+                        "source_video_path": relative,
+                        "source_video_sha256": source_video_sha256,
                         "purpose": purpose,
+                        "interval": copy.deepcopy(dict(interval)),
+                        "layout": copy.deepcopy(dict(layout)),
+                        "cells": copy.deepcopy(cells),
                     },
                 }
             )
@@ -714,10 +882,26 @@ def compact_context(
     return json.dumps(context, indent=2, sort_keys=True, allow_nan=False)
 
 
-def build_prompt(context: str, image_count: int) -> str:
+def build_prompt(context: str, image_count: int, pass_number: int) -> str:
+    if pass_number == 1:
+        pass_direction = (
+            "This is the first-pass lead checkpoint. Before broad exploration, follow "
+            "the highest-signal discrepancy into tight raw evidence, relevant "
+            "counterevidence, and owning code, then return schema-valid JSON promptly. "
+            "Do not transcribe or exhaustively review the inventory: the runner will add "
+            "every model-omitted artifact as skipped and mark the published report partial."
+        )
+    else:
+        pass_direction = (
+            "This is a bounded follow-up. Recheck the prior report against newly supplied "
+            "evidence, improve or reject its leads, and return a replacement schema-valid "
+            "report without broad unrelated exploration."
+        )
     return f"""Read AGENTS.md and tools/bench_investigator_prompt.md completely, then investigate the run below.
 
-You are in a read-only repository session. Inspect files and Git directly with shell tools; do not rely only on this inventory. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest maps their attachment order to root-owned video_extraction metadata and cell timestamps. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
+You are in a read-only repository session. Inspect files and Git directly with shell tools; do not rely only on this inventory. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest is runner-owned and directly records each durable sheet hash, canonical source-video hash, represented interval, cells, and timing uncertainty. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
+
+{pass_direction}
 
 Runner-provided context:
 {context}
@@ -781,6 +965,46 @@ def redact_report_paths(
         return item
 
     return visit(value)
+
+
+def sanitize_investigation_report(value: Any, run_dir: Path) -> Any:
+    bench_scripts = ROOT / "scripts" / "bench"
+    sys.path.insert(0, str(bench_scripts))
+    try:
+        from artifact_privacy import sanitize_artifact_value
+    finally:
+        try:
+            sys.path.remove(str(bench_scripts))
+        except ValueError:
+            pass
+    return sanitize_artifact_value(value, run_dir=run_dir)
+
+
+def validate_published_attachments(run_dir: Path, report: Mapping[str, Any]) -> list[str]:
+    """Re-resolve durable visual evidence after the final privacy transform."""
+    coverage = report.get("coverage")
+    attachments = coverage.get("attachments") if isinstance(coverage, Mapping) else None
+    if not isinstance(attachments, list):
+        return ["published attachment inventory is missing"]
+    errors: list[str] = []
+    for index, attachment in enumerate(attachments, start=1):
+        if not isinstance(attachment, Mapping):
+            errors.append(f"published attachment {index} is malformed")
+            continue
+        for path_field, hash_field, label in (
+            ("sheet_path", "sheet_sha256", "sheet"),
+            ("source_video_path", "source_video_sha256", "source video"),
+        ):
+            path = safe_relative_file(run_dir, attachment.get(path_field))
+            try:
+                actual_hash = sha256_file(path) if path is not None else None
+            except OSError:
+                actual_hash = None
+            if actual_hash != attachment.get(hash_field):
+                errors.append(
+                    f"published attachment {index} {label} no longer resolves"
+                )
+    return errors
 
 
 def sanitize_error(text: str, private_paths: Sequence[Path] = ()) -> str:
@@ -888,6 +1112,9 @@ def invoke_codex(
         ) from exc
     if not isinstance(report, dict):
         raise InvestigationError("model_output_invalid", "Model output is not a JSON object")
+    raw_coverage = report.get("coverage")
+    if isinstance(raw_coverage, dict):
+        raw_coverage["attachments"] = []
     schema_errors = validate_report_schema(report)
     if schema_errors:
         raise InvestigationError(
@@ -897,42 +1124,13 @@ def invoke_codex(
     return report, process.stdout, process.stderr
 
 
-def iter_evidence_selectors(value: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(value, dict):
-        if "path" in value and "sha256" in value and value.get("kind") in {
-            "file",
-            "json_pointer",
-            "ndjson",
-            "csv",
-            "log",
-            "video",
-        }:
-            yield value
-        for child in value.values():
-            yield from iter_evidence_selectors(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from iter_evidence_selectors(child)
-
-
-def iter_code_selectors(value: Any) -> Iterable[Mapping[str, Any]]:
-    if isinstance(value, dict):
-        if {"revision", "path", "symbol", "line_start", "line_end"}.issubset(value):
-            yield value
-        for child in value.values():
-            yield from iter_code_selectors(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from iter_code_selectors(child)
-
-
 def code_text(selector: Mapping[str, Any]) -> str | None:
     path = selector.get("path")
     revision = selector.get("revision")
     if not isinstance(path, str) or not isinstance(revision, str):
         return None
     current = safe_relative_file(ROOT, path)
-    if revision.upper().startswith("WORKTREE"):
+    if revision.upper() == "WORKTREE":
         try:
             return current.read_text(encoding="utf-8") if current else None
         except (OSError, UnicodeError):
@@ -989,18 +1187,127 @@ def probe_video_bounds(path: Path) -> tuple[float, int | None] | None:
         return None
 
 
+def _video_attachment_error(
+    run_dir: Path,
+    selector: Mapping[str, Any],
+    attachments_by_index: Mapping[int, Mapping[str, Any]] | None,
+    *,
+    required: bool,
+) -> str | None:
+    attachment_index = selector.get("attachment_index")
+    cell_indices = selector.get("cell_indices")
+    if attachment_index is None and not required:
+        return None
+    if (
+        not isinstance(attachment_index, int)
+        or isinstance(attachment_index, bool)
+        or attachments_by_index is None
+        or attachment_index not in attachments_by_index
+    ):
+        return f"video attachment does not resolve: {attachment_index!r}"
+    if (
+        not isinstance(cell_indices, list)
+        or not cell_indices
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in cell_indices)
+        or len(set(cell_indices)) != len(cell_indices)
+    ):
+        return f"video attachment cells do not resolve: {attachment_index!r}"
+
+    attachment = attachments_by_index[attachment_index]
+    if (
+        attachment.get("source_video_path") != selector.get("path")
+        or attachment.get("source_video_sha256") != selector.get("sha256")
+    ):
+        return f"video attachment source does not resolve: {attachment_index}"
+    sheet = safe_relative_file(run_dir, attachment.get("sheet_path"))
+    try:
+        sheet_hash = sha256_file(sheet) if sheet is not None else None
+    except OSError:
+        sheet_hash = None
+    if sheet_hash != attachment.get("sheet_sha256"):
+        return f"video attachment sheet does not resolve: {attachment_index}"
+
+    represented = attachment.get("interval")
+    if not isinstance(represented, Mapping):
+        return f"video attachment interval does not resolve: {attachment_index}"
+    represented_start = represented.get("start_pts_seconds")
+    represented_end = represented.get("end_pts_seconds")
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        for value in (represented_start, represented_end)
+    ):
+        return f"video attachment interval does not resolve: {attachment_index}"
+    selected_start = float(selector["start_pts_s"])
+    selected_end = float(selector["end_pts_s"])
+    if (
+        selected_start < float(represented_start) - 0.000_001
+        or selected_end > float(represented_end) + 0.000_001
+    ):
+        return f"video selector is outside attached sheet: {attachment_index}"
+
+    cells = attachment.get("cells")
+    if not isinstance(cells, list):
+        return f"video attachment cells do not resolve: {attachment_index}"
+    cells_by_index = {
+        item.get("cell_index"): item for item in cells if isinstance(item, Mapping)
+    }
+    selected_cells = [cells_by_index.get(index) for index in cell_indices]
+    if any(cell is None for cell in selected_cells):
+        return f"video attachment cells do not resolve: {attachment_index}"
+    uncertainty_intervals = [
+        cell.get("pts_uncertainty_interval")
+        for cell in selected_cells
+        if isinstance(cell, Mapping)
+    ]
+    if any(not isinstance(interval, Mapping) for interval in uncertainty_intervals):
+        return f"video attachment uncertainty does not resolve: {attachment_index}"
+    uncertainty_starts = [interval.get("start_pts_seconds") for interval in uncertainty_intervals]
+    uncertainty_ends = [interval.get("end_pts_seconds") for interval in uncertainty_intervals]
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        for value in (*uncertainty_starts, *uncertainty_ends)
+    ):
+        return f"video attachment uncertainty does not resolve: {attachment_index}"
+    if (
+        selected_start > min(float(value) for value in uncertainty_starts) + 0.000_001
+        or selected_end < max(float(value) for value in uncertainty_ends) - 0.000_001
+    ):
+        return f"video selector narrows attached PTS uncertainty: {attachment_index}"
+    if selector.get("start_frame") is not None and any(
+        cell.get("source_pts_measured") is not True
+        for cell in selected_cells
+        if isinstance(cell, Mapping)
+    ):
+        return f"video frame indices are not measured for attachment: {attachment_index}"
+    return None
+
+
 def resolve_artifact_selector(
     run_dir: Path,
     selector: dict[str, Any],
     video_bounds_cache: dict[Path, tuple[float, int | None] | None] | None = None,
+    attachments_by_index: Mapping[int, Mapping[str, Any]] | None = None,
+    *,
+    require_video_attachment: bool = True,
 ) -> str | None:
     path = safe_relative_file(run_dir, selector.get("path"))
     if path is None:
         return f"artifact path does not resolve: {selector.get('path')!r}"
-    actual_hash = sha256_file(path)
+    try:
+        actual_hash = sha256_file(path)
+    except OSError:
+        return f"artifact is unreadable: {selector.get('path')}"
     if selector.get("sha256") != actual_hash:
         return f"artifact hash does not match: {selector.get('path')}"
     selector_type = selector.get("kind")
+    if path.suffix.lower() in VIDEO_SUFFIXES and selector_type != "video":
+        return f"video artifact requires an attached video selector: {selector.get('path')}"
+    if selector_type != "video" and ATTACHMENT_DIRECTORY in Path(str(selector.get("path"))).parts:
+        return f"attached sheet requires a video selector: {selector.get('path')}"
     if selector_type in {"log", "ndjson"}:
         start = selector.get("line_start")
         end = selector.get("line_end")
@@ -1120,6 +1427,14 @@ def resolve_artifact_selector(
             or (frame_count is not None and last_frame >= frame_count)
         ):
             return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
+        attachment_error = _video_attachment_error(
+            run_dir,
+            selector,
+            attachments_by_index,
+            required=require_video_attachment,
+        )
+        if attachment_error:
+            return attachment_error
     return None
 
 
@@ -1127,34 +1442,191 @@ def resolve_code_selector(selector: Mapping[str, Any]) -> str | None:
     content = code_text(selector)
     if content is None:
         return f"code selector does not resolve: {selector.get('revision')}:{selector.get('path')}"
-    start = selector.get("line_start")
-    end = selector.get("line_end")
-    line_count = len(content.splitlines())
-    if not isinstance(start, int) or not isinstance(end, int) or start > end or end > line_count:
+    start, end = selector.get("line_start"), selector.get("line_end")
+    selection_hash = code_selection_sha256(content, start, end)
+    if selection_hash is None:
         return f"code line range does not resolve: {selector.get('path')}:{start}-{end}"
+    if selector.get("selection_sha256") != selection_hash:
+        return f"code selection hash does not match: {selector.get('path')}:{start}-{end}"
     return None
 
 
-def validate_conclusion(
+def partition_artifact_selectors(
     run_dir: Path,
-    conclusion: dict[str, Any],
+    selectors: Sequence[dict[str, Any]],
     video_bounds_cache: dict[Path, tuple[float, int | None] | None],
-) -> list[str]:
+    attachments_by_index: Mapping[int, Mapping[str, Any]],
+    *,
+    require_video_attachment: bool = True,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    valid: list[dict[str, Any]] = []
     errors: list[str] = []
-    for key in ("evidence", "counterevidence"):
-        for selector in conclusion.get(key, []):
-            if isinstance(selector, dict):
-                error = resolve_artifact_selector(run_dir, selector, video_bounds_cache)
-                if error:
-                    errors.append(error)
-    for selector in conclusion.get("code", []):
-        if isinstance(selector, Mapping):
+    for selector in selectors:
+        error = resolve_artifact_selector(
+            run_dir,
+            selector,
+            video_bounds_cache,
+            attachments_by_index,
+            require_video_attachment=require_video_attachment,
+        )
+        if error:
+            errors.append(error)
+        else:
+            valid.append(selector)
+    return valid, errors
+
+
+def partition_code_selectors(
+    selectors: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[str]]:
+    valid: list[Mapping[str, Any]] = []
+    errors: list[str] = []
+    for selector in selectors:
+        error = resolve_code_selector(selector)
+        if error:
+            errors.append(error)
+        else:
+            valid.append(selector)
+    return valid, errors
+
+
+def validate_published_selectors(
+    run_dir: Path,
+    report: Mapping[str, Any],
+) -> list[str]:
+    """Re-resolve every published evidence and code selector after redaction."""
+    errors: list[str] = []
+    video_bounds_cache: dict[Path, tuple[float, int | None] | None] = {}
+    coverage = report.get("coverage")
+    coverage = coverage if isinstance(coverage, Mapping) else {}
+    attachments = coverage.get("attachments")
+    attachments_by_index: dict[int, Mapping[str, Any]] = {}
+    if isinstance(attachments, list):
+        for attachment in attachments:
+            if not isinstance(attachment, Mapping):
+                continue
+            index = attachment.get("attachment_index")
+            if isinstance(index, int) and not isinstance(index, bool):
+                attachments_by_index[index] = attachment
+
+    def check_artifacts(
+        selectors: Any,
+        owner: str,
+        *,
+        require_video_attachment: bool = True,
+    ) -> None:
+        if not isinstance(selectors, list):
+            return
+        for index, selector in enumerate(selectors, start=1):
+            if not isinstance(selector, dict):
+                continue
+            error = resolve_artifact_selector(
+                run_dir,
+                selector,
+                video_bounds_cache,
+                attachments_by_index,
+                require_video_attachment=require_video_attachment,
+            )
+            if error:
+                errors.append(f"{owner}[{index}]: {error}")
+
+    def check_code(selectors: Any, owner: str) -> None:
+        if not isinstance(selectors, list):
+            return
+        for index, selector in enumerate(selectors, start=1):
+            if not isinstance(selector, Mapping):
+                continue
             error = resolve_code_selector(selector)
             if error:
-                errors.append(error)
-    for hypothesis in conclusion.get("hypotheses", []):
-        if isinstance(hypothesis, dict):
-            errors.extend(validate_conclusion(run_dir, hypothesis, video_bounds_cache))
+                errors.append(f"{owner}[{index}]: {error}")
+
+    source = report.get("source")
+    if isinstance(source, Mapping):
+        check_artifacts(source.get("identity_evidence"), "source.identity_evidence")
+        binary_identities = source.get("binary_identities")
+        if isinstance(binary_identities, list):
+            for identity_index, identity in enumerate(binary_identities, start=1):
+                if isinstance(identity, Mapping):
+                    check_artifacts(
+                        identity.get("evidence"),
+                        f"source.binary_identities[{identity_index}].evidence",
+                    )
+
+    artifacts = coverage.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact_index, artifact in enumerate(artifacts, start=1):
+            if not isinstance(artifact, Mapping):
+                continue
+            selectors = artifact.get("selectors")
+            check_artifacts(
+                selectors,
+                f"coverage.artifacts[{artifact_index}].selectors",
+            )
+            if isinstance(selectors, list):
+                for selector_index, selector in enumerate(selectors, start=1):
+                    if not isinstance(selector, Mapping):
+                        continue
+                    if (
+                        selector.get("path") != artifact.get("path")
+                        or selector.get("sha256") != artifact.get("sha256")
+                    ):
+                        errors.append(
+                            "coverage.artifacts"
+                            f"[{artifact_index}].selectors[{selector_index}]: "
+                            "selector targets another artifact"
+                        )
+    check_code(coverage.get("code"), "coverage.code")
+
+    video_intervals = coverage.get("video_intervals")
+    if isinstance(video_intervals, list):
+        for interval_index, interval in enumerate(video_intervals, start=1):
+            if isinstance(interval, Mapping):
+                check_artifacts(
+                    [interval.get("selector")],
+                    f"coverage.video_intervals[{interval_index}].selector",
+                    require_video_attachment=interval.get("status") != "unsampled",
+                )
+    clock_mappings = coverage.get("clock_mappings")
+    if isinstance(clock_mappings, list):
+        for mapping_index, mapping in enumerate(clock_mappings, start=1):
+            if isinstance(mapping, Mapping):
+                check_artifacts(
+                    mapping.get("evidence"),
+                    f"coverage.clock_mappings[{mapping_index}].evidence",
+                )
+
+    findings = report.get("findings")
+    if isinstance(findings, list):
+        for finding_index, finding in enumerate(findings, start=1):
+            if not isinstance(finding, Mapping):
+                continue
+            owner = f"findings[{finding_index}]"
+            check_artifacts(finding.get("evidence"), f"{owner}.evidence")
+            check_artifacts(finding.get("counterevidence"), f"{owner}.counterevidence")
+            check_code(finding.get("code"), f"{owner}.code")
+
+    unresolved_items = report.get("unresolved")
+    if isinstance(unresolved_items, list):
+        for unresolved_index, unresolved in enumerate(unresolved_items, start=1):
+            if not isinstance(unresolved, Mapping):
+                continue
+            owner = f"unresolved[{unresolved_index}]"
+            check_artifacts(unresolved.get("evidence"), f"{owner}.evidence")
+            check_artifacts(unresolved.get("counterevidence"), f"{owner}.counterevidence")
+            check_code(unresolved.get("code"), f"{owner}.code")
+            hypotheses = unresolved.get("hypotheses")
+            if isinstance(hypotheses, list):
+                for hypothesis_index, hypothesis in enumerate(hypotheses, start=1):
+                    if not isinstance(hypothesis, Mapping):
+                        continue
+                    hypothesis_owner = (
+                        f"{owner}.hypotheses[{hypothesis_index}]"
+                    )
+                    check_artifacts(
+                        hypothesis.get("evidence"),
+                        f"{hypothesis_owner}.evidence",
+                    )
+                    check_code(hypothesis.get("code"), f"{hypothesis_owner}.code")
     return errors
 
 
@@ -1162,6 +1634,7 @@ def index_clock_mappings(
     run_dir: Path,
     mappings: Sequence[Mapping[str, Any]],
     video_bounds_cache: dict[Path, tuple[float, int | None] | None],
+    attachments_by_index: Mapping[int, Mapping[str, Any]],
 ) -> tuple[dict[str, str | None], set[str], list[str]]:
     counts: dict[str, int] = {}
     for mapping in mappings:
@@ -1174,21 +1647,27 @@ def index_clock_mappings(
     ]
     for mapping in mappings:
         mapping_id = str(mapping.get("id"))
-        valid_evidence = 0
-        mapping_evidence_errors: list[str] = []
-        for selector in mapping.get("evidence", []):
-            error = resolve_artifact_selector(run_dir, selector, video_bounds_cache)
-            if error:
-                mapping_evidence_errors.append(error)
-                errors.append(f"clock mapping {mapping_id}: {error}")
-            else:
-                valid_evidence += 1
+        valid_evidence, mapping_evidence_errors = partition_artifact_selectors(
+            run_dir,
+            mapping.get("evidence", []),
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        if isinstance(mapping, dict):
+            mapping["evidence"] = valid_evidence
+        errors.extend(f"clock mapping {mapping_id}: {error}" for error in mapping_evidence_errors)
         if mapping_id in duplicates:
             continue
         status = mapping.get("status")
         if status == "unavailable":
             support[mapping_id] = f"clock mapping is unavailable: {mapping_id}"
-        elif valid_evidence == 0:
+        elif not valid_evidence:
+            if isinstance(mapping, dict):
+                mapping["status"] = "unavailable"
+                mapping["uncertainty_s"] = None
+                mapping.setdefault("limitations", []).append(
+                    "Runner removed all mapping evidence because no selector resolved."
+                )
             support[mapping_id] = f"clock mapping has no valid evidence: {mapping_id}"
             errors.append(support[mapping_id])
         elif mapping_evidence_errors:
@@ -1215,11 +1694,12 @@ def clock_reference_errors(
 
 
 def unresolved_from_finding(
-    finding: Mapping[str, Any], primary_errors: Sequence[str]
+    finding: Mapping[str, Any],
+    primary_errors: Sequence[str],
+    evidence: Sequence[dict[str, Any]],
+    code: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    evidence = finding.get("evidence")
-    code = finding.get("code")
-    if not isinstance(evidence, list) or not evidence or not isinstance(code, list) or not code:
+    if not evidence:
         return None
     cause = str(finding.get("cause") or "The reported cause is not established.")
     return {
@@ -1228,22 +1708,22 @@ def unresolved_from_finding(
         "causal_status": "unknown",
         "observation": finding["observed_behavior"],
         "why_unknown": "Primary citation resolution failed: " + "; ".join(primary_errors),
-        "evidence": evidence,
+        "evidence": list(evidence),
         "counterevidence": finding.get("counterevidence", []),
-        "code": code,
+        "code": list(code),
         "clock_mapping_ids": finding.get("clock_mapping_ids", []),
         "hypotheses": [
             {
                 "rank": 1,
                 "description": cause,
-                "evidence": evidence,
-                "code": code,
+                "evidence": list(evidence),
+                "code": list(code),
             }
         ],
         "next_observation": {
             "description": "Resolve the primary artifact and owning code citations before acting on this cause.",
             "distinguishes": [cause, "The cited observation or code attribution is incorrect."],
-            "minimal_evidence": "One resolvable primary run selector and one resolvable owning-code selector.",
+            "minimal_evidence": "One additional resolvable selector that establishes or rejects the proposed cause.",
         },
     }
 
@@ -1258,13 +1738,21 @@ def finish_report(
     tool_version: str,
     prompt: str,
     extra_errors: Sequence[tuple[str, str]],
+    attachment_manifest: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
+    raw_coverage = report.get("coverage")
+    if isinstance(raw_coverage, dict):
+        raw_coverage["attachments"] = []
     raw_schema_errors = validate_report_schema(report)
     if raw_schema_errors:
         raise InvestigationError(
             "model_output_invalid",
             "Raw model report violates schema: " + "; ".join(raw_schema_errors[:8]),
         )
+    # Resolve only the privacy-safe representation. A selector whose path is
+    # changed by the local blocklist must lose its grounding claim rather than
+    # retain a private path solely so it can still resolve.
+    report = sanitize_investigation_report(report, run_dir)
     model_execution = report["execution_status"]
     model_state = model_execution.get("state")
     model_summary = str(model_execution.get("summary") or "Model investigation returned no summary.")
@@ -1286,43 +1774,118 @@ def finish_report(
     resolution_errors: list[str] = []
     video_bounds_cache: dict[Path, tuple[float, int | None] | None] = {}
     coverage = report["coverage"]
+    attachments_by_index: dict[int, Mapping[str, Any]] = {}
+    for attachment in attachment_manifest:
+        index = attachment.get("attachment_index")
+        if not isinstance(index, int) or isinstance(index, bool) or index in attachments_by_index:
+            raise InvestigationError(
+                "attachment_manifest_invalid", "Runner attachment indices are not unique"
+            )
+        attachments_by_index[index] = attachment
+    coverage["attachments"] = copy.deepcopy(list(attachment_manifest))
+
+    def filter_evidence(owner: dict[str, Any], key: str) -> list[str]:
+        valid, selector_errors = partition_artifact_selectors(
+            run_dir,
+            owner.get(key, []),
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        owner[key] = valid
+        return selector_errors
+
+    resolution_errors.extend(filter_evidence(source_report, "identity_evidence"))
+    for identity in source_report.get("binary_identities", []):
+        if isinstance(identity, dict):
+            identity_errors = filter_evidence(identity, "evidence")
+            resolution_errors.extend(identity_errors)
+            if identity.get("basis") != "unavailable" and not identity["evidence"]:
+                identity["basis"] = "unavailable"
+                identity["sha256"] = None
+                identity.setdefault("limitations", []).append(
+                    "Runner removed the identity claim because no evidence selector resolved."
+                )
+                runner_errors.append(
+                    (
+                        "binary_identity_ungrounded",
+                        f"{identity.get('name')}: no identity evidence resolved",
+                    )
+                )
+
     clock_support, duplicate_clock_ids, clock_errors = index_clock_mappings(
-        run_dir, coverage["clock_mappings"], video_bounds_cache
+        run_dir,
+        coverage["clock_mappings"],
+        video_bounds_cache,
+        attachments_by_index,
     )
     resolution_errors.extend(clock_errors)
+
+    valid_coverage_code, coverage_code_errors = partition_code_selectors(coverage["code"])
+    coverage["code"] = valid_coverage_code
+    resolution_errors.extend(coverage_code_errors)
+
+    retained_video_coverage: list[dict[str, Any]] = []
+    for item in coverage["video_intervals"]:
+        selector = item["selector"]
+        if selector.get("kind") != "video":
+            resolution_errors.append("video coverage selector is not video evidence")
+            continue
+        valid, selector_errors = partition_artifact_selectors(
+            run_dir,
+            [selector],
+            video_bounds_cache,
+            attachments_by_index,
+            require_video_attachment=item.get("status") != "unsampled",
+        )
+        resolution_errors.extend(selector_errors)
+        if valid:
+            retained_video_coverage.append(item)
+        elif item.get("status") != "unsampled":
+            runner_errors.append(
+                (
+                    "video_coverage_omitted",
+                    "A reviewed or partially reviewed video interval did not resolve to an attached sheet and cell.",
+                )
+            )
+    coverage["video_intervals"] = retained_video_coverage
 
     retained_findings: list[dict[str, Any]] = []
     converted_unresolved: list[dict[str, Any]] = []
     for finding in report["findings"]:
-        evidence_results = [
-            resolve_artifact_selector(run_dir, selector, video_bounds_cache)
-            for selector in finding["evidence"]
-        ]
-        primary_errors = [error for error in evidence_results if error]
-        primary_errors.extend(
-            error
-            for selector in finding["code"]
-            if (error := resolve_code_selector(selector))
+        valid_evidence, evidence_errors = partition_artifact_selectors(
+            run_dir,
+            finding["evidence"],
+            video_bounds_cache,
+            attachments_by_index,
         )
-        secondary_errors = [
-            error
-            for selector in finding["counterevidence"]
-            if (error := resolve_artifact_selector(run_dir, selector, video_bounds_cache))
-        ]
+        valid_code, code_errors = partition_code_selectors(finding["code"])
+        valid_counterevidence, secondary_errors = partition_artifact_selectors(
+            run_dir,
+            finding["counterevidence"],
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        primary_errors = evidence_errors + code_errors
         secondary_errors.extend(
             clock_reference_errors(finding, clock_support, duplicate_clock_ids)
         )
+        finding["evidence"] = valid_evidence
+        finding["code"] = valid_code
+        finding["counterevidence"] = valid_counterevidence
         resolution_errors.extend(primary_errors)
         resolution_errors.extend(secondary_errors)
         if primary_errors:
             unresolved = unresolved_from_finding(
-                finding, primary_errors + secondary_errors
+                finding,
+                primary_errors + secondary_errors,
+                valid_evidence,
+                valid_code,
             )
             if unresolved is None:
                 runner_errors.append(
                     (
-                        "finding_omitted",
-                        f"{finding['id']}: primary evidence or code did not resolve",
+                        "unresolved_omitted_zero_grounding",
+                        f"{finding['id']}: no primary artifact evidence resolved",
                     )
                 )
             else:
@@ -1350,37 +1913,251 @@ def finish_report(
                     f"Source attribution is {effective_basis}; the cited code is a hypothesis."
                 )
 
-    for unresolved in report["unresolved"]:
-        errors = validate_conclusion(run_dir, unresolved, video_bounds_cache)
+    retained_unresolved: list[dict[str, Any]] = []
+    for unresolved in [*report["unresolved"], *converted_unresolved]:
+        valid_evidence, primary_errors = partition_artifact_selectors(
+            run_dir,
+            unresolved["evidence"],
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        valid_counterevidence, errors = partition_artifact_selectors(
+            run_dir,
+            unresolved["counterevidence"],
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        valid_code, code_errors = partition_code_selectors(unresolved["code"])
+        errors.extend(code_errors)
+        for hypothesis in unresolved["hypotheses"]:
+            valid_hypothesis_evidence, hypothesis_errors = partition_artifact_selectors(
+                run_dir,
+                hypothesis["evidence"],
+                video_bounds_cache,
+                attachments_by_index,
+            )
+            valid_hypothesis_code, hypothesis_code_errors = partition_code_selectors(
+                hypothesis["code"]
+            )
+            hypothesis["evidence"] = valid_hypothesis_evidence
+            hypothesis["code"] = valid_hypothesis_code
+            errors.extend(hypothesis_errors)
+            errors.extend(hypothesis_code_errors)
         errors.extend(clock_reference_errors(unresolved, clock_support, duplicate_clock_ids))
-        if errors:
+        unresolved["evidence"] = valid_evidence
+        unresolved["counterevidence"] = valid_counterevidence
+        unresolved["code"] = valid_code
+        resolution_errors.extend(primary_errors)
+        resolution_errors.extend(errors)
+        if not valid_evidence:
+            runner_errors.append(
+                (
+                    "unresolved_omitted_zero_grounding",
+                    f"{unresolved['id']}: no primary artifact evidence resolved",
+                )
+            )
+            continue
+        if primary_errors or errors:
             unresolved["why_unknown"] = (
                 str(unresolved.get("why_unknown", ""))
                 + " Citation resolution: "
-                + "; ".join(errors)
+                + "; ".join(primary_errors + errors)
             ).strip()
-            resolution_errors.extend(errors)
-    report["unresolved"].extend(converted_unresolved)
-    for selector in iter_evidence_selectors(report):
-        error = resolve_artifact_selector(run_dir, selector, video_bounds_cache)
-        if error:
-            resolution_errors.append(error)
-    for selector in iter_code_selectors(report.get("coverage", {})):
-        error = resolve_code_selector(selector)
-        if error:
-            resolution_errors.append(error)
+        retained_unresolved.append(unresolved)
+    report["unresolved"] = retained_unresolved
 
-    artifact_coverage = report.get("coverage", {}).get("artifacts", [])
-    for item in artifact_coverage:
-        if not isinstance(item, dict) or item.get("sha256") is None:
+    canonical_artifacts = {
+        item["path"]: item for item in discover_artifacts(run_dir)
+    }
+    retained_artifact_coverage: list[dict[str, Any]] = []
+    for item in coverage["artifacts"]:
+        canonical = canonical_artifacts.get(item.get("path"))
+        valid_selectors, selector_errors = partition_artifact_selectors(
+            run_dir,
+            item.get("selectors", []),
+            video_bounds_cache,
+            attachments_by_index,
+        )
+        matching_selectors: list[dict[str, Any]] = []
+        for selector in valid_selectors:
+            if (
+                selector.get("path") == item.get("path")
+                and selector.get("sha256") == item.get("sha256")
+            ):
+                matching_selectors.append(selector)
+        if len(matching_selectors) != len(valid_selectors):
+            selector_errors.append(
+                f"coverage selector targets another artifact: {item.get('path')}"
+            )
+        resolution_errors.extend(selector_errors)
+        claimed_review = item.get("status") in {"reviewed", "partially_reviewed"}
+        hash_matches = bool(
+            canonical is not None
+            and item.get("sha256") is not None
+            and item.get("sha256") == canonical.get("sha256")
+        )
+        if claimed_review and (not hash_matches or not matching_selectors):
+            reason = "reviewed coverage lacked a matching hash and resolvable selector"
+            retained_artifact_coverage.append(
+                {
+                    "path": str(item.get("path")),
+                    "status": "skipped",
+                    "sha256": None,
+                    "size_bytes": canonical.get("size_bytes") if canonical else None,
+                    "role": canonical.get("kind", item.get("role", "unknown"))
+                    if canonical
+                    else str(item.get("role", "unknown")),
+                    "selectors": [],
+                    "notes": [*item.get("notes", []), f"Runner correction: {reason}."],
+                }
+            )
+            runner_errors.append(
+                ("artifact_coverage_downgraded", f"{item.get('path')}: {reason}")
+            )
+            if not hash_matches:
+                resolution_errors.append(
+                    f"covered artifact hash does not match: {item.get('path')}"
+                )
             continue
-        path = safe_relative_file(run_dir, item.get("path"))
-        if path is None:
-            resolution_errors.append(f"covered artifact does not resolve: {item.get('path')!r}")
+        item["selectors"] = matching_selectors
+        if selector_errors and item.get("status") == "reviewed":
+            item["status"] = "partially_reviewed"
+            item.setdefault("notes", []).append(
+                "Runner removed one or more selectors that did not resolve."
+            )
+        if not claimed_review and item.get("sha256") is not None and not hash_matches:
+            item["sha256"] = None
+            resolution_errors.append(
+                f"covered artifact hash does not match: {item.get('path')}"
+            )
+        retained_artifact_coverage.append(item)
+
+    coverage_by_path: dict[str, list[dict[str, Any]]] = {}
+    for item in retained_artifact_coverage:
+        coverage_by_path.setdefault(str(item.get("path")), []).append(item)
+    retained_artifact_coverage = []
+    for path in sorted(coverage_by_path):
+        rows = coverage_by_path[path]
+        if len(rows) == 1:
+            retained_artifact_coverage.append(rows[0])
             continue
-        actual_hash = sha256_file(path)
-        if item.get("sha256") != actual_hash:
-            resolution_errors.append(f"covered artifact hash does not match: {item.get('path')}")
+        canonical = canonical_artifacts.get(path)
+        reviewed_rows = [
+            item
+            for item in rows
+            if item.get("status") in {"reviewed", "partially_reviewed"}
+            and item.get("selectors")
+        ]
+        selectors: list[dict[str, Any]] = []
+        seen_selectors: set[str] = set()
+        for item in reviewed_rows:
+            for selector in item.get("selectors", []):
+                key = json.dumps(selector, sort_keys=True, separators=(",", ":"))
+                if key not in seen_selectors:
+                    seen_selectors.add(key)
+                    selectors.append(selector)
+        statuses = {str(item.get("status")) for item in rows}
+        if reviewed_rows:
+            status = (
+                "reviewed"
+                if statuses == {"reviewed"}
+                else "partially_reviewed"
+            )
+            digest = reviewed_rows[0].get("sha256")
+        else:
+            status = next(
+                candidate
+                for candidate in ("unreadable", "unfamiliar", "skipped")
+                if candidate in statuses
+            )
+            digests = {item.get("sha256") for item in rows}
+            digest = next(iter(digests)) if len(digests) == 1 else None
+        notes: list[str] = []
+        for item in rows:
+            for note in item.get("notes", []):
+                if note not in notes:
+                    notes.append(note)
+        notes.append(
+            "Runner merged duplicate coverage rows conservatively; "
+            f"reported statuses were {', '.join(sorted(statuses))}."
+        )
+        retained_artifact_coverage.append(
+            {
+                "path": path,
+                "status": status,
+                "sha256": digest,
+                "size_bytes": canonical.get("size_bytes") if canonical else rows[0].get("size_bytes"),
+                "role": canonical.get("kind") if canonical else str(rows[0].get("role", "unknown")),
+                "selectors": selectors,
+                "notes": notes,
+            }
+        )
+        runner_errors.append(
+            (
+                "artifact_coverage_duplicate",
+                f"{path}: merged {len(rows)} coverage rows",
+            )
+        )
+    canonicalized_coverage: list[dict[str, Any]] = []
+    for item in retained_artifact_coverage:
+        path = str(item.get("path"))
+        canonical = canonical_artifacts.get(path)
+        if canonical is None:
+            runner_errors.append(
+                (
+                    "artifact_coverage_nonexistent",
+                    f"{path}: model coverage path is not in the runner inventory",
+                )
+            )
+            continue
+        canonicalized_coverage.append(
+            {
+                "path": canonical["path"],
+                "status": (
+                    "unreadable"
+                    if canonical.get("status") == "unreadable"
+                    or not isinstance(canonical.get("sha256"), str)
+                    else item["status"]
+                ),
+                "sha256": canonical["sha256"],
+                "size_bytes": canonical["size_bytes"],
+                "role": canonical["kind"],
+                "selectors": item.get("selectors", []),
+                "notes": item.get("notes", []),
+            }
+        )
+    retained_artifact_coverage = canonicalized_coverage
+    represented_paths = {
+        item.get("path")
+        for item in retained_artifact_coverage
+        if isinstance(item.get("path"), str)
+    }
+    for path, canonical in canonical_artifacts.items():
+        if path in represented_paths:
+            continue
+        retained_artifact_coverage.append(
+            {
+                "path": path,
+                "status": (
+                    "unreadable"
+                    if canonical.get("status") == "unreadable"
+                    or not isinstance(canonical.get("sha256"), str)
+                    else "skipped"
+                ),
+                "sha256": canonical["sha256"],
+                "size_bytes": canonical["size_bytes"],
+                "role": canonical["kind"],
+                "selectors": [],
+                "notes": [
+                    "Discovered and hashed by the runner but not semantically reviewed by the model."
+                ],
+            }
+        )
+        runner_errors.append(
+            ("artifact_coverage_missing", f"{path}: model report omitted this run artifact")
+        )
+    retained_artifact_coverage.sort(key=lambda item: str(item.get("path")))
+    coverage["artifacts"] = retained_artifact_coverage
 
     errors = list(model_errors)
     errors.extend(f"{code}: {message}" for code, message in runner_errors)
@@ -1393,7 +2170,7 @@ def finish_report(
         coverage.setdefault("notes", []).extend(
             f"Citation resolution: {message}" for message in sorted(set(resolution_errors))
         )
-    report["schema_version"] = 1
+    report["schema_version"] = 2
     report["kind"] = "bench_investigation"
     report["generated_at_utc"] = utc_now()
     final_state = (
@@ -1421,7 +2198,9 @@ def finish_report(
         ],
     }
     report = redact_report_paths(report, run_dir)
+    report = sanitize_investigation_report(report, run_dir)
     schema_errors = validate_report_schema(report)
+    schema_errors.extend(validate_published_selectors(run_dir, report))
     if schema_errors:
         raise InvestigationError(
             "model_output_invalid",
@@ -1441,6 +2220,7 @@ def failure_report(
     artifacts: Sequence[Mapping[str, Any]],
     source_context_value: Mapping[str, Any],
     video_history: Sequence[Mapping[str, Any]],
+    attachments: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     recorded_revisions = sorted(
         {
@@ -1463,7 +2243,7 @@ def failure_report(
             f"change_candidates={len(scan.get('change_candidates', []))}."
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bench_investigation",
         "generated_at_utc": utc_now(),
         "execution_status": {
@@ -1485,9 +2265,23 @@ def failure_report(
             "artifacts": [
                 {
                     "path": str(item["path"]),
-                    "status": "skipped",
-                    "sha256": None,
-                    "size_bytes": int(item["size_bytes"]),
+                    "status": (
+                        "unreadable"
+                        if item.get("status") == "unreadable"
+                        or not isinstance(item.get("sha256"), str)
+                        else "skipped"
+                    ),
+                    "sha256": (
+                        item.get("sha256")
+                        if isinstance(item.get("sha256"), str)
+                        else None
+                    ),
+                    "size_bytes": (
+                        item.get("size_bytes")
+                        if isinstance(item.get("size_bytes"), int)
+                        and not isinstance(item.get("size_bytes"), bool)
+                        else None
+                    ),
                     "role": str(item["kind"]),
                     "notes": [
                         "Discovered by the runner but not semantically reviewed.",
@@ -1496,6 +2290,7 @@ def failure_report(
                 }
                 for item in artifacts
             ],
+            "attachments": copy.deepcopy(list(attachments)),
             "code": [],
             "video_intervals": [],
             "clock_mappings": [],
@@ -1546,7 +2341,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("BENCH_INVESTIGATOR_CODEX") or shutil.which("codex") or "codex",
     )
     parser.add_argument("--max-video-passes", type=int, default=2)
-    parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--debug-transcript", action="store_true")
     args = parser.parse_args(argv)
     if not 1 <= args.max_video_passes <= 3:
@@ -1580,7 +2375,11 @@ def main() -> int:
     requested_run_dir = Path(args.run_dir).absolute()
     run_dir = requested_run_dir.resolve()
     if not run_dir.is_dir():
-        print(f"bench investigation: run directory does not exist: {run_dir}", file=sys.stderr)
+        detail = sanitize_error(
+            f"bench investigation: run directory does not exist: {run_dir}",
+            (requested_run_dir, run_dir),
+        )
+        print(detail, file=sys.stderr)
         return 3
     output_path = run_dir / "investigation.json"
     artifacts = discover_artifacts(run_dir)
@@ -1593,6 +2392,7 @@ def main() -> int:
         else "codex exec"
     )
     prior_report: dict[str, Any] | None = None
+    prior_prompt = ""
     final_prompt = ""
     debug_events: list[dict[str, Any]] = []
     runner_errors: list[tuple[str, str]] = []
@@ -1601,6 +2401,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="bench-investigation-") as temporary:
         workspace = Path(temporary)
         attachments: list[dict[str, Any]] = []
+        attachment_manifest: list[dict[str, Any]] = []
         initial_omitted_images = 0
         global_omitted_images = 0
         processed_videos = 0
@@ -1633,7 +2434,7 @@ def main() -> int:
                     initial_omitted_images += omitted_now
                 else:
                     global_omitted_images += omitted_now
-                attachment_manifest = ordered_attachment_manifest(attachments)
+                attachment_manifest = persist_attachment_manifest(run_dir, attachments)
                 context = compact_context(
                     run_dir,
                     artifacts,
@@ -1657,19 +2458,46 @@ def main() -> int:
                         "manifest": attachment_manifest,
                     },
                 )
-                final_prompt = build_prompt(context, len(attachments))
+                final_prompt = build_prompt(context, len(attachments), pass_number)
                 pass_output = workspace / f"model_pass_{pass_number}.json"
-                report, stdout, stderr = invoke_codex(
-                    executable=args.codex_executable,
-                    model=args.model,
-                    oss=local_execution,
-                    local_provider=args.local_provider,
-                    prompt=final_prompt,
-                    images=[item["file"] for item in attachments],
-                    output_path=pass_output,
-                    timeout_seconds=args.timeout_seconds,
-                    private_paths=(requested_run_dir, run_dir, workspace),
-                )
+                try:
+                    report, stdout, stderr = invoke_codex(
+                        executable=args.codex_executable,
+                        model=args.model,
+                        oss=local_execution,
+                        local_provider=args.local_provider,
+                        prompt=final_prompt,
+                        images=[item["file"] for item in attachments],
+                        output_path=pass_output,
+                        timeout_seconds=args.timeout_seconds,
+                        private_paths=(requested_run_dir, run_dir, workspace),
+                    )
+                except Exception as exc:
+                    if prior_report is None:
+                        raise
+                    failure_code = (
+                        exc.code
+                        if isinstance(exc, InvestigationError)
+                        else type(exc).__name__
+                    )
+                    failure_detail = sanitize_error(
+                        str(exc), (requested_run_dir, run_dir, workspace)
+                    )
+                    runner_errors.append(
+                        (
+                            "followup_backend_failed",
+                            f"pass {pass_number} {failure_code}: {failure_detail}",
+                        )
+                    )
+                    debug_events.append(
+                        {
+                            "pass": pass_number,
+                            "backend_status": "failed",
+                            "error_code": failure_code,
+                            "attached_images": len(attachments),
+                        }
+                    )
+                    break
                 debug_events.append(
                     {
                         "pass": pass_number,
@@ -1682,6 +2510,7 @@ def main() -> int:
                 prior_report = redact_report_paths(
                     report, requested_run_dir, (run_dir, workspace)
                 )
+                prior_prompt = final_prompt
                 raw_requests = report.get("video_requests", [])
                 requests = [item for item in raw_requests if isinstance(item, Mapping)]
                 if not requests:
@@ -1720,8 +2549,9 @@ def main() -> int:
                 model=args.model,
                 backend=backend,
                 tool_version=tool_version,
-                prompt=final_prompt,
+                prompt=prior_prompt,
                 extra_errors=runner_errors,
+                attachment_manifest=attachment_manifest,
             )
             exit_status = 2 if report["execution_status"]["state"] == "failed" else 0
         except InvestigationError as exc:
@@ -1735,6 +2565,7 @@ def main() -> int:
                 artifacts=artifacts,
                 source_context_value=source,
                 video_history=video_history,
+                attachments=attachment_manifest,
             )
             exit_status = 2
         except Exception as exc:
@@ -1751,10 +2582,14 @@ def main() -> int:
                 artifacts=artifacts,
                 source_context_value=source,
                 video_history=video_history,
+                attachments=attachment_manifest,
             )
             exit_status = 2
         report = redact_report_paths(report, requested_run_dir, (run_dir, workspace))
+        report = sanitize_investigation_report(report, requested_run_dir)
         final_schema_errors = validate_report_schema(report)
+        final_schema_errors.extend(validate_published_attachments(run_dir, report))
+        final_schema_errors.extend(validate_published_selectors(run_dir, report))
         if final_schema_errors:
             report = failure_report(
                 code="postprocessing_invalid",
@@ -1766,21 +2601,34 @@ def main() -> int:
                 artifacts=artifacts,
                 source_context_value=source,
                 video_history=video_history,
+                attachments=attachment_manifest,
             )
             report = redact_report_paths(report, requested_run_dir, (run_dir, workspace))
-            if validate_report_schema(report):
+            report = sanitize_investigation_report(report, requested_run_dir)
+            failure_errors = validate_report_schema(report)
+            failure_errors.extend(validate_published_attachments(run_dir, report))
+            failure_errors.extend(validate_published_selectors(run_dir, report))
+            if failure_errors:
                 print("bench investigation: could not construct a valid failure report", file=sys.stderr)
                 return 2
             exit_status = 2
         atomic_write_json(output_path, report)
+        prune_errors = prune_attachment_files(run_dir, report["coverage"]["attachments"])
+        if prune_errors:
+            report["execution_status"]["errors"].extend(
+                f"attachment_prune_failed: {error}" for error in prune_errors
+            )
+            if report["execution_status"]["state"] != "failed":
+                report["execution_status"]["state"] = "partial"
+            report["coverage"]["notes"].append(
+                "Runner limitation: one or more stale contact sheets could not be removed."
+            )
+            atomic_write_json(output_path, report)
         if args.debug_transcript:
             atomic_write_json(run_dir / "investigation_debug.json", {"passes": debug_events})
 
     state = report["execution_status"]["state"]
-    try:
-        output_label = output_path.relative_to(ROOT).as_posix()
-    except ValueError:
-        output_label = output_path.name
+    output_label = output_path.name
     print(
         f"Bench investigation {state}: {len(report.get('findings', []))} finding(s), "
         f"{len(report.get('unresolved', []))} unresolved; {output_label}"

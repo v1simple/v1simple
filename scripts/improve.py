@@ -55,7 +55,12 @@ from bench_policy import (  # noqa: E402
     validate_qualification_evidence,
     validate_qualification_record,
 )
-from score_hardware_run import MetricPolicy, load_catalog, score_run  # noqa: E402
+from score_hardware_run import (  # noqa: E402
+    SCORING_SCHEMA_VERSION,
+    MetricPolicy,
+    load_catalog,
+    score_run,
+)
 
 
 SCHEMA_VERSION = 1
@@ -2070,8 +2075,9 @@ def validate_bench_result(
         raise GateFailure(f"unknown bench arm: {arm}")
     expected_sha = plan["base_sha" if arm == "baseline" else "candidate_sha"]
     if (
-        result.get("schema_version") != 4
+        result.get("schema_version") != 5
         or result.get("kind") != "bench_result"
+        or result.get("run_dir") != "."
         or result.get("result") != "PASS"
         or result.get("git_sha") != expected_sha
         or result.get("git_worktree_clean") is not True
@@ -2250,11 +2256,10 @@ def validate_suite_artifacts(
     scoring_manifest = scoring.get("manifest")
     scoring_summary = scoring.get("summary")
     if (
-        scoring.get("schema_version") != 1
+        scoring.get("schema_version") != SCORING_SCHEMA_VERSION
         or scoring.get("result") != "NO_BASELINE"
         or not isinstance(scoring_manifest, dict)
-        or Path(os.path.abspath(str(scoring_manifest.get("path") or "")))
-        != paths["manifest.json"]
+        or scoring_manifest.get("path") != "manifest.json"
         or any(
             scoring_manifest.get(key) != manifest.get(key)
             for key in (
@@ -4185,7 +4190,7 @@ class LiveAdapter:
                     scoring = score_run(candidate_manifest, catalog, baselines)
                 except Exception as exc:
                     scoring = {
-                        "schema_version": 1,
+                        "schema_version": SCORING_SCHEMA_VERSION,
                         "result": "ERROR",
                         "summary": {"reason": str(exc)},
                     }

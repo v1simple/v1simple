@@ -6,7 +6,9 @@ ParsedFrameSignal ParsedFrameEventModule::collect(bool queueParsedReady, uint32_
                                                   SystemEventBus& eventBus) {
     ParsedFrameSignal signal;
     signal.parsedReady = queueParsedReady;
-    signal.parsedTsMs = queueParsedTsMs;
+    // The queue retains its last V1 timestamp after the edge is consumed. Only
+    // attach that timestamp when this collection actually owns the queue edge.
+    signal.parsedTsMs = queueParsedReady ? queueParsedTsMs : 0;
 
     // Drain parsed-frame events only; leave other event types for their owners.
     SystemEvent event;
@@ -19,8 +21,8 @@ ParsedFrameSignal ParsedFrameEventModule::collect(bool queueParsedReady, uint32_
 
     while (eventBus.consumeByType(SystemEventType::ALP_STATE_CHANGED, event)) {
         signal.parsedReady = true;
-        // Do not overwrite parsedTsMs — V1 timing is still what
-        // notify-to-display latency measures against.
+        // ALP owns a different UART clock edge. It may request a display update,
+        // but it must not manufacture a V1 notification latency sample.
     }
 
     return signal;

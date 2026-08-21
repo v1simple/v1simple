@@ -417,8 +417,7 @@ String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlo
 
     String savedSsid = doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "";
     if (expectedSsid.length() > 0 && savedSsid.length() > 0 && savedSsid != expectedSsid) {
-        Serial.printf("[Settings] WARN: SD WiFi secret SSID mismatch (want='%s' got='%s')\n", expectedSsid.c_str(),
-                      savedSsid.c_str());
+        Serial.println("[Settings] WARN: SD WiFi secret SSID mismatch");
         return backupFallback();
     }
 
@@ -507,7 +506,9 @@ String SettingsManager::loadLastV1AddressFallback() {
     if (!prefs.begin(kSettingsV1RuntimeNamespace, true)) {
         return "";
     }
-    const String address = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    const String address = prefs.isKey(kNvsLastConnectedV1Address)
+                               ? sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""))
+                               : "";
     prefs.end();
     return address;
 }
@@ -545,7 +546,9 @@ bool SettingsManager::persistLastV1AddressFallbackNow(const String& addr) {
         return false;
     }
 
-    const String existing = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    const String existing = prefs.isKey(kNvsLastConnectedV1Address)
+                                ? sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""))
+                                : "";
     if (existing == safeAddr) {
         prefs.end();
         return true;

@@ -6,6 +6,26 @@
 #include <nvs.h>
 #include "settings_backup_doc.h"
 
+namespace {
+
+bool hasRestorableWifiStaSlots(const JsonDocument& doc) {
+    if (!doc["wifiStaSlots"].is<JsonArrayConst>()) {
+        return false;
+    }
+    for (JsonObjectConst slot : doc["wifiStaSlots"].as<JsonArrayConst>()) {
+        const int index = slot["index"] | -1;
+        if (index < 0 || index >= static_cast<int>(kWifiStaSlotCount) || !slot["ssid"].is<const char*>()) {
+            continue;
+        }
+        if (sanitizeWifiClientSsidValue(slot["ssid"].as<String>()).length() > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 bool shouldSkipProfileReferenceValidation(size_t availableProfileCount, bool hasConfiguredSlotReferences) {
     return availableProfileCount == 0 && hasConfiguredSlotReferences;
 }
@@ -60,7 +80,8 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 bool backupWifiClientEnabled = false;
                 parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
                 const String backupSsid = legacyWifiClientSsidFromBackupDoc(bestBackupDoc);
-                if (restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, false)) {
+                if (hasRestorableWifiStaSlots(bestBackupDoc) &&
+                    restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, false)) {
                     settings_.wifiClientEnabled = true;
                     settings_.wifiMode = V1_WIFI_APSTA;
                 } else if (backupSsid.length() > 0) {
@@ -217,8 +238,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.wifiClientSSID = secretPresence.ssid;
                     settings_.ensureWifiStaSlotForLegacyAlias();
                     settings_.wifiMode = V1_WIFI_APSTA;
-                    Serial.printf("[Settings] HEAL: recovered WiFi SSID from wifi_secret ('%s')\n",
-                                  settings_.wifiClientSSID.c_str());
+                    Serial.println("[Settings] HEAL: recovered WiFi SSID from wifi_secret");
                     partialRecovered = true;
                 }
             }
@@ -236,7 +256,9 @@ bool SettingsManager::checkAndRestoreFromSD() {
 
     if (!needsRestore && storageManager.isReady() && storageManager.isSDCard()) {
         const WifiClientKeyPresence wifiKeyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
-        const bool wifiKeysMissing = !wifiKeyPresence.enabledKeyPresent || !wifiKeyPresence.ssidKeyPresent;
+        const bool legacySsidKeyRequired = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
+        const bool wifiKeysMissing =
+            !wifiKeyPresence.enabledKeyPresent || (legacySsidKeyRequired && !wifiKeyPresence.ssidKeyPresent);
         const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
 
         if (wifiKeysMissing && !missingCurrentSsid) {
@@ -251,7 +273,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 hasSdBackup && parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
             const String backupSsid = hasSdBackup ? legacyWifiClientSsidFromBackupDoc(bestBackupDoc) : "";
             const bool backupHasSsid = backupSsid.length() > 0;
-            const bool backupHasStaSlots = hasSdBackup && bestBackupDoc["wifiStaSlots"].is<JsonArrayConst>();
+            const bool backupHasStaSlots = hasSdBackup && hasRestorableWifiStaSlots(bestBackupDoc);
 
             const WifiClientSecretPresence secretPresence = readWifiClientSecretPresence(fs);
             const bool secretHasSsid = secretPresence.valid && secretPresence.ssid.length() > 0;
@@ -286,8 +308,8 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.ensureWifiStaSlotForLegacyAlias();
                 }
                 settings_.wifiMode = V1_WIFI_APSTA;
-                Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (ssid='%s', keysMissing=%s)\n",
-                              recoveredFrom, settings_.wifiClientSSID.c_str(), wifiKeysMissing ? "yes" : "no");
+                Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (keysMissing=%s)\n", recoveredFrom,
+                              wifiKeysMissing ? "yes" : "no");
                 if (backupHasSsid) {
                     restoreWifiClientPasswordObfFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
                     restoreLegacyStationPasswordFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
@@ -478,11 +500,12 @@ bool SettingsManager::restoreFromSD() {
     Serial.printf("[Settings] Restoring from SD backup (version %d)\n", backupVersion);
     bool backupAutoPush = false;
     const bool hasAutoPush = parseBoolVariant(doc["autoPushEnabled"], backupAutoPush);
-    const char* backupSlot0 =
-        doc["slot0ProfileName"].is<const char*>() ? doc["slot0ProfileName"].as<const char*>() : "";
+    const bool backupSlot0Configured =
+        doc["slot0ProfileName"].is<const char*>() && doc["slot0ProfileName"].as<const char*>()[0] != '\0';
     const int backupSlot0Mode = doc["slot0Mode"].is<int>() ? doc["slot0Mode"].as<int>() : -1;
-    Serial.printf("[Settings] Backup fields: autoPush=%s slot0Profile='%s' slot0Mode=%d\n",
-                  hasAutoPush ? (backupAutoPush ? "true" : "false") : "missing", backupSlot0, backupSlot0Mode);
+    Serial.printf("[Settings] Backup fields: autoPush=%s slot0ProfileConfigured=%s slot0Mode=%d\n",
+                  hasAutoPush ? (backupAutoPush ? "true" : "false") : "missing", backupSlot0Configured ? "yes" : "no",
+                  backupSlot0Mode);
 
     const SettingsBackupApplyResult applyResult = applyBackupDocument(doc, false);
     if (!applyResult.success) {
@@ -520,12 +543,12 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
         if (slot.profileName.length() > 0) {
             V1Profile testProfile;
             if (!profileMgr.loadProfile(slot.profileName, testProfile)) {
-                Serial.printf("[Settings] WARN: Profile '%s' for %s does not exist - clearing reference\n",
-                              slot.profileName.c_str(), slotName);
+                Serial.printf("[Settings] WARN: Profile reference for %s does not exist - clearing reference\n",
+                              slotName);
                 slot.profileName = "";
                 needsSave = true;
             } else {
-                Serial.printf("[Settings] Profile '%s' for %s validated OK\n", slot.profileName.c_str(), slotName);
+                Serial.printf("[Settings] Profile reference for %s validated OK\n", slotName);
             }
         }
     };

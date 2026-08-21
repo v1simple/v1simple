@@ -183,9 +183,9 @@ void test_reserved_padding_remains_csv_safe_across_sessions_and_append_fallback(
     created.close();
 
     const std::vector<std::string> records = {
-        "millis,rx\n#session_start,seq=1,bootId=7,uptime_ms=100,token=AAAA0001,schema=46\n",
+        "millis,rx\n#session_start,seq=1,bootId=7,uptime_ms=100,token=AAAA0001,schema=47\n",
         "100,1\n",
-        "millis,rx\n#session_start,seq=2,bootId=7,uptime_ms=200,token=BBBB0002,schema=46\n",
+        "millis,rx\n#session_start,seq=2,bootId=7,uptime_ms=200,token=BBBB0002,schema=47\n",
         "200,2\n",
     };
     File update = fs.open(path.c_str(), "r+", false);
@@ -263,6 +263,16 @@ void test_perf_sd_logger_reserve_source_contract_is_fail_safe_and_measured() {
     const std::string source = readProjectFile("src/perf_sd_logger.cpp");
     TEST_ASSERT_FALSE(source.empty());
 
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 47"));
+    TEST_ASSERT_NOT_EQUAL(
+        std::string::npos,
+        source.find("notifyToDisplayPipelineCompleteMax_ms,notifyToDisplayPipelineCompleteTotalCount"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          source.find("snapshot.notifyToDisplayPipelineCompleteMaxMs"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          source.find("snapshot.notifyToDisplayPipelineCompleteTotalCount"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("notifyToDisplayMax_ms"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("snapshot.notifyToDisplayMaxMs"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_SD_CONTIGUOUS_RESERVE_SIZE = 1024 * 1024"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_LINE_BUFFER_SIZE = 6656"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

@@ -162,9 +162,9 @@ def main() -> int:
     display_skips_last = None
     flush_max_peak = None
     loop_max_peak = None
-    notify_to_display_max_ms = None
-    notify_to_display_sample_count = 0
-    notify_to_display_seen = False
+    notify_to_display_pipeline_complete_max_ms = None
+    notify_to_display_pipeline_complete_sample_count = 0
+    notify_to_display_pipeline_complete_seen = False
     wifi_max_peak = None
     wifi_max_peak_excluding_first = None
     ble_drain_max_peak = None
@@ -472,15 +472,17 @@ def main() -> int:
                 sd_max_peak = update_max(sd_max_peak, num(data.get("sdMaxUs")))
                 fs_max_peak = update_max(fs_max_peak, num(data.get("fsMaxUs")))
 
-                n2d_max = num(data.get("notifyToDisplayMaxMs"))
+                n2d_max = num(data.get("notifyToDisplayPipelineCompleteMaxMs"))
                 if n2d_max is not None:
-                    notify_to_display_seen = True
-                    notify_to_display_max_ms = update_max(notify_to_display_max_ms, n2d_max)
-                n2d_count = num(data.get("notifyToDisplayTotalCount"))
+                    notify_to_display_pipeline_complete_seen = True
+                    notify_to_display_pipeline_complete_max_ms = update_max(
+                        notify_to_display_pipeline_complete_max_ms, n2d_max
+                    )
+                n2d_count = num(data.get("notifyToDisplayPipelineCompleteTotalCount"))
                 if n2d_count is not None:
-                    notify_to_display_seen = True
-                    if n2d_count > notify_to_display_sample_count:
-                        notify_to_display_sample_count = n2d_count
+                    notify_to_display_pipeline_complete_seen = True
+                    if n2d_count > notify_to_display_pipeline_complete_sample_count:
+                        notify_to_display_pipeline_complete_sample_count = n2d_count
                 queue_high_water = num(data.get("queueHighWater"))
                 if queue_high_water_first is None and queue_high_water is not None:
                     queue_high_water_first = queue_high_water
@@ -916,10 +918,15 @@ def main() -> int:
     emit("display_skips_last", display_skips_last)
     emit("flush_max_peak", flush_max_peak)
     emit("loop_max_peak", loop_max_peak)
-    emit("notify_to_display_max_ms", notify_to_display_max_ms)
     emit(
-        "notify_to_display_sample_count",
-        notify_to_display_sample_count if notify_to_display_seen else None,
+        "notify_to_display_pipeline_complete_max_ms",
+        notify_to_display_pipeline_complete_max_ms,
+    )
+    emit(
+        "notify_to_display_pipeline_complete_sample_count",
+        notify_to_display_pipeline_complete_sample_count
+        if notify_to_display_pipeline_complete_seen
+        else None,
     )
     emit("wifi_max_peak", wifi_max_peak)
     emit("wifi_max_peak_excluding_first", wifi_max_peak_excluding_first)

@@ -761,6 +761,11 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     printJsonString(providers_.buildGitSha ? providers_.buildGitSha(providers_.ctx) : "unknown");
     io_->print(",\"runtimeImageId\":");
     printJsonString(providers_.runtimeImageId ? providers_.runtimeImageId(providers_.ctx) : "unknown");
+    io_->print(",\"displaySettings\":{\"brightness\":");
+    io_->print(providers_.displayBrightness ? providers_.displayBrightness(providers_.ctx) : 0);
+    io_->print(",\"colorMutedRgb565\":");
+    io_->print(providers_.displayMutedColorRgb565 ? providers_.displayMutedColorRgb565(providers_.ctx) : 0);
+    io_->print('}');
     io_->print(",\"finalSnapshotQueued\":");
     io_->print(finalSnapshotQueued_ ? "true" : "false");
     io_->print(",\"finalized\":");

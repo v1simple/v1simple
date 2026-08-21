@@ -115,6 +115,22 @@ static FontVisualBounds freeSans24VisualBounds(const char* text) {
     };
 }
 
+static bool rectsOverlap(int16_t ax, int16_t ay, int16_t aw, int16_t ah,
+                         int16_t bx, int16_t by, int16_t bw, int16_t bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+static void assertBandClearsDoNotTouchDrawnCard0() {
+    const DisplayLayout::DisplayRect card = DisplayLayout::cardRect(0);
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0u, canvas()->fillRectCalls.size(),
+        "test setup must exercise at least one band background clear");
+    for (const auto& call : canvas()->fillRectCalls) {
+        TEST_ASSERT_FALSE_MESSAGE(
+            rectsOverlap(call.x, call.y, call.w, call.h, card.x, card.y, card.w, card.h),
+            "a band background clear must not erase pixels from an already-drawn card 0");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // setUp / tearDown
 // ---------------------------------------------------------------------------
@@ -204,6 +220,8 @@ void test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k() {
 
     display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
+    TEST_ASSERT_EQUAL_INT16(kBandLabelClearW, canvas()->fillRectCalls[0].w);
+    TEST_ASSERT_EQUAL_INT16(kBandLabelClearH, canvas()->fillRectCalls[0].h);
 }
 
 // And toggling Ku off must also re-invalidate.
@@ -229,6 +247,61 @@ void test_drawBandIndicators_band_move_clears_only_changed_cells() {
         TEST_ASSERT_EQUAL_INT16(kBandLabelClearW, call.w);
         TEST_ASSERT_EQUAL_INT16(kBandLabelClearH, call.h);
     }
+}
+
+void test_drawBandIndicators_band_move_preserves_drawn_card0() {
+    display.ut_elementCaches().bands.valid = false;
+    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
+    display.ut_elementCaches().cards.forceRedraw = false;
+    resetCanvas();
+
+    display.ut_drawBandIndicators(BAND_KA, false, 0);
+
+    assertBandClearsDoNotTouchDrawnCard0();
+    TEST_ASSERT_FALSE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
+        "clipped K-band cleanup must not add a redundant full card redraw");
+}
+
+void test_drawBandIndicators_full_stack_clear_preserves_drawn_card0() {
+    display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
+    display.ut_elementCaches().cards.forceRedraw = false;
+    display.ut_elementCaches().bands.valid = false;
+    resetCanvas();
+
+    display.ut_drawBandIndicators(BAND_KA, false, 0);
+
+    assertBandClearsDoNotTouchDrawnCard0();
+
+    // The upper stack still gets its historic full-width cleanup; only the
+    // portion geometrically inside card 0 is excluded.  The no-card Ku test
+    // above separately preserves the wider lower-cell cleanup.
+    const DisplayLayout::DisplayRect card = DisplayLayout::cardRect(0);
+    bool keptFullWidthAboveCard = false;
+    for (const auto& call : canvas()->fillRectCalls) {
+        if (call.x == kBandLabelX - kBandLabelClearLeftPad && call.w == kBandLabelClearW &&
+            call.y < card.y && call.y + call.h <= card.y) {
+            keptFullWidthAboveCard = true;
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(keptFullWidthAboveCard,
+        "full-stack cleanup above card 0 must retain the complete L/Ka clear width");
+    TEST_ASSERT_FALSE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
+        "clipped full-stack cleanup must not add a redundant full card redraw");
+}
+
+void test_drawBandIndicators_ku_foreground_repaints_drawn_card0() {
+    display.ut_elementCaches().bands.valid = false;
+    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
+    display.ut_elementCaches().cards.forceRedraw = false;
+    resetCanvas();
+
+    display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
+
+    TEST_ASSERT_TRUE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
+        "the wider Ku glyph must be composited below an already-drawn card 0");
 }
 
 void test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k() {
@@ -486,6 +559,9 @@ int main() {
     RUN_TEST(test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k);
     RUN_TEST(test_drawBandIndicators_clearing_ku_bit_invalidates_cache);
     RUN_TEST(test_drawBandIndicators_band_move_clears_only_changed_cells);
+    RUN_TEST(test_drawBandIndicators_band_move_preserves_drawn_card0);
+    RUN_TEST(test_drawBandIndicators_full_stack_clear_preserves_drawn_card0);
+    RUN_TEST(test_drawBandIndicators_ku_foreground_repaints_drawn_card0);
     RUN_TEST(test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k);
     RUN_TEST(test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw);
 

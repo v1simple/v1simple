@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from artifact_privacy import sanitize_artifact_value
 from bench_identity import current_grader_fingerprint
 from camera_artifacts import (
     CAPTURE_MANIFEST_NAME,
@@ -332,7 +333,10 @@ def _decode_registration_frame(path: Path, ffmpeg: str | None = None) -> bytes:
     )
     if process.returncode != 0:
         detail = process.stderr.decode("utf-8", errors="replace").strip()
-        error = detail or f"exit {process.returncode}"
+        error = sanitize_artifact_value(
+            detail or f"exit {process.returncode}",
+            run_dir=path.parent,
+        )
         raise RuntimeError(f"camera registration still decode failed: {error}")
     expected_bytes = REGISTRATION_WIDTH * REGISTRATION_HEIGHT * 3
     if len(process.stdout) != expected_bytes:
@@ -1319,11 +1323,12 @@ def grade_camera(
             duration_s = float(camera_result.get("expected_duration_seconds") or 0.0)
             payload.update(grade_idle(observations, timeline_start_video_s or 0.0, duration_s))
     except Exception as exc:  # noqa: BLE001 - the grade artifact is the failure contract
-        payload["errors"] = [str(exc)]
+        safe_error = sanitize_artifact_value(str(exc), run_dir=camera_dir)
+        payload["errors"] = [safe_error]
         payload["diagnostics"] = [
             {
                 "code": "camera_processing_error",
-                "message": str(exc),
+                "message": safe_error,
             }
         ]
         payload["confidence"] = {"result": "INCONCLUSIVE", "gates": {}}

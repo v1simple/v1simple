@@ -345,8 +345,8 @@ matching `alertTablePublishes`, `alertTablePublishes3Bogey`, and
 priority selections, invalid-band rows, live-display priority skips/fallbacks,
 queue drops, or parse failures. The replacement window must also advance
 `v1AllVolumeParsed` exactly once; earlier preflight credit cannot satisfy it.
-Display-update and notify-to-display latency counters provide transport context;
-they are not synthetic pass/fail proof.
+Display-update and notification-to-display-pipeline-completion latency counters
+provide transport context; they are not synthetic pass/fail proof.
 
 ## Verification
 

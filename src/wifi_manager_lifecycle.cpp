@@ -277,7 +277,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
         if (maintenanceBootMode_) {
             (void)beginMaintenanceAutoConnectScan(false);
         } else {
-            Serial.printf("[SetupMode] STA connect queued for '%s'\n", settings.wifiClientSSID.c_str());
+            Serial.println("[SetupMode] STA connect queued");
             (void)connectToNetwork(settings.wifiClientSSID, settingsManager.getWifiClientPassword(), false);
         }
     }

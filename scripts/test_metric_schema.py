@@ -20,7 +20,17 @@ def assert_true(condition: bool, message: str) -> None:
 def main() -> int:
     legacy_unsupported = metric_schema.unsupported_metrics_for_perf_csv(12, {"millis", "rx"})
     assert_true(
-        {"perf_drop_delta", "event_drop_delta", "samples_to_stable", "time_to_stable_ms"} <= legacy_unsupported,
+        {
+            "perf_drop_delta",
+            "event_drop_delta",
+            "samples_to_stable",
+            "time_to_stable_ms",
+            "connect_burst_samples_to_stable",
+            "connect_burst_time_to_stable_ms",
+            "notify_to_display_pipeline_complete_max_ms",
+            "notify_to_display_pipeline_complete_sample_count",
+        }
+        <= legacy_unsupported,
         f"legacy CSV capability mismatch: {legacy_unsupported}",
     )
     assert_true(
@@ -30,7 +40,15 @@ def main() -> int:
 
     schema13_unsupported = metric_schema.unsupported_metrics_for_perf_csv(13, {"perfDrop", "eventBusDrops", "millis"})
     assert_true(
-        schema13_unsupported == {"samples_to_stable", "time_to_stable_ms"},
+        schema13_unsupported
+        == {
+            "samples_to_stable",
+            "time_to_stable_ms",
+            "connect_burst_samples_to_stable",
+            "connect_burst_time_to_stable_ms",
+            "notify_to_display_pipeline_complete_max_ms",
+            "notify_to_display_pipeline_complete_sample_count",
+        },
         f"schema13 capability mismatch: {schema13_unsupported}",
     )
     assert_true(
@@ -42,13 +60,34 @@ def main() -> int:
         0, {"perfDrop", "eventBusDrops", "millis"}
     )
     assert_true(
-        unmarked_unsupported == {"samples_to_stable", "time_to_stable_ms"},
+        unmarked_unsupported
+        == {
+            "samples_to_stable",
+            "time_to_stable_ms",
+            "connect_burst_samples_to_stable",
+            "connect_burst_time_to_stable_ms",
+            "notify_to_display_pipeline_complete_max_ms",
+            "notify_to_display_pipeline_complete_sample_count",
+        },
         f"unmarked CSV should use observed drop-counter columns: {unmarked_unsupported}",
     )
 
     assert_true(
         metric_schema.SOAK_TREND_METRIC_UNITS["dma_fragmentation_pct_p95"] == "percent",
         "canonical fragmentation unit must stay percent",
+    )
+    schema47_unsupported = metric_schema.unsupported_metrics_for_perf_csv(
+        47,
+        {
+            "perfDrop",
+            "eventBusDrops",
+            "notifyToDisplayPipelineCompleteMax_ms",
+            "notifyToDisplayPipelineCompleteTotalCount",
+        },
+    )
+    assert_true(
+        "notify_to_display_pipeline_complete_max_ms" not in schema47_unsupported,
+        f"schema 47 completion metric unexpectedly unsupported: {schema47_unsupported}",
     )
     assert_true(
         metric_schema.kv_source_key("connect_burst_pre_ble_process_peak_us") == "connect_burst_pre_ble_process_peak",

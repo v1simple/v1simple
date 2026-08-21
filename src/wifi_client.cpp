@@ -420,7 +420,7 @@ void WiFiManager::processWifiClientConnectPhase() {
         // Improve coexistence stability while connecting alongside BLE links.
         WiFi.setSleep(false);
         WiFi.setAutoReconnect(true);
-        Serial.printf("[WiFiClient] Connecting to: %s\n", pendingConnectSSID_.c_str());
+        Serial.println("[WiFiClient] Connecting to configured network");
         WiFi.begin(pendingConnectSSID_.c_str(), pendingConnectPassword_.c_str());
         wifiConnectStartMs_ = now;
         wifiConnectPhase_ = WifiConnectPhase::IDLE;
@@ -555,8 +555,7 @@ bool WiFiManager::queueNextMaintenanceAutoConnectSlot() {
             continue;
         }
 
-        Serial.printf("[WiFiClient] Maintenance STA auto-connect trying slot %u SSID '%s'\n",
-                      static_cast<unsigned>(slotIndex), slot.ssid.c_str());
+        Serial.printf("[WiFiClient] Maintenance STA auto-connect trying slot %u\n", static_cast<unsigned>(slotIndex));
         if (connectToNetwork(slot.ssid, settingsManager.getWifiStaSlotPassword(slotIndex), false,
                              static_cast<int>(slotIndex), true)) {
             return true;
@@ -639,7 +638,7 @@ void WiFiManager::checkWifiClientStatus() {
         if (status == WL_CONNECTED) {
             wifiClientState_ = WIFI_CLIENT_CONNECTED;
             wifiConnectStartMs_ = 0;
-            Serial.printf("[WiFiClient] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            Serial.println("[WiFiClient] Connected");
             if (isSetupModeActive()) {
                 // Arm AP idle timer from STA connect so setup UI clients have
                 // a full grace window before AP retirement.

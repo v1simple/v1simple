@@ -31,6 +31,36 @@ def sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def assert_codex_transport_schema(schema: object) -> None:
+    def check(node: object, path: str = "$") -> None:
+        if isinstance(node, dict):
+            assert_true("oneOf" not in node, f"unsupported oneOf remained at {path}")
+            assert_true("const" not in node, f"unsupported const remained at {path}")
+            if "enum" in node:
+                assert_true("type" in node, f"enum lacks an explicit type at {path}")
+            assert_true(
+                not isinstance(node.get("type"), list),
+                f"multi-type union was not lowered to anyOf at {path}",
+            )
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                assert_true(
+                    set(node.get("required", [])) == set(properties),
+                    f"Structured Outputs required fields are incomplete at {path}",
+                )
+                assert_true(
+                    node.get("additionalProperties") is False,
+                    f"Structured Outputs object is open at {path}",
+                )
+            for key, child in node.items():
+                check(child, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, child in enumerate(node):
+                check(child, f"{path}[{index}]")
+
+    check(schema)
+
+
 def source_precheck(basis: str = "exact") -> dict[str, object]:
     return {
         "current_head": "fixture-revision",
@@ -1371,6 +1401,7 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             f"output.write_text({json.dumps(json.dumps(report))})\n"
             f"Path({str(capture)!r}).write_text(json.dumps({{\n"
             "  'argv':sys.argv[1:],\n"
+            "  'output_schema':json.loads(Path(sys.argv[sys.argv.index('--output-schema')+1]).read_text()),\n"
             "  'codex_oss_base_url':os.environ.get('CODEX_OSS_BASE_URL'),\n"
             "  'ollama_host':os.environ.get('OLLAMA_HOST'),\n"
             "  'openai_key':os.environ.get('OPENAI_API_KEY'),\n"
@@ -1403,6 +1434,15 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
         captured = json.loads(capture.read_text(encoding="utf-8"))
         argv = captured["argv"]
         assert_true("--oss" in argv, "local invocation omitted --oss")
+        local_schema_path = argv[argv.index("--output-schema") + 1]
+        assert_true(
+            local_schema_path == str(investigator.SCHEMA_PATH),
+            "local invocation no longer uses the canonical schema",
+        )
+        assert_true(
+            captured["output_schema"] == investigator.load_report_schema(),
+            "local invocation schema content changed",
+        )
         config_values = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "-c"]
         assert_true(
             'shell_environment_policy.inherit="core"' in config_values
@@ -1457,9 +1497,20 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             output_path=output,
             timeout_seconds=10,
         )
-        hosted_argv = json.loads(capture.read_text(encoding="utf-8"))["argv"]
+        hosted_capture = json.loads(capture.read_text(encoding="utf-8"))
+        hosted_argv = hosted_capture["argv"]
         assert_true("--oss" not in hosted_argv, "explicit hosted invocation stayed local")
         assert_true("--local-provider" not in hosted_argv, "hosted invocation retained a local provider")
+        hosted_schema_path = hosted_argv[hosted_argv.index("--output-schema") + 1]
+        assert_true(
+            hosted_schema_path != str(investigator.SCHEMA_PATH),
+            "hosted invocation bypassed its compatible transport schema",
+        )
+        assert_true(
+            not Path(hosted_schema_path).exists(),
+            "hosted transport schema was not removed after execution",
+        )
+        assert_codex_transport_schema(hosted_capture["output_schema"])
         hosted_config_values = [
             hosted_argv[index + 1]
             for index, value in enumerate(hosted_argv[:-1])
@@ -1585,6 +1636,141 @@ def test_raw_model_json_is_validated_before_postprocessing() -> None:
             assert_true("Raw model report violates schema" in str(exc), "raw validation was deferred")
         else:
             raise AssertionError("schema-invalid raw model JSON reached postprocessing")
+
+
+def test_codex_output_schema_requires_every_property() -> None:
+    assert_codex_transport_schema(investigator.codex_output_schema())
+
+
+def test_transport_nulls_are_removed_before_canonical_validation() -> None:
+    evidence = {
+        "kind": "file",
+        "path": "unused",
+        "sha256": "0" * 64,
+        "description": "fixture evidence",
+    }
+    optional_fields = (
+        "json_pointer",
+        "line_start",
+        "line_end",
+        "row_start",
+        "row_end",
+        "keys",
+        "start_pts_s",
+        "end_pts_s",
+        "start_frame",
+        "end_frame",
+        "attachment_index",
+        "cell_indices",
+    )
+    evidence.update({name: None for name in optional_fields})
+    report = minimal_model_report(evidence)
+    report["coverage"]["attachments"] = []
+    report["coverage"]["artifacts"] = [
+        {
+            "path": "unused",
+            "status": "skipped",
+            "sha256": "0" * 64,
+            "size_bytes": 0,
+            "role": "text",
+            "selectors": None,
+            "notes": [],
+        }
+    ]
+    assert_true(
+        bool(investigator.validate_report_schema(report)),
+        "canonical v2 unexpectedly accepted transport-only nulls",
+    )
+    investigator.remove_transport_nulls(report)
+    normalized = report["findings"][0]["evidence"][0]
+    assert_true(
+        all(name not in normalized for name in optional_fields),
+        "transport-only selector fields reached the canonical report",
+    )
+    assert_true(
+        "selectors" not in report["coverage"]["artifacts"][0],
+        "transport-only artifact selectors reached the canonical report",
+    )
+    assert_true(
+        not investigator.validate_report_schema(report),
+        "normalized report no longer matches canonical v2",
+    )
+
+
+def test_codex_failure_uses_sanitized_jsonl_terminal_error() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        output = root / "report.json"
+        nested = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "message": f"exact hosted failure at {root}",
+                },
+            }
+        )
+        stdout = "\n".join(
+            (
+                "not-json",
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": "earlier stream error",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "error", "message": "nonfatal warning"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.failed",
+                        "error": {"message": nested},
+                    }
+                ),
+            )
+        )
+        completed = subprocess.CompletedProcess(
+            args=["fixture-codex"],
+            returncode=1,
+            stdout=stdout,
+            stderr="stderr fallback",
+        )
+        original_unlink = Path.unlink
+
+        def reject_transport_schema_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            if path.name.startswith(".codex-output-schema-"):
+                raise PermissionError("fixture cleanup denied")
+            original_unlink(path, *args, **kwargs)
+
+        with (
+            patch.object(investigator.subprocess, "run", return_value=completed),
+            patch.object(Path, "unlink", reject_transport_schema_cleanup),
+        ):
+            try:
+                investigator.invoke_codex(
+                    executable="fixture-codex",
+                    model="fixture-model",
+                    oss=False,
+                    local_provider=None,
+                    prompt="fixture",
+                    images=[],
+                    output_path=output,
+                    timeout_seconds=10,
+                    private_paths=(root,),
+                )
+            except investigator.InvestigationError as exc:
+                message = str(exc)
+                assert_true(exc.code == "backend_failed", f"wrong failure code: {exc.code}")
+                assert_true("exact hosted failure" in message, "terminal JSONL error was lost")
+                assert_true("earlier stream error" not in message, "stream error won over terminal")
+                assert_true("stderr fallback" not in message, "stderr won over JSONL error")
+                assert_true("cleanup denied" not in message, "cleanup failure masked backend error")
+                assert_true(str(root) not in message and "<private>" in message, "error leaked path")
+            else:
+                raise AssertionError("nonzero Codex result did not fail")
 
 
 def test_image_attachment_limit_is_global_across_passes() -> None:
@@ -2899,6 +3085,9 @@ def main() -> int:
     test_missing_run_error_does_not_print_resolved_user_path()
     test_atomic_report_replaces_old_content()
     test_raw_model_json_is_validated_before_postprocessing()
+    test_codex_output_schema_requires_every_property()
+    test_transport_nulls_are_removed_before_canonical_validation()
+    test_codex_failure_uses_sanitized_jsonl_terminal_error()
     test_image_attachment_limit_is_global_across_passes()
     test_video_limits_apply_before_extraction_and_manifest_preserves_order()
     test_attachment_retention_is_contained_and_reconciled()

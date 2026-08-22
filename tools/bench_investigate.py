@@ -233,12 +233,113 @@ def validate_schema_value(
     return errors
 
 
-def validate_report_schema(report: Mapping[str, Any]) -> list[str]:
+def load_report_schema() -> dict[str, Any]:
     try:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise InvestigationError("schema_unavailable", f"Could not read report schema: {exc}") from exc
+    if not isinstance(schema, dict):
+        raise InvestigationError("schema_unavailable", "Report schema is not a JSON object")
+    return schema
+
+
+def validate_report_schema(report: Mapping[str, Any]) -> list[str]:
+    schema = load_report_schema()
     return validate_schema_value(report, schema, schema)
+
+
+def codex_output_schema() -> dict[str, Any]:
+    """Return the canonical report schema tightened for Structured Outputs."""
+    schema = copy.deepcopy(load_report_schema())
+
+    def require_every_property(node: Any) -> None:
+        if isinstance(node, dict):
+            if "oneOf" in node:
+                node["anyOf"] = node.pop("oneOf")
+            if "const" in node:
+                node["enum"] = [node.pop("const")]
+            enum_values = node.get("enum")
+            if "type" not in node and isinstance(enum_values, list) and enum_values:
+                if all(isinstance(value, str) for value in enum_values):
+                    node["type"] = "string"
+                elif all(
+                    isinstance(value, int) and not isinstance(value, bool)
+                    for value in enum_values
+                ):
+                    node["type"] = "integer"
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                canonical_required = set(node.get("required", []))
+                for name, child in list(properties.items()):
+                    if name not in canonical_required:
+                        properties[name] = {"anyOf": [child, {"type": "null"}]}
+                if len(canonical_required) != len(properties):
+                    existing = str(node.get("description") or "").strip()
+                    node["description"] = (
+                        f"{existing} Set fields that are not applicable to null."
+                    ).strip()
+                node["required"] = list(properties)
+            type_choices = node.get("type")
+            if isinstance(type_choices, list):
+                description = node.pop("description", None)
+                node.pop("type")
+                constraints = dict(node)
+                node.clear()
+                if description is not None:
+                    node["description"] = description
+                node["anyOf"] = [
+                    (
+                        {"type": choice}
+                        if choice == "null"
+                        else {"type": choice, **copy.deepcopy(constraints)}
+                    )
+                    for choice in type_choices
+                ]
+            for child in node.values():
+                require_every_property(child)
+        elif isinstance(node, list):
+            for child in node:
+                require_every_property(child)
+
+    require_every_property(schema)
+    return schema
+
+
+def remove_transport_nulls(report: dict[str, Any]) -> None:
+    """Remove hosted-only null placeholders before canonical v2 validation."""
+    schema = load_report_schema()
+
+    def resolve(node: Mapping[str, Any]) -> Mapping[str, Any]:
+        reference = node.get("$ref")
+        if not isinstance(reference, str) or not reference.startswith("#/"):
+            return node
+        target: Any = schema
+        for token in reference[2:].split("/"):
+            target = target[token.replace("~1", "/").replace("~0", "~")]
+        return target if isinstance(target, Mapping) else node
+
+    def normalize(value: Any, node: Mapping[str, Any]) -> None:
+        node = resolve(node)
+        if isinstance(value, dict):
+            properties = node.get("properties")
+            if not isinstance(properties, Mapping):
+                return
+            required = set(node.get("required", []))
+            for name in list(value):
+                child = properties.get(name)
+                if not isinstance(child, Mapping):
+                    continue
+                if value[name] is None and name not in required:
+                    del value[name]
+                else:
+                    normalize(value[name], child)
+        elif isinstance(value, list):
+            child = node.get("items")
+            if isinstance(child, Mapping):
+                for item in value:
+                    normalize(item, child)
+
+    normalize(report, schema)
 
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -1056,6 +1157,44 @@ def sanitize_error(text: str, private_paths: Sequence[Path] = ()) -> str:
     return _replace_private_paths(text, replacements)
 
 
+def _codex_error_message(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            decoded = json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped
+        nested = _codex_error_message(decoded)
+        return nested or stripped
+    if isinstance(value, Mapping):
+        if "error" in value:
+            nested = _codex_error_message(value.get("error"))
+            if nested:
+                return nested
+        if "message" in value:
+            return _codex_error_message(value.get("message"))
+    return None
+
+
+def codex_jsonl_failure(stdout: str) -> str | None:
+    stream_error: str | None = None
+    turn_failure: str | None = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("type") == "error":
+            stream_error = _codex_error_message(event.get("message")) or stream_error
+        elif event.get("type") == "turn.failed":
+            turn_failure = _codex_error_message(event.get("error")) or turn_failure
+    return turn_failure or stream_error
+
+
 def codex_environment(local_provider: str | None) -> dict[str, str]:
     environment = os.environ.copy()
     if local_provider is None:
@@ -1086,6 +1225,32 @@ def invoke_codex(
     timeout_seconds: int,
     private_paths: Sequence[Path] = (),
 ) -> tuple[dict[str, Any], str, str]:
+    output_schema_path = SCHEMA_PATH
+    temporary_output_schema: Path | None = None
+    if not oss:
+        schema_payload = codex_output_schema()
+        try:
+            descriptor, output_schema_name = tempfile.mkstemp(
+                prefix=".codex-output-schema-",
+                suffix=".json",
+                dir=output_path.parent,
+            )
+            temporary_output_schema = Path(output_schema_name)
+            output_schema_path = temporary_output_schema
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(schema_payload, handle, allow_nan=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except (OSError, TypeError, ValueError) as exc:
+            if temporary_output_schema is not None:
+                try:
+                    temporary_output_schema.unlink()
+                except OSError:
+                    pass
+            raise InvestigationError(
+                "schema_unavailable",
+                f"Could not prepare output schema: {type(exc).__name__}",
+            ) from exc
     command = [
         executable,
         "exec",
@@ -1107,7 +1272,7 @@ def invoke_codex(
         "--model",
         model,
         "--output-schema",
-        str(SCHEMA_PATH),
+        str(output_schema_path),
         "--output-last-message",
         str(output_path),
         "--color",
@@ -1132,29 +1297,45 @@ def invoke_codex(
         command.extend(["--image", str(image)])
     command.extend(["-C", str(ROOT), "-"])
     try:
-        process = subprocess.run(
-            command,
-            input=prompt,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=ROOT,
-            env=codex_environment(local_provider if oss else None),
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise InvestigationError(
-            "backend_missing",
-            "Codex executable is unavailable",
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise InvestigationError("backend_timeout", f"Codex exceeded {timeout_seconds} seconds") from exc
+        try:
+            process = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=ROOT,
+                env=codex_environment(local_provider if oss else None),
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise InvestigationError(
+                "backend_missing",
+                "Codex executable is unavailable",
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise InvestigationError(
+                "backend_timeout", f"Codex exceeded {timeout_seconds} seconds"
+            ) from exc
+    finally:
+        if temporary_output_schema is not None:
+            try:
+                temporary_output_schema.unlink()
+            except OSError:
+                pass
     if process.returncode != 0:
-        detail = "\n".join(line for line in process.stderr.splitlines()[-8:] if line.strip())
+        stderr_detail = "\n".join(
+            line for line in process.stderr.splitlines()[-8:] if line.strip()
+        )
+        detail = (
+            codex_jsonl_failure(process.stdout)
+            or stderr_detail
+            or f"Codex exited {process.returncode}"
+        )
         raise InvestigationError(
             "backend_failed",
-            sanitize_error(detail or f"Codex exited {process.returncode}", private_paths),
+            sanitize_error(detail, private_paths),
         )
     try:
         report = json.loads(output_path.read_text(encoding="utf-8"))
@@ -1165,6 +1346,8 @@ def invoke_codex(
         ) from exc
     if not isinstance(report, dict):
         raise InvestigationError("model_output_invalid", "Model output is not a JSON object")
+    if not oss:
+        remove_transport_nulls(report)
     raw_coverage = report.get("coverage")
     if isinstance(raw_coverage, dict):
         raw_coverage["attachments"] = []

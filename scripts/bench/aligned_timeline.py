@@ -1633,14 +1633,27 @@ def _commit_frame_relations(
     )
     associations: list[dict[str, Any]] = []
     for commit in commits:
-        dropped_overlap = not (unverified_camera or unmapped_camera) and any(
+        commit_earliest = _integer(commit.get("host_earliest_ns"))
+        # Delivery bounds capture start; adding the known duration bounds the
+        # latest time at which an otherwise unmapped sample could matter.
+        relevant_unmapped_camera = [
+            item
+            for item in unmapped_camera
+            if (callback := _integer(item.get("callback_host_ns"))) is None
+            or callback < 0
+            or (duration := _integer(item.get("duration_ns"))) is None
+            or duration <= 0
+            or commit_earliest is None
+            or callback + duration >= commit_earliest
+        ]
+        dropped_overlap = not unverified_camera and any(
             intervals_overlap(commit, drop) for drop in drops
         )
         if commit.get("host_earliest_ns") is None or commit.get("host_latest_ns") is None:
             status, candidates, reason = "missing_evidence", [], "commit_clock_mapping_unavailable"
         elif unverified_camera:
             status, candidates, reason = "missing_evidence", [], "camera_timing_unverified"
-        elif unmapped_camera:
+        elif relevant_unmapped_camera:
             mapped_candidates = [frame for frame in frames if intervals_overlap(commit, frame)]
             candidates = mapped_candidates
             status = "missing_evidence"

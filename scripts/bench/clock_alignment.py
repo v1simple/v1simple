@@ -20,6 +20,7 @@ UNCERTAINTY_TARGET_NS = 2_500_000
 MIN_AFFINE_OBSERVATIONS = 4
 MIN_AFFINE_SPAN_US = 1_000_000
 SELECTION_BUCKETS = 8
+MAX_PROVISIONAL_SLOPE_POINTS = 64
 SUCCESSFUL_EXCHANGE_STATUSES = frozenset(
     {"observed", "complete", "completed", "ok", "success", "successful", "valid"}
 )
@@ -223,8 +224,16 @@ def _fit_segment(
         base["limitations"] = ["no_valid_four_timestamp_exchange"]
         return base
 
-    points = [_point(item) for item in valid]
-    provisional_slope = _theil_sen(points) or NOMINAL_NS_PER_US
+    # This slope only ranks delay candidates. Bound its pairwise work while
+    # retaining evenly spaced coverage of the observed DUT span.
+    provisional_points = sorted(_point(item) for item in valid)
+    if len(provisional_points) > MAX_PROVISIONAL_SLOPE_POINTS:
+        final_index = len(provisional_points) - 1
+        provisional_points = [
+            provisional_points[index * final_index // (MAX_PROVISIONAL_SLOPE_POINTS - 1)]
+            for index in range(MAX_PROVISIONAL_SLOPE_POINTS)
+        ]
+    provisional_slope = _theil_sen(provisional_points) or NOMINAL_NS_PER_US
     if provisional_slope <= 0:
         provisional_slope = NOMINAL_NS_PER_US
     selected = _select_low_delay(valid, provisional_slope)

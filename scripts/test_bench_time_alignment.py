@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
+import clock_alignment  # noqa: E402
 from aligned_timeline import (  # noqa: E402
     build_aligned_timeline,
     extract_qsync_exchanges,
@@ -224,6 +225,44 @@ def test_run_window_qsync_names_robust_fit_bounds_and_outliers() -> None:
     )
     outside = map_dut_timestamp(alignment, "boot-a", 50_000_000)
     assert_true(outside["status"] == "out_of_range", "mapper extrapolated outside validity")
+
+
+def test_multi_hour_clock_fit_bounds_provisional_slope_work() -> None:
+    exchange_count = 1_920  # Four hours at the 7.5-second QSYNC cadence.
+    exchanges = qsync_fixture("long-run", count=exchange_count, step_us=7_500_000)
+    original_theil_sen = clock_alignment._theil_sen
+    fit_sizes: list[int] = []
+
+    def bounded_theil_sen(
+        points: list[tuple[Fraction, Fraction]],
+    ) -> Fraction | None:
+        fit_sizes.append(len(points))
+        assert_true(
+            len(points) <= clock_alignment.MAX_PROVISIONAL_SLOPE_POINTS,
+            f"unbounded Theil-Sen fit received {len(points)} points",
+        )
+        return original_theil_sen(points)
+
+    clock_alignment._theil_sen = bounded_theil_sen
+    try:
+        alignment = fit_clock_alignment(exchanges)
+    finally:
+        clock_alignment._theil_sen = original_theil_sen
+
+    mapping = alignment["segments"][0]
+    assert_true(
+        alignment["raw_exchange_count"] == exchange_count,
+        "long-run exchanges were lost",
+    )
+    assert_true(
+        fit_sizes == [clock_alignment.MAX_PROVISIONAL_SLOPE_POINTS, 8],
+        f"unexpected fit sizes: {fit_sizes}",
+    )
+    assert_true(mapping["fit_type"] == "affine", f"long-run fit was degraded: {mapping}")
+    assert_true(
+        abs(mapping["slope_ns_per_us"] - float(TRUE_SLOPE)) < 0.002,
+        f"long-run drift was not recovered: {mapping}",
+    )
 
 
 def test_late_qsync_reply_is_rejoined_by_nonce() -> None:
@@ -846,6 +885,40 @@ def test_repeated_missing_packets_and_explicit_interval_outcomes() -> None:
         and unmapped_unique["reason"]
         == "unmapped_camera_sample_prevents_unique_frame_evidence",
         f"unmapped camera sample permitted a unique frame claim: {unmapped_unique}",
+    )
+
+    within_callback_duration_display = {
+        **display[0],
+        "display_commit_dut_us": 4_001_000,
+        "commit_seq": 13,
+    }
+    later_display = {
+        **display[0],
+        "display_commit_dut_us": 4_100_000,
+        "commit_seq": 14,
+    }
+    later_commit_host = true_host(4_100_000)
+    later_camera = {
+        **overlapping_camera[0],
+        "frame_seq": 100,
+        "source_pts_value": 100,
+        "host_capture_ns": later_commit_host - 100_000,
+        "callback_host_ns": later_commit_host,
+    }
+    scoped_unmapped_records = build_aligned_timeline(
+        clean_alignment(),
+        display_commits=[display[0], within_callback_duration_display, later_display],
+        camera_sidecar=[overlapping_camera[0], unmapped_camera, later_camera],
+    )
+    scoped_unmapped = [
+        record
+        for record in scoped_unmapped_records
+        if record.get("relation") == "display_commit_to_camera_frame"
+    ]
+    assert_true(
+        [record["association_status"] for record in scoped_unmapped]
+        == ["missing_evidence", "missing_evidence", "matched"],
+        f"earlier unmapped camera sample invalidated later frame evidence: {scoped_unmapped}",
     )
 
     dropped_camera = [
@@ -1668,6 +1741,7 @@ def test_flexible_csv_reader_and_exclusive_artifact_generation() -> None:
 def main() -> int:
     tests = (
         test_run_window_qsync_names_robust_fit_bounds_and_outliers,
+        test_multi_hour_clock_fit_bounds_provisional_slope_work,
         test_late_qsync_reply_is_rejoined_by_nonce,
         test_raw_serial_qsync_reply_is_joined_once_after_timeout,
         test_clock_segment_changes_reboots_and_offset_only,

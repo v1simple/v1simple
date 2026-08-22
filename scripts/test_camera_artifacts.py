@@ -28,6 +28,7 @@ from camera_artifacts import (  # noqa: E402
     publish_capture_manifest,
     publish_grade,
     publish_immutable_json,
+    replay_timing_anchor,
     verify_capture_files,
 )
 
@@ -146,6 +147,23 @@ def test_capture_id_stability_and_sensitivity() -> None:
             )
         _camera, changed_timing = manifest_fixture(Path(second_tmp) / "other", timing=9.0)
         assert_true(first["capture_id"] != changed_timing["capture_id"], "timing change was ignored")
+
+
+def test_replay_timing_anchor_preserves_measured_precision() -> None:
+    recording_started = 12_345.123_456_789
+    replay_started = 12_353.987_654_321
+    expected = replay_started - recording_started
+    video_seconds, anchor = replay_timing_anchor(
+        "replay",
+        recording_started,
+        replay_started,
+    )
+    assert_true(video_seconds == expected, f"measured timing was changed: {video_seconds}")
+    assert_true(video_seconds != round(expected, 3), f"timing was rounded to milliseconds: {anchor}")
+    assert_true(
+        anchor is not None and anchor["video_seconds"] == expected,
+        f"timing anchor lost measured precision: {anchor}",
+    )
 
 
 def test_immutable_publication_and_conflicts() -> None:
@@ -615,6 +633,7 @@ def test_regrade_cli_scrubs_immutable_report_conflict_path() -> None:
 
 def main() -> int:
     test_capture_id_stability_and_sensitivity()
+    test_replay_timing_anchor_preserves_measured_precision()
     test_immutable_publication_and_conflicts()
     test_camera_publishers_scrub_private_failure_details_before_hashing()
     test_camera_publication_preserves_owned_hashes_but_scrubs_digest_narrative()

@@ -556,7 +556,7 @@ def replay_timing_anchor(
     recording_started_monotonic: float | None,
     replay_started_monotonic: Any,
 ) -> tuple[float | None, dict[str, Any] | None]:
-    """Map the replay host event to the current camera video's approximate clock."""
+    """Map the replay host event using the measured first-frame video clock."""
     if (
         suite != "replay"
         or recording_started_monotonic is None
@@ -564,7 +564,7 @@ def replay_timing_anchor(
         or not math.isfinite(replay_started_monotonic)
     ):
         return None, None
-    video_seconds = round(replay_started_monotonic - recording_started_monotonic, 3)
+    video_seconds = replay_started_monotonic - recording_started_monotonic
     return video_seconds, {
         "kind": "first_emitted_replay_sample",
         "video_seconds": video_seconds,

@@ -1,5 +1,6 @@
 #include "display_orchestration_module.h"
 
+#include "modules/display/display_pipeline_module.h"
 #include "modules/quiet/quiet_coordinator_module.h"
 
 #ifndef UNIT_TEST
@@ -21,7 +22,8 @@ void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleCl
                                        DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule,
                                        PacketParser* parserPtr, SettingsManager* settings,
                                        VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
-                                       QuietCoordinatorModule* quietCoordinator) {
+                                       QuietCoordinatorModule* quietCoordinator,
+                                       DisplayPipelineModule* displayPipelineModule) {
     display_ = displayPtr;
     ble_ = bleClient;
     bleQueue_ = bleQueueModule;
@@ -32,6 +34,7 @@ void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleCl
     volumeFade_ = volumeFadeModule;
     speedMute_ = speedMuteModule;
     quiet_ = quietCoordinator;
+    displayPipeline_ = displayPipelineModule;
 }
 
 void DisplayOrchestrationModule::syncQuietPresentation() {
@@ -135,6 +138,10 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
     // is not suppressed by a higher-priority state.
     if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
         ble_->isConnected() && loopHasRenderablePriority) {
+        if (displayPipeline_ && displayPipeline_->companionFrameRefreshDue(ctx.nowMs)) {
+            result.runBlinkRefresh = true;
+            return result;
+        }
         const DisplayState liveState = parser_->getDisplayState();
         const bool flashActive = (liveState.flashBits != 0) || (liveState.bandFlashBits != 0) ||
                                  (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE) ||

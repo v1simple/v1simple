@@ -338,7 +338,7 @@ static void configureSystemLoopCoreModules() {
     displayRestoreModule.begin(&display, &parser, &bleClient, &displayPreviewModule, &displayPipelineModule);
     displayOrchestrationModule.begin(&display, &bleClient, &bleQueueModule, &displayPreviewModule,
                                      &displayRestoreModule, &parser, &settingsManager, &volumeFadeModule,
-                                     &speedMuteModule, &quietCoordinatorModule);
+                                     &speedMuteModule, &quietCoordinatorModule, &displayPipelineModule);
 }
 
 static void configureSystemLoopPhaseModules() {

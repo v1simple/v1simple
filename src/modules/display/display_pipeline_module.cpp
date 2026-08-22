@@ -40,6 +40,77 @@ bool isLivePrimaryKind(RenderFramePrimaryKind kind) {
     return kind == RenderFramePrimaryKind::V1_LIVE || kind == RenderFramePrimaryKind::ALP_LIVE;
 }
 
+// Alert-table rows and their companion display packet can land in adjacent BLE
+// connection events.  Rendering the completed table immediately can therefore
+// put a new frequency/card on the panel with the prior band, arrow, or bogey
+// count for one physical frame. Hold that transient briefly so the companion
+// packet can resolve it. A scheduled deadline keeps a missing companion packet
+// from suppressing a real alert indefinitely.
+constexpr uint32_t kV1CompanionFrameHoldMs = 100;
+
+int decodeAlertCountGlyph(char glyph) {
+    constexpr char kCountGlyphs[] = "0123456789AbCdEF";
+    const char* match = glyph != '\0' ? strchr(kCountGlyphs, glyph) : nullptr;
+    return match ? static_cast<int>(match - kCountGlyphs) : -1;
+}
+
+bool hasV1CompanionSemanticMismatch(const RenderFrame& frame, int alertCount) {
+    if (frame.primaryKind != RenderFramePrimaryKind::V1_LIVE || alertCount <= 0) {
+        return false;
+    }
+
+    const DisplayState& state = frame.primaryState;
+    const int displayedCount = decodeAlertCountGlyph(state.bogeyCounterChar);
+    if (displayedCount >= 0 && displayedCount != alertCount) {
+        return true;
+    }
+
+    if (!state.systemStatus) {
+        return false;
+    }
+
+    uint8_t expectedBandMask = static_cast<uint8_t>(frame.v1Priority.band);
+    if (frame.v1Priority.band == BAND_KU) {
+        // The V1's band row represents Ku on its K indicator.
+        expectedBandMask = static_cast<uint8_t>(BAND_K | BAND_KU);
+    }
+    if (expectedBandMask != 0 && (state.activeBands & expectedBandMask) == 0) {
+        return true;
+    }
+
+    const uint8_t priorityDirection = static_cast<uint8_t>(frame.v1Priority.direction);
+    return priorityDirection != 0 && (static_cast<uint8_t>(state.arrows) & priorityDirection) == 0;
+}
+
+uint64_t v1CompanionMismatchKey(const RenderFrame& frame, int alertCount) {
+    const DisplayState& state = frame.primaryState;
+    const int displayedCount = decodeAlertCountGlyph(state.bogeyCounterChar);
+    return static_cast<uint64_t>(static_cast<uint8_t>(alertCount)) |
+           (static_cast<uint64_t>(static_cast<uint8_t>(displayedCount + 1)) << 8) |
+           (static_cast<uint64_t>(static_cast<uint8_t>(frame.v1Priority.band)) << 16) |
+           (static_cast<uint64_t>(state.activeBands) << 24) |
+           (static_cast<uint64_t>(static_cast<uint8_t>(frame.v1Priority.direction)) << 32) |
+           (static_cast<uint64_t>(static_cast<uint8_t>(state.arrows)) << 40);
+}
+
+bool shouldHoldV1CompanionFrame(const RenderFrame& frame, int alertCount, uint32_t nowMs) {
+    if (!hasV1CompanionSemanticMismatch(frame, alertCount)) {
+        return false;
+    }
+
+    const V1SemanticRevisionEvidence& causal = frame.primaryState.causal;
+    if (causal.stateRevision == 0 || causal.alertRevision == 0 || causal.stateSource.eventSeq == 0 ||
+        causal.alertSource.eventSeq == 0) {
+        return false;
+    }
+
+    const bool recentState =
+        causal.stateSource.dutMillis != 0 && (nowMs - causal.stateSource.dutMillis) < kV1CompanionFrameHoldMs;
+    const bool recentAlerts =
+        causal.alertSource.dutMillis != 0 && (nowMs - causal.alertSource.dutMillis) < kV1CompanionFrameHoldMs;
+    return recentState || recentAlerts;
+}
+
 bool isHighRateDisplaySnapshotEvent(const char* event) {
     if (!event) {
         return false;
@@ -275,6 +346,9 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastAlpDisplayLogEvent_[0] = '\0';
     lastAlpDisplayLogDetail_[0] = '\0';
     lastAlpDisplaySnapshotLogMs_ = 0;
+    companionFramePending_ = false;
+    companionFrameDeadlineMs_ = 0;
+    companionMismatchKey_ = 0;
 }
 
 void DisplayPipelineModule::logAlpDisplaySnapshot(uint32_t nowMs, const char* event, const char* detail,
@@ -566,6 +640,30 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
     perfClearDisplayRenderScenario();
 }
 
+bool DisplayPipelineModule::companionFrameRefreshDue(uint32_t nowMs) const {
+    return companionFramePending_ && static_cast<int32_t>(nowMs - companionFrameDeadlineMs_) >= 0;
+}
+
+bool DisplayPipelineModule::deferV1CompanionFrame(const RenderFrame& frame, int alertCount, uint32_t nowMs) {
+    if (!shouldHoldV1CompanionFrame(frame, alertCount, nowMs)) {
+        companionFramePending_ = false;
+        return false;
+    }
+
+    const uint64_t mismatchKey = v1CompanionMismatchKey(frame, alertCount);
+    const bool newMismatch = !companionFramePending_ || mismatchKey != companionMismatchKey_;
+    if (newMismatch) {
+        companionFramePending_ = true;
+        companionFrameDeadlineMs_ = nowMs + kV1CompanionFrameHoldMs;
+        companionMismatchKey_ = mismatchKey;
+    }
+    if (companionFrameRefreshDue(nowMs)) {
+        companionFramePending_ = false;
+        return false;
+    }
+    return true;
+}
+
 void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
     if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
         return;
@@ -579,6 +677,9 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
         frame.stealthSpeedMph = spd.speedMph;
         frame.stealthSpeedValid = spd.valid;
     }
+    if (deferV1CompanionFrame(frame, static_cast<int>(parser_->getAlertCount()), nowMs)) {
+        return;
+    }
     runVoice(frame, settingsRef, nowMs);
     if (frame.primaryKind == RenderFramePrimaryKind::V1_LIVE) {
         alertPersistence_->setPersistedAlert(frame.v1Priority);
@@ -590,6 +691,13 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
 // Narrow re-render path for blink refreshes. It omits voice and persistence
 // side effects; display caches repaint only elements affected by the phase.
 void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
+    if (companionFramePending_) {
+        // Whether the companion arrived or the bounded wait expired, release a
+        // deferred frame through the full path so voice and persistence are not
+        // lost along with the deferred physical frame.
+        handleParsed(nowMs);
+        return;
+    }
     if (!display_ || !parser_ || !settings_ || !ble_ || !displayMode_) {
         return;
     }
@@ -597,6 +705,9 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
     // Idle frames contain no blink sources.
     if (frame.primaryKind == RenderFramePrimaryKind::IDLE || frame.primaryKind == RenderFramePrimaryKind::NONE) {
+        return;
+    }
+    if (deferV1CompanionFrame(frame, static_cast<int>(parser_->getAlertCount()), nowMs)) {
         return;
     }
     renderComposedFrame(nowMs, frame, false, "DISP_BLINK");
@@ -611,6 +722,7 @@ bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
     const V1Settings& settingsRef = settings_->get();
 
     if (!v1Connected) {
+        companionFramePending_ = false;
         const RenderFrame frame = buildDisconnectedRestoreFrame(nowMs, settingsRef);
         if (isAlpPrimaryKind(frame.primaryKind)) {
             renderComposedFrame(nowMs, frame, true, "DISP_RESTORE", true);
@@ -639,12 +751,27 @@ bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
         return true;
     }
 
+    if (companionFramePending_) {
+        // Owner restoration can run after the companion became coherent but
+        // before the normal parsed path consumed it. Always release a pending
+        // frame through the full side-effect path, not the render-only restore.
+        display_->forceNextRedraw();
+        handleParsed(nowMs);
+        return true;
+    }
+
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
     if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
         const SpeedSelection spd = speedSelector_->selectedSpeed();
         frame.stealthMode = true;
         frame.stealthSpeedMph = spd.speedMph;
         frame.stealthSpeedValid = spd.valid;
+    }
+    if (deferV1CompanionFrame(frame, static_cast<int>(parser_->getAlertCount()), nowMs)) {
+        // Preview/warning restoration is a one-shot edge. Preserve its redraw
+        // request for the companion frame instead of consuming the edge silently.
+        display_->forceNextRedraw();
+        return true;
     }
     renderComposedFrame(nowMs, frame, true, "DISP_RESTORE", true);
     return true;

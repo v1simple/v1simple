@@ -45,6 +45,7 @@ class DisplayPipelineModule {
     // Triggered by the orchestrator when no parsed frame ran this loop but live
     // blink sources are active.
     void refreshBlinkTick(uint32_t nowMs);
+    bool companionFrameRefreshDue(uint32_t nowMs) const;
     bool restoreCurrentOwner(uint32_t nowMs);
     bool allowsObdPairGesture(uint32_t nowMs) const;
 
@@ -76,6 +77,9 @@ class DisplayPipelineModule {
     char lastAlpDisplayLogEvent_[24] = "";
     char lastAlpDisplayLogDetail_[192] = "";
     uint32_t lastAlpDisplaySnapshotLogMs_ = 0;
+    bool companionFramePending_ = false;
+    uint32_t companionFrameDeadlineMs_ = 0;
+    uint64_t companionMismatchKey_ = 0;
 
     void logAlpDisplaySnapshot(uint32_t nowMs, const char* event, const char* detail, bool traceRelevant);
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
@@ -83,6 +87,7 @@ class DisplayPipelineModule {
     AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
     void runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs);
+    bool deferV1CompanionFrame(const RenderFrame& frame, int alertCount, uint32_t nowMs);
     void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool restoreContext, const char* logEvent,
                              bool forceRedraw = false);
     void recordPerfTiming(unsigned long startUs, unsigned long endUs);

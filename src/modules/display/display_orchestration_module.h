@@ -13,6 +13,7 @@ class SettingsManager;
 class VolumeFadeModule;
 class SpeedMuteModule;
 class QuietCoordinatorModule;
+class DisplayPipelineModule;
 
 struct DisplayOrchestrationEarlyContext {
     uint32_t nowMs = 0;
@@ -56,7 +57,7 @@ class DisplayOrchestrationModule {
     void begin(V1Display* displayPtr, V1BLEClient* bleClient, BleQueueModule* bleQueueModule,
                DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule, PacketParser* parserPtr,
                SettingsManager* settings, VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
-               QuietCoordinatorModule* quietCoordinator);
+               QuietCoordinatorModule* quietCoordinator, DisplayPipelineModule* displayPipelineModule);
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     DisplayOrchestrationParsedResult processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
@@ -77,6 +78,7 @@ class DisplayOrchestrationModule {
     VolumeFadeModule* volumeFade_ = nullptr;
     SpeedMuteModule* speedMute_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
+    DisplayPipelineModule* displayPipeline_ = nullptr;
 
     // Blink refresh cadence is derived from the renderer's phase timestamp.
 };

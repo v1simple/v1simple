@@ -1456,6 +1456,14 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             f"local non-model egress overrides were lost: {config_values}",
         )
         assert_true(
+            "project_doc_max_bytes=0" in config_values,
+            "local investigator loaded general repository workflow instructions",
+        )
+        assert_true(
+            "skills.include_instructions=false" in config_values,
+            "local investigator loaded general repository skills",
+        )
+        assert_true(
             f"model_context_window={investigator.LOCAL_DEFAULT_CONTEXT_WINDOW}"
             in config_values
             and (
@@ -1526,6 +1534,14 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             "check_for_update_on_startup=false" in hosted_config_values
             and 'web_search="disabled"' in hosted_config_values,
             f"hosted non-model egress overrides were lost: {hosted_config_values}",
+        )
+        assert_true(
+            "project_doc_max_bytes=0" in hosted_config_values,
+            "hosted investigator loaded general repository workflow instructions",
+        )
+        assert_true(
+            "skills.include_instructions=false" in hosted_config_values,
+            "hosted investigator loaded general repository skills",
         )
         assert_true(
             not any(
@@ -2060,6 +2076,13 @@ def test_first_pass_requires_a_grounded_checkpoint_before_breadth() -> None:
         "first pass no longer requires a results-producing checkpoint",
     )
     assert_true(
+        "Read AGENTS.md" not in prompt
+        and "Read tools/bench_investigator_prompt.md completely" in prompt
+        and "purpose-specific read-only evidence session" in prompt
+        and "Do not modify files or run repository setup" in prompt,
+        "purpose-specific investigator regressed into repository workflow execution",
+    )
+    assert_true(
         "runner will add every model-omitted artifact as skipped" in prompt.casefold()
         and "adds every model-omitted inventory item as `skipped`"
         in normalized_instructions,
@@ -2087,10 +2110,11 @@ def test_first_pass_requires_a_grounded_checkpoint_before_breadth() -> None:
 
     follow_up = investigator.build_prompt("{}", 1, 2)
     assert_true(
-        "bounded follow-up" in follow_up
-        and "improve or reject its leads" in follow_up
-        and "broad unrelated exploration" in follow_up,
-        "follow-up prompt no longer refines the grounded checkpoint",
+        "synthesis pass" in follow_up
+        and "Do not stop at the first lead" in follow_up
+        and "other high-signal defects" in follow_up
+        and "code, logs, metrics, traces, and supplied video" in follow_up,
+        "synthesis prompt no longer expands beyond the grounded checkpoint",
     )
 
 
@@ -2622,8 +2646,23 @@ def test_backend_failure_still_publishes_honest_report() -> None:
             and report["model"]["name"] == "qwen3-vl:8b",
             f"automatic backend crossed the local boundary: {report['model']}",
         )
+        assert_true(
+            {item["path"] for item in report["model"]["instruction_hashes"]}
+            == {
+                "tools/bench_investigator_prompt.md",
+                "tools/bench_investigation.schema.json",
+            },
+            "failure report attributed unloaded repository instructions",
+        )
+        assert_true(
+            "Reason: The investigation backend did not produce usable results."
+            in process.stderr
+            and "Detail: backend_failed:" in process.stderr,
+            "CLI hid the recorded backend failure reason",
+        )
         assert_true((run / "partial.log").read_text() == "partial evidence\n", "input was changed")
         serialized = json.dumps(report)
+        console = process.stdout + process.stderr
         assert_true(str(run) not in serialized, "failure report leaked the private run path")
         assert_true("/var/folders/" not in serialized, "failure report leaked a temporary path")
         assert_true("/private/var/folders/" not in serialized, "failure report leaked a temporary path")
@@ -2636,6 +2675,7 @@ def test_backend_failure_still_publishes_honest_report() -> None:
             "/Users/" + "failure-person",
         ):
             assert_true(private_value not in serialized, f"failure report leaked {private_value}")
+            assert_true(private_value not in console, f"failure console leaked {private_value}")
 
 
 def test_missing_backend_does_not_publish_executable_path() -> None:
@@ -2746,7 +2786,16 @@ def test_success_report_is_recursively_redacted_and_debug_is_structured() -> Non
         )
         assert_true(process.returncode == 0, f"successful redaction fixture failed: {process.stderr}")
         report_text = (run / "investigation.json").read_text(encoding="utf-8")
+        published = json.loads(report_text)
         debug = json.loads((run / "investigation_debug.json").read_text(encoding="utf-8"))
+        assert_true(
+            {item["path"] for item in published["model"]["instruction_hashes"]}
+            == {
+                "tools/bench_investigator_prompt.md",
+                "tools/bench_investigation.schema.json",
+            },
+            "success report attributed unloaded repository instructions",
+        )
         for private in (str(run), str(ROOT), str(Path.home()), str(root)):
             assert_true(private not in report_text, f"successful report leaked {private}")
         assert_true(
@@ -2825,7 +2874,7 @@ def test_fresh_source_precheck_limits_final_attribution() -> None:
                     0,
                     ["omitted.mp4"],
                 ),
-            ),
+            ) as extract_video,
             patch.object(investigator, "invoke_codex", side_effect=model_pass),
             patch.object(investigator, "codex_version", return_value="fixture"),
             redirect_stdout(io.StringIO()),
@@ -2833,7 +2882,9 @@ def test_fresh_source_precheck_limits_final_attribution() -> None:
             result = investigator.main()
         finished = json.loads((run / "investigation.json").read_text(encoding="utf-8"))
         assert_true(
-            result == 0 and order == ["source", "model", "source"],
+            result == 0
+            and order == ["source", "model", "model", "source"]
+            and extract_video.call_count == 1,
             f"source was not refreshed after model execution: {order}",
         )
         assert_true(finished["source"]["basis"] == "current_only", "stale exact source survived")
@@ -2871,6 +2922,7 @@ def test_unexpected_postprocessing_error_publishes_valid_sanitized_failure() -> 
             patch.object(investigator, "finish_report", side_effect=explode),
             patch.object(investigator, "codex_version", return_value="fixture"),
             redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
         ):
             result = investigator.main()
         failure = json.loads((run / "investigation.json").read_text(encoding="utf-8"))
@@ -2879,6 +2931,135 @@ def test_unexpected_postprocessing_error_publishes_valid_sanitized_failure() -> 
         assert_true(investigator.validate_report_schema(failure) == [], "unexpected-error report is invalid")
         for private in (str(run), str(ROOT), str(Path.home()), tempfile.gettempdir()):
             assert_true(private not in serialized, f"unexpected-error report leaked {private}")
+
+
+def test_no_video_request_still_runs_synthesis_pass() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        run = Path(temporary) / "run"
+        run.mkdir()
+        report = minimal_model_report(
+            {
+                "kind": "file",
+                "path": "unused",
+                "sha256": "0" * 64,
+                "description": "unused fixture",
+            }
+        )
+        report["findings"] = []
+        prompts: list[str] = []
+
+        def model_pass(**kwargs: object) -> tuple[dict[str, object], str, str]:
+            prompts.append(str(kwargs["prompt"]))
+            report["execution_status"]["summary"] = f"model pass {len(prompts)}"
+            return report, "", ""
+
+        argv = [
+            "bench_investigate.py",
+            str(run),
+            "--codex-executable",
+            "fixture",
+            "--max-video-passes",
+            "1",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(investigator, "source_context", return_value=source_precheck()),
+            patch.object(
+                investigator,
+                "extract_video_evidence",
+                return_value=([], [], 0, []),
+            ) as extract_video,
+            patch.object(investigator, "invoke_codex", side_effect=model_pass),
+            patch.object(investigator, "codex_version", return_value="fixture"),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = investigator.main()
+
+        finished = json.loads((run / "investigation.json").read_text(encoding="utf-8"))
+        assert_true(
+            result == 0 and len(prompts) == 2 and extract_video.call_count == 1,
+            "one video pass bypassed the required synthesis model pass",
+        )
+        assert_true(
+            "first-pass lead checkpoint" in prompts[0]
+            and "synthesis pass" in prompts[1]
+            and "prior_report_to_recheck_and_improve" in prompts[1],
+            "second pass did not synthesize the first checkpoint",
+        )
+        assert_true(
+            finished["execution_status"]["summary"].startswith("model pass 2")
+            and finished["model"]["prompt_sha256"]
+            == investigator.sha256_bytes(prompts[1].encode("utf-8")),
+            "published report did not come from the synthesis pass",
+        )
+
+
+def test_unserved_video_request_remains_a_limitation() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        run = Path(temporary) / "run"
+        run.mkdir()
+        selector = {
+            "kind": "file",
+            "path": "unused",
+            "sha256": "0" * 64,
+            "description": "unused fixture",
+        }
+        checkpoint = minimal_model_report(selector)
+        checkpoint["findings"] = []
+        checkpoint["video_requests"] = [
+            {
+                "path": "camera.mp4",
+                "start_pts_s": 1.0,
+                "end_pts_s": 2.0,
+                "sample_fps": 10.0,
+                "reason": "Inspect the display transition",
+            }
+        ]
+        synthesis = minimal_model_report(selector)
+        synthesis["findings"] = []
+        synthesis["video_requests"] = []
+        prompts: list[str] = []
+
+        def model_pass(**kwargs: object) -> tuple[dict[str, object], str, str]:
+            prompts.append(str(kwargs["prompt"]))
+            return (checkpoint if len(prompts) == 1 else synthesis), "", ""
+
+        argv = [
+            "bench_investigate.py",
+            str(run),
+            "--codex-executable",
+            "fixture",
+            "--max-video-passes",
+            "1",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(investigator, "source_context", return_value=source_precheck()),
+            patch.object(
+                investigator,
+                "extract_video_evidence",
+                return_value=([], [], 0, []),
+            ) as extract_video,
+            patch.object(investigator, "invoke_codex", side_effect=model_pass),
+            patch.object(investigator, "codex_version", return_value="fixture"),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = investigator.main()
+
+        finished = json.loads((run / "investigation.json").read_text(encoding="utf-8"))
+        errors = "\n".join(finished["execution_status"]["errors"])
+        assert_true(
+            result == 0
+            and len(prompts) == 2
+            and extract_video.call_count == 1
+            and finished["execution_status"]["state"] == "partial",
+            "unserved video request did not leave an honest partial investigation",
+        )
+        assert_true(
+            "video_request_limit" in errors
+            and "1 video request(s) from pass 1 were not extracted" in errors,
+            "synthesis erased the unserved first-pass video request",
+        )
 
 
 def test_failed_video_followup_preserves_prior_grounded_report() -> None:
@@ -3102,6 +3283,8 @@ def main() -> int:
     test_success_report_is_recursively_redacted_and_debug_is_structured()
     test_fresh_source_precheck_limits_final_attribution()
     test_unexpected_postprocessing_error_publishes_valid_sanitized_failure()
+    test_no_video_request_still_runs_synthesis_pass()
+    test_unserved_video_request_remains_a_limitation()
     test_failed_video_followup_preserves_prior_grounded_report()
     test_video_request_runs_a_fresh_follow_up()
     print("bench investigate tests passed")

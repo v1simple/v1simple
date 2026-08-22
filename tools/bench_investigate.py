@@ -24,7 +24,6 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "tools" / "bench_investigation.schema.json"
 INSTRUCTION_PATH = ROOT / "tools" / "bench_investigator_prompt.md"
-AGENTS_PATH = ROOT / "AGENTS.md"
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".mkv"}
 IGNORED_OUTPUTS = {"investigation.json", "investigation_debug.json"}
 AUXILIARY_OVERVIEW_VIDEO_NAMES = {".camera_preflight.mov"}
@@ -1023,13 +1022,15 @@ def build_prompt(context: str, image_count: int, pass_number: int) -> str:
         )
     else:
         pass_direction = (
-            "This is a bounded follow-up. Recheck the prior report against newly supplied "
-            "evidence, improve or reject its leads, and return a replacement schema-valid "
-            "report without broad unrelated exploration."
+            "This is the synthesis pass. Recheck the prior report, inspect the additional "
+            "raw artifacts and owning code needed to test its leads, and look for other "
+            "high-signal defects across code, logs, metrics, traces, and supplied video. "
+            "Do not stop at the first lead. Improve or reject prior leads and return one "
+            "replacement schema-valid report without transcribing the artifact inventory."
         )
-    return f"""Read AGENTS.md and tools/bench_investigator_prompt.md completely, then investigate the run below.
+    return f"""Read tools/bench_investigator_prompt.md completely, then investigate the run below.
 
-You are in a read-only repository session. Inspect files and Git directly with shell tools; do not rely only on this inventory. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest is runner-owned and directly records each durable sheet hash, canonical source-video hash, represented interval, cells, and timing uncertainty. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
+You are in a purpose-specific read-only evidence session. Do not modify files or run repository setup, build, test, CI, release, or publication workflows. Inspect artifacts, source, and Git directly with shell tools; do not rely only on this inventory. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest is runner-owned and directly records each durable sheet hash, canonical source-video hash, represented interval, cells, and timing uncertainty. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
 
 {pass_direction}
 
@@ -1269,6 +1270,10 @@ def invoke_codex(
         "check_for_update_on_startup=false",
         "-c",
         'web_search="disabled"',
+        "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "skills.include_instructions=false",
         "--model",
         model,
         "--output-schema",
@@ -2453,7 +2458,7 @@ def finish_report(
         "prompt_sha256": sha256_bytes(prompt.encode("utf-8")),
         "instruction_hashes": [
             {"path": path.relative_to(ROOT).as_posix(), "sha256": sha256_file(path)}
-            for path in (AGENTS_PATH, INSTRUCTION_PATH, SCHEMA_PATH)
+            for path in (INSTRUCTION_PATH, SCHEMA_PATH)
         ],
     }
     report = redact_report_paths(report, run_dir)
@@ -2564,7 +2569,7 @@ def failure_report(
             "prompt_sha256": sha256_bytes(prompt.encode("utf-8")),
             "instruction_hashes": [
                 {"path": path.relative_to(ROOT).as_posix(), "sha256": sha256_file(path)}
-                for path in (AGENTS_PATH, INSTRUCTION_PATH, SCHEMA_PATH)
+                for path in (INSTRUCTION_PATH, SCHEMA_PATH)
                 if path.is_file()
             ],
         },
@@ -2668,16 +2673,37 @@ def main() -> int:
         requests: list[Mapping[str, Any]] = []
         try:
             source = source_context(run_dir, artifacts)
-            for pass_number in range(1, args.max_video_passes + 1):
-                video, extracted_attachments, processed_count, omitted_paths = extract_video_evidence(
-                    run_dir,
-                    artifacts,
-                    workspace / f"pass_{pass_number}",
-                    requests,
-                    scan_overview=pass_number == 1,
-                    pass_number=pass_number,
-                    remaining_run_budget=MAX_VIDEOS_PER_RUN - processed_videos,
-                )
+            model_pass_limit = max(2, args.max_video_passes)
+            for pass_number in range(1, model_pass_limit + 1):
+                if pass_number <= args.max_video_passes:
+                    video, extracted_attachments, processed_count, omitted_paths = (
+                        extract_video_evidence(
+                            run_dir,
+                            artifacts,
+                            workspace / f"pass_{pass_number}",
+                            requests,
+                            scan_overview=pass_number == 1,
+                            pass_number=pass_number,
+                            remaining_run_budget=MAX_VIDEOS_PER_RUN - processed_videos,
+                        )
+                    )
+                else:
+                    if requests:
+                        runner_errors.append(
+                            (
+                                "video_request_limit",
+                                f"{len(requests)} video request(s) from pass "
+                                f"{pass_number - 1} were not extracted because video "
+                                f"evidence extraction ended after "
+                                f"{args.max_video_passes} pass(es)",
+                            )
+                        )
+                    video, extracted_attachments, processed_count, omitted_paths = (
+                        [],
+                        [],
+                        0,
+                        [],
+                    )
                 processed_videos += processed_count
                 omitted_videos.extend((pass_number, path) for path in omitted_paths)
                 video_history.extend(video)
@@ -2772,7 +2798,7 @@ def main() -> int:
                 prior_prompt = final_prompt
                 raw_requests = report.get("video_requests", [])
                 requests = [item for item in raw_requests if isinstance(item, Mapping)]
-                if not requests:
+                if not requests and pass_number > 1:
                     break
             if prior_report is None:
                 raise InvestigationError("model_output_missing", "No model pass completed")
@@ -2892,6 +2918,14 @@ def main() -> int:
         f"Bench investigation {state}: {len(report.get('findings', []))} finding(s), "
         f"{len(report.get('unresolved', []))} unresolved; {output_label}"
     )
+    if state == "failed":
+        execution_status = report.get("execution_status", {})
+        summary = execution_status.get("summary")
+        errors = execution_status.get("errors", [])
+        if isinstance(summary, str) and summary:
+            print(f"Reason: {summary}", file=sys.stderr)
+        if isinstance(errors, list) and errors and isinstance(errors[0], str):
+            print(f"Detail: {errors[0]}", file=sys.stderr)
     return exit_status
 
 

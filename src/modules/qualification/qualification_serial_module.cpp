@@ -209,6 +209,15 @@ void QualificationSerialModule::serviceRun() {
         return;
     }
 
+    if (state_ == State::Done) {
+        // Evidence is best effort for run completion, but keep draining it in
+        // the background so a later causal-trace export can become ready.
+        if (!evidenceDrained_ && providers_.tryDrainEvidence) {
+            evidenceDrained_ = providers_.tryDrainEvidence(providers_.ctx);
+        }
+        return;
+    }
+
     if (state_ != State::Finalizing) {
         return;
     }
@@ -218,8 +227,7 @@ void QualificationSerialModule::serviceRun() {
     if (!evidenceDrained_) {
         evidenceDrained_ = !providers_.tryDrainEvidence || providers_.tryDrainEvidence(providers_.ctx);
     }
-    const bool drained = perfDrained && evidenceDrained_;
-    if (drained) {
+    if (perfDrained) {
         finishRun(true, "done");
         return;
     }

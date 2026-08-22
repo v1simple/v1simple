@@ -119,6 +119,9 @@ uint64_t provideClockSegment(void* ctx) {
 struct EvidenceStartProbe {
     bool capturePaused = false;
     uint32_t perfStarts = 0;
+    bool evidenceReady = false;
+    uint32_t evidenceDrainAttempts = 0;
+    uint32_t evidenceEnds = 0;
 };
 
 bool provideTrue(void*) {
@@ -140,10 +143,24 @@ bool rejectEvidenceStart(uint32_t, uint32_t, void*) {
     return false;
 }
 void endEvidence(uint32_t, uint32_t, void*) {}
+bool acceptEvidenceStart(uint32_t, uint32_t, void*) {
+    return true;
+}
+bool drainEvidence(void* ctx) {
+    auto& probe = *static_cast<EvidenceStartProbe*>(ctx);
+    probe.evidenceDrainAttempts++;
+    return probe.evidenceReady;
+}
+void trackEvidenceEnd(uint32_t, uint32_t, void* ctx) {
+    static_cast<EvidenceStartProbe*>(ctx)->evidenceEnds++;
+}
 
 } // namespace
 
-void setUp() {}
+void setUp() {
+    mockMillis = 0;
+    mockMicros = 0;
+}
 void tearDown() {}
 
 void test_qstatus_emits_provider_display_settings_as_json() {
@@ -250,11 +267,56 @@ void test_qstart_treats_causal_evidence_as_best_effort() {
     TEST_ASSERT_TRUE(unavailableModule.isRunning());
 }
 
+void test_finalization_does_not_wait_for_best_effort_evidence() {
+    EvidenceStartProbe probe;
+    QualificationSerialModule::Providers providers;
+    providers.isPerfEnabled = provideTrue;
+    providers.perfCsvPath = providePerfPath;
+    providers.startPerfSession = startPerf;
+    providers.enqueueSnapshotNow = enqueueSnapshot;
+    providers.tryDrainPerf = provideTrue;
+    providers.tryDrainEvidence = drainEvidence;
+    providers.beginEvidenceSession = acceptEvidenceStart;
+    providers.endEvidenceSession = trackEvidenceEnd;
+    providers.setSdCapturePaused = setCapturePaused;
+    providers.ctx = &probe;
+
+    CaptureStream stream("QSTART core 1\n");
+    QualificationSerialModule module;
+    module.begin(&stream, providers);
+    module.process();
+
+    mockMillis = 1000;
+    module.process();
+    TEST_ASSERT_TRUE(module.isRunning());
+    TEST_ASSERT_EQUAL_UINT32(1, probe.evidenceEnds);
+
+    // Even at the finalization deadline, undrained investigation evidence
+    // must not invalidate a run whose primary performance CSV is ready.
+    mockMillis = 3500;
+    module.process();
+    TEST_ASSERT_TRUE(module.isDone());
+    TEST_ASSERT_EQUAL_UINT32(1, probe.evidenceDrainAttempts);
+    TEST_ASSERT_TRUE(stream.output().find("\"message\":\"done\"") != std::string::npos);
+    TEST_ASSERT_TRUE(stream.output().find("finalize_timeout") == std::string::npos);
+
+    // Completion remains terminal while evidence is retried opportunistically.
+    module.process();
+    TEST_ASSERT_TRUE(module.isDone());
+    TEST_ASSERT_EQUAL_UINT32(2, probe.evidenceDrainAttempts);
+    probe.evidenceReady = true;
+    module.process();
+    module.process();
+    TEST_ASSERT_TRUE(module.isDone());
+    TEST_ASSERT_EQUAL_UINT32(3, probe.evidenceDrainAttempts);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_qstatus_emits_provider_display_settings_as_json);
     RUN_TEST(test_qsync_captures_parse_and_prewrite_timestamps_in_fixed_width_reply);
     RUN_TEST(test_qsync_rejects_non_fixed_nonce);
     RUN_TEST(test_qstart_treats_causal_evidence_as_best_effort);
+    RUN_TEST(test_finalization_does_not_wait_for_best_effort_evidence);
     return UNITY_END();
 }

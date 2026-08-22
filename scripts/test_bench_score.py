@@ -293,8 +293,12 @@ def write_reconnect_logs(
                 "HOST_BOUNDARY reconnect_pre_qstart_fence_complete",
                 ">>> QSTATUS",
                 FENCE_RESPONSE,
+                ">>> QSYNC 0000000000000001",
+                "QSYNC 0000000000000001 00000000000000AA 0000000000000100 0000000000000101",
                 ">>> QSTART core 300",
                 'QRESP {"ok":true,"state":"running","suite":"core"}',
+                ">>> QSYNC 0000000000000002",
+                "QSYNC 0000000000000002 00000000000000AA 0000000000000200 0000000000000201",
                 'QEVENT {"ok":true,"state":"done","suite":"core","finalized":true}',
             ]
         )
@@ -2247,6 +2251,8 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         assert callable(transform)
         path.write_text("\n".join(transform(lines)) + "\n", encoding="utf-8")
 
+    exercise(lambda _replay: None, 0, "bench result: PASS")
+
     exercise(
         lambda replay: (replay / "v1replay_reconnect_preflight.log").unlink(),
         3,
@@ -2984,7 +2990,7 @@ def test_reconnect_raw_lifecycle_mutants_cannot_false_green() -> None:
         3,
         "failed replacement QEVENT",
     )
-    for command in (">>> QABORT", ">>> QSTATUS", ">>> QGETCSV"):
+    for command in (">>> QABORT", ">>> QSTATUS", ">>> QGETCSV", ">>> QSYNC 1234"):
         exercise(
             lambda replay, command=command: mutate_serial_lines(
                 replay,

@@ -138,6 +138,13 @@ RECONNECT_PRE_QSTART_FENCE_COMPLETE = "HOST_BOUNDARY reconnect_pre_qstart_fence_
 V1_DISCONNECT_CLEANUP_PREFIX = "[BLE] V1 disconnected; cleared LCD BLE state at "
 BOOT_PREFIX = "BOOT bootId="
 
+
+def _is_owned_qsync_command(line: str) -> bool:
+    prefix = ">>> QSYNC "
+    nonce = line[len(prefix) :] if line.startswith(prefix) else ""
+    return len(nonce) == 16 and all(character in "0123456789abcdef" for character in nonce)
+
+
 START_ALERT_REQUEST = (0xDA, 0xE6, 0x41, ())
 VERSION_REQUEST = (0xDA, 0xE6, 0x01, ())
 VERSION_RESPONSE = (0xD6, 0xEA, 0x02, tuple(b"v4.1038"))
@@ -1168,7 +1175,9 @@ def score_reconnect_raw_evidence(
             done_indexes.append(index)
 
     end = done_indexes[-1] if done_indexes else len(lines)
-    def status_fence_result(start: int, stop: int) -> tuple[bool, str]:
+    def status_fence_result(
+        start: int, stop: int, *, allow_qsync: bool = False
+    ) -> tuple[bool, str]:
         command_indexes = [
             index for index in range(start, stop) if lines[index] == ">>> QSTATUS"
         ]
@@ -1183,7 +1192,12 @@ def score_reconnect_raw_evidence(
         response_index = protocol_indexes[0]
         if response_index <= command_index:
             return False, "replay reconnect serial fence response precedes QSTATUS"
-        if any(lines[index].startswith(">>> ") for index in range(start, stop) if index != command_index):
+        if any(
+            lines[index].startswith(">>> ")
+            and index != command_index
+            and not (allow_qsync and _is_owned_qsync_command(lines[index]))
+            for index in range(start, stop)
+        ):
             return False, "replay reconnect serial fence contains an unexpected host command"
         line = lines[response_index]
         if line.startswith("QERR "):
@@ -1419,7 +1433,9 @@ def score_reconnect_raw_evidence(
     unexpected_commands = [
         lines[index]
         for index in range(qstart_indexes[0], done)
-        if lines[index].startswith(">>> ") and not lines[index].startswith(">>> QSTART ")
+        if lines[index].startswith(">>> ")
+        and not lines[index].startswith(">>> QSTART ")
+        and not _is_owned_qsync_command(lines[index])
     ]
     if unexpected_commands:
         return handshake_collection_failure(
@@ -1579,6 +1595,7 @@ def score_reconnect_raw_evidence(
     pre_window_status, pre_window_status_error = status_fence_result(
         pre_qstart_complete + 1,
         qstart,
+        allow_qsync=True,
     )
     if pre_window_status_error:
         return handshake_collection_failure(pre_window_status_error)
@@ -1598,13 +1615,14 @@ def score_reconnect_raw_evidence(
     ]
     expected_commands = [
         index
-        for begin, complete in (
-            (post_cleanup_begin, post_cleanup_complete),
-            (pre_qstart_begin, pre_qstart_complete),
-            (pre_qstart_complete, qstart),
+        for begin, complete, allow_qsync in (
+            (post_cleanup_begin, post_cleanup_complete, False),
+            (pre_qstart_begin, pre_qstart_complete, False),
+            (pre_qstart_complete, qstart, True),
         )
         for index in range(begin + 1, complete)
         if lines[index] == ">>> QSTATUS"
+        or (allow_qsync and _is_owned_qsync_command(lines[index]))
     ]
     expected_responses = [
         index

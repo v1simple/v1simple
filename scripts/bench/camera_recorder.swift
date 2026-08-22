@@ -455,11 +455,8 @@ func runWriterSelfTest() -> Never {
             30_020_006_000, 30_025_007_333, 30_030_009_100, 30_035_010_222,
             30_040_012_555, 30_045_014_001, 30_050_015_999, 30_055_018_250,
         ]
-        let sourceDurations: [CMTime] = sourceValues.indices.map { index in
-            let value = index + 1 < sourceValues.count
-                ? sourceValues[index + 1] - sourceValues[index]
-                : 5_000_000
-            return CMTime(value: value, timescale: 1_000_000_000)
+        let sourceDurations: [CMTime] = sourceValues.map { _ in
+            CMTime(value: 5_000_000, timescale: 1_000_000_000)
         }
         var timeline = SourcePresentationTimeline()
         let resolvedTimings = try zip(sourceValues, sourceDurations).map { value, sourceDuration in
@@ -566,8 +563,16 @@ func runWriterSelfTest() -> Never {
         }) else {
             throw NSError(domain: "v1simple.camera.selftest", code: 29)
         }
-        guard zip(encodedTimings, resolvedTimings).allSatisfy({ encoded, expected in
-            CMTimeCompare(encoded.1, expected.duration) == 0
+        let encodedDurations = resolvedTimings.indices.map { index in
+            index + 1 < resolvedTimings.count
+                ? CMTimeSubtract(
+                    resolvedTimings[index + 1].presentationTime,
+                    resolvedTimings[index].presentationTime
+                )
+                : resolvedTimings[index].duration
+        }
+        guard zip(encodedTimings, encodedDurations).allSatisfy({ encoded, duration in
+            CMTimeCompare(encoded.1, duration) == 0
         }) else {
             throw NSError(domain: "v1simple.camera.selftest", code: 30)
         }

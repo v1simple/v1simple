@@ -183,15 +183,30 @@ def test_run_window_qsync_names_robust_fit_bounds_and_outliers() -> None:
         "all-observation residual hid the serial outlier",
     )
     assert_true(
-        not mapping["uncertainty_smaller_than_2_5_ms"],
-        "the 4 ms injected serial delay was hidden from the 2.5 ms report",
+        mapping["uncertainty_smaller_than_2_5_ms"]
+        and mapping["uncertainty_width_ns"] < 500_000,
+        "an interior serial delay widened the selected-endpoint clock bounds",
+    )
+    assert_true(
+        mapping["uncertainty_boundary_source_records"] == [1, 16],
+        f"low-delay boundary observations are wrong: {mapping}",
     )
     for raw in alignment["raw_exchanges"][:-1]:
         assert_true("adjusted_round_trip_ns" in raw, "adjusted RTT is absent")
         assert_true("offset_lower_ns" in raw and "offset_upper_ns" in raw, "offset bounds are absent")
         assert_true("midpoint_residual_ns" in raw, "exchange residual is absent")
+    assert_true(
+        max(raw["adjusted_round_trip_ns"] for raw in alignment["raw_exchanges"][:-1])
+        > 4_000_000,
+        "interior serial-delay evidence was discarded with the uncertainty outlier",
+    )
 
-    for dut_us in (150_000, 4_500_000, 17_000_000):
+    validity = mapping["validity_dut_us"]
+    for dut_us in (
+        validity["start"],
+        (validity["start"] + validity["end"]) // 2,
+        validity["end"],
+    ):
         mapped = map_dut_timestamp(alignment, "boot-a", dut_us)
         assert_true(mapped["status"] == "mapped", f"in-range timestamp did not map: {mapped}")
         truth = true_host(dut_us)
@@ -199,7 +214,14 @@ def test_run_window_qsync_names_robust_fit_bounds_and_outliers() -> None:
             mapped["host_earliest_ns"] <= truth <= mapped["host_latest_ns"],
             f"true host timestamp escaped conservative bounds: {mapped}, truth={truth}",
         )
-        assert_true(mapped["fit_quality"] == "poor", "outlier-driven poor fit was hidden")
+        assert_true(mapped["fit_quality"] == "good", "a sound affine fit was mislabeled")
+    final_raw_midpoint = 17_100_020
+    assert_true(
+        validity["end"] < final_raw_midpoint
+        and map_dut_timestamp(alignment, "boot-a", validity["end"] + 1)["status"]
+        == "out_of_range",
+        "mapper extended selected-endpoint bounds across unbounded raw observations",
+    )
     outside = map_dut_timestamp(alignment, "boot-a", 50_000_000)
     assert_true(outside["status"] == "out_of_range", "mapper extrapolated outside validity")
 

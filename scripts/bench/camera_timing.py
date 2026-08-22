@@ -342,6 +342,13 @@ def compare_encoded_video_timing(
 ) -> dict[str, Any]:
     validate_frame_sidecar(sidecar_records)
     expected = _expected_written_frames(sidecar_records)
+    source_intervals = [
+        following["pts"] - current["pts"]
+        for current, following in zip(expected, expected[1:])
+    ]
+    expected_encoded_durations = (
+        [*source_intervals, expected[-1]["duration"]] if expected else []
+    )
     encoded_by_pts: dict[Fraction, deque[int]] = defaultdict(deque)
     for index, frame in enumerate(encoded_frames):
         encoded_by_pts[frame["pts"]].append(index)
@@ -351,7 +358,9 @@ def compare_encoded_video_timing(
     duration_mismatches: list[dict[str, Any]] = []
     first_mismatch: dict[str, Any] | None = None
 
-    for expected_index, frame in enumerate(expected):
+    for expected_index, (frame, expected_duration) in enumerate(
+        zip(expected, expected_encoded_durations, strict=True)
+    ):
         candidates = encoded_by_pts.get(frame["pts"])
         encoded_index = candidates.popleft() if candidates else None
         if encoded_index is None:
@@ -368,13 +377,13 @@ def compare_encoded_video_timing(
             continue
         matched_encoded.add(encoded_index)
         encoded = encoded_frames[encoded_index]
-        if frame["duration"] is not None and encoded["duration"] != frame["duration"]:
+        if encoded["duration"] != expected_duration:
             mismatch = {
                 "type": "duration_mismatch",
                 "written_index": expected_index,
                 "encoded_index": encoded_index,
                 "frame_seq": frame["frame_seq"],
-                "expected_duration_ns": _nanoseconds(frame["duration"]),
+                "expected_duration_ns": _nanoseconds(expected_duration),
                 "encoded_duration_ns": (
                     None if encoded["duration"] is None else _nanoseconds(encoded["duration"])
                 ),
@@ -436,6 +445,14 @@ def compare_encoded_video_timing(
         "extra_encoded_frames": extra,
         "duration_mismatch_count": len(duration_mismatches),
         "duration_mismatches": duration_mismatches,
+        "source_interval_difference_count": sum(
+            interval != frame["duration"]
+            for frame, interval in zip(expected[:-1], source_intervals, strict=True)
+        ),
+        "maximum_source_interval_ns": max(
+            (_nanoseconds(interval) for interval in source_intervals),
+            default=None,
+        ),
         "first_mismatch": first_mismatch,
         "maximum_timestamp_difference_ns": max_timestamp_difference_ns,
     }

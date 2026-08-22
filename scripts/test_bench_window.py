@@ -3067,7 +3067,7 @@ def test_camera_timing_verifier_compares_every_written_frame_exactly() -> None:
         {
             "streams": [{"time_base": "1/60000"}],
             "frames": [
-                {"pts": 0, "duration": 300},
+                {"pts": 0, "duration": 1200},
                 {"pts": 1200, "duration": 300},
             ],
         }
@@ -3079,16 +3079,45 @@ def test_camera_timing_verifier_compares_every_written_frame_exactly() -> None:
         and verified["written_frame_count"] == 2
         and verified["capture_drop_count"] == 1
         and verified["writer_drop_count"] == 1
-        and verified["timestamp_error_count"] == 2,
+        and verified["timestamp_error_count"] == 2
+        and verified["source_interval_difference_count"] == 1
+        and verified["maximum_source_interval_ns"] == 20_000_000,
         f"exact camera timing verification lost source outcomes: {verified}",
     )
 
-    encoded[1] = {**encoded[1], "duration": encoded[1]["duration"] * 2}
-    mismatched = compare_encoded_video_timing(sidecar, encoded)
+    wrong_duration = [
+        {**encoded[0], "duration": encoded[0]["duration"] / 4},
+        encoded[1],
+    ]
+    mismatched = compare_encoded_video_timing(sidecar, wrong_duration)
     assert_true(
         mismatched["status"] == "mismatch"
         and mismatched["duration_mismatch_count"] == 1,
         f"camera timing duration mismatch was hidden: {mismatched}",
+    )
+
+    source_gap = [
+        camera_frame_record(1, "written", video_pts_value=0, video_duration_value=300),
+        camera_frame_record(
+            2,
+            "written",
+            source_pts_value=1_015_000_000,
+            video_pts_value=600,
+            video_duration_value=300,
+        ),
+    ]
+    gap_encoded = encoded_frames_from_ffprobe(
+        {
+            "streams": [{"time_base": "1/60000"}],
+            "frames": [{"pts": 0, "duration": 600}, {"pts": 600, "duration": 300}],
+        }
+    )
+    gap_result = compare_encoded_video_timing(source_gap, gap_encoded)
+    assert_true(
+        gap_result["status"] == "verified"
+        and gap_result["source_interval_difference_count"] == 1
+        and gap_result["maximum_source_interval_ns"] == 10_000_000,
+        f"source presentation gap was mistaken for encoded timing loss: {gap_result}",
     )
 
     synthesized = [{**sidecar[0], "video_pts_value": 1}]

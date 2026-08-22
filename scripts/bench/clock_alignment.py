@@ -259,22 +259,25 @@ def _fit_segment(
     reference_host = _median(centered_hosts)
 
     # At an exchange midpoint the true affine host time lies between H1 and H4,
-    # regardless of request/reply asymmetry.  The difference between the true
-    # affine map and this fitted affine map is itself affine, so bounds that hold
-    # at the first and last observed midpoints hold everywhere between them.
-    # Restricting validity to that midpoint span avoids asserting a bound at the
-    # D2/D3 edges where fitted-slope error can otherwise escape the envelope.
-    # All valid observations contribute: queueing outliers may make the result
-    # wide, but cannot be silently hidden from consumers.
+    # regardless of request/reply asymmetry. The error between the true and
+    # fitted affine maps is itself affine, so the earliest/latest selected
+    # low-delay brackets conservatively bound their entire midpoint span.
+    # Interior queueing outliers remain visible in raw RTTs and residuals, but a
+    # weaker interior bracket must not widen the clock uncertainty.
+    selected_ordered = sorted(
+        selected, key=lambda item: (_point(item)[0], item["source_record"])
+    )
+    boundary_exchanges = (selected_ordered[0], selected_ordered[-1])
+    boundary_points = [_point(item) for item in boundary_exchanges]
     lower_errors = [
         Fraction(item["h1_host_monotonic_ns"])
         - _predict(slope, reference_dut_us, reference_host, _point(item)[0])
-        for item in valid
+        for item in boundary_exchanges
     ]
     upper_errors = [
         Fraction(item["h4_host_monotonic_ns"])
         - _predict(slope, reference_dut_us, reference_host, _point(item)[0])
-        for item in valid
+        for item in boundary_exchanges
     ]
     lower_error = min(lower_errors)
     upper_error = max(upper_errors)
@@ -317,8 +320,8 @@ def _fit_segment(
     maximum_selected_residual = _ceil_fraction(
         max(abs(value) for value in selected_residuals)
     )
-    validity_start = _ceil_fraction(min(point[0] for point in points))
-    validity_end = _floor_fraction(max(point[0] for point in points))
+    validity_start = _ceil_fraction(min(point[0] for point in boundary_points))
+    validity_end = _floor_fraction(max(point[0] for point in boundary_points))
     if validity_start > validity_end:
         base["limitations"] = [*limitations, "no_integer_timestamp_in_observed_midpoint_span"]
         return base
@@ -342,6 +345,9 @@ def _fit_segment(
             "drift_ppm": float(drift_ppm),
             "validity_dut_us": {"start": validity_start, "end": validity_end},
             "selected_source_records": sorted(selected_records),
+            "uncertainty_boundary_source_records": [
+                item["source_record"] for item in boundary_exchanges
+            ],
             "maximum_residual_ns": maximum_residual,
             "maximum_selected_residual_ns": maximum_selected_residual,
             "host_error_bounds_ns": {

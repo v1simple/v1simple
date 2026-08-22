@@ -56,7 +56,13 @@ def qualification_host_boundaries(
             "host_monotonic_ns": true_host(start_dut_us),
             "line": "QRESP "
             + json.dumps(
-                {"ok": True, "state": "running", "sessionToken": session_token},
+                {
+                    "ok": True,
+                    "state": "running",
+                    "sessionToken": session_token,
+                    "startedAtDutMicros": start_dut_us,
+                    "clockSegment": "boot-chain",
+                },
                 separators=(",", ":"),
             ),
         },
@@ -88,7 +94,7 @@ def qualification_session_end(
         "trace_seq": trace_seq,
         "qualification_session_token": session_token,
         "stage": "SESSION_END",
-        "stage_dut_monotonic_us": end_dut_us,
+        "stage_dut_micros": end_dut_us,
         "clock_segment": "boot-chain",
     }
 
@@ -764,6 +770,7 @@ def test_repeated_missing_packets_and_explicit_interval_outcomes() -> None:
     )
     assert_true(
         unmapped_absence["association_status"] == "missing_evidence"
+        and not unmapped_absence["candidate_record_ids"]
         and unmapped_absence["reason"]
         == "unmapped_camera_sample_prevents_frame_absence_claim",
         f"unmapped camera sample permitted a frame absence claim: {unmapped_absence}",
@@ -813,6 +820,7 @@ def test_repeated_missing_packets_and_explicit_interval_outcomes() -> None:
     )
     assert_true(
         unmapped_unique["association_status"] == "missing_evidence"
+        and len(unmapped_unique["candidate_record_ids"]) == 1
         and unmapped_unique["reason"]
         == "unmapped_camera_sample_prevents_unique_frame_evidence",
         f"unmapped camera sample permitted a unique frame claim: {unmapped_unique}",
@@ -1571,17 +1579,58 @@ def test_flexible_csv_reader_and_exclusive_artifact_generation() -> None:
             rows[0]["__csv_metadata__"]["causal_trace_schema"] == "9",
             "versioned CSV metadata was lost",
         )
+        perf_path = run_dir / "perf.csv"
+        perf_path.write_text(
+            "millis,dutMicros,clockSegment\n#session_start,seq=1,token=PERF0001\n1,1999999,boot-chain\n"
+            "millis,dutMicros,clockSegment\n#session_start,seq=2,token=PERF0002\n2,2000000,boot-chain\n3,2100000,boot-chain\n4,2100001,boot-chain\n",
+            encoding="utf-8",
+        )
+        perf_rows = read_csv_records(perf_path)
+        assert_true(
+            [(row["__source_record__"], row["__csv_session__"].get("token")) for row in perf_rows]
+            == [(3, "PERF0001"), (6, "PERF0002"), (7, "PERF0002"), (8, "PERF0002")],
+            f"perf sessions or physical lines were misparsed: {perf_rows}",
+        )
+        qualification_token = "22222222"
+        scoped = build_aligned_timeline(
+            clean_alignment(),
+            causal_trace=[
+                {"trace_seq": 1, "qualification_session_token": qualification_token, "stage": "SESSION_START", "stage_dut_micros": 2_000_000, "clock_segment": "boot-chain"},
+                qualification_session_end(qualification_token, trace_seq=2, end_dut_us=2_100_000),
+            ],
+            perf_csv=perf_path,
+        )
+        samples = [record for record in scoped if record["kind"] == "metric_sample"]
+        assert_true([record["source_record"] for record in samples] == [6, 7], f"perf rows escaped exact qualification bounds: {samples}")
+        fallback = build_aligned_timeline(
+            clean_alignment(), bench_timeline=qualification_host_boundaries(qualification_token, start_dut_us=2_000_000, end_dut_us=2_100_000), perf_csv=perf_path
+        )
+        fallback_samples = [record for record in fallback if record["kind"] == "metric_sample"]
+        assert_true([record["source_record"] for record in fallback_samples] == [6, 7], f"best-effort causal loss discarded perf rows: {fallback_samples}")
+        camera_path = run_dir / "camera" / "frame_timing.ndjson"
+        camera_path.parent.mkdir()
+        _, _, display, camera = complete_chain_inputs()
+        frame = dict(camera[0])
+        frame.update({"phase": "window", "source_clock": "avcapture_session_synchronization_clock", "callback_clock": "host_monotonic", "source_duration_value": 5_000, "source_duration_timescale": 1_000_000, "video_pts_value": 0, "video_duration_value": 5_000, "video_duration_timescale": 1_000_000})
+        camera_cases = (("{bad-json\n", True), (json.dumps({**frame, "status": []}), True), (json.dumps(frame), False))
+        for payload, verified in camera_cases:
+            camera_path.write_text(payload + ("" if payload.endswith("\n") else "\n"), encoding="utf-8")
+            camera_records = build_aligned_timeline(clean_alignment(), display_commits=display, camera_sidecar=camera_path, camera_verified=verified)
+            relation = next(record for record in camera_records if record.get("relation") == "display_commit_to_camera_frame")
+            assert_true(relation["association_status"] == "missing_evidence" and not relation["candidate_record_ids"], f"invalid camera evidence matched or expanded candidates: {relation}")
+        camera_path.write_text(json.dumps(frame) + "\n", encoding="utf-8")
 
         timeline_path = run_dir / "bench_timeline.ndjson"
         with timeline_path.open("w", encoding="utf-8") as handle:
             for exchange in qsync_fixture("boot-generated", count=8):
                 handle.write(json.dumps(exchange, sort_keys=True) + "\n")
-        result = generate_alignment_artifacts(run_dir)
+        result = generate_alignment_artifacts(run_dir, camera_result={"frame_timing": camera_path.name, "video_timing_verification_result": {"status": "verified"}})
         assert_true((run_dir / "clock_alignment.json").is_file(), "clock alignment was not written")
         aligned_path = run_dir / "aligned_timeline.ndjson"
         assert_true(aligned_path.is_file(), "aligned timeline was not written")
         lines = [json.loads(line) for line in aligned_path.read_text(encoding="utf-8").splitlines()]
         assert_true(result["aligned_timeline"]["record_count"] == len(lines), "record count is inaccurate")
+        assert_true(any(record["kind"] == "camera_frame" and record["alignment_status"] == "mapped" for record in lines), "verified nested camera sidecar was not resolved")
         assert_true(
             all(str(run_dir) not in json.dumps(record) for record in lines),
             "absolute temporary path leaked into aligned evidence",

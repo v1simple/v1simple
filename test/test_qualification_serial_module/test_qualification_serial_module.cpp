@@ -210,7 +210,7 @@ void test_qsync_rejects_non_fixed_nonce() {
     TEST_ASSERT_EQUAL_UINT32(2, probe.reads);
 }
 
-void test_qstart_rejects_missing_causal_evidence_capacity() {
+void test_qstart_treats_causal_evidence_as_best_effort() {
     EvidenceStartProbe probe;
     QualificationSerialModule::Providers providers;
     providers.isPerfEnabled = provideTrue;
@@ -229,11 +229,25 @@ void test_qstart_rejects_missing_causal_evidence_capacity() {
     module.begin(&stream, providers);
     module.process();
 
-    TEST_ASSERT_TRUE(stream.output().rfind("QERR ", 0) == 0);
-    TEST_ASSERT_TRUE(stream.output().find("\"error\":\"evidence_unavailable\"") != std::string::npos);
+    TEST_ASSERT_TRUE(stream.output().rfind("QRESP ", 0) == 0);
     TEST_ASSERT_FALSE(probe.capturePaused);
-    TEST_ASSERT_EQUAL_UINT32(0, probe.perfStarts);
-    TEST_ASSERT_FALSE(module.isRunning());
+    TEST_ASSERT_EQUAL_UINT32(1, probe.perfStarts);
+    TEST_ASSERT_TRUE(module.isRunning());
+
+    EvidenceStartProbe unavailableProbe;
+    providers.beginEvidenceSession = nullptr;
+    providers.endEvidenceSession = nullptr;
+    providers.tryDrainEvidence = nullptr;
+    providers.ctx = &unavailableProbe;
+    CaptureStream unavailableStream("QSTART core 1\n");
+    QualificationSerialModule unavailableModule;
+    unavailableModule.begin(&unavailableStream, providers);
+    unavailableModule.process();
+
+    TEST_ASSERT_TRUE(unavailableStream.output().rfind("QRESP ", 0) == 0);
+    TEST_ASSERT_FALSE(unavailableProbe.capturePaused);
+    TEST_ASSERT_EQUAL_UINT32(1, unavailableProbe.perfStarts);
+    TEST_ASSERT_TRUE(unavailableModule.isRunning());
 }
 
 int main() {
@@ -241,6 +255,6 @@ int main() {
     RUN_TEST(test_qstatus_emits_provider_display_settings_as_json);
     RUN_TEST(test_qsync_captures_parse_and_prewrite_timestamps_in_fixed_width_reply);
     RUN_TEST(test_qsync_rejects_non_fixed_nonce);
-    RUN_TEST(test_qstart_rejects_missing_causal_evidence_capacity);
+    RUN_TEST(test_qstart_treats_causal_evidence_as_best_effort);
     return UNITY_END();
 }

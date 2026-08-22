@@ -1949,6 +1949,33 @@ def derive_time_alignment_artifacts(
     }
 
 
+def retain_failure_time_alignment(
+    out_dir: Path,
+    artifacts: dict[str, Any],
+    *,
+    live: bool,
+) -> None:
+    """Retain derivable timing evidence without replacing the owning failure."""
+    if (
+        not live
+        or "time_alignment" in artifacts
+        or not (out_dir / "bench_timeline.ndjson").is_file()
+    ):
+        return
+    try:
+        artifacts["time_alignment"] = derive_time_alignment_artifacts(
+            out_dir,
+            perf_csv=None,
+            encounter_csv=None,
+            camera_result=None,
+        )
+    except Exception as exc:  # preserve the original live-collection failure
+        artifacts["time_alignment"] = {
+            "status": "unavailable",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def panic_sidecar_artifact(path: Path | None, reason: str = "") -> dict[str, Any]:
     return file_artifact(path, reason)
 
@@ -3746,6 +3773,7 @@ def main() -> int:
         )
         return 0 if import_proc.returncode < 3 else 3
     except CameraPreflightFailure as exc:
+        retain_failure_time_alignment(out_dir, artifacts, live=not bool(args.from_csv))
         write_window_result(
             out_dir,
             {
@@ -3777,6 +3805,7 @@ def main() -> int:
         )
         return 3
     except CameraEvidenceFailure as exc:
+        retain_failure_time_alignment(out_dir, artifacts, live=not bool(args.from_csv))
         try:
             camera_result = json.loads(exc.camera.result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -3832,6 +3861,7 @@ def main() -> int:
         )
         return 3
     except ReconnectPreflightFailure as exc:
+        retain_failure_time_alignment(out_dir, artifacts, live=not bool(args.from_csv))
         write_window_result(
             out_dir,
             {
@@ -3863,6 +3893,7 @@ def main() -> int:
         )
         return 3
     except Exception as exc:  # noqa: BLE001 - top-level artifact capture
+        retain_failure_time_alignment(out_dir, artifacts, live=not bool(args.from_csv))
         write_window_result(
             out_dir,
             {

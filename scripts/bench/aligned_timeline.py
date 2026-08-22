@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from camera_timing import validate_frame_sidecar
 from clock_alignment import fit_clock_alignment, map_dut_timestamp
 
 
@@ -348,37 +349,43 @@ def read_ndjson_records(path: Path) -> list[dict[str, Any]]:
 
 
 def read_csv_records(path: Path) -> list[dict[str, Any]]:
-    """Read versioned comment-prefixed CSV by column name, preserving extras."""
+    """Read repeated-header session CSV without inventing rows."""
     metadata: dict[str, str] = {}
-    data_lines: list[tuple[int, str]] = []
+    session: dict[str, Any] = {}
+    header: list[str] | None = None
+    result: list[dict[str, Any]] = []
     with path.open(encoding="utf-8", newline="") as handle:
         for line_number, raw in enumerate(handle, start=1):
             if raw.startswith("#"):
+                parsed: dict[str, Any] = {}
                 for field in raw[1:].strip().split(","):
                     key, separator, value = field.partition("=")
                     if separator:
-                        metadata[key.strip()] = value.strip()
-            elif raw.strip():
-                data_lines.append((line_number, raw))
-    if not data_lines:
-        return []
-    header = next(csv.reader([data_lines[0][1]]), None)
-    if not header:
-        return []
-    result: list[dict[str, Any]] = []
-    for line_number, raw in data_lines[1:]:
-        values = next(csv.reader([raw]))
-        if len(values) > len(header):
-            raise ValueError(f"{path.name} line {line_number} has extra unnamed columns")
-        values.extend([""] * (len(header) - len(values)))
-        result.append(
-            {
-                **dict(zip(header, values)),
-                "__source_artifact__": path.name,
-                "__source_record__": line_number,
-                "__csv_metadata__": dict(metadata),
-            }
-        )
+                        parsed[key.strip()] = value.strip()
+                if raw.startswith("#session_start"):
+                    session = {**parsed, "__source_record__": line_number}
+                else:
+                    metadata.update(parsed)
+                continue
+            if not raw.strip():
+                continue
+            values = next(csv.reader([raw]))
+            if header is None or (values and values[0] == header[0]):
+                header, session = values, {}
+                continue
+            if len(values) > len(header):
+                raise ValueError(f"{path.name} line {line_number} has extra unnamed columns")
+            values.extend([""] * (len(header) - len(values)))
+            result.append(
+                {
+                    **dict(zip(header, values)),
+                    "__source_artifact__": path.name,
+                    "__source_record__": line_number,
+                    "__csv_session__": dict(session),
+                }
+            )
+    for record in result:
+        record["__csv_metadata__"] = dict(metadata)
     return result
 
 
@@ -1077,19 +1084,22 @@ def _display_events(
     return result
 
 
-def _camera_events(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _camera_events(records: Sequence[Mapping[str, Any]], *, evidence_usable: bool = True) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for record in records:
         status = str(record.get("status") or "timestamp_error")
         host_capture = _integer(record.get("host_capture_ns"))
         duration = _integer(record.get("duration_ns"))
         mapped = (
-            host_capture is not None
+            evidence_usable
+            and host_capture is not None
             and host_capture >= 0
             and duration is not None
             and duration > 0
         )
         limitations: list[str] = []
+        if not evidence_usable:
+            limitations.append("camera_evidence_unverified")
         if host_capture is None or host_capture < 0:
             limitations.append("camera_clock_conversion_unavailable")
         if duration is None or duration <= 0:
@@ -1145,6 +1155,52 @@ def _metric_events(
             ),
         )
         for record in records
+    ]
+
+
+def _metrics_for_session(
+    records: Sequence[Mapping[str, Any]],
+    causal: Sequence[Mapping[str, Any]],
+    host: Sequence[Mapping[str, Any]],
+    session_token: str,
+) -> list[dict[str, Any]]:
+    boundaries: dict[str, tuple[Any, int]] = {}
+    for record in causal:
+        stage = str(_first(record, ("stage", "kind", "event")) or "").upper()
+        segment = _causal_identifiers(record).get("clock_segment")
+        dut_us = _integer(_first(record, ("stage_dut_micros", "stage_dut_monotonic_us", "stage_dut_us", "dut_monotonic_us", "dut_micros", "timestamp_dut_us")))
+        if stage in {"SESSION_START", "SESSION_END"} and segment is not None and dut_us is not None:
+            boundaries[stage] = (segment, dut_us)
+    if len(boundaries) < 2:
+        for record in host:
+            payload = _json_protocol_payload(record.get("line"))
+            if payload is None or _record_qualification_session_token(payload) != session_token:
+                continue
+            state = str(payload.get("state") or "").lower()
+            if state == "running":
+                boundary, names = "SESSION_START", ("startedAtDutMicros", "started_at_dut_micros")
+            elif state in {"finalizing", "done", "error"}:
+                boundary, names = "SESSION_END", ("dutMicros", "dut_micros")
+            else:
+                continue
+            dut_us = _integer(_first(payload, names))
+            raw_segment = _first(payload, ("clockSegment", "clock_segment"))
+            segment = (
+                int(str(raw_segment), 16)
+                if re.fullmatch(r"[0-9a-fA-F]{16}", str(raw_segment))
+                else _causal_identifiers(payload).get("clock_segment")
+            )
+            if segment is not None and dut_us is not None:
+                boundaries.setdefault(boundary, (segment, dut_us))
+    start, end = boundaries.get("SESSION_START"), boundaries.get("SESSION_END")
+    if start is None or end is None or start[0] != end[0]:
+        return []
+    return [
+        dict(record)
+        for record in records
+        if _causal_identifiers(record).get("clock_segment") == start[0]
+        and (timestamp := _dut_timestamp(record, ("dutMicros", "dut_micros"))[1]) is not None
+        and start[1] <= timestamp <= end[1]
     ]
 
 
@@ -1571,14 +1627,22 @@ def _commit_frame_relations(
         for item in (*frames, *drops)
         if item.get("host_earliest_ns") is None or item.get("host_latest_ns") is None
     ]
+    unverified_camera = any(
+        "camera_evidence_unverified" in item.get("limitations", ())
+        for item in (*frames, *drops)
+    )
     associations: list[dict[str, Any]] = []
     for commit in commits:
-        dropped_overlap = any(intervals_overlap(commit, drop) for drop in drops)
+        dropped_overlap = not (unverified_camera or unmapped_camera) and any(
+            intervals_overlap(commit, drop) for drop in drops
+        )
         if commit.get("host_earliest_ns") is None or commit.get("host_latest_ns") is None:
             status, candidates, reason = "missing_evidence", [], "commit_clock_mapping_unavailable"
+        elif unverified_camera:
+            status, candidates, reason = "missing_evidence", [], "camera_timing_unverified"
         elif unmapped_camera:
             mapped_candidates = [frame for frame in frames if intervals_overlap(commit, frame)]
-            candidates = [*mapped_candidates, *unmapped_camera]
+            candidates = mapped_candidates
             status = "missing_evidence"
             reason = (
                 "unmapped_camera_sample_prevents_unique_frame_evidence"
@@ -1686,12 +1750,21 @@ def build_aligned_timeline(
     camera_sidecar: Path | Sequence[Mapping[str, Any]] | None = None,
     perf_csv: Path | Sequence[Mapping[str, Any]] | None = None,
     encounter_csv: Path | Sequence[Mapping[str, Any]] | None = None,
+    camera_verified: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Align known artifacts while tolerating future additive schema columns."""
     host = _records(bench_timeline, "bench_timeline.ndjson")
     causal = _records(causal_trace, "causal_trace.csv")
     commits = _records(display_commits, "display_commits.csv")
-    camera = _records(camera_sidecar, "camera/frame_timing.ndjson")
+    camera_is_path = isinstance(camera_sidecar, Path)
+    camera_valid = not camera_is_path
+    try:
+        camera = _records(camera_sidecar, "camera/frame_timing.ndjson")
+        if camera_is_path:
+            validate_frame_sidecar([{key: value for key, value in row.items() if not key.startswith("__")} for row in camera])
+            camera_valid = True
+    except (OSError, TypeError, ValueError):
+        camera = []
     perf = _records(perf_csv, "perf.csv")
     encounters = _records(encounter_csv, "encounters.csv")
 
@@ -1706,6 +1779,7 @@ def build_aligned_timeline(
             retain_unscoped_tail_context=True,
         )
         encounters = _records_for_qualification_session(encounters, qualification_session_token)
+        perf = _metrics_for_session(perf, causal, host, qualification_session_token)
     qualification_window = _qualification_host_window(
         host,
         causal,
@@ -1723,7 +1797,13 @@ def build_aligned_timeline(
     )
     aligned.extend(_causal_events(causal, clock_alignment))
     aligned.extend(_display_events(commits, clock_alignment))
-    aligned.extend(_camera_events(camera))
+    aligned.extend(
+        _camera_events(
+            camera,
+            evidence_usable=camera_valid
+            and (camera_verified is True if camera_is_path else camera_verified is not False),
+        )
+    )
     aligned.extend(_metric_events(perf, clock_alignment, "metric_sample"))
     aligned.extend(_metric_events(encounters, clock_alignment, "encounter_event"))
     aligned.extend(correlate_timeline(aligned))
@@ -1758,6 +1838,12 @@ def _first_existing(run_dir: Path, patterns: Sequence[str]) -> Path | None:
     return None
 
 
+def _camera_artifact_path(run_dir: Path, value: Any) -> Path | None:
+    candidate = Path(str(value or ""))
+    roots = (Path("/"),) if candidate.is_absolute() else (run_dir, run_dir / "camera")
+    return next((root / candidate for root in roots if (root / candidate).is_file()), None)
+
+
 def _camera_sidecar_from_result(run_dir: Path, camera_result: Mapping[str, Any] | None) -> Path | None:
     if camera_result is not None:
         value = _first(
@@ -1770,15 +1856,24 @@ def _camera_sidecar_from_result(run_dir: Path, camera_result: Mapping[str, Any] 
             ),
         )
         if value is not None:
-            candidate = Path(str(value))
-            if not candidate.is_absolute():
-                candidate = run_dir / candidate
-            if candidate.is_file():
+            candidate = _camera_artifact_path(run_dir, value)
+            if candidate is not None:
                 return candidate
     return _first_existing(
         run_dir,
         ("frame_timing.ndjson", "*frame*timing*.ndjson", "*timing*sidecar*.ndjson"),
     )
+
+
+def _camera_verification_acceptable(run_dir: Path, camera_result: Mapping[str, Any] | None) -> bool:
+    verification = camera_result.get("video_timing_verification_result") if camera_result else None
+    if not isinstance(verification, Mapping) and isinstance(camera_result, Mapping):
+        path = _camera_artifact_path(run_dir, camera_result.get("video_timing_verification"))
+        try:
+            verification = json.loads(path.read_text(encoding="utf-8")) if path else None
+        except (OSError, json.JSONDecodeError):
+            pass
+    return isinstance(verification, Mapping) and verification.get("status") == "verified"
 
 
 def generate_alignment_artifacts(
@@ -1810,6 +1905,7 @@ def generate_alignment_artifacts(
         camera_sidecar=camera_sidecar,
         perf_csv=perf_csv,
         encounter_csv=encounter_csv,
+        camera_verified=_camera_verification_acceptable(run_dir, camera_result),
     )
 
     clock_path = run_dir / CLOCK_ALIGNMENT_FILENAME

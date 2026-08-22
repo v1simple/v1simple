@@ -3351,6 +3351,22 @@ def test_live_camera_failure_is_serialized_as_evidence_failure() -> None:
                 "scope": "boot_prefix_through_export",
                 "path": "display_commits_fixture.csv",
             }
+            (target / "bench_timeline.ndjson").write_text(
+                json.dumps(
+                    {
+                        "kind": "qsync_exchange",
+                        "status": "observed",
+                        "nonce": "0000000000000001",
+                        "clock_segment": "1",
+                        "h1_host_ns": 1_000_000_000,
+                        "d2_dut_us": 1_000,
+                        "d3_dut_us": 1_001,
+                        "h4_host_ns": 1_001_200_000,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             camera = CameraCapture(target / "camera", 300)
             camera.recorder_failure = {
                 "schema_version": 1,
@@ -3396,6 +3412,12 @@ def test_live_camera_failure_is_serialized_as_evidence_failure() -> None:
         assert_true(
             window["artifacts"]["display_commits"]["path"] == "display_commits_fixture.csv",
             f"captured renderer evidence was lost on camera failure: {window}",
+        )
+        assert_true(
+            window["artifacts"]["time_alignment"]["status"] == "captured"
+            and (out_dir / "clock_alignment.json").is_file()
+            and (out_dir / "aligned_timeline.ndjson").is_file(),
+            f"partial time alignment was lost on camera failure: {window}",
         )
 
 

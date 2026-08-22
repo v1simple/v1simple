@@ -590,8 +590,7 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
         return false;
     }
     if (!providers_.perfCsvPath || !providers_.startPerfSession || !providers_.enqueueSnapshotNow ||
-        !providers_.tryDrainPerf || !providers_.setSdCapturePaused || !providers_.beginEvidenceSession ||
-        !providers_.endEvidenceSession || !providers_.tryDrainEvidence) {
+        !providers_.tryDrainPerf || !providers_.setSdCapturePaused) {
         setError("providers_missing");
         return false;
     }
@@ -635,14 +634,11 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
     lastError_[0] = '\0';
     copyString(csvPath_, sizeof(csvPath_), providers_.perfCsvPath(providers_.ctx));
 
-    if (!providers_.beginEvidenceSession(qualificationSessionToken_, startedAtMs_, providers_.ctx)) {
-        providers_.setSdCapturePaused(false, providers_.ctx);
-        clearQualificationModeOverride();
-        setError("evidence_unavailable");
-        return false;
-    }
-    evidenceSessionActive_ = true;
-    evidenceDrained_ = false;
+    // Qualification evidence is best effort: unavailable instrumentation must
+    // not prevent the primary performance window from running.
+    evidenceSessionActive_ = providers_.beginEvidenceSession && providers_.endEvidenceSession &&
+                             providers_.beginEvidenceSession(qualificationSessionToken_, startedAtMs_, providers_.ctx);
+    evidenceDrained_ = !evidenceSessionActive_ || !providers_.tryDrainEvidence;
     providers_.startPerfSession(providers_.ctx);
     providers_.setSdCapturePaused(false, providers_.ctx);
     (void)providers_.enqueueSnapshotNow(providers_.ctx);

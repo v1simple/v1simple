@@ -23,6 +23,7 @@ MAX_INTERVAL_FRAMES = 36
 DEFAULT_INTERVAL_HZ = 8.0
 MAX_INTERVAL_HZ = 12.0
 CELL_WIDTH = 240
+CHANGE_ATLAS_COLUMNS = 3
 
 PTS_RE = re.compile(r"\bpts_time:([-+0-9.eE]+)")
 SCORE_RE = re.compile(r"^lavfi\.scene_score=([-+0-9.eE]+)$")
@@ -178,9 +179,18 @@ def _sheet(
     start: float,
     end: float,
     frame_count: int,
+    *,
+    fixed_layout: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
-    span, columns = end - start, min(6, max(1, math.ceil(math.sqrt(frame_count))))
-    rate, rows = frame_count / span, math.ceil(frame_count / columns)
+    span = end - start
+    if fixed_layout is None:
+        columns = min(6, max(1, math.ceil(math.sqrt(frame_count))))
+        rows = math.ceil(frame_count / columns)
+    else:
+        columns, rows = fixed_layout
+        if columns < 1 or rows < 1 or columns * rows < frame_count:
+            raise ValueError("fixed sheet layout cannot contain its frames")
+    rate = frame_count / span
     command = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error"]
     if start > 0:
         command += ["-ss", f"{start:.9f}"]
@@ -191,8 +201,11 @@ def _sheet(
             f"scale={CELL_WIDTH}:-2:flags=area,"
             f"tile={columns}x{rows}:nb_frames={frame_count}:padding=2:margin=2"
         ),
-        "-an", "-frames:v", "1", "-q:v", "3", str(destination),
+        "-an", "-frames:v", "1",
     ]
+    if destination.suffix.casefold() in {".jpg", ".jpeg"}:
+        command += ["-q:v", "3"]
+    command.append(str(destination))
     _run(command, "ffmpeg_failed", video, output)
     if not destination.is_file() or destination.stat().st_size == 0:
         raise CommandError("image_missing")
@@ -244,8 +257,9 @@ def _change_sheets(
         frame_count = max(1, min(3, round((end - start) / step)))
         try:
             sheet = _sheet(
-                video, output, output / f"change_{rank:02d}.jpg", ffmpeg,
+                video, output, output / f"change_{rank:02d}.png", ffmpeg,
                 "temporal_change_candidate", start, end, frame_count,
+                fixed_layout=(2, 2),
             )
             evidence.append({**candidate, **sheet})
         except CommandError as error:
@@ -260,6 +274,127 @@ def _change_sheets(
             _record(errors, "change_sheet", error)
             errors[-1]["change_rank"] = rank
     return evidence
+
+
+def _pack_change_sheets(
+    video: Path,
+    output: Path,
+    ffmpeg: str,
+    sheets: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    complete = [
+        sheet
+        for sheet in sheets
+        if sheet.get("status") == "complete"
+        and isinstance(sheet.get("filename"), str)
+        and isinstance(sheet.get("interval"), Mapping)
+        and isinstance(sheet.get("layout"), Mapping)
+        and isinstance(sheet.get("cells"), list)
+        and isinstance(sheet.get("pts_seconds"), (int, float))
+        and not isinstance(sheet.get("pts_seconds"), bool)
+    ]
+    if not complete:
+        raise CommandError("change_sheets_missing")
+    # A partial atlas would make a successful pack look complete while silently
+    # dropping a selected interval. Keep the individual-sheet fallback instead.
+    if len(complete) != len(sheets):
+        raise CommandError("change_sheet_partial")
+
+    destination = output / "change_candidates.png"
+    command = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error"]
+    for sheet in complete:
+        image = output / str(sheet["filename"])
+        if not image.is_file():
+            raise CommandError("change_sheet_missing")
+        command += ["-i", str(image)]
+
+    columns = min(CHANGE_ATLAS_COLUMNS, len(complete))
+    rows = math.ceil(len(complete) / columns)
+    positions: list[str] = []
+    for index in range(len(complete)):
+        row, column = divmod(index, columns)
+        row_start = row * columns
+        x = "0" if column == 0 else "+".join(
+            f"w{row_start + prior_column}" for prior_column in range(column)
+        )
+        y = "0" if row == 0 else "+".join(
+            f"h{prior_row * columns}" for prior_row in range(row)
+        )
+        positions.append(f"{x}_{y}")
+    layout = "|".join(positions)
+    inputs = "".join(f"[{index}:v]" for index in range(len(complete)))
+    command += [
+        "-filter_complex",
+        f"{inputs}xstack=inputs={len(complete)}:layout={layout}:fill=black[out]",
+        "-map",
+        "[out]",
+        "-frames:v",
+        "1",
+        str(destination),
+    ]
+    _run(command, "ffmpeg_failed", video, output)
+    if not destination.is_file() or destination.stat().st_size == 0:
+        raise CommandError("image_missing")
+
+    cells: list[dict[str, Any]] = []
+    starts: list[float] = []
+    ends: list[float] = []
+    inner_columns = 2
+    inner_rows = 2
+    atlas_columns = columns * inner_columns
+    atlas_rows = rows * inner_rows
+    for index, sheet in enumerate(complete):
+        interval = sheet["interval"]
+        start = float(interval["start_pts_seconds"])
+        end = float(interval["end_pts_seconds"])
+        starts.append(start)
+        ends.append(end)
+        inner_layout = sheet["layout"]
+        if (
+            inner_layout.get("columns") != inner_columns
+            or inner_layout.get("rows") != inner_rows
+            or inner_layout.get("cell_order") != "row_major"
+        ):
+            raise CommandError("change_sheet_layout_invalid")
+        outer_row, outer_column = divmod(index, columns)
+        rank = int(sheet["change_rank"])
+        for source_cell in sheet["cells"]:
+            if not isinstance(source_cell, Mapping):
+                raise CommandError("change_sheet_cells_invalid")
+            inner_index = source_cell.get("cell_index")
+            if (
+                not isinstance(inner_index, int)
+                or isinstance(inner_index, bool)
+                or inner_index < 0
+                or inner_index >= inner_columns * inner_rows
+            ):
+                raise CommandError("change_sheet_cells_invalid")
+            inner_row, inner_column = divmod(inner_index, inner_columns)
+            atlas_row = outer_row * inner_rows + inner_row
+            atlas_column = outer_column * inner_columns + inner_column
+            cell = dict(source_cell)
+            cell["cell_index"] = atlas_row * atlas_columns + atlas_column
+            cell["cell_label"] = (
+                f"change_rank_{rank:02d}_{source_cell.get('cell_label', '')}"
+            )
+            cells.append(cell)
+    cells.sort(key=lambda cell: cell["cell_index"])
+    return {
+        "status": "complete",
+        "filename": destination.name,
+        "purpose": "temporal_change_candidates",
+        "frame_count": len(cells),
+        "interval": {
+            "start_pts_seconds": _rounded(min(starts)),
+            "end_pts_seconds": _rounded(max(ends)),
+        },
+        "layout": {
+            "columns": atlas_columns,
+            "rows": atlas_rows,
+            "cell_order": "row_major",
+        },
+        "cells": cells,
+    }
 
 
 def _request(value: Any) -> tuple[float, float, float]:
@@ -443,9 +578,19 @@ def inspect_video(
         try:
             scan = _scan(video, output, ffmpeg_tool, duration)
             result["temporal_scan"] = scan
-            result["change_images"] = _change_sheets(
+            change_sheets = _change_sheets(
                 video, output, ffmpeg_tool, duration, scan, errors
             )
+            result["change_images"] = change_sheets
+            if len(change_sheets) > 1:
+                try:
+                    result["change_images"] = [
+                        _pack_change_sheets(
+                            video, output, ffmpeg_tool, change_sheets
+                        )
+                    ]
+                except CommandError as error:
+                    _record(errors, "change_atlas", error)
         except CommandError as error:
             _record(errors, "temporal_scan", error)
             result["temporal_scan"] = {

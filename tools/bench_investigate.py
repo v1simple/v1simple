@@ -27,6 +27,7 @@ INSTRUCTION_PATH = ROOT / "tools" / "bench_investigator_prompt.md"
 AGENTS_PATH = ROOT / "AGENTS.md"
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".mkv"}
 IGNORED_OUTPUTS = {"investigation.json", "investigation_debug.json"}
+AUXILIARY_OVERVIEW_VIDEO_NAMES = {".camera_preflight.mov"}
 ATTACHMENT_DIRECTORY = "investigation_sheets"
 MAX_INITIAL_IMAGES = 8
 MAX_ATTACHED_IMAGES = 12
@@ -36,6 +37,10 @@ MAX_VIDEOS_PER_RUN = 12
 LOCAL_DEFAULT_MODEL = "qwen3-vl:8b"
 LOCAL_DEFAULT_PROVIDER = "ollama"
 HOSTED_DEFAULT_MODEL = "gpt-5.6-sol"
+LOCAL_DEFAULT_CONTEXT_WINDOW = 98304
+LOCAL_AUTO_COMPACT_TOKEN_LIMIT = 65536
+LOCAL_TOOL_OUTPUT_TOKEN_LIMIT = 4000
+FRAME_COUNT_UNAVAILABLE = -1
 LOCAL_PRIVATE_ENVIRONMENT = {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -683,11 +688,28 @@ def extract_video_evidence(
     overview_attachments: list[dict[str, Any]] = []
     requested_attachment_groups: list[list[dict[str, Any]]] = []
     change_attachment_groups: list[list[dict[str, Any]]] = []
-    candidate_paths = (
-        [str(item["path"]) for item in artifacts if item.get("kind") == "video"]
-        if scan_overview
-        else list(by_video)
-    )
+    if scan_overview:
+        all_video_paths = [
+            str(item["path"]) for item in artifacts if item.get("kind") == "video"
+        ]
+        auxiliary_paths = [
+            path
+            for path in all_video_paths
+            if Path(path).name in AUXILIARY_OVERVIEW_VIDEO_NAMES
+        ]
+        candidate_paths = [
+            path for path in all_video_paths if path not in auxiliary_paths
+        ]
+        results.extend(
+            {
+                "path": relative,
+                "status": "not_processed",
+                "error": "hidden_auxiliary_video",
+            }
+            for relative in auxiliary_paths
+        )
+    else:
+        candidate_paths = list(by_video)
     video_paths, omitted_paths = bounded_video_paths(candidate_paths, remaining_run_budget)
     results.extend(
         {
@@ -888,6 +910,7 @@ def build_prompt(context: str, image_count: int, pass_number: int) -> str:
             "This is the first-pass lead checkpoint. Before broad exploration, follow "
             "the highest-signal discrepancy into tight raw evidence, relevant "
             "counterevidence, and owning code, then return schema-valid JSON promptly. "
+            "Inspect every supplied temporal-change atlas cell before choosing that lead. "
             "Do not transcribe or exhaustively review the inventory: the runner will add "
             "every model-omitted artifact as skipped and mark the published report partial."
         )
@@ -1071,6 +1094,17 @@ def invoke_codex(
         "--color",
         "never",
     ]
+    if oss and local_provider == LOCAL_DEFAULT_PROVIDER and model == LOCAL_DEFAULT_MODEL:
+        command.extend(
+            [
+                "-c",
+                f"model_context_window={LOCAL_DEFAULT_CONTEXT_WINDOW}",
+                "-c",
+                f"model_auto_compact_token_limit={LOCAL_AUTO_COMPACT_TOKEN_LIMIT}",
+                "-c",
+                f"tool_output_token_limit={LOCAL_TOOL_OUTPUT_TOKEN_LIMIT}",
+            ]
+        )
     if oss:
         command.append("--oss")
     if local_provider:
@@ -1146,21 +1180,30 @@ def code_text(selector: Mapping[str, Any]) -> str | None:
     return process.stdout if process.returncode == 0 else None
 
 
-def probe_video_bounds(path: Path) -> tuple[float, int | None] | None:
+def probe_video_bounds(
+    path: Path, *, count_frames: bool = False
+) -> tuple[float, int | None] | None:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return None
     try:
+        command = [
+            ffprobe,
+            "-v", "error",
+            "-select_streams", "v:0",
+        ]
+        if count_frames:
+            command.append("-count_frames")
+        stream_entries = "duration"
+        if count_frames:
+            stream_entries += ",nb_frames,nb_read_frames"
+        command += [
+            "-show_entries", f"format=duration:stream={stream_entries}",
+            "-of", "json",
+            str(path),
+        ]
         process = subprocess.run(
-            [
-                ffprobe,
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-count_frames",
-                "-show_entries", "format=duration:stream=duration,nb_frames,nb_read_frames",
-                "-of", "json",
-                str(path),
-            ],
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1172,7 +1215,11 @@ def probe_video_bounds(path: Path) -> tuple[float, int | None] | None:
         duration = float(payload.get("format", {}).get("duration") or stream.get("duration"))
         if not math.isfinite(duration) or duration <= 0:
             return None
-        raw_frame_count = stream.get("nb_read_frames") or stream.get("nb_frames")
+        raw_frame_count = (
+            stream.get("nb_read_frames") or stream.get("nb_frames")
+            if count_frames
+            else None
+        )
         frame_count = int(raw_frame_count) if str(raw_frame_count).isdigit() else None
         return duration, frame_count
     except (
@@ -1424,8 +1471,18 @@ def resolve_artifact_selector(
             or isinstance(last_frame, bool)
             or first_frame < 0
             or first_frame > last_frame
-            or (frame_count is not None and last_frame >= frame_count)
         ):
+            return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
+        if first_frame is not None and frame_count == FRAME_COUNT_UNAVAILABLE:
+            return f"video frame bounds are unavailable: {selector.get('path')}"
+        if first_frame is not None and frame_count is None:
+            counted_bounds = probe_video_bounds(path, count_frames=True)
+            if counted_bounds is None or counted_bounds[1] is None:
+                cache[path] = (duration, FRAME_COUNT_UNAVAILABLE)
+                return f"video frame bounds are unavailable: {selector.get('path')}"
+            duration, frame_count = counted_bounds
+            cache[path] = counted_bounds
+        if first_frame is not None and last_frame >= frame_count:
             return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
         attachment_error = _video_attachment_error(
             run_dir,

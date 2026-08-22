@@ -1378,6 +1378,18 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             and 'web_search="disabled"' in config_values,
             f"local non-model egress overrides were lost: {config_values}",
         )
+        assert_true(
+            f"model_context_window={investigator.LOCAL_DEFAULT_CONTEXT_WINDOW}"
+            in config_values
+            and (
+                "model_auto_compact_token_limit="
+                f"{investigator.LOCAL_AUTO_COMPACT_TOKEN_LIMIT}"
+            )
+            in config_values
+            and f"tool_output_token_limit={investigator.LOCAL_TOOL_OUTPUT_TOKEN_LIMIT}"
+            in config_values,
+            f"default local context bounds were lost: {config_values}",
+        )
         provider_index = argv.index("--local-provider")
         assert_true(argv[provider_index + 1] == "ollama", "local provider changed")
         model_index = argv.index("--model")
@@ -1427,8 +1439,56 @@ def test_provider_command_and_local_environment_do_not_fall_back() -> None:
             and 'web_search="disabled"' in hosted_config_values,
             f"hosted non-model egress overrides were lost: {hosted_config_values}",
         )
+        assert_true(
+            not any(
+                value.startswith(
+                    (
+                        "model_context_window=",
+                        "model_auto_compact_token_limit=",
+                        "tool_output_token_limit=",
+                    )
+                )
+                for value in hosted_config_values
+            ),
+            f"default-local context bounds leaked into hosted execution: {hosted_config_values}",
+        )
         hosted_model_index = hosted_argv.index("--model")
         assert_true(hosted_argv[hosted_model_index + 1] == "gpt-5.6-sol", "hosted model changed")
+
+        for local_provider, model in (
+            ("ollama", "custom-local-model"),
+            ("lmstudio", investigator.LOCAL_DEFAULT_MODEL),
+        ):
+            investigator.invoke_codex(
+                executable=str(backend),
+                model=model,
+                oss=True,
+                local_provider=local_provider,
+                prompt="non-default local fixture",
+                images=[],
+                output_path=output,
+                timeout_seconds=10,
+            )
+            local_argv = json.loads(capture.read_text(encoding="utf-8"))["argv"]
+            local_config_values = [
+                local_argv[index + 1]
+                for index, value in enumerate(local_argv[:-1])
+                if value == "-c"
+            ]
+            assert_true(
+                not any(
+                    value.startswith(
+                        (
+                            "model_context_window=",
+                            "model_auto_compact_token_limit=",
+                            "tool_output_token_limit=",
+                        )
+                    )
+                    for value in local_config_values
+                ),
+                f"default-model bounds leaked into {local_provider}/{model}: "
+                f"{local_config_values}",
+            )
 
 
 def test_missing_run_error_does_not_print_resolved_user_path() -> None:
@@ -1833,82 +1893,263 @@ def test_attachment_allocation_is_reported_honestly() -> None:
     )
 
 
-def test_attachment_cap_represents_each_video_before_extra_sheets() -> None:
+def test_first_pass_keeps_every_main_video_change_candidate_under_the_image_cap() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         run = root / "run"
         run.mkdir()
         artifacts = []
-        for name in ("preflight.mov", "replay.mov"):
-            (run / name).write_bytes(b"fixture")
-            artifacts.append(
-                {
-                    "path": name,
-                    "sha256": sha256(b"fixture"),
-                    "kind": "video",
-                    "size_bytes": 7,
-                }
-            )
+        evidence_paths = []
+        for suite in ("core", "display", "replay"):
+            for filename in (".camera_preflight.mov", "evidence.mov"):
+                relative = f"{suite}/camera/{filename}"
+                path = run / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture")
+                if filename == "evidence.mov":
+                    evidence_paths.append(relative)
+                artifacts.append(
+                    {
+                        "path": relative,
+                        "sha256": sha256(b"fixture"),
+                        "kind": "video",
+                        "size_bytes": 7,
+                    }
+                )
+
+        calls = []
 
         def inspect_video(
             video: Path, output: Path, _requests: object, *, scan_overview: bool
         ) -> dict[str, object]:
+            calls.append(video.relative_to(run.resolve()).as_posix())
             output.mkdir(parents=True)
             (output / "overview.jpg").write_bytes(b"overview")
+            (output / "change_candidates.png").write_bytes(b"packed changes")
 
-            def sheet(filename: str, purpose: str) -> dict[str, object]:
+            def cell(index: int, label: str) -> dict[str, object]:
                 return {
-                    "status": "complete",
-                    "filename": filename,
-                    "purpose": purpose,
-                    "interval": {"start_pts_seconds": 0.0, "end_pts_seconds": 1.0},
-                    "layout": {"columns": 1, "rows": 1, "cell_order": "row_major"},
-                    "cells": [
-                        {
-                            "cell_index": 0,
-                            "cell_label": "cell_001",
-                            "nominal_requested_pts_seconds": 0.0,
-                            "source_pts_measured": False,
-                            "pts_uncertainty_seconds": 1.0,
-                            "pts_uncertainty_interval": {
-                                "start_pts_seconds": 0.0,
-                                "end_pts_seconds": 1.0,
-                            },
-                        }
-                    ],
+                    "cell_index": index,
+                    "cell_label": label,
+                    "nominal_requested_pts_seconds": index + 0.5,
+                    "source_pts_measured": False,
+                    "pts_uncertainty_seconds": 0.5,
+                    "pts_uncertainty_interval": {
+                        "start_pts_seconds": float(index),
+                        "end_pts_seconds": float(index + 1),
+                    },
                 }
 
-            changes = []
-            for index in range(12):
-                filename = f"change-{index:02d}.jpg"
-                (output / filename).write_bytes(filename.encode())
-                changes.append(sheet(filename, "temporal_change_candidate"))
+            candidate_cells = []
+            for rank_index in range(12):
+                outer_row, outer_column = divmod(rank_index, 3)
+                for inner_index in range(3):
+                    inner_row, inner_column = divmod(inner_index, 2)
+                    atlas_index = (
+                        (outer_row * 2 + inner_row) * 6
+                        + outer_column * 2
+                        + inner_column
+                    )
+                    candidate_cells.append(
+                        cell(
+                            atlas_index,
+                            f"change_rank_{rank_index + 1:02d}_cell_{inner_index + 1:03d}",
+                        )
+                    )
+            candidate_cells.sort(key=lambda item: item["cell_index"])
+
             return {
                 "status": "complete",
-                "overview": sheet("overview.jpg", "whole_video_overview"),
-                "change_images": changes,
+                "overview": {
+                    "status": "complete",
+                    "filename": "overview.jpg",
+                    "purpose": "whole_video_overview",
+                    "interval": {"start_pts_seconds": 0.0, "end_pts_seconds": 12.0},
+                    "layout": {"columns": 1, "rows": 1, "cell_order": "row_major"},
+                    "cells": [cell(0, "whole_video")],
+                },
+                "change_images": [
+                    {
+                        "status": "complete",
+                        "filename": "change_candidates.png",
+                        "purpose": "temporal_change_candidates",
+                        "interval": {
+                            "start_pts_seconds": 0.0,
+                            "end_pts_seconds": 12.0,
+                        },
+                        "layout": {
+                            "columns": 6,
+                            "rows": 8,
+                            "cell_order": "row_major",
+                        },
+                        "cells": candidate_cells,
+                    }
+                ],
                 "requested_intervals": [],
             }
 
         with patch.object(investigator, "load_video_helper", return_value=inspect_video):
-            _video, candidates, _processed, _omitted = investigator.extract_video_evidence(
+            video, candidates, processed, omitted = investigator.extract_video_evidence(
                 run,
                 artifacts,
                 root / "images",
                 [],
                 scan_overview=True,
                 pass_number=1,
-                remaining_run_budget=2,
+                remaining_run_budget=8,
             )
         attached: list[dict[str, object]] = []
-        investigator.append_bounded_attachments(
+        omitted_images = investigator.append_bounded_attachments(
             attached, candidates, limit=investigator.MAX_INITIAL_IMAGES
         )
-        paths = [item["manifest"]["source_video_path"] for item in attached]
-        assert_true(paths[:2] == ["preflight.mov", "replay.mov"], "overview order changed")
         assert_true(
-            paths[2:] == ["preflight.mov", "replay.mov"] * 3,
-            f"one video starved the bounded change-sheet selection: {paths}",
+            calls == evidence_paths and processed == 3 and omitted == [],
+            f"hidden camera preflight consumed semantic video work: calls={calls}, video={video}",
+        )
+        assert_true(
+            sum(item.get("error") == "hidden_auxiliary_video" for item in video) == 3,
+            f"skipped preflight videos were not reported honestly: {video}",
+        )
+        assert_true(
+            omitted_images == 0 and len(attached) == 6,
+            f"packed main-video evidence still exceeded the first-pass cap: {len(attached)}",
+        )
+        paths = [item["manifest"]["source_video_path"] for item in attached]
+        assert_true(
+            paths == evidence_paths + evidence_paths,
+            f"main video overview/change pairing was lost: {paths}",
+        )
+        atlases = [
+            item["manifest"]
+            for item in attached
+            if item["manifest"]["purpose"] == "temporal_change_candidates"
+        ]
+        assert_true(
+            len(atlases) == 3
+            and all(len(item["cells"]) == 36 for item in atlases)
+            and all(
+                any(
+                    cell["cell_label"].startswith("change_rank_12_")
+                    for cell in item["cells"]
+                )
+                for item in atlases
+            ),
+            f"a late-ranked firmware-defect candidate was withheld: {atlases}",
+        )
+
+
+def test_pts_video_selector_does_not_decode_the_whole_video_for_bounds() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        run = Path(temporary)
+        video = run / "long-camera.mov"
+        video.write_bytes(b"fixture video")
+        commands = []
+
+        def ffprobe(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            stream = {"duration": "340.365", "nb_frames": "999999"}
+            if "-count_frames" in command:
+                stream["nb_read_frames"] = "67895"
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "streams": [stream],
+                        "format": {"duration": "340.365"},
+                    }
+                ),
+                stderr="",
+            )
+
+        selector = {
+            "kind": "video",
+            "path": video.name,
+            "sha256": sha256(video.read_bytes()),
+            "description": "Timestamp-only long-video evidence",
+            "start_pts_s": 38.858337,
+            "end_pts_s": 39.047429,
+        }
+        bounds_cache = {}
+        with patch.object(investigator.subprocess, "run", side_effect=ffprobe):
+            error = investigator.resolve_artifact_selector(
+                run,
+                selector,
+                bounds_cache,
+                require_video_attachment=False,
+            )
+            assert_true(error is None, f"timestamp-only selector decoded the whole video: {error}")
+            assert_true(
+                len(commands) == 1 and "-count_frames" not in commands[0],
+                f"video bounds still force a full frame decode: {commands}",
+            )
+
+            frame_selector = dict(selector)
+            frame_selector["start_frame"] = 67894
+            frame_selector["end_frame"] = 67895
+            frame_error = investigator.resolve_artifact_selector(
+                run,
+                frame_selector,
+                bounds_cache,
+                require_video_attachment=False,
+            )
+        assert_true(
+            frame_error is not None and "frame range does not resolve" in frame_error,
+            f"out-of-range frame selector bypassed lazy bounds: {frame_error}",
+        )
+        assert_true(
+            len(commands) == 2
+            and "-count_frames" in commands[1]
+            and bounds_cache[video.resolve()][1] == 67895,
+            f"frame selector did not upgrade cached bounds exactly once: {commands}",
+        )
+
+        failed_commands = []
+
+        def unavailable_count(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            failed_commands.append(command)
+            if "-count_frames" in command:
+                raise subprocess.TimeoutExpired(command, 30)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "streams": [{"duration": "340.365", "nb_frames": "N/A"}],
+                        "format": {"duration": "340.365"},
+                    }
+                ),
+                stderr="",
+            )
+
+        failed_cache = {}
+        with patch.object(investigator.subprocess, "run", side_effect=unavailable_count):
+            assert_true(
+                investigator.resolve_artifact_selector(
+                    run,
+                    selector,
+                    failed_cache,
+                    require_video_attachment=False,
+                )
+                is None,
+                "failed frame counting poisoned timestamp-only bounds",
+            )
+            failed_errors = [
+                investigator.resolve_artifact_selector(
+                    run,
+                    frame_selector,
+                    failed_cache,
+                    require_video_attachment=False,
+                )
+                for _index in range(2)
+            ]
+        assert_true(
+            all("frame bounds are unavailable" in str(error) for error in failed_errors)
+            and sum("-count_frames" in command for command in failed_commands) == 1,
+            f"failed frame count was retried or hid usable PTS bounds: "
+            f"{failed_errors}, {failed_commands}",
         )
 
 
@@ -2597,7 +2838,8 @@ def main() -> int:
     test_model_context_summarizes_periodic_video_points()
     test_first_pass_requires_a_grounded_checkpoint_before_breadth()
     test_attachment_allocation_is_reported_honestly()
-    test_attachment_cap_represents_each_video_before_extra_sheets()
+    test_first_pass_keeps_every_main_video_change_candidate_under_the_image_cap()
+    test_pts_video_selector_does_not_decode_the_whole_video_for_bounds()
     test_durable_attachment_manifest_controls_video_citations()
     test_backend_failure_still_publishes_honest_report()
     test_success_report_is_recursively_redacted_and_debug_is_structured()

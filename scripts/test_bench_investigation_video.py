@@ -50,6 +50,59 @@ def make_corner_change_video(path: Path, *, brief: bool = False) -> None:
     )
 
 
+def make_many_change_video(path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise AssertionError("ffmpeg is required for investigation video tests")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            (
+                "color=c=black:s=96x64:r=30:d=6,"
+                "drawbox=x=12:y=8:w=72:h=48:color=white:t=fill:"
+                "enable='gte(sin(10*PI*t),0)'"
+            ),
+            "-c:v",
+            "ffv1",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+def image_dimensions(path: Path) -> tuple[int, int]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise AssertionError("ffprobe is required for investigation video tests")
+    process = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    width, height = process.stdout.strip().split("x", 1)
+    return int(width), int(height)
+
+
 def test_full_frame_candidates_and_requested_interval_sheet() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
@@ -237,10 +290,86 @@ def test_brief_off_overview_change_becomes_a_candidate() -> None:
         )
 
 
+def test_all_ranked_changes_are_packed_into_one_lossless_atlas() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        video = root / "many-changes.mkv"
+        output = root / "images"
+        make_many_change_video(video)
+        report = inspect_video(video, output)
+
+        candidates = report["temporal_scan"]["change_candidates"]
+        assert_true(len(candidates) == 12, f"fixture did not fill the candidate bound: {candidates}")
+        assert_true(report["status"] == "complete", f"atlas extraction failed: {report['errors']}")
+        assert_true(len(report["change_images"]) == 1, "ranked changes still consume one image each")
+        atlas = report["change_images"][0]
+        assert_true(
+            atlas["purpose"] == "temporal_change_candidates"
+            and atlas["filename"].endswith(".png")
+            and (output / atlas["filename"]).stat().st_size > 0,
+            f"lossless change atlas is missing: {atlas}",
+        )
+        assert_true(
+            atlas["layout"] == {"columns": 6, "rows": 8, "cell_order": "row_major"},
+            f"visible frames are not mapped onto the physical atlas grid: {atlas['layout']}",
+        )
+        panel_width, panel_height = image_dimensions(output / "change_01.png")
+        atlas_width, atlas_height = image_dimensions(output / atlas["filename"])
+        assert_true(
+            (atlas_width, atlas_height) == (panel_width * 3, panel_height * 4),
+            f"candidate panels overlap in the rendered atlas: "
+            f"{(atlas_width, atlas_height)} vs {(panel_width * 3, panel_height * 4)}",
+        )
+        assert_true(
+            atlas["frame_count"] == len(atlas["cells"]) == 36,
+            f"not every visible before/at/after frame has metadata: {atlas['cells']}",
+        )
+        cells_by_rank = {
+            rank: [
+                cell
+                for cell in atlas["cells"]
+                if cell["cell_label"].startswith(f"change_rank_{rank:02d}_")
+            ]
+            for rank in range(1, 13)
+        }
+        assert_true(
+            all(
+                [cell["cell_label"] for cell in cells_by_rank[rank]]
+                == [f"change_rank_{rank:02d}_cell_{index:03d}" for index in range(1, 4)]
+                for rank in range(1, 13)
+            ),
+            f"candidate subframe mapping was lost: {cells_by_rank}",
+        )
+        assert_true(
+            all(
+                any(
+                    cell["nominal_requested_pts_seconds"] == candidate["pts_seconds"]
+                    for cell in cells_by_rank[int(candidate["change_rank"])]
+                )
+                for candidate in candidates
+            ),
+            "candidate PTS values no longer resolve to visible atlas cells",
+        )
+        assert_true(
+            [cell["cell_index"] for cell in atlas["cells"]]
+            == sorted(cell["cell_index"] for cell in atlas["cells"]),
+            f"atlas cells are not published in physical row-major order: {atlas['cells']}",
+        )
+        for cell in atlas["cells"]:
+            interval = cell["pts_uncertainty_interval"]
+            assert_true(
+                interval["start_pts_seconds"]
+                <= cell["nominal_requested_pts_seconds"]
+                <= interval["end_pts_seconds"],
+                f"atlas cell lost its candidate interval: {cell}",
+            )
+
+
 def main() -> int:
     test_full_frame_candidates_and_requested_interval_sheet()
     test_extraction_failures_and_invalid_requests_remain_machine_readable()
     test_brief_off_overview_change_becomes_a_candidate()
+    test_all_ranked_changes_are_packed_into_one_lossless_atlas()
     print("bench investigation video tests passed")
     return 0
 

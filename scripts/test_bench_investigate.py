@@ -1311,6 +1311,43 @@ def test_default_is_local_and_hosted_requires_explicit_choice() -> None:
                 os.environ[name] = value
 
 
+def test_codex_executable_resolution_uses_override_path_and_app_bundle() -> None:
+    name = "BENCH_INVESTIGATOR_CODEX"
+    previous = os.environ.get(name)
+    try:
+        os.environ[name] = "/configured/codex"
+        with patch.object(investigator.shutil, "which", return_value="/path/codex"):
+            assert_true(
+                investigator.resolve_codex_executable() == "/configured/codex",
+                "explicit Codex executable lost precedence",
+            )
+
+        os.environ.pop(name, None)
+        with patch.object(investigator.shutil, "which", return_value="/path/codex"):
+            assert_true(
+                investigator.resolve_codex_executable() == "/path/codex",
+                "PATH Codex executable was not selected",
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundled = Path(temporary) / "codex"
+            bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+            bundled.chmod(0o700)
+            with (
+                patch.object(investigator.shutil, "which", return_value=None),
+                patch.object(investigator, "BUNDLED_CODEX_EXECUTABLES", (bundled,)),
+            ):
+                assert_true(
+                    investigator.resolve_codex_executable() == str(bundled),
+                    "executable app-bundled Codex was not discovered",
+                )
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
 def test_provider_command_and_local_environment_do_not_fall_back() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -2415,6 +2452,35 @@ def test_backend_failure_still_publishes_honest_report() -> None:
             assert_true(private_value not in serialized, f"failure report leaked {private_value}")
 
 
+def test_missing_backend_does_not_publish_executable_path() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        run = root / "run"
+        run.mkdir()
+        private_executable = root / "private" / "missing-codex"
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "bench_investigate.py"),
+                str(run),
+                "--codex-executable",
+                str(private_executable),
+                "--max-video-passes",
+                "1",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        report = json.loads((run / "investigation.json").read_text(encoding="utf-8"))
+        serialized = json.dumps(report)
+        assert_true(process.returncode == 2, "missing backend exit changed")
+        assert_true("backend_missing: Codex executable is unavailable" in serialized, "missing backend was not identified")
+        assert_true(str(private_executable) not in serialized, "missing backend leaked its configured path")
+
+
 def test_success_report_is_recursively_redacted_and_debug_is_structured() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -2828,6 +2894,7 @@ def main() -> int:
     test_nested_csv_selector_keys_are_resolved()
     test_clock_mapping_failures_downgrade_only_referencing_findings()
     test_default_is_local_and_hosted_requires_explicit_choice()
+    test_codex_executable_resolution_uses_override_path_and_app_bundle()
     test_provider_command_and_local_environment_do_not_fall_back()
     test_missing_run_error_does_not_print_resolved_user_path()
     test_atomic_report_replaces_old_content()
@@ -2842,6 +2909,7 @@ def main() -> int:
     test_pts_video_selector_does_not_decode_the_whole_video_for_bounds()
     test_durable_attachment_manifest_controls_video_citations()
     test_backend_failure_still_publishes_honest_report()
+    test_missing_backend_does_not_publish_executable_path()
     test_success_report_is_recursively_redacted_and_debug_is_structured()
     test_fresh_source_precheck_limits_final_attribution()
     test_unexpected_postprocessing_error_publishes_valid_sanitized_failure()

@@ -493,18 +493,33 @@ def test_replay_machine_events_are_copied_once_without_reinterpretation() -> Non
             assert isinstance(observed["observer_host_monotonic_ns"], int)
 
 
-def test_bench_automatic_investigation_is_local_only_and_non_gating() -> None:
+def test_bench_investigation_backend_choice_is_explicit_and_non_gating() -> None:
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
     score_setup = source.index('score_args=(python3 "$ROOT_DIR/tools/bench_score.py"')
     score = source.index('-- "${score_args[@]}" || score_status=$?', score_setup)
     investigation = source.index('python3 "$ROOT_DIR/tools/bench_investigate.py"')
     final_exit = source.index('exit "$score_status"', investigation)
     invocation = source[investigation:final_exit]
+    hosted_start = invocation.index('if [[ "$HOSTED_INVESTIGATOR" -eq 1 ]]; then')
+    local_start = invocation.index("else\n  investigator_args+=(", hosted_start)
+    choice_end = invocation.index("\nfi\n", local_start)
+    hosted_branch = invocation[hosted_start:local_start]
+    local_branch = invocation[local_start:choice_end]
 
     assert score < investigation < final_exit
-    assert '--local-provider "${BENCH_INVESTIGATOR_LOCAL_PROVIDER:-ollama}"' in invocation
-    assert '--model "${BENCH_INVESTIGATOR_MODEL:-qwen3-vl:8b}"' in invocation
-    assert "--hosted" not in invocation
+    assert "HOSTED_INVESTIGATOR=0" in source
+    assert "--hosted-investigator)" in source
+    assert "HOSTED_INVESTIGATOR=1" in source
+    assert "investigator_args+=(" in invocation
+    assert "--hosted" in hosted_branch
+    assert "--model gpt-5.6-sol" in hosted_branch
+    assert "--local-provider" not in hosted_branch
+    assert "BENCH_INVESTIGATOR_MODEL" not in hosted_branch
+    assert "--hosted" not in local_branch
+    assert '--local-provider "${BENCH_INVESTIGATOR_LOCAL_PROVIDER:-ollama}"' in local_branch
+    assert '--model "${BENCH_INVESTIGATOR_MODEL:-qwen3-vl:8b}"' in local_branch
+    assert "BENCH_INVESTIGATOR_HOSTED" not in source
+    assert '"${investigator_args[@]}" || investigation_status=$?' in invocation
     assert "|| investigation_status=$?" in invocation
     assert "bench exit remains $score_status" in invocation
 
@@ -521,7 +536,7 @@ def main() -> int:
         test_device_reported_causal_trace_path_is_collected_without_gating,
         test_external_scenario_is_an_opaque_replay_argument,
         test_replay_machine_events_are_copied_once_without_reinterpretation,
-        test_bench_automatic_investigation_is_local_only_and_non_gating,
+        test_bench_investigation_backend_choice_is_explicit_and_non_gating,
     ]
     for test in tests:
         test()

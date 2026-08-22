@@ -37,6 +37,12 @@ MAX_VIDEOS_PER_RUN = 12
 LOCAL_DEFAULT_MODEL = "qwen3-vl:8b"
 LOCAL_DEFAULT_PROVIDER = "ollama"
 HOSTED_DEFAULT_MODEL = "gpt-5.6-sol"
+BUNDLED_CODEX_EXECUTABLES = (
+    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    Path("/Applications/Codex.app/Contents/Resources/codex"),
+    Path.home() / "Applications/ChatGPT.app/Contents/Resources/codex",
+    Path.home() / "Applications/Codex.app/Contents/Resources/codex",
+)
 LOCAL_DEFAULT_CONTEXT_WINDOW = 98304
 LOCAL_AUTO_COMPACT_TOKEN_LIMIT = 65536
 LOCAL_TOOL_OUTPUT_TOKEN_LIMIT = 4000
@@ -948,6 +954,19 @@ def codex_version(executable: str) -> str:
     return process.stdout.strip() or "unknown"
 
 
+def resolve_codex_executable() -> str:
+    configured = os.environ.get("BENCH_INVESTIGATOR_CODEX")
+    if configured:
+        return configured
+    discovered = shutil.which("codex")
+    if discovered:
+        return discovered
+    for candidate in BUNDLED_CODEX_EXECUTABLES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "codex"
+
+
 def is_ollama_cloud_model(model: str) -> bool:
     lowered = model.casefold()
     return lowered.endswith(":cloud") or lowered.endswith("-cloud")
@@ -1127,7 +1146,7 @@ def invoke_codex(
     except FileNotFoundError as exc:
         raise InvestigationError(
             "backend_missing",
-            sanitize_error(f"Codex executable not found: {executable}", private_paths),
+            "Codex executable is unavailable",
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise InvestigationError("backend_timeout", f"Codex exceeded {timeout_seconds} seconds") from exc
@@ -2395,7 +2414,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--codex-executable",
-        default=os.environ.get("BENCH_INVESTIGATOR_CODEX") or shutil.which("codex") or "codex",
+        default=resolve_codex_executable(),
     )
     parser.add_argument("--max-video-passes", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=int, default=3600)

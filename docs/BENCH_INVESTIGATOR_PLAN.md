@@ -27,24 +27,28 @@ after one hour without a finding. The runner also rejects Ollama model tags
 ending in `:cloud` or `-cloud`. Larger context windows consume more memory; a
 higher-precision KV cache can be selected on machines where it fits.
 
-`bench.sh` invokes that local form after collection and scoring. Its provider and
-model can be changed with `BENCH_INVESTIGATOR_LOCAL_PROVIDER` and
-`BENCH_INVESTIGATOR_MODEL`, but the automatic path never passes `--hosted` and
-never falls back to a hosted service. Investigation is diagnostic: it never
+`bench.sh` invokes that local form after collection and scoring. Its local
+provider and model can be changed with `BENCH_INVESTIGATOR_LOCAL_PROVIDER` and
+`BENCH_INVESTIGATOR_MODEL`. Passing `--hosted-investigator` instead explicitly
+selects hosted `gpt-5.6-sol`; it never silently falls back to a hosted service or
+inherits a stale local model choice. Investigation is diagnostic: it never
 changes the bench verdict or becomes a release gate.
 
 Hosted review is a separate, direct opt-in by the person running it:
 
 ```text
+./bench.sh --replay --camera --hosted-investigator
+
+# Or investigate an existing run without collecting again:
 python3 tools/bench_investigate.py <bench-run-directory> \
   --hosted --model gpt-5.6-sol
 ```
 
-Only that explicit `--hosted` command authorizes sending evidence to the hosted
-model. It may transmit selected raw run artifacts and source excerpts plus camera
-contact sheets. Its read-only repository scope can also see other readable files
-under the checkout, including ignored artifacts, so inspect that scope before
-opting in.
+Only the explicit bench flag or direct `--hosted` command authorizes sending
+evidence to the hosted model. It may transmit selected raw run artifacts and
+source excerpts plus camera contact sheets. Its read-only repository scope can
+also see other readable files under the checkout, including ignored artifacts,
+so inspect that scope before opting in.
 
 ## Report contract
 

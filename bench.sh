@@ -18,6 +18,7 @@ SELECTED=0
 UPLOAD=1
 SKIP_WEB=0
 CAPTURE_CAMERA=0
+HOSTED_INVESTIGATOR=0
 FROM_CSV=""
 SEGMENT="last"
 USE_BASELINE=1
@@ -51,6 +52,9 @@ Options:
   --blink-arrow           Legacy alias for --blink-profile stress.
   --scenario PATH         Pass an external replay scenario through to v1replay.
   --camera                Capture every live window; gate only replay camera evidence.
+  --hosted-investigator   Investigate with hosted gpt-5.6-sol after scoring.
+                          This explicitly sends investigation inputs and prepared
+                          camera sheets to the hosted model; the bench verdict remains unchanged.
   --duration-seconds N    Window duration (default: 300).
   --replay-duration-seconds N
                           Replay metrics window duration (default: 300).
@@ -98,6 +102,8 @@ while [[ $# -gt 0 ]]; do
       SCENARIO="$2"; shift 2 ;;
     --camera)
       CAPTURE_CAMERA=1; shift ;;
+    --hosted-investigator)
+      HOSTED_INVESTIGATOR=1; shift ;;
     --duration-seconds)
       [[ $# -lt 2 ]] && { echo "Missing value for --duration-seconds" >&2; exit 3; }
       DURATION_SECONDS="$2"; shift 2 ;;
@@ -448,10 +454,19 @@ fi
 echo "Latest artifacts: selected artifact root / $SAFE_BOARD_ID / latest" | tee -a "$RUN_LOG"
 echo "==> bench investigation (non-gating; bench exit remains $score_status)" | tee -a "$RUN_LOG"
 investigation_status=0
-python3 "$ROOT_DIR/tools/bench_investigate.py" "$RUN_DIR" \
-  --local-provider "${BENCH_INVESTIGATOR_LOCAL_PROVIDER:-ollama}" \
-  --model "${BENCH_INVESTIGATOR_MODEL:-qwen3-vl:8b}" \
-  || investigation_status=$?
+investigator_args=(python3 "$ROOT_DIR/tools/bench_investigate.py" "$RUN_DIR")
+if [[ "$HOSTED_INVESTIGATOR" -eq 1 ]]; then
+  investigator_args+=(
+    --hosted
+    --model gpt-5.6-sol
+  )
+else
+  investigator_args+=(
+    --local-provider "${BENCH_INVESTIGATOR_LOCAL_PROVIDER:-ollama}"
+    --model "${BENCH_INVESTIGATOR_MODEL:-qwen3-vl:8b}"
+  )
+fi
+"${investigator_args[@]}" || investigation_status=$?
 if [[ "$investigation_status" -ne 0 ]]; then
   echo "Bench investigation backend failed (exit=$investigation_status); bench exit remains $score_status" >&2
 fi

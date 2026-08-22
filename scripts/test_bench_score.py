@@ -471,6 +471,7 @@ def write_window(
     camera_result: str = "",
     camera_grade_result: str = "PASS",
     camera_grade_errors: tuple[str, ...] = (),
+    camera_timing_verification: dict | None = None,
 ) -> None:
     step = root / suite
     encounter_path: Path | None = None
@@ -608,6 +609,11 @@ def write_window(
         if camera_result == "CAPTURED":
             for name in evidence_names.values():
                 (camera_dir / name).write_bytes(b"evidence")
+            if camera_timing_verification is not None:
+                write_json(
+                    camera_dir / "video_timing_verification.json",
+                    camera_timing_verification,
+                )
         physical_camera = {
             "schema_version": 1,
             "kind": "bench_camera_evidence",
@@ -619,6 +625,12 @@ def write_window(
             "profile_validation": {"result": "PASS"},
             **{key: value if camera_result == "CAPTURED" else "" for key, value in evidence_names.items()},
             "video_duration_seconds": 300.0 if camera_result == "CAPTURED" else 0.0,
+            "video_timing_verification": (
+                "video_timing_verification.json"
+                if camera_result == "CAPTURED" and camera_timing_verification is not None
+                else ""
+            ),
+            "video_timing_verification_result": camera_timing_verification or {},
             "errors": [] if camera_result == "CAPTURED" else ["camera unavailable"],
         }
         write_json(camera_dir / "camera_result.json", physical_camera)
@@ -4079,6 +4091,90 @@ def test_requested_replay_camera_separates_product_and_evidence_failures() -> No
         assert_true("legacy ownership" not in proc.stdout, proc.stdout)
 
 
+def test_camera_timing_mismatch_is_surfaced_without_changing_verdict() -> None:
+    timing_mismatch = {
+        "schema_version": 1,
+        "kind": "camera_video_timing_verification",
+        "status": "mismatch",
+        "duration_mismatch_count": 1,
+        "first_mismatch": {
+            "type": "duration_mismatch",
+            "frame_seq": 42,
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_window(
+            root,
+            "replay",
+            camera_result="CAPTURED",
+            camera_timing_verification=timing_mismatch,
+        )
+        capture_path = root / "replay" / "camera" / "capture_manifest.json"
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        capture["capture"]["video_timing_verification_result"] = {"status": "verified"}
+        write_json(capture_path, capture)
+        proc = run_score(root, "replay", camera_suites=("replay",))
+        assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+        result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+        assert_true(result["result"] == "PASS", f"timing diagnostic became a gate: {result}")
+        assert_true(
+            result["windows"][0]["camera"]["video_timing_verification_result"]
+            == timing_mismatch,
+            f"camera timing mismatch was dropped from scorer JSON: {result}",
+        )
+        expected = "camera_timing=mismatch (non-gating)"
+        assert_true(expected in proc.stdout, f"camera timing mismatch was hidden: {proc.stdout}")
+        summary = (root / "bench_summary.txt").read_text(encoding="utf-8")
+        assert_true(expected in summary, f"camera timing mismatch was hidden: {summary}")
+
+    invalid_artifacts = (
+        {},
+        {
+            "schema_version": 2,
+            "kind": "camera_video_timing_verification",
+            "status": "verified",
+        },
+        {
+            "schema_version": 1,
+            "kind": "unowned_timing_summary",
+            "status": "verified",
+        },
+        {
+            "schema_version": 1,
+            "kind": "camera_video_timing_verification",
+            "status": [],
+        },
+        {
+            "schema_version": 1,
+            "kind": "camera_video_timing_verification",
+            "status": "verified\nforged=PASS",
+        },
+    )
+    for invalid_artifact in invalid_artifacts:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_window(
+                root,
+                "replay",
+                camera_result="CAPTURED",
+                camera_timing_verification=invalid_artifact,
+            )
+            proc = run_score(root, "replay", camera_suites=("replay",))
+            assert_true(proc.returncode == 0, proc.stdout + proc.stderr)
+            result = json.loads((root / "bench_result.json").read_text(encoding="utf-8"))
+            timing = result["windows"][0]["camera"]["video_timing_verification_result"]
+            assert_true(
+                timing.get("status") == "verification_error",
+                f"invalid owned camera timing artifact was hidden: {result}",
+            )
+            assert_true(
+                "camera_timing=verification_error (non-gating)" in proc.stdout
+                and "forged=PASS" not in proc.stdout,
+                f"invalid owned camera timing artifact was hidden: {proc.stdout}",
+            )
+
+
 def test_strict_camera_ownership_and_confidence_are_required() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -4387,6 +4483,7 @@ def main() -> int:
     test_current_emulator_shutdown_and_ownership_evidence_fail_closed()
     test_explicit_legacy_window_preserves_pre_graceful_stop_scoring()
     test_requested_replay_camera_separates_product_and_evidence_failures()
+    test_camera_timing_mismatch_is_surfaced_without_changing_verdict()
     test_strict_camera_ownership_and_confidence_are_required()
     test_camera_comparisons_do_not_change_the_bench_verdict()
     test_strict_camera_bytes_and_window_identity_are_required()

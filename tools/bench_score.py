@@ -53,6 +53,11 @@ EXIT_BY_RESULT = {
 }
 CATALOG_PATH = ROOT / "tools" / "hardware_metric_catalog.json"
 CURRENT_GRADER_FINGERPRINT = current_grader_fingerprint(ROOT)
+CAMERA_TIMING_VERIFICATION_SCHEMA = 1
+CAMERA_TIMING_VERIFICATION_KIND = "camera_video_timing_verification"
+CAMERA_TIMING_VERIFICATION_STATUSES = frozenset(
+    {"verified", "mismatch", "sidecar_error", "probe_error", "verification_error"}
+)
 
 ENCOUNTER_COLUMNS = (
     "millis",
@@ -2851,6 +2856,27 @@ def classify_window(
             capture_manifest = load_capture_manifest(capture_manifest_path)
             camera = camera_result_view(capture_manifest)
             camera["capture_id"] = capture_manifest.get("capture_id")
+            camera["video_timing_verification_result"] = {}
+            timing_path = resolve_manifest_artifact(
+                camera_dir,
+                capture_manifest,
+                "video_timing_verification",
+            )
+            owned_timing = load_json(timing_path) if timing_path is not None else None
+            if timing_path is not None:
+                timing_status = owned_timing.get("status") if owned_timing is not None else None
+                if (
+                    owned_timing is None
+                    or owned_timing.get("schema_version") != CAMERA_TIMING_VERIFICATION_SCHEMA
+                    or owned_timing.get("kind") != CAMERA_TIMING_VERIFICATION_KIND
+                    or not isinstance(timing_status, str)
+                    or timing_status not in CAMERA_TIMING_VERIFICATION_STATUSES
+                ):
+                    owned_timing = {
+                        "status": "verification_error",
+                        "first_mismatch": {"type": "invalid_verification_artifact"},
+                    }
+                camera["video_timing_verification_result"] = owned_timing
         except CameraArtifactError as exc:
             if camera_required:
                 camera_evidence_inconclusive = True
@@ -3013,6 +3039,11 @@ def classify_window(
             "video": camera.get("video", ""),
             "video_duration_seconds": camera.get("video_duration_seconds"),
             "video_probe": camera.get("video_probe", {}),
+            "video_timing_verification_result": (
+                camera.get("video_timing_verification_result")
+                if isinstance(camera.get("video_timing_verification_result"), dict)
+                else {}
+            ),
             "errors": camera.get("errors", []),
             "visually_graded": camera_grade_valid,
             "checks": camera_grade.get("checks", {}),
@@ -3099,6 +3130,10 @@ def render_text(payload: dict[str, Any]) -> str:
                     f", camera={camera['result']} "
                     f"({camera.get('role_summary') or 'not gated'})"
                 )
+        timing = camera.get("video_timing_verification_result")
+        timing_status = str(timing.get("status") or "") if isinstance(timing, dict) else ""
+        if timing_status and timing_status != "verified":
+            detail += f", camera_timing={timing_status} (non-gating)"
         lines.append(detail)
     failures = [w for w in payload["windows"] if w["result"] != "PASS"]
     if failures:

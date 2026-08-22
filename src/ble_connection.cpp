@@ -7,6 +7,7 @@
 #include "ble_internals.h"
 #include "config.h"
 #include "perf_metrics.h"
+#include "qualification_clock.h"
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -941,6 +942,8 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (!pData || !instancePtr || !pChar) {
         return;
     }
+    const uint32_t callbackDutMillis = static_cast<uint32_t>(millis());
+    const uint64_t callbackDutMicros = QualificationClock::nowMicros();
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
     BleProxyEpochObserver::CallbackLease callbackLease(instancePtr->proxyEpochObserver_,
@@ -973,13 +976,13 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
 
     if (instancePtr->connected_.load(std::memory_order_relaxed) &&
         instancePtr->firstRxAfterConnectMs_.load(std::memory_order_relaxed) == 0) {
-        instancePtr->firstRxAfterConnectMs_.store(static_cast<uint32_t>(millis()), std::memory_order_relaxed);
+        instancePtr->firstRxAfterConnectMs_.store(callbackDutMillis, std::memory_order_relaxed);
     }
 
     // Call user callback for display processing (queued to main loop for SPI safety)
     if (instancePtr->dataCallback_ && instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) &&
         instancePtr->sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration &&
         instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
-        instancePtr->dataCallback_(pData, length, charId, callbackGeneration);
+        instancePtr->dataCallback_(pData, length, charId, callbackGeneration, callbackDutMillis, callbackDutMicros);
     }
 }

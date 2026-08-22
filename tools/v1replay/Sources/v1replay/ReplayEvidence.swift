@@ -39,6 +39,7 @@ struct ReplayNotificationIdentity: Equatable {
     let payloadSha256: String
     let payloadFnv1a32: String
     let payloadHex: String
+    let intendedHostMonotonicNs: UInt64?
     let requestedHostMonotonicNs: UInt64
 
     init(globalTxSequence: UInt64,
@@ -46,6 +47,7 @@ struct ReplayNotificationIdentity: Equatable {
          emissionOrdinal: Int?,
          characteristic: String,
          payload: Data,
+         intendedHostMonotonicNs: UInt64? = nil,
          requestedHostMonotonicNs: UInt64) {
         precondition(globalTxSequence > 0, "global TX sequence must be positive")
         if let stimulusSequence {
@@ -65,6 +67,7 @@ struct ReplayNotificationIdentity: Equatable {
         self.payloadSha256 = sha256Hex(payload)
         self.payloadFnv1a32 = fnv1a32Hex(payload)
         self.payloadHex = payload.map { String(format: "%02X", $0) }.joined()
+        self.intendedHostMonotonicNs = intendedHostMonotonicNs
         self.requestedHostMonotonicNs = requestedHostMonotonicNs
     }
 
@@ -83,6 +86,30 @@ struct ReplayNotificationIdentity: Equatable {
             hostMonotonicNs: hostMonotonicNs
         )
     }
+
+    func delayedEvent(hostMonotonicNs: UInt64) -> ReplayNotificationEvent {
+        return ReplayNotificationEvent(
+            state: .delayed,
+            identity: self,
+            hostMonotonicNs: hostMonotonicNs
+        )
+    }
+
+    func droppedEvent(hostMonotonicNs: UInt64) -> ReplayNotificationEvent {
+        return ReplayNotificationEvent(
+            state: .dropped,
+            identity: self,
+            hostMonotonicNs: hostMonotonicNs
+        )
+    }
+
+    func skippedEvent(hostMonotonicNs: UInt64) -> ReplayNotificationEvent {
+        return ReplayNotificationEvent(
+            state: .skipped,
+            identity: self,
+            hostMonotonicNs: hostMonotonicNs
+        )
+    }
 }
 
 /// Request means queued by v1replay. Acceptance means
@@ -92,10 +119,13 @@ struct ReplayNotificationEvent: Encodable, Equatable {
     enum State: String {
         case requested = "notification_requested"
         case accepted = "notification_accepted"
+        case delayed = "notification_delayed"
+        case dropped = "notification_dropped"
+        case skipped = "notification_skipped"
     }
 
     let state: String
-    let schemaVersion = 1
+    let schemaVersion = 2
     let globalTxSequence: UInt64
     let stimulusSequence: Int?
     let emissionOrdinal: Int?
@@ -103,6 +133,7 @@ struct ReplayNotificationEvent: Encodable, Equatable {
     let payloadSha256: String
     let payloadFnv1a32: String
     let payloadHex: String
+    let intendedHostMonotonicNs: UInt64?
     let hostMonotonicNs: UInt64
 
     init(state: State,
@@ -116,6 +147,7 @@ struct ReplayNotificationEvent: Encodable, Equatable {
         self.payloadSha256 = identity.payloadSha256
         self.payloadFnv1a32 = identity.payloadFnv1a32
         self.payloadHex = identity.payloadHex
+        self.intendedHostMonotonicNs = identity.intendedHostMonotonicNs
         self.hostMonotonicNs = hostMonotonicNs
     }
 

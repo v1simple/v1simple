@@ -5,6 +5,19 @@ func nowSeconds() -> Double {
     return Double(hostMonotonicNanoseconds()) / 1_000_000_000.0
 }
 
+@inline(__always)
+private func replayIntervalNanoseconds(_ seconds: Double) -> UInt64 {
+    guard seconds.isFinite, seconds > 0 else { return 0 }
+    let nanoseconds = seconds * 1_000_000_000.0
+    return nanoseconds >= Double(UInt64.max) ? UInt64.max : UInt64(nanoseconds.rounded())
+}
+
+@inline(__always)
+private func advanceReplayDeadline(_ deadline: UInt64, by interval: UInt64) -> UInt64 {
+    let (result, overflow) = deadline.addingReportingOverflow(interval)
+    return overflow ? UInt64.max : result
+}
+
 // =============================================================================
 // Replay engine: walks an encounter's timeline and hands packets to the
 // peripheral at the recorded cadence, with transport controls.
@@ -390,19 +403,22 @@ final class Player {
 
     private func send(_ emission: V1.PlaybackPacketPlan.Emission,
                       stimulusSequence: Int,
-                      emissionOrdinal: Int) {
+                      emissionOrdinal: Int,
+                      intendedHostMonotonicNs: UInt64) {
         switch emission.channel {
         case .displayShort:
             peripheral.sendDisplay(
                 emission.bytes,
                 stimulusSequence: stimulusSequence,
-                emissionOrdinal: emissionOrdinal
+                emissionOrdinal: emissionOrdinal,
+                intendedHostMonotonicNs: intendedHostMonotonicNs
             )
         case .displayLong:
             peripheral.sendLong(
                 emission.bytes,
                 stimulusSequence: stimulusSequence,
-                emissionOrdinal: emissionOrdinal
+                emissionOrdinal: emissionOrdinal,
+                intendedHostMonotonicNs: intendedHostMonotonicNs
             )
         }
     }
@@ -410,7 +426,7 @@ final class Player {
     private func playTimeline() -> Outcome {
         setPhase(.playing)
         var index = startIndex()
-        var deadline = nowSeconds()
+        var deadline = hostMonotonicNanoseconds()
         var applyGap = false
 
         while index < encounter.samples.count {
@@ -419,14 +435,17 @@ final class Player {
 
             if let target = consumeSeek() {
                 index = target
-                deadline = nowSeconds()
+                deadline = hostMonotonicNanoseconds()
                 applyGap = false
                 setIndex(index)
             }
 
             if applyGap && index > 0 {
                 let gap = encounter.samples[index].offset - encounter.samples[index - 1].offset
-                deadline += max(0, gap) / currentSpeed()
+                deadline = advanceReplayDeadline(
+                    deadline,
+                    by: replayIntervalNanoseconds(max(0, gap) / currentSpeed())
+                )
             }
 
             switch waitUntil(&deadline) {
@@ -445,8 +464,8 @@ final class Player {
             // the B2CE notification subscription or the alert-data request is
             // lost in the small window after waitUntil(), retry this same step
             // once readiness returns instead of advancing without a full table.
-            if !emit(sampleAt: index) {
-                deadline = nowSeconds()
+            if !emit(sampleAt: index, intendedHostMonotonicNs: deadline) {
+                deadline = hostMonotonicNanoseconds()
                 applyGap = false
                 continue
             }
@@ -458,7 +477,7 @@ final class Player {
     }
 
     @discardableResult
-    private func emit(sampleAt index: Int) -> Bool {
+    private func emit(sampleAt index: Int, intendedHostMonotonicNs: UInt64) -> Bool {
         if options.waitForAlertData && !transportReady() { return false }
         let sample = encounter.samples[index]
 
@@ -528,13 +547,15 @@ final class Player {
             displayOn: displayOn,
             arrowBlink: arrowBlink,
             plan: plan,
+            intendedHostMonotonicNs: intendedHostMonotonicNs,
             requestedHostMonotonicNs: requestedAtNs
         ))
         for (ordinal, emission) in plan.emissions.enumerated() {
             send(
                 emission,
                 stimulusSequence: currentStimulusSequence,
-                emissionOrdinal: ordinal
+                emissionOrdinal: ordinal,
+                intendedHostMonotonicNs: intendedHostMonotonicNs
             )
         }
 
@@ -547,7 +568,7 @@ final class Player {
     }
 
     /// Sleep until `deadline`, absorbing pause time and honouring single steps.
-    private func waitUntil(_ deadline: inout Double) -> WaitResult {
+    private func waitUntil(_ deadline: inout UInt64) -> WaitResult {
         while true {
             if isStopped { return .aborted }
 
@@ -555,20 +576,29 @@ final class Player {
                 // Freeze the replay clock while the bench transport is not
                 // ready. Catching up would omit alert tables and make the
                 // expected CSV diverge from what the firmware actually saw.
-                let readinessLostAt = nowSeconds()
+                let readinessLostAt = hostMonotonicNanoseconds()
                 setPhase(.waiting)
                 while !isStopped && !transportReady() {
                     if consumeRestart() {
-                        deadline += nowSeconds() - readinessLostAt
+                        deadline = advanceReplayDeadline(
+                            deadline,
+                            by: hostMonotonicNanoseconds() - readinessLostAt
+                        )
                         return .restart
                     }
                     if hasSeekRequest() {
-                        deadline += nowSeconds() - readinessLostAt
+                        deadline = advanceReplayDeadline(
+                            deadline,
+                            by: hostMonotonicNanoseconds() - readinessLostAt
+                        )
                         return .seek
                     }
                     Thread.sleep(forTimeInterval: 0.02)
                 }
-                deadline += nowSeconds() - readinessLostAt
+                deadline = advanceReplayDeadline(
+                    deadline,
+                    by: hostMonotonicNanoseconds() - readinessLostAt
+                )
                 if isStopped { return .aborted }
                 setPhase(.playing)
                 continue
@@ -585,21 +615,25 @@ final class Player {
             if restarting { return .restart }
             if seeking { return .seek }
             if stepping {
-                deadline = nowSeconds()
+                deadline = hostMonotonicNanoseconds()
                 return .fire
             }
 
             if paused {
                 // Freeze the clock: push the deadline forward by the paused time
                 // so resuming does not fire a burst of catch-up packets.
-                let pauseStart = nowSeconds()
+                let pauseStart = hostMonotonicNanoseconds()
                 Thread.sleep(forTimeInterval: 0.02)
-                deadline += nowSeconds() - pauseStart
+                deadline = advanceReplayDeadline(
+                    deadline,
+                    by: hostMonotonicNanoseconds() - pauseStart
+                )
                 continue
             }
 
-            let remaining = deadline - nowSeconds()
-            if remaining <= 0 { return .fire }
+            let now = hostMonotonicNanoseconds()
+            if now >= deadline { return .fire }
+            let remaining = Double(deadline - now) / 1_000_000_000.0
             Thread.sleep(forTimeInterval: min(remaining, 0.015))
         }
     }

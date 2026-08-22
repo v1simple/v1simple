@@ -118,4 +118,5 @@ struct V1CausalTraceRecord {
     uint32_t alertRevision = 0;
     uint32_t alertTableDigest = 0;
     uint32_t sourceLossCount = 0;
+    uint64_t stageDutMicros = 0;
 };

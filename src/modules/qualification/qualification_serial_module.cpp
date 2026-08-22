@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "storage_manager.h"
+#include "qualification_clock.h"
 
 namespace {
 constexpr char kPrefixResp[] = "QRESP ";
@@ -55,6 +56,13 @@ bool validCanonicalExportPath(const char* path) {
     const size_t pathLen = strlen(path);
     return !segmentStart && path[pathLen - 1] != '.';
 }
+
+void writeHex64(char* out, uint64_t value) {
+    static constexpr char kHexDigits[] = "0123456789ABCDEF";
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        *out++ = kHexDigits[(value >> shift) & 0x0F];
+    }
+}
 } // namespace
 
 void QualificationSerialModule::begin(Stream* io, const Providers& providers) {
@@ -65,6 +73,7 @@ void QualificationSerialModule::begin(Stream* io, const Providers& providers) {
     mode_ = Mode::Current;
     durationMs_ = 0;
     startedAtMs_ = 0;
+    startedAtDutMicros_ = 0;
     finalizingAtMs_ = 0;
     qualificationSessionToken_ = 0;
     evidenceSessionActive_ = false;
@@ -93,6 +102,14 @@ uint32_t QualificationSerialModule::nowMs() const {
         return providers_.nowMs(providers_.ctx);
     }
     return millis();
+}
+
+uint64_t QualificationSerialModule::nowUs() const {
+    return providers_.nowUs ? providers_.nowUs(providers_.ctx) : QualificationClock::nowMicros();
+}
+
+uint64_t QualificationSerialModule::clockSegment() const {
+    return providers_.clockSegment ? providers_.clockSegment(providers_.ctx) : QualificationClock::segment();
 }
 
 const char* QualificationSerialModule::stateName() const {
@@ -146,10 +163,11 @@ void QualificationSerialModule::serviceInput() {
             continue;
         }
         if (c == '\n') {
+            const uint64_t newlineDutMicros = nowUs();
             commandBuf_[commandLen_] = '\0';
             char* line = trim(commandBuf_);
             if (line[0] != '\0') {
-                handleCommand(line);
+                handleCommand(line, newlineDutMicros);
             }
             commandLen_ = 0;
             commandBuf_[0] = '\0';
@@ -305,7 +323,11 @@ void QualificationSerialModule::serviceExport() {
     exportChunks_++;
 }
 
-void QualificationSerialModule::handleCommand(char* line) {
+void QualificationSerialModule::handleCommand(char* line, uint64_t newlineDutMicros) {
+    if (strncmp(line, "QSYNC", 5) == 0 && (line[5] == '\0' || isspace(static_cast<unsigned char>(line[5])))) {
+        handleSync(trim(line + 5), newlineDutMicros);
+        return;
+    }
     if (strncmp(line, "QSTART", 6) == 0 && (line[6] == '\0' || isspace(static_cast<unsigned char>(line[6])))) {
         handleStart(trim(line + 6));
         return;
@@ -327,6 +349,35 @@ void QualificationSerialModule::handleCommand(char* line) {
         return;
     }
     sendErrorLine("unknown_command");
+}
+
+void QualificationSerialModule::handleSync(char* args, uint64_t newlineDutMicros) {
+    if (!validSyncNonce(args)) {
+        sendErrorLine("invalid_sync_nonce");
+        return;
+    }
+
+    char normalizedNonce[17];
+    for (size_t i = 0; i < 16; ++i) {
+        normalizedNonce[i] = static_cast<char>(toupper(static_cast<unsigned char>(args[i])));
+    }
+    normalizedNonce[16] = '\0';
+
+    char response[96];
+    const int written =
+        snprintf(response, sizeof(response), "QSYNC %s %016llX %016llX 0000000000000000\n", normalizedNonce,
+                 static_cast<unsigned long long>(clockSegment()), static_cast<unsigned long long>(newlineDutMicros));
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(response)) {
+        sendErrorLine("sync_response_overflow");
+        return;
+    }
+
+    // D3 is the final device-clock read before this complete fixed-width reply
+    // is handed to the serial stream. Only the bounded hex fill separates the
+    // timestamp from the first write.
+    const uint64_t replyDutMicros = nowUs();
+    writeHex64(response + written - 17, replyDutMicros);
+    io_->print(response);
 }
 
 void QualificationSerialModule::handleStart(char* args) {
@@ -539,7 +590,8 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
         return false;
     }
     if (!providers_.perfCsvPath || !providers_.startPerfSession || !providers_.enqueueSnapshotNow ||
-        !providers_.tryDrainPerf || !providers_.setSdCapturePaused) {
+        !providers_.tryDrainPerf || !providers_.setSdCapturePaused || !providers_.beginEvidenceSession ||
+        !providers_.endEvidenceSession || !providers_.tryDrainEvidence) {
         setError("providers_missing");
         return false;
     }
@@ -568,6 +620,7 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
     suite_ = suite;
     mode_ = mode;
     durationMs_ = durationSeconds * 1000UL;
+    startedAtDutMicros_ = nowUs();
     startedAtMs_ = nowMs();
     qualificationSessionToken_ = providers_.newSessionToken ? providers_.newSessionToken(providers_.ctx) : 0;
     if (qualificationSessionToken_ == 0) {
@@ -582,12 +635,15 @@ bool QualificationSerialModule::startRun(Suite suite, uint32_t durationSeconds, 
     lastError_[0] = '\0';
     copyString(csvPath_, sizeof(csvPath_), providers_.perfCsvPath(providers_.ctx));
 
-    providers_.startPerfSession(providers_.ctx);
-    if (providers_.beginEvidenceSession) {
-        providers_.beginEvidenceSession(qualificationSessionToken_, startedAtMs_, providers_.ctx);
-        evidenceSessionActive_ = true;
+    if (!providers_.beginEvidenceSession(qualificationSessionToken_, startedAtMs_, providers_.ctx)) {
+        providers_.setSdCapturePaused(false, providers_.ctx);
+        clearQualificationModeOverride();
+        setError("evidence_unavailable");
+        return false;
     }
-    evidenceDrained_ = providers_.tryDrainEvidence == nullptr;
+    evidenceSessionActive_ = true;
+    evidenceDrained_ = false;
+    providers_.startPerfSession(providers_.ctx);
     providers_.setSdCapturePaused(false, providers_.ctx);
     (void)providers_.enqueueSnapshotNow(providers_.ctx);
 
@@ -729,6 +785,7 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     if (!io_) {
         return;
     }
+    const uint64_t statusDutMicros = nowUs();
     const uint32_t statusDutMillis = nowMs();
     io_->print(prefix ? prefix : kPrefixResp);
     io_->print("{\"ok\":");
@@ -746,8 +803,21 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     io_->print(elapsed);
     io_->print(",\"dutMillis\":");
     io_->print(statusDutMillis);
+    io_->print(",\"dutMicros\":");
+    char microsBuf[21];
+    snprintf(microsBuf, sizeof(microsBuf), "%llu", static_cast<unsigned long long>(statusDutMicros));
+    io_->print(microsBuf);
+    io_->print(",\"clockSegment\":\"");
+    char segmentBuf[17];
+    snprintf(segmentBuf, sizeof(segmentBuf), "%016llX", static_cast<unsigned long long>(clockSegment()));
+    io_->print(segmentBuf);
+    io_->print('"');
     io_->print(",\"startedAtDutMillis\":");
     io_->print(startedAtMs_);
+    io_->print(",\"startedAtDutMicros\":");
+    char startedMicrosBuf[21];
+    snprintf(startedMicrosBuf, sizeof(startedMicrosBuf), "%llu", static_cast<unsigned long long>(startedAtDutMicros_));
+    io_->print(startedMicrosBuf);
     io_->print(",\"sessionToken\":\"");
     char tokenBuf[9];
     snprintf(tokenBuf, sizeof(tokenBuf), "%08lX", static_cast<unsigned long>(qualificationSessionToken_));
@@ -820,6 +890,18 @@ bool QualificationSerialModule::validNonce(const char* value) {
     for (size_t index = 0; index < 32; ++index) {
         const char c = value[index];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool QualificationSerialModule::validSyncNonce(const char* value) {
+    if (!value || strlen(value) != 16) {
+        return false;
+    }
+    for (size_t index = 0; index < 16; ++index) {
+        if (!isxdigit(static_cast<unsigned char>(value[index]))) {
             return false;
         }
     }

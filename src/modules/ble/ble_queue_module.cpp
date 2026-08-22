@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "perf_metrics.h"
+#include "qualification_clock.h"
 
 #ifndef UNIT_TEST
 #include "modules/display/display_preview_module.h"
@@ -139,11 +140,13 @@ void BleQueueModule::closeSession() {
     backpressureActive_ = false;
 }
 
-void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
-    (void)tryOnNotify(data, length, charUUID, sessionGeneration);
+void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+                              uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
+    (void)tryOnNotify(data, length, charUUID, sessionGeneration, callbackDutMillis, callbackDutMicros);
 }
 
-bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
+bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+                                 uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
     if (!queueHandle_ || !acceptNotifications_.load(std::memory_order_acquire) ||
         sessionGeneration != sessionGeneration_.load(std::memory_order_acquire))
         return false;
@@ -155,7 +158,9 @@ bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t ch
         memcpy(pkt.data, data, length);
         pkt.length = length;
         pkt.charUUID = charUUID;
-        pkt.tsMs = millis();
+        pkt.tsMs = callbackDutMillis;
+        pkt.tsUs = callbackDutMicros;
+        pkt.clockSegment = QualificationClock::segment();
         pkt.sessionGeneration = sessionGeneration;
         pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -194,21 +199,28 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
     pkt.length = length;
     pkt.charUUID = charUUID;
     pkt.tsMs = millis();
+    pkt.tsUs = QualificationClock::nowMicros();
+    pkt.clockSegment = QualificationClock::segment();
     pkt.sessionGeneration = sessionGeneration;
     pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
     return xQueueSend(queueHandle_, &pkt, 0) == pdTRUE;
 }
 #endif
 
-void BleQueueModule::emitCausalTrace(const V1CausalTraceRecord& record) const {
-    if (causalTraceObserver_) {
+void BleQueueModule::emitCausalTrace(const V1CausalTraceRecord& record, const uint8_t* exactPayload,
+                                     size_t exactPayloadLength) const {
+    if (causalTraceObserver_ && (!causalTraceEnabled_ || causalTraceEnabled_(causalTraceObserverContext_))) {
         V1CausalTraceRecord stamped = record;
         if (stamped.stageDutMillis == 0) {
             stamped.stageDutMillis =
                 stamped.stage == V1CausalStage::Rx ? stamped.identity.dutMillis : static_cast<uint32_t>(millis());
         }
+        if (stamped.stageDutMicros == 0) {
+            stamped.stageDutMicros =
+                stamped.stage == V1CausalStage::Rx ? stamped.identity.dutMicros : QualificationClock::nowMicros();
+        }
         stamped.sourceLossCount = causalSourceLosses_.load(std::memory_order_relaxed);
-        causalTraceObserver_(stamped, causalTraceObserverContext_);
+        causalTraceObserver_(stamped, exactPayload, exactPayloadLength, causalTraceObserverContext_);
     }
 }
 
@@ -254,6 +266,8 @@ bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet, V1CausalIdentit
     identity.characteristic = packet.charUUID;
     identity.payloadLength = static_cast<uint16_t>(packet.length);
     identity.payloadDigest = v1Fnv1a32(packet.data, packet.length);
+    identity.clockSegment = packet.clockSegment;
+    identity.dutMicros = packet.tsUs;
 
     if (packet.length == 0) {
         return false;
@@ -290,6 +304,8 @@ V1CausalIdentity BleQueueModule::identityForFrame(size_t frameBegin, size_t fram
         }
         identity.rxLastSeq = span.identity.rxLastSeq;
         identity.dutMillis = span.identity.dutMillis;
+        identity.dutMicros = span.identity.dutMicros;
+        identity.clockSegment = span.identity.clockSegment;
         identity.bleSessionGeneration = span.identity.bleSessionGeneration;
         identity.characteristic = span.identity.characteristic;
     }
@@ -357,12 +373,13 @@ void BleQueueModule::process() {
         rxRecord.stage = V1CausalStage::Rx;
         rxRecord.outcome = appended ? V1CausalOutcome::Accepted : V1CausalOutcome::BufferDropped;
         rxRecord.payloadUnit = V1CausalPayloadUnit::Notification;
+        rxRecord.stageDutMicros = pkt.tsUs;
         rxRecord.alertTableDigest = parser_ ? parser_->getCausalEvidence().alertTableDigest : 0;
         if (parser_) {
             rxRecord.stateRevision = parser_->getCausalEvidence().stateRevision;
             rxRecord.alertRevision = parser_->getCausalEvidence().alertRevision;
         }
-        emitCausalTrace(rxRecord);
+        emitCausalTrace(rxRecord, pkt.data, pkt.length);
         latestPktTs = pkt.tsMs;
     }
 
@@ -516,6 +533,7 @@ void BleQueueModule::process() {
             handledRecord.payloadUnit = V1CausalPayloadUnit::Frame;
             handledRecord.packetId = packetId;
             handledRecord.parseOk = true;
+            handledRecord.stageDutMicros = QualificationClock::nowMicros();
             if (parser_) {
                 handledRecord.stateRevision = parser_->getCausalEvidence().stateRevision;
                 handledRecord.alertRevision = parser_->getCausalEvidence().alertRevision;
@@ -531,6 +549,7 @@ void BleQueueModule::process() {
         parser_->setCausalIdentity(frameIdentity);
         const uint32_t frameDutMillis = frameIdentity.dutMillis != 0 ? frameIdentity.dutMillis : parseTimestampMs;
         bool parseOk = parser_->parse(packetPtr, packetSize, frameDutMillis);
+        const uint64_t parseCompletedDutMicros = QualificationClock::nowMicros();
         const V1SemanticRevisionEvidence afterEvidence = parser_->getCausalEvidence();
 
         V1CausalTraceRecord parseRecord;
@@ -540,6 +559,7 @@ void BleQueueModule::process() {
         parseRecord.payloadUnit = V1CausalPayloadUnit::Frame;
         parseRecord.packetId = packetId;
         parseRecord.parseOk = parseOk;
+        parseRecord.stageDutMicros = parseCompletedDutMicros;
         parseRecord.stateRevision = afterEvidence.stateRevision;
         parseRecord.alertRevision = afterEvidence.alertRevision;
         parseRecord.alertTableDigest = afterEvidence.alertTableDigest;
@@ -549,12 +569,14 @@ void BleQueueModule::process() {
             V1CausalTraceRecord publishRecord = parseRecord;
             publishRecord.stage = V1CausalStage::PublishState;
             publishRecord.outcome = V1CausalOutcome::Published;
+            publishRecord.stageDutMicros = afterEvidence.statePublishedDutMicros;
             emitCausalTrace(publishRecord);
         }
         if (afterEvidence.alertRevision != beforeEvidence.alertRevision) {
             V1CausalTraceRecord publishRecord = parseRecord;
             publishRecord.stage = V1CausalStage::PublishAlerts;
             publishRecord.outcome = V1CausalOutcome::Published;
+            publishRecord.stageDutMicros = afterEvidence.alertPublishedDutMicros;
             emitCausalTrace(publishRecord);
         }
 

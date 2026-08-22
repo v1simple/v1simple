@@ -78,6 +78,8 @@ struct V1CausalIdentity {
     uint32_t payloadDigest = 0;
     uint16_t characteristic = 0;
     uint16_t payloadLength = 0;
+    uint64_t clockSegment = 0;
+    uint64_t dutMicros = 0;
 };
 
 struct V1SemanticRevisionEvidence {
@@ -86,6 +88,8 @@ struct V1SemanticRevisionEvidence {
     uint32_t alertTableDigest = 0;
     V1CausalIdentity stateSource{};
     V1CausalIdentity alertSource{};
+    uint64_t statePublishedDutMicros = 0;
+    uint64_t alertPublishedDutMicros = 0;
 };
 
 // --- DisplayState ---

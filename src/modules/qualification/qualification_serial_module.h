@@ -32,7 +32,7 @@ class QualificationSerialModule {
         bool (*tryDrainDisplayCommit)(void* ctx) = nullptr;
         const char* (*causalTraceCsvPath)(void* ctx) = nullptr;
         bool (*tryDrainEvidence)(void* ctx) = nullptr;
-        void (*beginEvidenceSession)(uint32_t sessionToken, uint32_t startedAtDutMs, void* ctx) = nullptr;
+        bool (*beginEvidenceSession)(uint32_t sessionToken, uint32_t startedAtDutMs, void* ctx) = nullptr;
         void (*endEvidenceSession)(uint32_t sessionToken, uint32_t endedAtDutMs, void* ctx) = nullptr;
         uint32_t (*newSessionToken)(void* ctx) = nullptr;
         const char* (*buildGitSha)(void* ctx) = nullptr;
@@ -50,6 +50,8 @@ class QualificationSerialModule {
         SemaphoreHandle_t (*sdMutex)(void* ctx) = nullptr;
         bool (*tryProxyEpochSnapshot)(BleProxyEpochQualificationSnapshot& snapshot, void* ctx) = nullptr;
         uint32_t (*nowMs)(void* ctx) = nullptr;
+        uint64_t (*nowUs)(void* ctx) = nullptr;
+        uint64_t (*clockSegment)(void* ctx) = nullptr;
         void* ctx = nullptr;
     };
 
@@ -81,6 +83,7 @@ class QualificationSerialModule {
     Mode mode_ = Mode::Current;
     uint32_t durationMs_ = 0;
     uint32_t startedAtMs_ = 0;
+    uint64_t startedAtDutMicros_ = 0;
     uint32_t finalizingAtMs_ = 0;
     uint32_t qualificationSessionToken_ = 0;
     bool evidenceSessionActive_ = false;
@@ -101,6 +104,8 @@ class QualificationSerialModule {
     uint32_t exportChunks_ = 0;
 
     uint32_t nowMs() const;
+    uint64_t nowUs() const;
+    uint64_t clockSegment() const;
     const char* stateName() const;
     const char* suiteName() const;
     const char* modeName() const;
@@ -108,11 +113,12 @@ class QualificationSerialModule {
     void serviceInput();
     void serviceRun();
     void serviceExport();
-    void handleCommand(char* line);
+    void handleCommand(char* line, uint64_t newlineDutMicros);
     void handleStart(char* args);
     void handleStatus();
     void handleGetCsv(char* args);
     void handleBsc08(char* args);
+    void handleSync(char* args, uint64_t newlineDutMicros);
     void handleAbort();
 
     bool parseStartArgs(char* args, Suite& suite, uint32_t& durationSeconds, Mode& mode) const;
@@ -131,5 +137,6 @@ class QualificationSerialModule {
 
     static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len);
     static bool validNonce(const char* value);
+    static bool validSyncNonce(const char* value);
     static char* trim(char* text);
 };

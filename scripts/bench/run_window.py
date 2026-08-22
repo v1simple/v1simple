@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+from collections import deque
 import csv
 import errno
 import fcntl
@@ -46,6 +47,11 @@ from artifact_privacy import (
     redact_artifact_text,
     sanitize_artifact_value,
 )
+from aligned_timeline import (
+    ALIGNED_TIMELINE_FILENAME,
+    CLOCK_ALIGNMENT_FILENAME,
+    generate_alignment_artifacts,
+)
 from bench_identity import (
     baseline_directory,
     build_identity_manifest,
@@ -72,6 +78,13 @@ except ImportError:  # pragma: no cover - exercised only on hosts without pyseri
 IMPORT_PERF_CSV = ROOT / "tools" / "import_perf_csv.py"
 BUILD_SH = ROOT / "build.sh"
 RUN_PROGRESS_INTERVAL_S = 15
+QSYNC_PERIOD_SECONDS = 7.5
+QSYNC_BURST_COUNT = 8
+QSYNC_MAX_SEGMENT_RESTARTS = 4
+QSYNC_REPLY = re.compile(
+    r"^QSYNC ([0-9a-fA-F]{16}) ([0-9a-fA-F]{16}) "
+    r"([0-9a-fA-F]{16}) ([0-9a-fA-F]{16})$"
+)
 QGETCSV_BUSY_RETRY_TIMEOUT_S = 15.0
 QGETCSV_BUSY_RETRY_DELAY_S = 0.25
 QABORT_CONFIRM_TIMEOUT_S = 5.0
@@ -121,7 +134,7 @@ MAX_HANDSHAKE_EVENTS_PER_EPOCH = 12
 # Six non-start events plus five accepted starts use 11 slots, so the existing
 # cap still records a violating sixth start as the twelfth event.
 MAX_HANDSHAKE_START_REQUESTS = 5
-DISPLAY_COMMIT_HEADER = (
+DISPLAY_COMMIT_HEADER_V2 = (
     "seq",
     "millis",
     "path",
@@ -194,11 +207,30 @@ DISPLAY_COMMIT_HEADER = (
     "priority_raw_band_bits",
     "priority_is_ku",
 )
-DISPLAY_COMMIT_METADATA_LINE = (
+DISPLAY_COMMIT_HEADER_V3 = DISPLAY_COMMIT_HEADER_V2 + (
+    "clock_segment",
+    "render_request_dut_micros",
+    "display_commit_dut_micros",
+    "state_published_dut_micros",
+    "alert_published_dut_micros",
+    "state_rx_dut_micros",
+    "alert_rx_dut_micros",
+)
+DISPLAY_COMMIT_METADATA_LINE_V2 = (
     "# display_commit_schema=2,timebase=millis,source=renderer_commit,"
     "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
     "complete_alert_rows=encounter_csv_by_session_revision_digest"
 )
+DISPLAY_COMMIT_METADATA_LINE_V3 = (
+    "# display_commit_schema=3,timebase=millis,monotonic_timebase=esp_timer_us,"
+    "source=renderer_commit,"
+    "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
+    "complete_alert_rows=encounter_csv_by_session_revision_digest"
+)
+DISPLAY_COMMIT_CONTRACTS = {
+    DISPLAY_COMMIT_METADATA_LINE_V2: DISPLAY_COMMIT_HEADER_V2,
+    DISPLAY_COMMIT_METADATA_LINE_V3: DISPLAY_COMMIT_HEADER_V3,
+}
 DISPLAY_COMMIT_EXPORT_MARKER = re.compile(
     r"# display_commit_export_schema=1,terminal_seq=(0|[1-9][0-9]*),"
     r"dropped_commits=(0|[1-9][0-9]*)"
@@ -219,6 +251,17 @@ V1_RADIO_QUIET_SECONDS = 1.0
 # for the lock file is insufficient: the referenced open-file description must
 # already own the exclusive flock.
 V1_RADIO_LEASE_FD_ENV = "V1SIMPLE_MANAGED_V1_LEASE_FD"
+
+
+def next_qsync_deadline(previous_deadline: float, observed_now: float) -> float:
+    """Advance an anchored cadence without adding exchange latency to the period."""
+    next_deadline = previous_deadline + QSYNC_PERIOD_SECONDS
+    if next_deadline >= observed_now:
+        return next_deadline
+    missed_periods = math.floor(
+        (observed_now - next_deadline) / QSYNC_PERIOD_SECONDS
+    ) + 1
+    return next_deadline + missed_periods * QSYNC_PERIOD_SECONDS
 
 
 def _lease_path_owner(path: Path) -> Path:
@@ -974,6 +1017,10 @@ class BenchSerial:
         self.disconnect_cleanup_count = 0
         self.timeline = timeline
         self.last_receive_monotonic_ns: int | None = None
+        self._serial_read_buffer = bytearray()
+        self._serial_buffer_received_ns: int | None = None
+        self._protocol_inbox: deque[tuple[str, int]] = deque()
+        self._protocol_inbox_limit = 256
 
     def close(self) -> None:
         try:
@@ -984,12 +1031,13 @@ class BenchSerial:
 
     def write_command(self, command: str) -> int:
         line = command.rstrip("\r\n") + "\n"
+        payload = line.encode("utf-8")
         safe_line = redact_artifact_text(line)
         self.log.write(f">>> {safe_line}")
         self.log.flush()
         sent = time.monotonic_ns()
         try:
-            self.ser.write(line.encode("utf-8"))
+            self.ser.write(payload)
             self.ser.flush()
         except Exception as exc:
             if self.timeline is not None:
@@ -1013,11 +1061,23 @@ class BenchSerial:
     def read_line(self, timeout_s: float) -> str:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            raw = self.ser.readline()
-            if not raw:
-                continue
-            received = time.monotonic_ns()
-            text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            newline = self._serial_read_buffer.find(b"\n")
+            if newline < 0:
+                raw = self.ser.readline()
+                chunk_received_ns = time.monotonic_ns()
+                if not raw:
+                    continue
+                self._serial_read_buffer.extend(raw)
+                self._serial_buffer_received_ns = chunk_received_ns
+                newline = self._serial_read_buffer.find(b"\n")
+                if newline < 0:
+                    continue
+            received = self._serial_buffer_received_ns or time.monotonic_ns()
+            raw_line = bytes(self._serial_read_buffer[:newline])
+            del self._serial_read_buffer[: newline + 1]
+            if not self._serial_read_buffer:
+                self._serial_buffer_received_ns = None
+            text = raw_line.decode("utf-8", errors="replace").rstrip("\r")
             safe_text = redact_artifact_text(text)
             self.last_receive_monotonic_ns = received
             self.log.write(safe_text + "\n")
@@ -1040,6 +1100,11 @@ class BenchSerial:
         self.log.flush()
 
     def read_protocol_line(self, prefixes: tuple[str, ...], timeout_s: float) -> str:
+        for index, (pending, received) in enumerate(self._protocol_inbox):
+            if pending.startswith(prefixes):
+                del self._protocol_inbox[index]
+                self.last_receive_monotonic_ns = received
+                return pending
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
@@ -1049,6 +1114,12 @@ class BenchSerial:
                 continue
             if line.startswith(prefixes):
                 return line
+            if line.startswith("Q"):
+                if len(self._protocol_inbox) >= self._protocol_inbox_limit:
+                    raise RuntimeError("serial protocol inbox overflow")
+                self._protocol_inbox.append(
+                    (line, self.last_receive_monotonic_ns or time.monotonic_ns())
+                )
         raise TimeoutError(f"timed out waiting for {prefixes}")
 
 
@@ -1141,6 +1212,136 @@ def capture_qstatus_round_trip(
                 error=f"{type(exc).__name__}: {exc}",
             )
         return {}
+
+
+class QSyncCollector:
+    """Collect four-timestamp exchanges without creating a new bench gate."""
+
+    def __init__(self, q: BenchSerial) -> None:
+        self.q = q
+        self.sequence = 0
+        self.last_clock_segment: str | None = None
+        self.pending_h1_by_nonce: dict[str, int] = {}
+
+    def collect_one(self, phase: str, timeout_s: float = 2.0) -> dict[str, Any]:
+        self.sequence += 1
+        nonce = secrets.token_hex(8)
+        h1 = time.monotonic_ns()
+        h4: int | None = None
+        record: dict[str, Any] = {
+            "phase": phase,
+            "exchange_sequence": self.sequence,
+            "nonce": nonce,
+            "status": "failed",
+            "h1_host_ns": h1,
+            "d2_dut_us": None,
+            "d3_dut_us": None,
+            "h4_host_ns": None,
+            "clock_segment": None,
+            "segment_changed": False,
+            "unexpected_replies": [],
+        }
+        try:
+            h1 = self.q.write_command(f"QSYNC {nonce}")
+            record["h1_host_ns"] = h1
+            self.pending_h1_by_nonce[nonce] = h1
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                remaining = max(0.001, deadline - time.monotonic())
+                line = self.q.read_protocol_line(("QSYNC ", "QERR "), remaining)
+                reply_h4 = self.q.last_receive_monotonic_ns or time.monotonic_ns()
+                if line.startswith("QERR "):
+                    record["h4_host_ns"] = reply_h4
+                    record["status"] = "device_error"
+                    record["error"] = parse_json_line(line, "QERR ")
+                    self.pending_h1_by_nonce.pop(nonce, None)
+                    break
+                match = QSYNC_REPLY.fullmatch(line)
+                if match is None:
+                    record["unexpected_replies"].append(
+                        {
+                            "status": "invalid_reply",
+                            "h4_host_ns": reply_h4,
+                            "reason": "fixed_width_reply_required",
+                        }
+                    )
+                    continue
+                reply_nonce, segment_wire, d2_hex, d3_hex = match.groups()
+                reply_nonce = reply_nonce.lower()
+                d2 = int(d2_hex, 16)
+                d3 = int(d3_hex, 16)
+                segment_wire = segment_wire.lower()
+                segment = str(int(segment_wire, 16))
+                if reply_nonce != nonce:
+                    unexpected = {
+                        "status": "nonce_mismatch",
+                        "reply_nonce": reply_nonce,
+                        "clock_segment": segment,
+                        "clock_segment_wire": segment_wire,
+                        "d2_dut_us": d2,
+                        "d3_dut_us": d3,
+                        "h4_host_ns": reply_h4,
+                    }
+                    original_h1 = self.pending_h1_by_nonce.pop(reply_nonce, None)
+                    if original_h1 is not None:
+                        unexpected["h1_host_ns"] = original_h1
+                        unexpected["status"] = "late_observed"
+                    record["unexpected_replies"].append(unexpected)
+                    continue
+                record.update(
+                    {
+                        "reply_nonce": reply_nonce,
+                        "clock_segment": segment,
+                        "clock_segment_wire": segment_wire,
+                        "d2_dut_us": d2,
+                        "d3_dut_us": d3,
+                        "h4_host_ns": reply_h4,
+                    }
+                )
+                if reply_h4 < h1 or d3 < d2:
+                    record["status"] = "invalid_order"
+                else:
+                    changed = (
+                        self.last_clock_segment is not None
+                        and self.last_clock_segment != segment
+                    )
+                    record["status"] = "observed"
+                    record["segment_changed"] = changed
+                    self.last_clock_segment = segment
+                self.pending_h1_by_nonce.pop(nonce, None)
+                break
+        except Exception as exc:  # alignment evidence is deliberately non-gating
+            record["error"] = f"{type(exc).__name__}: {exc}"
+        timeline = getattr(self.q, "timeline", None)
+        if timeline is not None:
+            timeline.record("qsync_exchange", **record)
+        return record
+
+    def burst(self, phase: str, count: int = QSYNC_BURST_COUNT) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        current_phase = phase
+        for restart in range(QSYNC_MAX_SEGMENT_RESTARTS + 1):
+            batch = [self.collect_one(current_phase) for _ in range(count)]
+            records.extend(batch)
+            if not any(record.get("segment_changed") is True for record in batch):
+                break
+            if restart == QSYNC_MAX_SEGMENT_RESTARTS:
+                timeline = getattr(self.q, "timeline", None)
+                if timeline is not None:
+                    timeline.record(
+                        "qsync_segment_restart_limit",
+                        phase=phase,
+                        status="incomplete",
+                        restart_limit=QSYNC_MAX_SEGMENT_RESTARTS,
+                    )
+                break
+            current_phase = f"{phase}_segment_restart_{restart + 1}"
+        return records
+
+    def periodic(self) -> None:
+        record = self.collect_one("during_window")
+        if record.get("segment_changed") is True:
+            self.burst("during_window_segment_restart")
 
 
 def establish_reconnect_readiness(
@@ -1442,6 +1643,7 @@ def start_and_wait(
     grace_s: int,
     after_started: Callable[[], None] | None = None,
     health_check: Callable[[], str] | None = None,
+    clock_sync: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     start_deadline = time.monotonic() + 15
     last_start_error: dict[str, Any] | None = None
@@ -1564,12 +1766,21 @@ def start_and_wait(
         deadline = time.monotonic() + duration_s + grace_s
         run_started = time.monotonic()
         next_progress = run_started + RUN_PROGRESS_INTERVAL_S
+        next_clock_sync = run_started + QSYNC_PERIOD_SECONDS
         last_event: dict[str, Any] = start_payload
         while time.monotonic() < deadline:
             if health_check is not None:
                 problem = health_check()
                 if problem:
                     raise RuntimeError(problem)
+            now = time.monotonic()
+            if clock_sync is not None and now >= next_clock_sync:
+                scheduled_clock_sync = next_clock_sync
+                clock_sync()
+                next_clock_sync = next_qsync_deadline(
+                    scheduled_clock_sync,
+                    time.monotonic(),
+                )
             try:
                 line = q.read_protocol_line(("QEVENT ", "QERR "), 1)
             except TimeoutError:
@@ -1694,6 +1905,50 @@ def file_artifact(path: Path | None, reason: str = "") -> dict[str, Any]:
     }
 
 
+def derive_time_alignment_artifacts(
+    out_dir: Path,
+    *,
+    perf_csv: Path | None,
+    encounter_csv: Path | None,
+    camera_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish derived clock/timeline evidence without changing the run verdict."""
+    try:
+        summary = generate_alignment_artifacts(
+            out_dir,
+            perf_csv=perf_csv,
+            encounter_csv=encounter_csv,
+            camera_result=camera_result,
+        )
+    except Exception as exc:  # derived evidence failure is visible but non-gating
+        reason = f"{type(exc).__name__}: {exc}"
+        return {
+            "status": "partial" if (out_dir / CLOCK_ALIGNMENT_FILENAME).is_file() else "unavailable",
+            "reason": reason,
+            "clock_alignment": file_artifact(
+                out_dir / CLOCK_ALIGNMENT_FILENAME,
+                reason,
+            ),
+            "aligned_timeline": file_artifact(
+                out_dir / ALIGNED_TIMELINE_FILENAME,
+                reason,
+            ),
+        }
+    return {
+        "status": "captured",
+        "reason": "",
+        **summary,
+        "clock_alignment": {
+            **summary["clock_alignment"],
+            **file_artifact(out_dir / CLOCK_ALIGNMENT_FILENAME),
+        },
+        "aligned_timeline": {
+            **summary["aligned_timeline"],
+            **file_artifact(out_dir / ALIGNED_TIMELINE_FILENAME),
+        },
+    }
+
+
 def panic_sidecar_artifact(path: Path | None, reason: str = "") -> dict[str, Any]:
     return file_artifact(path, reason)
 
@@ -1806,7 +2061,10 @@ def summarize_display_commit_artifact(
             "complete_alert_rows": metadata.get("complete_alert_rows", ""),
         }
     )
-    if metadata_lines != [DISPLAY_COMMIT_METADATA_LINE]:
+    expected_header = (
+        DISPLAY_COMMIT_CONTRACTS.get(metadata_lines[0]) if len(metadata_lines) == 1 else None
+    )
+    if expected_header is None:
         reasons.append("metadata_invalid")
 
     csv_lines = [line for line in lines if line and not line.startswith("#")]
@@ -1819,7 +2077,7 @@ def summarize_display_commit_artifact(
             rows = list(reader)
         except csv.Error:
             reasons.append("csv_parse_error")
-    if tuple(header) != DISPLAY_COMMIT_HEADER:
+    if expected_header is None or tuple(header) != expected_header:
         reasons.append("header_invalid")
 
     sequences: list[int] = []
@@ -2796,6 +3054,8 @@ def _collect_live(
         protocol_log,
         out_dir / BENCH_TIMELINE_NAME,
         out_dir / BUILD_UPLOAD_ARTIFACTS_NAME,
+        out_dir / CLOCK_ALIGNMENT_FILENAME,
+        out_dir / ALIGNED_TIMELINE_FILENAME,
         out_dir / "window_result.json",
         out_dir / "v1replay.log",
         out_dir / "import_stdout.log",
@@ -2968,6 +3228,8 @@ def _collect_live(
 
         require_healthy_replay_camera()
         capture_qstatus_round_trip(q, "pre_window")
+        qsync = QSyncCollector(q)
+        qsync.burst("before_window")
 
         completion = start_and_wait(
             q,
@@ -2975,6 +3237,7 @@ def _collect_live(
             args.duration_seconds,
             args.completion_grace_seconds,
             after_started=start_managed_emulator,
+            clock_sync=qsync.periodic,
             health_check=lambda: (
                 emulator.health_problem()
                 or require_healthy_replay_camera()
@@ -2995,6 +3258,7 @@ def _collect_live(
                 )
             ),
         )
+        qsync.burst("after_window")
         post_window_status = capture_qstatus_round_trip(q, "post_window")
         if (
             args.suite == "replay"
@@ -3406,6 +3670,13 @@ def main() -> int:
             live=not bool(args.from_csv),
         )
         import_proc = run_import(args, csv_path, out_dir, identity)
+        if not args.from_csv:
+            artifacts["time_alignment"] = derive_time_alignment_artifacts(
+                out_dir,
+                perf_csv=csv_path,
+                encounter_csv=encounter_csv_path,
+                camera_result=camera_result,
+            )
         scoring_path = out_dir / "scoring.json"
         manifest_path = out_dir / "manifest.json"
         result = "COLLECTION_FAILED" if import_proc.returncode >= 3 else "COLLECTED"

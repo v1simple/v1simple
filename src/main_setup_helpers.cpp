@@ -22,6 +22,7 @@
 #include "display_mode.h"
 #include "packet_parser.h"
 #include "perf_sd_logger.h"
+#include "qualification_clock.h"
 #include "modules/alp/alp_sd_logger.h"
 #include "modules/display/display_commit_log.h"
 #include "modules/encounter/v1_encounter_logger.h"
@@ -395,9 +396,13 @@ void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason) {
     const char* gitSha = getBuildGitSha();
     const char* imageId = getRuntimeImageId();
     const char* resetStr = resetReasonToString(resetReason);
-    SerialLog.printf("BOOT bootId=%lu dutMillis=%lu reset=%s git=%s image=%s scenario=%s wifiMaster=%s\n",
-                     static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()), resetStr, gitSha,
-                     imageId, scenario, bootSettings.enableWifi ? "on" : "off");
+    const uint64_t dutMicros = QualificationClock::nowMicros();
+    SerialLog.printf(
+        "BOOT bootId=%lu dutMillis=%lu dutMicros=%llu clockSegment=%llu reset=%s git=%s image=%s scenario=%s "
+        "wifiMaster=%s\n",
+        static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()),
+        static_cast<unsigned long long>(dutMicros), static_cast<unsigned long long>(QualificationClock::segment()),
+        resetStr, gitSha, imageId, scenario, bootSettings.enableWifi ? "on" : "off");
 }
 
 void logBootSummaryAndWifiStartup(uint32_t bootId, esp_reset_reason_t resetReason) {

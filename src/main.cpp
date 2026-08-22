@@ -95,6 +95,7 @@
 #include "modules/wifi/wifi_process_cadence_module.h"
 #include "modules/wifi/wifi_runtime_module.h"
 #include "modules/qualification/qualification_serial_module.h"
+#include "qualification_clock.h"
 
 #include "modules/perf/debug_macros.h"
 #include "provider_callback_bindings.h"
@@ -206,8 +207,9 @@ QualificationSerialModule qualificationSerialModule;
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
-void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration) {
-    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration);
+void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+              uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
+    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration, callbackDutMillis, callbackDutMicros);
 }
 
 template <typename StageLogger>
@@ -579,6 +581,7 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
 }
 
 void setup() {
+    QualificationClock::initialize();
     const unsigned long setupStartMs = millis();
     unsigned long setupStageStartMs = setupStartMs;
 

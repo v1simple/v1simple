@@ -32,7 +32,7 @@
 #endif
 
 // Which renderer path committed this frame.
-enum class V1DisplayCommitPath : uint8_t { Live = 0, Resting = 1, Persisted = 2 };
+enum class V1DisplayCommitPath : uint8_t { Live = 0, Resting = 1, Persisted = 2, Scanning = 3, Stealth = 4 };
 
 // What physically went to the panel. Describes the transfer, not the reason for it:
 // the reason lives in the perf counters, but only this says what the panel received.
@@ -71,6 +71,9 @@ struct V1DisplayCommitSnapshot {
     // all-alert input is joined through alertRevision + alertTableDigest to the
     // per-alert encounter rows, avoiding a 15-alert copy in every queue item.
     AlertData priority{};
+    uint64_t clockSegment = 0;
+    uint64_t renderRequestDutMicros = 0;
+    uint64_t displayCommitDutMicros = 0;
 };
 
 class V1DisplayCommitLog {
@@ -78,12 +81,15 @@ class V1DisplayCommitLog {
     void setBootId(uint32_t bootId, uint32_t bootToken = 0);
     void begin(bool sdAvailable);
     void record(const V1DisplayCommitSnapshot& snapshot);
-    void beginQualificationSession(uint32_t sessionToken);
+    bool beginQualificationSession(uint32_t sessionToken);
     void endQualificationSession(uint32_t sessionToken);
     void drainAndClose(uint32_t timeoutMs);
     bool tryDrainAndClose();
 
     bool isEnabled() const { return enabled_; }
+    bool isQualificationSessionActive() const {
+        return qualificationSessionToken_.load(std::memory_order_acquire) != 0;
+    }
     const char* csvPath() const { return csvPathBuf_; }
     uint32_t nextSeq() { return ++seq_; }
 

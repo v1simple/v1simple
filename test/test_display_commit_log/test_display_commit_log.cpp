@@ -95,7 +95,8 @@ void test_commit_log_records_resolved_state_and_dispatch() {
         "1,84000,LIVE,PARTIAL,1234,1,1,1,1,2,350,22,105,136,2,1,1,6,1,0,0,0,1,1,0,A,2,0,2,5,0,0,0,0,0,";
     TEST_ASSERT_EQUAL_STRING_LEN(legacyPrefix, log.testGetLastLine(), std::strlen(legacyPrefix));
     TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",0BADF00D,17,9,31,40,41,29,37,39,89ABCDEF,"));
-    TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",1,3,2,34700,1,178,130,6,2,1,0,0,0,0\n"));
+    TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",1,3,2,34700,1,178,130,6,2,1,0,0,0,0,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(log.testGetLastLine(), ",0,0,0,0,0,0,0\n"));
 }
 
 void test_commit_log_keeps_flash_bits_and_dispatch_independent() {
@@ -161,6 +162,7 @@ void test_commit_log_is_inert_without_storage() {
     log.record(makeCommit());
 
     TEST_ASSERT_FALSE(log.isEnabled());
+    TEST_ASSERT_FALSE(log.beginQualificationSession(0x12345678));
     TEST_ASSERT_EQUAL_UINT32(0, log.testCommitCount());
 }
 
@@ -219,6 +221,35 @@ void test_render_commit_digest_joins_the_parser_published_alert_table() {
     TEST_ASSERT_EQUAL(std::string::npos, source.find("v1AlertTableFnv1a32(allAlerts, alertCount)"));
 }
 
+void test_render_request_is_stamped_at_the_public_frame_boundary() {
+    const std::string source = readProjectFile("src/display_update.cpp");
+    TEST_ASSERT_FALSE(source.empty());
+    const size_t entry = source.find("void V1Display::renderFrame(const RenderFrame& frame)");
+    const size_t stamp = source.find("activeRenderRequestDutMicros_ = QualificationClock::nowMicros();", entry);
+    const size_t dispatch = source.find("switch (frame.primaryKind)", entry);
+    TEST_ASSERT_TRUE(entry < stamp && stamp < dispatch);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          source.find("activeRenderRequestDutMicros_ != 0 ? activeRenderRequestDutMicros_", dispatch));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("lastPhysicalCommitDutMicros_", dispatch));
+}
+
+void test_qualification_only_display_paths_are_complete_and_gated() {
+    const std::string updateSource = readProjectFile("src/display_update.cpp");
+    const std::string screenSource = readProjectFile("src/display_screens.cpp");
+    TEST_ASSERT_FALSE(updateSource.empty());
+    TEST_ASSERT_FALSE(screenSource.empty());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          updateSource.find("qualificationOnly && !v1DisplayCommitLog.isQualificationSessionActive()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, updateSource.find("V1DisplayCommitPath::Stealth"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, screenSource.find("V1DisplayCommitPath::Scanning"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, screenSource.find("V1DisplayCommitPath::Resting"));
+
+    const size_t scanning = screenSource.find("void V1Display::showScanning()");
+    const size_t scanningFlush = screenSource.find("DISPLAY_FLUSH();", scanning);
+    const size_t scanningRecord = screenSource.find("recordDisplayCommit(V1DisplayCommitPath::Scanning", scanning);
+    TEST_ASSERT_TRUE(scanning < scanningFlush && scanningFlush < scanningRecord);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_commit_log_records_resolved_state_and_dispatch);
@@ -230,5 +261,7 @@ int main() {
     RUN_TEST(test_commit_log_never_blocks_the_render_path);
     RUN_TEST(test_commit_log_export_drain_is_nonblocking_and_writes_a_terminal_fence);
     RUN_TEST(test_render_commit_digest_joins_the_parser_published_alert_table);
+    RUN_TEST(test_render_request_is_stamped_at_the_public_frame_boundary);
+    RUN_TEST(test_qualification_only_display_paths_are_complete_and_gated);
     return UNITY_END();
 }

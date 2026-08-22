@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
 from camera_contract import EXPECTED_CAMERA_NAME
+from camera_timing import VIDEO_TIMING_VERIFICATION_SCHEMA, verify_video_file
 
 
 # The open-aperture AR0234 profile converges to 5 ms in aperture-priority mode.
@@ -42,6 +43,18 @@ CAMERA_PROCESS_STOP_TIMEOUT_S = CAMERA_RECORDER_FINALIZE_TIMEOUT_S + 10.0
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _rational_nanoseconds(value: int, timescale: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("camera timing value is not an integer")
+    if isinstance(timescale, bool) or not isinstance(timescale, int) or timescale <= 0:
+        raise ValueError("camera timing timescale is invalid")
+    numerator = value * 1_000_000_000
+    quotient, remainder = divmod(abs(numerator), timescale)
+    if remainder * 2 >= timescale:
+        quotient += 1
+    return -quotient if numerator < 0 else quotient
 
 
 def _find_uvc_util() -> Path | None:
@@ -127,6 +140,9 @@ class CameraCapture:
         self.native_recorder = Path(__file__).with_name("camera_recorder.swift").resolve()
         self.video_path = self.out_dir / f"evidence_exp{VIDEO_EXPOSURE}.mov"
         self.native_preflight_path = self.out_dir / ".camera_preflight.mov"
+        self.frame_timing_path = self.out_dir / "frame_timing.ndjson"
+        self.preflight_frame_timing_path = self.out_dir / "preflight_frame_timing.ndjson"
+        self.video_timing_verification_path = self.out_dir / "video_timing_verification.json"
         self.preflight_path = self.out_dir / f"session_start_exp{VIDEO_EXPOSURE}.jpg"
         self.bright_path = self.out_dir / "final_auto.jpg"
         self.dim_path = self.out_dir / "final_profile.jpg"
@@ -162,6 +178,7 @@ class CameraCapture:
         self.recorder_returncode: int | None = None
         self.first_frame_event: dict[str, Any] = {}
         self.profile_readback: dict[str, Any] = {}
+        self.video_timing_verification: dict[str, Any] = {}
 
     def profile(self) -> dict[str, Any]:
         return {
@@ -191,6 +208,7 @@ class CameraCapture:
             "recorder_stats": self.recorder_stats,
             "recorder_returncode": self.recorder_returncode,
             "first_frame_event": self.first_frame_event,
+            "video_timing_verification_result": self.video_timing_verification,
             "expected_duration_seconds": self.expected_duration_s,
             "errors": self.errors,
         }
@@ -460,19 +478,36 @@ class CameraCapture:
             "camera first-frame timing marker",
         )
         host_ns = payload.get("host_monotonic_ns")
-        pts_zero = payload.get("pts_zero_seconds")
+        video_pts_value = payload.get("video_pts_value")
+        video_pts_timescale = payload.get("video_pts_timescale")
         if (
             payload.get("event") != "first_frame"
             or not isinstance(host_ns, int)
             or isinstance(host_ns, bool)
             or host_ns <= 0
-            or not isinstance(pts_zero, (int, float))
-            or isinstance(pts_zero, bool)
-            or abs(float(pts_zero)) > 0.000_001
         ):
             raise RuntimeError("camera first-frame timing marker is malformed")
+        try:
+            if isinstance(video_pts_value, int) and not isinstance(video_pts_value, bool):
+                video_pts_ns = _rational_nanoseconds(video_pts_value, video_pts_timescale)
+            else:
+                # Preserve compatibility with older captures whose first written
+                # frame was forced to movie PTS zero.
+                pts_zero = payload.get("pts_zero_seconds")
+                if (
+                    not isinstance(pts_zero, (int, float))
+                    or isinstance(pts_zero, bool)
+                    or abs(float(pts_zero)) > 0.000_001
+                ):
+                    raise ValueError("legacy first-frame PTS is invalid")
+                video_pts_ns = 0
+        except ValueError as exc:
+            raise RuntimeError("camera first-frame timing marker is malformed") from exc
+        capture_origin_ns = host_ns - video_pts_ns
+        if capture_origin_ns <= 0:
+            raise RuntimeError("camera first-frame timing marker is malformed")
         self.first_frame_event = payload
-        self.recording_started_monotonic = host_ns / 1_000_000_000
+        self.recording_started_monotonic = capture_origin_ns / 1_000_000_000
         if self.timeline_event is not None:
             self.timeline_event(dict(payload))
 
@@ -531,6 +566,10 @@ class CameraCapture:
                 str(self.video_path),
                 "--preflight-output",
                 str(self.native_preflight_path),
+                "--timing-sidecar",
+                str(self.frame_timing_path),
+                "--preflight-timing-sidecar",
+                str(self.preflight_frame_timing_path),
                 "--session-ready",
                 str(self.session_ready_path),
                 "--start-marker",
@@ -636,6 +675,8 @@ class CameraCapture:
             self.stats_marker_path,
             self.session_ready_path,
             self.first_frame_path,
+            self.frame_timing_path,
+            self.preflight_frame_timing_path,
         ):
             self._sanitize_text_artifact(path)
         self._ingest_recorder_artifacts()
@@ -650,9 +691,21 @@ class CameraCapture:
         if message not in self.errors:
             self.errors.append(message)
         self._stop_process()
+        self._verify_video_timing()
         payload = {
             "video": self.video_path.name if self.video_path.is_file() else "",
             "video_duration_seconds": 0.0,
+            "frame_timing": self.frame_timing_path.name if self.frame_timing_path.is_file() else "",
+            "preflight_frame_timing": (
+                self.preflight_frame_timing_path.name
+                if self.preflight_frame_timing_path.is_file()
+                else ""
+            ),
+            "video_timing_verification": (
+                self.video_timing_verification_path.name
+                if self.video_timing_verification_path.is_file()
+                else ""
+            ),
             "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
             "bright_still": "",
             "dim_still": "",
@@ -661,6 +714,51 @@ class CameraCapture:
         }
         safe_result = self._write_result("CAPTURE_FAILED", **payload)
         return safe_result
+
+    def _verify_video_timing(self) -> dict[str, Any]:
+        """Retain a full-frame MOV/sidecar comparison without gating capture."""
+        try:
+            result = verify_video_file(
+                str(self.ffprobe or "ffprobe"),
+                self.video_path,
+                self.frame_timing_path,
+                self.video_timing_verification_path,
+            )
+        except Exception as exc:  # verification evidence must not replace capture evidence
+            result = {
+                "schema_version": VIDEO_TIMING_VERIFICATION_SCHEMA,
+                "kind": "camera_video_timing_verification",
+                "status": "verification_error",
+                "source_frame_count": 0,
+                "written_frame_count": 0,
+                "encoded_frame_count": 0,
+                "capture_drop_count": 0,
+                "writer_drop_count": 0,
+                "timestamp_error_count": 0,
+                "missing_encoded_frame_count": 0,
+                "extra_encoded_frame_count": 0,
+                "missing_encoded_frames": [],
+                "extra_encoded_frames": [],
+                "duration_mismatch_count": 0,
+                "duration_mismatches": [],
+                "first_mismatch": {
+                    "type": "verification_error",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                },
+                "maximum_timestamp_difference_ns": None,
+            }
+        safe_result = sanitize_artifact_value(result, run_dir=self.out_dir)
+        self.video_timing_verification = dict(safe_result)
+        try:
+            self.video_timing_verification_path.write_text(
+                json.dumps(safe_result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            # The in-memory result still makes the evidence gap explicit in
+            # camera_result; final capture validity remains unchanged.
+            pass
+        return self.video_timing_verification
 
     def _probe_video(self) -> dict[str, Any]:
         assert self.ffprobe is not None
@@ -738,6 +836,7 @@ class CameraCapture:
 
         was_running = self.process is not None
         self._stop_process()
+        self._verify_video_timing()
         duration = 0.0
         video_probe: dict[str, Any] = {}
         profile_validation: dict[str, Any] = {}
@@ -786,6 +885,17 @@ class CameraCapture:
             "video": self.video_path.name if self.video_path.is_file() else "",
             "video_duration_seconds": round(duration, 3),
             "video_probe": video_probe,
+            "frame_timing": self.frame_timing_path.name if self.frame_timing_path.is_file() else "",
+            "preflight_frame_timing": (
+                self.preflight_frame_timing_path.name
+                if self.preflight_frame_timing_path.is_file()
+                else ""
+            ),
+            "video_timing_verification": (
+                self.video_timing_verification_path.name
+                if self.video_timing_verification_path.is_file()
+                else ""
+            ),
             "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
             "bright_still": self.bright_path.name if self.bright_path.is_file() else "",
             "dim_still": self.dim_path.name if self.dim_path.is_file() else "",

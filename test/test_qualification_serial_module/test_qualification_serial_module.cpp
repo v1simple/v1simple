@@ -36,8 +36,7 @@ class Stream {
 
     size_t print(char value) { return write(static_cast<uint8_t>(value)); }
 
-    template <typename T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
-    size_t print(T value) {
+    template <typename T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0> size_t print(T value) {
         const std::string text = std::to_string(value);
         return print(text.c_str());
     }
@@ -99,6 +98,49 @@ uint16_t provideMutedColor(void* ctx) {
     return probe.mutedColorRgb565;
 }
 
+struct ClockProbe {
+    uint64_t nextMicros = 0x123;
+    uint32_t reads = 0;
+    uint64_t segment = 0x1020304050607080ULL;
+};
+
+uint64_t provideMicros(void* ctx) {
+    auto& probe = *static_cast<ClockProbe*>(ctx);
+    const uint64_t value = probe.nextMicros;
+    probe.nextMicros += 0x333;
+    probe.reads++;
+    return value;
+}
+
+uint64_t provideClockSegment(void* ctx) {
+    return static_cast<ClockProbe*>(ctx)->segment;
+}
+
+struct EvidenceStartProbe {
+    bool capturePaused = false;
+    uint32_t perfStarts = 0;
+};
+
+bool provideTrue(void*) {
+    return true;
+}
+const char* providePerfPath(void*) {
+    return "/perf/test.csv";
+}
+void startPerf(void* ctx) {
+    static_cast<EvidenceStartProbe*>(ctx)->perfStarts++;
+}
+bool enqueueSnapshot(void*) {
+    return true;
+}
+void setCapturePaused(bool paused, void* ctx) {
+    static_cast<EvidenceStartProbe*>(ctx)->capturePaused = paused;
+}
+bool rejectEvidenceStart(uint32_t, uint32_t, void*) {
+    return false;
+}
+void endEvidence(uint32_t, uint32_t, void*) {}
+
 } // namespace
 
 void setUp() {}
@@ -122,21 +164,83 @@ void test_qstatus_emits_provider_display_settings_as_json() {
     TEST_ASSERT_FALSE(response.empty());
     TEST_ASSERT_EQUAL_CHAR('\n', response.back());
 
-    const std::string payload = response.substr(sizeof(kResponsePrefix) - 1,
-                                                response.size() - (sizeof(kResponsePrefix) - 1) - 1);
+    const std::string payload =
+        response.substr(sizeof(kResponsePrefix) - 1, response.size() - (sizeof(kResponsePrefix) - 1) - 1);
     JsonDocument status;
     const DeserializationError error = deserializeJson(status, payload);
     TEST_ASSERT_FALSE_MESSAGE(error, error.c_str());
 
     TEST_ASSERT_EQUAL_UINT8(probe.brightness, status["displaySettings"]["brightness"].as<uint8_t>());
-    TEST_ASSERT_EQUAL_UINT16(probe.mutedColorRgb565,
-                             status["displaySettings"]["colorMutedRgb565"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT16(probe.mutedColorRgb565, status["displaySettings"]["colorMutedRgb565"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT32(1, probe.brightnessReads);
     TEST_ASSERT_EQUAL_UINT32(1, probe.mutedColorReads);
+}
+
+void test_qsync_captures_parse_and_prewrite_timestamps_in_fixed_width_reply() {
+    ClockProbe probe;
+    QualificationSerialModule::Providers providers;
+    providers.nowUs = provideMicros;
+    providers.clockSegment = provideClockSegment;
+    providers.ctx = &probe;
+
+    CaptureStream stream("QSYNC 0123456789abcdef\n");
+    QualificationSerialModule module;
+    module.begin(&stream, providers);
+    module.process();
+
+    TEST_ASSERT_EQUAL_STRING("QSYNC 0123456789ABCDEF 1020304050607080 0000000000000123 0000000000000456\n",
+                             stream.output().c_str());
+    TEST_ASSERT_EQUAL_UINT32(2, probe.reads);
+}
+
+void test_qsync_rejects_non_fixed_nonce() {
+    ClockProbe probe;
+    QualificationSerialModule::Providers providers;
+    providers.nowUs = provideMicros;
+    providers.clockSegment = provideClockSegment;
+    providers.ctx = &probe;
+
+    CaptureStream stream("QSYNC 1234\n");
+    QualificationSerialModule module;
+    module.begin(&stream, providers);
+    module.process();
+
+    TEST_ASSERT_TRUE(stream.output().rfind("QERR ", 0) == 0);
+    TEST_ASSERT_TRUE(stream.output().find("\"error\":\"invalid_sync_nonce\"") != std::string::npos);
+    TEST_ASSERT_EQUAL_UINT32(2, probe.reads);
+}
+
+void test_qstart_rejects_missing_causal_evidence_capacity() {
+    EvidenceStartProbe probe;
+    QualificationSerialModule::Providers providers;
+    providers.isPerfEnabled = provideTrue;
+    providers.perfCsvPath = providePerfPath;
+    providers.startPerfSession = startPerf;
+    providers.enqueueSnapshotNow = enqueueSnapshot;
+    providers.tryDrainPerf = provideTrue;
+    providers.tryDrainEvidence = provideTrue;
+    providers.beginEvidenceSession = rejectEvidenceStart;
+    providers.endEvidenceSession = endEvidence;
+    providers.setSdCapturePaused = setCapturePaused;
+    providers.ctx = &probe;
+
+    CaptureStream stream("QSTART core 1\n");
+    QualificationSerialModule module;
+    module.begin(&stream, providers);
+    module.process();
+
+    TEST_ASSERT_TRUE(stream.output().rfind("QERR ", 0) == 0);
+    TEST_ASSERT_TRUE(stream.output().find("\"error\":\"evidence_unavailable\"") != std::string::npos);
+    TEST_ASSERT_FALSE(probe.capturePaused);
+    TEST_ASSERT_EQUAL_UINT32(0, probe.perfStarts);
+    TEST_ASSERT_FALSE(module.isRunning());
 }
 
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_qstatus_emits_provider_display_settings_as_json);
+    RUN_TEST(test_qsync_captures_parse_and_prewrite_timestamps_in_fixed_width_reply);
+    RUN_TEST(test_qsync_rejects_non_fixed_nonce);
+    RUN_TEST(test_qstart_rejects_missing_causal_evidence_capacity);
     return UNITY_END();
 }

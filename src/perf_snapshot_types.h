@@ -277,4 +277,8 @@ struct PerfSdSnapshot {
 
     // V1 connected-readback evidence (schema v46 — appended)
     uint32_t v1AllVolumeParsed; // Canonical RESPALLVOLUME packets parsed since boot/reset
+
+    // Qualification clock alignment (schema v49 — appended).
+    uint64_t dutMicros;
+    uint64_t clockSegment;
 };

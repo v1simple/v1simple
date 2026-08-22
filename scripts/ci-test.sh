@@ -163,6 +163,7 @@ section "Python Regression Tests"
 run_step "Bench identity regression suite" python3 scripts/test_bench_identity.py
 run_step "Bench qualification policy regression suite" python3 scripts/test_bench_policy.py
 run_step "Bench host evidence regression suite" python3 scripts/test_bench_host_evidence.py
+run_step "Bench time-alignment regression suite" python3 scripts/test_bench_time_alignment.py
 run_step "Bench investigator regression suite" python3 scripts/test_bench_investigate.py
 run_step "Bench investigation video regression suite" python3 scripts/test_bench_investigation_video.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py

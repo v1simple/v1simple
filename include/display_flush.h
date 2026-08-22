@@ -3,6 +3,7 @@
 #pragma once
 
 #include "perf_metrics.h"
+#include "qualification_clock.h"
 
 #define DISPLAY_FLUSH()                                                                                                \
     do {                                                                                                               \
@@ -10,6 +11,7 @@
             uint32_t _start = PERF_TIMESTAMP_US();                                                                     \
             uint32_t _areaPx = static_cast<uint32_t>(tft_->width()) * static_cast<uint32_t>(tft_->height());           \
             tft_->flush();                                                                                             \
+            lastPhysicalCommitDutMicros_ = QualificationClock::nowMicros();                                            \
             ++renderSeq_;                                                                                              \
             perfRecordFlushUs(PERF_TIMESTAMP_US() - _start, _areaPx, true);                                            \
         }                                                                                                              \

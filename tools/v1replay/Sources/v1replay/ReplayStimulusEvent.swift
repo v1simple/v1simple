@@ -62,10 +62,11 @@ struct ReplayStimulusEvent: Encodable, Equatable {
     }
 
     let state = "stimulus_requested"
-    let schemaVersion = 1
+    let schemaVersion = 2
     let stimulusSequence: Int
     let sourceIndex: Int
     let replayOffsetSeconds: Double
+    let intendedHostMonotonicNs: UInt64
     let requestedHostMonotonicSeconds: Double
     let requestedHostMonotonicNs: UInt64
     let expected: ExpectedDisplay
@@ -78,11 +79,13 @@ struct ReplayStimulusEvent: Encodable, Equatable {
          displayOn: Bool,
          arrowBlink: Bool,
          plan: V1.PlaybackPacketPlan,
+         intendedHostMonotonicNs: UInt64,
          requestedHostMonotonicNs: UInt64) {
         precondition(sequence > 0, "stimulus sequence must be positive")
         stimulusSequence = sequence
         sourceIndex = sample.sourceIndex
         replayOffsetSeconds = sample.offset
+        self.intendedHostMonotonicNs = intendedHostMonotonicNs
         self.requestedHostMonotonicNs = requestedHostMonotonicNs
         requestedHostMonotonicSeconds =
             Double(requestedHostMonotonicNs) / 1_000_000_000.0

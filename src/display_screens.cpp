@@ -98,6 +98,18 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 // ============================================================================
 
 void V1Display::showResting(bool forceRedraw) {
+    const bool recordQualificationCommit = v1DisplayCommitLog.isQualificationSessionActive();
+    const uint64_t renderRequestDutMicros = recordQualificationCommit ? QualificationClock::nowMicros() : 0;
+    const uint32_t commitStartUs = recordQualificationCommit ? static_cast<uint32_t>(micros()) : 0;
+    const uint32_t commitSeqBefore = renderSeq_;
+    if (recordQualificationCommit) {
+        lastPhysicalCommitDutMicros_ = 0;
+    }
+    V1DisplayCommitDispatch commitDispatch = V1DisplayCommitDispatch::None;
+    int16_t commitRegionX = 0;
+    int16_t commitRegionY = 0;
+    int16_t commitRegionW = 0;
+    int16_t commitRegionH = 0;
     const PerfDisplayRenderScenario renderScenario = perfGetDisplayRenderScenario();
     const bool restoreRender = (renderScenario == PerfDisplayRenderScenario::Restore);
     unsigned long renderStartUs = 0;
@@ -174,6 +186,9 @@ void V1Display::showResting(bool forceRedraw) {
         currentScreen_ = ScreenMode::Resting;
 
         DISPLAY_FLUSH();
+        commitDispatch = V1DisplayCommitDispatch::FullFlush;
+        commitRegionW = SCREEN_WIDTH;
+        commitRegionH = SCREEN_HEIGHT;
     } else if (profileChanged) {
         perfRecordDisplayRenderPath(restoreRender ? PerfDisplayRenderPath::Restore
                                                   : PerfDisplayRenderPath::RestingIncremental);
@@ -186,9 +201,21 @@ void V1Display::showResting(bool forceRedraw) {
         // indicator plus any restored battery corner or percentage. Static
         // flush rectangles can miss pixels when indicator geometry moves.
         if (!drawnRegion_.empty()) {
+            commitRegionX = drawnRegion_.x();
+            commitRegionY = drawnRegion_.y();
+            commitRegionW = drawnRegion_.w();
+            commitRegionH = drawnRegion_.h();
             flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
+            commitDispatch = V1DisplayCommitDispatch::PartialRegion;
             drawnRegion_.reset();
         }
+    }
+
+    if (recordQualificationCommit && renderSeq_ != commitSeqBefore) {
+        recordDisplayCommit(V1DisplayCommitPath::Resting, lastState_, nullptr, static_cast<uint8_t>(DIR_NONE), 0,
+                            blinkPhase_, false, commitDispatch, commitRegionX, commitRegionY, commitRegionW,
+                            commitRegionH, commitStartUs, renderSeq_ - commitSeqBefore, renderRequestDutMicros,
+                            lastPhysicalCommitDutMicros_, true);
     }
 
     // Reset lastState_ so next update() detects changes from this "resting" state
@@ -223,6 +250,13 @@ void V1Display::resetChangeTracking() {
 // ============================================================================
 
 void V1Display::showScanning() {
+    const bool recordQualificationCommit = v1DisplayCommitLog.isQualificationSessionActive();
+    const uint64_t renderRequestDutMicros = recordQualificationCommit ? QualificationClock::nowMicros() : 0;
+    const uint32_t commitStartUs = recordQualificationCommit ? static_cast<uint32_t>(micros()) : 0;
+    const uint32_t commitSeqBefore = renderSeq_;
+    if (recordQualificationCommit) {
+        lastPhysicalCommitDutMicros_ = 0;
+    }
     const PerfDisplayRenderScenario renderScenario = perfGetDisplayRenderScenario();
     const bool restoreRender = (renderScenario == PerfDisplayRenderScenario::Restore);
     const unsigned long renderStartUs = micros();
@@ -312,6 +346,13 @@ void V1Display::showScanning() {
     lastState_ = DisplayState();
 
     DISPLAY_FLUSH();
+
+    if (recordQualificationCommit) {
+        recordDisplayCommit(V1DisplayCommitPath::Scanning, lastState_, nullptr, static_cast<uint8_t>(DIR_NONE), 0,
+                            blinkPhase_, false, V1DisplayCommitDispatch::FullFlush, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT,
+                            commitStartUs, renderSeq_ - commitSeqBefore, renderRequestDutMicros,
+                            lastPhysicalCommitDutMicros_, true);
+    }
 
     if (currentScreen_ != ScreenMode::Scanning) {
         perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Scanning, millis());

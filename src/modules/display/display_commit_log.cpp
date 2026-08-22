@@ -12,7 +12,7 @@
 namespace {
 constexpr const char* COMMIT_DIR_PATH = "/display_commits";
 constexpr const char* COMMIT_HEADER =
-    "# display_commit_schema=2,timebase=millis,source=renderer_commit,"
+    "# display_commit_schema=3,timebase=millis,monotonic_timebase=esp_timer_us,source=renderer_commit,"
     "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
     "complete_alert_rows=encounter_csv_by_session_revision_digest\n"
     "seq,millis,path,dispatch,render_us,pushes,arrows_to_show,blink_phase,arrow_painted,alert_count,"
@@ -24,7 +24,9 @@ constexpr const char* COMMIT_HEADER =
     "state_revision,alert_revision,state_event_seq,state_rx_first_seq,state_rx_last_seq,"
     "alert_event_seq,alert_rx_first_seq,alert_rx_last_seq,alert_table_fnv1a32,priority_valid,priority_v1_index,"
     "priority_band,priority_frequency_mhz,priority_direction,priority_front_raw,priority_rear_raw,priority_front_bars,"
-    "priority_rear_bars,priority_flag,priority_junk,priority_photo_type,priority_raw_band_bits,priority_is_ku\n";
+    "priority_rear_bars,priority_flag,priority_junk,priority_photo_type,priority_raw_band_bits,priority_is_ku,"
+    "clock_segment,render_request_dut_micros,display_commit_dut_micros,state_published_dut_micros,"
+    "alert_published_dut_micros,state_rx_dut_micros,alert_rx_dut_micros\n";
 constexpr const char* COMMIT_EXPORT_MARKER_FORMAT =
     "# display_commit_export_schema=1,terminal_seq=%lu,dropped_commits=%lu\n";
 
@@ -45,6 +47,10 @@ const char* pathName(V1DisplayCommitPath path) {
         return "RESTING";
     case V1DisplayCommitPath::Persisted:
         return "PERSISTED";
+    case V1DisplayCommitPath::Scanning:
+        return "SCANNING";
+    case V1DisplayCommitPath::Stealth:
+        return "STEALTH";
     case V1DisplayCommitPath::Live:
     default:
         return "LIVE";
@@ -120,8 +126,12 @@ void V1DisplayCommitLog::begin(bool sdAvailable) {
     enabled_ = true;
 }
 
-void V1DisplayCommitLog::beginQualificationSession(uint32_t sessionToken) {
+bool V1DisplayCommitLog::beginQualificationSession(uint32_t sessionToken) {
+    if (!enabled_ || sessionToken == 0) {
+        return false;
+    }
     qualificationSessionToken_.store(sessionToken, std::memory_order_release);
+    return true;
 }
 
 void V1DisplayCommitLog::endQualificationSession(uint32_t sessionToken) {
@@ -171,7 +181,7 @@ bool V1DisplayCommitLog::formatCsvLine(const V1DisplayCommitSnapshot& snapshot, 
         out, outLen,
         "%lu,%lu,%s,%s,%lu,%lu,%u,%u,%u,%u,%d,%d,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%c,%c,%u,%c,%u,%u,%u,%u,%u,"
         "%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%u,%08lX,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%08lX,%u,%u,%u,"
-        "%lu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+        "%lu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
         static_cast<unsigned long>(snapshot.seq), static_cast<unsigned long>(snapshot.millisTs),
         pathName(snapshot.path), dispatchName(snapshot.dispatch), static_cast<unsigned long>(snapshot.renderUs),
         static_cast<unsigned long>(snapshot.pushes), static_cast<unsigned>(snapshot.arrowsToShow),
@@ -205,7 +215,14 @@ bool V1DisplayCommitLog::formatCsvLine(const V1DisplayCommitSnapshot& snapshot, 
         static_cast<unsigned>(priority.frontRawStrength), static_cast<unsigned>(priority.rearRawStrength),
         static_cast<unsigned>(priority.frontStrength), static_cast<unsigned>(priority.rearStrength),
         priority.isPriority ? 1u : 0u, priority.isJunk ? 1u : 0u, static_cast<unsigned>(priority.photoType),
-        static_cast<unsigned>(priority.rawBandBits), priority.isKu ? 1u : 0u);
+        static_cast<unsigned>(priority.rawBandBits), priority.isKu ? 1u : 0u,
+        static_cast<unsigned long long>(snapshot.clockSegment),
+        static_cast<unsigned long long>(snapshot.renderRequestDutMicros),
+        static_cast<unsigned long long>(snapshot.displayCommitDutMicros),
+        static_cast<unsigned long long>(state.causal.statePublishedDutMicros),
+        static_cast<unsigned long long>(state.causal.alertPublishedDutMicros),
+        static_cast<unsigned long long>(state.causal.stateSource.dutMicros),
+        static_cast<unsigned long long>(state.causal.alertSource.dutMicros));
     return written > 0 && static_cast<size_t>(written) < outLen;
 }
 

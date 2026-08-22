@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "../../packet_parser.h"
+#include "../../qualification_clock.h"
 
 #ifndef UNIT_TEST
 #include <Arduino.h>
@@ -15,18 +16,21 @@
 namespace {
 constexpr const char* ENCOUNTER_DIR_PATH = "/encounters";
 constexpr const char* ENCOUNTER_HEADER =
-    "# encounter_schema=2,timebase=millis,v1_assignments=raw,no_gps=1,no_speed=1,"
+    "# encounter_schema=3,timebase=millis,monotonic_timebase=esp_timer_us,v1_assignments=raw,no_gps=1,no_speed=1,"
     "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding)\n"
     "millis,encounter_id,sample_seq,event,v1_index,alert_count,band,frequency_mhz,direction,front_raw,rear_raw,"
     "front_bars,rear_bars,priority,junk,photo_type,dropped_snapshots,qualification_session_token,state_revision,"
     "alert_revision,alert_table_fnv1a32,state_event_seq,state_rx_first_seq,state_rx_last_seq,alert_event_seq,"
-    "alert_rx_first_seq,alert_rx_last_seq,valid,raw_band_bits,is_ku\n";
+    "alert_rx_first_seq,alert_rx_last_seq,valid,raw_band_bits,is_ku,clock_segment,sample_dut_micros,"
+    "state_published_dut_micros,alert_published_dut_micros,state_rx_dut_micros,alert_rx_dut_micros\n";
 constexpr const char* CAUSAL_TRACE_HEADER =
-    "# causal_trace_schema=2,timebase=dut_millis,payload_digest=fnv1a32,"
-    "payload_digest_bytes=exact_payload_unit_bytes,rx_range=inclusive\n"
+    "# causal_trace_schema=3,timebase=dut_millis,monotonic_timebase=esp_timer_us,payload_digest=fnv1a32,"
+    "payload_digest_bytes=exact_payload_unit_bytes,rx_range=inclusive,"
+    "exact_payload_hex=ble_rx_notification_bytes\n"
     "trace_seq,qualification_session_token,stage_dut_millis,rx_dut_millis,stage,outcome,ble_session_generation,"
     "rx_first_seq,rx_last_seq,event_seq,characteristic,payload_unit,payload_length,payload_fnv1a32,packet_id,"
-    "parse_ok,state_revision,alert_revision,alert_table_fnv1a32,ble_source_losses,lost_trace_records\n";
+    "parse_ok,state_revision,alert_revision,alert_table_fnv1a32,ble_source_losses,lost_trace_records,clock_segment,"
+    "stage_dut_micros,rx_dut_micros,exact_payload_hex\n";
 constexpr const char* TRACE_EXPORT_MARKER_FORMAT =
     "# causal_trace_export_schema=1,terminal_trace_seq=%lu,lost_trace_records=%lu,"
     "terminal_encounter_sample_seq=%lu,lost_encounter_snapshots=%lu\n";
@@ -263,7 +267,7 @@ void V1EncounterLogger::begin(bool sdAvailable) {
         // can stall the shared SD path mid-encounter. Failure is not fatal —
         // ensureFileReady() runs again lazily on the first append.
         StorageManager::SDLockBlocking lock(storageManager.getSDMutex());
-        if (!lock || !ensureFileReady() || !ensureTraceFileReady()) {
+        if (!lock || !ensureFileReady()) {
             Serial.println("[Encounter] WARN: storage warm-up deferred to first alert");
         }
     }
@@ -276,7 +280,7 @@ void V1EncounterLogger::attach(PacketParser& parser) {
     parser.setAlertTableObserver(parserObserver, this);
 }
 
-void V1EncounterLogger::beginQualificationSession(uint32_t sessionToken, uint32_t startedAtDutMs,
+bool V1EncounterLogger::beginQualificationSession(uint32_t sessionToken, uint32_t startedAtDutMs,
                                                   uint32_t sourceLossCount) {
     V1SemanticRevisionEvidence retainedEvidence;
     const V1SemanticRevisionEvidence* retainedEvidencePtr = nullptr;
@@ -285,15 +289,24 @@ void V1EncounterLogger::beginQualificationSession(uint32_t sessionToken, uint32_
         retainedEvidence = parser_->getCausalEvidence();
         retainedEvidencePtr = &retainedEvidence;
     }
-    beginQualificationSessionWithEvidence(sessionToken, startedAtDutMs, sourceLossCount, retainedEvidencePtr);
+    return beginQualificationSessionWithEvidence(sessionToken, startedAtDutMs, sourceLossCount, retainedEvidencePtr);
 }
 
-void V1EncounterLogger::beginQualificationSessionWithEvidence(uint32_t sessionToken, uint32_t startedAtDutMs,
+bool V1EncounterLogger::beginQualificationSessionWithEvidence(uint32_t sessionToken, uint32_t startedAtDutMs,
                                                               uint32_t sourceLossCount,
                                                               const V1SemanticRevisionEvidence* retainedEvidence) {
     if (!enabled_ || sessionToken == 0) {
-        return;
+        return false;
     }
+#ifndef UNIT_TEST
+    // The exact-payload trace queue is sizeable. Keep it out of ordinary
+    // runtime and allocate it only when qualification evidence is requested.
+    traceQueueRequired_.store(true, std::memory_order_release);
+    if (!ensureTraceQueue()) {
+        Serial.println("[Encounter] WARN: causal trace queue unavailable");
+        return false;
+    }
+#endif
     qualificationSessionToken_.store(sessionToken, std::memory_order_relaxed);
     qualificationSessionActive_.store(true, std::memory_order_release);
 
@@ -302,6 +315,9 @@ void V1EncounterLogger::beginQualificationSessionWithEvidence(uint32_t sessionTo
     record.outcome = V1CausalOutcome::Started;
     record.stageDutMillis = startedAtDutMs;
     record.identity.dutMillis = startedAtDutMs;
+    record.identity.clockSegment = QualificationClock::segment();
+    record.stageDutMicros = QualificationClock::nowMicros();
+    record.identity.dutMicros = record.stageDutMicros;
     record.alertTableDigest = v1AlertTableFnv1a32(nullptr, 0);
     record.sourceLossCount = sourceLossCount;
     recordCausalTrace(record);
@@ -309,6 +325,7 @@ void V1EncounterLogger::beginQualificationSessionWithEvidence(uint32_t sessionTo
     if (retainedEvidence) {
         recordRetainedBaselines(*retainedEvidence, startedAtDutMs, sourceLossCount);
     }
+    return true;
 }
 
 void V1EncounterLogger::recordRetainedBaselines(const V1SemanticRevisionEvidence& evidence, uint32_t startedAtDutMs,
@@ -317,6 +334,7 @@ void V1EncounterLogger::recordRetainedBaselines(const V1SemanticRevisionEvidence
         V1CausalTraceRecord record;
         record.identity = source;
         record.stageDutMillis = startedAtDutMs;
+        record.stageDutMicros = QualificationClock::nowMicros();
         record.stage = stage;
         record.outcome = V1CausalOutcome::Retained;
         record.payloadUnit = V1CausalPayloadUnit::Frame;
@@ -358,6 +376,9 @@ void V1EncounterLogger::endQualificationSession(uint32_t sessionToken, uint32_t 
     record.outcome = V1CausalOutcome::Ended;
     record.stageDutMillis = endedAtDutMs;
     record.identity.dutMillis = endedAtDutMs;
+    record.identity.clockSegment = QualificationClock::segment();
+    record.stageDutMicros = QualificationClock::nowMicros();
+    record.identity.dutMicros = record.stageDutMicros;
     record.sourceLossCount = sourceLossCount;
     record.alertTableDigest = parser_ ? parser_->getCausalEvidence().alertTableDigest : v1AlertTableFnv1a32(nullptr, 0);
     if (parser_) {
@@ -369,7 +390,8 @@ void V1EncounterLogger::endQualificationSession(uint32_t sessionToken, uint32_t 
     qualificationSessionToken_.store(0, std::memory_order_relaxed);
 }
 
-void V1EncounterLogger::recordCausalTrace(const V1CausalTraceRecord& record) {
+void V1EncounterLogger::recordCausalTrace(const V1CausalTraceRecord& record, const uint8_t* exactPayload,
+                                          size_t exactPayloadLength) {
     if (!enabled_ || !qualificationSessionActive_.load(std::memory_order_acquire)) {
         return;
     }
@@ -378,8 +400,23 @@ void V1EncounterLogger::recordCausalTrace(const V1CausalTraceRecord& record) {
     persisted.qualificationSessionToken = qualificationSessionToken_.load(std::memory_order_relaxed);
     persisted.lostTraceRecords = droppedTraceRecords_.load(std::memory_order_relaxed);
     persisted.record = record;
+    if (exactPayload && exactPayloadLength > 0) {
+        persisted.exactPayloadLength =
+            static_cast<uint16_t>(std::min(exactPayloadLength, V1PersistedCausalTraceRecord::MAX_EXACT_PAYLOAD));
+        memcpy(persisted.exactPayload, exactPayload, persisted.exactPayloadLength);
+    }
     if (persisted.record.stageDutMillis == 0) {
         persisted.record.stageDutMillis = persisted.record.identity.dutMillis;
+    }
+    if (persisted.record.identity.clockSegment == 0) {
+        persisted.record.identity.clockSegment = QualificationClock::segment();
+    }
+    if (persisted.record.stageDutMicros == 0) {
+        persisted.record.stageDutMicros = persisted.record.identity.dutMicros != 0 ? persisted.record.identity.dutMicros
+                                                                                   : QualificationClock::nowMicros();
+    }
+    if (persisted.record.stage == V1CausalStage::Rx && persisted.record.identity.dutMicros == 0) {
+        persisted.record.identity.dutMicros = persisted.record.stageDutMicros;
     }
     enqueueTrace(persisted);
 }
@@ -470,6 +507,8 @@ V1EncounterLogger::makeSnapshot(V1EncounterEvent event, uint32_t nowMs,
     snapshot.sampleSeq = ++encounterSampleSeq_;
     snapshot.droppedSnapshots = droppedSnapshots_.load(std::memory_order_relaxed);
     snapshot.qualificationSessionToken = qualificationSessionToken_.load(std::memory_order_relaxed);
+    snapshot.clockSegment = QualificationClock::segment();
+    snapshot.dutMicros = QualificationClock::nowMicros();
     if (parser_) {
         const V1SemanticRevisionEvidence& evidence = parser_->getCausalEvidence();
         snapshot.stateRevision = evidence.stateRevision;
@@ -477,6 +516,8 @@ V1EncounterLogger::makeSnapshot(V1EncounterEvent event, uint32_t nowMs,
         snapshot.alertTableDigest = evidence.alertTableDigest;
         snapshot.stateSource = evidence.stateSource;
         snapshot.alertSource = evidence.alertSource;
+        snapshot.statePublishedDutMicros = evidence.statePublishedDutMicros;
+        snapshot.alertPublishedDutMicros = evidence.alertPublishedDutMicros;
     } else {
         snapshot.alertTableDigest = v1AlertTableFnv1a32(nullptr, 0);
     }
@@ -505,11 +546,16 @@ bool V1EncounterLogger::enqueueSnapshot(const V1EncounterSnapshot& snapshot) {
 
 bool V1EncounterLogger::enqueueTrace(const V1PersistedCausalTraceRecord& record) {
 #ifndef UNIT_TEST
-    if (!enabled_ || !traceQueue_) {
+    if (!enabled_) {
+        return false;
+    }
+    QueueHandle_t traceQueue = traceQueue_.load(std::memory_order_acquire);
+    if (!traceQueue) {
+        droppedTraceRecords_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     pendingTraceWrites_.fetch_add(1, std::memory_order_relaxed);
-    if (xQueueSend(traceQueue_, &record, 0) != pdTRUE) {
+    if (xQueueSend(traceQueue, &record, 0) != pdTRUE) {
         pendingTraceWrites_.fetch_sub(1, std::memory_order_relaxed);
         droppedTraceRecords_.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -527,28 +573,33 @@ bool V1EncounterLogger::formatCsvLine(const V1EncounterSnapshot& snapshot, size_
     }
     const V1EncounterAlertSample emptyAlert{};
     const V1EncounterAlertSample& alert = snapshot.alertCount > 0 ? snapshot.alerts[alertIndex] : emptyAlert;
-    const int written =
-        snprintf(out, outLen,
-                 "%lu,%lu,%lu,%s,%u,%u,%s,%lu,%s,%u,%u,%u,%u,%u,%u,%u,%lu,%08lX,%lu,%lu,%08lX,%lu,%lu,%lu,"
-                 "%lu,%lu,%lu,%u,%u,%u\n",
-                 static_cast<unsigned long>(snapshot.millisTs), static_cast<unsigned long>(snapshot.encounterId),
-                 static_cast<unsigned long>(snapshot.sampleSeq), eventName(snapshot.event),
-                 static_cast<unsigned>(alert.v1Index), static_cast<unsigned>(snapshot.alertCount),
-                 encounterBandName(alert.band), static_cast<unsigned long>(alert.frequency),
-                 directionName(alert.direction), static_cast<unsigned>(alert.frontRaw),
-                 static_cast<unsigned>(alert.rearRaw), static_cast<unsigned>(alert.frontBars),
-                 static_cast<unsigned>(alert.rearBars), alert.priority ? 1u : 0u, alert.junk ? 1u : 0u,
-                 static_cast<unsigned>(alert.photoType), static_cast<unsigned long>(snapshot.droppedSnapshots),
-                 static_cast<unsigned long>(snapshot.qualificationSessionToken),
-                 static_cast<unsigned long>(snapshot.stateRevision), static_cast<unsigned long>(snapshot.alertRevision),
-                 static_cast<unsigned long>(snapshot.alertTableDigest),
-                 static_cast<unsigned long>(snapshot.stateSource.eventSeq),
-                 static_cast<unsigned long>(snapshot.stateSource.rxFirstSeq),
-                 static_cast<unsigned long>(snapshot.stateSource.rxLastSeq),
-                 static_cast<unsigned long>(snapshot.alertSource.eventSeq),
-                 static_cast<unsigned long>(snapshot.alertSource.rxFirstSeq),
-                 static_cast<unsigned long>(snapshot.alertSource.rxLastSeq), alert.valid ? 1u : 0u,
-                 static_cast<unsigned>(alert.rawBandBits), alert.isKu ? 1u : 0u);
+    const int written = snprintf(
+        out, outLen,
+        "%lu,%lu,%lu,%s,%u,%u,%s,%lu,%s,%u,%u,%u,%u,%u,%u,%u,%lu,%08lX,%lu,%lu,%08lX,%lu,%lu,%lu,"
+        "%lu,%lu,%lu,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu\n",
+        static_cast<unsigned long>(snapshot.millisTs), static_cast<unsigned long>(snapshot.encounterId),
+        static_cast<unsigned long>(snapshot.sampleSeq), eventName(snapshot.event), static_cast<unsigned>(alert.v1Index),
+        static_cast<unsigned>(snapshot.alertCount), encounterBandName(alert.band),
+        static_cast<unsigned long>(alert.frequency), directionName(alert.direction),
+        static_cast<unsigned>(alert.frontRaw), static_cast<unsigned>(alert.rearRaw),
+        static_cast<unsigned>(alert.frontBars), static_cast<unsigned>(alert.rearBars), alert.priority ? 1u : 0u,
+        alert.junk ? 1u : 0u, static_cast<unsigned>(alert.photoType),
+        static_cast<unsigned long>(snapshot.droppedSnapshots),
+        static_cast<unsigned long>(snapshot.qualificationSessionToken),
+        static_cast<unsigned long>(snapshot.stateRevision), static_cast<unsigned long>(snapshot.alertRevision),
+        static_cast<unsigned long>(snapshot.alertTableDigest),
+        static_cast<unsigned long>(snapshot.stateSource.eventSeq),
+        static_cast<unsigned long>(snapshot.stateSource.rxFirstSeq),
+        static_cast<unsigned long>(snapshot.stateSource.rxLastSeq),
+        static_cast<unsigned long>(snapshot.alertSource.eventSeq),
+        static_cast<unsigned long>(snapshot.alertSource.rxFirstSeq),
+        static_cast<unsigned long>(snapshot.alertSource.rxLastSeq), alert.valid ? 1u : 0u,
+        static_cast<unsigned>(alert.rawBandBits), alert.isKu ? 1u : 0u,
+        static_cast<unsigned long long>(snapshot.clockSegment), static_cast<unsigned long long>(snapshot.dutMicros),
+        static_cast<unsigned long long>(snapshot.statePublishedDutMicros),
+        static_cast<unsigned long long>(snapshot.alertPublishedDutMicros),
+        static_cast<unsigned long long>(snapshot.stateSource.dutMicros),
+        static_cast<unsigned long long>(snapshot.alertSource.dutMicros));
     return written > 0 && static_cast<size_t>(written) < outLen;
 }
 
@@ -560,7 +611,9 @@ bool V1EncounterLogger::formatTraceCsvLine(const V1PersistedCausalTraceRecord& p
     const V1CausalTraceRecord& record = persisted.record;
     const V1CausalIdentity& identity = record.identity;
     const int written = snprintf(
-        out, outLen, "%lu,%08lX,%lu,%lu,%s,%s,%lu,%lu,%lu,%lu,%04X,%s,%u,%08lX,%02X,%u,%lu,%lu,%08lX,%lu,%lu\n",
+        out, outLen,
+        "%lu,%08lX,%lu,%lu,%s,%s,%lu,%lu,%lu,%lu,%04X,%s,%u,%08lX,%02X,%u,%lu,%lu,%08lX,%lu,%lu,%llu,%llu,"
+        "%llu,",
         static_cast<unsigned long>(persisted.traceSeq), static_cast<unsigned long>(persisted.qualificationSessionToken),
         static_cast<unsigned long>(record.stageDutMillis), static_cast<unsigned long>(identity.dutMillis),
         causalStageName(record.stage), causalOutcomeName(record.outcome),
@@ -571,8 +624,25 @@ bool V1EncounterLogger::formatTraceCsvLine(const V1PersistedCausalTraceRecord& p
         static_cast<unsigned>(record.packetId), record.parseOk ? 1u : 0u,
         static_cast<unsigned long>(record.stateRevision), static_cast<unsigned long>(record.alertRevision),
         static_cast<unsigned long>(record.alertTableDigest), static_cast<unsigned long>(record.sourceLossCount),
-        static_cast<unsigned long>(persisted.lostTraceRecords));
-    return written > 0 && static_cast<size_t>(written) < outLen;
+        static_cast<unsigned long>(persisted.lostTraceRecords), static_cast<unsigned long long>(identity.clockSegment),
+        static_cast<unsigned long long>(record.stageDutMicros), static_cast<unsigned long long>(identity.dutMicros));
+    if (written <= 0 || static_cast<size_t>(written) >= outLen) {
+        return false;
+    }
+
+    size_t used = static_cast<size_t>(written);
+    const size_t payloadLength = std::min<size_t>(persisted.exactPayloadLength, sizeof(persisted.exactPayload));
+    if (used + payloadLength * 2 + 2 > outLen) {
+        return false;
+    }
+    static constexpr char kHexDigits[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < payloadLength; ++i) {
+        out[used++] = kHexDigits[persisted.exactPayload[i] >> 4];
+        out[used++] = kHexDigits[persisted.exactPayload[i] & 0x0F];
+    }
+    out[used++] = '\n';
+    out[used] = '\0';
+    return true;
 }
 
 bool V1EncounterLogger::appendSnapshot(const V1EncounterSnapshot& snapshot) {
@@ -592,7 +662,7 @@ bool V1EncounterLogger::appendSnapshot(const V1EncounterSnapshot& snapshot) {
         return false;
     }
 
-    char line[384];
+    char line[640];
     const size_t rowCount = snapshot.alertCount > 0 ? snapshot.alertCount : 1;
     for (size_t i = 0; i < rowCount; ++i) {
         if (!formatCsvLine(snapshot, i, line, sizeof(line)) || persistentFile_.print(line) != strlen(line)) {
@@ -629,7 +699,7 @@ bool V1EncounterLogger::appendTrace(const V1PersistedCausalTraceRecord& record) 
     if (!lock || !ensureTraceFileReady()) {
         return false;
     }
-    char line[384];
+    char line[1024];
     if (!formatTraceCsvLine(record, line, sizeof(line)) || traceFile_.print(line) != strlen(line)) {
         traceFile_.close();
         traceHeaderReady_ = false;
@@ -660,17 +730,6 @@ bool V1EncounterLogger::ensureWriter() {
             Serial.println("[Encounter] WARN: queue using internal SRAM fallback");
         }
     }
-    if (!traceQueue_) {
-        bool queueInPsram = false;
-        traceQueue_ = createQueuePreferPsram(CAUSAL_TRACE_QUEUE_DEPTH, sizeof(V1PersistedCausalTraceRecord),
-                                             traceQueueAllocation_, &queueInPsram);
-        if (!traceQueue_) {
-            return false;
-        }
-        if (!queueInPsram) {
-            Serial.println("[Encounter] WARN: causal trace queue using internal SRAM fallback");
-        }
-    }
     if (!writerTask_) {
         const BaseType_t result =
             createTaskPinnedToCoreInternalStack(writerTaskEntry, "EncounterWriter", ENCOUNTER_WRITER_STACK_SIZE, this,
@@ -682,6 +741,20 @@ bool V1EncounterLogger::ensureWriter() {
     return true;
 }
 
+bool V1EncounterLogger::ensureTraceQueue() {
+    if (traceQueue_.load(std::memory_order_acquire)) {
+        return true;
+    }
+    bool queueInPsram = false;
+    QueueHandle_t traceQueue = createQueuePreferPsram(CAUSAL_TRACE_QUEUE_DEPTH, sizeof(V1PersistedCausalTraceRecord),
+                                                      traceQueueAllocation_, &queueInPsram);
+    if (traceQueue && !queueInPsram) {
+        Serial.println("[Encounter] WARN: causal trace queue using internal SRAM fallback");
+    }
+    traceQueue_.store(traceQueue, std::memory_order_release);
+    return traceQueue != nullptr;
+}
+
 void V1EncounterLogger::writerTaskEntry(void* context) {
     static_cast<V1EncounterLogger*>(context)->writerTaskLoop();
 }
@@ -690,15 +763,18 @@ void V1EncounterLogger::writerTaskLoop() {
     while (true) {
         // Keep the small, higher-rate causal records moving without starving
         // the larger encounter snapshots. Both producers remain zero-wait.
-        for (uint8_t i = 0; i < 16; ++i) {
-            V1PersistedCausalTraceRecord trace;
-            if (xQueueReceive(traceQueue_, &trace, 0) != pdTRUE) {
-                break;
+        QueueHandle_t traceQueue = traceQueue_.load(std::memory_order_acquire);
+        if (traceQueue) {
+            for (uint8_t i = 0; i < 16; ++i) {
+                V1PersistedCausalTraceRecord trace;
+                if (xQueueReceive(traceQueue, &trace, 0) != pdTRUE) {
+                    break;
+                }
+                if (!appendTrace(trace)) {
+                    droppedTraceRecords_.fetch_add(1, std::memory_order_relaxed);
+                }
+                pendingTraceWrites_.fetch_sub(1, std::memory_order_relaxed);
             }
-            if (!appendTrace(trace)) {
-                droppedTraceRecords_.fetch_add(1, std::memory_order_relaxed);
-            }
-            pendingTraceWrites_.fetch_sub(1, std::memory_order_relaxed);
         }
 
         V1EncounterSnapshot snapshot;
@@ -769,11 +845,15 @@ bool V1EncounterLogger::ensureTraceFileReady() {
 
 bool V1EncounterLogger::tryDrainQualificationEvidence() {
 #ifndef UNIT_TEST
-    if (!enabled_ || !queue_ || !traceQueue_) {
+    if (!enabled_ || !queue_) {
         return true;
     }
+    QueueHandle_t traceQueue = traceQueue_.load(std::memory_order_acquire);
+    if (!traceQueue) {
+        return !traceQueueRequired_.load(std::memory_order_acquire);
+    }
     if (pendingWrites_.load(std::memory_order_relaxed) > 0 || pendingTraceWrites_.load(std::memory_order_relaxed) > 0 ||
-        uxQueueMessagesWaiting(queue_) > 0 || uxQueueMessagesWaiting(traceQueue_) > 0) {
+        uxQueueMessagesWaiting(queue_) > 0 || uxQueueMessagesWaiting(traceQueue) > 0) {
         return false;
     }
     StorageManager::SDTryLock lock(storageManager.getSDMutex());
@@ -811,10 +891,11 @@ void V1EncounterLogger::drainAndClose(uint32_t timeoutMs) {
     if (!enabled_ || !queue_) {
         return;
     }
+    QueueHandle_t traceQueue = traceQueue_.load(std::memory_order_acquire);
     const uint32_t startMs = millis();
     while (pendingWrites_.load(std::memory_order_relaxed) > 0 ||
            pendingTraceWrites_.load(std::memory_order_relaxed) > 0 || uxQueueMessagesWaiting(queue_) > 0 ||
-           uxQueueMessagesWaiting(traceQueue_) > 0) {
+           (traceQueue && uxQueueMessagesWaiting(traceQueue) > 0)) {
         if ((millis() - startMs) > timeoutMs) {
             break;
         }

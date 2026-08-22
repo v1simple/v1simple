@@ -74,13 +74,13 @@ void test_qualification_trace_stamps_session_identity_digest_and_loss_fields() {
     record.identity.payloadLength = sizeof(payload);
     record.identity.payloadDigest = v1Fnv1a32(payload, sizeof(payload));
     record.sourceLossCount = 2;
-    logger.recordCausalTrace(record);
+    logger.recordCausalTrace(record, payload, sizeof(payload));
 
     TEST_ASSERT_EQUAL_STRING("/encounters/causal_trace_44-11223344.csv", logger.causalTraceCsvPath());
     TEST_ASSERT_EQUAL_UINT32(2, logger.testTraceCount()); // SESSION_START + BLE_RX
     const char* line = logger.testGetLastTraceLine();
     TEST_ASSERT_NOT_NULL(std::strstr(line, ",A1B2C3D4,902,901,BLE_RX,ACCEPTED,7,12,12,0,FFF4,NOTIFICATION,6,"));
-    TEST_ASSERT_NOT_NULL(std::strstr(line, ",2,0\n")); // source losses, logger queue losses
+    TEST_ASSERT_NOT_NULL(std::strstr(line, ",2,0,1,1,1,AAD0E03102AB\n")); // losses, clocks, exact payload
 
     AlertData alert = makeAlert(1, DIR_FRONT, 0x90, 0x70);
     logger.onAlertTable(&alert, 1, 902);
@@ -88,7 +88,7 @@ void test_qualification_trace_stamps_session_identity_digest_and_loss_fields() {
 
     logger.endQualificationSession(0xA1B2C3D4, 903, 3);
     TEST_ASSERT_NOT_NULL(std::strstr(logger.testGetLastTraceLine(), ",903,903,SESSION_END,ENDED,"));
-    TEST_ASSERT_NOT_NULL(std::strstr(logger.testGetLastTraceLine(), ",3,0\n"));
+    TEST_ASSERT_NOT_NULL(std::strstr(logger.testGetLastTraceLine(), ",3,0,1,1,1,\n"));
 }
 
 void test_qualification_trace_retains_distinct_prestart_state_and_alert_sources() {
@@ -259,8 +259,7 @@ void test_encounter_logger_begin_warms_storage_at_boot() {
 
 void test_qualification_status_exposes_identity_and_effective_display_settings() {
     const std::string qualification = readProjectFile("src/modules/qualification/qualification_serial_module.cpp");
-    const std::string qualificationHeader =
-        readProjectFile("src/modules/qualification/qualification_serial_module.h");
+    const std::string qualificationHeader = readProjectFile("src/modules/qualification/qualification_serial_module.h");
     const std::string runtimeWiring = readProjectFile("src/main_runtime_wiring.cpp");
     const std::string buildMetadata = readProjectFile("src/build_metadata.cpp");
     TEST_ASSERT_FALSE(qualification.empty());
@@ -277,11 +276,10 @@ void test_qualification_status_exposes_identity_and_effective_display_settings()
     TEST_ASSERT_NOT_NULL(std::strstr(qualificationHeader.c_str(), "displayBrightness"));
     TEST_ASSERT_NOT_NULL(std::strstr(qualificationHeader.c_str(), "displayMutedColorRgb565"));
     TEST_ASSERT_NOT_NULL(std::strstr(
-        runtimeWiring.c_str(),
-        "providers.displayBrightness = [](void*) { return settingsManager.get().brightness; }"));
-    TEST_ASSERT_NOT_NULL(std::strstr(
-        runtimeWiring.c_str(),
-        "providers.displayMutedColorRgb565 = [](void*) { return settingsManager.get().colorMuted; }"));
+        runtimeWiring.c_str(), "providers.displayBrightness = [](void*) { return settingsManager.get().brightness; }"));
+    TEST_ASSERT_NOT_NULL(
+        std::strstr(runtimeWiring.c_str(),
+                    "providers.displayMutedColorRgb565 = [](void*) { return settingsManager.get().colorMuted; }"));
     TEST_ASSERT_NOT_NULL(std::strstr(buildMetadata.c_str(), "esp_app_get_elf_sha256"));
 }
 

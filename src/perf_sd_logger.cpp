@@ -6,6 +6,7 @@
 
 #include "storage_manager.h"
 #include "perf_metrics.h"
+#include "qualification_clock.h"
 #include <FS.h>
 #include <cstdarg>
 #include <cstring>
@@ -22,7 +23,7 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 48; // removes obsolete timing and event-bus columns
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 49; // adds 64-bit DUT time and reboot clock segment
 static constexpr char PERF_CSV_HEADER[] =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
@@ -85,7 +86,8 @@ static constexpr char PERF_CSV_HEADER[] =
     "cycleWifiManualPhoneKicksTotal,cycleProxyNoClientLatched,gpsSentencesOk,gpsSentencesChecksumFail,"
     "gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,gpsStableFixAgeMs,"
     "gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,"
-    "notifyToDisplayPipelineCompleteMax_ms,notifyToDisplayPipelineCompleteTotalCount,v1AllVolumeParsed\n";
+    "notifyToDisplayPipelineCompleteMax_ms,notifyToDisplayPipelineCompleteTotalCount,v1AllVolumeParsed,"
+    "dutMicros,clockSegment\n";
 static constexpr UBaseType_t PERF_SD_QUEUE_DEPTH = 16;      // Halved from 32 to reclaim ~7 KiB internal SRAM
 static constexpr uint32_t PERF_SD_WRITER_STACK_SIZE = 8192; // Bench high-water leaves ~4 KiB free
 static constexpr UBaseType_t PERF_SD_WRITER_PRIORITY = 1;
@@ -94,7 +96,7 @@ static constexpr uint16_t PERF_SD_FLUSH_EVERY_ROWS = 1;
 static constexpr uint32_t PERF_SD_FLUSH_INTERVAL_MS = 15000;
 static constexpr size_t PERF_CSV_LINE_BUFFER_SIZE = 6656;
 static constexpr size_t PERF_SD_WRITE_STAGING_SIZE = 512;
-static constexpr size_t PERF_SD_SESSION_MARKER_BUFFER_SIZE = 128;
+static constexpr size_t PERF_SD_SESSION_MARKER_BUFFER_SIZE = 192;
 // One boot file can run for hours, so this reserve is an optimization rather
 // than a hard cap. Once it is consumed, the same r+ handle grows normally and
 // the allocation cost remains inside appendSnapshotLine()'s latency sample.
@@ -221,6 +223,14 @@ static bool appendCsvFormat(char* buffer, size_t bufferLen, size_t& offset, cons
 
 static bool appendCsvUInt32(char* buffer, size_t bufferLen, size_t& offset, uint32_t value) {
     return appendCsvFormat(buffer, bufferLen, offset, "%lu,", static_cast<unsigned long>(value));
+}
+
+static bool appendCsvUInt64(char* buffer, size_t bufferLen, size_t& offset, uint64_t value) {
+    return appendCsvFormat(buffer, bufferLen, offset, "%llu,", static_cast<unsigned long long>(value));
+}
+
+static bool appendCsvUInt64Last(char* buffer, size_t bufferLen, size_t& offset, uint64_t value) {
+    return appendCsvFormat(buffer, bufferLen, offset, "%llu\n", static_cast<unsigned long long>(value));
 }
 
 static bool appendCsvUInt8(char* buffer, size_t bufferLen, size_t& offset, uint8_t value) {
@@ -359,6 +369,8 @@ void PerfSdLogger::begin(bool sdAvailable) {
     rowsSinceFlush_ = 0;
     lastFlushMs_ = 0;
     sessionStartMs_ = millis();
+    sessionStartUs_ = QualificationClock::nowMicros();
+    clockSegment_ = QualificationClock::segment();
     sessionToken_ = static_cast<uint32_t>(esp_random());
     sessionSeq_++;
 
@@ -446,6 +458,8 @@ void PerfSdLogger::startNewSession() {
     rowsSinceFlush_ = 0;
     lastFlushMs_ = 0;
     sessionStartMs_ = millis();
+    sessionStartUs_ = QualificationClock::nowMicros();
+    clockSegment_ = QualificationClock::segment();
     sessionToken_ = static_cast<uint32_t>(esp_random());
     sessionSeq_++;
 }
@@ -707,11 +721,13 @@ bool PerfSdLogger::formatSessionMarker(char* marker, size_t markerCapacity, size
     if (!marker || markerCapacity == 0) {
         return false;
     }
-    const int n =
-        snprintf(marker, markerCapacity, "#session_start,seq=%lu,bootId=%lu,uptime_ms=%lu,token=%08lX,schema=%lu\n",
-                 static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
-                 static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long>(sessionToken_),
-                 static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
+    const int n = snprintf(
+        marker, markerCapacity,
+        "#session_start,seq=%lu,bootId=%lu,uptime_ms=%lu,uptime_us=%llu,clockSegment=%llu,token=%08lX,schema=%lu\n",
+        static_cast<unsigned long>(sessionSeq_), static_cast<unsigned long>(bootId_),
+        static_cast<unsigned long>(sessionStartMs_), static_cast<unsigned long long>(sessionStartUs_),
+        static_cast<unsigned long long>(clockSegment_), static_cast<unsigned long>(sessionToken_),
+        static_cast<unsigned long>(PERF_CSV_SCHEMA_VERSION));
     if (n <= 0 || static_cast<size_t>(n) >= markerCapacity) {
         return false;
     }
@@ -1153,7 +1169,10 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.notifyToDisplayPipelineCompleteMaxMs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.notifyToDisplayPipelineCompleteTotalCount) &&
         // V1 connected-readback evidence (schema v46)
-        appendCsvUInt32Last(line, lineBufferLen, offset, snapshot.v1AllVolumeParsed);
+        appendCsvUInt32(line, lineBufferLen, offset, snapshot.v1AllVolumeParsed) &&
+        // Qualification clock alignment (schema v49)
+        appendCsvUInt64(line, lineBufferLen, offset, snapshot.dutMicros) &&
+        appendCsvUInt64Last(line, lineBufferLen, offset, snapshot.clockSegment);
 
     if (!ok) {
         persistentFile_.close();

@@ -29,7 +29,8 @@ class V1BLEClient;
 // length: number of bytes
 // charUUID: last 16-bit of source characteristic UUID (0xB2CE, 0xB4E0, etc)
 // sessionGeneration: immutable V1 link generation captured by the notify callback
-typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
+typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+                             uint32_t callbackDutMillis, uint64_t callbackDutMicros);
 
 // Callback for V1 connection events
 typedef void (*ConnectionCallback)();

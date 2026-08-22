@@ -11,6 +11,7 @@
 
 #include "packet_parser.h"
 #include "causal_evidence_types.h"
+#include "qualification_clock.h"
 #include "config.h"
 #include "perf_metrics.h" // perfRecordV1FirmwareVersion
 
@@ -290,12 +291,14 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
 void PacketParser::publishStateRevision() {
     ++displayState_.causal.stateRevision;
     displayState_.causal.stateSource = currentCausalIdentity_;
+    displayState_.causal.statePublishedDutMicros = QualificationClock::nowMicros();
 }
 
 void PacketParser::publishAlertRevision() {
     ++displayState_.causal.alertRevision;
     displayState_.causal.alertSource = currentCausalIdentity_;
     displayState_.causal.alertTableDigest = v1AlertTableFnv1a32(alerts_.data(), alertCount_);
+    displayState_.causal.alertPublishedDutMicros = QualificationClock::nowMicros();
     // Alert publication also changes priority/junk/photo/Ku fields inside the
     // renderer's DisplayState input, so it is a state publication as well.
     publishStateRevision();

@@ -79,6 +79,7 @@ GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "camera_capture": (
         "scripts/bench/camera_capture.py",
         "scripts/bench/camera_recorder.swift",
+        "scripts/bench/camera_timing.py",
     ),
     "camera_preflight": ("scripts/bench/camera_preflight.py",),
     "camera_contract": ("scripts/bench/camera_contract.py",),
@@ -98,6 +99,10 @@ GRADER_COMPONENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "qualification_policy": ("scripts/bench/bench_policy.py",),
     # The top-level bench entry point owns whether camera gating is invoked.
     "camera_gate_entrypoint": ("bench.sh",),
+    "time_alignment": (
+        "scripts/bench/aligned_timeline.py",
+        "scripts/bench/clock_alignment.py",
+    ),
     "grader_dependencies": (
         "scripts/bench/requirements*.txt",
         "scripts/bench/pyproject.toml",

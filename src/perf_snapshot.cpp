@@ -11,6 +11,7 @@
 #include "modules/speed/speed_source_selector.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_publishers.h"
+#include "qualification_clock.h"
 #if PERF_METRICS && PERF_MONITORING && !defined(UNIT_TEST)
 #include "modules/alp/alp_sd_logger.h"
 #endif
@@ -21,6 +22,8 @@ namespace {
 
 struct RuntimeSnapshotCaptureContext {
     uint32_t nowMs = 0;
+    uint64_t nowMicros = 0;
+    uint64_t clockSegment = 0;
     uint32_t freeHeap = 0;
     uint32_t freeDma = 0;
     uint32_t largestDma = 0;
@@ -39,6 +42,8 @@ struct RuntimeSnapshotCaptureContext {
 
 static RuntimeSnapshotCaptureContext captureRuntimeSnapshotContext() {
     RuntimeSnapshotCaptureContext ctx{};
+    ctx.nowMicros = QualificationClock::nowMicros();
+    ctx.clockSegment = QualificationClock::segment();
     ctx.nowMs = millis();
     ctx.freeHeap = ESP.getFreeHeap();
     ctx.freeDma = StorageManager::getCachedFreeDma();
@@ -154,6 +159,8 @@ static void capturePerfExtendedSnapshot(PerfExtendedSnapshot& snapshot, const Ru
 static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCaptureContext& ctx) {
     flat = {};
     flat.millisTs = ctx.nowMs;
+    flat.dutMicros = ctx.nowMicros;
+    flat.clockSegment = ctx.clockSegment;
     flat.freeHeap = ctx.freeHeap;
     flat.freeDma = ctx.freeDma;
     flat.largestDma = ctx.largestDma;

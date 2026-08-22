@@ -1,4 +1,5 @@
 #include "main_runtime_wiring.h"
+#include "qualification_clock.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -321,7 +322,11 @@ static void configureSystemLoopCoreModules() {
         fatalBootError("BLE queue init failed", true);
     }
     bleQueueModule.setCausalTraceObserver(
-        [](const V1CausalTraceRecord& record, void*) { v1EncounterLogger.recordCausalTrace(record); });
+        [](const V1CausalTraceRecord& record, const uint8_t* exactPayload, size_t exactPayloadLength, void* context) {
+            static_cast<V1EncounterLogger*>(context)->recordCausalTrace(record, exactPayload, exactPayloadLength);
+        },
+        [](void* context) { return static_cast<V1EncounterLogger*>(context)->isQualificationSessionActive(); },
+        &v1EncounterLogger);
     configureConnectionRuntimeModule();
     connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
     connectionStateModule.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, &displayPipelineModule);
@@ -475,9 +480,15 @@ static void configureQualificationSerialModule() {
         return encounterReady && displayReady;
     };
     providers.beginEvidenceSession = [](uint32_t sessionToken, uint32_t startedAtDutMs, void*) {
-        v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
-                                                    bleQueueModule.causalSourceLossCount());
-        v1DisplayCommitLog.beginQualificationSession(sessionToken);
+        if (!v1DisplayCommitLog.beginQualificationSession(sessionToken)) {
+            return false;
+        }
+        if (!v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
+                                                         bleQueueModule.causalSourceLossCount())) {
+            v1DisplayCommitLog.endQualificationSession(sessionToken);
+            return false;
+        }
+        return true;
     };
     providers.endEvidenceSession = [](uint32_t sessionToken, uint32_t endedAtDutMs, void*) {
         v1DisplayCommitLog.endQualificationSession(sessionToken);
@@ -501,6 +512,8 @@ static void configureQualificationSerialModule() {
         return bleClient.trySnapshotProxyEpochQualification(snapshot);
     };
     providers.nowMs = [](void*) { return millis(); };
+    providers.nowUs = [](void*) { return QualificationClock::nowMicros(); };
+    providers.clockSegment = [](void*) { return QualificationClock::segment(); };
     qualificationSerialModule.begin(&Serial, providers);
 }
 

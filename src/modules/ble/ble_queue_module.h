@@ -45,8 +45,10 @@ class BleQueueModule {
     }
 
     // Callback entry from BLE notifications.
-    void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
-    bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
+    void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+                  uint32_t callbackDutMillis, uint64_t callbackDutMicros);
+    bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
+                     uint32_t callbackDutMillis, uint64_t callbackDutMicros);
 
     // Open/close the V1 notification boundary. closeSession() rejects new
     // notifications and discards every queued, buffered, and parsed signal
@@ -57,9 +59,12 @@ class BleQueueModule {
     // Drain queue, frame packets, parse, and forward to display pipeline.
     void process();
 
-    using CausalTraceObserver = void (*)(const V1CausalTraceRecord& record, void* context);
-    void setCausalTraceObserver(CausalTraceObserver observer, void* context = nullptr) {
+    using CausalTraceObserver = void (*)(const V1CausalTraceRecord& record, const uint8_t* exactPayload,
+                                         size_t exactPayloadLength, void* context);
+    using CausalTraceEnabled = bool (*)(void* context);
+    void setCausalTraceObserver(CausalTraceObserver observer, CausalTraceEnabled enabled, void* context = nullptr) {
         causalTraceObserver_ = observer;
+        causalTraceEnabled_ = enabled;
         causalTraceObserverContext_ = context;
     }
 
@@ -77,6 +82,8 @@ class BleQueueModule {
         size_t length;
         uint16_t charUUID;
         uint32_t tsMs;
+        uint64_t tsUs;
+        uint64_t clockSegment;
         uint32_t sessionGeneration;
         uint32_t rxSeq;
     };
@@ -112,6 +119,7 @@ class BleQueueModule {
 
     Config config_;
     CausalTraceObserver causalTraceObserver_ = nullptr;
+    CausalTraceEnabled causalTraceEnabled_ = nullptr;
     void* causalTraceObserverContext_ = nullptr;
     void refreshBackpressureState();
     bool appendRxPacket(const BLEDataPacket& packet, V1CausalIdentity& identity);
@@ -119,5 +127,6 @@ class BleQueueModule {
     void clearRxState();
     V1CausalIdentity identityForFrame(size_t frameBegin, size_t frameLength) const;
     void emitFramingReject(size_t begin, size_t length, V1CausalOutcome outcome);
-    void emitCausalTrace(const V1CausalTraceRecord& record) const;
+    void emitCausalTrace(const V1CausalTraceRecord& record, const uint8_t* exactPayload = nullptr,
+                         size_t exactPayloadLength = 0) const;
 };

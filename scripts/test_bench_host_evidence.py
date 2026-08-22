@@ -86,6 +86,166 @@ def test_serial_timeline_and_status_round_trips() -> None:
         run_window.serial = original_serial
 
 
+def test_serial_buffers_partial_lines_until_newline() -> None:
+    port = FakeSerialPort([b'QRESP {"ok":true,', b'"state":"idle"}\n'])
+    original_serial = run_window.serial
+    try:
+        run_window.serial = SimpleNamespace(Serial=lambda: port)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            timeline = run_window.BenchTimeline(root / "bench_timeline.ndjson")
+            serial = run_window.BenchSerial("fake", 115200, root / "bench_serial.log", timeline)
+            try:
+                result = run_window.capture_qstatus_round_trip(serial, "partial_line")
+            finally:
+                serial.close()
+                timeline.close()
+            receives = [
+                event for event in read_ndjson(timeline.path) if event["event"] == "serial_receive"
+            ]
+            assert result["ok"] is True
+            assert len(receives) == 1
+            assert receives[0]["line"] == 'QRESP {"ok":true,"state":"idle"}'
+    finally:
+        run_window.serial = original_serial
+
+
+def test_qsync_preserves_asynchronous_terminal_line_and_raw_timestamps() -> None:
+    terminal = b'QEVENT {"ok":true,"state":"done","suite":"core"}\n'
+    reply = (
+        b"QSYNC 0123456789ABCDEF 00000000000000AB "
+        b"0000000000010203 0000000000010205\n"
+    )
+    port = FakeSerialPort([terminal, reply])
+    original_serial = run_window.serial
+    original_token_hex = run_window.secrets.token_hex
+    try:
+        run_window.serial = SimpleNamespace(Serial=lambda: port)
+        run_window.secrets.token_hex = lambda _length: "0123456789abcdef"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            timeline = run_window.BenchTimeline(root / "bench_timeline.ndjson")
+            serial = run_window.BenchSerial("fake", 115200, root / "bench_serial.log", timeline)
+            try:
+                collector = run_window.QSyncCollector(serial)
+                record = collector.collect_one("during_window")
+                queued_terminal = serial.read_protocol_line(("QEVENT ",), 0.1)
+            finally:
+                serial.close()
+                timeline.close()
+
+            assert queued_terminal == terminal.decode().strip()
+            assert port.writes == [b"QSYNC 0123456789abcdef\n"]
+            assert record["status"] == "observed"
+            assert record["h1_host_ns"] <= record["h4_host_ns"]
+            assert record["d2_dut_us"] == 0x10203
+            assert record["d3_dut_us"] == 0x10205
+            assert record["clock_segment"] == str(0xAB)
+            assert record["clock_segment_wire"] == "00000000000000ab"
+            qsync = [
+                event
+                for event in read_ndjson(timeline.path)
+                if event.get("event") == "qsync_exchange"
+            ]
+            assert len(qsync) == 1
+            assert qsync[0]["h1_host_ns"] == record["h1_host_ns"]
+            assert qsync[0]["h4_host_ns"] == record["h4_host_ns"]
+    finally:
+        run_window.serial = original_serial
+        run_window.secrets.token_hex = original_token_hex
+
+
+def test_qsync_recovers_from_late_nonce_reply_and_restarts_each_new_segment() -> None:
+    first_nonce = "0000000000000001"
+    second_nonce = "0000000000000002"
+    first_reply = (
+        f"QSYNC {first_nonce} 00000000000000AA "
+        "0000000000001000 0000000000001001\n"
+    ).encode()
+    second_reply = (
+        f"QSYNC {second_nonce} 00000000000000AA "
+        "0000000000002000 0000000000002001\n"
+    ).encode()
+    port = FakeSerialPort([])
+    original_serial = run_window.serial
+    original_token_hex = run_window.secrets.token_hex
+    nonces = iter((first_nonce, second_nonce))
+    try:
+        run_window.serial = SimpleNamespace(Serial=lambda: port)
+        run_window.secrets.token_hex = lambda _length: next(nonces)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            serial = run_window.BenchSerial("fake", 115200, root / "bench_serial.log")
+            try:
+                collector = run_window.QSyncCollector(serial)
+                timed_out = collector.collect_one("first", timeout_s=0.001)
+                port.responses.extend((first_reply, second_reply))
+                recovered = collector.collect_one("second", timeout_s=0.1)
+            finally:
+                serial.close()
+        assert timed_out["status"] == "failed"
+        assert recovered["status"] == "observed"
+        assert recovered["reply_nonce"] == second_nonce
+        assert recovered["unexpected_replies"] == [
+            {
+                "status": "late_observed",
+                "reply_nonce": first_nonce,
+                "clock_segment": str(0xAA),
+                "clock_segment_wire": "00000000000000aa",
+                "d2_dut_us": 0x1000,
+                "d3_dut_us": 0x1001,
+                "h4_host_ns": recovered["unexpected_replies"][0]["h4_host_ns"],
+                "h1_host_ns": timed_out["h1_host_ns"],
+            }
+        ]
+    finally:
+        run_window.serial = original_serial
+        run_window.secrets.token_hex = original_token_hex
+
+    collector = run_window.QSyncCollector(SimpleNamespace(timeline=None))
+    changes = iter((True, False, True, False, False, False))
+    phases: list[str] = []
+
+    def collect(phase: str) -> dict[str, object]:
+        phases.append(phase)
+        return {"segment_changed": next(changes)}
+
+    collector.collect_one = collect  # type: ignore[method-assign]
+    records = collector.burst("pre_window", count=2)
+    assert len(records) == 6
+    assert phases == [
+        "pre_window",
+        "pre_window",
+        "pre_window_segment_restart_1",
+        "pre_window_segment_restart_1",
+        "pre_window_segment_restart_2",
+        "pre_window_segment_restart_2",
+    ]
+
+
+def test_qsync_periodic_deadline_is_anchored_within_required_cadence() -> None:
+    previous_deadline = 100.0
+    worst_case_exchange_completion = previous_deadline + 2.0
+    next_deadline = run_window.next_qsync_deadline(
+        previous_deadline,
+        worst_case_exchange_completion,
+    )
+    assert next_deadline == previous_deadline + run_window.QSYNC_PERIOD_SECONDS
+
+    event_loop_poll_seconds = 1.0
+    earliest_spacing = next_deadline - (previous_deadline + event_loop_poll_seconds)
+    latest_spacing = next_deadline + event_loop_poll_seconds - previous_deadline
+    assert 5.0 <= earliest_spacing <= 10.0
+    assert 5.0 <= latest_spacing <= 10.0
+    assert (
+        worst_case_exchange_completion
+        + run_window.QSYNC_PERIOD_SECONDS
+        + event_loop_poll_seconds
+        - previous_deadline
+        > 10.0
+    ), "fixture no longer exercises the completion-anchored cadence bug"
+
+
 def test_camera_first_frame_is_joinable_to_video_pts_zero() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
@@ -352,6 +512,10 @@ def test_bench_automatic_investigation_is_local_only_and_non_gating() -> None:
 def main() -> int:
     tests = [
         test_serial_timeline_and_status_round_trips,
+        test_serial_buffers_partial_lines_until_newline,
+        test_qsync_preserves_asynchronous_terminal_line_and_raw_timestamps,
+        test_qsync_recovers_from_late_nonce_reply_and_restarts_each_new_segment,
+        test_qsync_periodic_deadline_is_anchored_within_required_cadence,
         test_camera_first_frame_is_joinable_to_video_pts_zero,
         test_build_hashes_and_imported_panic_sidecar_are_retained,
         test_device_reported_causal_trace_path_is_collected_without_gating,

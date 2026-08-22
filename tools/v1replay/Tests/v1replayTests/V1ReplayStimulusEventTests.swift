@@ -40,13 +40,15 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             displayOn: true,
             arrowBlink: true,
             plan: plan,
+            intendedHostMonotonicNs: 123_499_000_000,
             requestedHostMonotonicNs: 123_500_000_000
         )
 
         XCTAssertEqual(event.state, "stimulus_requested")
-        XCTAssertEqual(event.schemaVersion, 1)
+        XCTAssertEqual(event.schemaVersion, 2)
         XCTAssertEqual(event.stimulusSequence, 9)
         XCTAssertEqual(event.sourceIndex, 41)
+        XCTAssertEqual(event.intendedHostMonotonicNs, 123_499_000_000)
         XCTAssertEqual(event.requestedHostMonotonicNs, 123_500_000_000)
         XCTAssertEqual(event.requestedHostMonotonicSeconds, 123.5)
         XCTAssertEqual(event.expected.phase, "changed_scenario")
@@ -68,7 +70,8 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
         )
         XCTAssertEqual(decoded["state"] as? String, "stimulus_requested")
-        XCTAssertEqual(decoded["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(decoded["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(decoded["intendedHostMonotonicNs"] as? Int, 123_499_000_000)
         XCTAssertEqual(decoded["stimulusSequence"] as? Int, 9)
         XCTAssertEqual((decoded["notifications"] as? [[String: Any]])?.count, plan.emissions.count)
     }

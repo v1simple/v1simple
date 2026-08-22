@@ -250,6 +250,7 @@ final class V1Peripheral: NSObject {
         let handshakeEpoch: Int?
         let purpose: NotificationPurpose
         let evidence: ReplayNotificationIdentity
+        var delayReported = false
     }
 
     private var pending: [PendingNotification] = []
@@ -294,23 +295,27 @@ final class V1Peripheral: NSObject {
 
     func sendDisplay(_ bytes: [UInt8],
                      stimulusSequence: Int? = nil,
-                     emissionOrdinal: Int? = nil) {
+                     emissionOrdinal: Int? = nil,
+                     intendedHostMonotonicNs: UInt64? = nil) {
         send(
             bytes,
             to: displayChar,
             stimulusSequence: stimulusSequence,
-            emissionOrdinal: emissionOrdinal
+            emissionOrdinal: emissionOrdinal,
+            intendedHostMonotonicNs: intendedHostMonotonicNs
         )
     }
 
     func sendLong(_ bytes: [UInt8],
                   stimulusSequence: Int? = nil,
-                  emissionOrdinal: Int? = nil) {
+                  emissionOrdinal: Int? = nil,
+                  intendedHostMonotonicNs: UInt64? = nil) {
         send(
             bytes,
             to: longNotifyChar,
             stimulusSequence: stimulusSequence,
-            emissionOrdinal: emissionOrdinal
+            emissionOrdinal: emissionOrdinal,
+            intendedHostMonotonicNs: intendedHostMonotonicNs
         )
     }
 
@@ -330,7 +335,8 @@ final class V1Peripheral: NSObject {
     private func send(_ bytes: [UInt8],
                       to characteristic: CBMutableCharacteristic?,
                       stimulusSequence: Int? = nil,
-                      emissionOrdinal: Int? = nil) {
+                      emissionOrdinal: Int? = nil,
+                      intendedHostMonotonicNs: UInt64? = nil) {
         guard let characteristic = characteristic else { return }
         let data = Data(bytes)
         let requestedHostMonotonicNs = hostMonotonicNanoseconds()
@@ -344,6 +350,7 @@ final class V1Peripheral: NSObject {
                 purpose: .ordinary,
                 stimulusSequence: stimulusSequence,
                 emissionOrdinal: emissionOrdinal,
+                intendedHostMonotonicNs: intendedHostMonotonicNs,
                 requestedHostMonotonicNs: requestedHostMonotonicNs
             )
             self.appendPending(notification)
@@ -380,6 +387,7 @@ final class V1Peripheral: NSObject {
                     purpose: .handshakeClear,
                     stimulusSequence: nil,
                     emissionOrdinal: nil,
+                    intendedHostMonotonicNs: nil,
                     requestedHostMonotonicNs: requestedHostMonotonicNs
                 )
                 self.appendPending(notification)
@@ -404,8 +412,29 @@ final class V1Peripheral: NSObject {
                 handshakeClearDelivery.discardPending()
             }
             withState { $0.notifiesDropped += 1 }
+            onNotificationEvent?(
+                dropped.evidence.droppedEvent(
+                    hostMonotonicNs: hostMonotonicNanoseconds()
+                )
+            )
         }
         pending.append(notification)
+    }
+
+    private func discardPending(where shouldDiscard: (PendingNotification) -> Bool) {
+        let discarded = pending.filter(shouldDiscard)
+        pending.removeAll(where: shouldDiscard)
+        for item in discarded {
+            onNotificationEvent?(
+                item.evidence.skippedEvent(
+                    hostMonotonicNs: hostMonotonicNanoseconds()
+                )
+            )
+        }
+    }
+
+    private func discardAllPending() {
+        discardPending { _ in true }
     }
 
     private func makePendingNotification(
@@ -415,6 +444,7 @@ final class V1Peripheral: NSObject {
         purpose: NotificationPurpose,
         stimulusSequence: Int?,
         emissionOrdinal: Int?,
+        intendedHostMonotonicNs: UInt64?,
         requestedHostMonotonicNs: UInt64
     ) -> PendingNotification {
         globalTxSequence &+= 1
@@ -430,13 +460,14 @@ final class V1Peripheral: NSObject {
                 emissionOrdinal: emissionOrdinal,
                 characteristic: Self.shortName(characteristic.uuid),
                 payload: data,
+                intendedHostMonotonicNs: intendedHostMonotonicNs,
                 requestedHostMonotonicNs: requestedHostMonotonicNs
             )
         )
     }
 
     private func discardPendingHandshakeClear() {
-        pending.removeAll { $0.purpose == .handshakeClear }
+        discardPending { $0.purpose == .handshakeClear }
         handshakeClearDelivery.discardPending()
     }
 
@@ -452,7 +483,7 @@ final class V1Peripheral: NSObject {
     /// for readers on the console/main thread.
     private func resetSessionTransport() {
         endHandshakeEpoch()
-        pending.removeAll()
+        discardAllPending()
         lastValues.removeAll()
         shortSubscriberIDs.removeAll()
         handshakeClearDelivery = HandshakeClearDeliveryState()
@@ -480,7 +511,17 @@ final class V1Peripheral: NSObject {
                 item.data,
                 for: item.characteristic,
                 onSubscribedCentrals: nil
-            ) else { return }
+            ) else {
+                if !item.delayReported {
+                    pending[0].delayReported = true
+                    onNotificationEvent?(
+                        item.evidence.delayedEvent(
+                            hostMonotonicNs: hostMonotonicNanoseconds()
+                        )
+                    )
+                }
+                return
+            }
             pending.removeFirst()
             withState { $0.notifiesSent += 1 }
             onNotificationEvent?(
@@ -801,9 +842,9 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         }
         onLog?("Central unsubscribed from \(name)")
         if remaining == 0 {
-            pending.removeAll()
+            discardAllPending()
         } else if endedShortSession {
-            pending.removeAll {
+            discardPending {
                 $0.characteristic.uuid == CBUUID(string: V1.displayShortUUID)
             }
         }

@@ -92,6 +92,8 @@ class PerfSdLogger {
     uint32_t sessionSeq_ = 0;
     uint32_t sessionToken_ = 0;
     uint32_t sessionStartMs_ = 0;
+    uint64_t sessionStartUs_ = 0;
+    uint64_t clockSegment_ = 0;
     uint32_t bootId_ = 0;
     uint32_t bootToken_ = 0;
     uint16_t rowsSinceFlush_ = 0;

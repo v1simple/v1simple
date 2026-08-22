@@ -126,6 +126,14 @@ def build_capture_manifest(
         if field == "video":
             extra["duration_seconds"] = safe_camera_result.get("video_duration_seconds")
         artifacts[field] = _file_entry(path, camera_dir, **extra)
+    for field in ("frame_timing", "preflight_frame_timing", "video_timing_verification"):
+        raw_name = safe_camera_result.get(field)
+        if not raw_name:
+            continue
+        path = _resolve_named_file(camera_dir, raw_name)
+        if path is None:
+            raise CameraArtifactIncompatible(f"camera {field} is missing")
+        artifacts[field] = _file_entry(path, camera_dir)
     if encounter_csv_path is not None:
         artifacts["encounter_csv"] = _file_entry(encounter_csv_path, camera_dir)
     preflight_summary: dict[str, Any] = {}
@@ -169,6 +177,14 @@ def build_capture_manifest(
         "session_start_still": str(safe_camera_result.get("session_start_still") or ""),
         "bright_still": str(safe_camera_result.get("bright_still") or ""),
         "dim_still": str(safe_camera_result.get("dim_still") or ""),
+        "frame_timing": str(safe_camera_result.get("frame_timing") or ""),
+        "preflight_frame_timing": str(safe_camera_result.get("preflight_frame_timing") or ""),
+        "video_timing_verification": str(safe_camera_result.get("video_timing_verification") or ""),
+        "video_timing_verification_result": (
+            safe_camera_result.get("video_timing_verification_result")
+            if isinstance(safe_camera_result.get("video_timing_verification_result"), dict)
+            else {}
+        ),
         "camera_name": safe_camera_result.get("camera_name"),
         "camera_device_index": safe_camera_result.get("camera_device_index"),
         "profile": identity["camera"]["profile"],
@@ -222,6 +238,15 @@ def validate_capture_manifest(manifest: Mapping[str, Any]) -> None:
         required.add("encounter_csv")
     for name in required:
         entry = artifacts.get(name)
+        if not isinstance(entry, dict) or not _valid_digest(entry.get("sha256")):
+            raise CameraArtifactError(f"camera capture manifest has invalid {name} ownership")
+        path = str(entry.get("path") or "")
+        if not path or Path(path).name in {"", ".", ".."}:
+            raise CameraArtifactError(f"camera capture manifest has invalid {name} path")
+    for name in ("frame_timing", "preflight_frame_timing", "video_timing_verification"):
+        entry = artifacts.get(name)
+        if entry is None:
+            continue
         if not isinstance(entry, dict) or not _valid_digest(entry.get("sha256")):
             raise CameraArtifactError(f"camera capture manifest has invalid {name} ownership")
         path = str(entry.get("path") or "")

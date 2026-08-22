@@ -43,6 +43,7 @@
 #include "display_drawn_region.h"
 #include "display_element_caches.h"
 #include "display_frequency_digit_atlas.h"
+#include "modules/display/display_commit_log.h"
 #include "display_frequency_raster_cache.h"
 #include "display_font_manager.h"
 
@@ -189,6 +190,11 @@ class V1Display {
   private:
     enum class ScreenMode { Unknown, Resting, Scanning, Disconnected, Maintenance, Live, Persisted, Stealth };
     static PerfDisplayScreen perfScreenForMode(ScreenMode mode);
+    void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, const AlertData* priority,
+                             uint8_t arrowsToShow, uint8_t alertCount, bool blinkPhase, bool arrowPainted,
+                             V1DisplayCommitDispatch dispatch, int16_t regionX, int16_t regionY, int16_t regionW,
+                             int16_t regionH, uint32_t commitStartUs, uint32_t pushes, uint64_t renderRequestDutMicros,
+                             uint64_t displayCommitDutMicros, bool qualificationOnly = false);
 
     // Display driver (Arduino_GFX)
     std::unique_ptr<Arduino_ESP32QSPI> bus_;
@@ -446,6 +452,11 @@ class V1Display {
     DisplayBleContext bleCtx_;       // BLE state snapshot for display DI
     uint32_t bleCtxUpdatedAtMs_ = 0; // When setBleContext() last refreshed bleCtx_
     uint32_t renderSeq_ = 0;         // Monotonic id bumped after every display flush.
+    uint64_t lastPhysicalCommitDutMicros_ = 0;
+    // Nonzero only while renderFrame() dispatches one composed request. The
+    // overload-specific update paths use this entry timestamp instead of
+    // stamping after card copying and dispatch work has already occurred.
+    uint64_t activeRenderRequestDutMicros_ = 0;
 
     static constexpr uint32_t HIDE_TIMEOUT_MS = 3000; // 3 second display timeout
 

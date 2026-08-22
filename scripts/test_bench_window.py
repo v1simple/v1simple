@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_capture as camera_capture_module  # noqa: E402
 import camera_grade as camera_grade_module  # noqa: E402
+import camera_timing as camera_timing_module  # noqa: E402
 import run_logged as run_logged_module  # noqa: E402
 import run_window as run_window_module  # noqa: E402
 from artifact_privacy import (  # noqa: E402
@@ -50,6 +51,7 @@ from camera_capture import (  # noqa: E402
     CameraCapture,
     evaluate_camera_profile_frames,
 )
+from camera_timing import compare_encoded_video_timing, encoded_frames_from_ffprobe  # noqa: E402
 from camera_grade import (  # noqa: E402
     DISPLAY_CROP_HEIGHT,
     DISPLAY_CROP_WIDTH,
@@ -1318,9 +1320,12 @@ def test_live_cleanup_preserves_primary_failure_when_emulator_stop_also_fails() 
                     raise AssertionError("simultaneous primary and cleanup failures passed")
             assert_true(len(serials) == 1, f"unexpected serial sessions: {serials}")
             serial = serials[0]
+            commands = getattr(serial, "commands")
             assert_true(
-                getattr(serial, "commands") == ["QSTART core 1", "QABORT"],
-                f"primary failure did not abort the DUT window: {getattr(serial, 'commands')}",
+                len(commands) == 10
+                and all(command.startswith("QSYNC ") for command in commands[:8])
+                and commands[8:] == ["QSTART core 1", "QABORT"],
+                f"primary failure did not abort the DUT window after the sync burst: {commands}",
             )
             assert_true(getattr(serial, "closed") is True, "serial cleanup did not run")
     finally:
@@ -2919,22 +2924,51 @@ def test_global_shutter_default_uses_qualified_720p200_profile() -> None:
             os.environ["BENCH_CAMERA_FRAMERATE"] = previous
 
 
-def test_native_camera_recorder_uses_host_clock_timeline() -> None:
+def test_native_camera_recorder_preserves_source_clock_timeline() -> None:
     source = (ROOT / "scripts" / "bench" / "camera_recorder.swift").read_text(encoding="utf-8")
+    capture = (ROOT / "scripts" / "bench" / "camera_capture.py").read_text(encoding="utf-8")
     runner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
     assert_true(
         "videoOutput.alwaysDiscardsLateVideoFrames = true" in source,
         "native recorder can accumulate stale camera frames",
     )
     assert_true(
-        "CMClockGetTime(CMClockGetHostTimeClock())" in source
-        and "pixelBufferAdaptor.append(pixelBuffer, withPresentationTime: presentationTime)" in source
+        "session.synchronizationClock" in source
+        and "CMSyncConvertTime(" in source
+        and "from: synchronizationClock" in source
+        and '"callback_host_ns"' in source
         and "writer.startSession(atSourceTime: .zero)" in source,
-        "native recorder does not replace camera timestamps with a monotonic host timeline",
+        "native recorder does not convert the AVFoundation source clock separately from callback time",
+    )
+    prepare_start = source.index("private func prepareSample(")
+    prepare_end = source.index("private func recordWriterDrop(", prepare_start)
+    prepare_source = source[prepare_start:prepare_end]
+    assert_true(
+        prepare_source.index("hostNanoseconds(") < prepare_source.index("timeline.resolve("),
+        "source-to-host conversion is still gated by writer timing validation",
     )
     assert_true(
-        "writerInput.append(sampleBuffer)" not in source,
-        "native recorder still forwards camera-owned sample timing to AVAssetWriter",
+        "CMSampleBufferGetPresentationTimeStamp(sampleBuffer)" in source
+        and "CMSampleBufferGetDuration(sampleBuffer)" in source
+        and "CMSampleBufferCreateCopyWithNewTiming(" in source
+        and "writerInput.append(retimed)" in source
+        and "AVAssetWriterInputPixelBufferAdaptor" not in source,
+        "native recorder does not preserve and retime source sample timing for AVAssetWriter",
+    )
+    assert_true(
+        "didDrop sampleBuffer: CMSampleBuffer" in source
+        and '"capture_drop"' in source
+        and '"writer_drop"' in source
+        and '"timestamp_error"' in source
+        and '"written"' in source
+        and '"drop_reason"' in source,
+        "native recorder does not retain every capture/writer/timestamp outcome",
+    )
+    assert_true(
+        '"--timing-sidecar"' in capture
+        and '"--preflight-timing-sidecar"' in capture
+        and "verify_video_file(" in capture,
+        "camera owner does not wire both sidecars and full-file verification",
     )
     assert_true(
         "switch writer.status" in source
@@ -2943,10 +2977,250 @@ def test_native_camera_recorder_uses_host_clock_timeline() -> None:
         "native writer failure can hide behind backpressure or lacks a real writer-path test",
     )
     assert_true(
+        "mediaTimeScale: mediaTimeScale" in source
+        and "AVAssetReaderTrackOutput" in source
+        and "CMTimeCompare(encoded.0, expected.presentationTime)" in source
+        and '"description": nsError.localizedDescription' not in source,
+        "camera self-test does not verify production-resolved timing or error artifacts retain private descriptions",
+    )
+    assert_true(
         'if camera is None or args.suite != "replay"' in runner
         and runner.count("require_healthy_replay_camera()") == 3,
         "diagnostic core/display camera health can alter product collection",
     )
+
+
+def camera_frame_record(
+    frame_seq: int,
+    status: str,
+    *,
+    video_pts_value: int | None = None,
+    video_duration_value: int | None = None,
+    drop_reason: str | None = None,
+    timestamp_error: str | None = None,
+    source_pts_value: int | None = None,
+    source_duration_value: int = 5_000_000,
+    duration_ns: int | None = None,
+) -> dict[str, object]:
+    has_video_timing = video_pts_value is not None and video_duration_value is not None
+    resolved_source_pts = (
+        1_000_000_000 + frame_seq * 5_000_000
+        if source_pts_value is None
+        else source_pts_value
+    )
+    host_conversion_failed = timestamp_error in {
+        "synchronization_clock_unavailable",
+        "host_clock_conversion_failed",
+    }
+    record: dict[str, object] = {
+        "schema_version": 1,
+        "phase": "recording",
+        "frame_seq": frame_seq,
+        "source_clock": "avcapture_session_synchronization_clock",
+        "callback_clock": "host_monotonic",
+        "source_pts_value": resolved_source_pts,
+        "source_pts_timescale": 1_000_000_000,
+        "source_duration_value": source_duration_value,
+        "source_duration_timescale": 1_000_000_000,
+        "callback_host_ns": 2_000_000_000 + frame_seq,
+        "host_capture_ns": None if host_conversion_failed else 1_500_000_000 + frame_seq,
+        "video_pts_value": video_pts_value,
+        "video_pts_timescale": 60_000 if has_video_timing else None,
+        "video_duration_value": video_duration_value,
+        "video_duration_timescale": 60_000 if has_video_timing else None,
+        "duration_ns": source_duration_value if duration_ns is None else duration_ns,
+        "status": status,
+        "drop_reason": drop_reason,
+    }
+    if timestamp_error is not None:
+        record["timestamp_error"] = timestamp_error
+    return record
+
+
+def test_camera_timing_verifier_compares_every_written_frame_exactly() -> None:
+    sidecar = [
+        camera_frame_record(11, "written", video_pts_value=0, video_duration_value=300),
+        camera_frame_record(
+            12,
+            "capture_drop",
+            drop_reason="discontinuity",
+            timestamp_error="invalid_source_duration",
+            source_duration_value=0,
+            duration_ns=0,
+        ),
+        camera_frame_record(
+            13,
+            "writer_drop",
+            video_pts_value=600,
+            video_duration_value=300,
+            drop_reason="writer_backpressure",
+        ),
+        camera_frame_record(
+            14,
+            "timestamp_error",
+            timestamp_error="non_monotonic_source_pts",
+            source_pts_value=1_000_000_000 + 13 * 5_000_000,
+        ),
+        camera_frame_record(15, "written", video_pts_value=1200, video_duration_value=300),
+    ]
+    encoded = encoded_frames_from_ffprobe(
+        {
+            "streams": [{"time_base": "1/60000"}],
+            "frames": [
+                {"pts": 0, "duration": 300},
+                {"pts": 1200, "duration": 300},
+            ],
+        }
+    )
+    verified = compare_encoded_video_timing(sidecar, encoded)
+    assert_true(
+        verified["status"] == "verified"
+        and verified["source_frame_count"] == 5
+        and verified["written_frame_count"] == 2
+        and verified["capture_drop_count"] == 1
+        and verified["writer_drop_count"] == 1
+        and verified["timestamp_error_count"] == 2,
+        f"exact camera timing verification lost source outcomes: {verified}",
+    )
+
+    encoded[1] = {**encoded[1], "duration": encoded[1]["duration"] * 2}
+    mismatched = compare_encoded_video_timing(sidecar, encoded)
+    assert_true(
+        mismatched["status"] == "mismatch"
+        and mismatched["duration_mismatch_count"] == 1,
+        f"camera timing duration mismatch was hidden: {mismatched}",
+    )
+
+    synthesized = [{**sidecar[0], "video_pts_value": 1}]
+    try:
+        compare_encoded_video_timing(synthesized, encoded[:1])
+    except ValueError as exc:
+        assert_true("source-relative" in str(exc), f"wrong source-relative error: {exc}")
+    else:
+        raise AssertionError("synthesized video PTS was accepted")
+
+    synthesized_delta = [
+        camera_frame_record(1, "written", video_pts_value=0, video_duration_value=300),
+        camera_frame_record(
+            2,
+            "written",
+            source_pts_value=1_000_000_000 + 5_000_000 + 4,
+            video_pts_value=600,
+            video_duration_value=300,
+        ),
+    ]
+    try:
+        compare_encoded_video_timing(synthesized_delta, encoded)
+    except ValueError as exc:
+        assert_true("source-relative" in str(exc), f"wrong synthesized-delta error: {exc}")
+    else:
+        raise AssertionError("4 ns source delta was accepted as a 10 ms movie delta")
+
+    altered_duration = [{**sidecar[0], "video_duration_value": 301}]
+    try:
+        compare_encoded_video_timing(altered_duration, encoded[:1])
+    except ValueError as exc:
+        assert_true("differs from source" in str(exc), f"wrong source-duration error: {exc}")
+    else:
+        raise AssertionError("video duration unequal to source duration was accepted")
+
+    zero_duration_errors = [
+        camera_frame_record(
+            1,
+            "timestamp_error",
+            timestamp_error="invalid_source_duration",
+            source_duration_value=0,
+            duration_ns=0,
+        ),
+        camera_frame_record(
+            2,
+            "capture_drop",
+            drop_reason="discontinuity",
+            timestamp_error="invalid_source_duration",
+            source_duration_value=0,
+            duration_ns=0,
+        ),
+    ]
+    camera_timing_module.validate_frame_sidecar(zero_duration_errors)
+
+
+def test_camera_timing_verification_is_full_file_and_non_gating() -> None:
+    commands: list[list[str]] = []
+
+    class ProbeResult:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps(
+            {
+                "streams": [{"time_base": "1/60000"}],
+                "frames": [{"pts": 0, "duration": 300}],
+            }
+        )
+
+    original_run = camera_timing_module.subprocess.run
+    try:
+        camera_timing_module.subprocess.run = lambda command, **_kwargs: (  # type: ignore[assignment]
+            commands.append(command) or ProbeResult()
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sidecar = root / "frame_timing.ndjson"
+            sidecar.write_text(
+                json.dumps(camera_frame_record(1, "written", video_pts_value=0, video_duration_value=300))
+                + "\n",
+                encoding="utf-8",
+            )
+            video = root / "evidence.mov"
+            video.write_bytes(b"movie")
+            output = root / "video_timing_verification.json"
+            result = camera_timing_module.verify_video_file("ffprobe", video, sidecar, output)
+            assert_true(result["status"] == "verified" and output.is_file(), str(result))
+            assert_true(
+                "-show_frames" in commands[0] and "-read_intervals" not in commands[0],
+                f"camera timing verification was not a full-file frame pass: {commands[0]}",
+            )
+
+            class FailedProbe:
+                returncode = 2
+                stderr = "truncated movie"
+                stdout = ""
+
+            camera_timing_module.subprocess.run = lambda *_args, **_kwargs: FailedProbe()  # type: ignore[assignment]
+            failed = camera_timing_module.verify_video_file("ffprobe", video, sidecar, output)
+            assert_true(
+                failed["status"] == "probe_error" and failed["first_mismatch"]["type"] == "probe_error",
+                f"camera timing probe error escaped or was hidden: {failed}",
+            )
+
+            unknown = camera_frame_record(
+                1,
+                "invented_fallback",
+                video_pts_value=0,
+                video_duration_value=300,
+            )
+            sidecar.write_text(json.dumps(unknown) + "\n", encoding="utf-8")
+            invalid_status = camera_timing_module.verify_video_file("ffprobe", video, sidecar, output)
+            assert_true(
+                invalid_status["status"] == "sidecar_error"
+                and invalid_status["first_mismatch"]["type"] == "sidecar_error",
+                f"unknown camera status was accepted: {invalid_status}",
+            )
+
+            missing_duration = camera_frame_record(
+                1,
+                "written",
+                video_pts_value=0,
+                video_duration_value=300,
+            )
+            del missing_duration["video_duration_value"]
+            sidecar.write_text(json.dumps(missing_duration) + "\n", encoding="utf-8")
+            invalid_duration = camera_timing_module.verify_video_file("ffprobe", video, sidecar, output)
+            assert_true(
+                invalid_duration["status"] == "sidecar_error",
+                f"written frame without a duration was accepted: {invalid_duration}",
+            )
+    finally:
+        camera_timing_module.subprocess.run = original_run
 
 
 def test_camera_failure_marker_aborts_active_window() -> None:
@@ -3536,6 +3810,8 @@ def test_bench_serial_keeps_raw_protocol_but_persists_only_redacted_copies() -> 
     serial.boot_marker_count = 0
     serial.disconnect_cleanup_count = 0
     serial.last_receive_monotonic_ns = None
+    serial._serial_read_buffer = bytearray()
+    serial._serial_buffer_received_ns = None
 
     returned = serial.read_line(0.1)
 
@@ -5085,6 +5361,44 @@ def test_display_commit_artifact_summary_owns_a_terminally_fenced_prefix() -> No
             f"renderer encounter join contract was lost: {summary}",
         )
 
+        v3_header = header + [
+            "clock_segment",
+            "render_request_dut_micros",
+            "display_commit_dut_micros",
+            "state_published_dut_micros",
+            "alert_published_dut_micros",
+            "state_rx_dut_micros",
+            "alert_rx_dut_micros",
+        ]
+        v3_metadata = (
+            "# display_commit_schema=3,timebase=millis,monotonic_timebase=esp_timer_us,"
+            "source=renderer_commit,"
+            "alert_table_digest=fnv1a32(count_then_ordered_alert_fields_no_padding),"
+            "complete_alert_rows=encounter_csv_by_session_revision_digest"
+        )
+        v3_values = ["0"] * len(v3_header)
+        v3_values[0] = "1"
+        v3_values[2] = "LIVE"
+        v3_values[3] = "PARTIAL"
+        v3_values[v3_header.index("clock_segment")] = "99"
+        v3_values[v3_header.index("render_request_dut_micros")] = "1200000"
+        v3_values[v3_header.index("display_commit_dut_micros")] = "1200450"
+        csv_path.write_text(
+            v3_metadata
+            + "\n"
+            + ",".join(v3_header)
+            + "\n"
+            + ",".join(v3_values)
+            + "\n# display_commit_export_schema=1,terminal_seq=1,dropped_commits=0\n",
+            encoding="utf-8",
+        )
+        v3_summary = summarize_display_commit_artifact(csv_path, out_dir)
+        assert_true(
+            v3_summary["status"] == "complete",
+            f"valid monotonic renderer prefix was not complete: {v3_summary}",
+        )
+        assert_true(v3_summary["csv_schema_version"] == "3", f"wrong renderer schema: {v3_summary}")
+
         csv_path.write_text(
             metadata
             + "\n"
@@ -5200,9 +5514,9 @@ def test_v1replay_player_uses_live_control_snapshot() -> None:
     idle_method = player.split("private func sendIdleFrame()", 1)[1].split(
         "private func sendEmptyAlertTable", 1
     )[0]
-    active_method = player.split("private func emit(sampleAt index: Int)", 1)[1].split(
-        "/// Sleep until", 1
-    )[0]
+    active_method = player.split(
+        "private func emit(sampleAt index: Int, intendedHostMonotonicNs: UInt64)", 1
+    )[1].split("/// Sleep until", 1)[0]
 
     assert_true("var mode:" not in options, "Player.Options duplicates session mode")
     assert_true("var volume:" not in options, "Player.Options duplicates session volume")
@@ -5331,7 +5645,7 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
         "a post-delivery start can bypass the authoritative request ledger",
     )
     assert_true(
-        "pending.removeAll { $0.purpose == .handshakeClear }" in epoch_cleanup
+        "discardPending { $0.purpose == .handshakeClear }" in epoch_cleanup
         and "discardPendingHandshakeClear()" in epoch_end
         and peripheral.count("handshakeLedger?.endEpoch()") == 1,
         "an ended evidence epoch can retain a stale handshake clear",
@@ -5348,7 +5662,7 @@ def test_v1replay_handshake_only_path_sends_once_then_holds_quiet() -> None:
             fragment in transport_reset
             for fragment in (
                 "endHandshakeEpoch()",
-                "pending.removeAll()",
+                "discardAllPending()",
                 "lastValues.removeAll()",
                 "shortSubscriberIDs.removeAll()",
                 "$0.session.resetTransport()",
@@ -5421,7 +5735,9 @@ def main() -> int:
     test_reconnect_preflight_process_uses_separate_quiet_artifacts()
     test_handshake_ledger_runner_and_delivery_wiring_are_pinned()
     test_global_shutter_default_uses_qualified_720p200_profile()
-    test_native_camera_recorder_uses_host_clock_timeline()
+    test_native_camera_recorder_preserves_source_clock_timeline()
+    test_camera_timing_verifier_compares_every_written_frame_exactly()
+    test_camera_timing_verification_is_full_file_and_non_gating()
     test_camera_failure_marker_aborts_active_window()
     test_live_camera_failure_is_serialized_as_evidence_failure()
     test_camera_stop_timeout_exceeds_native_finalize_timeout()

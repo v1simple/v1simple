@@ -58,16 +58,25 @@ struct V1EncounterSnapshot {
     uint32_t alertTableDigest = 0;
     V1CausalIdentity stateSource{};
     V1CausalIdentity alertSource{};
+    uint64_t clockSegment = 0;
+    uint64_t dutMicros = 0;
+    uint64_t statePublishedDutMicros = 0;
+    uint64_t alertPublishedDutMicros = 0;
     V1EncounterEvent event = V1EncounterEvent::Sample;
     uint8_t alertCount = 0;
     std::array<V1EncounterAlertSample, V1_ENCOUNTER_MAX_ALERTS> alerts{};
 };
 
 struct V1PersistedCausalTraceRecord {
+    static constexpr size_t MAX_EXACT_PAYLOAD = 256;
     uint32_t traceSeq = 0;
     uint32_t qualificationSessionToken = 0;
     uint32_t lostTraceRecords = 0;
     V1CausalTraceRecord record{};
+    // Owned copy made only after an active qualification-session check. The
+    // normal causal record and BLE processing path stay compact.
+    uint16_t exactPayloadLength = 0;
+    uint8_t exactPayload[MAX_EXACT_PAYLOAD]{};
 };
 
 class V1EncounterLogger {
@@ -76,9 +85,13 @@ class V1EncounterLogger {
     void begin(bool sdAvailable);
     void attach(PacketParser& parser);
     void onAlertTable(const AlertData* alerts, size_t count, uint32_t nowMs);
-    void beginQualificationSession(uint32_t sessionToken, uint32_t startedAtDutMs, uint32_t sourceLossCount = 0);
+    bool beginQualificationSession(uint32_t sessionToken, uint32_t startedAtDutMs, uint32_t sourceLossCount = 0);
     void endQualificationSession(uint32_t sessionToken, uint32_t endedAtDutMs, uint32_t sourceLossCount = 0);
-    void recordCausalTrace(const V1CausalTraceRecord& record);
+    void recordCausalTrace(const V1CausalTraceRecord& record, const uint8_t* exactPayload = nullptr,
+                           size_t exactPayloadLength = 0);
+    bool isQualificationSessionActive() const {
+        return enabled_ && qualificationSessionActive_.load(std::memory_order_acquire);
+    }
     bool tryDrainQualificationEvidence();
     void drainAndClose(uint32_t timeoutMs);
 
@@ -108,7 +121,7 @@ class V1EncounterLogger {
     bool appendTrace(const V1PersistedCausalTraceRecord& record);
     bool formatCsvLine(const V1EncounterSnapshot& snapshot, size_t alertIndex, char* out, size_t outLen) const;
     bool formatTraceCsvLine(const V1PersistedCausalTraceRecord& record, char* out, size_t outLen) const;
-    void beginQualificationSessionWithEvidence(uint32_t sessionToken, uint32_t startedAtDutMs, uint32_t sourceLossCount,
+    bool beginQualificationSessionWithEvidence(uint32_t sessionToken, uint32_t startedAtDutMs, uint32_t sourceLossCount,
                                                const V1SemanticRevisionEvidence* retainedEvidence);
     void recordRetainedBaselines(const V1SemanticRevisionEvidence& evidence, uint32_t startedAtDutMs,
                                  uint32_t sourceLossCount);
@@ -120,6 +133,7 @@ class V1EncounterLogger {
     static void writerTaskEntry(void* context);
     void writerTaskLoop();
     bool ensureWriter();
+    bool ensureTraceQueue();
     bool ensureFileReady();
     bool ensureTraceFileReady();
 #endif
@@ -148,7 +162,8 @@ class V1EncounterLogger {
 
 #ifndef UNIT_TEST
     QueueHandle_t queue_ = nullptr;
-    QueueHandle_t traceQueue_ = nullptr;
+    std::atomic<QueueHandle_t> traceQueue_{nullptr};
+    std::atomic<bool> traceQueueRequired_{false};
     TaskHandle_t writerTask_ = nullptr;
     PsramQueueAllocation queueAllocation_ = {};
     PsramQueueAllocation traceQueueAllocation_ = {};
@@ -164,9 +179,9 @@ class V1EncounterLogger {
 #else
     uint32_t snapshotsWritten_ = 0;
     uint32_t linesWritten_ = 0;
-    char lastLineBuf_[384] = {0};
+    char lastLineBuf_[640] = {0};
     uint32_t tracesWritten_ = 0;
-    char lastTraceLineBuf_[384] = {0};
+    char lastTraceLineBuf_[1024] = {0};
     std::array<V1PersistedCausalTraceRecord, 8> testTraceRecords_{};
 #endif
 };

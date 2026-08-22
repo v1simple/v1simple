@@ -11,6 +11,7 @@ final class V1ReplayEvidenceTests: XCTestCase {
             emissionOrdinal: 1,
             characteristic: "B2CE",
             payload: payload,
+            intendedHostMonotonicNs: 900,
             requestedHostMonotonicNs: 1_000
         )
         let repeated = ReplayNotificationIdentity(
@@ -35,11 +36,18 @@ final class V1ReplayEvidenceTests: XCTestCase {
 
         let requested = first.requestedEvent
         let accepted = first.acceptedEvent(hostMonotonicNs: 1_250)
+        let delayed = first.delayedEvent(hostMonotonicNs: 1_100)
+        let dropped = first.droppedEvent(hostMonotonicNs: 1_200)
+        let skipped = first.skippedEvent(hostMonotonicNs: 1_225)
         XCTAssertEqual(requested.state, "notification_requested")
         XCTAssertEqual(accepted.state, "notification_accepted")
+        XCTAssertEqual(delayed.state, "notification_delayed")
+        XCTAssertEqual(dropped.state, "notification_dropped")
+        XCTAssertEqual(skipped.state, "notification_skipped")
         XCTAssertEqual(requested.globalTxSequence, accepted.globalTxSequence)
         XCTAssertEqual(requested.stimulusSequence, 4)
         XCTAssertEqual(requested.emissionOrdinal, 1)
+        XCTAssertEqual(requested.intendedHostMonotonicNs, 900)
         XCTAssertEqual(requested.hostMonotonicNs, 1_000)
         XCTAssertEqual(accepted.hostMonotonicNs, 1_250)
 

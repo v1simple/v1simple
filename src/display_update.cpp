@@ -26,6 +26,7 @@
 #include "settings.h"
 #include "perf_metrics.h"
 #include "packet_parser.h"
+#include "qualification_clock.h"
 #if defined(DISPLAY_WAVESHARE_349)
 #include "battery_manager.h"
 #include "wifi_manager.h"
@@ -67,42 +68,6 @@ struct DispatchRectList {
     DrawnRegion::Rect rects[DrawnRegion::MAX_RECTS]{};
     uint8_t count = 0;
 };
-
-// One record per display commit: the DisplayState the renderer consumed, the values
-// it resolved from that state, and how the result reached the panel. The snapshot is
-// copied into a zero-wait queue, so the render path never waits on storage.
-void recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, const AlertData* priority,
-                         uint8_t arrowsToShow, uint8_t alertCount, bool blinkPhase, bool arrowPainted,
-                         V1DisplayCommitDispatch dispatch, int16_t regionX, int16_t regionY, int16_t regionW,
-                         int16_t regionH, uint32_t commitStartUs, uint32_t pushes) {
-    if (!v1DisplayCommitLog.isEnabled()) {
-        return;
-    }
-    V1DisplayCommitSnapshot commit;
-    commit.seq = v1DisplayCommitLog.nextSeq();
-    commit.millisTs = static_cast<uint32_t>(millis());
-    commit.renderUs = static_cast<uint32_t>(micros()) - commitStartUs;
-    commit.pushes = pushes;
-    commit.path = path;
-    commit.dispatch = dispatch;
-    commit.arrowsToShow = arrowsToShow;
-    commit.blinkPhase = blinkPhase ? 1 : 0;
-    commit.arrowPainted = arrowPainted ? 1 : 0;
-    commit.alertCount = alertCount;
-    commit.regionX = regionX;
-    commit.regionY = regionY;
-    commit.regionW = regionW;
-    commit.regionH = regionH;
-    commit.state = state;
-    if (priority) {
-        commit.priority = *priority;
-    }
-    // This digest names the complete parser-published table retained in the
-    // encounter CSV. The composer may reorder/filter that table before render;
-    // priority + alertCount + owning composer code describe that smaller view.
-    commit.alertTableDigest = state.causal.alertTableDigest;
-    v1DisplayCommitLog.record(commit);
-}
 
 bool clipToFramebuffer(DrawnRegion::Rect& rect) {
     int16_t x = rect.x;
@@ -350,6 +315,47 @@ uint16_t profileColorForSlot(const V1Settings& s, int slot) {
 
 } // namespace
 
+// One record per display commit: the DisplayState the renderer consumed, the values
+// it resolved from that state, and how the result reached the panel. The snapshot is
+// copied into a zero-wait queue, so the render path never waits on storage.
+void V1Display::recordDisplayCommit(V1DisplayCommitPath path, const DisplayState& state, const AlertData* priority,
+                                    uint8_t arrowsToShow, uint8_t alertCount, bool blinkPhase, bool arrowPainted,
+                                    V1DisplayCommitDispatch dispatch, int16_t regionX, int16_t regionY, int16_t regionW,
+                                    int16_t regionH, uint32_t commitStartUs, uint32_t pushes,
+                                    uint64_t renderRequestDutMicros, uint64_t displayCommitDutMicros,
+                                    bool qualificationOnly) {
+    if (!v1DisplayCommitLog.isEnabled() || (qualificationOnly && !v1DisplayCommitLog.isQualificationSessionActive())) {
+        return;
+    }
+    V1DisplayCommitSnapshot commit;
+    commit.seq = v1DisplayCommitLog.nextSeq();
+    commit.millisTs = static_cast<uint32_t>(millis());
+    commit.renderUs = static_cast<uint32_t>(micros()) - commitStartUs;
+    commit.pushes = pushes;
+    commit.clockSegment = QualificationClock::segment();
+    commit.renderRequestDutMicros = renderRequestDutMicros;
+    commit.displayCommitDutMicros = displayCommitDutMicros;
+    commit.path = path;
+    commit.dispatch = dispatch;
+    commit.arrowsToShow = arrowsToShow;
+    commit.blinkPhase = blinkPhase ? 1 : 0;
+    commit.arrowPainted = arrowPainted ? 1 : 0;
+    commit.alertCount = alertCount;
+    commit.regionX = regionX;
+    commit.regionY = regionY;
+    commit.regionW = regionW;
+    commit.regionH = regionH;
+    commit.state = state;
+    if (priority) {
+        commit.priority = *priority;
+    }
+    // This digest names the complete parser-published table retained in the
+    // encounter CSV. The composer may reorder/filter that table before render;
+    // priority + alertCount + owning composer code describe that smaller view.
+    commit.alertTableDigest = state.causal.alertTableDigest;
+    v1DisplayCommitLog.record(commit);
+}
+
 // ============================================================================
 // renderFrame — display-pipeline frame dispatch
 // ============================================================================
@@ -397,19 +403,29 @@ int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, R
 } // namespace
 
 void V1Display::renderFrame(const RenderFrame& frame) {
+    activeRenderRequestDutMicros_ = QualificationClock::nowMicros();
     persistedMode_ = false;
 
     switch (frame.primaryKind) {
     case RenderFramePrimaryKind::NONE:
-        return;
+        break;
 
     case RenderFramePrimaryKind::IDLE:
         if (frame.stealthMode) {
+            lastPhysicalCommitDutMicros_ = 0;
+            const uint32_t commitStartUs = static_cast<uint32_t>(micros());
+            const uint32_t commitSeqBefore = renderSeq_;
             showStealth(frame.stealthSpeedMph, frame.stealthSpeedValid);
+            const uint32_t pushes = renderSeq_ - commitSeqBefore;
+            recordDisplayCommit(V1DisplayCommitPath::Stealth, frame.primaryState, nullptr,
+                                static_cast<uint8_t>(DIR_NONE), 0, blinkPhase_, false,
+                                pushes == 0 ? V1DisplayCommitDispatch::None : V1DisplayCommitDispatch::FullFlush, 0, 0,
+                                pushes == 0 ? 0 : SCREEN_WIDTH, pushes == 0 ? 0 : SCREEN_HEIGHT, commitStartUs, pushes,
+                                activeRenderRequestDutMicros_, lastPhysicalCommitDutMicros_, true);
         } else {
             update(frame.primaryState);
         }
-        return;
+        break;
 
     case RenderFramePrimaryKind::V1_LIVE: {
         // The card-row alert list includes the priority alert. The composer
@@ -436,12 +452,12 @@ void V1Display::renderFrame(const RenderFrame& frame) {
             liveAlerts[liveCount++] = card.v1Alert;
         }
         update(frame.v1Priority, liveAlerts.data(), liveCount, frame.primaryState);
-        return;
+        break;
     }
 
     case RenderFramePrimaryKind::V1_PERSISTED:
         updatePersisted(frame.v1Priority, frame.primaryState);
-        return;
+        break;
 
     case RenderFramePrimaryKind::ALP_LIVE:
     case RenderFramePrimaryKind::ALP_PERSISTED: {
@@ -454,9 +470,10 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts);
         const AlertData syntheticAlert = alpEventToSyntheticAlert(frame.alpPrimary);
         update(syntheticAlert, cardAlerts.data(), cardCount, frame.primaryState);
-        return;
+        break;
     }
     }
+    activeRenderRequestDutMicros_ = 0;
 }
 
 #if defined(DISPLAY_WAVESHARE_349)
@@ -662,6 +679,9 @@ void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool to
 // ============================================================================
 
 void V1Display::update(const DisplayState& state) {
+    const uint64_t renderRequestDutMicros =
+        activeRenderRequestDutMicros_ != 0 ? activeRenderRequestDutMicros_ : QualificationClock::nowMicros();
+    lastPhysicalCommitDutMicros_ = 0;
     // Not in persisted mode
     persistedMode_ = false;
     const uint32_t commitStartUs = static_cast<uint32_t>(micros());
@@ -672,6 +692,10 @@ void V1Display::update(const DisplayState& state) {
 
     // Scanning owns the display until its mode transition completes.
     if (currentScreen_ == ScreenMode::Scanning) {
+        recordDisplayCommit(V1DisplayCommitPath::Resting, state, nullptr, static_cast<uint8_t>(DIR_NONE), 0,
+                            blinkPhase_, false, V1DisplayCommitDispatch::None, drawnRegion_.x(), drawnRegion_.y(),
+                            drawnRegion_.w(), drawnRegion_.h(), commitStartUs, renderSeq_ - commitSeqBefore,
+                            renderRequestDutMicros, 0, true);
         return;
     }
 
@@ -736,6 +760,9 @@ void V1Display::update(const DisplayState& state) {
             perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting,
                                            PerfDisplayFlushDecisionReason::CacheHit);
             lastState_ = state;
+            recordDisplayCommit(V1DisplayCommitPath::Resting, state, nullptr, static_cast<uint8_t>(DIR_NONE), 0,
+                                blinkPhase_, false, V1DisplayCommitDispatch::None, 0, 0, 0, 0, commitStartUs,
+                                renderSeq_ - commitSeqBefore, renderRequestDutMicros, 0, true);
             return;
         }
     } else {
@@ -809,7 +836,7 @@ void V1Display::update(const DisplayState& state) {
                         flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
                                                                                   : V1DisplayCommitDispatch::FullFlush,
                         drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h(), commitStartUs,
-                        renderSeq_ - commitSeqBefore);
+                        renderSeq_ - commitSeqBefore, renderRequestDutMicros, lastPhysicalCommitDutMicros_);
     drawnRegion_.reset();
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
@@ -828,6 +855,9 @@ void V1Display::update(const DisplayState& state) {
 // ============================================================================
 
 void V1Display::updatePersisted(const AlertData& alert, const DisplayState& state) {
+    const uint64_t renderRequestDutMicros =
+        activeRenderRequestDutMicros_ != 0 ? activeRenderRequestDutMicros_ : QualificationClock::nowMicros();
+    lastPhysicalCommitDutMicros_ = 0;
     if (!alert.isValid) {
         persistedMode_ = false;
         update(state);
@@ -923,7 +953,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
                         flushDecision == PerfDisplayFlushDecisionReason::CacheHit ? V1DisplayCommitDispatch::None
                                                                                   : V1DisplayCommitDispatch::FullFlush,
                         drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h(), commitStartUs,
-                        renderSeq_ - commitSeqBefore);
+                        renderSeq_ - commitSeqBefore, renderRequestDutMicros, lastPhysicalCommitDutMicros_);
     drawnRegion_.reset();
     perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
@@ -937,6 +967,9 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 
 void V1Display::update(const AlertData& priority, const AlertData* allAlerts, int alertCount,
                        const DisplayState& state) {
+    const uint64_t renderRequestDutMicros =
+        activeRenderRequestDutMicros_ != 0 ? activeRenderRequestDutMicros_ : QualificationClock::nowMicros();
+    lastPhysicalCommitDutMicros_ = 0;
     persistedMode_ = false;
     const uint32_t commitStartUs = static_cast<uint32_t>(micros());
     const uint32_t commitSeqBefore = renderSeq_;
@@ -946,6 +979,11 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         // have painted an indicator before this invalid live packet. Leaving
         // the region queued lets the next real display frame flush it.
         PERF_INC(displayLiveInvalidPrioritySkips);
+        recordDisplayCommit(V1DisplayCommitPath::Live, state, &priority, static_cast<uint8_t>(state.priorityArrow),
+                            static_cast<uint8_t>(alertCount < 0 ? 0 : alertCount), blinkPhase_, false,
+                            V1DisplayCommitDispatch::None, drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(),
+                            drawnRegion_.h(), commitStartUs, renderSeq_ - commitSeqBefore, renderRequestDutMicros, 0,
+                            true);
         return;
     }
 
@@ -1167,7 +1205,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     recordDisplayCommit(V1DisplayCommitPath::Live, state, &priority, static_cast<uint8_t>(arrowsToShow),
                         static_cast<uint8_t>(alertCount < 0 ? 0 : alertCount), blinkPhase_, arrowPaintedThisFrame_,
                         commitDispatch, commitRegionX, commitRegionY, commitRegionW, commitRegionH, commitStartUs,
-                        renderSeq_ - commitSeqBefore);
+                        renderSeq_ - commitSeqBefore, renderRequestDutMicros, lastPhysicalCommitDutMicros_);
 
     // Consume the live-frame region after dispatch. This prevents the next
     // live frame from mistaking already-flushed paint for pending external

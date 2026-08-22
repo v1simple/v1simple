@@ -7,7 +7,7 @@ from collections.abc import Iterable
 import json
 from pathlib import Path
 
-CURRENT_PERF_CSV_SCHEMA = 48
+CURRENT_PERF_CSV_SCHEMA = 49
 MIN_DROP_COUNTER_SCHEMA = 13
 MIN_NOTIFY_PIPELINE_COMPLETE_SCHEMA = 47
 

@@ -439,6 +439,7 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
                            static_cast<uint32_t>(phys_px0);
         gfxPanel_->draw16bitRGBBitmap(phys_px0, phys_py0 + row, rowPtr, phys_pw, 1);
     }
+    lastPhysicalCommitDutMicros_ = QualificationClock::nowMicros();
     const uint32_t elapsedUs = PERF_TIMESTAMP_US() - startUs;
     ++renderSeq_;
     perfRecordFlushUs(elapsedUs, areaPx, false);

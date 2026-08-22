@@ -77,21 +77,24 @@ struct DetectorVolumeCheckpoint: Equatable {
     }
 }
 
-/// One modeled physical-V1 mute edge in the fixed bench stimulus.
+/// One modeled physical-V1 mute edge in the replay stimulus.
 struct DetectorMuteCheckpoint: Equatable {
-    let replaySecond: Int
+    let replaySecond: Double
     let muted: Bool
 
-    init(replaySecond: Int, muted: Bool) {
-        precondition(replaySecond >= 0, "replay second must be non-negative")
+    init(replaySecond: Double, muted: Bool) {
+        precondition(replaySecond.isFinite && replaySecond >= 0,
+                     "replay second must be finite and non-negative")
         self.replaySecond = replaySecond
         self.muted = muted
     }
 
     var machineEventLine: String {
+        let encodedSecond = Int(exactly: replaySecond).map(String.init) ?? String(replaySecond)
+        let encodedMuted = muted ? "true" : "false"
         return "V1REPLAY_EVENT {\"state\":\"detector_mute\","
-            + "\"replaySecond\":\(replaySecond),"
-            + "\"muted\":\(muted ? "true" : "false")}"
+            + "\"replaySecond\":\(encodedSecond),"
+            + "\"muted\":\(encodedMuted)}"
     }
 }
 
@@ -445,7 +448,7 @@ struct Encounter {
         let previous = index > samples.startIndex ? samples[index - 1].muted : false
         guard muted != previous else { return nil }
         return DetectorMuteCheckpoint(
-            replaySecond: Int(samples[index].offset),
+            replaySecond: samples[index].offset,
             muted: muted
         )
     }

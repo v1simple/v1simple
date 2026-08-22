@@ -29,6 +29,7 @@ from camera_artifacts import (  # noqa: E402
     publish_grade,
     publish_immutable_json,
     replay_timing_anchor,
+    validate_capture_manifest,
     verify_capture_files,
 )
 
@@ -82,7 +83,14 @@ def camera_fixture(replay_dir: Path) -> tuple[Path, dict, Path]:
     return camera_dir, result, encounter
 
 
-def manifest_fixture(root: Path, *, timing: float = 8.0, trace_sha: str = "1" * 40) -> tuple[Path, dict]:
+def manifest_fixture(
+    root: Path,
+    *,
+    timing: float = 8.0,
+    trace_sha: str = "1" * 40,
+    mute_events: list[dict] | None = None,
+    completed: bool = True,
+) -> tuple[Path, dict]:
     replay_dir = root / "run" / "replay"
     camera_dir, result, encounter = camera_fixture(replay_dir)
     manifest = build_capture_manifest(
@@ -94,6 +102,11 @@ def manifest_fixture(root: Path, *, timing: float = 8.0, trace_sha: str = "1" * 
         encounter_csv_path=encounter,
         timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": timing},
         traceability={"repository_sha": trace_sha},
+        replay_mute_signal={
+            "schema_version": 1,
+            "events": list(mute_events or []),
+        },
+        replay_completed=completed,
     )
     return camera_dir, manifest
 
@@ -140,6 +153,8 @@ def test_capture_id_stability_and_sensitivity() -> None:
                 scenario_fingerprint="b" * 64,
                 encounter_csv_path=changed_camera.parent / "encounters_1-token.csv",
                 timing_anchor=unchanged["timing_anchor"],
+                replay_mute_signal=unchanged["identity"]["replay_mute_signal"],
+                replay_completed=True,
             )
             assert_true(
                 unchanged["capture_id"] != rebuilt["capture_id"],
@@ -147,6 +162,45 @@ def test_capture_id_stability_and_sensitivity() -> None:
             )
         _camera, changed_timing = manifest_fixture(Path(second_tmp) / "other", timing=9.0)
         assert_true(first["capture_id"] != changed_timing["capture_id"], "timing change was ignored")
+        _camera, changed_mute = manifest_fixture(
+            Path(second_tmp) / "mute",
+            mute_events=[
+                {"state": "detector_mute", "replaySecond": 20.9, "muted": True},
+            ],
+        )
+        assert_true(
+            first["capture_id"] != changed_mute["capture_id"],
+            "capture-owned mute schedule change was ignored",
+        )
+        _camera, incomplete = manifest_fixture(Path(second_tmp) / "incomplete", completed=False)
+        assert_true(
+            first["capture_id"] != incomplete["capture_id"],
+            "capture-owned replay completion change was ignored",
+        )
+        tampered = json.loads(json.dumps(first))
+        tampered["identity"]["replay_mute_signal"]["events"] = changed_mute["identity"][
+            "replay_mute_signal"
+        ]["events"]
+        try:
+            validate_capture_manifest(tampered)
+        except CameraArtifactError:
+            pass
+        else:
+            raise AssertionError("edited mute schedule retained valid capture ownership")
+        tampered_capture = json.loads(json.dumps(first))
+        tampered_capture["capture"]["video"] = "unowned.mov"
+        assert_true(
+            camera_result_view(tampered_capture)["video"] == "evidence_exp50.mov",
+            "unowned capture view changed the graded video",
+        )
+        tampered_timing = json.loads(json.dumps(first))
+        tampered_timing["timing_anchor"]["video_seconds"] = 99.0
+        try:
+            validate_capture_manifest(tampered_timing)
+        except CameraArtifactError:
+            pass
+        else:
+            raise AssertionError("unowned top-level timing changed the replay alignment")
 
 
 def test_replay_timing_anchor_preserves_measured_precision() -> None:
@@ -344,6 +398,119 @@ def test_current_grade_refresh_preserves_stale_owned_evidence() -> None:
         assert_true(before == after, "refresh rewrote captured media or its prior owned grade")
 
 
+def test_regrade_uses_capture_owned_replay_mute_signal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp)
+        mute_signal = {
+            "schema_version": 1,
+            "events": [
+                {"state": "detector_mute", "replaySecond": 185, "muted": True},
+                {"state": "detector_mute", "replaySecond": 189, "muted": False},
+            ],
+        }
+        camera_dir, manifest = manifest_fixture(corpus, mute_events=mute_signal["events"])
+        publish_capture_manifest(camera_dir, manifest)
+        write_json(
+            camera_dir.parent / "window_result.json",
+            {
+                "replay": {"completed": False},
+                "replay_mute_signal": {
+                    "schema_version": 1,
+                    "events": [
+                        {"state": "detector_mute", "replaySecond": 1, "muted": True},
+                    ],
+                },
+            },
+        )
+        original = camera_regrade_module.grade_camera
+        received: dict[str, object] = {}
+
+        def fake_grade(**kwargs: object) -> dict:
+            received.update(kwargs)
+            return grade_fixture(manifest, str(kwargs["grader_fingerprint"]))
+
+        camera_regrade_module.grade_camera = fake_grade  # type: ignore[assignment]
+        try:
+            counts, returncode = camera_regrade_module.regrade_corpus(corpus)
+        finally:
+            camera_regrade_module.grade_camera = original
+
+        assert_true(returncode == 0 and counts["graded"] == 1, f"regrade failed: {counts}")
+        assert_true(
+            "replay_mute_signal" not in received
+            and "emulator_result" not in received
+            and received["capture_manifest"]["identity"]["replay_mute_signal"] == mute_signal,
+            f"regrade accepted mutable replay state: {received}",
+        )
+
+
+def test_malformed_replay_mute_signal_abstains_before_decode() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        malformed_camera, malformed_result, malformed_encounter = camera_fixture(
+            root / "malformed" / "run" / "replay"
+        )
+        try:
+            build_capture_manifest(
+                camera_dir=malformed_camera,
+                camera_result=malformed_result,
+                suite="replay",
+                product_fingerprint="a" * 64,
+                scenario_fingerprint="b" * 64,
+                encounter_csv_path=malformed_encounter,
+                timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 8.0},
+                replay_mute_signal={
+                    "schema_version": 1,
+                    "events": [
+                        {"state": "detector_mute", "replaySecond": 5, "muted": "yes"}
+                    ],
+                },
+                replay_completed=True,
+            )
+        except CameraArtifactError:
+            pass
+        else:
+            raise AssertionError("malformed mute schedule entered capture identity")
+
+        legacy_camera, legacy_result, legacy_encounter = camera_fixture(
+            root / "legacy" / "run" / "replay"
+        )
+        unowned_manifest = build_capture_manifest(
+            camera_dir=legacy_camera,
+            camera_result=legacy_result,
+            suite="replay",
+            product_fingerprint="a" * 64,
+            scenario_fingerprint="b" * 64,
+            encounter_csv_path=legacy_encounter,
+            timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 8.0},
+        )
+        unowned_grade = camera_regrade_module.grade_camera(
+            camera_dir=legacy_camera,
+            capture_manifest=unowned_manifest,
+            grader_fingerprint=current_grader_fingerprint(ROOT),
+        )
+        assert_true(
+            unowned_grade["result"] == "INCONCLUSIVE"
+            and unowned_grade["diagnostics"][0]["code"] == "replay_mute_signal_unowned",
+            f"unowned mute schedule did not abstain: {unowned_grade}",
+        )
+
+        incomplete_camera, incomplete_manifest = manifest_fixture(
+            root / "incomplete",
+            completed=False,
+        )
+        incomplete_grade = camera_regrade_module.grade_camera(
+            camera_dir=incomplete_camera,
+            capture_manifest=incomplete_manifest,
+            grader_fingerprint=current_grader_fingerprint(ROOT),
+        )
+        assert_true(
+            incomplete_grade["result"] == "INCONCLUSIVE"
+            and incomplete_grade["diagnostics"][0]["code"] == "replay_incomplete",
+            f"capture-owned incomplete replay reached video grading: {incomplete_grade}",
+        )
+
+
 def test_fresh_capture_owns_its_grade_before_bench_scoring() -> None:
     capture_owner = (ROOT / "scripts" / "bench" / "run_window.py").read_text(encoding="utf-8")
     grade = capture_owner.index("camera_grade = grade_camera(")
@@ -440,14 +607,9 @@ def test_missing_legacy_timing_abstains_before_decode() -> None:
         )
         try:
             grade = camera_regrade_module.grade_camera(
-                suite="replay",
                 camera_dir=camera_dir,
-                camera_result=camera_result_view(manifest),
                 capture_manifest=manifest,
                 grader_fingerprint=current_grader_fingerprint(ROOT),
-                emulator_result={"completed": True},
-                encounter_csv_path=replay_dir / "encounters_1-token.csv",
-                timeline_start_video_s=None,
             )
         finally:
             camera_regrade_module.grade_camera.__globals__["extract_observations"] = original
@@ -639,6 +801,8 @@ def main() -> int:
     test_camera_publication_preserves_owned_hashes_but_scrubs_digest_narrative()
     test_resumable_skip_does_not_extract_frames()
     test_current_grade_refresh_preserves_stale_owned_evidence()
+    test_regrade_uses_capture_owned_replay_mute_signal()
+    test_malformed_replay_mute_signal_abstains_before_decode()
     test_fresh_capture_owns_its_grade_before_bench_scoring()
     test_owned_bytes_are_verified_before_resume()
     test_legacy_preservation_and_relocation()

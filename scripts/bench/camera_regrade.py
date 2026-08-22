@@ -14,13 +14,11 @@ from camera_artifacts import (
     CAPTURE_MANIFEST_NAME,
     CameraArtifactConflict,
     CameraArtifactError,
-    camera_result_view,
     grade_path,
     load_or_adapt_capture,
     load_owned_grade,
     publish_grade,
     publish_immutable_json,
-    resolve_manifest_artifact,
     validate_resumable_grade,
     verify_capture_files,
 )
@@ -156,22 +154,10 @@ def regrade_corpus(
                 }
                 report_entries.append(entry)
                 continue
-            timing = capture.get("timing_anchor")
-            timeline_start = timing.get("video_seconds") if isinstance(timing, dict) else None
-            encounter = resolve_manifest_artifact(camera_dir, capture, "encounter_csv")
             grade = grade_camera(
-                suite="replay",
                 camera_dir=camera_dir,
-                camera_result=camera_result_view(capture),
                 capture_manifest=capture,
                 grader_fingerprint=grader_fingerprint,
-                emulator_result=(
-                    window_result.get("replay")
-                    if isinstance(window_result.get("replay"), dict)
-                    else {"completed": True}
-                ),
-                encounter_csv_path=encounter,
-                timeline_start_video_s=timeline_start,
             )
             _published_path, _created = publish_grade(
                 camera_dir,

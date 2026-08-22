@@ -5186,6 +5186,104 @@ def test_replay_consensus_grades_stable_windows_not_planned_transitions() -> Non
         assert_true(grade["checks"][check]["result"] == "PASS", f"stable check failed: {grade}")
 
 
+def test_replay_camera_excludes_unsupported_muted_palette() -> None:
+    offset = 2.0
+    observations, encounters = matching_replay_fixture(offset)
+    mute_events = ((100.0, True), (130.0, False))
+    assert_true(
+        camera_grade_module._visible(49, 48, 49)
+        and not camera_grade_module._visible(34, 34, 34),
+        "intentional muted gray is indistinguishable from a blank display",
+    )
+    same_time_signal = camera_grade_module.normalize_replay_mute_signal(
+        {
+            "schema_version": 1,
+            "events": [
+                {"state": "detector_mute", "replaySecond": 20.9, "muted": True},
+                {"state": "detector_mute", "replaySecond": 20.9, "muted": False},
+            ],
+        }
+    )
+    assert_true(
+        len(same_time_signal["events"]) == 2,
+        "same-time flexible replay state changes were rejected",
+    )
+    assert_true(
+        not camera_grade_module._mute_semantics_unsupported(90.0, ((90.0, False),)),
+        "a no-op mute checkpoint manufactured an unsupported transition window",
+    )
+    muted_observations = [
+        FrameObservation(
+            **(
+                {
+                    **item.__dict__,
+                    "frequency_pixels": 0,
+                    "frequency_mhz": None,
+                    "frequency_confidence": 0.0,
+                    "direction": "UNKNOWN",
+                    "direction_confidence": 0.0,
+                }
+                if 100.0 <= item.time_s - offset < 130.0
+                else item.__dict__
+            )
+        )
+        for item in observations
+    ]
+
+    grade = grade_replay(muted_observations, encounters, offset, mute_events)
+    assert_true(grade["result"] == "PASS", f"intentional muted palette failed: {grade}")
+    stable_gate = grade["confidence"]["gates"]["stable_encounter_windows"]
+    assert_true(
+        stable_gate["mute_rows_excluded"] == 31,
+        f"mute plateau and transition edges were not reported exactly: {stable_gate}",
+    )
+    assert_true(
+        grade["alignment"]["mute_checkpoints_excluded"] > 0,
+        f"mute plateau still influenced alert/rest alignment: {grade['alignment']}",
+    )
+    assert_true(
+        all(
+            not camera_grade_module._mute_semantics_unsupported(
+                item["replay_time_seconds"], mute_events
+            )
+            for item in grade["encounter_comparisons"]
+        ),
+        "unsupported muted rows leaked into semantic comparisons",
+    )
+    assert_true(
+        len(grade["encounter_comparisons"])
+        + stable_gate["transition_rows_excluded"]
+        + stable_gate["mute_rows_excluded"]
+        == len(encounters),
+        f"mute-aware comparison accounting lost rows: {grade}",
+    )
+    for check in grade["checks"].values():
+        assert_true(check["result"] == "PASS", f"unmuted evidence was changed: {grade}")
+
+    short_mute_events = ((185.0, True), (189.0, False))
+    blank_muted_observations = [
+        FrameObservation(
+            **(
+                {**item.__dict__, "visible_pixels": 0}
+                if 185.0 <= item.time_s - offset < 189.0
+                else item.__dict__
+            )
+        )
+        for item in observations
+    ]
+    blank_grade = grade_replay(
+        blank_muted_observations,
+        encounters,
+        offset,
+        short_mute_events,
+    )
+    assert_true(
+        blank_grade["result"] == "INCONCLUSIVE"
+        and blank_grade["diagnostics"][0]["code"] == "muted_display_unreadable",
+        f"mute exclusions hid a blank display: {blank_grade}",
+    )
+
+
 def test_idle_camera_grade_rejects_unlogged_alerts() -> None:
     idle = [camera_observation(float(second), alert=False) for second in range(300)]
     assert_true(grade_idle(idle, 0.0, 300.0)["result"] == "PASS", "visible idle display failed")
@@ -5825,6 +5923,7 @@ def main() -> int:
     test_replay_camera_abstains_for_unreadable_or_ambiguous_answers()
     test_replay_semantic_consensus_counts_unreadable_samples()
     test_replay_consensus_grades_stable_windows_not_planned_transitions()
+    test_replay_camera_excludes_unsupported_muted_palette()
     test_idle_camera_grade_rejects_unlogged_alerts()
     test_post_upload_settle_is_interruptible_and_skippable()
     test_csv_export_retries_busy_admission_then_preserves_grading()

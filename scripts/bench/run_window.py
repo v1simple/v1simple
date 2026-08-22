@@ -60,13 +60,16 @@ from bench_identity import (
 )
 from camera_artifacts import (
     build_capture_manifest,
-    camera_result_view,
     publish_capture_manifest,
     publish_grade,
     replay_timing_anchor,
 )
 from camera_capture import CameraCapture
-from camera_contract import camera_grade_required as contract_grade_required
+from camera_contract import (
+    REPLAY_MUTE_EVENT_STATE as DETECTOR_MUTE_EVENT_STATE,
+    REPLAY_MUTE_SIGNAL_SCHEMA,
+    camera_grade_required as contract_grade_required,
+)
 from camera_grade import grade_camera
 from camera_preflight import run_camera_preflight
 
@@ -93,8 +96,6 @@ RECONNECT_LEDGER_NAME = "handshake_ledger_preflight.jsonl"
 RECONNECT_LOG_NAME = "v1replay_reconnect_preflight.log"
 REPLAY_VOLUME_SIGNAL_SCHEMA = 1
 DETECTOR_VOLUME_EVENT_STATE = "detector_volume"
-REPLAY_MUTE_SIGNAL_SCHEMA = 1
-DETECTOR_MUTE_EVENT_STATE = "detector_mute"
 REPLAY_MODE_SIGNAL_SCHEMA = 1
 DETECTOR_MODE_EVENT_STATE = "detector_mode"
 REPLAY_STIMULUS_SCHEMA = 1
@@ -3419,6 +3420,19 @@ def _collect_live(
                             if isinstance(current_identity.get("traceability"), dict)
                             else {}
                         ),
+                        replay_mute_signal=(
+                            {
+                                "schema_version": REPLAY_MUTE_SIGNAL_SCHEMA,
+                                "events": emulator_result.get("detector_mute_events", []),
+                            }
+                            if args.suite == "replay"
+                            else None
+                        ),
+                        replay_completed=(
+                            emulator_result.get("completed") is True
+                            if args.suite == "replay"
+                            else None
+                        ),
                     )
                     manifest_path, _created = publish_capture_manifest(
                         camera.out_dir,
@@ -3441,16 +3455,10 @@ def _collect_live(
                     current_identity = identity_provider() if identity_provider is not None else {}
                 if camera_grade_required(args.suite, camera_result) and capture_manifest:
                     grader_fingerprint = str(current_identity.get("grader_fingerprint") or "")
-                    grade_camera_result = camera_result_view(capture_manifest)
                     camera_grade = grade_camera(
-                        suite=args.suite,
                         camera_dir=camera.out_dir,
-                        camera_result=grade_camera_result,
                         capture_manifest=capture_manifest,
                         grader_fingerprint=grader_fingerprint,
-                        emulator_result=emulator_result,
-                        encounter_csv_path=encounter_csv_path,
-                        timeline_start_video_s=timeline_start_video_s,
                     )
                     grade_path, _created = publish_grade(
                         camera.out_dir,

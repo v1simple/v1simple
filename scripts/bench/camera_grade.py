@@ -32,6 +32,7 @@ from camera_artifacts import (
     load_capture_manifest,
     publish_grade,
     resolve_manifest_artifact,
+    verify_capture_files,
 )
 from camera_contract import (
     EXPECTED_CAMERA_NAME,
@@ -47,8 +48,10 @@ from camera_contract import (
     MIN_FREQUENCY_MATCH_RATIO,
     MIN_TIMELINE_MATCH_RATIO,
     REGISTRATION_SOURCE_FIELDS,
+    ReplayMuteSignalError,
     SUPPORTED_GRADER_VIDEO_SIZES,
     camera_evidence_contract,
+    normalize_replay_mute_signal,
 )
 
 
@@ -158,6 +161,47 @@ class CameraRegistrationError(RuntimeError):
         }
 
 
+def _mute_events(signal: dict[str, Any]) -> tuple[tuple[float, bool], ...]:
+    return tuple(
+        (float(event["replaySecond"]), bool(event["muted"]))
+        for event in signal["events"]
+    )
+
+
+def _mute_state_at(replay_time_s: float, events: tuple[tuple[float, bool], ...]) -> bool:
+    muted = False
+    for event_time_s, event_muted in events:
+        if event_time_s > replay_time_s:
+            break
+        muted = event_muted
+    return muted
+
+
+def _mute_semantics_unsupported(
+    replay_time_s: float,
+    events: tuple[tuple[float, bool], ...],
+) -> bool:
+    return _mute_state_at(replay_time_s, events) or _mute_transition_nearby(
+        replay_time_s,
+        events,
+    )
+
+
+def _mute_transition_nearby(
+    replay_time_s: float,
+    events: tuple[tuple[float, bool], ...],
+) -> bool:
+    prior_state = False
+    for event_time_s, event_muted in events:
+        if (
+            event_muted != prior_state
+            and abs(replay_time_s - event_time_s) <= CONSENSUS_RADIUS_SECONDS
+        ):
+            return True
+        prior_state = event_muted
+    return False
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -167,7 +211,9 @@ def _orange(red: int, green: int, blue: int) -> bool:
 
 
 def _visible(red: int, green: int, blue: int) -> bool:
-    return max(red, green, blue) >= 35 and max(red, green, blue) - min(red, green, blue) >= 12
+    # The intentional muted palette is neutral gray (roughly RGB 49/48/49),
+    # while the fixed-profile display background remains below this threshold.
+    return max(red, green, blue) >= 35
 
 
 def _count_pixels(
@@ -715,6 +761,7 @@ def find_replay_alignment(
     observations: list[FrameObservation],
     encounters: list[EncounterObservation],
     hint_s: float | None,
+    replay_mute_events: tuple[tuple[float, bool], ...] = (),
 ) -> dict[str, Any]:
     if hint_s is None or not math.isfinite(hint_s):
         return {
@@ -728,7 +775,23 @@ def find_replay_alignment(
     adjustment_steps = round(MAX_REPLAY_ALIGNMENT_ADJUSTMENT_S * FRAME_RATE)
     candidates = [hint_s + delta / FRAME_RATE for delta in range(-adjustment_steps, adjustment_steps + 1)]
     checkpoint_count = round((ALIGNMENT_END_SECONDS - 1.0) * FRAME_RATE) + 1
-    checkpoints = [1.0 + index / FRAME_RATE for index in range(checkpoint_count)]
+    all_checkpoints = [1.0 + index / FRAME_RATE for index in range(checkpoint_count)]
+    checkpoints = [
+        replay_time
+        for replay_time in all_checkpoints
+        if not _mute_semantics_unsupported(replay_time, replay_mute_events)
+    ]
+    mute_checkpoints_excluded = len(all_checkpoints) - len(checkpoints)
+    if not checkpoints:
+        return {
+            "result": "INCONCLUSIVE",
+            "selection_basis": "alert_rest_only",
+            "mute_checkpoints_excluded": mute_checkpoints_excluded,
+            "diagnostic": {
+                "code": "alignment_coverage_insufficient",
+                "message": "replay camera alignment has no unmuted checkpoints",
+            },
+        }
     scored: list[dict[str, Any]] = []
     for offset in candidates:
         active_matches = 0
@@ -817,6 +880,7 @@ def find_replay_alignment(
         "equivalent_candidate_count": len(equivalent),
         "equivalent_offset_range_seconds": [round(equivalent_min, 3), round(equivalent_max, 3)],
         "coverage_ratio": round(float(selected["coverage"]), 6),
+        "mute_checkpoints_excluded": mute_checkpoints_excluded,
         "boundary_hit": boundary,
         "diagnostic": diagnostic,
     }
@@ -826,9 +890,15 @@ def find_replay_offset(
     observations: list[FrameObservation],
     encounters: list[EncounterObservation],
     hint_s: float | None,
+    replay_mute_events: tuple[tuple[float, bool], ...] = (),
 ) -> tuple[float, float]:
     """Compatibility wrapper for callers that still expect the old tuple."""
-    alignment = find_replay_alignment(observations, encounters, hint_s)
+    alignment = find_replay_alignment(
+        observations,
+        encounters,
+        hint_s,
+        replay_mute_events,
+    )
     if alignment.get("result") != "PASS":
         diagnostic = alignment.get("diagnostic") or {}
         raise RuntimeError(str(diagnostic.get("message") or "replay camera alignment is inconclusive"))
@@ -1001,13 +1071,15 @@ def _encounter_comparison(summary: dict[str, Any]) -> dict[str, Any]:
 
 def _stable_encounters(
     encounters: list[EncounterObservation],
-) -> tuple[list[EncounterObservation], int]:
+    replay_mute_events: tuple[tuple[float, bool], ...] = (),
+) -> tuple[list[EncounterObservation], int, int]:
     """Return log rows whose consensus window contains no planned transition.
 
-    Transition selection depends only on the encounter log. Camera answers do
-    not move, add, or remove comparison windows. This keeps semantic grading
-    independent from alignment while avoiding an unavoidable old/new tie when
-    a symmetric camera window is centered on a planned display state change.
+    Transition selection depends only on the encounter log and recorded mute
+    plan. Camera answers do not move, add, or remove comparison windows. This
+    keeps semantic grading independent from alignment while avoiding an
+    unavoidable old/new tie when a symmetric camera window is centered on a
+    planned display state change.
     """
     boundaries: list[float] = []
     previous_state: tuple[int, int, str] | None = None
@@ -1025,7 +1097,7 @@ def _stable_encounters(
             boundaries.append(encounter.time_s)
         previous_state = state
 
-    stable = [
+    transition_safe = [
         encounter
         for encounter in encounters
         if encounter.event == "SAMPLE"
@@ -1034,7 +1106,16 @@ def _stable_encounters(
             for boundary in boundaries
         )
     ]
-    return stable, len(encounters) - len(stable)
+    stable = [
+        encounter
+        for encounter in transition_safe
+        if not _mute_semantics_unsupported(encounter.time_s, replay_mute_events)
+    ]
+    return (
+        stable,
+        len(encounters) - len(transition_safe),
+        len(transition_safe) - len(stable),
+    )
 
 
 def _gate(result: bool, **measurements: Any) -> dict[str, Any]:
@@ -1049,8 +1130,14 @@ def grade_replay(
     observations: list[FrameObservation],
     encounters: list[EncounterObservation],
     start_hint_s: float | None,
+    replay_mute_events: tuple[tuple[float, bool], ...] = (),
 ) -> dict[str, Any]:
-    alignment = find_replay_alignment(observations, encounters, start_hint_s)
+    alignment = find_replay_alignment(
+        observations,
+        encounters,
+        start_hint_s,
+        replay_mute_events,
+    )
     diagnostics: list[dict[str, Any]] = []
     if alignment.get("result") != "PASS":
         if isinstance(alignment.get("diagnostic"), dict):
@@ -1069,7 +1156,10 @@ def grade_replay(
         }
 
     offset_s = float(alignment["selected_video_offset_seconds"])
-    stable_encounters, transition_rows_excluded = _stable_encounters(encounters)
+    stable_encounters, transition_rows_excluded, mute_rows_excluded = _stable_encounters(
+        encounters,
+        replay_mute_events,
+    )
     summaries = [
         _encounter_consensus(observations, encounter, offset_s)
         for encounter in stable_encounters
@@ -1080,6 +1170,20 @@ def grade_replay(
     direction_summaries = [item for item in summaries if item["direction"] is not None]
     visible_frames = sum(item.visible_pixels >= 80 for item in observations)
     visible_ratio = visible_frames / len(observations) if observations else 0.0
+    muted_visibility_observations = [
+        item
+        for item in observations
+        if _mute_state_at(item.time_s - offset_s, replay_mute_events)
+        and not _mute_transition_nearby(item.time_s - offset_s, replay_mute_events)
+    ]
+    muted_visible_frames = sum(
+        item.visible_pixels >= 80 for item in muted_visibility_observations
+    )
+    muted_visible_ratio = (
+        muted_visible_frames / len(muted_visibility_observations)
+        if muted_visibility_observations
+        else 0.0
+    )
     ambiguous = sum(
         item["alert"] is None
         or item["frequency"] is None
@@ -1093,6 +1197,7 @@ def grade_replay(
             bool(stable_encounters),
             compared=len(stable_encounters),
             transition_rows_excluded=transition_rows_excluded,
+            mute_rows_excluded=mute_rows_excluded,
             transition_guard_seconds=CONSENSUS_RADIUS_SECONDS,
         ),
         "display_readable": _gate(
@@ -1123,12 +1228,31 @@ def grade_replay(
             maximum=MAX_AMBIGUOUS_ENCOUNTER_RATIO,
         ),
     }
+    if muted_visibility_observations:
+        gates["muted_display_readable"] = _gate(
+            muted_visible_ratio >= MIN_DISPLAY_VISIBLE_RATIO,
+            visible=muted_visible_frames,
+            compared=len(muted_visibility_observations),
+            ratio=round(muted_visible_ratio, 4),
+            minimum=MIN_DISPLAY_VISIBLE_RATIO,
+        )
     if gates["display_readable"]["result"] != "PASS":
         diagnostics.append(
             _diagnostic(
                 "display_unreadable",
                 "too few replay camera frames contain a readable display",
                 **gates["display_readable"],
+            )
+        )
+    if (
+        "muted_display_readable" in gates
+        and gates["muted_display_readable"]["result"] != "PASS"
+    ):
+        diagnostics.append(
+            _diagnostic(
+                "muted_display_unreadable",
+                "the display is unreadable during the stable muted interval",
+                **gates["muted_display_readable"],
             )
         )
     for gate_name, code, message in (
@@ -1231,15 +1355,22 @@ def grade_replay(
 
 def grade_camera(
     *,
-    suite: str,
     camera_dir: Path,
-    camera_result: dict[str, Any],
     capture_manifest: dict[str, Any],
     grader_fingerprint: str,
-    emulator_result: dict[str, Any],
-    encounter_csv_path: Path | None,
-    timeline_start_video_s: float | None,
 ) -> dict[str, Any]:
+    camera_result = camera_result_view(capture_manifest)
+    capture_identity = capture_manifest["identity"]
+    suite = str(capture_identity["suite"])
+    timing_anchor = capture_identity.get("timing_anchor")
+    timeline_start_video_s = (
+        timing_anchor.get("video_seconds") if isinstance(timing_anchor, dict) else None
+    )
+    encounter_csv_path = resolve_manifest_artifact(
+        camera_dir,
+        capture_manifest,
+        "encounter_csv",
+    )
     capture_id = str(capture_manifest.get("capture_id") or "")
     payload: dict[str, Any] = {
         "schema_version": GRADE_SCHEMA_VERSION,
@@ -1262,6 +1393,7 @@ def grade_camera(
     }
     if suite == "replay":
         payload["encounter_comparisons"] = []
+    replay_mute_events: tuple[tuple[float, bool], ...] = ()
     try:
         if camera_result.get("result") != "CAPTURED":
             raise RuntimeError("camera capture did not complete")
@@ -1275,6 +1407,46 @@ def grade_camera(
                 }
             ]
             return payload
+        if suite == "replay":
+            replay_mute_signal = capture_identity.get("replay_mute_signal")
+            if replay_mute_signal is None:
+                payload["diagnostics"] = [
+                    {
+                        "code": "replay_mute_signal_unowned",
+                        "message": "replay camera grade requires a capture-owned mute schedule",
+                    }
+                ]
+                return payload
+            try:
+                normalized_mute_signal = normalize_replay_mute_signal(replay_mute_signal)
+            except ReplayMuteSignalError as exc:
+                safe_error = sanitize_artifact_value(str(exc), run_dir=camera_dir)
+                payload["diagnostics"] = [
+                    {
+                        "code": "replay_mute_signal_invalid",
+                        "message": safe_error,
+                    }
+                ]
+                return payload
+            payload["replay_mute_signal"] = normalized_mute_signal
+            replay_mute_events = _mute_events(normalized_mute_signal)
+            replay_completed = capture_identity.get("replay_completed")
+            if replay_completed is not True:
+                payload["diagnostics"] = [
+                    {
+                        "code": (
+                            "replay_completion_unowned"
+                            if replay_completed is None
+                            else "replay_incomplete"
+                        ),
+                        "message": (
+                            "replay camera grade requires capture-owned completion"
+                            if replay_completed is None
+                            else "replay emulator did not complete"
+                        ),
+                    }
+                ]
+                return payload
         payload["recognizer"] = {
             "kind": "seven_segment_topology",
             "reference_images": False,
@@ -1285,6 +1457,13 @@ def grade_camera(
                 "on_minimum": SEGMENT_ON_THRESHOLD,
             },
         }
+        if suite == "replay":
+            payload["recognizer"].update(
+                {
+                    "supported_display_states": ["unmuted"],
+                    "unsupported_display_states": ["muted"],
+                }
+            )
         validate_camera_profile(camera_result)
         video_name = str(camera_result.get("video") or "")
         video_path = camera_dir / video_name
@@ -1306,12 +1485,17 @@ def grade_camera(
         payload["sample_count"] = len(observations)
         payload["video"] = video_name
         if suite == "replay":
-            if not emulator_result.get("completed"):
-                raise RuntimeError("replay emulator did not complete")
             if encounter_csv_path is None or not encounter_csv_path.is_file():
                 raise RuntimeError("replay encounter CSV is missing")
             encounters = load_encounters(encounter_csv_path)
-            payload.update(grade_replay(observations, encounters, timeline_start_video_s))
+            payload.update(
+                grade_replay(
+                    observations,
+                    encounters,
+                    timeline_start_video_s,
+                    replay_mute_events,
+                )
+            )
             payload["encounter_csv"] = encounter_csv_path.name
             payload["encounter_observations"] = len(encounters)
         elif suite == "display":
@@ -1340,15 +1524,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=["core", "display", "replay"], required=True)
     parser.add_argument("--camera-dir", required=True)
-    parser.add_argument("--encounter-csv", default="")
-    parser.add_argument(
-        "--timeline-start-video-seconds",
-        "--emulator-start-video-seconds",
-        dest="timeline_start_video_seconds",
-        type=float,
-        default=None,
-        help="Replay/display timeline start on the camera video's clock",
-    )
     return parser.parse_args()
 
 
@@ -1356,30 +1531,14 @@ def main() -> int:
     args = parse_args()
     camera_dir = Path(args.camera_dir).resolve()
     capture_manifest = load_capture_manifest(camera_dir / CAPTURE_MANIFEST_NAME)
-    camera_result = camera_result_view(capture_manifest)
+    if capture_manifest["identity"]["suite"] != args.suite:
+        raise RuntimeError("requested camera suite does not match the capture identity")
+    verify_capture_files(camera_dir, capture_manifest)
     grader_fingerprint = current_grader_fingerprint()
-    encounter_path = (
-        Path(args.encounter_csv).resolve()
-        if args.encounter_csv
-        else resolve_manifest_artifact(camera_dir, capture_manifest, "encounter_csv")
-    )
-    timing_anchor = capture_manifest.get("timing_anchor")
-    timeline_start = (
-        timing_anchor.get("video_seconds") if isinstance(timing_anchor, dict) else None
-    )
     grade = grade_camera(
-        suite=args.suite,
         camera_dir=camera_dir,
-        camera_result=camera_result,
         capture_manifest=capture_manifest,
         grader_fingerprint=grader_fingerprint,
-        emulator_result={"completed": True},
-        encounter_csv_path=encounter_path,
-        timeline_start_video_s=(
-            args.timeline_start_video_seconds
-            if args.timeline_start_video_seconds is not None
-            else timeline_start
-        ),
     )
     publish_grade(camera_dir, capture_manifest, grader_fingerprint, grade)
     print(json.dumps(grade, indent=2))

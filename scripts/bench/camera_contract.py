@@ -8,10 +8,13 @@ independent same-window log and may affect the bench verdict.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+import math
+from typing import Any, Mapping
 
 
 CAMERA_CONTRACT_SCHEMA_VERSION = 2
+REPLAY_MUTE_SIGNAL_SCHEMA = 1
+REPLAY_MUTE_EVENT_STATE = "detector_mute"
 
 EXPECTED_CAMERA_NAME = "Global Shutter Camera"
 EXPECTED_CAMERA_PROFILE = {
@@ -39,6 +42,54 @@ MIN_DIRECTION_MATCH_RATIO = 0.85
 MIN_ALERT_COMPARISONS = 20
 MIN_FREQUENCY_COMPARISONS = 20
 MIN_DIRECTION_COMPARISONS = 12
+
+
+class ReplayMuteSignalError(ValueError):
+    """The replay mute schedule is missing or cannot be interpreted exactly."""
+
+
+def normalize_replay_mute_signal(signal: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the exact canonical mute schedule used by capture and grading."""
+    if not isinstance(signal, Mapping):
+        raise ReplayMuteSignalError("replay mute signal is missing")
+    if (
+        type(signal.get("schema_version")) is not int
+        or signal["schema_version"] != REPLAY_MUTE_SIGNAL_SCHEMA
+    ):
+        raise ReplayMuteSignalError("replay mute signal has an unsupported schema")
+    events = signal.get("events")
+    if not isinstance(events, list):
+        raise ReplayMuteSignalError("replay mute signal events must be a list")
+
+    normalized: list[dict[str, Any]] = []
+    previous_second = -1.0
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping) or event.get("state") != REPLAY_MUTE_EVENT_STATE:
+            raise ReplayMuteSignalError(f"replay mute event {index} has an invalid state")
+        raw_second = event.get("replaySecond")
+        if isinstance(raw_second, bool) or not isinstance(raw_second, (int, float)):
+            raise ReplayMuteSignalError(f"replay mute event {index} has an invalid time")
+        replay_second = float(raw_second)
+        if (
+            not math.isfinite(replay_second)
+            or replay_second < 0
+            or replay_second < previous_second
+        ):
+            raise ReplayMuteSignalError(f"replay mute event {index} is not ordered")
+        muted = event.get("muted")
+        if type(muted) is not bool:
+            raise ReplayMuteSignalError(f"replay mute event {index} has an invalid muted value")
+        normalized.append(
+            {
+                "state": REPLAY_MUTE_EVENT_STATE,
+                "replaySecond": (
+                    int(replay_second) if replay_second.is_integer() else replay_second
+                ),
+                "muted": muted,
+            }
+        )
+        previous_second = replay_second
+    return {"schema_version": REPLAY_MUTE_SIGNAL_SCHEMA, "events": normalized}
 
 
 _SUITE_CONTRACTS: dict[str, dict[str, Any]] = {

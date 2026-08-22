@@ -34,7 +34,9 @@ enum BenchScenario {
     }
 
     private static func muted(at second: Int) -> Bool {
-        return detectorMuteCheckpoints.last(where: { $0.replaySecond <= second })?.muted ?? false
+        return detectorMuteCheckpoints.last(where: {
+            $0.replaySecond <= Double(second)
+        })?.muted ?? false
     }
 
     private static func detectorMode(at second: Int) -> V1.ModeGlyph? {

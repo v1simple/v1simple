@@ -13,7 +13,12 @@ from typing import Any, Mapping
 
 from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
 from bench_identity import canonical_bytes
-from camera_contract import EXPECTED_CAMERA_NAME, camera_evidence_contract
+from camera_contract import (
+    EXPECTED_CAMERA_NAME,
+    ReplayMuteSignalError,
+    camera_evidence_contract,
+    normalize_replay_mute_signal,
+)
 
 
 CAPTURE_MANIFEST_SCHEMA_VERSION = 2
@@ -107,6 +112,8 @@ def build_capture_manifest(
     encounter_csv_path: Path | None,
     timing_anchor: Mapping[str, Any] | None,
     traceability: Mapping[str, Any] | None = None,
+    replay_mute_signal: Mapping[str, Any] | None = None,
+    replay_completed: bool | None = None,
 ) -> dict[str, Any]:
     camera_dir = camera_dir.resolve()
     safe_camera_result = sanitize_artifact_value(dict(camera_result), run_dir=camera_dir)
@@ -169,6 +176,17 @@ def build_capture_manifest(
         "timing_anchor": normalized_anchor,
         "artifacts": artifacts,
     }
+    if replay_mute_signal is not None:
+        if suite != "replay":
+            raise CameraArtifactIncompatible("mute schedule is only valid for replay captures")
+        try:
+            identity["replay_mute_signal"] = normalize_replay_mute_signal(replay_mute_signal)
+        except ReplayMuteSignalError as exc:
+            raise CameraArtifactIncompatible(str(exc)) from exc
+    if replay_completed is not None:
+        if suite != "replay" or type(replay_completed) is not bool:
+            raise CameraArtifactIncompatible("replay completion is invalid for this capture")
+        identity["replay_completed"] = replay_completed
     capture_id = hashlib.sha256(canonical_bytes(identity)).hexdigest()
     capture = {
         "result": safe_camera_result.get("result"),
@@ -230,6 +248,24 @@ def validate_capture_manifest(manifest: Mapping[str, Any]) -> None:
         raise CameraArtifactError("camera capture manifest has no identity")
     if identity.get("schema_version") != 1 or identity.get("suite") not in {"core", "display", "replay"}:
         raise CameraArtifactError("camera capture manifest has an invalid identity contract")
+    camera = identity.get("camera")
+    if not isinstance(camera, dict) or not isinstance(camera.get("profile"), dict):
+        raise CameraArtifactError("camera capture manifest has an invalid camera identity")
+    replay_completed = identity.get("replay_completed")
+    if replay_completed is not None and (
+        identity.get("suite") != "replay" or type(replay_completed) is not bool
+    ):
+        raise CameraArtifactError("camera capture manifest has invalid replay completion")
+    replay_mute_signal = identity.get("replay_mute_signal")
+    if replay_mute_signal is not None:
+        if identity.get("suite") != "replay":
+            raise CameraArtifactError("non-replay camera capture owns a mute schedule")
+        try:
+            normalized_mute_signal = normalize_replay_mute_signal(replay_mute_signal)
+        except ReplayMuteSignalError as exc:
+            raise CameraArtifactError(str(exc)) from exc
+        if replay_mute_signal != normalized_mute_signal:
+            raise CameraArtifactError("camera capture mute schedule is not canonical")
     artifacts = identity.get("artifacts")
     if not isinstance(artifacts, dict):
         raise CameraArtifactError("camera capture manifest has no artifact ownership")
@@ -265,6 +301,8 @@ def validate_capture_manifest(manifest: Mapping[str, Any]) -> None:
     expected = hashlib.sha256(canonical_bytes(identity)).hexdigest()
     if manifest.get("capture_id") != expected:
         raise CameraArtifactError("camera capture_id does not match its immutable identity")
+    if manifest.get("timing_anchor") != identity.get("timing_anchor"):
+        raise CameraArtifactError("camera capture timing anchor is not owned by its identity")
 
 
 def load_capture_manifest(path: Path) -> dict[str, Any]:
@@ -321,11 +359,37 @@ def capture_input_hashes(manifest: Mapping[str, Any]) -> dict[str, str]:
 
 
 def camera_result_view(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    validate_capture_manifest(manifest)
     capture = manifest.get("capture")
     if not isinstance(capture, dict):
         raise CameraArtifactError("camera capture manifest has no capture view")
+    identity = manifest["identity"]
+    artifacts = identity["artifacts"]
+    camera = identity["camera"]
+
+    def artifact_name(field: str) -> str:
+        entry = artifacts.get(field)
+        return Path(str(entry.get("path") or "")).name if isinstance(entry, dict) else ""
+
     result = dict(capture)
-    result["timing_anchor"] = manifest.get("timing_anchor") or {}
+    result.update(
+        {
+            "result": "CAPTURED",
+            "video": artifact_name("video"),
+            "video_duration_seconds": artifacts["video"].get("duration_seconds"),
+            "session_start_still": artifact_name("session_start_still"),
+            "bright_still": artifact_name("bright_still"),
+            "dim_still": artifact_name("dim_still"),
+            "frame_timing": artifact_name("frame_timing"),
+            "preflight_frame_timing": artifact_name("preflight_frame_timing"),
+            "video_timing_verification": artifact_name("video_timing_verification"),
+            "camera_name": camera.get("name"),
+            "camera_device_index": camera.get("device_index"),
+            "profile": camera.get("profile") or {},
+            "expected_duration_seconds": identity.get("expected_duration_seconds"),
+            "timing_anchor": identity.get("timing_anchor") or {},
+        }
+    )
     result["evidence_contract"] = manifest.get("evidence_contract") or {}
     result["preflight"] = manifest.get("preflight") or {}
     return result
@@ -342,6 +406,7 @@ def validate_grade_ownership(
     manifest: Mapping[str, Any],
     grader_fingerprint: str,
 ) -> None:
+    validate_capture_manifest(manifest)
     if grade.get("schema_version") != GRADE_SCHEMA_VERSION or grade.get("kind") != "bench_camera_grade":
         raise CameraArtifactError("invalid strict camera grade schema")
     if grade.get("capture_id") != manifest.get("capture_id"):

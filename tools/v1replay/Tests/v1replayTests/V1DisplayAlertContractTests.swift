@@ -394,7 +394,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
 
         let control = V1.Session().controlState
         for checkpoint in expected {
-            let sampleIndex = checkpoint.replaySecond * BenchScenario.cadenceHz
+            let sampleIndex = Int(checkpoint.replaySecond * Double(BenchScenario.cadenceHz))
             let sample = encounter.samples[sampleIndex]
             XCTAssertEqual(encounter.detectorMuteCheckpoint(at: sampleIndex), checkpoint)
             XCTAssertEqual(sample.muted, checkpoint.muted)
@@ -422,6 +422,35 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertTrue(encounter.samples[(189 * 3)...].allSatisfy { !$0.muted })
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 185 * 3 + 1))
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 189 * 3 + 1))
+    }
+
+    func testDetectorMuteCheckpointPreservesFractionalReplayOffset() {
+        let encounter = Encounter(
+            origin: .externalInput,
+            samples: [
+                TimedSample(
+                    offset: 20.5,
+                    phase: "external",
+                    muted: false,
+                    alerts: [],
+                    sourceIndex: 0
+                ),
+                TimedSample(
+                    offset: 20.9,
+                    phase: "external",
+                    muted: true,
+                    alerts: [],
+                    sourceIndex: 1
+                ),
+            ]
+        )
+
+        let checkpoint = encounter.detectorMuteCheckpoint(at: 1)
+        XCTAssertEqual(checkpoint?.replaySecond, 20.9)
+        XCTAssertEqual(
+            checkpoint?.machineEventLine,
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":20.9,\"muted\":true}"
+        )
     }
 
     func testBenchDetectorModeCheckpointsApplyOnceAndReachLiteralFrames() throws {

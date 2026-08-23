@@ -79,9 +79,6 @@ boot, the firmware keeps the newest 20 generated CSV files in each of `/perf`,
 `/alp`, and `/encounters`. Files with other names are never removed by this
 retention policy.
 
-The non-destructive setup and acceptance criteria for comparing a 32 KB FAT32
-allocation unit are documented in [`docs/SD_STORAGE.md`](docs/SD_STORAGE.md).
-
 ## Verify a change
 
 Install and verify the fail-closed privacy boundary once per clone before making

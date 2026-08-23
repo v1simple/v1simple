@@ -182,6 +182,40 @@ def test_replay_allows_a_superseded_session_without_samples() -> None:
         assert_true(len(sessions) == 2, f"empty superseded session was retained: {sessions}")
 
 
+def test_raw_summary_reports_work_peaks_health_and_span() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "perf.csv"
+        write_replay_csv(path)
+        text = path.read_text(encoding="utf-8")
+        text = text.replace(
+            "millis,utc,prioritySelectRowFlag",
+            "millis,utc,rx,parseOK,displayUpdates,loopMax_us,bleProcessMax_us,"
+            "dispMax_us,sdMax_us,perfDrop,displaySkips,dmaFreeMin,prioritySelectRowFlag",
+        )
+        text = text.replace(
+            "2026-08-23T12:00:00Z,",
+            "2026-08-23T12:00:00Z,10,20,30,4000,5000,6000,7000,0,0,81920,",
+        )
+        path.write_text(text, encoding="utf-8")
+
+        lines = import_perf_csv.render_perf_summary(path, "replay")
+        assert_true(lines[0] == "metrics: 4 samples over 0.1s", str(lines))
+        assert_true(
+            lines[1] == "work: rx +0 | parsed +0 | alerts +708 | display updates +0",
+            str(lines),
+        )
+        assert_true(
+            lines[2] == "peaks: loop 4.0ms | BLE 5.0ms | display 6.0ms | SD 7.0ms",
+            str(lines),
+        )
+        assert_true(
+            lines[3]
+            == "health: queue drops +0 | parse failures +0 | perf drops +0 | "
+            "display skips +0 | DMA low 80.0KiB",
+            str(lines),
+        )
+
+
 def test_terminal_session_without_samples_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as raw:
         path = Path(raw) / "perf.csv"
@@ -259,6 +293,7 @@ def main() -> int:
     test_truncated_and_duplicate_rows_are_rejected()
     test_replay_pass_is_direct_and_writes_nothing()
     test_replay_allows_a_superseded_session_without_samples()
+    test_raw_summary_reports_work_peaks_health_and_span()
     test_terminal_session_without_samples_is_rejected()
     test_replay_semantic_failure_returns_two()
     test_replay_collection_failures_return_three()

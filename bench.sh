@@ -213,6 +213,46 @@ print("\t".join((result, kind, message)))
 PY
 }
 
+print_window_summary() {
+  python3 - "$1" "$2" "$ROOT_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+result_path = Path(sys.argv[1]).resolve()
+suite = sys.argv[2]
+root = Path(sys.argv[3]).resolve()
+sys.path.insert(0, str(root / "tools"))
+
+from import_perf_csv import render_perf_summary
+
+payload = json.loads(result_path.read_text(encoding="utf-8"))
+artifact = payload.get("artifacts", {}).get("perf_csv", {})
+relative_path = str(artifact.get("path") or "")
+if artifact.get("status") != "captured" or Path(relative_path).name != relative_path:
+    raise RuntimeError("window result has no captured perf CSV")
+csv_path = (result_path.parent / relative_path).resolve()
+csv_path.relative_to(result_path.parent)
+
+for line in render_perf_summary(csv_path, suite):
+    print(f"[bench] {suite} {line}")
+
+camera = payload.get("camera")
+if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
+    stats = camera.get("recorder_stats") or {}
+    probe = camera.get("video_probe") or {}
+    frames = stats.get("frames_appended")
+    fps = probe.get("average_frame_rate")
+    capture_drops = stats.get("capture_drops")
+    writer_drops = stats.get("writer_backpressure_drops")
+    if all(isinstance(value, (int, float)) for value in (frames, fps, capture_drops, writer_drops)):
+        print(
+            f"[bench] {suite} camera: {int(frames):,} frames @ {float(fps):.1f}fps"
+            f" | capture drops {int(capture_drops)} | writer drops {int(writer_drops)}"
+        )
+PY
+}
+
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
 SUITES=(core display replay)
 [[ "$RUN_REPLAY" -eq 1 ]] && SUITES=(replay)
@@ -268,6 +308,9 @@ for suite in "${SUITES[@]}"; do
   IFS=$'\t' read -r result failure_kind reason \
     < <(read_window_result "$step_dir/window_result.json" 2>/dev/null)
   if [[ "$result" == "PASS" && "$runner_status" -eq 0 ]]; then
+    if ! print_window_summary "$step_dir/window_result.json" "$suite"; then
+      printf '%s: metrics summary unavailable\n' "$suite" >> "$RUN_LOG"
+    fi
     continue
   fi
 

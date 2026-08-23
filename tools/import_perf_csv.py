@@ -445,6 +445,92 @@ def validate_perf_csv(path: Path, suite: str, segment: str = "last") -> tuple[bo
     return True, f"raw {suite} perf CSV segment {index} is structurally valid"
 
 
+def _summary_rows(path: Path, suite: str, segment: str) -> list[dict[str, int]]:
+    sessions = load_sessions(path)
+    if suite == "replay":
+        if len(sessions) < 2:
+            raise CsvEvidenceError(
+                "replay CSV requires QSTART and replacement-connection sessions"
+            )
+        return [*sessions[-2][1], *sessions[-1][1]]
+    _meta, rows, _index = choose_session(sessions, segment)
+    return rows
+
+
+def _counter_delta(rows: list[dict[str, int]], column: str) -> int | None:
+    if not rows or column not in rows[0] or column not in rows[-1]:
+        return None
+    return int(rows[-1][column]) - int(rows[0][column])
+
+
+def _peak(rows: list[dict[str, int]], column: str) -> int | None:
+    values = [int(row[column]) for row in rows if column in row]
+    return max(values) if values else None
+
+
+def _format_milliseconds(microseconds: int) -> str:
+    return f"{microseconds / 1000.0:.1f}ms"
+
+
+def render_perf_summary(
+    path: Path,
+    suite: str,
+    segment: str = "last",
+) -> list[str]:
+    """Render a compact, non-gating view of the validated raw perf evidence."""
+    rows = _summary_rows(path, suite, segment)
+    _validate_row_timing(rows, None)
+    duration_seconds = _duration_ms(rows) / 1000.0
+    lines = [f"metrics: {len(rows)} samples over {duration_seconds:.1f}s"]
+
+    work_columns = (
+        ("rx", "rx"),
+        ("parseOK", "parsed"),
+        ("alertTablePublishes", "alerts"),
+        ("displayUpdates", "display updates"),
+    )
+    work = [
+        f"{label} {delta:+d}"
+        for column, label in work_columns
+        if (delta := _counter_delta(rows, column)) is not None
+    ]
+    if work:
+        lines.append("work: " + " | ".join(work))
+
+    peak_columns = (
+        ("loopMax_us", "loop"),
+        ("bleProcessMax_us", "BLE"),
+        ("dispMax_us", "display"),
+        ("sdMax_us", "SD"),
+    )
+    peaks = [
+        f"{label} {_format_milliseconds(value)}"
+        for column, label in peak_columns
+        if (value := _peak(rows, column)) is not None
+    ]
+    if peaks:
+        lines.append("peaks: " + " | ".join(peaks))
+
+    health_columns = (
+        ("qDrop", "queue drops"),
+        ("parseFail", "parse failures"),
+        ("perfDrop", "perf drops"),
+        ("displaySkips", "display skips"),
+    )
+    health = [
+        f"{label} {delta:+d}"
+        for column, label in health_columns
+        if (delta := _counter_delta(rows, column)) is not None
+    ]
+    dma_low = _peak(rows, "dmaFreeMin")
+    if dma_low is not None:
+        dma_low = min(int(row["dmaFreeMin"]) for row in rows if "dmaFreeMin" in row)
+        health.append(f"DMA low {dma_low / 1024.0:.1f}KiB")
+    if health:
+        lines.append("health: " + " | ".join(health))
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:

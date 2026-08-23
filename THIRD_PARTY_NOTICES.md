@@ -46,8 +46,8 @@ SOFTWARE.
 - `include/Segment7Font.h` contains V1SevenX, a renamed and modified Segment7
   font by Cedric Knight (2014), under the SIL Open Font License 1.1. See
   `licenses/OFL-1.1.txt`.
-- `tools/build_voice_clips.py` identifies the bundled voice clips as generated
-  with Piper's `en_US-libritts_r-medium` voice from LibriTTS-R, CC BY 4.0.
+- The bundled voice clips were generated with Piper's
+  `en_US-libritts_r-medium` voice from LibriTTS-R, CC BY 4.0.
   Attribution: Y. Koizumi et al., “LibriTTS-R: A Restored Multi-Speaker
   Text-to-Speech Corpus,” 2023. See `licenses/CC-BY-4.0.txt`; source:
   [OpenSLR 141](https://openslr.org/141/).

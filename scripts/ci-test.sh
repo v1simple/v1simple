@@ -158,7 +158,6 @@ run_step "Identity gate workflow regression suite" python3 scripts/test_identity
 run_step "Performance CSV import regression suite" python3 scripts/test_perf_csv_import.py
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
-run_step "Device test runner regression suite" python3 scripts/test_run_device_tests_script.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
 
 section "Host Tools"

@@ -250,6 +250,39 @@ def make_run(run: Path) -> None:
         encoding="utf-8",
     )
     make_video(replay / "camera.mkv")
+    (replay / "frame_timing.ndjson").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "frame_seq": 0,
+                "status": "dropped",
+                "host_capture_ns": 500_000,
+                "duration_ns": 0,
+                "drop_reason": "fixture_before_first_written_frame",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+        + "".join(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "frame_seq": frame_index,
+                    "status": "written",
+                    "host_capture_ns": 1_000_000 + frame_index * 5_000_000,
+                    "duration_ns": 5_000_000,
+                    "video_pts_value": frame_index * 150,
+                    "video_pts_timescale": 30_000,
+                    "source_pts_value": frame_index * 150,
+                    "source_pts_timescale": 30_000,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+            for frame_index in range(50)
+        ),
+        encoding="utf-8",
+    )
 
 
 def run_cli(*arguments: str) -> dict[str, object]:
@@ -652,6 +685,46 @@ def test_synthetic_indexes_queries_and_native_sheets() -> None:
                 investigator.resolve_artifact_selector(run, selector) is None,
                 f"recorded clock anchor does not resolve: {selector}",
             )
+        replay_timing = run_cli(
+            "records",
+            str(run),
+            "--path",
+            "replay/frame_timing.ndjson",
+            "--clock",
+            "host_monotonic_ns",
+            "--start",
+            str(replay_conversion["host_earliest_ns"] - 5_000_000),
+            "--end",
+            str(replay_conversion["host_latest_ns"] + 5_000_000),
+            "--limit",
+            "100",
+        )
+        replay_timing_pts = [
+            item["record"]["video_pts_value"]
+            / item["record"]["video_pts_timescale"]
+            for item in replay_timing["results"]
+            if "video_pts_value" in item["record"]
+            and "video_pts_timescale" in item["record"]
+        ]
+        replay_frames = run_cli(
+            "frames",
+            str(run),
+            "--path",
+            "replay/camera.mkv",
+            "--start",
+            str(min(replay_timing_pts)),
+            "--end",
+            str(max(replay_timing_pts)),
+        )
+        assert_true(
+            replay_timing["query"]["clock_conversion"]["method"] == "identity"
+            and replay_timing["truncated"] is False
+            and replay_timing["next_offset"] is None
+            and replay_timing_pts == [0.0, 0.005]
+            and [item["frame_index"] for item in replay_frames["results"]] == [0, 1],
+            "replay-offset event did not bridge through host time to native frames",
+        )
+        assert_selectors_resolve(run, replay_timing)
         frame_query = run_cli(
             "frames",
             str(run),
@@ -668,6 +741,57 @@ def test_synthetic_indexes_queries_and_native_sheets() -> None:
             and frame_query["results"],
             "frame query lost its raw-video identity",
         )
+        timing_bridge = run_cli(
+            "records",
+            str(run),
+            "--path",
+            "replay/frame_timing.ndjson",
+            "--clock",
+            "dut_us",
+            "--clock-segment",
+            "fixture-segment",
+            "--segment-instance",
+            "1",
+            "--start",
+            "1000",
+            "--end",
+            "1000",
+            "--context",
+            "1",
+            "--limit",
+            "1",
+        )
+        timing_conversion = timing_bridge["query"]["clock_conversion"]
+        timing_records = [
+            item["record"]
+            for item in timing_bridge["results"]
+            if "video_pts_value" in item["record"]
+            and "video_pts_timescale" in item["record"]
+        ]
+        timing_pts = [
+            item["video_pts_value"] / item["video_pts_timescale"]
+            for item in timing_records
+        ]
+        bridged_frames = run_cli(
+            "frames",
+            str(run),
+            "--path",
+            "replay/camera.mkv",
+            "--start",
+            str(min(timing_pts)),
+            "--end",
+            str(max(timing_pts)),
+        )
+        assert_true(
+            timing_conversion["method"] == "clock_alignment_affine"
+            and timing_conversion["uncertainty_ns"] > 0
+            and timing_bridge["returned_match_count"] == 1
+            and timing_bridge["returned_count"] == 3
+            and timing_pts == [0.0, 0.005]
+            and [item["frame_index"] for item in bridged_frames["results"]] == [0, 1],
+            "DUT event did not bridge through raw camera timing to native frames",
+        )
+        assert_selectors_resolve(run, timing_bridge)
         revision = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=ROOT,

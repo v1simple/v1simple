@@ -172,6 +172,31 @@ stages. Distinguish a request, API acceptance, firmware receipt, parser success,
 render commit, panel dispatch, and observed pixel; none automatically proves the
 next.
 
+Before synthesis, complete one bounded event-to-frame bridge for the single
+highest-ranked time-localized candidate, even if you ultimately reject that
+candidate. This is a causal-depth requirement, not an artifact-review quota.
+Select an unambiguous runner-provided `event_to_video_bridges` entry. Query its
+`status=verified` entry. First query the candidate's own raw artifact in its
+recorded clock with `records --path EVENT_PATH --clock EVENT_CLOCK --start --end`
+and any required clock-segment selectors. Preserve the complete
+`query.clock_conversion` and its mapping uncertainty; its `host_earliest_ns`
+through `host_latest_ns` is the complete converted host interval. Then query the
+entry's raw timing artifact in `host_monotonic_ns` across that host interval
+expanded on each side by exactly the entry's recorded `frame_margin_ns`; this
+margin brackets point-sampled camera rows and does not replace the candidate's
+original host interval or uncertainty. Preserve every returned
+`results[].host_time` interval. For the event, timing, and native-frame bounded
+queries, follow `next_offset` until it is null whenever `truncated` is true. Never
+derive or cite an enclosing video-PTS
+interval from incomplete results; report truncation as an exact missing edge.
+Derive video PTS only from complete returned raw timing records that contain both
+`video_pts_value` and `video_pts_timescale`, query every corresponding native
+frame row, and request a bounded video interval if supplied
+cells do not cover it. Cite the candidate record, recorded clock mapping, recorded
+timing verification, raw camera-timing records, and reviewed attached cells. If
+any edge is unavailable, name that exact missing edge in `coverage.notes` rather
+than substituting an approximate anchor or silently abandoning the bridge.
+
 Derive expected behavior independently from the recorded stimulus values and
 timing plus the owning protocol and renderer code. Never encode or assume fixed
 replay phases, a five-second start, a sample rate, fixed checkpoint values, or a

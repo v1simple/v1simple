@@ -1010,6 +1010,277 @@ def extract_video_evidence(
     return results, attachments, len(video_paths), omitted_paths
 
 
+def event_to_video_bridges(
+    run_dir: Path,
+    artifacts: Sequence[Mapping[str, Any]],
+    evidence_index: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return only recorded, verified, one-to-one event-to-video bridges."""
+    if not isinstance(evidence_index, Mapping):
+        return []
+
+    artifact_hashes = {
+        str(item["path"]): item.get("sha256")
+        for item in artifacts
+        if isinstance(item, Mapping)
+        and isinstance(item.get("path"), str)
+        and item.get("status") == "readable"
+    }
+
+    def indexed_json(relative: str) -> Mapping[str, Any] | None:
+        expected_sha256 = artifact_hashes.get(relative)
+        unresolved = run_dir / relative
+        path = safe_relative_file(run_dir, relative)
+        if (
+            not isinstance(expected_sha256, str)
+            or unresolved.is_symlink()
+            or path is None
+        ):
+            return None
+        try:
+            if sha256_file(path) != expected_sha256:
+                return None
+        except OSError:
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, Mapping) else None
+
+    def finite_number(value: Any) -> float | None:
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            return None
+        return float(value)
+
+    def verified_timing(payload: Any, frame_count: int) -> bool:
+        if not isinstance(payload, Mapping) or payload.get("status") != "verified":
+            return False
+        if any(
+            not isinstance(payload.get(field), int)
+            or isinstance(payload.get(field), bool)
+            or payload.get(field) != frame_count
+            for field in (
+                "source_frame_count",
+                "written_frame_count",
+                "encoded_frame_count",
+            )
+        ):
+            return False
+        return all(
+            isinstance(payload.get(field), int)
+            and not isinstance(payload.get(field), bool)
+            and payload.get(field) == 0
+            for field in (
+                "capture_drop_count",
+                "writer_drop_count",
+                "timestamp_error_count",
+                "missing_encoded_frame_count",
+                "extra_encoded_frame_count",
+                "duration_mismatch_count",
+            )
+        )
+
+    def sibling_path(parent: Path, raw: Any) -> str | None:
+        if not isinstance(raw, str) or not raw:
+            return None
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        return (parent / relative).as_posix()
+
+    videos = [
+        item
+        for item in evidence_index.get("videos", [])
+        if isinstance(item, Mapping)
+        and isinstance(item.get("path"), str)
+        and isinstance(item.get("frame_index"), Mapping)
+    ]
+    timing_files = [
+        item
+        for item in evidence_index.get("files", [])
+        if isinstance(item, Mapping)
+        and isinstance(item.get("path"), str)
+        and isinstance(item.get("recorded_clocks"), Mapping)
+        and isinstance(item["recorded_clocks"].get("video_pts_s"), Mapping)
+    ]
+    candidates_by_video: dict[str, list[Mapping[str, Any]]] = {}
+    videos_by_timing: dict[str, list[str]] = {}
+    for video in videos:
+        video_path = str(video["path"])
+        frame_index = video["frame_index"]
+        assert isinstance(frame_index, Mapping)
+        frame_count = frame_index.get("frame_count")
+        first_pts = finite_number(frame_index.get("first_pts_seconds"))
+        last_pts = finite_number(frame_index.get("last_pts_seconds"))
+        if (
+            not isinstance(frame_count, int)
+            or isinstance(frame_count, bool)
+            or frame_count < 1
+            or first_pts is None
+            or last_pts is None
+        ):
+            candidates_by_video[video_path] = []
+            continue
+        matches: list[Mapping[str, Any]] = []
+        for timing in timing_files:
+            clocks = timing["recorded_clocks"]
+            assert isinstance(clocks, Mapping)
+            pts = clocks["video_pts_s"]
+            assert isinstance(pts, Mapping)
+            timing_first = finite_number(pts.get("minimum"))
+            timing_last = finite_number(pts.get("maximum"))
+            if (
+                Path(str(timing["path"])).parent == Path(video_path).parent
+                and pts.get("count") == frame_count
+                and isinstance(timing.get("record_count"), int)
+                and not isinstance(timing.get("record_count"), bool)
+                and isinstance(timing.get("host_time_mapped_count"), int)
+                and not isinstance(timing.get("host_time_mapped_count"), bool)
+                and timing["host_time_mapped_count"] == timing["record_count"]
+                and timing_first is not None
+                and timing_last is not None
+                and math.isclose(timing_first, first_pts, rel_tol=0, abs_tol=1e-6)
+                and math.isclose(timing_last, last_pts, rel_tol=0, abs_tol=1e-6)
+            ):
+                matches.append(timing)
+                videos_by_timing.setdefault(str(timing["path"]), []).append(video_path)
+        candidates_by_video[video_path] = matches
+
+    bridges: list[dict[str, Any]] = []
+    for video in videos:
+        video_path = str(video["path"])
+        frame_index = video["frame_index"]
+        assert isinstance(frame_index, Mapping)
+        frame_count = frame_index.get("frame_count")
+        matches = candidates_by_video.get(video_path, [])
+        if (
+            not isinstance(frame_count, int)
+            or isinstance(frame_count, bool)
+            or len(matches) != 1
+            or len(videos_by_timing.get(str(matches[0]["path"]), [])) != 1
+        ):
+            bridges.append(
+                {
+                    "video_path": video_path,
+                    "status": "unavailable",
+                    "limitation": (
+                        "no globally one-to-one raw timing match with equal video-PTS "
+                        "count and bounds"
+                    ),
+                }
+            )
+            continue
+
+        timing = matches[0]
+        timing_path = str(timing["path"])
+        parent = Path(video_path).parent
+        camera_result_path = (parent / "camera_result.json").as_posix()
+        camera_result = indexed_json(camera_result_path)
+        verification_path = sibling_path(
+            parent,
+            camera_result.get("video_timing_verification")
+            if isinstance(camera_result, Mapping)
+            else None,
+        )
+        verification = indexed_json(verification_path) if verification_path else None
+        declared_video = sibling_path(
+            parent, camera_result.get("video") if isinstance(camera_result, Mapping) else None
+        )
+        declared_timing = sibling_path(
+            parent,
+            camera_result.get("frame_timing")
+            if isinstance(camera_result, Mapping)
+            else None,
+        )
+        embedded_verification = (
+            camera_result.get("video_timing_verification_result")
+            if isinstance(camera_result, Mapping)
+            else None
+        )
+        frame_margin_ns = (
+            verification.get("maximum_source_interval_ns")
+            if isinstance(verification, Mapping)
+            else None
+        )
+        embedded_frame_margin_ns = (
+            embedded_verification.get("maximum_source_interval_ns")
+            if isinstance(embedded_verification, Mapping)
+            else None
+        )
+        if (
+            declared_video != video_path
+            or declared_timing != timing_path
+            or verification_path is None
+            or not verified_timing(embedded_verification, frame_count)
+            or not verified_timing(verification, frame_count)
+            or not isinstance(frame_margin_ns, int)
+            or isinstance(frame_margin_ns, bool)
+            or frame_margin_ns < 1
+            or embedded_frame_margin_ns != frame_margin_ns
+        ):
+            bridges.append(
+                {
+                    "video_path": video_path,
+                    "timing_path": timing_path,
+                    "status": "unavailable",
+                    "limitation": (
+                        "recorded camera pairing or zero-error video timing verification "
+                        "is unavailable"
+                    ),
+                }
+            )
+            continue
+
+        bridges.append(
+            {
+                "video_path": video_path,
+                "timing_path": timing_path,
+                "status": "verified",
+                "verification_path": verification_path,
+                "frame_count": frame_count,
+                "first_pts_seconds": frame_index.get("first_pts_seconds"),
+                "last_pts_seconds": frame_index.get("last_pts_seconds"),
+                "frame_margin_ns": frame_margin_ns,
+                "pairing_basis": (
+                    "globally one-to-one frame count and PTS bounds plus recorded "
+                    "zero-error timing verification"
+                ),
+                "event_clock_to_host_query": (
+                    "records --path EVENT_PATH --clock EVENT_CLOCK --start VALUE "
+                    "--end VALUE [--clock-segment ID] [--segment-instance N] --limit 100"
+                ),
+                "host_interval_basis": (
+                    "query.clock_conversion.host_earliest_ns through "
+                    "query.clock_conversion.host_latest_ns"
+                ),
+                "timing_host_window_query": (
+                    "records --path TIMING_PATH --clock host_monotonic_ns "
+                    "--start HOST_EARLIEST_NS_MINUS_FRAME_MARGIN --end "
+                    "HOST_LATEST_NS_PLUS_FRAME_MARGIN --limit 100"
+                ),
+                "pagination": (
+                    "for event, timing, and native-frame queries, while truncated is "
+                    "true, repeat the same bounded query with --offset next_offset; "
+                    "do not derive or cite an interval until next_offset is null"
+                ),
+                "returned_time_basis": "query.clock_conversion and results[].host_time",
+                "returned_video_pts_basis": (
+                    "PTS-bearing rows only: results[].record.video_pts_value / "
+                    "results[].record.video_pts_timescale"
+                ),
+                "native_frame_query": (
+                    "frames --path VIDEO_PATH --start PTS --end PTS --limit 100"
+                ),
+            }
+        )
+    return bridges
+
+
 def compact_context(
     run_dir: Path,
     artifacts: Sequence[Mapping[str, Any]],
@@ -1116,7 +1387,15 @@ def compact_context(
                 "literal_predicate": "--where field=value",
                 "same_record_field_comparison": "--compare left!=right",
                 "adjacent_raw_context": "--context N",
+                "time_window": (
+                    "--clock CLOCK --start VALUE --end VALUE "
+                    "[--clock-segment ID] [--segment-instance N]"
+                ),
+                "common_host_output": "query.clock_conversion and results[].host_time",
             },
+            "event_to_video_bridges": event_to_video_bridges(
+                run_dir, artifacts, evidence_index
+            ),
             "investigation_priority": {
                 "lead_ranking": "raw_cross_source_ordering_before_video",
                 "class_selector_minimum": "access_check_only",
@@ -1131,6 +1410,26 @@ def compact_context(
 
 
 def build_prompt(context: str, image_count: int, pass_number: int) -> str:
+    bridge_direction = (
+        "Before synthesis, complete one bounded event-to-frame bridge for the "
+        "highest-ranked time-localized candidate, even if you ultimately reject it. "
+        "Use only a status=verified event_to_video_bridges entry. First query the "
+        "candidate's own EVENT_PATH in its EVENT_CLOCK to obtain the complete host "
+        "interval from query.clock_conversion.host_earliest_ns through host_latest_ns "
+        "and preserve the conversion and its uncertainty. Then query "
+        "the raw timing_path in host_monotonic_ns across that interval expanded on each "
+        "side by exactly the entry's recorded frame_margin_ns, preserve every "
+        "results[].host_time interval, and consume every page through next_offset. "
+        "Never derive an enclosing video PTS from truncated results; report truncation "
+        "as an exact missing edge instead. Derive PTS only from the returned raw timing "
+        "records, then query every native frame row across that PTS interval, consuming "
+        "next_offset from the native frames query until null too, and request a bounded "
+        "video interval "
+        "when supplied cells do not cover it. Cite the candidate record, clock mapping, "
+        "recorded timing verification, raw timing records, and reviewed attached cells. "
+        "If an edge is unavailable, name that exact missing edge in coverage notes. This "
+        "is one top-candidate causal bridge, not an artifact-review quota. "
+    )
     if pass_number == 1:
         pass_direction = (
             "This is the evidence-mapping pass. Use the bounded evidence query CLI to "
@@ -1143,7 +1442,9 @@ def build_prompt(context: str, image_count: int, pass_number: int) -> str:
             "run-spanning raw-record ordering triage before selecting the strongest "
             "cross-source candidates; copy each returned record selector unchanged. "
             "Compare generic magnitudes, outliers, adjacent-stage ordering, and raw-versus-"
-            "derived agreement across those sources. For the strongest cross-source "
+            "derived agreement across those sources. "
+            + bridge_direction
+            + "For the strongest cross-source "
             "anomalies, reconstruct the supported stimulus-to-physical-frame chain and "
             "inspect owning code at the recorded revision. Semantically review every "
             "supplied top-change window, or identify each unreviewed rank and interval in "
@@ -1157,6 +1458,8 @@ def build_prompt(context: str, image_count: int, pass_number: int) -> str:
             "leads. Complete run-spanning raw-record ordering triage before selecting the "
             "strongest cross-source anomalies, and copy each returned record selector "
             "unchanged. Complete their causal chains, "
+            + bridge_direction
+            + "Recheck and cite the completed bridge, "
             "check counterevidence, and account for every indexed top-change window. "
             "Improve or reject prior leads and return one replacement schema-valid report "
             "without transcribing the artifact inventory."

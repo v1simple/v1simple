@@ -2129,8 +2129,24 @@ def test_model_context_includes_bounded_frame_and_field_indexes() -> None:
                 "path": "camera.mov",
                 "frame_index": {
                     "frame_count": 72000,
+                    "first_pts_seconds": 0.0,
+                    "last_pts_seconds": 359.995,
                     "native_frame_rate_fps": 200.0,
                     "top_change_windows": video[0]["temporal_scan"]["change_candidates"],
+                },
+            }
+        ],
+        "files": [
+            {
+                "path": "frame_timing.ndjson",
+                "record_count": 72001,
+                "host_time_mapped_count": 72001,
+                "recorded_clocks": {
+                    "video_pts_s": {
+                        "count": 72000,
+                        "minimum": 0.0,
+                        "maximum": 359.995,
+                    }
                 },
             }
         ],
@@ -2158,11 +2174,78 @@ def test_model_context_includes_bounded_frame_and_field_indexes() -> None:
         }
     )
     source["current_worktree_clean"] = False
-    context = json.loads(
-        investigator.compact_context(
-            Path("run"), [], source, video, None, 1, {}, evidence_index
+    verification = {
+        "schema_version": 1,
+        "kind": "camera_video_timing_verification",
+        "status": "verified",
+        "source_frame_count": 72000,
+        "written_frame_count": 72000,
+        "encoded_frame_count": 72000,
+        "capture_drop_count": 0,
+        "writer_drop_count": 0,
+        "timestamp_error_count": 0,
+        "missing_encoded_frame_count": 0,
+        "extra_encoded_frame_count": 0,
+        "duration_mismatch_count": 0,
+        "maximum_source_interval_ns": 5_000_000,
+    }
+    camera_result = {
+        "schema_version": 2,
+        "kind": "bench_camera_evidence",
+        "video": "camera.mov",
+        "frame_timing": "frame_timing.ndjson",
+        "video_timing_verification": "video_timing_verification.json",
+        "video_timing_verification_result": verification,
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        run = Path(temporary) / "run"
+        run.mkdir()
+        verification_content = (
+            json.dumps(verification, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        camera_result_content = (
+            json.dumps(camera_result, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        (run / "video_timing_verification.json").write_bytes(verification_content)
+        (run / "camera_result.json").write_bytes(camera_result_content)
+        artifacts = [
+            {
+                "path": "camera_result.json",
+                "sha256": sha256(camera_result_content),
+                "status": "readable",
+            },
+            {
+                "path": "video_timing_verification.json",
+                "sha256": sha256(verification_content),
+                "status": "readable",
+            },
+        ]
+        context = json.loads(
+            investigator.compact_context(
+                run, artifacts, source, video, None, 1, {}, evidence_index
+            )
         )
-    )
+        ambiguous_index = json.loads(json.dumps(evidence_index))
+        ambiguous_index["videos"].append(
+            {
+                "path": "second_camera.mov",
+                "frame_index": dict(evidence_index["videos"][0]["frame_index"]),
+            }
+        )
+        ambiguous = investigator.event_to_video_bridges(
+            run, artifacts, ambiguous_index
+        )
+        assert_true(
+            len(ambiguous) == 2
+            and all(item["status"] == "unavailable" for item in ambiguous),
+            f"same-signature videos were paired ambiguously: {ambiguous}",
+        )
+        unverified = investigator.event_to_video_bridges(run, [], evidence_index)
+        assert_true(
+            unverified[0]["status"] == "unavailable"
+            and "verification" in unverified[0]["limitation"],
+            f"unverified timing pairing was advertised: {unverified}",
+        )
     compact = context["video_extraction"][0]
     assert_true(
         compact["temporal_scan"]["frame_count"] == 72000
@@ -2197,8 +2280,62 @@ def test_model_context_includes_bounded_frame_and_field_indexes() -> None:
             "literal_predicate": "--where field=value",
             "same_record_field_comparison": "--compare left!=right",
             "adjacent_raw_context": "--context N",
+            "time_window": (
+                "--clock CLOCK --start VALUE --end VALUE "
+                "[--clock-segment ID] [--segment-instance N]"
+            ),
+            "common_host_output": "query.clock_conversion and results[].host_time",
         },
         "model context omits generic field comparison or adjacent raw context",
+    )
+    bridges = context["evidence_query"]["event_to_video_bridges"]
+    assert_true(
+        bridges
+        == [
+            {
+                "video_path": "camera.mov",
+                "timing_path": "frame_timing.ndjson",
+                "status": "verified",
+                "verification_path": "video_timing_verification.json",
+                "frame_count": 72000,
+                "first_pts_seconds": 0.0,
+                "last_pts_seconds": 359.995,
+                "frame_margin_ns": 5_000_000,
+                "pairing_basis": (
+                    "globally one-to-one frame count and PTS bounds plus recorded "
+                    "zero-error timing verification"
+                ),
+                "event_clock_to_host_query": (
+                    "records --path EVENT_PATH --clock EVENT_CLOCK --start VALUE "
+                    "--end VALUE [--clock-segment ID] [--segment-instance N] --limit 100"
+                ),
+                "host_interval_basis": (
+                    "query.clock_conversion.host_earliest_ns through "
+                    "query.clock_conversion.host_latest_ns"
+                ),
+                "timing_host_window_query": (
+                    "records --path TIMING_PATH --clock host_monotonic_ns "
+                    "--start HOST_EARLIEST_NS_MINUS_FRAME_MARGIN --end "
+                    "HOST_LATEST_NS_PLUS_FRAME_MARGIN --limit 100"
+                ),
+                "pagination": (
+                    "for event, timing, and native-frame queries, while truncated is "
+                    "true, repeat the same bounded query with --offset next_offset; "
+                    "do not derive or cite an interval until next_offset is null"
+                ),
+                "returned_time_basis": (
+                    "query.clock_conversion and results[].host_time"
+                ),
+                "returned_video_pts_basis": (
+                    "PTS-bearing rows only: results[].record.video_pts_value / "
+                    "results[].record.video_pts_timescale"
+                ),
+                "native_frame_query": (
+                    "frames --path VIDEO_PATH --start PTS --end PTS --limit 100"
+                ),
+            }
+        ],
+        f"model context omitted the unambiguous event-to-video bridge: {bridges}",
     )
     serialized_source = json.dumps(context["source_precheck"], sort_keys=True)
     assert_true(
@@ -2272,6 +2409,17 @@ def test_prompt_requires_broad_queries_causal_chains_and_window_accounting() -> 
         "keys are conjunctive",
         "--compare 'left!=right'",
         "--context N",
+        "highest-ranked time-localized candidate",
+        "event_to_video_bridges",
+        "status=verified",
+        "query.clock_conversion",
+        "results[].host_time",
+        "host_monotonic_ns",
+        "frame_margin_ns",
+        "next_offset",
+        "next_offset from the native frames query until null",
+        "Never derive an enclosing video PTS from truncated results",
+        "one top-candidate causal bridge",
     ):
         assert_true(
             required in normalized,
@@ -2293,6 +2441,8 @@ def test_prompt_requires_broad_queries_causal_chains_and_window_accounting() -> 
     assert_true(
         "synthesis pass" in follow_up
         and "Complete their causal chains" in follow_up
+        and "highest-ranked time-localized candidate" in follow_up
+        and "Recheck and cite the completed bridge" in follow_up
         and "account for every indexed top-change window" in follow_up,
         "synthesis prompt no longer closes the cross-source evidence map",
     )

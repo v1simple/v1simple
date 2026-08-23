@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
-from investigation_video import inspect_video  # noqa: E402
+from investigation_video import CommandError, build_frame_index, inspect_video  # noqa: E402
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -69,6 +69,33 @@ def make_many_change_video(path: Path) -> None:
                 "color=c=black:s=96x64:r=30:d=6,"
                 "drawbox=x=12:y=8:w=72:h=48:color=white:t=fill:"
                 "enable='gte(sin(10*PI*t),0)'"
+            ),
+            "-c:v",
+            "ffv1",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+def make_single_frame_change_video(path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise AssertionError("ffmpeg is required for investigation video tests")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            (
+                "color=c=black:s=96x64:r=30:d=1,"
+                "drawbox=x=72:y=40:w=24:h=24:color=white:t=fill:enable='eq(n,7)'"
             ),
             "-c:v",
             "ffv1",
@@ -177,12 +204,31 @@ def test_full_frame_candidates_and_requested_interval_sheet() -> None:
             for cell in item["cells"]:
                 nominal = cell["nominal_requested_pts_seconds"]
                 uncertainty = cell["pts_uncertainty_interval"]
-                assert_true(cell["source_pts_measured"] is False, f"nominal time became source PTS: {cell}")
-                assert_true("pts_seconds" not in cell, f"nominal time is mislabeled as measured PTS: {cell}")
-                assert_true(
-                    uncertainty == item["interval"],
-                    f"cell uncertainty lost the extraction interval: {cell}",
-                )
+                if item["purpose"] == "whole_video_overview":
+                    assert_true(
+                        cell["source_pts_measured"] is False,
+                        f"overview nominal time became measured PTS: {cell}",
+                    )
+                    assert_true(
+                        uncertainty == item["interval"],
+                        f"overview uncertainty lost its extraction interval: {cell}",
+                    )
+                else:
+                    assert_true(
+                        cell["source_pts_measured"] is True
+                        and cell["source_pts_seconds"] == nominal
+                        and isinstance(cell["source_pts_value"], int)
+                        and cell["source_pts_time_base"]["numerator"] > 0
+                        and cell["source_pts_time_base"]["denominator"] > 0
+                        and isinstance(cell["source_frame_index"], int),
+                        f"exact source position is missing: {cell}",
+                    )
+                    assert_true(
+                        uncertainty
+                        == {"start_pts_seconds": nominal, "end_pts_seconds": nominal}
+                        and cell["pts_uncertainty_seconds"] == 0,
+                        f"measured PTS retained synthetic uncertainty: {cell}",
+                    )
                 assert_true(
                     uncertainty["start_pts_seconds"] <= nominal <= uncertainty["end_pts_seconds"],
                     f"nominal time is outside its uncertainty: {cell}",
@@ -203,24 +249,16 @@ def test_full_frame_candidates_and_requested_interval_sheet() -> None:
             f"unsampled intervals were not recorded: {coverage}",
         )
         scan_coverage = report["coverage"]["full_frame_scan"]
-        sampled_pts = report["temporal_scan"]["sampled_pts_seconds"]
         assert_true(
-            scan_coverage["temporal_coverage"] == "sample_points_only"
-            and scan_coverage["continuous_coverage"] is False,
-            f"periodic scan claimed continuous coverage: {scan_coverage}",
+            scan_coverage["temporal_coverage"] == "exhaustive_frame_index"
+            and scan_coverage["sampling"] == "every_decoded_source_frame"
+            and scan_coverage["indexed_frame_count"] == 60
+            and scan_coverage["frame_indices_contiguous"] is True
+            and scan_coverage["semantic_review"] is False
+            and scan_coverage["continuous_coverage"] is False
+            and scan_coverage["unsampled_edge_intervals"] == [],
+            f"native frame index coverage is inaccurate: {scan_coverage}",
         )
-        assert_true(
-            scan_coverage["sampled_pts_seconds"] == sampled_pts,
-            f"scan coverage lost sampled PTS points: {scan_coverage}",
-        )
-        assert_true(
-            scan_coverage["nominal_cadence_seconds"] > 0,
-            f"scan cadence is missing: {scan_coverage}",
-        )
-        gaps = scan_coverage["between_point_gaps"]
-        assert_true(gaps["count"] == max(0, len(sampled_pts) - 1), f"wrong gap count: {gaps}")
-        assert_true(gaps["all_interiors_unsampled"] is bool(gaps["count"]), f"gap truth missing: {gaps}")
-        assert_true("sampled_intervals" not in scan_coverage, f"scan restored continuous coverage: {scan_coverage}")
         json.dumps(report, allow_nan=False)
         assert_true(str(root) not in json.dumps(report), "report leaked its temporary absolute path")
 
@@ -245,9 +283,9 @@ def test_extraction_failures_and_invalid_requests_remain_machine_readable() -> N
         assert_true(report["temporal_scan"]["status"] == "failed", "failed scan looked complete")
         assert_true(report["overview"]["status"] == "failed", "failed overview looked complete")
         states = [item["status"] for item in report["requested_intervals"]]
-        assert_true(states == ["failed", "not_sampled", "not_sampled"], f"wrong request states: {states}")
+        assert_true(states == ["not_sampled", "not_sampled", "not_sampled"], f"wrong request states: {states}")
         codes = {(item["stage"], item["code"]) for item in report["errors"]}
-        assert_true(("temporal_scan", "ffmpeg_failed") in codes, f"scan error missing: {codes}")
+        assert_true(("frame_index", "ffmpeg_failed") in codes, f"frame index error missing: {codes}")
         assert_true(("overview", "ffmpeg_failed") in codes, f"overview error missing: {codes}")
         assert_true(
             ("requested_interval", "interval_range_invalid") in codes,
@@ -287,6 +325,115 @@ def test_brief_off_overview_change_becomes_a_candidate() -> None:
         assert_true(
             any(1.0 <= item["pts_seconds"] <= 1.25 for item in candidates),
             f"brief full-frame change was missed: {candidates}",
+        )
+
+
+def test_single_native_frame_change_and_hash_cache() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        first = root / "first.mkv"
+        second = root / "second.mkv"
+        index = root / "investigation_index"
+        make_single_frame_change_video(first)
+        report = inspect_video(first, root / "images", index_dir=index)
+        assert_true(
+            report["temporal_scan"]["frame_count"] == 30
+            and any(
+                item["frame_index"] in {7, 8}
+                for item in report["temporal_scan"]["change_candidates"]
+            ),
+            f"single native frame was not scored: {report['temporal_scan']}",
+        )
+        shutil.copyfile(first, second)
+        digest = report["frame_index_summary"]["source_video_sha256"]
+        failing_tool = shutil.which("false")
+        if not failing_tool:
+            raise AssertionError("false is required for cache-path testing")
+        cached_summary, cached_rows = build_frame_index(
+            second, index, video_sha256=digest, ffmpeg=failing_tool
+        )
+        assert_true(
+            cached_summary["frame_count"] == len(cached_rows) == 30,
+            "byte-identical video did not reuse its hash-keyed frame index",
+        )
+        second.write_bytes(second.read_bytes() + b"changed")
+        try:
+            build_frame_index(
+                second,
+                index,
+                video_sha256=digest,
+                ffmpeg=failing_tool,
+            )
+        except CommandError as error:
+            assert_true(
+                error.code == "video_hash_mismatch",
+                f"caller-supplied stale hash was trusted: {error.code}",
+            )
+        else:
+            raise AssertionError("changed video bytes reused a caller-selected stale index")
+
+
+def test_cache_summary_integrity_symlink_guard_and_empty_interval() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        video = root / "source.mkv"
+        index = root / "index"
+        make_single_frame_change_video(video)
+        summary, _rows = build_frame_index(video, index)
+        summary_path = index / f"{summary['source_video_sha256']}.summary.json"
+        corrupted = json.loads(summary_path.read_text(encoding="utf-8"))
+        corrupted["unexpected_private_text"] = "must not enter model context"
+        summary_path.write_text(json.dumps(corrupted) + "\n", encoding="utf-8")
+        failing_tool = shutil.which("false")
+        if not failing_tool:
+            raise AssertionError("false is required for cache-integrity testing")
+        try:
+            build_frame_index(video, index, ffmpeg=failing_tool)
+        except CommandError as error:
+            assert_true(
+                error.code == "ffmpeg_failed",
+                f"corrupt cache was accepted or failed incorrectly: {error.code}",
+            )
+        else:
+            raise AssertionError("modified cache summary was accepted")
+
+        target = root / "target"
+        target.mkdir()
+        linked = root / "linked-index"
+        linked.symlink_to(target, target_is_directory=True)
+        try:
+            build_frame_index(video, linked)
+        except CommandError as error:
+            assert_true(
+                error.code == "frame_index_directory_invalid",
+                f"symlink index directory was not rejected: {error.code}",
+            )
+        else:
+            raise AssertionError("symlink index directory was accepted")
+        symlink_report = inspect_video(
+            video, root / "symlink-sheets", index_dir=linked, scan_overview=False
+        )
+        assert_true(
+            any(
+                error["stage"] == "frame_index"
+                and error["code"] == "frame_index_directory_invalid"
+                for error in symlink_report["errors"]
+            ),
+            f"inspect_video bypassed the symlink index guard: {symlink_report}",
+        )
+
+        report = inspect_video(
+            video,
+            root / "sheets",
+            [{"start_seconds": 0.001, "end_seconds": 0.002, "sample_rate_hz": 30}],
+            index_dir=root / "fresh-index",
+            scan_overview=False,
+        )
+        interval = report["requested_intervals"][0]
+        assert_true(
+            interval["status"] == "not_sampled"
+            and interval["reason"] == "no_source_frame_in_interval",
+            f"out-of-window frame was attached as complete evidence: {interval}",
         )
 
 
@@ -369,6 +516,8 @@ def main() -> int:
     test_full_frame_candidates_and_requested_interval_sheet()
     test_extraction_failures_and_invalid_requests_remain_machine_readable()
     test_brief_off_overview_change_becomes_a_candidate()
+    test_single_native_frame_change_and_hash_cache()
+    test_cache_summary_integrity_symlink_guard_and_empty_interval()
     test_all_ranked_changes_are_packed_into_one_lossless_atlas()
     print("bench investigation video tests passed")
     return 0

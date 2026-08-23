@@ -76,7 +76,7 @@
         "row_end": { "type": "integer", "minimum": 1 },
         "keys": {
           "type": "array",
-          "description": "Stable field=value selectors for NDJSON or CSV records.",
+          "description": "Conjunctive stable field=value selectors that must all match one selected NDJSON or CSV record.",
           "items": { "type": "string", "minLength": 1 }
         },
         "start_pts_s": { "type": "number", "minimum": 0 },
@@ -181,6 +181,15 @@
         "end_pts_seconds": { "type": "number", "minimum": 0 }
       }
     },
+    "pts_time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "numerator", "denominator" ],
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 1 },
+        "denominator": { "type": "integer", "minimum": 1 }
+      }
+    },
     "attachment_cell": {
       "type": "object",
       "additionalProperties": false,
@@ -194,6 +203,10 @@
         "cell_label": { "type": "string", "minLength": 1 },
         "nominal_requested_pts_seconds": { "type": "number", "minimum": 0 },
         "source_pts_measured": { "type": "boolean" },
+        "source_pts_seconds": { "type": "number", "minimum": 0 },
+        "source_pts_value": { "type": "integer" },
+        "source_pts_time_base": { "$ref": "#/$defs/pts_time_base" },
+        "source_frame_index": { "type": "integer", "minimum": 0 },
         "pts_uncertainty_seconds": { "type": "number", "minimum": 0 },
         "pts_uncertainty_interval": { "$ref": "#/$defs/pts_interval" }
       }

@@ -46,14 +46,52 @@ be useful leads, but their descriptions must say that attribution is a hypothesi
 
 ## Build the evidence map
 
-The runner supplies the complete run-relative artifact inventory, sizes, and
-runner-owned SHA-256 hashes. Do not spend the first pass transcribing that
-inventory. Before broad exploration, return a schema-valid lead checkpoint that
-follows the strongest recorded discrepancy through its raw support and
-counterevidence into the tightest owning-code location available. Use bounded
-reads and searches; never stream a large log, trace, table, or binary into model
-context merely to claim coverage. If no defect is established, preserve the
-grounded observation as unresolved or report the honestly limited coverage.
+The runner supplies the complete run-relative artifact inventory, sizes,
+runner-owned SHA-256 hashes, exhaustive frame-index summaries, and a per-kind
+field dictionary. Use `python3 tools/bench_evidence.py list <run>` to inspect the
+catalog, `records <run>` for bounded raw records, `frames <run>` for frame-index
+finding aids, and `source` for exact-revision source slices. Use the exact run
+directory argument in the runner context. Query subcommands are read-only; never
+invoke the `build` subcommand in this evidence session.
+
+Do not stream a large timeline, log, trace, table, or binary with `cat`, `sed`,
+`tail`, or equivalent commands. Query across record kinds, fields, clocks, and
+tight time windows. Before synthesis, obtain at least one bounded raw record and
+resolvable raw selector from every available record-backed evidence class:
+stimulus; host notification or log; receive, parse, or publication trace;
+display commit; and metrics. For aligned camera or physical frame evidence,
+semantically review at least one supplied cell and use a resolvable attached-cell
+video selector. If a class is unavailable or cannot be queried, name it and the
+limitation in coverage notes instead of substituting an inventory or index
+summary. This one-record-per-class minimum proves access and selector grounding
+only; it is not run-wide behavior triage. Before selecting a primary lead, use
+bounded chronological queries spanning the available run to compare stage order,
+causal identifiers, revision or identity combinations, and loss across
+record-backed classes. Rank candidates from those cross-source discrepancies
+before narrowing around a metric or video window. The `records` query accepts
+literal `--where field=value` predicates, same-record field comparisons such as
+`--compare 'left!=right'`, and bounded adjacent raw records through `--context N`.
+Each returned record is labeled as a predicate `match` or adjacent `context` and
+has its own selector. Choose fields from the run's dictionary; do not assume a
+fixed schema. Compare anomalies generically:
+magnitudes and outliers, ordering inversions between adjacent recorded stages,
+and disagreement between derived
+summaries and raw records. Do not use fixed timestamps, packet values,
+expected-transition catalogs, or a known answer. Follow the strongest
+cross-source anomalies through raw support, counterevidence, and the tightest
+owning-code location available. If no defect is established, preserve a grounded
+observation as unresolved or report the honestly limited coverage.
+
+Index summaries and index rows are finding aids, never primary evidence. Every
+published artifact selector must target the raw run-relative path, hash, and
+line/row coordinates returned by the query tool. Do not cite any file below
+`investigation_index/`.
+
+Each `records` result supplies one citation-ready selector basis. Copy its kind,
+path, hash, coordinates, and keys unchanged; only its description may be
+rewritten. Cite multiple returned records separately. Never widen or merge
+coordinate ranges, add keys, or combine keys from different results. Selector
+keys are conjunctive and must all match one selected raw record.
 
 Populate `coverage.artifacts` only for artifacts you semantically examined, using
 at least one resolvable selector (a whole-file selector is valid) for every
@@ -87,7 +125,7 @@ exact host-to-video or host-to-DUT clock.
 
 ## Investigate raw behavior
 
-Read raw evidence before trusting derived summaries. Depending on what exists,
+Query raw evidence before trusting derived summaries. Depending on what exists,
 this includes:
 
 - top-level and per-suite build/runner logs;
@@ -99,9 +137,9 @@ this includes:
 - parser-observed encounter records;
 - renderer display commits and the semantic inputs they actually retain;
 - camera capture metadata, timing anchors, raw video, and extracted frames;
-- owning firmware, replay, collection, import, and scoring code at the defensible
-  source revision;
-- relevant Git history when it clarifies when or why the behavior changed.
+- owning firmware, replay, collection, import, and scoring code queried only at
+  the recorded source revision. Do not run Git directly or inspect the current
+  worktree, later revisions, commit messages, or later history.
 
 In the causal trace, `STATE_BASELINE` or `ALERT_TABLE_BASELINE` with outcome
 `RETAINED` records parser evidence that already existed when `QSTART` began. Its
@@ -116,7 +154,8 @@ not independent truth. Follow each useful lead back to raw records and owning
 code. In particular, parser-derived encounter data cannot by itself establish
 what bytes were sent or what the display should have shown.
 
-Reconstruct a causal path only as far as evidence supports it, for example:
+For the strongest cross-source anomalies, reconstruct a causal path only as far
+as evidence supports it, for example:
 
 ```text
 recorded stimulus request
@@ -145,19 +184,33 @@ frames. Interpret displayed meaning with stimulus, trace, log, and code evidence
 Do not use a fixed crop, fixed ROI, reference image, pixel/color threshold,
 seven-segment template, or closed catalog of expected transitions as the oracle.
 
-The full-frame temporal scan is periodic candidate selection, not continuous video
-review. To bound model context, regular sampled PTS points are summarized by count,
-first/last PTS, nominal cadence, and bounded locations of abnormal gaps; unsampled
-edges remain explicit. Exact regular point locations are not supplied to the model.
-Never turn the summary into whole-duration visual coverage or ignore a recorded gap.
+The full-frame temporal index scores every decoded source frame at native cadence
+and has contiguous zero-based frame rows with measured source PTS. It is
+exhaustive automatic change scoring, not exhaustive semantic video review. The
+context gives its frame count, native rate, score distribution, and bounded
+top-change windows; use the `frames` query for exact index rows. Never turn
+automatic scoring into a claim that all displayed meaning was reviewed.
+A change score measures whole-frame pixel difference only. Its rank is not defect
+likelihood, semantic importance, or causal priority. Treat the ranked windows as
+coverage targets unless independent raw evidence makes one of their intervals a
+candidate. Normal semantics in a ranked window is local counterevidence only; it
+does not reject unrelated record-order candidates elsewhere in the run.
+
+For every top-change window in every indexed main video, either semantically
+review the supplied sheet cells and cite them in `coverage.video_intervals`, or
+identify the window rank and PTS interval explicitly as unreviewed in
+`coverage.notes`. Checking only the overview does not account for the indexed
+windows.
 
 The runner-owned attachment manifest binds each supplied image index and durable
 run-relative sheet path/hash to its canonical source video path/hash, represented
 interval, and row-major ordered cells. Temporary extraction filenames are not
-evidence and must never appear in a selector. A cell's
-`nominal_requested_pts_seconds` is a requested sampling label, not a measured
-source-frame PTS. Preserve its explicit `pts_uncertainty_seconds` and
-`pts_uncertainty_interval`; do not use the nominal label for exact timing or
+evidence and must never appear in a selector. A cell with
+`source_pts_measured: true` carries its measured `source_pts_seconds` and
+zero-based decoded `source_frame_index`; those values may be cited at
+native-frame granularity. Otherwise, `nominal_requested_pts_seconds` is only a
+requested sampling label. Always preserve `pts_uncertainty_seconds` and
+`pts_uncertainty_interval`, and never use a nominal label for exact timing or
 latency.
 
 If the overview or other evidence identifies a PTS interval that needs denser
@@ -214,8 +267,9 @@ SHA-256 hash. Include only the selector fields applicable to its `kind`:
 
 - `file`: the whole file;
 - `json_pointer`: an RFC 6901 pointer into JSON;
-- `ndjson`: one-based physical line range plus an event key/value when useful;
-- `csv`: one-based data-record range after comments/header plus stable key columns;
+- `ndjson`: one-based physical line range plus the query-returned keys, if any;
+- `csv`: one-based data-record range after comments/header plus the query-returned
+  keys, if any;
 - `log`: one-based physical line range;
 - `video`: source-video PTS interval, `attachment_index`, and `cell_indices`; use
   frame indices only when the manifest says source positions were measured.
@@ -224,9 +278,11 @@ Keep ranges tight. The selector description states exactly what the selected
 record proves. Use `findings[].evidence` and `unresolved[].evidence` for run
 artifacts; use their `code` arrays for repository source. Code selectors always
 name the inspected revision, path, symbol, line range, and `selection_sha256`.
-Compute `selection_sha256` over UTF-8 text made from the selected physical lines
-joined by LF with one final LF. The symbol is the model's owner label; the runner
-resolves revision, path, line range, and selected-line digest. For artifacts, the
+The `source` query returns a `code_selector_basis`; copy its revision, path, line
+range, and `selection_sha256` unchanged, then add the symbol and description. If
+you need a different line range, query that exact range instead of reusing a
+digest. The symbol is the model's owner label; the runner resolves revision,
+path, line range, and selected-line digest. For artifacts, the
 runner resolves paths, hashes, `json_pointer` values, rows, lines, and attached
 video sheets/cells with their PTS uncertainty. If a
 citation does not resolve, it records the citation error in `coverage` and

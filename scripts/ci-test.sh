@@ -166,6 +166,7 @@ run_step "Bench host evidence regression suite" python3 scripts/test_bench_host_
 run_step "Bench time-alignment regression suite" python3 scripts/test_bench_time_alignment.py
 run_step "Bench investigator regression suite" python3 scripts/test_bench_investigate.py
 run_step "Bench investigation video regression suite" python3 scripts/test_bench_investigation_video.py
+run_step "Bench evidence query regression suite" python3 scripts/test_bench_evidence.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py

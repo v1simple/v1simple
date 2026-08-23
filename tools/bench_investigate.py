@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -28,6 +29,7 @@ VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".mkv"}
 IGNORED_OUTPUTS = {"investigation.json", "investigation_debug.json"}
 AUXILIARY_OVERVIEW_VIDEO_NAMES = {".camera_preflight.mov"}
 ATTACHMENT_DIRECTORY = "investigation_sheets"
+INDEX_DIRECTORY = "investigation_index"
 MAX_INITIAL_IMAGES = 8
 MAX_ATTACHED_IMAGES = 12
 MAX_SAMPLED_GAP_ANOMALIES = 32
@@ -392,6 +394,7 @@ def discover_artifacts(run_dir: Path) -> list[dict[str, Any]]:
             path.name in IGNORED_OUTPUTS
             or path.name.startswith(".investigation.")
             or ATTACHMENT_DIRECTORY in Path(relative).parts
+            or INDEX_DIRECTORY in Path(relative).parts
         ):
             continue
         size: int | None = None
@@ -608,6 +611,18 @@ def git_text(*arguments: str) -> str | None:
     return process.stdout.strip() if process.returncode == 0 else None
 
 
+@lru_cache(maxsize=256)
+def canonical_commit(revision: str) -> str | None:
+    if (
+        not revision
+        or revision.startswith("-")
+        or not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", revision)
+    ):
+        return None
+    resolved = git_text("rev-parse", "--verify", f"{revision}^{{commit}}")
+    return resolved if resolved and re.fullmatch(r"[0-9a-f]{40,64}", resolved) else None
+
+
 def git_file_hash(revision: str, path: str) -> str | None:
     process = subprocess.run(
         ["git", "show", f"{revision}:{path}"],
@@ -725,6 +740,84 @@ def source_context(run_dir: Path, artifacts: Sequence[Mapping[str, Any]]) -> dic
     }
 
 
+def recorded_identity_revisions(source_context_value: Mapping[str, Any]) -> list[str]:
+    revisions: list[str] = []
+    for identity in source_context_value.get("identities", []):
+        if not isinstance(identity, Mapping):
+            continue
+        recorded = identity.get("recorded_revision")
+        canonical = canonical_commit(recorded) if isinstance(recorded, str) else None
+        normalized = (
+            canonical
+            if canonical is not None
+            else recorded
+            if isinstance(recorded, str) and re.fullmatch(r"[0-9a-f]{40,64}", recorded)
+            else None
+        )
+        if normalized is not None and normalized not in revisions:
+            revisions.append(normalized)
+    return revisions
+
+
+def recorded_source_revisions(source_context_value: Mapping[str, Any]) -> list[str]:
+    return [
+        canonical
+        for revision in recorded_identity_revisions(source_context_value)
+        if (canonical := canonical_commit(revision)) is not None
+    ]
+
+
+def model_source_context(source_context_value: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose recorded identity trust without revealing later-worktree or history leads."""
+    identities: list[dict[str, Any]] = []
+    for identity in source_context_value.get("identities", []):
+        if not isinstance(identity, Mapping):
+            continue
+        if identity.get("error") is not None:
+            identities.append(
+                {
+                    "path": identity.get("path"),
+                    "error": identity.get("error"),
+                }
+            )
+            continue
+        recorded = identity.get("recorded_revision")
+        canonical = canonical_commit(recorded) if isinstance(recorded, str) else None
+        recorded_identity = (
+            canonical
+            if canonical is not None
+            else recorded
+            if isinstance(recorded, str) and re.fullmatch(r"[0-9a-f]{40,64}", recorded)
+            else None
+        )
+        commit_mismatched = identity.get("commit_files_mismatched")
+        commit_unavailable = identity.get("commit_files_unavailable")
+        identities.append(
+            {
+                "path": identity.get("path"),
+                "recorded_revision": recorded_identity,
+                "recorded_worktree_clean": identity.get("recorded_worktree_clean"),
+                "recorded_product_fingerprint": identity.get(
+                    "recorded_product_fingerprint"
+                ),
+                "recorded_file_count": identity.get("recorded_file_count"),
+                "recorded_commit_available": identity.get("recorded_commit_available"),
+                "recorded_commit_files_matched": identity.get("commit_files_matched"),
+                "recorded_commit_files_mismatched": (
+                    len(commit_mismatched) if isinstance(commit_mismatched, list) else None
+                ),
+                "recorded_commit_files_unavailable": (
+                    len(commit_unavailable) if isinstance(commit_unavailable, list) else None
+                ),
+                "suggested_basis": identity.get("suggested_basis"),
+            }
+        )
+    return {
+        "recorded_revisions": recorded_identity_revisions(source_context_value),
+        "identities": identities,
+    }
+
+
 def conservative_source_basis(source_context_value: Mapping[str, Any]) -> str:
     identities = [
         item
@@ -756,6 +849,12 @@ def load_video_helper() -> Any:
     return inspect_video
 
 
+def build_evidence_index(run_dir: Path) -> dict[str, Any]:
+    import bench_evidence
+
+    return bench_evidence.compact_manifest(bench_evidence.build_run_index(run_dir))
+
+
 def extract_video_evidence(
     run_dir: Path,
     artifacts: Sequence[Mapping[str, Any]],
@@ -765,6 +864,7 @@ def extract_video_evidence(
     scan_overview: bool,
     pass_number: int,
     remaining_run_budget: int,
+    index_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[str]]:
     inspect_video = load_video_helper()
     artifact_hashes = {
@@ -846,6 +946,8 @@ def extract_video_evidence(
                 video,
                 output,
                 by_video.get(relative, []),
+                index_dir=index_dir,
+                video_sha256=source_video_sha256,
                 scan_overview=scan_overview,
             )
         except Exception as exc:  # preserve one broken video without losing the run
@@ -916,6 +1018,7 @@ def compact_context(
     prior_report: Mapping[str, Any] | None,
     pass_number: int,
     image_attachments: Mapping[str, Any],
+    evidence_index: Mapping[str, Any] | None = None,
 ) -> str:
     try:
         run_label = run_dir.relative_to(ROOT).as_posix()
@@ -1000,10 +1103,27 @@ def compact_context(
     context: dict[str, Any] = {
         "run_directory": run_label,
         "artifact_inventory": list(artifacts),
-        "source_precheck": source,
+        "source_precheck": model_source_context(source),
         "video_extraction": compact_video,
         "investigation_pass": pass_number,
         "image_attachments": dict(image_attachments),
+        "evidence_query": {
+            "argv_prefix": ["python3", "tools/bench_evidence.py"],
+            "run_directory": run_label,
+            "query_subcommands": ["list", "records", "frames", "source"],
+            "index_is_finding_aid_only": True,
+            "record_query_capabilities": {
+                "literal_predicate": "--where field=value",
+                "same_record_field_comparison": "--compare left!=right",
+                "adjacent_raw_context": "--context N",
+            },
+            "investigation_priority": {
+                "lead_ranking": "raw_cross_source_ordering_before_video",
+                "class_selector_minimum": "access_check_only",
+                "video_change_score": "whole_frame_pixel_difference_only_not_defect_priority",
+            },
+            "summary": dict(evidence_index or {}),
+        },
     }
     if prior_report is not None:
         context["prior_report_to_recheck_and_improve"] = prior_report
@@ -1013,24 +1133,37 @@ def compact_context(
 def build_prompt(context: str, image_count: int, pass_number: int) -> str:
     if pass_number == 1:
         pass_direction = (
-            "This is the first-pass lead checkpoint. Before broad exploration, follow "
-            "the highest-signal discrepancy into tight raw evidence, relevant "
-            "counterevidence, and owning code, then return schema-valid JSON promptly. "
-            "Inspect every supplied temporal-change atlas cell before choosing that lead. "
-            "Do not transcribe or exhaustively review the inventory: the runner will add "
-            "every model-omitted artifact as skipped and mark the published report partial."
+            "This is the evidence-mapping pass. Use the bounded evidence query CLI to "
+            "inspect the recorded timeline, trace, commits, stimulus, metrics, and logs; "
+            "before synthesis, obtain a bounded raw record and resolvable raw selector "
+            "from every available record-backed evidence class, obtain a resolvable "
+            "attached-cell video selector for physical evidence, and explicitly name "
+            "any unavailable class in coverage notes. "
+            "Treat that per-class selector floor only as an access check. Complete "
+            "run-spanning raw-record ordering triage before selecting the strongest "
+            "cross-source candidates; copy each returned record selector unchanged. "
+            "Compare generic magnitudes, outliers, adjacent-stage ordering, and raw-versus-"
+            "derived agreement across those sources. For the strongest cross-source "
+            "anomalies, reconstruct the supported stimulus-to-physical-frame chain and "
+            "inspect owning code at the recorded revision. Semantically review every "
+            "supplied top-change window, or identify each unreviewed rank and interval in "
+            "coverage notes. Do not transcribe the inventory: the runner will add every "
+            "model-omitted artifact as skipped and mark the published report partial."
         )
     else:
         pass_direction = (
             "This is the synthesis pass. Recheck the prior report, inspect the additional "
-            "raw artifacts and owning code needed to test its leads, and look for other "
-            "high-signal defects across code, logs, metrics, traces, and supplied video. "
-            "Do not stop at the first lead. Improve or reject prior leads and return one "
-            "replacement schema-valid report without transcribing the artifact inventory."
+            "queried raw artifacts, native-rate frames, and owning code needed to test its "
+            "leads. Complete run-spanning raw-record ordering triage before selecting the "
+            "strongest cross-source anomalies, and copy each returned record selector "
+            "unchanged. Complete their causal chains, "
+            "check counterevidence, and account for every indexed top-change window. "
+            "Improve or reject prior leads and return one replacement schema-valid report "
+            "without transcribing the artifact inventory."
         )
     return f"""Read tools/bench_investigator_prompt.md completely, then investigate the run below.
 
-You are in a purpose-specific read-only evidence session. Do not modify files or run repository setup, build, test, CI, release, or publication workflows. Inspect artifacts, source, and Git directly with shell tools; do not rely only on this inventory. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest is runner-owned and directly records each durable sheet hash, canonical source-video hash, represented interval, cells, and timing uncertainty. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
+You are in a purpose-specific read-only evidence session. Do not modify files or run repository setup, index builds, tests, CI, release, or publication workflows. For large recorded artifacts, run `python3 tools/bench_evidence.py list <run>`, `python3 tools/bench_evidence.py records <run>`, or `python3 tools/bench_evidence.py frames <run>` with the exact runner-provided run directory; do not stream those files with cat, sed, tail, or equivalent commands. Run `python3 tools/bench_evidence.py source --revision <recorded-revision> --path <path> --line-start <line> --line-end <line>` for exact-revision source slices. Do not run Git commands directly or inspect the current worktree, later revisions, commit messages, or later history. Index rows and summaries are finding aids only: every published artifact selector must target the raw run-relative artifact returned by a query. The {image_count} attached image(s), if any, are generic whole-video overview/change or requested-interval contact sheets. The one-based image_attachments.manifest is runner-owned and directly records each durable sheet hash, canonical source-video hash, represented interval, cells, measured source positions where available, and timing uncertainty. A prior report means this is a fresh stateless follow-up: recheck it against all evidence and replace it with a better final report.
 
 {pass_direction}
 
@@ -1510,6 +1643,61 @@ def _video_attachment_error(
     selected_cells = [cells_by_index.get(index) for index in cell_indices]
     if any(cell is None for cell in selected_cells):
         return f"video attachment cells do not resolve: {attachment_index}"
+    for cell in selected_cells:
+        if not isinstance(cell, Mapping) or cell.get("source_pts_measured") is not True:
+            continue
+        measured_pts = cell.get("source_pts_seconds")
+        source_pts = cell.get("source_pts_value")
+        source_frame = cell.get("source_frame_index")
+        time_base = cell.get("source_pts_time_base")
+        if (
+            not isinstance(measured_pts, (int, float))
+            or isinstance(measured_pts, bool)
+            or not math.isfinite(float(measured_pts))
+            or not isinstance(source_pts, int)
+            or isinstance(source_pts, bool)
+            or not isinstance(source_frame, int)
+            or isinstance(source_frame, bool)
+            or source_frame < 0
+            or not isinstance(time_base, Mapping)
+        ):
+            return f"video measured source position does not resolve: {attachment_index}"
+        numerator, denominator = time_base.get("numerator"), time_base.get("denominator")
+        if (
+            not isinstance(numerator, int)
+            or isinstance(numerator, bool)
+            or not isinstance(denominator, int)
+            or isinstance(denominator, bool)
+            or numerator <= 0
+            or denominator <= 0
+            or not math.isclose(
+                float(measured_pts),
+                source_pts * numerator / denominator,
+                rel_tol=0,
+                abs_tol=0.000_000_001,
+            )
+        ):
+            return f"video measured source position does not resolve: {attachment_index}"
+    if all(
+        isinstance(cell, Mapping) and cell.get("source_pts_measured") is True
+        for cell in selected_cells
+    ):
+        measured_positions = [float(cell["source_pts_seconds"]) for cell in selected_cells]
+        if (
+            not math.isclose(
+                selected_start,
+                min(measured_positions),
+                rel_tol=0,
+                abs_tol=0.000_001,
+            )
+            or not math.isclose(
+                selected_end,
+                max(measured_positions),
+                rel_tol=0,
+                abs_tol=0.000_001,
+            )
+        ):
+            return f"video selector does not match attached measured PTS: {attachment_index}"
     uncertainty_intervals = [
         cell.get("pts_uncertainty_interval")
         for cell in selected_cells
@@ -1531,12 +1719,40 @@ def _video_attachment_error(
         or selected_end < max(float(value) for value in uncertainty_ends) - 0.000_001
     ):
         return f"video selector narrows attached PTS uncertainty: {attachment_index}"
-    if selector.get("start_frame") is not None and any(
-        cell.get("source_pts_measured") is not True
-        for cell in selected_cells
-        if isinstance(cell, Mapping)
-    ):
-        return f"video frame indices are not measured for attachment: {attachment_index}"
+    for cell, interval in zip(selected_cells, uncertainty_intervals):
+        if not isinstance(cell, Mapping) or cell.get("source_pts_measured") is not True:
+            continue
+        measured_pts = float(cell["source_pts_seconds"])
+        if (
+            cell.get("pts_uncertainty_seconds") != 0
+            or not math.isclose(
+                float(interval["start_pts_seconds"]), measured_pts, rel_tol=0, abs_tol=1e-9
+            )
+            or not math.isclose(
+                float(interval["end_pts_seconds"]), measured_pts, rel_tol=0, abs_tol=1e-9
+            )
+        ):
+            return f"video measured PTS uncertainty does not resolve: {attachment_index}"
+    if selector.get("start_frame") is not None:
+        source_frames = [
+            cell.get("source_frame_index")
+            for cell in selected_cells
+            if isinstance(cell, Mapping)
+        ]
+        if any(
+            cell.get("source_pts_measured") is not True
+            for cell in selected_cells
+            if isinstance(cell, Mapping)
+        ) or any(
+            not isinstance(frame, int) or isinstance(frame, bool)
+            for frame in source_frames
+        ):
+            return f"video frame indices are not measured for attachment: {attachment_index}"
+        if (
+            int(selector["start_frame"]) != min(source_frames)
+            or int(selector["end_frame"]) != max(source_frames)
+        ):
+            return f"video selector does not match attached frame positions: {attachment_index}"
     return None
 
 
@@ -1558,6 +1774,8 @@ def resolve_artifact_selector(
     if selector.get("sha256") != actual_hash:
         return f"artifact hash does not match: {selector.get('path')}"
     selector_type = selector.get("kind")
+    if INDEX_DIRECTORY in Path(str(selector.get("path"))).parts:
+        return f"investigation index is a finding aid, not evidence: {selector.get('path')}"
     if path.suffix.lower() in VIDEO_SUFFIXES and selector_type != "video":
         return f"video artifact requires an attached video selector: {selector.get('path')}"
     if selector_type != "video" and ATTACHMENT_DIRECTORY in Path(str(selector.get("path"))).parts:
@@ -1565,10 +1783,6 @@ def resolve_artifact_selector(
     if selector_type in {"log", "ndjson"}:
         start = selector.get("line_start")
         end = selector.get("line_end")
-        try:
-            line_count = sum(1 for _line in path.open("r", encoding="utf-8", errors="replace"))
-        except OSError:
-            return f"artifact lines are unreadable: {selector.get('path')}"
         if (
             not isinstance(start, int)
             or isinstance(start, bool)
@@ -1576,12 +1790,21 @@ def resolve_artifact_selector(
             or isinstance(end, bool)
             or start < 1
             or start > end
-            or end > line_count
         ):
+            return f"artifact line range does not resolve: {selector.get('path')}:{start}-{end}"
+        selected: list[str] = []
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                line_count = 0
+                for line_count, line in enumerate(handle, 1):
+                    if start <= line_count <= end:
+                        selected.append(line)
+        except OSError:
+            return f"artifact lines are unreadable: {selector.get('path')}"
+        if end > line_count:
             return f"artifact line range does not resolve: {selector.get('path')}:{start}-{end}"
         if selector_type == "ndjson" and selector.get("keys"):
             try:
-                selected = path.read_text(encoding="utf-8").splitlines()[start - 1 : end]
                 records = [json.loads(line) for line in selected]
                 pairs = [str(item).split("=", 1) for item in selector["keys"]]
                 if any(len(pair) != 2 for pair in pairs) or not any(
@@ -1616,7 +1839,9 @@ def resolve_artifact_selector(
         try:
             with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 lines = [line for line in handle if line.strip() and not line.startswith("#")]
-            reader = csv.DictReader(lines)
+            reader = csv.DictReader(
+                lines, delimiter="\t" if path.suffix.casefold() == ".tsv" else ","
+            )
             rows = list(reader)
             if reader.fieldnames is None:
                 raise ValueError("CSV header is missing")
@@ -1680,17 +1905,6 @@ def resolve_artifact_selector(
             or first_frame > last_frame
         ):
             return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
-        if first_frame is not None and frame_count == FRAME_COUNT_UNAVAILABLE:
-            return f"video frame bounds are unavailable: {selector.get('path')}"
-        if first_frame is not None and frame_count is None:
-            counted_bounds = probe_video_bounds(path, count_frames=True)
-            if counted_bounds is None or counted_bounds[1] is None:
-                cache[path] = (duration, FRAME_COUNT_UNAVAILABLE)
-                return f"video frame bounds are unavailable: {selector.get('path')}"
-            duration, frame_count = counted_bounds
-            cache[path] = counted_bounds
-        if first_frame is not None and last_frame >= frame_count:
-            return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
         attachment_error = _video_attachment_error(
             run_dir,
             selector,
@@ -1699,10 +1913,42 @@ def resolve_artifact_selector(
         )
         if attachment_error:
             return attachment_error
+        frame_position_is_attached = selector.get("attachment_index") is not None
+        if (
+            first_frame is not None
+            and frame_count not in (None, FRAME_COUNT_UNAVAILABLE)
+            and last_frame >= frame_count
+        ):
+            return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
+        if first_frame is not None and not frame_position_is_attached:
+            if frame_count == FRAME_COUNT_UNAVAILABLE:
+                return f"video frame bounds are unavailable: {selector.get('path')}"
+            if frame_count is None:
+                counted_bounds = probe_video_bounds(path, count_frames=True)
+                if counted_bounds is None or counted_bounds[1] is None:
+                    cache[path] = (duration, FRAME_COUNT_UNAVAILABLE)
+                    return f"video frame bounds are unavailable: {selector.get('path')}"
+                duration, frame_count = counted_bounds
+                cache[path] = counted_bounds
+            if last_frame >= frame_count:
+                return f"video frame range does not resolve: {selector.get('path')}:{first_frame}-{last_frame}"
     return None
 
 
-def resolve_code_selector(selector: Mapping[str, Any]) -> str | None:
+def resolve_code_selector(
+    selector: Mapping[str, Any],
+    *,
+    allowed_revisions: set[str] | None = None,
+    inspected_revision: str | None = None,
+) -> str | None:
+    revision = selector.get("revision")
+    canonical_revision = canonical_commit(revision) if isinstance(revision, str) else None
+    if canonical_revision is None or revision != canonical_revision:
+        return f"code revision is not a canonical commit: {revision}"
+    if allowed_revisions is not None and canonical_revision not in allowed_revisions:
+        return f"code revision is not recorded for this run: {revision}"
+    if allowed_revisions is not None and canonical_revision != inspected_revision:
+        return f"code revision does not match the inspected revision: {revision}"
     content = code_text(selector)
     if content is None:
         return f"code selector does not resolve: {selector.get('revision')}:{selector.get('path')}"
@@ -1742,11 +1988,18 @@ def partition_artifact_selectors(
 
 def partition_code_selectors(
     selectors: Sequence[Mapping[str, Any]],
+    *,
+    allowed_revisions: set[str] | None = None,
+    inspected_revision: str | None = None,
 ) -> tuple[list[Mapping[str, Any]], list[str]]:
     valid: list[Mapping[str, Any]] = []
     errors: list[str] = []
     for selector in selectors:
-        error = resolve_code_selector(selector)
+        error = resolve_code_selector(
+            selector,
+            allowed_revisions=allowed_revisions,
+            inspected_revision=inspected_revision,
+        )
         if error:
             errors.append(error)
         else:
@@ -1772,6 +2025,32 @@ def validate_published_selectors(
             index = attachment.get("attachment_index")
             if isinstance(index, int) and not isinstance(index, bool):
                 attachments_by_index[index] = attachment
+
+    source = report.get("source")
+    allowed_code_revisions: set[str] = set()
+    inspected_code_revision: str | None = None
+    if isinstance(source, Mapping):
+        recorded = source.get("recorded_revisions")
+        if isinstance(recorded, list):
+            for revision in recorded:
+                if not isinstance(revision, str) or not re.fullmatch(
+                    r"[0-9a-f]{40,64}", revision
+                ):
+                    errors.append(f"source recorded revision is not canonical: {revision}")
+                    continue
+                canonical = canonical_commit(revision)
+                if canonical == revision:
+                    allowed_code_revisions.add(canonical)
+        inspected = source.get("inspected_revision")
+        if isinstance(inspected, str):
+            inspected_code_revision = canonical_commit(inspected)
+            if inspected_code_revision is None or inspected_code_revision != inspected:
+                errors.append(f"source inspected revision is not canonical: {inspected}")
+                inspected_code_revision = None
+            elif inspected_code_revision not in allowed_code_revisions:
+                errors.append(
+                    f"source inspected revision was not recorded for this run: {inspected}"
+                )
 
     def check_artifacts(
         selectors: Any,
@@ -1800,11 +2079,14 @@ def validate_published_selectors(
         for index, selector in enumerate(selectors, start=1):
             if not isinstance(selector, Mapping):
                 continue
-            error = resolve_code_selector(selector)
+            error = resolve_code_selector(
+                selector,
+                allowed_revisions=allowed_code_revisions,
+                inspected_revision=inspected_code_revision,
+            )
             if error:
                 errors.append(f"{owner}[{index}]: {error}")
 
-    source = report.get("source")
     if isinstance(source, Mapping):
         check_artifacts(source.get("identity_evidence"), "source.identity_evidence")
         binary_identities = source.get("binary_identities")
@@ -2023,10 +2305,33 @@ def finish_report(
     model_errors = model_execution.get("errors")
 
     source_report = report["source"]
+    runner_errors = list(extra_errors)
+    allowed_code_revisions = set(recorded_source_revisions(source_context_value))
+    recorded_revision_list = sorted(recorded_identity_revisions(source_context_value))
+    reported_revisions = source_report.get("recorded_revisions")
+    if reported_revisions != recorded_revision_list:
+        source_report["recorded_revisions"] = recorded_revision_list
+        limitation = "Runner replaced model-reported revisions with recorded run identity."
+        source_report.setdefault("limitations", []).append(limitation)
+        runner_errors.append(("source_revisions_corrected", limitation))
+    raw_inspected_revision = source_report.get("inspected_revision")
+    inspected_revision = (
+        canonical_commit(raw_inspected_revision)
+        if isinstance(raw_inspected_revision, str)
+        else None
+    )
+    if inspected_revision not in allowed_code_revisions:
+        inspected_revision = None
+        if raw_inspected_revision is not None:
+            limitation = (
+                "Runner removed an inspected revision that was not recorded for this run."
+            )
+            source_report.setdefault("limitations", []).append(limitation)
+            runner_errors.append(("source_revision_unrecorded", limitation))
+    source_report["inspected_revision"] = inspected_revision
     model_basis = source_report.get("basis")
     prechecked_basis = conservative_source_basis(source_context_value)
     effective_basis = min((str(model_basis), prechecked_basis), key=SOURCE_BASIS_RANK.__getitem__)
-    runner_errors = list(extra_errors)
     if effective_basis != model_basis:
         limitation = (
             f"Runner source precheck limited basis from {model_basis} to {effective_basis}."
@@ -2084,7 +2389,11 @@ def finish_report(
     )
     resolution_errors.extend(clock_errors)
 
-    valid_coverage_code, coverage_code_errors = partition_code_selectors(coverage["code"])
+    valid_coverage_code, coverage_code_errors = partition_code_selectors(
+        coverage["code"],
+        allowed_revisions=allowed_code_revisions,
+        inspected_revision=inspected_revision,
+    )
     coverage["code"] = valid_coverage_code
     resolution_errors.extend(coverage_code_errors)
 
@@ -2122,7 +2431,11 @@ def finish_report(
             video_bounds_cache,
             attachments_by_index,
         )
-        valid_code, code_errors = partition_code_selectors(finding["code"])
+        valid_code, code_errors = partition_code_selectors(
+            finding["code"],
+            allowed_revisions=allowed_code_revisions,
+            inspected_revision=inspected_revision,
+        )
         valid_counterevidence, secondary_errors = partition_artifact_selectors(
             run_dir,
             finding["counterevidence"],
@@ -2191,7 +2504,11 @@ def finish_report(
             video_bounds_cache,
             attachments_by_index,
         )
-        valid_code, code_errors = partition_code_selectors(unresolved["code"])
+        valid_code, code_errors = partition_code_selectors(
+            unresolved["code"],
+            allowed_revisions=allowed_code_revisions,
+            inspected_revision=inspected_revision,
+        )
         errors.extend(code_errors)
         for hypothesis in unresolved["hypotheses"]:
             valid_hypothesis_evidence, hypothesis_errors = partition_artifact_selectors(
@@ -2201,7 +2518,9 @@ def finish_report(
                 attachments_by_index,
             )
             valid_hypothesis_code, hypothesis_code_errors = partition_code_selectors(
-                hypothesis["code"]
+                hypothesis["code"],
+                allowed_revisions=allowed_code_revisions,
+                inspected_revision=inspected_revision,
             )
             hypothesis["evidence"] = valid_hypothesis_evidence
             hypothesis["code"] = valid_hypothesis_code
@@ -2486,13 +2805,7 @@ def failure_report(
     video_history: Sequence[Mapping[str, Any]],
     attachments: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    recorded_revisions = sorted(
-        {
-            str(item["recorded_revision"])
-            for item in source_context_value.get("identities", [])
-            if isinstance(item, Mapping) and item.get("recorded_revision")
-        }
-    )
+    recorded_revisions = sorted(recorded_identity_revisions(source_context_value))
     video_notes: dict[str, list[str]] = {}
     for item in video_history:
         path = item.get("path")
@@ -2661,6 +2974,7 @@ def main() -> int:
     debug_events: list[dict[str, Any]] = []
     runner_errors: list[tuple[str, str]] = []
     video_history: list[dict[str, Any]] = []
+    evidence_index: dict[str, Any] = {}
 
     with tempfile.TemporaryDirectory(prefix="bench-investigation-") as temporary:
         workspace = Path(temporary)
@@ -2672,6 +2986,7 @@ def main() -> int:
         omitted_videos: list[tuple[int, str]] = []
         requests: list[Mapping[str, Any]] = []
         try:
+            evidence_index = build_evidence_index(run_dir)
             source = source_context(run_dir, artifacts)
             model_pass_limit = max(2, args.max_video_passes)
             for pass_number in range(1, model_pass_limit + 1):
@@ -2685,6 +3000,7 @@ def main() -> int:
                             scan_overview=pass_number == 1,
                             pass_number=pass_number,
                             remaining_run_budget=MAX_VIDEOS_PER_RUN - processed_videos,
+                            index_dir=run_dir / INDEX_DIRECTORY,
                         )
                     )
                 else:
@@ -2742,6 +3058,7 @@ def main() -> int:
                         },
                         "manifest": attachment_manifest,
                     },
+                    evidence_index,
                 )
                 final_prompt = build_prompt(context, len(attachments), pass_number)
                 pass_output = workspace / f"model_pass_{pass_number}.json"

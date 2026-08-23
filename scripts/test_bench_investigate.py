@@ -62,20 +62,34 @@ def assert_codex_transport_schema(schema: object) -> None:
 
 
 def source_precheck(basis: str = "exact") -> dict[str, object]:
+    revision = investigator.canonical_commit("HEAD")
+    assert revision is not None
     return {
-        "current_head": "fixture-revision",
-        "identities": [{"suggested_basis": basis}],
+        "current_head": revision,
+        "identities": [
+            {
+                "recorded_revision": revision,
+                "recorded_commit_available": True,
+                "suggested_basis": basis,
+            }
+        ],
     }
 
 
 def minimal_model_report(evidence: dict[str, object]) -> dict[str, object]:
-    code_path = ROOT / "tools" / "bench_investigate.py"
-    code_content = code_path.read_text(encoding="utf-8")
+    revision = investigator.canonical_commit("HEAD")
+    assert revision is not None
+    code_path = "AGENTS.md"
+    code_content = subprocess.run(
+        ["git", "show", f"{revision}:{code_path}"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
     code_lines = code_content.splitlines()
-    line_start = next(
-        index for index, line in enumerate(code_lines, 1) if line.startswith("def sha256_file(")
-    )
-    line_end = line_start + 5
+    line_start = 1
+    line_end = min(2, len(code_lines))
     selection_hash = investigator.code_selection_sha256(
         code_content, line_start, line_end
     )
@@ -88,8 +102,8 @@ def minimal_model_report(evidence: dict[str, object]) -> dict[str, object]:
         "source": {
             "basis": "exact",
             "summary": "fixture source",
-            "recorded_revisions": [],
-            "inspected_revision": "WORKTREE",
+            "recorded_revisions": [revision],
+            "inspected_revision": revision,
             "identity_evidence": [],
             "mismatches": [],
             "binary_identities": [],
@@ -116,9 +130,9 @@ def minimal_model_report(evidence: dict[str, object]) -> dict[str, object]:
                 "counterevidence": [],
                 "code": [
                     {
-                        "revision": "WORKTREE",
-                        "path": "tools/bench_investigate.py",
-                        "symbol": "sha256_file",
+                        "revision": revision,
+                        "path": code_path,
+                        "symbol": "fixture_instructions",
                         "line_start": line_start,
                         "line_end": line_end,
                         "selection_sha256": selection_hash,
@@ -147,6 +161,10 @@ def test_discovery_accepts_unfamiliar_and_excludes_prior_output() -> None:
         (run / "suite").mkdir()
         (run / "suite" / "future.trace").write_bytes(b"trace")
         (run / "investigation.json").write_text("old", encoding="utf-8")
+        (run / investigator.INDEX_DIRECTORY).mkdir()
+        (run / investigator.INDEX_DIRECTORY / "manifest.json").write_text(
+            "derived", encoding="utf-8"
+        )
         artifacts = investigator.discover_artifacts(run)
         paths = [item["path"] for item in artifacts]
         assert_true(paths == ["suite/future.trace"], f"unexpected discovery: {artifacts}")
@@ -478,6 +496,49 @@ def test_source_precheck_limits_attribution_and_model_execution_state_is_preserv
         )
 
 
+def test_unavailable_recorded_revision_remains_visible_but_cannot_authorize_code() -> None:
+    unavailable_revision = "f" * 40
+    source = {
+        "current_head": investigator.canonical_commit("HEAD"),
+        "identities": [
+            {
+                "path": "suite/identity.json",
+                "recorded_revision": unavailable_revision,
+                "recorded_commit_available": False,
+                "suggested_basis": "current_only",
+            }
+        ],
+    }
+    assert_true(
+        investigator.recorded_identity_revisions(source) == [unavailable_revision]
+        and investigator.recorded_source_revisions(source) == [],
+        "recorded identity was confused with locally available source",
+    )
+    compact = investigator.model_source_context(source)
+    assert_true(
+        compact["recorded_revisions"] == [unavailable_revision]
+        and compact["identities"][0]["recorded_revision"] == unavailable_revision,
+        "model context erased an unavailable recorded revision",
+    )
+    report = investigator.failure_report(
+        code="fixture_failure",
+        message="fixture",
+        model="fixture-model",
+        backend="fixture-backend",
+        tool_version="fixture-tool",
+        prompt="fixture prompt",
+        artifacts=[],
+        source_context_value=source,
+        video_history=[],
+    )
+    assert_true(
+        report["source"]["recorded_revisions"] == [unavailable_revision]
+        and investigator.validate_report_schema(report) == []
+        and investigator.validate_published_selectors(Path.cwd(), report) == [],
+        "failure publication erased or rejected an unavailable recorded revision",
+    )
+
+
 def test_code_selector_requires_exact_selected_line_hash() -> None:
     evidence = {
         "kind": "file",
@@ -488,6 +549,23 @@ def test_code_selector_requires_exact_selected_line_hash() -> None:
     report = minimal_model_report(evidence)
     selector = report["findings"][0]["code"][0]
     assert_true(investigator.resolve_code_selector(selector) is None, "valid code slice failed")
+    noncanonical = dict(selector)
+    noncanonical["revision"] = "HEAD"
+    assert_true(
+        "not a canonical commit" in str(investigator.resolve_code_selector(noncanonical)),
+        "mutable source tree-ish resolved as an exact code citation",
+    )
+    assert_true(
+        "not recorded for this run"
+        in str(
+            investigator.resolve_code_selector(
+                selector,
+                allowed_revisions=set(),
+                inspected_revision=None,
+            )
+        ),
+        "code citation resolved outside the run's recorded revisions",
+    )
     wrong_hash = dict(selector)
     wrong_hash["selection_sha256"] = "0" * 64
     assert_true(
@@ -1845,7 +1923,14 @@ def test_video_limits_apply_before_extraction_and_manifest_preserves_order() -> 
             )
         calls: list[str] = []
 
-        def inspect_video(video: Path, output: Path, _requests: object, *, scan_overview: bool) -> dict[str, object]:
+        def inspect_video(
+            video: Path,
+            output: Path,
+            _requests: object,
+            *,
+            scan_overview: bool,
+            **_kwargs: object,
+        ) -> dict[str, object]:
             calls.append(video.name)
             output.mkdir(parents=True)
             for name in ("overview.jpg", "change.jpg", "interval.jpg"):
@@ -2010,82 +2095,152 @@ def test_attachment_retention_is_contained_and_reconciled() -> None:
         )
 
 
-def test_model_context_summarizes_periodic_video_points() -> None:
-    points = [index / 12 for index in range(3600)]
+def test_model_context_includes_bounded_frame_and_field_indexes() -> None:
     video = [
         {
             "path": "camera.mov",
             "temporal_scan": {
-                "sampled_pts_seconds": points,
-                "change_candidates": [{"pts_seconds": 10.0}],
+                "frame_count": 72000,
+                "native_frame_rate_fps": 200.0,
+                "change_candidates": [
+                    {
+                        "change_rank": 1,
+                        "frame_index": 2000,
+                        "pts_seconds": 10.0,
+                        "window_start_pts_seconds": 9.995,
+                        "window_end_pts_seconds": 10.005,
+                    }
+                ],
             },
             "coverage": {
                 "full_frame_scan": {
-                    "sampled_pts_seconds": points,
+                    "temporal_coverage": "exhaustive_frame_index",
+                    "indexed_frame_count": 72000,
+                    "frame_indices_contiguous": True,
+                    "semantic_review": False,
                     "continuous_coverage": False,
                 }
             },
         }
     ]
+    evidence_index = {
+        "videos": [
+            {
+                "path": "camera.mov",
+                "frame_index": {
+                    "frame_count": 72000,
+                    "native_frame_rate_fps": 200.0,
+                    "top_change_windows": video[0]["temporal_scan"]["change_candidates"],
+                },
+            }
+        ],
+        "field_dictionary": {
+            "dut_packet_parse": {
+                "count": 12,
+                "fields": {
+                    "causal_identifiers.event_seq": {
+                        "count": 12,
+                        "types": {"integer": 12},
+                    }
+                },
+            }
+        },
+    }
+    source = source_precheck()
+    identity = source["identities"][0]
+    assert isinstance(identity, dict)
+    identity.update(
+        {
+            "current_files_mismatched": ["src/later_change.cpp"],
+            "current_files_matched": 7,
+            "commit_files_matched": 6,
+            "commit_files_mismatched": ["generated/later.bin"],
+        }
+    )
+    source["current_worktree_clean"] = False
     context = json.loads(
-        investigator.compact_context(Path("run"), [], {}, video, None, 1, {})
+        investigator.compact_context(
+            Path("run"), [], source, video, None, 1, {}, evidence_index
+        )
     )
     compact = context["video_extraction"][0]
     assert_true(
-        "sampled_pts_seconds" not in compact["temporal_scan"]
-        and compact["temporal_scan"]["sampled_pts_summary"]["count"] == 3600,
-        "temporal scan points were copied into the model prompt",
+        compact["temporal_scan"]["frame_count"] == 72000
+        and "frame_rows" not in compact["temporal_scan"],
+        "frame summary was expanded into raw index rows",
     )
     assert_true(
-        "sampled_pts_seconds" not in compact["coverage"]["full_frame_scan"]
-        and compact["coverage"]["full_frame_scan"]["continuous_coverage"] is False,
-        "coverage summary lost the sampled-only limitation",
+        compact["coverage"]["full_frame_scan"]["temporal_coverage"]
+        == "exhaustive_frame_index"
+        and compact["coverage"]["full_frame_scan"]["semantic_review"] is False,
+        "automatic frame indexing became semantic video coverage",
     )
     assert_true(
-        compact["temporal_scan"]["change_candidates"] == [{"pts_seconds": 10.0}],
-        "candidate timestamps were removed with periodic scan points",
+        context["evidence_query"]["summary"] == evidence_index
+        and context["evidence_query"]["index_is_finding_aid_only"] is True
+        and context["evidence_query"]["query_subcommands"]
+        == ["list", "records", "frames", "source"],
+        "field dictionary or bounded query contract is missing from context",
     )
-
-    irregular = [index / 12 for index in range(120)]
-    irregular.extend(20 + index / 12 for index in range(120))
-    video[0]["temporal_scan"]["sample_rate_hz"] = 12.0
-    video[0]["temporal_scan"]["sampled_pts_seconds"] = irregular
-    anomaly_context = json.loads(
-        investigator.compact_context(Path("run"), [], {}, video, None, 1, {})
-    )
-    anomaly_summary = anomaly_context["video_extraction"][0]["temporal_scan"][
-        "sampled_pts_summary"
-    ]
-    assert_true(anomaly_summary["gap_anomaly_count"] == 1, "gap anomaly was hidden")
     assert_true(
-        anomaly_summary["gap_anomalies"]
-        == [{"start_seconds": 9.916667, "end_seconds": 20.0, "gap_seconds": 10.083333}],
-        f"gap location was not retained: {anomaly_summary}",
+        context["evidence_query"]["investigation_priority"]
+        == {
+            "lead_ranking": "raw_cross_source_ordering_before_video",
+            "class_selector_minimum": "access_check_only",
+            "video_change_score": "whole_frame_pixel_difference_only_not_defect_priority",
+        },
+        "model context does not distinguish evidence triage from pixel coverage",
+    )
+    assert_true(
+        context["evidence_query"]["record_query_capabilities"]
+        == {
+            "literal_predicate": "--where field=value",
+            "same_record_field_comparison": "--compare left!=right",
+            "adjacent_raw_context": "--context N",
+        },
+        "model context omits generic field comparison or adjacent raw context",
+    )
+    serialized_source = json.dumps(context["source_precheck"], sort_keys=True)
+    assert_true(
+        "current_head" not in context["source_precheck"]
+        and "current_worktree_clean" not in context["source_precheck"]
+        and "current_files_mismatched" not in serialized_source
+        and "later_change.cpp" not in serialized_source
+        and context["source_precheck"]["recorded_revisions"],
+        f"model context exposed later-worktree answer leads: {serialized_source}",
     )
 
 
-def test_first_pass_requires_a_grounded_checkpoint_before_breadth() -> None:
+def test_prompt_requires_broad_queries_causal_chains_and_window_accounting() -> None:
     prompt = investigator.build_prompt("{}", 2, 1)
     instructions = investigator.INSTRUCTION_PATH.read_text(encoding="utf-8")
     combined = f"{prompt}\n{instructions}"
-    normalized_instructions = " ".join(instructions.split())
+    normalized = " ".join(combined.split())
     assert_true(
-        "first-pass lead checkpoint" in prompt
-        and "Before broad exploration" in combined
-        and "schema-valid" in combined,
-        "first pass no longer requires a results-producing checkpoint",
+        "evidence-mapping pass" in prompt
+        and "bench_evidence.py list <run>" in prompt
+        and "bench_evidence.py records <run>" in prompt
+        and "bench_evidence.py frames <run>" in prompt
+        and "Do not modify files or run repository setup, index builds" in prompt,
+        "first pass does not require the read-only evidence query path",
     )
     assert_true(
         "Read AGENTS.md" not in prompt
         and "Read tools/bench_investigator_prompt.md completely" in prompt
         and "purpose-specific read-only evidence session" in prompt
-        and "Do not modify files or run repository setup" in prompt,
+        and "Index rows and summaries are finding aids only" in prompt,
         "purpose-specific investigator regressed into repository workflow execution",
+    )
+    assert_true(
+        "Do not run Git commands directly" in prompt
+        and "later revisions, commit messages, or later history" in combined
+        and "relevant Git history" not in combined,
+        "investigator can still inspect post-run source history",
     )
     assert_true(
         "runner will add every model-omitted artifact as skipped" in prompt.casefold()
         and "adds every model-omitted inventory item as `skipped`"
-        in normalized_instructions,
+        in " ".join(instructions.split()),
         "runner-owned skipped coverage was not explained to the model",
     )
     assert_true(
@@ -2095,26 +2250,56 @@ def test_first_pass_requires_a_grounded_checkpoint_before_breadth() -> None:
         "the prompt still commands exhaustive artifact transcription",
     )
     for required in (
-        "raw evidence",
+        "Query raw evidence",
         "owning code",
         "counterevidence",
         "timing uncertainty",
         "semantically",
         "Review video semantically",
         "Interpret displayed meaning",
+        "top-change window",
+        "ordering inversions",
+        "stimulus-to-physical-frame chain",
+        "bounded raw record and resolvable raw selector",
+        "host notification or log",
+        "display commit",
+        "aligned camera or physical frame",
+        "resolvable attached-cell",
+        "access and selector grounding",
+        "whole-frame pixel difference",
+        "not defect likelihood",
+        "Copy its kind",
+        "keys are conjunctive",
+        "--compare 'left!=right'",
+        "--context N",
     ):
         assert_true(
-            required in combined,
-            f"lead-first prompt lost required investigation behavior: {required}",
+            required in normalized,
+            f"query-led prompt lost required investigation behavior: {required}",
         )
+    assert_true(
+        "promptly" not in combined.casefold()
+        and "first-pass lead checkpoint" not in combined
+        and "periodic candidate selection" not in combined,
+        "prompt still pressures premature single-lead convergence or periodic sampling",
+    )
+    assert_true(
+        prompt.index("run-spanning raw-record ordering triage")
+        < prompt.index("top-change window"),
+        "first pass ranks pixel coverage before raw ordering triage",
+    )
 
     follow_up = investigator.build_prompt("{}", 1, 2)
     assert_true(
         "synthesis pass" in follow_up
-        and "Do not stop at the first lead" in follow_up
-        and "other high-signal defects" in follow_up
-        and "code, logs, metrics, traces, and supplied video" in follow_up,
-        "synthesis prompt no longer expands beyond the grounded checkpoint",
+        and "Complete their causal chains" in follow_up
+        and "account for every indexed top-change window" in follow_up,
+        "synthesis prompt no longer closes the cross-source evidence map",
+    )
+    assert_true(
+        follow_up.index("run-spanning raw-record ordering triage")
+        < follow_up.index("top-change window"),
+        "synthesis pass ranks pixel coverage before raw ordering triage",
     )
 
 
@@ -2167,7 +2352,12 @@ def test_first_pass_keeps_every_main_video_change_candidate_under_the_image_cap(
         calls = []
 
         def inspect_video(
-            video: Path, output: Path, _requests: object, *, scan_overview: bool
+            video: Path,
+            output: Path,
+            _requests: object,
+            *,
+            scan_overview: bool,
+            **_kwargs: object,
         ) -> dict[str, object]:
             calls.append(video.relative_to(run.resolve()).as_posix())
             output.mkdir(parents=True)
@@ -2494,6 +2684,123 @@ def test_durable_attachment_manifest_controls_video_citations() -> None:
         assert_true(
             investigator.resolve_artifact_selector(run, selector, {}, by_index) is None,
             "attached video cell did not resolve",
+        )
+        missing_measured = json.loads(json.dumps(by_index))
+        missing_measured["1"]["cells"][0]["source_pts_measured"] = True
+        missing_measured_by_index = {
+            int(key): value for key, value in missing_measured.items()
+        }
+        assert_true(
+            "measured source position does not resolve"
+            in str(
+                investigator.resolve_artifact_selector(
+                    run, selector, {}, missing_measured_by_index
+                )
+            ),
+            "measured cell without exact source metadata resolved",
+        )
+        contradictory = json.loads(json.dumps(missing_measured))
+        contradictory_cell = contradictory["1"]["cells"][0]
+        contradictory_cell.update(
+            {
+                "source_pts_seconds": 0.1,
+                "source_pts_value": 1,
+                "source_pts_time_base": {"numerator": 1, "denominator": 8},
+                "source_frame_index": 1,
+                "pts_uncertainty_seconds": 0.0,
+                "pts_uncertainty_interval": {
+                    "start_pts_seconds": 0.1,
+                    "end_pts_seconds": 0.1,
+                },
+            }
+        )
+        contradictory_by_index = {
+            int(key): value for key, value in contradictory.items()
+        }
+        assert_true(
+            "measured source position does not resolve"
+            in str(
+                investigator.resolve_artifact_selector(
+                    run, selector, {}, contradictory_by_index
+                )
+            ),
+            "contradictory measured PTS metadata resolved",
+        )
+        measured = json.loads(json.dumps(contradictory))
+        measured_cell = measured["1"]["cells"][0]
+        measured_cell.update(
+            {
+                "source_pts_seconds": 0.125,
+                "source_pts_value": 1,
+                "source_pts_time_base": {"numerator": 1, "denominator": 8},
+                "source_frame_index": 1,
+                "pts_uncertainty_seconds": 0.0,
+                "pts_uncertainty_interval": {
+                    "start_pts_seconds": 0.125,
+                    "end_pts_seconds": 0.125,
+                },
+            }
+        )
+        measured_by_index = {int(key): value for key, value in measured.items()}
+        measured_selector = dict(selector)
+        measured_selector.update(
+            {
+                "start_pts_s": 0.125,
+                "end_pts_s": 0.125,
+                "start_frame": 1,
+                "end_frame": 1,
+            }
+        )
+        measured_probe_commands = []
+
+        def measured_probe(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            measured_probe_commands.append(command)
+            if "-count_frames" in command:
+                raise subprocess.TimeoutExpired(command, 30)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "streams": [{"duration": "1.0", "nb_frames": "N/A"}],
+                        "format": {"duration": "1.0"},
+                    }
+                ),
+                stderr="",
+            )
+
+        with patch.object(investigator.subprocess, "run", side_effect=measured_probe):
+            measured_error = investigator.resolve_artifact_selector(
+                run, measured_selector, {}, measured_by_index
+            )
+        assert_true(
+            measured_error is None
+            and len(measured_probe_commands) == 1
+            and "-count_frames" not in measured_probe_commands[0],
+            "authenticated measured frame citation forced a whole-video decode: "
+            f"{measured_error}, {measured_probe_commands}",
+        )
+        inflated_selector = dict(measured_selector)
+        inflated_selector["end_frame"] = 999
+        with patch.object(investigator.subprocess, "run", side_effect=measured_probe):
+            inflated_error = investigator.resolve_artifact_selector(
+                run, inflated_selector, {}, measured_by_index
+            )
+        assert_true(
+            "does not match attached frame positions" in str(inflated_error),
+            f"attached citation claimed unobserved frames: {inflated_error}",
+        )
+        inflated_pts_selector = dict(measured_selector)
+        inflated_pts_selector["end_pts_s"] = 0.25
+        with patch.object(investigator.subprocess, "run", side_effect=measured_probe):
+            inflated_pts_error = investigator.resolve_artifact_selector(
+                run, inflated_pts_selector, {}, measured_by_index
+            )
+        assert_true(
+            "does not match attached measured PTS" in str(inflated_pts_error),
+            f"attached citation claimed unobserved PTS: {inflated_pts_error}",
         )
         unattached = dict(selector)
         unattached["start_pts_s"], unattached["end_pts_s"] = 0.5, 0.6
@@ -2981,7 +3288,7 @@ def test_no_video_request_still_runs_synthesis_pass() -> None:
             "one video pass bypassed the required synthesis model pass",
         )
         assert_true(
-            "first-pass lead checkpoint" in prompts[0]
+            "evidence-mapping pass" in prompts[0]
             and "synthesis pass" in prompts[1]
             and "prior_report_to_recheck_and_improve" in prompts[1],
             "second pass did not synthesize the first checkpoint",
@@ -3249,6 +3556,7 @@ def main() -> int:
     test_invalid_primary_citations_are_stripped_or_omitted()
     test_existing_unresolved_without_primary_grounding_is_omitted()
     test_source_precheck_limits_attribution_and_model_execution_state_is_preserved()
+    test_unavailable_recorded_revision_remains_visible_but_cannot_authorize_code()
     test_code_selector_requires_exact_selected_line_hash()
     test_invalid_reviewed_coverage_becomes_runner_owned_skipped()
     test_duplicate_valid_coverage_is_unique()
@@ -3272,8 +3580,8 @@ def main() -> int:
     test_image_attachment_limit_is_global_across_passes()
     test_video_limits_apply_before_extraction_and_manifest_preserves_order()
     test_attachment_retention_is_contained_and_reconciled()
-    test_model_context_summarizes_periodic_video_points()
-    test_first_pass_requires_a_grounded_checkpoint_before_breadth()
+    test_model_context_includes_bounded_frame_and_field_indexes()
+    test_prompt_requires_broad_queries_causal_chains_and_window_accounting()
     test_attachment_allocation_is_reported_honestly()
     test_first_pass_keeps_every_main_video_change_candidate_under_the_image_cap()
     test_pts_video_selector_does_not_decode_the_whole_video_for_bounds()

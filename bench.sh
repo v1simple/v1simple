@@ -86,6 +86,9 @@ if ! : > "$RUN_LOG" 2>/dev/null; then
   exit 2
 fi
 
+printf '[bench] run started — evidence: %s\n' "$RUN_DIR"
+printf '[bench] detail streams to bench.log in that directory; the verdict prints here last\n'
+
 publish_latest() {
   local board_root="$ARTIFACT_ROOT/$SAFE_BOARD_ID"
   local latest="$board_root/latest"
@@ -168,6 +171,7 @@ if [[ "$FLASH" -eq 1 ]] && ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   finish 'FAIL (collection): PlatformIO is required to build and flash the firmware' 2
 fi
 
+printf '[bench] building v1replay emulator...\n'
 printf 'v1replay build: started\n' >> "$RUN_LOG"
 build_status=0
 python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
@@ -240,6 +244,9 @@ for suite in "${SUITES[@]}"; do
     args+=(--upload)
   fi
 
+  leg_note=""
+  [[ "$FLASH" -eq 1 && "$first_suite" -eq 1 ]] && leg_note=" (firmware build + flash + ${POST_UPLOAD_SETTLE_SECONDS}s settle first)"
+  printf '[bench] %s leg: %ss collection%s\n' "$suite" "$suite_duration" "$leg_note"
   printf '%s: started\n' "$suite" >> "$RUN_LOG"
   runner_status=0
   python3 "$ROOT_DIR/scripts/bench/run_logged.py" \

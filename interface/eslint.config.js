@@ -1,6 +1,5 @@
 import js from '@eslint/js';
 import svelte from 'eslint-plugin-svelte';
-import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 import svelteConfig from './svelte.config.js';
 
@@ -105,9 +104,5 @@ export default [
                 ...vitestGlobals
             }
         }
-    },
-
-    // eslint-config-prettier must stay last so it can switch off every
-    // formatting rule that Prettier already owns.
-    prettier
+    }
 ];

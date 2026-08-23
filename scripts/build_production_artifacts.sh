@@ -67,10 +67,6 @@ run_firmware_build_with_memory_log() {
     | tee "$memory_dir/waveshare-349-build.log"
 }
 
-run_size_report() {
-  "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t size
-}
-
 echo "============================================"
 echo "Production Artifact Build"
 echo "============================================"
@@ -107,8 +103,6 @@ run_step "Flash package truth report" python3 scripts/report_flash_package_size.
 run_step "LittleFS image/runtime compatibility" \
   python3 scripts/check_littlefs_image_compatibility.py \
   --candidate .pio/build/waveshare-349/littlefs.bin
-run_step "Firmware size report" run_size_report
-
 END_TIME="$(date +%s)"
 ELAPSED="$((END_TIME - START_TIME))"
 

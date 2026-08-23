@@ -16,12 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from native_test_source_manifest import (
-    LINKED_NATIVE_TEST_PILOT_ENV,
-    linked_test_names,
-    validate_manifest,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
 BUILD_ROOT = ROOT / ".artifacts" / "serial_test_builds"
@@ -60,14 +54,6 @@ def parse_args() -> argparse.Namespace:
         help="PlatformIO test environment (default: native).",
     )
     parser.add_argument(
-        "--linked-pilot",
-        action="store_true",
-        help=(
-            "Compile allow-listed production sources separately for the focused "
-            "linked-test pilot."
-        ),
-    )
-    parser.add_argument(
         "tests",
         nargs="*",
         help="Optional native test directory names (for example: test_packet_parser).",
@@ -75,10 +61,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def suite_build_root(env: str, test_name: str, linked_pilot: bool = False) -> Path:
+def suite_build_root(env: str, test_name: str) -> Path:
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", test_name)
-    if linked_pilot:
-        return BUILD_ROOT / "linked-pilot" / env / safe_name
     return BUILD_ROOT / env / safe_name
 
 
@@ -99,21 +83,7 @@ def main() -> int:
     args = parse_args()
     env = "native_car" if args.env == "native-car" else args.env
     available = discover_native_tests(env)
-    if args.linked_pilot:
-        if env not in {"native", "native-sanitized"}:
-            print(
-                "[linked-pilot] only native and native-sanitized are supported",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            validate_manifest(ROOT)
-        except ValueError as exc:
-            print(f"[linked-pilot] invalid source manifest: {exc}", file=sys.stderr)
-            return 2
-        selected = args.tests or list(linked_test_names())
-    else:
-        selected = args.tests or available
+    selected = args.tests or available
 
     unknown = sorted(set(selected) - set(available))
     if unknown:
@@ -122,29 +92,17 @@ def main() -> int:
             print(f"  - {name}")
         return 2
 
-    if args.linked_pilot:
-        unsupported = sorted(set(selected) - set(linked_test_names()))
-        if unsupported:
-            print("[linked-pilot] suite(s) are not in the exact source allow-list:")
-            for name in unsupported:
-                print(f"  - {name}")
-            return 2
-
     failures: list[tuple[str, int]] = []
 
     for index, test_name in enumerate(selected, start=1):
-        build_root = suite_build_root(env, test_name, args.linked_pilot)
+        build_root = suite_build_root(env, test_name)
         remove_tree(build_root)
 
         child_env = os.environ.copy()
         child_env["PLATFORMIO_BUILD_DIR"] = str(build_root)
-        child_env.pop(LINKED_NATIVE_TEST_PILOT_ENV, None)
-        if args.linked_pilot:
-            child_env[LINKED_NATIVE_TEST_PILOT_ENV] = "1"
 
-        mode = "linked-pilot" if args.linked_pilot else "serial"
         print(
-            f"[{env}-{mode}] ({index}/{len(selected)}) running {test_name} "
+            f"[{env}-serial] ({index}/{len(selected)}) running {test_name} "
             f"with build root {build_root}"
         )
         result = subprocess.run(
@@ -156,14 +114,12 @@ def main() -> int:
             failures.append((test_name, result.returncode))
 
     if failures:
-        mode = "linked-pilot" if args.linked_pilot else "serial"
-        print(f"[{env}-{mode}] failed suite(s):")
+        print(f"[{env}-serial] failed suite(s):")
         for test_name, returncode in failures:
             print(f"  - {test_name} (exit {returncode})")
         return 1
 
-    mode = "linked-pilot" if args.linked_pilot else "serial"
-    print(f"[{env}-{mode}] all {len(selected)} suite(s) passed")
+    print(f"[{env}-serial] all {len(selected)} suite(s) passed")
     return 0
 
 

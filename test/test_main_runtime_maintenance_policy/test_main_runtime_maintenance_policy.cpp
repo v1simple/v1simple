@@ -348,7 +348,7 @@ void test_session_start_is_latched_once_and_never_moves() {
     const std::string initBody = extractFunctionBody(source, "static void initializeMaintenanceBootFlow(");
     const std::string loopBody = extractFunctionBody(source, "void loop()");
 
-    // Trailing '=' only, so clang-format is free to wrap the assignment.
+    // Match the assignment independently of its following expression.
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           initBody.find("mainRuntimeState.maintenanceBootSessionStartedMs ="));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, initBody.find("mainRuntimeState.maintenanceLastUiActivityMs = 0;"));

@@ -1,6 +1,5 @@
-// Native tests reach this translation unit two ways: the linked-source pilot
-// builds it separately, and an ordinary native build includes it into the test
-// TU. Either way it must be compiled exactly once, against the mock display.
+// Native tests include this translation unit directly against the mock display.
+// Compile it exactly once in that test translation unit.
 #if !defined(UNIT_TEST) || defined(V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK)
 
 #include "display_preview_module.h"

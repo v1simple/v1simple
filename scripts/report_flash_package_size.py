@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Report flash package size truth for firmware artifacts.
-
-Prints firmware, filesystem, bootloader, partition, total package bytes,
-and remaining gap against a reduction target from a known baseline.
-
-Exit status is non-zero only when an explicit budget/expectation is passed
-and violated.
-"""
+"""Validate firmware artifact sizes against release package bounds."""
 
 from __future__ import annotations
 
@@ -20,8 +13,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--build-dir", default=".pio/build/waveshare-349")
     p.add_argument("--partition-table", default="partitions_v1.csv")
-    p.add_argument("--baseline-total-bytes", type=int, default=6_361_920)
-    p.add_argument("--target-reduction-pct", type=float, default=25.0)
     p.add_argument("--max-total-package-bytes", type=int)
     p.add_argument("--max-firmware-bytes", type=int)
     p.add_argument("--expect-littlefs-bytes", type=int)
@@ -61,21 +52,13 @@ def main() -> int:
     storage_partition = read_storage_partition_size(partition_table)
 
     total = firmware + littlefs + bootloader + partitions
-    target_total = int(round(args.baseline_total_bytes * (1.0 - args.target_reduction_pct / 100.0)))
-    saved_vs_baseline = args.baseline_total_bytes - total
-    remaining_gap = max(0, total - target_total)
-
-    print("Flash package report")
+    print("Flash package sizes")
     print(f"  firmware.bin:   {human(firmware)}")
     print(f"  littlefs.bin:   {human(littlefs)}")
     print(f"  bootloader.bin: {human(bootloader)}")
     print(f"  partitions.bin: {human(partitions)}")
     print(f"  storage part:   {human(storage_partition)}")
     print(f"  total package:  {human(total)}")
-    print(f"  baseline total: {human(args.baseline_total_bytes)}")
-    print(f"  target total:   {human(target_total)} ({args.target_reduction_pct:.1f}% reduction)")
-    print(f"  saved so far:   {human(saved_vs_baseline)}")
-    print(f"  remaining gap:  {human(remaining_gap)}")
 
     failed = False
 

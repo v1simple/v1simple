@@ -1,6 +1,5 @@
 #include <unity.h>
 #include <atomic>
-#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -163,9 +162,7 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     return g_sendCommandResult;
 }
 
-#if !defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
 #include "../../src/ble_proxy.cpp"
-#endif
 #include "../../src/ble_connection.cpp"
 
 void setUp() {
@@ -481,52 +478,6 @@ void test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_st
     TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_free_size, snapshot.freeInternalBytes);
     TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_largest_block, snapshot.largestInternalBlockBytes);
 }
-
-#if defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
-void test_linked_source_epoch_gate_rejects_a_callback_crossing_disable_and_reenable() {
-    V1BLEClient client;
-    TEST_ASSERT_TRUE(client.allocateProxyQueues());
-    client.bleNotifyMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8201u);
-    client.phoneCmdMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8202u);
-    const uint32_t oldEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
-    std::atomic<bool> callbackEntered{false};
-    std::atomic<bool> callbackMayExit{false};
-
-    // This deterministic host barrier proves the linked production observer's
-    // ordering only. It is explicitly non-qualifying for the physical race.
-    std::thread callback([&]() {
-        BleProxyEpochObserver::CallbackLease lease(client.proxyEpochObserver_, BleProxyCallbackDirection::V1ToProxy,
-                                                   oldEpoch);
-        client.proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::V1ToProxy);
-        callbackEntered.store(true, std::memory_order_release);
-        while (!callbackMayExit.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        client.proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
-    });
-    while (!callbackEntered.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
-    }
-
-    mock_queue_semaphore_take_result(pdFALSE);
-    client.releaseProxyQueues();
-    TEST_ASSERT_TRUE(client.proxyQueueReleasePending_.load(std::memory_order_acquire));
-    callbackMayExit.store(true, std::memory_order_release);
-    callback.join();
-    mock_queue_semaphore_take_result(pdTRUE);
-    mock_queue_semaphore_take_result(pdTRUE);
-    TEST_ASSERT_TRUE(client.allocateProxyQueues());
-    TEST_ASSERT_EQUAL_UINT32(oldEpoch + 1, client.proxyQueueEpoch_.load(std::memory_order_acquire));
-    client.proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, oldEpoch, false);
-
-    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
-    TEST_ASSERT_TRUE(observation.activeCallbackObserved);
-    TEST_ASSERT_TRUE(observation.releaseOpportunityObserved);
-    TEST_ASSERT_EQUAL_UINT32(1, observation.staleV1ToProxyRejections);
-    TEST_ASSERT_FALSE(observation.oldEpochForwarded);
-    TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(oldEpoch + 1));
-}
-#endif
 
 void test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation() {
     V1BLEClient client;
@@ -859,9 +810,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_missing_phone_queue_records_rejected_epoch_admission);
     RUN_TEST(test_runtime_disable_closes_epoch_admission_before_queue_release);
     RUN_TEST(test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state);
-#if defined(V1_LINKED_TEST_BLE_PROXY_ALLOC)
-    RUN_TEST(test_linked_source_epoch_gate_rejects_a_callback_crossing_disable_and_reenable);
-#endif
     RUN_TEST(test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation);
     RUN_TEST(test_initProxyServer_partial_failure_frees_partial_allocation_and_resets_state);
     RUN_TEST(test_phone_command_invalid_drop_updates_getters_and_metrics_payload);

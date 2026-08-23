@@ -21,7 +21,6 @@ ALLOWED_SUFFIXES = ("@users.noreply.github.com",)
 ALLOWED_NAMES = frozenset(
     {
         "contributor",
-        "dependabot[bot]",
         "github",
         "github-actions[bot]",
         "v1simple",

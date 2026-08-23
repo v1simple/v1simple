@@ -343,26 +343,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Summary
-        if: steps.publish.outputs.published == 'true'
-        run: |
-          {
-            echo "## Released ${{ steps.version.outputs.tag }}"
-            echo ""
-            echo "- Exact main commit passed authoritative CI before automatic semantic-version publication"
-            echo "- Selected firmware version embedded and verified without changing that commit"
-            echo "- Tested main commit: ${{ steps.publish.outputs.sha }}"
-            echo "- Annotated tag published atomically with the unchanged main ref or safely reused"
-            echo "- GitHub Release published with firmware, filesystem, merged installer binary, and ESP Web Tools manifest"
-            echo "- Third-party notices and runtime license texts published with the release and installer"
-            echo "- Image-info report uploaded with the workflow artifacts"
-            if [ "${{ steps.publish.outputs.deploy_pages }}" = "true" ]; then
-              echo "- GitHub Pages installer staged for deployment from the same manifest and merged image"
-            else
-              echo "- Newer GitHub Pages installer left unchanged while this release's assets were repaired"
-            fi
-          } >> $GITHUB_STEP_SUMMARY
-
   deploy-pages:
     needs: release
     if: needs.release.outputs.deploy_pages == 'true'

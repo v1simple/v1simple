@@ -172,10 +172,18 @@ def parse_perf_csv(path: Path) -> list[ParsedSession]:
     current_rows: list[dict[str, int]] = []
     leading_rows: list[tuple[int, str]] = []
 
-    def finish_current() -> None:
+    def finish_current(*, superseded: bool = False) -> None:
         nonlocal current_header, current_meta, current_rows
         if current_header is not None:
             if not current_rows:
+                # A V1 connection can be replaced before the five-second perf
+                # sampler emits its first row. A following header proves that
+                # this empty session was superseded; an empty terminal session
+                # remains a collection failure.
+                if superseded:
+                    current_meta = None
+                    current_rows = []
+                    return
                 raise CsvEvidenceError("perf CSV session has no metric rows")
             sessions.append(
                 ParsedSession(current_meta, current_header, tuple(current_rows))
@@ -199,7 +207,7 @@ def parse_perf_csv(path: Path) -> list[ParsedSession]:
                     sessions.append(ParsedSession(None, fields, implicit_rows))
                 leading_rows = []
             else:
-                finish_current()
+                finish_current(superseded=True)
             current_header = fields
             continue
 

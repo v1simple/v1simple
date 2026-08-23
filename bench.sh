@@ -201,7 +201,7 @@ except (OSError, json.JSONDecodeError):
     payload = {}
 
 result = str(payload.get("result") or "COLLECTION_FAILED")
-kind = str(payload.get("failure_kind") or "")
+kind = str(payload.get("failure_kind") or "none")
 message = str(
     payload.get("error")
     or payload.get("metric_validation_message")

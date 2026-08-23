@@ -43,8 +43,9 @@ def write_replay_csv(
     path: Path,
     *,
     final_overrides: dict[str, int] | None = None,
-    replacement_seq: int = 2,
+    replacement_seq: int | None = None,
     omit_column: str = "",
+    superseded_empty_session: bool = False,
 ) -> None:
     columns = [column for column in REPLAY_COLUMNS if column != omit_column]
     final = replay_row(
@@ -55,16 +56,29 @@ def write_replay_csv(
         v1AllVolumeParsed=1,
     )
     final.update(final_overrides or {})
-    sessions = [
-        (
-            "#session_start,seq=1,bootId=9,uptime_ms=100,token=AAAA,schema=46",
-            [replay_row(100), replay_row(150)],
-        ),
-        (
-            f"#session_start,seq={replacement_seq},bootId=9,uptime_ms=200,token=BBBB,schema=46",
-            [replay_row(200), final],
-        ),
-    ]
+    qstart_seq = 2 if superseded_empty_session else 1
+    if replacement_seq is None:
+        replacement_seq = qstart_seq + 1
+    sessions = []
+    if superseded_empty_session:
+        sessions.append(
+            (
+                "#session_start,seq=1,bootId=9,uptime_ms=50,token=EMPTY,schema=46",
+                [],
+            )
+        )
+    sessions.extend(
+        [
+            (
+                f"#session_start,seq={qstart_seq},bootId=9,uptime_ms=100,token=AAAA,schema=46",
+                [replay_row(100), replay_row(150)],
+            ),
+            (
+                f"#session_start,seq={replacement_seq},bootId=9,uptime_ms=200,token=BBBB,schema=46",
+                [replay_row(200), final],
+            ),
+        ]
+    )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         for marker, rows in sessions:
@@ -158,6 +172,30 @@ def test_replay_pass_is_direct_and_writes_nothing() -> None:
         assert_true(before == after == ["perf.csv"], f"validator wrote derived files: {after}")
 
 
+def test_replay_allows_a_superseded_session_without_samples() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "perf.csv"
+        write_replay_csv(path, superseded_empty_session=True)
+        completed = run_cli(path)
+        assert_true(completed.returncode == 0, completed.stdout + completed.stderr)
+        sessions = import_perf_csv.load_sessions(path)
+        assert_true(len(sessions) == 2, f"empty superseded session was retained: {sessions}")
+
+
+def test_terminal_session_without_samples_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "perf.csv"
+        write_replay_csv(path)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(",".join(REPLAY_COLUMNS) + "\n")
+            handle.write(
+                "#session_start,seq=3,bootId=9,uptime_ms=300,token=EMPTY,schema=46\n"
+            )
+        completed = run_cli(path)
+        assert_true(completed.returncode == 3, completed.stdout + completed.stderr)
+        assert_true("session has no metric rows" in completed.stderr, completed.stderr)
+
+
 def test_replay_semantic_failure_returns_two() -> None:
     with tempfile.TemporaryDirectory() as raw:
         path = Path(raw) / "perf.csv"
@@ -220,6 +258,8 @@ def main() -> int:
     test_leading_rows_form_an_implicit_session()
     test_truncated_and_duplicate_rows_are_rejected()
     test_replay_pass_is_direct_and_writes_nothing()
+    test_replay_allows_a_superseded_session_without_samples()
+    test_terminal_session_without_samples_is_rejected()
     test_replay_semantic_failure_returns_two()
     test_replay_collection_failures_return_three()
     test_core_segment_selection_is_structural_only()

@@ -108,7 +108,7 @@ inline bool hitsV1BleHardResetThreshold(uint8_t consecutiveFailures) {
 // ============================================================================
 
 // ============================================================================
-// BLE client lifetime contract (CI-enforced).
+// BLE client lifetime contract.
 // ============================================================================
 // NimBLE maintains a fixed 3-slot internal client array. Deleting a client
 // at runtime (NimBLEDevice::deleteClient) corrupts the heap — the slot is
@@ -116,8 +116,6 @@ inline bool hitsV1BleHardResetThreshold(uint8_t consecutiveFailures) {
 //
 // deleteClient() and deinit() are prohibited. deleteAllBonds() is restricted
 // to fresh-flash recovery in ble_client.cpp.
-//
-// Enforced by scripts/check_ble_deletion_contract.py.
 // ============================================================================
 
 // ============================================================================

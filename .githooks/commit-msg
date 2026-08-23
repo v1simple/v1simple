@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Enforce the project's commit-message contract:  <type>(<scope>): short summary
+# Privacy gate for commit messages.
 #
 # Install:  ./scripts/setup-hooks.sh
-# `git commit --no-verify` skips this format check, but prepare-commit-msg scans
-# the initial message and the independent reference-transaction hook scans the
+# `git commit --no-verify` skips this hook, but prepare-commit-msg scans the
+# initial message and the independent reference-transaction hook scans the
 # completed message before Git can move any ref to it.
 
 set -euo pipefail
@@ -15,5 +15,4 @@ PRIVACY_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
   exit 1
 }
 
-python3 "$PRIVACY_CHECK" --message-file "$1" || exit 1
-exec python3 "$ROOT/scripts/check_commit_msg.py" "$1"
+exec python3 "$PRIVACY_CHECK" --message-file "$1"

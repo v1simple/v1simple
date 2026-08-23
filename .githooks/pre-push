@@ -100,12 +100,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     :
   else
     case "$remote_ref" in
-      refs/heads/main|refs/heads/dependabot/github_actions/*)
+      refs/heads/main)
         ;;
       *)
         fail "a destination ref is outside the public ref allowlist."
-        echo "    Public publication is restricted to main, semantic release tags," >&2
-        echo "    and GitHub-managed Dependabot github_actions branches." >&2
+        echo "    Public publication is restricted to main and semantic release tags." >&2
         blocked=1
         continue
         ;;

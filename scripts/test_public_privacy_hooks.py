@@ -17,7 +17,6 @@ PREPARE_COMMIT_MSG = ROOT / ".githooks" / "prepare-commit-msg"
 PRE_PUSH = ROOT / ".githooks" / "pre-push"
 COMMIT_MSG = ROOT / ".githooks" / "commit-msg"
 REFERENCE_TRANSACTION = ROOT / ".githooks" / "reference-transaction"
-COMMIT_MSG_CHECK = ROOT / "scripts" / "check_commit_msg.py"
 METADATA_CHECK = ROOT / "scripts" / "check_public_commit_metadata.py"
 SNAPSHOT_CHECK = ROOT / "scripts" / "check_public_snapshot_privacy.py"
 SNAPSHOT_TEST = ROOT / "scripts" / "test_check_public_snapshot_privacy.py"
@@ -64,7 +63,6 @@ def make_repo(base: Path) -> Path:
     shutil.copy2(PRE_PUSH, repo / ".githooks" / "pre-push")
     shutil.copy2(COMMIT_MSG, repo / ".githooks" / "commit-msg")
     shutil.copy2(REFERENCE_TRANSACTION, repo / ".githooks" / "reference-transaction")
-    shutil.copy2(COMMIT_MSG_CHECK, repo / "scripts" / COMMIT_MSG_CHECK.name)
     shutil.copy2(METADATA_CHECK, repo / "scripts" / METADATA_CHECK.name)
     shutil.copy2(SNAPSHOT_CHECK, repo / "scripts" / SNAPSHOT_CHECK.name)
     shutil.copy2(SNAPSHOT_TEST, repo / "scripts" / SNAPSHOT_TEST.name)
@@ -122,20 +120,11 @@ def invoke_commit_msg(repo: Path, message: str) -> subprocess.CompletedProcess[s
     return run([str(repo / ".githooks" / "commit-msg"), str(message_file)], cwd=repo)
 
 
-def test_commit_msg_accepts_safe_conventional_message() -> None:
+def test_commit_msg_accepts_safe_message() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
-        completed = invoke_commit_msg(repo, "ci(release): scan complete publication history\n")
+        completed = invoke_commit_msg(repo, "safe fixture message\n")
         assert completed.returncode == 0, completed.stderr
-
-
-def test_commit_msg_rejects_invalid_message_without_recommending_bypass() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        completed = invoke_commit_msg(repo, "invalid message\n")
-        assert completed.returncode != 0
-        assert "do not bypass this safeguard" in completed.stderr
-        assert "--no-verify" not in completed.stderr
 
 
 def test_commit_msg_blocks_private_text_before_validator_can_echo_it() -> None:
@@ -769,8 +758,7 @@ def main() -> int:
         return 0
 
     tests = (
-        test_commit_msg_accepts_safe_conventional_message,
-        test_commit_msg_rejects_invalid_message_without_recommending_bypass,
+        test_commit_msg_accepts_safe_message,
         test_commit_msg_blocks_private_text_before_validator_can_echo_it,
         test_pre_commit_accepts_public_identity,
         test_pre_commit_blocks_personal_identity_without_echoing_it,

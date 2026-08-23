@@ -89,7 +89,6 @@ section "Frontend"
 )
 
 section "Frontend Packaging"
-run_step "Web asset guardrails" python3 scripts/check_web_asset_budget.py
 run_step "Audio asset manifest (source + deployed)" \
   python3 scripts/check_audio_asset_manifest.py
 

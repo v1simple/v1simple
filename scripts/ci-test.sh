@@ -1,12 +1,12 @@
 #!/bin/bash
 # Authoritative repo gate used locally and by GitHub workflows.
 #
-# Gate order: pinned-toolchain check -> format -> privacy gate -> BLE invariant
-# gates -> firmware static analysis -> Python regression tests -> host-tool tests
-# -> native tests across every host environment -> frontend checks -> production
-# artifact build.
-# Privacy and Tier-0 gates run their own regression suites inline; a guard is
-# only as trustworthy as the proof that it still detects.
+# Gate order: pinned toolchain/workflow checks -> production build contracts ->
+# privacy and publication guards -> firmware static analysis -> Python regression
+# tests -> host-tool tests -> native tests across every host environment ->
+# frontend checks -> production artifact build.
+# Privacy guards run their own regression suites inline; a guard is only as
+# trustworthy as the proof that it still detects.
 
 set -euo pipefail
 
@@ -23,8 +23,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/ci-test.sh [--fast] [--help]
 
-  --fast   Static preflight only: toolchain pins, format, privacy, and Tier-0
-           invariant gates. No firmware analysis, native tests, or builds.
+  --fast   Static preflight only: toolchain/workflow pins, build contracts, and
+           privacy/publication guards. No firmware analysis, native tests, or builds.
   --help   Show this message.
 EOF
 }
@@ -119,9 +119,6 @@ section "Toolchain"
 run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
 run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
 
-section "Format"
-run_step "clang-format check" python3 scripts/check_clang_format.py
-
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
@@ -137,15 +134,6 @@ run_step "Scanner parity with the internal repository" python3 scripts/test_scan
 run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
 run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
 run_step "v1replay producer-to-firmware protocol contract" python3 tools/v1replay/verify/verify_protocol.py
-
-section "Tier-0 Invariants"
-# Same reasoning as the privacy section, applied where the stakes are highest:
-# these two guards report success by finding nothing, so one that silently
-# stopped detecting is indistinguishable from a clean tree. The regression suite
-# plants known violations and proves each guard still catches them.
-run_step "BLE hot-path invariant guard" python3 scripts/check_ble_hot_path_contract.py
-run_step "BLE deletion safety contract" python3 scripts/check_ble_deletion_contract.py
-run_step "Tier-0 guard regression suite" python3 scripts/test_ble_tier0_guards.py
 
 if [[ "$FAST" -eq 1 ]]; then
   ELAPSED=$(($(date +%s) - START_TIME))

@@ -68,7 +68,6 @@ from pathlib import Path
 json_path = Path(sys.argv[1])
 xml_path = Path(sys.argv[2])
 suite = sys.argv[3]
-bad_metric = os.environ.get("FAKE_PIO_BAD_METRIC") == "1"
 zero_exit_error = os.environ.get("FAKE_PIO_ZERO_EXIT_ERROR") == "1"
 partial_skip = os.environ.get("FAKE_PIO_PARTIAL_SKIP") == "1"
 test_cases = (
@@ -111,7 +110,7 @@ xml_path.write_text(
 
 metrics_by_suite = {
     "test_device_boot": {
-        "internal_free_bytes": 1 if bad_metric else 200000,
+        "internal_free_bytes": 200000,
         "internal_largest_block_bytes": 100000,
         "psram_size_bytes": 8 * 1024 * 1024,
         "free_sketch_bytes": 2 * 1024 * 1024,
@@ -141,11 +140,9 @@ fi
 def run_device_tests(
     tmp_dir: Path,
     *,
-    bad_metric: bool = False,
     infra_exit: bool = False,
     zero_exit_error: bool = False,
     partial_skip: bool = False,
-    compare_to: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin = tmp_dir / "bin"
     write_fake_pio(fake_bin / "pio")
@@ -163,8 +160,6 @@ def run_device_tests(
             "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
         }
     )
-    if bad_metric:
-        env["FAKE_PIO_BAD_METRIC"] = "1"
     if infra_exit:
         env["FAKE_PIO_INFRA_EXIT"] = "1"
         env["DEVICE_FAIL_CLOSED_TRANSPORT"] = "1"
@@ -174,8 +169,6 @@ def run_device_tests(
         env["FAKE_PIO_PARTIAL_SKIP"] = "1"
 
     command = [str(RUNNER), "--quick", "--cooldown-seconds", "0", "--out-dir", str(out_dir)]
-    if compare_to is not None:
-        command.extend(["--compare-to", str(compare_to)])
 
     completed = subprocess.run(
         command,
@@ -200,48 +193,9 @@ def test_empty_compare_args_passes_on_nounset_shells() -> None:
         manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
         assert_true(len(manifest["git_sha"]) == 40, f"git SHA must be full: {manifest}")
         assert_true(manifest["base_result"] == "PASS", f"unexpected suite base result: {manifest}")
-        assert_true(manifest["result"] == "NO_BASELINE", f"unexpected manifest result: {manifest}")
-        assert_true((out_dir / "scoring.json").exists(), "scoring.json should be written")
-        assert_true((out_dir / "summary.md").exists(), "summary.md should be written")
-
-
-def test_scorer_hard_failure_controls_exit_status() -> None:
-    with tempfile.TemporaryDirectory() as tmp_dir_raw:
-        completed, out_dir = run_device_tests(Path(tmp_dir_raw), bad_metric=True)
-        assert_true(completed.returncode != 0, "hard scorer failure should make device runner exit non-zero")
-        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-        scoring = json.loads((out_dir / "scoring.json").read_text(encoding="utf-8"))
-        assert_true(manifest["base_result"] == "PASS", f"suite base result should remain PASS: {manifest}")
-        assert_true(manifest["result"] == "FAIL", f"manifest should reflect scorer failure: {manifest}")
-        assert_true(scoring["result"] == "FAIL", f"scoring should fail: {scoring}")
-
-
-def test_legacy_device_manifests_retain_baseline_comparison() -> None:
-    with tempfile.TemporaryDirectory() as tmp_dir_raw:
-        root = Path(tmp_dir_raw)
-        baseline_completed, baseline_out = run_device_tests(root / "baseline")
-        assert_true(
-            baseline_completed.returncode == 0,
-            baseline_completed.stdout + baseline_completed.stderr,
-        )
-        baseline_manifest = baseline_out / "manifest.json"
-        baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
-        assert_true(
-            "hardware_scoring_fingerprint" not in baseline_payload,
-            f"legacy fixture unexpectedly declared a scoring identity: {baseline_payload}",
-        )
-
-        current_completed, current_out = run_device_tests(
-            root / "current",
-            compare_to=baseline_manifest,
-        )
-        assert_true(
-            current_completed.returncode == 0,
-            current_completed.stdout + current_completed.stderr,
-        )
-        scoring = json.loads((current_out / "scoring.json").read_text(encoding="utf-8"))
-        assert_true(scoring["comparison_kind"] == "run_variance", str(scoring))
-        assert_true(scoring["baseline_window"]["candidate_count"] == 1, str(scoring))
+        assert_true(manifest["result"] == "PASS", f"unexpected manifest result: {manifest}")
+        assert_true((out_dir / "metrics.ndjson").exists(), "raw metrics should be written")
+        assert_true((out_dir / "suite_index.tsv").exists(), "raw suite index should be written")
 
 
 def test_fail_closed_transport_rejects_nonzero_pio_exit() -> None:
@@ -294,16 +248,13 @@ def test_device_lane_owns_only_the_three_surviving_suites() -> None:
     assert_true(runner.count('SUITES=("${CORE_SUITES[@]}" "${CONCURRENCY_SUITES[@]}")') == 1,
                 "default mode must select core plus event-bus suites exactly once")
     assert_true("--full" not in runner, "duplicate full/default device mode returned")
-    assert_true(runner.count("score_hardware_run.py") == 1, "device results must be scored once")
-    expected_usage = "[--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
+    expected_usage = "[--quick] [--cooldown-seconds N] [--out-dir PATH]"
     assert_true(runner.count(expected_usage) == 2,
                 "device runner help and error usage must expose only the supported option shape")
 
 
 def main() -> int:
     test_empty_compare_args_passes_on_nounset_shells()
-    test_scorer_hard_failure_controls_exit_status()
-    test_legacy_device_manifests_retain_baseline_comparison()
     test_fail_closed_transport_rejects_nonzero_pio_exit()
     test_zero_exit_with_reported_test_error_fails()
     test_partial_skip_uses_real_platformio_counters_and_passes()

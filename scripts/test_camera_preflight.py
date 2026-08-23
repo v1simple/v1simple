@@ -16,10 +16,8 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
 import camera_preflight as preflight_module  # noqa: E402
 import run_window as run_window_module  # noqa: E402
-from bench_identity import current_grader_fingerprint  # noqa: E402
-from bench_policy import _validate_camera_smoke  # noqa: E402
 from camera_artifacts import build_capture_manifest  # noqa: E402
-from camera_grade import (  # noqa: E402
+from camera_registration import (  # noqa: E402
     DISPLAY_CROP_HEIGHT,
     DISPLAY_CROP_WIDTH,
     DISPLAY_CROP_X,
@@ -152,6 +150,10 @@ class FakeCamera:
         self.preflight_result_path = out_dir / "camera_preflight.json"
         self.result_path = out_dir / "camera_result.json"
         self.video_path = out_dir / "evidence_exp50.mov"
+        self.frame_timing_path = out_dir / "frame_timing.ndjson"
+        self.video_timing_path = out_dir / "video_timing_verification.json"
+        self.bright_still_path = out_dir / "final_auto.jpg"
+        self.dim_still_path = out_dir / "final_profile.jpg"
         self.recording_started_monotonic = None
         self.errors: list[str] = []
         self.start_ok = start_ok
@@ -186,6 +188,10 @@ class FakeCamera:
             return False
         self.preflight_path.write_bytes(b"fixed session still")
         self.video_path.write_bytes(b"short video")
+        self.frame_timing_path.write_text('{"frame":0,"host_monotonic_ns":1}\n', encoding="utf-8")
+        self.video_timing_path.write_text('{"status":"verified"}\n', encoding="utf-8")
+        self.bright_still_path.write_bytes(b"bright still")
+        self.dim_still_path.write_bytes(b"dim still")
         self.running = True
         self._write_result("RECORDING")
         return True
@@ -211,9 +217,16 @@ class FakeCamera:
                     }
                     if result == "CAPTURED"
                     else {},
+                    "frame_timing": self.frame_timing_path.name if self.frame_timing_path.is_file() else "",
+                    "video_timing_verification": (
+                        self.video_timing_path.name if self.video_timing_path.is_file() else ""
+                    ),
+                    "video_timing_verification_result": (
+                        {"status": "verified"} if result == "CAPTURED" else {}
+                    ),
                     "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
-                    "bright_still": "",
-                    "dim_still": "",
+                    "bright_still": self.bright_still_path.name if self.bright_still_path.is_file() else "",
+                    "dim_still": self.dim_still_path.name if self.dim_still_path.is_file() else "",
                     "profile_validation": {"result": "PASS"} if result == "CAPTURED" else {},
                     "errors": list(self.errors),
                 }
@@ -232,7 +245,7 @@ class FakeCamera:
     def stop(self, collection_completed: bool) -> dict[str, Any]:
         self.stop_calls += 1
         self.running = False
-        result = "CAPTURED" if self.smoke_capture_ok and collection_completed is False else "CAPTURE_FAILED"
+        result = "CAPTURED" if self.smoke_capture_ok or collection_completed else "CAPTURE_FAILED"
         self._write_result(result)
         return {"result": result, "errors": list(self.errors)}
 
@@ -582,6 +595,8 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         camera_dir.mkdir(parents=True)
         names = {
             "video": "evidence_exp50.mov",
+            "frame_timing": "frame_timing.ndjson",
+            "video_timing_verification": "video_timing_verification.json",
             "session_start_still": "session_start_exp50.jpg",
             "bright_still": "final_auto.jpg",
             "dim_still": "final_profile.jpg",
@@ -606,8 +621,6 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             ),
             encoding="utf-8",
         )
-        encounter = camera_dir.parent / "encounters.csv"
-        encounter.write_text("millis,event,priority\n0,SAMPLE,1\n", encoding="utf-8")
         camera_result = {
             "result": "CAPTURED",
             "camera_name": "Global Shutter Camera",
@@ -615,6 +628,7 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             "profile": {"video_exposure_time_abs": 50},
             "expected_duration_seconds": 300,
             "video_duration_seconds": 300.0,
+            "video_timing_verification_result": {"status": "verified"},
             "profile_validation": {"result": "PASS"},
             "errors": [],
             **names,
@@ -623,10 +637,6 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             camera_dir=camera_dir,
             camera_result=camera_result,
             suite="replay",
-            product_fingerprint="a" * 64,
-            scenario_fingerprint="b" * 64,
-            encounter_csv_path=encounter,
-            timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 2.0},
         )
         assert_true(
             first["preflight"]["sha256"]
@@ -645,10 +655,6 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             camera_dir=camera_dir,
             camera_result=camera_result,
             suite="replay",
-            product_fingerprint="a" * 64,
-            scenario_fingerprint="b" * 64,
-            encounter_csv_path=encounter,
-            timing_anchor={"kind": "first_emitted_replay_sample", "video_seconds": 2.0},
         )
         assert_true(first["capture_id"] != second["capture_id"], "preflight change did not change capture_id")
 
@@ -666,10 +672,6 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         )
         assert_true(code == 0 and smoke["result"] == "PASS", f"standalone smoke failed: {smoke}")
         assert_true(smoke["schema_version"] == 2, f"smoke schema did not own its bytes: {smoke}")
-        assert_true(
-            smoke["grader_fingerprint"] == current_grader_fingerprint(),
-            "standalone smoke lost current grader ownership",
-        )
         assert_true(
             smoke["camera"]
             == {
@@ -696,11 +698,6 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
             smoke["preflight"]["path"] == smoke["artifacts"]["preflight"]["path"]
             and smoke["preflight"]["sha256"] == smoke["artifacts"]["preflight"]["sha256"],
             f"preflight summary disagrees with owned bytes: {smoke}",
-        )
-        _validate_camera_smoke(
-            smoke,
-            smoke_dir / "camera_smoke.json",
-            current_grader=current_grader_fingerprint(),
         )
         assert_true(made[0].start_calls == 1 and made[0].stop_calls == 1, "smoke lifecycle was duplicated")
 

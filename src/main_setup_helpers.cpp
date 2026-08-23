@@ -176,7 +176,7 @@ void onV1ConnectImmediate() {
     mainRuntimeState.v1ConnectedAtMs = millis();
     connectionStateModule.handleConnected(mainRuntimeState.v1ConnectedAtMs, bleClient.sessionGeneration());
 
-    // Start a new perf CSV session so scoring tools can isolate
+    // Start a new perf CSV session so the harness can isolate
     // V1-connected data from idle boot noise.
     perfSdLogger.startNewSession();
 }

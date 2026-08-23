@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,17 +34,22 @@ def _normalize_metric(record: dict[str, Any], *, run_id: str, git_sha: str, suit
         record["suite_or_profile"] = suite
     if not record.get("sample"):
         record["sample"] = "value"
-    if not record.get("unit"):
-        record["unit"] = "count"
+    metric = record.get("metric")
+    if not isinstance(metric, str) or not metric.strip():
+        raise ValueError("metric line has no metric name")
+
+    unit = record.get("unit")
+    if not isinstance(unit, str) or not unit.strip():
+        raise ValueError("metric line has no emitted unit")
+
     if not isinstance(record.get("tags"), dict):
-        record["tags"] = {}
+        raise ValueError("metric line has invalid tags")
 
     value = record.get("value")
-    if isinstance(value, bool):
-        value = int(value)
-    if not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("metric line has non-numeric value")
-    record["value"] = float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("metric line has non-finite value")
 
     for field in [
         "schema_version",

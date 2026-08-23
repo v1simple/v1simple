@@ -13,7 +13,6 @@ cd "$ROOT_DIR"
 
 MODE="device"
 SUITE_COOLDOWN_SECONDS="${DEVICE_SUITE_COOLDOWN_SECONDS:-5}"
-COMPARE_TO_MANIFESTS=()
 OUT_DIR_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -29,14 +28,6 @@ while [[ $# -gt 0 ]]; do
       SUITE_COOLDOWN_SECONDS="$2"
       shift
       ;;
-    --compare-to)
-      if [[ $# -lt 2 ]]; then
-        echo "Missing value for --compare-to" >&2
-        exit 2
-      fi
-      COMPARE_TO_MANIFESTS+=("$2")
-      shift
-      ;;
     --out-dir)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for --out-dir" >&2
@@ -46,7 +37,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]"
+      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--out-dir PATH]"
       echo ""
       echo "Modes:"
       echo "  (default)  Run boot, heap, and event-bus suites"
@@ -54,8 +45,6 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --cooldown-seconds N"
       echo "             Wait N seconds between suites (default: ${DEVICE_SUITE_COOLDOWN_SECONDS:-5})"
-      echo "  --compare-to PATH"
-      echo "             Compare this run against a prior manifest.json (repeat for a baseline window)"
       echo "  --out-dir PATH"
       echo "             Write all run artifacts to PATH"
       echo ""
@@ -65,7 +54,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--compare-to PATH ...] [--out-dir PATH]" >&2
+      echo "Usage: $0 [--quick] [--cooldown-seconds N] [--out-dir PATH]" >&2
       echo "" >&2
       echo "Unknown option: $1" >&2
       exit 2
@@ -200,8 +189,6 @@ mkdir -p "$OUT_DIR"
 MAIN_LOG="$OUT_DIR/device.log"
 METRICS_NDJSON="$OUT_DIR/metrics.ndjson"
 MANIFEST_JSON="$OUT_DIR/manifest.json"
-SCORING_JSON="$OUT_DIR/scoring.json"
-SUMMARY_MD="$OUT_DIR/summary.md"
 SUITE_INDEX_TSV="$OUT_DIR/suite_index.tsv"
 : > "$MAIN_LOG"
 : > "$METRICS_NDJSON"
@@ -377,58 +364,12 @@ payload = {
     "result": base_result,
     "base_result": base_result,
     "metrics_file": "metrics.ndjson",
-    "scoring_file": "scoring.json",
     "tracks": tracks,
     "suite_results": suite_rows,
 }
 
 manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
-}
-
-score_manifest() {
-  local scorer_status=0
-  local compare_args=()
-  local compare_to=""
-
-  if [[ "${#COMPARE_TO_MANIFESTS[@]}" -gt 0 ]]; then
-    for compare_to in "${COMPARE_TO_MANIFESTS[@]}"; do
-      compare_args+=(--compare-to "$compare_to")
-    done
-  fi
-
-  set +e
-  python3 "$ROOT_DIR/tools/score_hardware_run.py" \
-    "$MANIFEST_JSON" \
-    --catalog "$ROOT_DIR/tools/hardware_metric_catalog.json" \
-    ${compare_args[@]+"${compare_args[@]}"} \
-    --json-out "$SCORING_JSON" > "$SUMMARY_MD"
-  scorer_status=$?
-  set -e
-
-  if [[ "$scorer_status" -le 2 ]]; then
-    python3 - "$MANIFEST_JSON" "$SCORING_JSON" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest_path = Path(sys.argv[1])
-scoring_path = Path(sys.argv[2])
-manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-scoring = json.loads(scoring_path.read_text(encoding="utf-8"))
-manifest["result"] = scoring["result"]
-manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-PY
-  else
-    cat > "$SUMMARY_MD" <<EOF
-# Hardware Run Score
-
-- Result: **ERROR**
-- Scoring failed before a comparison summary could be generated.
-EOF
-  fi
-
-  return "$scorer_status"
 }
 
 # ─── Run tests ────────────────────────────────────────────────────────
@@ -565,27 +506,16 @@ if [[ -n "$failed_suite" ]]; then
   base_result="FAIL"
 fi
 write_manifest "$base_result"
-scorer_exit=0
-set +e
-score_manifest
-scorer_exit=$?
-set -e
 
 if [[ -n "$failed_suite" ]]; then
   echo "" >&2
   echo "Device test run stopped at: $failed_suite" >&2
-  echo "Reports written to: $OUT_DIR"
+  echo "Raw evidence written to: $OUT_DIR"
   echo "Manifest: $MANIFEST_JSON"
-  echo "Summary: $SUMMARY_MD"
   exit 1
 fi
 
 echo ""
 echo "All requested device suites passed."
-echo "Reports written to: $OUT_DIR"
+echo "Raw evidence written to: $OUT_DIR"
 echo "Manifest: $MANIFEST_JSON"
-echo "Summary: $SUMMARY_MD"
-
-if [[ "$scorer_exit" -ge 2 ]]; then
-  exit 1
-fi

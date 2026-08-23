@@ -38,7 +38,7 @@ class PerfSdLogger {
 #endif
 
     /// Start a new logical session within the current boot file.
-    /// Emits a fresh CSV header + #session_start marker so scoring tools
+    /// Emits a fresh CSV header + #session_start marker so raw validation
     /// can isolate V1-connected data from idle boot noise.
     void startNewSession();
 

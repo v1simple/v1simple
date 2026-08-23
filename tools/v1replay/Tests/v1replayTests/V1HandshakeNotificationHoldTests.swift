@@ -164,19 +164,12 @@ final class V1HandshakeNotificationHoldTests: XCTestCase {
             encoding: .utf8
         )
 
-        let ledgerRecord = try XCTUnwrap(
-            source.range(of: "handshakeLedger?.recordAcceptedRequest(")
-        )
         let acceptedStart = try XCTUnwrap(
-            source.range(
-                of: "switch handshakeNotificationHold.acceptedStart(",
-                range: ledgerRecord.lowerBound..<source.endIndex
-            )
+            source.range(of: "switch handshakeNotificationHold.acceptedStart(")
         )
         let effects = try XCTUnwrap(
             source.range(of: "for effect in outcome.effects", range: acceptedStart.lowerBound..<source.endIndex)
         )
-        XCTAssertLessThan(ledgerRecord.lowerBound, acceptedStart.lowerBound)
         XCTAssertLessThan(acceptedStart.lowerBound, effects.lowerBound)
         let releaseCase = try XCTUnwrap(
             source.range(
@@ -203,7 +196,7 @@ final class V1HandshakeNotificationHoldTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "handshakeLedger?.beginEpoch()\n            handshakeNotificationHold.beginEpoch()"
+                "handshakeSubscriberID = central.identifier\n            handshakeNotificationHold.beginEpoch()"
             )
         )
     }

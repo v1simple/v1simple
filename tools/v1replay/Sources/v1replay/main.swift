@@ -257,8 +257,7 @@ func runHelp() {
       --machine-events     emit stable completion events for an external runner
       --scenario <path>    external encounter for managed bench playback
       --scenario-evidence P
-                           write path-free resolved scenario JSON for investigation
-      --handshake-ledger P bench-only bounded startup-handshake evidence (JSONL)
+                           write path-free resolved scenario JSON as raw evidence
       --handshake-only     runner preflight: one clear alert row, then stay quiet
       --handshake-notification-hold-ms N
                            maximum stress hold; second START releases (0...1999; default 0)
@@ -587,12 +586,6 @@ func runPlay(idleOnly: Bool,
     peripheralConfig.mutedVolume = mutedVolume
     peripheralConfig.logPackets = args.bool("log-packets")
     peripheralConfig.handshakeNotificationHoldMs = handshakeNotificationHoldMs
-    if let ledgerPath = args.optionalString("handshake-ledger") {
-        guard bench else {
-            throw ReplayError.message("--handshake-ledger is available only in bench mode")
-        }
-        peripheralConfig.handshakeLedger = try HandshakeLedger(path: ledgerPath)
-    }
 
     var playerOptions = Player.Options()
     playerOptions.speed = args.double("speed", 1.0)
@@ -670,9 +663,7 @@ func runPlay(idleOnly: Bool,
         peripheral.onStateChange = {
             sessionTransportEvents?.emit(peripheral.sessionTransportActive)
             if playerOptions.handshakeOnly {
-                let active = peripheral.displaySubscribed
-                    && peripheral.alertDataRequested
-                    && peripheralConfig.handshakeLedger?.activeEpoch != nil
+                let active = peripheral.handshakeTransportActive
                 console.print("V1REPLAY_EVENT {\"state\":\"handshake_transport\","
                               + "\"active\":\(active ? "true" : "false")}")
             }

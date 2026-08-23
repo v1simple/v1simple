@@ -160,10 +160,6 @@ _SECRET_PATTERNS = tuple(
 _HEX_DIGEST = re.compile(r"[0-9A-Fa-f]{64}")
 _GIT_REVISION = re.compile(r"[0-9A-Fa-f]{7,64}")
 _RUNTIME_IMAGE_ID = re.compile(r"[0-9A-Fa-f]{9}")
-_CONTENT_ADDRESSED_SHEET = re.compile(
-    r"investigation_sheets/[0-9A-Fa-f]{64}\.(?:jpe?g|png)"
-)
-
 _LOCAL_TERMS_CACHE_KEY: tuple[str, int, int] | None = None
 _LOCAL_TERMS_CACHE: tuple[tuple[int, re.Pattern[str]], ...] = ()
 
@@ -267,7 +263,6 @@ def _is_opaque_metadata(field: str | None, parent_field: str | None, text: str) 
     if _HEX_DIGEST.fullmatch(text) and (
         normalized in {
             "capture_id",
-            "grade_id",
             "sha256",
             "source_sha256",
         }
@@ -290,8 +285,6 @@ def _is_opaque_metadata(field: str | None, parent_field: str | None, text: str) 
         "runtimeimageid",
     }:
         return _RUNTIME_IMAGE_ID.fullmatch(text) is not None
-    if normalized == "sheet_path":
-        return _CONTENT_ADDRESSED_SHEET.fullmatch(text) is not None
     return False
 
 

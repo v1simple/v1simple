@@ -148,24 +148,14 @@ run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-
 section "Python Regression Tests"
 # Safety-critical guard regressions already run inline above. Keep the remaining
 # script and workflow regressions in the full gate without expanding --fast.
-run_step "Bench identity regression suite" python3 scripts/test_bench_identity.py
-run_step "Bench qualification policy regression suite" python3 scripts/test_bench_policy.py
-run_step "Bench host evidence regression suite" python3 scripts/test_bench_host_evidence.py
-run_step "Bench time-alignment regression suite" python3 scripts/test_bench_time_alignment.py
-run_step "Bench investigator regression suite" python3 scripts/test_bench_investigate.py
-run_step "Bench investigation video regression suite" python3 scripts/test_bench_investigation_video.py
-run_step "Bench evidence query regression suite" python3 scripts/test_bench_evidence.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
-run_step "Bench scorer regression suite" python3 scripts/test_bench_score.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "PlatformIO test-delay hook self-check" python3 scripts/test_delay.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
-run_step "Hardware run scoring regression suite" python3 scripts/test_hardware_run_scoring.py
 run_step "Identity gate workflow regression suite" python3 scripts/test_identity_gate_workflow.py
-run_step "Metric schema regression suite" python3 scripts/test_metric_schema.py
 run_step "Performance CSV import regression suite" python3 scripts/test_perf_csv_import.py
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
@@ -182,7 +172,6 @@ else
 fi
 
 section "Native Tests"
-run_step "Native linked-source manifest" python3 scripts/native_test_source_manifest.py --check
 run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitizer unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native-car

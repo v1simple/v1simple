@@ -149,8 +149,6 @@ final class V1Peripheral: NSObject {
         var savedMutedVolume: UInt8?
         var userBytes: [UInt8] = Array(repeating: 0, count: 6)
         var logPackets: Bool = false
-        /// Optional bounded, anonymous startup-handshake evidence.
-        var handshakeLedger: HandshakeLedger?
         /// Stress-only maximum hold after the first epoch-owned START. A second
         /// owned START releases sooner; zero preserves immediate notifications.
         var handshakeNotificationHoldMs: Int = 0
@@ -203,6 +201,13 @@ final class V1Peripheral: NSObject {
     var sessionTransportActive: Bool {
         return withState { $0.session.sessionTransportActive }
     }
+    var handshakeTransportActive: Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return handshakeSubscriberID != nil && withState {
+            $0.session.readiness.displaySubscribed
+                && $0.session.alertDataRequested
+        }
+    }
     var longSubscribed: Bool {
         return withState { $0.session.readiness.longTrafficSubscribed }
     }
@@ -247,7 +252,6 @@ final class V1Peripheral: NSObject {
     private struct PendingNotification {
         let data: Data
         let characteristic: CBMutableCharacteristic
-        let handshakeEpoch: Int?
         let purpose: NotificationPurpose
         let evidence: ReplayNotificationIdentity
         var delayReported = false
@@ -256,21 +260,19 @@ final class V1Peripheral: NSObject {
     private var pending: [PendingNotification] = []
     private static let pendingCap = 96
     private var lastValues: [CBUUID: Data] = [:]
-    /// In-memory only. Bench evidence models one logical short-notify session;
-    /// central identifiers are never written to the ledger.
+    /// In-memory only. One central owns the logical short-notify handshake;
+    /// central identifiers never leave the process.
     private var shortSubscriberIDs: Set<UUID> = []
     private var handshakeSubscriberID: UUID?
     private var handshakeClearDelivery = HandshakeClearDeliveryState()
     private var globalTxSequence: UInt64 = 0
     private var serviceAdded = false
     private var isStopping = false
-    private let handshakeLedger: HandshakeLedger?
     private var handshakeNotificationHold: HandshakeNotificationHoldState
 
     init(config: Config,
          onNotificationEvent: ((ReplayNotificationEvent) -> Void)? = nil) {
         self.config = config
-        self.handshakeLedger = config.handshakeLedger
         self.handshakeNotificationHold = HandshakeNotificationHoldState(
             delayMilliseconds: config.handshakeNotificationHoldMs
         )
@@ -346,7 +348,6 @@ final class V1Peripheral: NSObject {
             let notification = self.makePendingNotification(
                 data: data,
                 characteristic: characteristic,
-                handshakeEpoch: self.handshakeLedger?.activeEpoch,
                 purpose: .ordinary,
                 stimulusSequence: stimulusSequence,
                 emissionOrdinal: emissionOrdinal,
@@ -383,7 +384,6 @@ final class V1Peripheral: NSObject {
                 let notification = self.makePendingNotification(
                     data: data,
                     characteristic: characteristic,
-                    handshakeEpoch: self.handshakeLedger?.activeEpoch,
                     purpose: .handshakeClear,
                     stimulusSequence: nil,
                     emissionOrdinal: nil,
@@ -440,7 +440,6 @@ final class V1Peripheral: NSObject {
     private func makePendingNotification(
         data: Data,
         characteristic: CBMutableCharacteristic,
-        handshakeEpoch: Int?,
         purpose: NotificationPurpose,
         stimulusSequence: Int?,
         emissionOrdinal: Int?,
@@ -452,7 +451,6 @@ final class V1Peripheral: NSObject {
         return PendingNotification(
             data: data,
             characteristic: characteristic,
-            handshakeEpoch: handshakeEpoch,
             purpose: purpose,
             evidence: ReplayNotificationIdentity(
                 globalTxSequence: globalTxSequence,
@@ -475,7 +473,6 @@ final class V1Peripheral: NSObject {
         handshakeSubscriberID = nil
         handshakeNotificationHold.endEpoch()
         discardPendingHandshakeClear()
-        handshakeLedger?.endEpoch()
     }
 
     /// Clear every value owned by one CoreBluetooth transport lifetime. This
@@ -531,11 +528,6 @@ final class V1Peripheral: NSObject {
             )
             let firstHandshakeClearDelivery = item.purpose == .handshakeClear
                 && handshakeClearDelivery.confirmDelivery()
-            handshakeLedger?.recordDelivered(
-                bytes: [UInt8](item.data),
-                channel: Self.shortName(item.characteristic.uuid),
-                epoch: item.handshakeEpoch
-            )
             if firstHandshakeClearDelivery {
                 onHandshakeClearDelivered?()
             }
@@ -618,9 +610,10 @@ final class V1Peripheral: NSObject {
 
     // MARK: - Command handling
 
-    private func handle(_ outcome: V1.Session.CommandOutcome,
-                        inboundCharacteristic: CBUUID,
-                        belongsToHandshakeSubscriber: Bool) {
+    private func handle(
+        _ outcome: V1.Session.CommandOutcome,
+        belongsToHandshakeSubscriber: Bool
+    ) {
         withState { $0.commandsReceived += 1 }
         let packet = outcome.packet
         let commandName = V1.name(forPacketID: packet.id)
@@ -634,11 +627,6 @@ final class V1Peripheral: NSObject {
             return false
         }
         if accepted {
-            handshakeLedger?.recordAcceptedRequest(
-                bytes: packet.raw,
-                channel: Self.shortName(inboundCharacteristic),
-                belongsToEpochSubscriber: belongsToHandshakeSubscriber
-            )
             if packet.id == V1.PacketID.reqStartAlertData.rawValue {
                 switch handshakeNotificationHold.acceptedStart(
                     belongsToActiveEpoch: belongsToHandshakeSubscriber
@@ -716,9 +704,9 @@ final class V1Peripheral: NSObject {
         return text
     }
 
-    /// Pure ownership check for anonymous handshake evidence. The identifier
-    /// remains process-local and is never passed to the ledger or serialized.
-    static func handshakeEvidenceOwnerMatches(subscriber: UUID?, writer: UUID) -> Bool {
+    /// Pure ownership check for the active handshake. The identifier remains
+    /// process-local and is never serialized.
+    static func handshakeOwnerMatches(subscriber: UUID?, writer: UUID) -> Bool {
         guard let subscriber else { return false }
         return subscriber == writer
     }
@@ -808,7 +796,6 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         if beganShortSession {
             discardPendingHandshakeClear()
             handshakeSubscriberID = central.identifier
-            handshakeLedger?.beginEpoch()
             handshakeNotificationHold.beginEpoch()
         } else if addedSecondShortSubscriber {
             // Notification delivery is broadcast, so attribution becomes
@@ -891,7 +878,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
 
         for request in requests {
             guard let value = request.value else { continue }
-            let belongsToHandshakeSubscriber = Self.handshakeEvidenceOwnerMatches(
+            let belongsToHandshakeSubscriber = Self.handshakeOwnerMatches(
                 subscriber: handshakeSubscriberID,
                 writer: request.central.identifier
             )
@@ -904,7 +891,6 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             while let outcome = withState({ $0.session.nextOutcome() }) {
                 handle(
                     outcome,
-                    inboundCharacteristic: request.characteristic.uuid,
                     belongsToHandshakeSubscriber: belongsToHandshakeSubscriber
                 )
             }

@@ -81,13 +81,13 @@ through the end of the firmware metrics window, and then stops its process group
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
-The unified runner alone uses `bench --handshake-only` before the scored replay.
+The unified runner alone uses `bench --handshake-only` before replay.
 That mode reacts directly to each accepted start-alert request and ensures one
 canonical count-zero alert row is queued until CoreBluetooth accepts it for
 delivery; it does not depend on the player's polling cadence. Once delivery is
 recorded it stays quiet and alive until the runner removes the peripheral. Its
-bounded packet log contains only the two targeted startup replies and that clear
-row; it does not enter the scenario or idle stream.
+raw machine-event log records the accepted notification and readiness boundary;
+it does not enter the scenario or idle stream.
 
 Bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
@@ -161,8 +161,8 @@ packet. Card fields list active secondary alerts in alert-table order with their
 raw 0–8 strength projected onto the six-cell card meter as `(raw * 6 + 4) / 8`.
 
 The CSV describes transmitted active state, not the renderer's card-grace
-cache. Initial card appearance, persistence, slot reuse, and removal remain
-camera-reviewed during Phase 0.
+cache. Raw camera recordings can retain initial card appearance, persistence,
+slot reuse, and removal during Phase 0.
 
 ### Playback keys
 
@@ -199,39 +199,25 @@ The public contract inventory uses these stable behavior IDs:
   unsent query for a later loop instead of skipping it. Exact retry count,
   delay, and reply arrival order are not gated.
 - `V1-RECONNECT-SESSION-001` pins a managed same-boot reconnect boundary. A
-  handshake-only process must independently complete one active startup epoch,
+  handshake-only process must independently reach its startup-ready event,
   then disappear; after the still-open serial session observes the board's V1
-  cleanup, a replacement process must independently complete a fresh epoch.
-  The two bounded ledgers are distinct, so neither can borrow readiness or
-  replies from the other. Schema 2 records anonymous epoch-relative monotonic
-  milliseconds for every event. One initial start plus at most four recovery
-  starts are legal before the delivered clear row when every consecutive retry
-  is at least 1000 ms later. The evidence is
+  cleanup, a replacement process must independently become ready. The raw
+  process logs and serial fences keep those two sessions distinct. The evidence is
   `ConnectionStateModule::DATA_REQUEST_INTERVAL_MS` in
   `src/modules/ble/connection_state_module.h`, the strict `>` rate-limit check
   in `src/modules/ble/connection_state_module.cpp`, and
   `V1SessionContractTests.testDuplicateStartIsDeterministicAndStopEmitsNoReply`.
-  Because the ledger stores integer milliseconds, the gate accepts a measured
-  1000 ms boundary for an underlying interval that can be just over 1000 ms.
-  The five-start limit leaves the existing 12-event ledger cap enough room to
-  record a violating sixth start alongside the six non-start events. A sixth
-  start, a faster retry, or any start after stream delivery fails. Historical
-  schema-1 evidence remains readable only for the unambiguous single-start
-  shape because it cannot prove retry spacing. This is host emulator and
-  board-cleanup integration evidence, not proof of physical-V1 reconnect
-  timing, cache or bond behavior, or control persistence. The reconnect
-  evidence alone does not prove board-side all-volume parsing; that is joined
-  separately under `V1-ALL-VOLUME-001`.
+  This is host emulator and board-cleanup integration evidence, not proof of
+  physical-V1 reconnect timing, cache or bond behavior, or control persistence.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
   B2CE short-packet route. Equal current and saved values are emulator fixture
   configuration, not a universal device default. For the default-v4.1038
-  managed replay, the independently decoded replacement ledger must contain the
-  canonical delivered reply and the same replacement metrics window must record
-  exactly one canonical four-field parser commit. The counter is recorded only
-  after the four values enter parser state; it does not claim that the firmware
-  independently validated the packet checksum or that a physical V1 was used.
+  managed replay, the raw replacement process log records the accepted canonical
+  reply and the same replacement metrics window must record exactly one canonical
+  four-field parser commit. The counter is recorded only after the four values
+  enter parser state; it does not claim that a physical V1 was used.
 - `V1-CONTROL-MODE-001` pins the default-US one-byte mode commands `01`, `02`,
   and `03`. They update the current mode without a semantic reply. Later idle
   display information carries the matching mode glyph and Aux1 mode bits; active
@@ -281,24 +267,12 @@ Feedback rendering and timing, other reserved volume-control bits, disconnect
 restore, power-cycle persistence, and non-US mode variants remain outside this
 host-state gate.
 
-Managed replay writes two bounded anonymous startup-handshake ledgers: one for
-the quiet preflight process and one for the scored replacement. Neither contains
-a central identifier or absolute timestamp; schema 2 contains only epoch-relative
-monotonic milliseconds. Neither ledger is a general packet transcript.
-The grader decodes them separately and requires exactly one connection epoch in
-each with B2CE subscription, one or more accepted pre-stream start requests
-within the bounded retry contract, accepted version and all-volume requests,
-CoreBluetooth-accepted short replies, and alert-stream start. The preflight's
-only stream packet must be the canonical count-zero clear row. The scored
-replacement window additionally requires one boot-cumulative canonical
-all-volume parser commit, while the independently decoded replacement ledger
-owns the reply's exact bytes, checksum, and route. Together those two sources
-provide bounded integration evidence that a canonical reply from the controlled
-emulator reached replacement board parser state; the counter alone does not
-identify exact values, checksum, header, or route. Preflight board-side
-consumption remains unclaimed. Each ledger models one logical short-notify
-session; concurrent short subscribers end the active evidence epoch instead of
-being merged.
+Managed replay keeps the quiet preflight and replacement process outputs as
+separate plain-text logs. Their machine events record requested and accepted
+notifications, transport readiness, lifecycle boundaries, and monotonic host
+times. The still-open serial log records the intervening board cleanup and
+same-boot fences. These raw streams remain the evidence; no derived post-run
+artifact is generated.
 
 With `--machine-events`, every queued notification emits
 `notification_requested`; every successful CoreBluetooth `updateValue` emits

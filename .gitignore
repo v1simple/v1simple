@@ -47,7 +47,6 @@ __MACOSX/
 *.elf
 *.zip
 *.log
-!test/fixtures/debug_base_stable.log
 artifacts/
 .artifacts/
 

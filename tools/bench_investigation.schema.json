@@ -1,0 +1,505 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bench Investigation Report",
+  "description": "Evidence-grounded diagnostic output. This is not a product verdict or release gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "generated_at_utc", "execution_status", "source",
+    "coverage", "findings", "unresolved", "model", "video_requests"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "kind": { "const": "bench_investigation" },
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "execution_status": { "$ref": "#/$defs/execution_status" },
+    "source": { "$ref": "#/$defs/source" },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/unresolved" }
+    },
+    "model": { "$ref": "#/$defs/model" },
+    "video_requests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/video_request" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullable_sha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "execution_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "state", "summary", "errors" ],
+      "properties": {
+        "state": { "enum": [ "completed", "partial", "failed" ] },
+        "summary": { "type": "string" },
+        "errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "evidence_selector": {
+      "type": "object",
+      "description": "A resolvable selection within one run artifact. Include only fields applicable to kind.",
+      "additionalProperties": false,
+      "required": [ "kind", "path", "sha256", "description" ],
+      "properties": {
+        "kind": {
+          "enum": [ "file", "json_pointer", "ndjson", "csv", "log", "video" ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Run-relative artifact path."
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "description": { "type": "string", "minLength": 1 },
+        "json_pointer": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "row_start": { "type": "integer", "minimum": 1 },
+        "row_end": { "type": "integer", "minimum": 1 },
+        "keys": {
+          "type": "array",
+          "description": "Conjunctive stable field=value selectors that must all match one selected NDJSON or CSV record.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "start_pts_s": { "type": "number", "minimum": 0 },
+        "end_pts_s": { "type": "number", "minimum": 0 },
+        "start_frame": { "type": "integer", "minimum": 0 },
+        "end_frame": { "type": "integer", "minimum": 0 },
+        "attachment_index": { "type": "integer", "minimum": 1 },
+        "cell_indices": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "code_selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision", "path", "symbol", "line_start", "line_end",
+        "selection_sha256", "description"
+      ],
+      "properties": {
+        "revision": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative source path."
+        },
+        "symbol": { "type": "string", "minLength": 1 },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "selection_sha256": { "$ref": "#/$defs/sha256" },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "binary_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "name", "basis", "sha256", "evidence", "limitations" ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "basis": {
+          "enum": [
+            "device_attested", "upload_reported", "built_only", "source_only",
+            "unavailable"
+          ]
+        },
+        "sha256": { "$ref": "#/$defs/nullable_sha256" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis", "summary", "recorded_revisions", "inspected_revision",
+        "identity_evidence", "mismatches", "binary_identities", "limitations"
+      ],
+      "properties": {
+        "basis": {
+          "enum": [
+            "exact", "commit_reconstructed", "current_only", "unavailable"
+          ]
+        },
+        "summary": { "type": "string" },
+        "recorded_revisions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "inspected_revision": { "type": [ "string", "null" ] },
+        "identity_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "mismatches": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/binary_identity" }
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "pts_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "start_pts_seconds", "end_pts_seconds" ],
+      "properties": {
+        "start_pts_seconds": { "type": "number", "minimum": 0 },
+        "end_pts_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "pts_time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "numerator", "denominator" ],
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 1 },
+        "denominator": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "attachment_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell_index", "cell_label", "nominal_requested_pts_seconds",
+        "source_pts_measured", "pts_uncertainty_seconds",
+        "pts_uncertainty_interval"
+      ],
+      "properties": {
+        "cell_index": { "type": "integer", "minimum": 0 },
+        "cell_label": { "type": "string", "minLength": 1 },
+        "nominal_requested_pts_seconds": { "type": "number", "minimum": 0 },
+        "source_pts_measured": { "type": "boolean" },
+        "source_pts_seconds": { "type": "number", "minimum": 0 },
+        "source_pts_value": { "type": "integer" },
+        "source_pts_time_base": { "$ref": "#/$defs/pts_time_base" },
+        "source_frame_index": { "type": "integer", "minimum": 0 },
+        "pts_uncertainty_seconds": { "type": "number", "minimum": 0 },
+        "pts_uncertainty_interval": { "$ref": "#/$defs/pts_interval" }
+      }
+    },
+    "attachment_sheet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attachment_index", "pass", "sheet_path", "sheet_sha256",
+        "source_video_path", "source_video_sha256", "purpose", "interval",
+        "layout", "cells"
+      ],
+      "properties": {
+        "attachment_index": { "type": "integer", "minimum": 1 },
+        "pass": { "type": "integer", "minimum": 1 },
+        "sheet_path": {
+          "type": "string",
+          "pattern": "^investigation_sheets/[0-9a-f]{64}\\.(jpg|jpeg|png)$"
+        },
+        "sheet_sha256": { "$ref": "#/$defs/sha256" },
+        "source_video_path": { "type": "string", "minLength": 1 },
+        "source_video_sha256": { "$ref": "#/$defs/sha256" },
+        "purpose": { "type": "string", "minLength": 1 },
+        "interval": { "$ref": "#/$defs/pts_interval" },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [ "columns", "rows", "cell_order" ],
+          "properties": {
+            "columns": { "type": "integer", "minimum": 1 },
+            "rows": { "type": "integer", "minimum": 1 },
+            "cell_order": { "const": "row_major" }
+          }
+        },
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/attachment_cell" }
+        }
+      }
+    },
+    "artifact_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "path", "status", "sha256", "size_bytes", "role", "notes" ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": [
+            "reviewed", "partially_reviewed", "skipped", "unreadable",
+            "unfamiliar"
+          ]
+        },
+        "sha256": { "$ref": "#/$defs/nullable_sha256" },
+        "size_bytes": {
+          "type": [ "integer", "null" ],
+          "minimum": 0
+        },
+        "role": { "type": "string" },
+        "selectors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "video_interval_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "status", "selector", "notes" ],
+      "properties": {
+        "status": { "enum": [ "reviewed", "partially_reviewed", "unsampled" ] },
+        "selector": { "$ref": "#/$defs/evidence_selector" },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "clock_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "from_clock", "to_clock", "status", "method", "uncertainty_s",
+        "evidence", "limitations"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "from_clock": { "type": "string", "minLength": 1 },
+        "to_clock": { "type": "string", "minLength": 1 },
+        "status": { "enum": [ "measured", "approximate", "unavailable" ] },
+        "method": { "type": "string" },
+        "uncertainty_s": {
+          "type": [ "number", "null" ],
+          "minimum": 0
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attachments", "artifacts", "code", "video_intervals", "clock_mappings",
+        "notes"
+      ],
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attachment_sheet" }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifact_coverage" }
+        },
+        "code": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/code_selector" }
+        },
+        "video_intervals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/video_interval_coverage" }
+        },
+        "clock_mappings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/clock_mapping" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "title", "causal_status", "impact", "expected_behavior",
+        "observed_behavior", "cause", "fix", "evidence", "counterevidence",
+        "code", "clock_mapping_ids", "remaining_unknowns"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "causal_status": { "enum": [ "confirmed", "probable" ] },
+        "impact": { "type": "string" },
+        "expected_behavior": { "type": "string", "minLength": 1 },
+        "observed_behavior": { "type": "string", "minLength": 1 },
+        "cause": { "type": "string", "minLength": 1 },
+        "fix": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "counterevidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "code": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/code_selector" }
+        },
+        "clock_mapping_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "remaining_unknowns": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "rank", "description", "evidence", "code" ],
+      "properties": {
+        "rank": { "type": "integer", "minimum": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "code": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/code_selector" }
+        }
+      }
+    },
+    "next_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "description", "distinguishes", "minimal_evidence" ],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "distinguishes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "minimal_evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "unresolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "title", "causal_status", "observation", "why_unknown", "evidence",
+        "counterevidence", "code", "clock_mapping_ids", "hypotheses",
+        "next_observation"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "causal_status": { "const": "unknown" },
+        "observation": { "type": "string", "minLength": 1 },
+        "why_unknown": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "counterevidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_selector" }
+        },
+        "code": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/code_selector" }
+        },
+        "clock_mapping_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "hypotheses": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/hypothesis" }
+        },
+        "next_observation": { "$ref": "#/$defs/next_observation" }
+      }
+    },
+    "instruction_hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "path", "sha256" ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend", "name", "tool_version", "prompt_sha256",
+        "instruction_hashes"
+      ],
+      "properties": {
+        "backend": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "tool_version": { "type": "string" },
+        "prompt_sha256": { "$ref": "#/$defs/sha256" },
+        "instruction_hashes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction_hash" }
+        }
+      }
+    },
+    "video_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path", "start_pts_s", "end_pts_s", "sample_fps", "reason"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "start_pts_s": { "type": "number", "minimum": 0 },
+        "end_pts_s": { "type": "number", "minimum": 0 },
+        "sample_fps": { "type": "number", "exclusiveMinimum": 0 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

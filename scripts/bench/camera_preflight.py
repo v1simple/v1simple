@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
+from bench_identity import current_grader_fingerprint
 from camera_artifacts import CameraArtifactConflict, sha256_file
 from camera_capture import CALIBRATION_VIDEO_TIME_S, CameraCapture, utc_now
 from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
-from camera_registration import (
+from camera_grade import (
     REGISTRATION_HEIGHT,
     REGISTRATION_WIDTH,
     CameraRegistrationError,
@@ -236,6 +237,7 @@ def run_camera_smoke(
         "kind": "bench_camera_smoke",
         "timestamp_utc": utc_now(),
         "result": "PASS" if passed else "INCONCLUSIVE",
+        "grader_fingerprint": current_grader_fingerprint(),
         "camera": {
             "name": (
                 camera.camera_name

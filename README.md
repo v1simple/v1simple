@@ -104,7 +104,7 @@ Never add that file or its values to this repository.
 ```sh
 ./scripts/ci-test.sh                   # complete local code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
-./bench.sh --all|--replay [--camera] [--no-flash]  # HIL suites (--replay: replay leg only), raw evidence, one verdict
+./bench.sh [--all|--core|--display|--replay] [--camera] [--no-upload]  # bench evidence suites, one verdict; see ./bench.sh --help
 ```
 
 Automated tests establish code behavior. Device tests and bench runs establish

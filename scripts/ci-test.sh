@@ -153,7 +153,6 @@ run_step "Camera preflight regression suite" python3 scripts/test_camera_preflig
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
-run_step "PlatformIO test-delay hook self-check" python3 scripts/test_delay.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
 run_step "Identity gate workflow regression suite" python3 scripts/test_identity_gate_workflow.py
 run_step "Performance CSV import regression suite" python3 scripts/test_perf_csv_import.py

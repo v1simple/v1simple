@@ -17,7 +17,6 @@
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_publishers.h"
 #include "modules/system/system_event_bus.h"
-#include "modules/wifi/wifi_auto_start_module.h"
 #if PERF_METRICS && PERF_MONITORING && !defined(UNIT_TEST)
 #include "modules/alp/alp_sd_logger.h"
 #endif

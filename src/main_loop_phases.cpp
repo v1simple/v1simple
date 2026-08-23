@@ -62,39 +62,24 @@ void processLoopDisplayPreWifiPhase(const unsigned long nowMs, const bool bootSp
     }
 }
 
-LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const unsigned long v1ConnectedAtMs,
-                                         const bool enableWifi, const bool wifiAutoStartAllowed,
-                                         const bool currentWifiAutoStartDone, const bool wifiManualStartIntentLatched,
-                                         const bool skipLateNonCoreThisLoop, const bool bleBackpressure,
-                                         const bool overloadLateThisLoop, const bool bleConnectBurstSettling,
-                                         const bool bootSplashHoldActive) {
-    LoopRuntimeSnapshotContext loopRuntimeSnapshotCtx;
-    loopRuntimeSnapshotCtx.canStartDmaProbeAllowed =
-        enableWifi && !currentWifiAutoStartDone && wifiManualStartIntentLatched && wifiAutoStartAllowed;
+LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const bool skipLateNonCoreThisLoop,
+                                         const bool bleBackpressure, const bool overloadLateThisLoop,
+                                         const bool bleConnectBurstSettling, const bool bootSplashHoldActive) {
     const LoopRuntimeSnapshotValues loopRuntimeSnapshotValues =
-        loopRuntimeSnapshotModule.process(loopRuntimeSnapshotCtx);
+        loopRuntimeSnapshotModule.process(LoopRuntimeSnapshotContext{});
 
     WifiRuntimeContext wifiRuntimeCtx;
     wifiRuntimeCtx.nowMs = nowMs;
-    wifiRuntimeCtx.v1ConnectedAtMs = v1ConnectedAtMs;
-    wifiRuntimeCtx.enableWifi = enableWifi;
-    wifiRuntimeCtx.bleConnected = loopRuntimeSnapshotValues.bleConnected;
-    wifiRuntimeCtx.canStartDma = loopRuntimeSnapshotValues.canStartDma;
-    wifiRuntimeCtx.wifiAutoStartAllowed = wifiAutoStartAllowed;
-    wifiRuntimeCtx.wifiAutoStartDone = currentWifiAutoStartDone;
-    wifiRuntimeCtx.wifiManualStartIntentLatched = wifiManualStartIntentLatched;
     wifiRuntimeCtx.skipLateNonCoreThisLoop = skipLateNonCoreThisLoop;
     wifiRuntimeCtx.bleBackpressure = bleBackpressure;
     wifiRuntimeCtx.overloadLateThisLoop = overloadLateThisLoop;
     wifiRuntimeCtx.bleConnectBurstSettling = bleConnectBurstSettling;
     wifiRuntimeCtx.displayPreviewRunning = loopRuntimeSnapshotValues.displayPreviewRunning;
     wifiRuntimeCtx.bootSplashHoldActive = bootSplashHoldActive;
-    const WifiRuntimeResult wifiRuntimeResult = wifiRuntimeModule.process(wifiRuntimeCtx);
+    wifiRuntimeModule.process(wifiRuntimeCtx);
 
     LoopWifiPhaseValues values;
     values.loopRuntimeSnapshotValues = loopRuntimeSnapshotValues;
-    values.wifiAutoStartDone = wifiRuntimeResult.wifiAutoStartDone;
-    values.wifiManualStartIntentLatched = wifiRuntimeResult.wifiManualStartIntentLatched;
     return values;
 }
 

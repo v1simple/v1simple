@@ -6,13 +6,6 @@
 
 struct WifiRuntimeContext {
     uint32_t nowMs = 0;
-    uint32_t v1ConnectedAtMs = 0;
-    bool enableWifi = true;
-    bool bleConnected = false;
-    bool canStartDma = false;
-    bool wifiAutoStartAllowed = false;
-    bool wifiAutoStartDone = false;
-    bool wifiManualStartIntentLatched = false;
     bool skipLateNonCoreThisLoop = false;
     bool bleBackpressure = false;
     bool overloadLateThisLoop = false;
@@ -21,20 +14,11 @@ struct WifiRuntimeContext {
     bool bootSplashHoldActive = false;
 };
 
-struct WifiRuntimeResult {
-    bool wifiAutoStartDone = false;
-    bool wifiManualStartIntentLatched = false;
-};
-
-// Orchestrates deferred WiFi auto-start, process cadence, and visual sync.
+// Orchestrates WiFi process cadence and visual sync. Normal runtime never
+// starts WiFi: maintenance entry reboots first, so there is no start path here.
 class WifiRuntimeModule {
   public:
     struct Providers {
-        void (*runWifiAutoStartProcess)(void* ctx, uint32_t nowMs, uint32_t v1ConnectedAtMs, bool enableWifi,
-                                        bool bleConnected, bool canStartDma, bool wifiAutoStartAllowed,
-                                        bool& wifiManualStartIntentLatched, bool& wifiAutoStartDone) = nullptr;
-        void* wifiAutoStartContext = nullptr;
-
         bool (*shouldRunWifiProcessingPolicy)(void* ctx) = nullptr;
         void* wifiPolicyContext = nullptr;
         bool (*readWifiLifecyclePending)(void* ctx) = nullptr;
@@ -63,7 +47,7 @@ class WifiRuntimeModule {
     };
 
     void begin(const Providers& hooks);
-    WifiRuntimeResult process(const WifiRuntimeContext& ctx);
+    void process(const WifiRuntimeContext& ctx);
 
   private:
     static constexpr uint32_t WIFI_PROCESS_MIN_INTERVAL_US = 2000;

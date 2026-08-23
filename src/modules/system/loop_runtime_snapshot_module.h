@@ -4,13 +4,10 @@
 
 struct LoopRuntimeSnapshotValues {
     bool bleConnected = false;
-    bool canStartDma = false;
     bool displayPreviewRunning = false;
 };
 
-struct LoopRuntimeSnapshotContext {
-    bool canStartDmaProbeAllowed = true;
-};
+struct LoopRuntimeSnapshotContext {};
 
 // Snapshots loop-local runtime service state once per iteration.
 class LoopRuntimeSnapshotModule {
@@ -18,9 +15,6 @@ class LoopRuntimeSnapshotModule {
     struct Providers {
         bool (*readBleConnected)(void* ctx) = nullptr;
         void* bleConnectedContext = nullptr;
-
-        bool (*readCanStartDma)(void* ctx) = nullptr;
-        void* canStartDmaContext = nullptr;
 
         bool (*readDisplayPreviewRunning)(void* ctx) = nullptr;
         void* displayPreviewContext = nullptr;
@@ -31,6 +25,4 @@ class LoopRuntimeSnapshotModule {
 
   private:
     Providers providers{};
-    bool hasCachedCanStartDma_ = false;
-    bool cachedCanStartDma_ = false;
 };

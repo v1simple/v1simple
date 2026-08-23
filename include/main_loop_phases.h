@@ -23,8 +23,6 @@ struct LoopIngestPhaseValues {
 
 struct LoopWifiPhaseValues {
     LoopRuntimeSnapshotValues loopRuntimeSnapshotValues;
-    bool wifiAutoStartDone = false;
-    bool wifiManualStartIntentLatched = false;
 };
 
 struct LoopFinalizePhaseValues {
@@ -44,10 +42,8 @@ LoopIngestPhaseValues processLoopIngestPhase(unsigned long nowMs, bool currentBo
 void processLoopDisplayPreWifiPhase(unsigned long nowMs, bool bootSplashHoldActive, bool overloadLateThisLoop,
                                     bool presentationSuppressed);
 
-LoopWifiPhaseValues processLoopWifiPhase(unsigned long nowMs, unsigned long v1ConnectedAtMs, bool enableWifi,
-                                         bool wifiAutoStartAllowed, bool currentWifiAutoStartDone,
-                                         bool wifiManualStartIntentLatched, bool skipLateNonCoreThisLoop,
-                                         bool bleBackpressure, bool overloadLateThisLoop, bool bleConnectBurstSettling,
+LoopWifiPhaseValues processLoopWifiPhase(unsigned long nowMs, bool skipLateNonCoreThisLoop, bool bleBackpressure,
+                                         bool overloadLateThisLoop, bool bleConnectBurstSettling,
                                          bool bootSplashHoldActive);
 
 LoopFinalizePhaseValues processLoopFinalizePhase(bool bootSplashHoldActive, bool displayPreviewRunning,

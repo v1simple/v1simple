@@ -35,7 +35,6 @@ struct CycleContext {
     bool proxyClientConnectedOnceThisBoot = false;
     bool wifiEnabled = false;
     bool wifiActive = false;
-    bool wifiManualStartIntentLatched = false;
     uint32_t obdScanWindowMs = 0;
     uint32_t obdRetryIntervalMs = 0;
     uint32_t proxyOpenWindowMs = 0;
@@ -79,7 +78,6 @@ class ConnectionCycleCoordinatorModule {
     bool obdRetryAllowed(uint32_t nowMs) const;
     bool proxyAdvertisingAllowed() const;
     bool proxyKeepConnectionAllowed() const;
-    bool wifiAutoStartAllowed() const;
     bool shouldPreemptProxyForManualWifiStart() const;
 
     ObdBleArbitrationRequest arbitrationRequest() const;

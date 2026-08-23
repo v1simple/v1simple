@@ -108,8 +108,6 @@ struct MainRuntimeState {
     unsigned long activeScanScreenDwellMs = 0;
     unsigned long v1ConnectedAtMs = 0;
     bool alpSignalActive = false;
-    bool wifiManualStartIntentLatched = false;
-    bool wifiAutoStartDone = false;
     bool maintenanceBootActive = false;
     // Countdown anchor published through /api/status; not the immutable
     // session start.

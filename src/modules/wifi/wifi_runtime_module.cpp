@@ -4,18 +4,9 @@ void WifiRuntimeModule::begin(const Providers& hooks) {
     providers = hooks;
 }
 
-WifiRuntimeResult WifiRuntimeModule::process(const WifiRuntimeContext& ctx) {
-    WifiRuntimeResult result;
-    result.wifiAutoStartDone = ctx.wifiAutoStartDone;
-    result.wifiManualStartIntentLatched = ctx.wifiManualStartIntentLatched;
+void WifiRuntimeModule::process(const WifiRuntimeContext& ctx) {
     const bool allowTransitionWork = !ctx.skipLateNonCoreThisLoop && !ctx.overloadLateThisLoop &&
                                      !ctx.bleBackpressure && !ctx.bleConnectBurstSettling;
-
-    if (allowTransitionWork && providers.runWifiAutoStartProcess) {
-        providers.runWifiAutoStartProcess(providers.wifiAutoStartContext, ctx.nowMs, ctx.v1ConnectedAtMs,
-                                          ctx.enableWifi, ctx.bleConnected, ctx.canStartDma, ctx.wifiAutoStartAllowed,
-                                          result.wifiManualStartIntentLatched, result.wifiAutoStartDone);
-    }
 
     if (providers.setWifiTransitionAdmission) {
         providers.setWifiTransitionAdmission(providers.wifiTransitionAdmissionContext, allowTransitionWork);
@@ -58,6 +49,4 @@ WifiRuntimeResult WifiRuntimeModule::process(const WifiRuntimeContext& ctx) {
         providers.runWifiVisualSync(providers.wifiVisualSyncContext, visualNowMs, wifiVisualActiveNow,
                                     ctx.displayPreviewRunning, ctx.bootSplashHoldActive);
     }
-
-    return result;
 }

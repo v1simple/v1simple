@@ -38,10 +38,6 @@ void configureLoopRuntimeSnapshotModule() {
     loopRuntimeSnapshotProviders.readBleConnected =
         ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::isConnected>;
     loopRuntimeSnapshotProviders.bleConnectedContext = &bleClient;
-    loopRuntimeSnapshotProviders.readCanStartDma = [](void* ctx) -> bool {
-        return static_cast<WiFiManager*>(ctx)->canStartSetupMode(nullptr, nullptr);
-    };
-    loopRuntimeSnapshotProviders.canStartDmaContext = &wifiManager;
     // Keep connection-state display transitions gated through the ended-but-
     // not-yet-restored interval as well as while preview frames are active.
     loopRuntimeSnapshotProviders.readDisplayPreviewRunning =

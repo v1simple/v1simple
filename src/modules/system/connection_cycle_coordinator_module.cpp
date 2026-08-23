@@ -154,8 +154,6 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
     case CycleState::SCAN_V1:
         if (ctx.v1GattConnected) {
             transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
-        } else if (ctx.wifiManualStartIntentLatched) {
-            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
         } else if (ctx.bootReady && hasElapsed(ctx.nowMs, stateEnteredMs_, kScanV1FallbackMs)) {
             transitionTo(CycleState::STEADY, ctx.nowMs);
         }
@@ -196,20 +194,8 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         break;
 
     case CycleState::PROXY_OPEN:
-        if (ctx.wifiManualStartIntentLatched) {
-            manualWifiPreemptRequested_ = ctx.proxyClientConnected;
-            if (ctx.proxyClientConnected) {
-                totalWifiManualPhoneKicks_++;
-            }
-            if (providers.stopProxyAdvertising) {
-                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-            }
-            if (ctx.proxyClientConnected && providers.disconnectProxyPhone) {
-                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-            }
-            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
-        } else if (!isExplicitProxyAppMode(ctx) && !ctx.proxyClientConnected &&
-                   hasElapsed(ctx.nowMs, stateEnteredMs_, proxyOpenWindowMs_)) {
+        if (!isExplicitProxyAppMode(ctx) && !ctx.proxyClientConnected &&
+            hasElapsed(ctx.nowMs, stateEnteredMs_, proxyOpenWindowMs_)) {
             if (providers.stopProxyAdvertising) {
                 providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
             }
@@ -228,13 +214,6 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
     case CycleState::STEADY:
         if (v1Connected) {
             transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
-        } else if (ctx.wifiManualStartIntentLatched && ctx.proxyClientConnected) {
-            manualWifiPreemptRequested_ = true;
-            totalWifiManualPhoneKicks_++;
-            if (providers.disconnectProxyPhone) {
-                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-            }
-            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
         }
         break;
 
@@ -274,13 +253,6 @@ bool ConnectionCycleCoordinatorModule::proxyKeepConnectionAllowed() const {
     // attached phone outlive passive advertising. Explicit Proxy / App mode
     // keeps PROXY_OPEN for the drive; passive proxy still times out.
     return state_ == CycleState::PROXY_OPEN;
-}
-
-bool ConnectionCycleCoordinatorModule::wifiAutoStartAllowed() const {
-    if (state_ != CycleState::WIFI_OPEN && state_ != CycleState::STEADY) {
-        return false;
-    }
-    return !providers.isProxyFullyStopped || providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
 }
 
 bool ConnectionCycleCoordinatorModule::shouldPreemptProxyForManualWifiStart() const {

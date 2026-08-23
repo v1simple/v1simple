@@ -61,7 +61,6 @@
 #include "modules/touch/touch_ui_module.h"
 #include "modules/voice/voice_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
-#include "modules/wifi/wifi_auto_start_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
 #include "modules/wifi/wifi_priority_policy_module.h"
 #include "modules/wifi/wifi_process_cadence_module.h"
@@ -136,7 +135,6 @@ void configureWifiRuntimeModule() {
                 wifiStatus.apLastTransitionReason =
                     perfWifiApTransitionReasonName(wifiStatus.apLastTransitionReasonCode);
                 wifiStatus.lowDmaCooldownRemainingMs = wifiManager.lowDmaCooldownRemainingMs();
-                wifiStatus.autoStart = wifiAutoStartModule.getLastDecision();
 
                 StatusObservabilityPayload::appendStatusObservability(obj, wifiStatus);
 
@@ -179,15 +177,6 @@ void configureWifiRuntimeModule() {
     }
 
     WifiRuntimeModule::Providers wifiRuntimeProviders;
-    wifiRuntimeProviders.runWifiAutoStartProcess =
-        [](void* ctx, uint32_t nowMs, uint32_t v1ConnectedAtMs, bool enableWifi, bool bleConnected, bool canStartDma,
-           bool wifiAutoStartAllowed, bool& wifiManualStartIntentLatched, bool& wifiAutoStartDone) {
-            static_cast<WifiAutoStartModule*>(ctx)->process(
-                nowMs, v1ConnectedAtMs, enableWifi, bleConnected, canStartDma, wifiAutoStartAllowed,
-                wifiManualStartIntentLatched, wifiAutoStartDone,
-                [](bool autoStarted, void* /*ctx*/) { return wifiManager.startSetupMode(autoStarted); }, nullptr);
-        };
-    wifiRuntimeProviders.wifiAutoStartContext = &wifiAutoStartModule;
     wifiRuntimeProviders.shouldRunWifiProcessingPolicy = [](void* ctx) {
         return isWifiProcessingEnabledPolicy(*static_cast<WiFiManager*>(ctx));
     };

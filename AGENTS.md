@@ -2,7 +2,6 @@
 
 Keep V1Simple simple, in code and docs.
 
-- Use `.agents/skills/v1simple-engineering/SKILL.md` for engineering work.
 - This public repository is the complete source of engineering context.
 - Process for the sake of process is NOT accepted. Every plan, artifact,
   abstraction, check, or report must directly deliver a requested product

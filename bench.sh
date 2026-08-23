@@ -12,15 +12,16 @@ POST_UPLOAD_SETTLE_SECONDS="${BENCH_POST_UPLOAD_SETTLE_SECONDS:-90}"
 PIO_CMD="${PIO_CMD:-pio}"
 PORT="${DEVICE_PORT:-}"
 RUN_ALL=0
+RUN_REPLAY=0
 CAMERA_REQUESTED=0
 FLASH=1
 
 usage() {
-  printf 'Usage: ./bench.sh --all [--camera] [--no-flash]\n'
+  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
 }
 
 fail_usage() {
-  printf 'FAIL (collection): usage: ./bench.sh --all [--camera] [--no-flash]\n'
+  printf 'FAIL (collection): usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
   exit 2
 }
 
@@ -28,6 +29,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --all)
       RUN_ALL=1
+      ;;
+    --replay)
+      RUN_REPLAY=1
       ;;
     --camera)
       CAMERA_REQUESTED=1
@@ -46,7 +50,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-[[ "$RUN_ALL" -eq 1 ]] || fail_usage
+[[ $((RUN_ALL + RUN_REPLAY)) -eq 1 ]] || fail_usage
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$REPLAY_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_usage
@@ -206,8 +210,10 @@ PY
 }
 
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
+SUITES=(core display replay)
+[[ "$RUN_REPLAY" -eq 1 ]] && SUITES=(replay)
 first_suite=1
-for suite in core display replay; do
+for suite in "${SUITES[@]}"; do
   step_dir="$RUN_DIR/$suite"
   mkdir -p "$step_dir" 2>/dev/null || finish "FAIL (collection): $suite evidence directory could not be created" 2
   suite_duration="$DURATION_SECONDS"

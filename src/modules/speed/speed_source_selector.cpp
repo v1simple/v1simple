@@ -84,6 +84,24 @@ SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
 }
 
 void SpeedSourceSelector::update(uint32_t nowMs) {
+    // No configured source can produce a selection, so skip the status build
+    // entirely rather than assembling one to discover it is empty. Without this
+    // gate the no-source counter below advances once per main-loop iteration,
+    // which measures loop rate rather than speed-selection behavior.
+    //
+    // Safe only while the enable flags are boot-fixed: syncEnabledInputs() is
+    // called from begin() alone, so cachedStatus_ cannot go stale here and no
+    // source-switch edge can be missed. If a runtime enable/disable path is
+    // ever added, this gate must also count the enabled->disabled switch and
+    // refresh cachedStatus_ before returning.
+    if (!obdEnabled_ && !gpsEnabled_) {
+        if (selectedSpeed_.valid) {
+            selectedSpeed_ = SpeedSelection{};
+        }
+        lastSource_ = SpeedSource::NONE;
+        return;
+    }
+
     SpeedSelectorStatus next = buildStatus(nowMs);
     const SpeedSource picked = next.selectedSource;
 

@@ -49,6 +49,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stdout", required=True)
     parser.add_argument("--stderr", required=True)
     parser.add_argument("--combined", required=True)
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="write sanitized logs without copying child output to the terminal",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command and args.command[0] == "--":
@@ -60,7 +65,7 @@ def parse_args() -> argparse.Namespace:
 
 def copy_stream(
     source: BinaryIO,
-    terminal: BinaryIO,
+    terminal: BinaryIO | None,
     own_log: BinaryIO,
     combined_log: BinaryIO,
     combined_lock: threading.Lock,
@@ -70,8 +75,9 @@ def copy_stream(
         if not chunk:
             break
         safe_chunk = redact_artifact_bytes(chunk)
-        terminal.write(safe_chunk)
-        terminal.flush()
+        if terminal is not None:
+            terminal.write(safe_chunk)
+            terminal.flush()
         own_log.write(safe_chunk)
         own_log.flush()
         with combined_lock:
@@ -140,12 +146,24 @@ def main() -> int:
         lock = threading.Lock()
         stdout_thread = threading.Thread(
             target=copy_stream,
-            args=(process.stdout, sys.stdout.buffer, stdout_log, combined_log, lock),
+            args=(
+                process.stdout,
+                None if args.quiet else sys.stdout.buffer,
+                stdout_log,
+                combined_log,
+                lock,
+            ),
             daemon=True,
         )
         stderr_thread = threading.Thread(
             target=copy_stream,
-            args=(process.stderr, sys.stderr.buffer, stderr_log, combined_log, lock),
+            args=(
+                process.stderr,
+                None if args.quiet else sys.stderr.buffer,
+                stderr_log,
+                combined_log,
+                lock,
+            ),
             daemon=True,
         )
         stdout_thread.start()

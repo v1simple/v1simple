@@ -709,14 +709,13 @@ class CameraCapture:
             "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
             "bright_still": "",
             "dim_still": "",
-            "visually_graded": False,
             "profile_validation": {},
         }
         safe_result = self._write_result("CAPTURE_FAILED", **payload)
         return safe_result
 
     def _verify_video_timing(self) -> dict[str, Any]:
-        """Retain a full-frame MOV/sidecar comparison without gating capture."""
+        """Retain the full-frame MOV/sidecar comparison used by the camera leg."""
         try:
             result = verify_video_file(
                 str(self.ffprobe or "ffprobe"),
@@ -756,7 +755,7 @@ class CameraCapture:
             )
         except OSError:
             # The in-memory result still makes the evidence gap explicit in
-            # camera_result; final capture validity remains unchanged.
+            # camera_result; the final capture check fails closed below.
             pass
         return self.video_timing_verification
 
@@ -836,7 +835,13 @@ class CameraCapture:
 
         was_running = self.process is not None
         self._stop_process()
-        self._verify_video_timing()
+        timing_verification = self._verify_video_timing()
+        if timing_verification.get("status") != "verified":
+            mismatch = timing_verification.get("first_mismatch")
+            self.errors.append(
+                "camera video timing verification failed"
+                + (f": {mismatch}" if mismatch else "")
+            )
         duration = 0.0
         video_probe: dict[str, Any] = {}
         profile_validation: dict[str, Any] = {}
@@ -876,6 +881,8 @@ class CameraCapture:
             was_running
             and not self.errors
             and self.video_path.is_file()
+            and self.frame_timing_path.is_file()
+            and self.video_timing_verification_path.is_file()
             and self.preflight_path.is_file()
             and self.bright_path.is_file()
             and self.dim_path.is_file()
@@ -899,7 +906,6 @@ class CameraCapture:
             "session_start_still": self.preflight_path.name if self.preflight_path.is_file() else "",
             "bright_still": self.bright_path.name if self.bright_path.is_file() else "",
             "dim_still": self.dim_path.name if self.dim_path.is_file() else "",
-            "visually_graded": False,
             "profile_validation": profile_validation,
         }
         return self._write_result(result, **payload)

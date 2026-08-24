@@ -309,8 +309,25 @@ uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) 
 
     // What the renderer committed to putting on screen, per frame. The camera records
     // what actually appeared; this is the other half of that comparison.
+    //
+    // TEMPORARILY DISABLED — memory-headroom bisect, not a permanent decision.
+    //
+    // Bench history dates a loss of 11,724 bytes of internal heap and 10,240 bytes of
+    // largest contiguous DMA block to eefa49a, the commit that introduced this logger.
+    // Its writer holds a 6 KiB internal-SRAM stack (createTaskPinnedToCoreInternalStack
+    // forces MALLOC_CAP_INTERNAL) plus a 32-deep queue of ~280-byte snapshots. Drives
+    // after that commit ran largestDma at 51,188 — below the entire healthy historical
+    // range of 57,332-69,620 — and crashed repeatedly during live alerts.
+    //
+    // Measured with begin(false): freeHeap 93,628 -> 109,764 (+16,136), largestDma
+    // 53,236 -> 65,524 (+12,288). Both back inside the healthy range. The bench keeps
+    // passing with full camera evidence, so QSTART does not depend on this logger.
+    //
+    // The permanent form is lazy allocation from beginQualificationSession(), so the
+    // bench keeps its per-frame evidence and normal runtime stops paying for a harness
+    // that is not running. Restore to begin(sdEnabled) only alongside that change.
     v1DisplayCommitLog.setBootId(bootId, bootToken);
-    v1DisplayCommitLog.begin(sdEnabled);
+    v1DisplayCommitLog.begin(false);
     if (v1DisplayCommitLog.isEnabled()) {
         SerialLog.printf("[DisplayCommit] SD logger enabled (%s)\n", v1DisplayCommitLog.csvPath());
     }

@@ -75,11 +75,6 @@ class DisplayOrchestrationModule;
 class DisplayPreviewModule;
 #endif
 
-// Perf monitoring (conditional)
-#if defined(PERF_METRICS) && defined(PERF_MONITORING)
-struct PerfLatency;
-#endif
-
 // ============================================================================
 // Extern declarations — loop phase modules
 // ============================================================================
@@ -140,10 +135,6 @@ extern DisplayPipelineModule displayPipelineModule;
 extern DisplayOrchestrationModule displayOrchestrationModule;
 extern DisplayPreviewModule displayPreviewModule;
 extern DisplayRestoreModule displayRestoreModule;
-#endif
-
-#if defined(PERF_METRICS) && defined(PERF_MONITORING)
-extern PerfLatency perfLatency;
 #endif
 
 // ============================================================================

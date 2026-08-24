@@ -31,7 +31,6 @@ PerfCounters perfCounters;
 PerfExtendedMetrics perfExtended;
 
 #if PERF_METRICS
-PerfLatency perfLatency;
 #endif
 
 #if PERF_METRICS && PERF_MONITORING
@@ -75,7 +74,6 @@ void perfMetricsReset() {
     sDisplayRenderScenario.store(static_cast<uint8_t>(PerfDisplayRenderScenario::None), std::memory_order_relaxed);
     sSdCapturePaused.store(false, std::memory_order_relaxed);
 #if PERF_METRICS
-    perfLatency.reset();
 #endif
 }
 

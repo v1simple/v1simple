@@ -48,9 +48,6 @@
 #endif
 
 // Sampling rate: measure 1 in N packets to reduce overhead
-#ifndef PERF_SAMPLE_RATE
-#define PERF_SAMPLE_RATE 8 // Measure every 8th packet
-#endif
 
 // Threshold for alert (print immediately if exceeded)
 #ifndef PERF_LATENCY_ALERT_MS
@@ -871,38 +868,6 @@ uint32_t perfGetProxyAdvertisingLastTransitionReason();
 const char* perfProxyAdvertisingTransitionReasonName(uint32_t reasonCode);
 
 // ============================================================================
-// Sampled latency tracking (only when PERF_METRICS=1)
-// Uses std::atomic for thread-safe access
-// ============================================================================
-struct PerfLatency {
-    // BLE→Flush latency (microseconds)
-    std::atomic<uint32_t> minUs{UINT32_MAX};
-    std::atomic<uint32_t> maxUs{0};
-    std::atomic<uint64_t> totalUs{0};
-    std::atomic<uint32_t> sampleCount{0};
-
-    // Per-stage breakdown (for debugging bottlenecks)
-    std::atomic<uint32_t> notifyToQueueUs{0}; // notify callback → queue send
-    std::atomic<uint32_t> queueToParseUs{0};  // queue receive → parse done
-    std::atomic<uint32_t> parseToFlushUs{0};  // parse done → display flush
-
-    void reset() {
-        minUs.store(UINT32_MAX, std::memory_order_relaxed);
-        maxUs.store(0, std::memory_order_relaxed);
-        totalUs.store(0, std::memory_order_relaxed);
-        sampleCount.store(0, std::memory_order_relaxed);
-        notifyToQueueUs.store(0, std::memory_order_relaxed);
-        queueToParseUs.store(0, std::memory_order_relaxed);
-        parseToFlushUs.store(0, std::memory_order_relaxed);
-    }
-
-    uint32_t avgUs() const {
-        uint32_t count = sampleCount.load(std::memory_order_relaxed);
-        return count > 0 ? static_cast<uint32_t>(totalUs.load(std::memory_order_relaxed) / count) : 0;
-    }
-};
-
-// ============================================================================
 // Global instances
 // ============================================================================
 extern PerfCounters perfCounters;
@@ -925,10 +890,6 @@ void perfSetConnectionCycleSnapshot(uint8_t stateCode, uint32_t timeInStateMs, u
                                     uint32_t wifiManualPhoneKicksTotal, bool proxyNoClientLatched);
 
 const char* perfConnectionCycleStateName(uint8_t stateCode);
-
-#if PERF_METRICS
-extern PerfLatency perfLatency;
-#endif
 
 #if PERF_METRICS && PERF_MONITORING
 extern uint32_t perfLastReportMs; // Last report timestamp
@@ -954,37 +915,6 @@ extern uint32_t perfLastReportMs; // Last report timestamp
 
 // Timestamp capture (always on, but cheap)
 #define PERF_TIMESTAMP_US() ((uint32_t)esp_timer_get_time())
-
-#if PERF_METRICS && PERF_MONITORING
-
-// Sampled latency recording
-#define PERF_SAMPLE_LATENCY(startUs, endUs)                                                                            \
-    do {                                                                                                               \
-        static uint32_t _sampleCounter = 0;                                                                            \
-        if ((++_sampleCounter & (PERF_SAMPLE_RATE - 1)) == 0) {                                                        \
-            uint32_t _lat = (endUs) - (startUs);                                                                       \
-            if (_lat < perfLatency.minUs)                                                                              \
-                perfLatency.minUs = _lat;                                                                              \
-            if (_lat > perfLatency.maxUs)                                                                              \
-                perfLatency.maxUs = _lat;                                                                              \
-            perfLatency.totalUs += _lat;                                                                               \
-            perfLatency.sampleCount++;                                                                                 \
-        }                                                                                                              \
-    } while (0)
-
-// Stage timing (for debugging)
-#if PERF_VERBOSE
-#define PERF_STAGE_TIME(stage, value) (perfLatency.stage = (value))
-#else
-#define PERF_STAGE_TIME(stage, value) ((void)0)
-#endif
-
-#else // PERF_METRICS == 0 or PERF_MONITORING == 0
-
-#define PERF_SAMPLE_LATENCY(startUs, endUs) ((void)0)
-#define PERF_STAGE_TIME(stage, value) ((void)0)
-
-#endif // PERF_METRICS && PERF_MONITORING
 
 // ============================================================================
 // API functions

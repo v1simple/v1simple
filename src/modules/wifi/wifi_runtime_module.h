@@ -24,16 +24,14 @@ class WifiRuntimeModule {
         bool (*readWifiLifecyclePending)(void* ctx) = nullptr;
         void* wifiLifecycleContext = nullptr;
 
-        uint32_t (*perfTimestampUs)(void* ctx) = nullptr;
-        void* perfContext = nullptr;
+        uint32_t (*processClockUs)(void* ctx) = nullptr;
+        void* processClockContext = nullptr;
         WifiProcessCadenceDecision (*runWifiCadence)(void* ctx, const WifiProcessCadenceContext& cadenceCtx) = nullptr;
         void* wifiCadenceContext = nullptr;
         void (*setWifiTransitionAdmission)(void* ctx, bool allowTransitionWork) = nullptr;
         void* wifiTransitionAdmissionContext = nullptr;
         void (*runWifiManagerProcess)(void* ctx) = nullptr;
         void* wifiManagerProcessContext = nullptr;
-        void (*recordWifiProcessUs)(void* ctx, uint32_t elapsedUs) = nullptr;
-        void* wifiProcessPerfContext = nullptr;
 
         bool (*readWifiServiceActive)(void* ctx) = nullptr;
         void* wifiServiceContext = nullptr;

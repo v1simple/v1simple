@@ -4,8 +4,6 @@
 #include <cstring>
 
 #include "config.h"
-#include "perf_metrics.h"
-#include "qualification_clock.h"
 
 #ifndef UNIT_TEST
 #include "modules/display/display_preview_module.h"
@@ -62,8 +60,6 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     lastNotifyTsMs_ = 0;
     lastParsedTsMs_ = 0;
     hadSuccessfulParse_ = false;
-    rxSeq_.store(0, std::memory_order_relaxed);
-    rxSourceLosses_.store(0, std::memory_order_relaxed);
     backpressureActive_ = false;
     tooLargeWarningLog_ = BleLogRateLimitState{};
     missingEndWarningLog_ = BleLogRateLimitState{};
@@ -116,18 +112,8 @@ void BleQueueModule::openSession(uint32_t sessionGeneration) {
 void BleQueueModule::closeSession() {
     acceptNotifications_.store(false, std::memory_order_release);
 
-    uint32_t discardedNotifications = 0;
     BLEDataPacket discarded;
     while (queueHandle_ && xQueueReceive(queueHandle_, &discarded, 0) == pdTRUE) {
-        ++discardedNotifications;
-    }
-
-    const size_t unreadBytes = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
-    if (discardedNotifications > 0) {
-        rxSourceLosses_.fetch_add(discardedNotifications, std::memory_order_relaxed);
-    }
-    if (unreadBytes > 0) {
-        rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
     }
 
     clearRxState();
@@ -139,49 +125,34 @@ void BleQueueModule::closeSession() {
 }
 
 void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                              uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
-    (void)tryOnNotify(data, length, charUUID, sessionGeneration, callbackDutMillis, callbackDutMicros);
+                              uint32_t callbackMillis) {
+    (void)tryOnNotify(data, length, charUUID, sessionGeneration, callbackMillis);
 }
 
 bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                                 uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
+                                 uint32_t callbackMillis) {
     if (!queueHandle_ || !acceptNotifications_.load(std::memory_order_acquire) ||
         sessionGeneration != sessionGeneration_.load(std::memory_order_acquire))
         return false;
 
     if (length > 0 && length <= sizeof(BLEDataPacket::data)) {
-        PERF_INC(rxPackets);
-        PERF_ADD(rxBytes, length);
         BLEDataPacket pkt;
         memcpy(pkt.data, data, length);
         pkt.length = length;
         pkt.charUUID = charUUID;
-        pkt.tsMs = callbackDutMillis;
-        pkt.tsUs = callbackDutMicros;
-        pkt.clockSegment = QualificationClock::segment();
+        pkt.tsMs = callbackMillis;
         pkt.sessionGeneration = sessionGeneration;
-        pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
 
         // closeSession() can race this callback between its first admission
         // check and packet construction. Recheck before publishing; if it
         // races after this point, process() rejects the stamped generation.
         if (!acceptNotifications_.load(std::memory_order_acquire) ||
             sessionGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
-            rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
 
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
-        if (result != pdTRUE) {
-            PERF_INC(queueDrops);
-            rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
-        }
-        UBaseType_t depth = uxQueueMessagesWaiting(queueHandle_);
-        PERF_MAX(queueHighWater, depth);
         return result == pdTRUE;
-    } else if (length > sizeof(BLEDataPacket::data)) {
-        PERF_INC(oversizeDrops);
-        rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
     }
     return false;
 }
@@ -197,10 +168,7 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
     pkt.length = length;
     pkt.charUUID = charUUID;
     pkt.tsMs = millis();
-    pkt.tsUs = QualificationClock::nowMicros();
-    pkt.clockSegment = QualificationClock::segment();
     pkt.sessionGeneration = sessionGeneration;
-    pkt.rxSeq = rxSeq_.fetch_add(1, std::memory_order_relaxed) + 1;
     return xQueueSend(queueHandle_, &pkt, 0) == pdTRUE;
 }
 #endif
@@ -280,11 +248,9 @@ void BleQueueModule::process() {
 
     while (queueHandle_ && xQueueReceive(queueHandle_, &pkt, 0) == pdTRUE) {
         if (!sessionOpen || pkt.sessionGeneration != activeSessionGeneration) {
-            rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
         if (!appendRxPacket(pkt)) {
-            rxSourceLosses_.fetch_add(1, std::memory_order_relaxed);
         }
         latestPktTs = pkt.tsMs;
     }
@@ -296,7 +262,6 @@ void BleQueueModule::process() {
     if (latestPktTs != 0) {
         lastRxMillis_ = latestPktTs;
         lastNotifyTsMs_ = latestPktTs;
-        perfRecordBleTimelineEvent(PerfBleTimelineEvent::FirstRx, latestPktTs);
     }
     const uint32_t parseTimestampMs = lastNotifyTsMs_;
 
@@ -345,7 +310,7 @@ void BleQueueModule::process() {
         maxPacketsPerCycle = MID_PACKETS_PER_CYCLE;
     }
 
-    const uint32_t parseCycleStartUs = PERF_TIMESTAMP_US();
+    const uint32_t parseCycleStartUs = micros();
     const uint32_t parseBudgetUs =
         (maxPacketsPerCycle > BASE_PACKETS_PER_CYCLE) ? BURST_PARSE_BUDGET_US : BASE_PARSE_BUDGET_US;
     size_t packetsProcessedThisCycle = 0;
@@ -357,7 +322,7 @@ void BleQueueModule::process() {
             break;
         }
         if (packetsProcessedThisCycle >= BASE_PACKETS_PER_CYCLE &&
-            (PERF_TIMESTAMP_US() - parseCycleStartUs) >= parseBudgetUs) {
+            (micros() - parseCycleStartUs) >= parseBudgetUs) {
             break;
         }
 
@@ -385,7 +350,6 @@ void BleQueueModule::process() {
 
         uint8_t lenField = rxBuffer_[rxReadPos_ + 4];
         if (lenField == 0) {
-            PERF_INC(parseResyncs);
             rxReadPos_++;
             continue;
         }
@@ -398,7 +362,6 @@ void BleQueueModule::process() {
                 }
                 loggedTooLargeWarning = true;
             }
-            PERF_INC(parseResyncs);
             rxReadPos_++;
             continue;
         }
@@ -412,7 +375,6 @@ void BleQueueModule::process() {
                 }
                 loggedMissingEndWarning = true;
             }
-            PERF_INC(parseResyncs);
             rxReadPos_++;
             continue;
         }
@@ -441,9 +403,7 @@ void BleQueueModule::process() {
 
         if (packetId == PACKET_ID_DISPLAY_DATA || packetId == PACKET_ID_ALERT_DATA) {
             if (parseOk) {
-                PERF_INC(parseSuccesses);
             } else {
-                PERF_INC(parseFailures);
             }
         }
 

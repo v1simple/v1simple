@@ -13,7 +13,6 @@
 #include "display_segments.h"
 #include "display_font_manager.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include <algorithm>
 #include <cstring>
 
@@ -167,7 +166,6 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
     if (!changed) {
         return;
     }
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::FrequencyChange);
 
     if (usingOfr) {
         // Use Segment7 TTF font

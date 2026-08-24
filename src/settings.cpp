@@ -425,7 +425,6 @@ void SettingsManager::load() {
 
     // ALP settings
     settings_.alpEnabled = preferences_.getBool(kNvsAlpEnabled, false);
-    settings_.alpSdLogEnabled = preferences_.getBool(kNvsAlpSdLog, false);
     {
         uint8_t alpPersist = preferences_.getUChar(kNvsAlpPersistSec, 0);
         if (alpPersist > 5)
@@ -433,9 +432,6 @@ void SettingsManager::load() {
         settings_.alpAlertPersistSec = alpPersist;
     }
     settings_.alpDisableV1LaserOnPush = preferences_.getBool(kNvsAlpNoV1Laser, true);
-
-    // Debug / diagnostics
-    settings_.powerOffSdLog = preferences_.getBool(kNvsPowerOffSdLog, false);
 
     // GPS settings
     settings_.gpsEnabled = preferences_.getBool(kNvsGpsEnabled, false);
@@ -447,9 +443,6 @@ void SettingsManager::load() {
     // Normalize stale active-low NVS values so old backups/API writes cannot
     // leave diagnostics or future backups reporting a dead polarity state.
     settings_.gpsEnablePinActiveHigh = true;
-    settings_.gpsLogUtcToPerf = preferences_.getBool(kNvsGpsLogUtcToPerf, true);
-    settings_.gpsLogUtcToAlp = preferences_.getBool(kNvsGpsLogUtcToAlp, true);
-
     backupDueRevision_ = preferences_.getUInt(kNvsBackupDueRevision, 0);
     preferences_.end();
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);

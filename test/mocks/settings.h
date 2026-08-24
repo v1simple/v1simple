@@ -152,10 +152,8 @@ struct V1Settings {
     bool bleProxyEnabled = true;
     uint8_t activeSlot = 0;
     bool autoPushEnabled = false;
-    bool powerOffSdLog = false;
     // Whether ALP module is enabled — used by auto power-off logic.
     bool alpEnabled = false;
-    bool alpSdLogEnabled = false;
     uint8_t alpAlertPersistSec = 0;
     bool alpDisableV1LaserOnPush = true;
 

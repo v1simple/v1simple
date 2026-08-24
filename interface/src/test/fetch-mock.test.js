@@ -91,15 +91,6 @@ describe('firmware-captured fetch fixtures', () => {
         );
     });
 
-    it('preserves captured non-JSON bodies without JSON quoting', async () => {
-        installFixtureFetchMock('diagnostics_routes');
-
-        const response = await fetch('/api/diagnostics/log?path=%2Fperf%2Fperf_boot_7.csv');
-
-        expect(response.headers.get('content-type')).toBe('text/csv');
-        expect(await response.text()).toBe('header\nrow\n');
-    });
-
     it('fails closed when a fixture scenario does not cover the request', async () => {
         installFixtureFetchMock('wifi_status_default');
 

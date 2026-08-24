@@ -204,7 +204,6 @@ result = str(payload.get("result") or "COLLECTION_FAILED")
 kind = str(payload.get("failure_kind") or "none")
 message = str(
     payload.get("error")
-    or payload.get("metric_validation_message")
     or "leg did not produce a readable result"
 )
 message = re.sub(r"^FAIL \([^)]*\):\s*", "", message)
@@ -221,21 +220,16 @@ from pathlib import Path
 
 result_path = Path(sys.argv[1]).resolve()
 suite = sys.argv[2]
-root = Path(sys.argv[3]).resolve()
-sys.path.insert(0, str(root / "tools"))
-
-from import_perf_csv import render_perf_summary
 
 payload = json.loads(result_path.read_text(encoding="utf-8"))
-artifact = payload.get("artifacts", {}).get("perf_csv", {})
-relative_path = str(artifact.get("path") or "")
-if artifact.get("status") != "captured" or Path(relative_path).name != relative_path:
-    raise RuntimeError("window result has no captured perf CSV")
-csv_path = (result_path.parent / relative_path).resolve()
-csv_path.relative_to(result_path.parent)
-
-for line in render_perf_summary(csv_path, suite):
-    print(f"[bench] {suite} {line}")
+completion = payload.get("completion") or {}
+duration = completion.get("duration_seconds")
+serial_lines = completion.get("serial_lines_observed")
+if isinstance(duration, (int, float)) and isinstance(serial_lines, int):
+    print(
+        f"[bench] {suite} external window: {duration:g}s"
+        f" | serial lines observed {serial_lines}"
+    )
 
 camera = payload.get("camera")
 if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
@@ -309,7 +303,7 @@ for suite in "${SUITES[@]}"; do
     < <(read_window_result "$step_dir/window_result.json" 2>/dev/null)
   if [[ "$result" == "PASS" && "$runner_status" -eq 0 ]]; then
     if ! print_window_summary "$step_dir/window_result.json" "$suite"; then
-      printf '%s: metrics summary unavailable\n' "$suite" >> "$RUN_LOG"
+      printf '%s: external evidence summary unavailable\n' "$suite" >> "$RUN_LOG"
     fi
     continue
   fi

@@ -17,12 +17,6 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-// Perf stubs — quiet_coordinator_templates.h calls these but perf_metrics.h
-// is excluded in UNIT_TEST builds.
-void perfRecordSpeedVolDrop() {}
-void perfRecordSpeedVolRestore() {}
-void perfRecordSpeedVolRetry() {}
-
 struct VoiceContext {
     bool isMuted = false;
     bool isSoftMuted = false;

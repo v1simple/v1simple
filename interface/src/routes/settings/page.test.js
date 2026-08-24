@@ -1199,34 +1199,6 @@ describe('settings route page', () => {
         expect(postCall).toBeTruthy();
         expect(postCall[1].body.has('proxy_ble')).toBe(false);
         expect(postCall[1].body.has('proxy_name')).toBe(false);
-        expect(postCall[1].body.get('powerOffSdLog')).toBe('false');
-        unmount();
-    });
-
-    it('exposes and saves shutdown evidence logging in the released settings page', async () => {
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'GET',
-                match: '/api/device/settings',
-                respond: jsonResponse({ ap_ssid: 'V1', powerOffSdLog: false })
-            }
-        ]);
-        const { unmount } = render(Page);
-
-        const toggle = await screen.findByRole('checkbox', { name: /record shutdown evidence/i });
-        expect(toggle).not.toBeChecked();
-        expect(screen.getByRole('link', { name: 'Logs page' })).toHaveAttribute('href', '/logs');
-
-        await fireEvent.click(toggle);
-        await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
-        await screen.findByText(
-            'Settings saved! New AP credentials apply the next time the AP starts.'
-        );
-
-        const postCall = fetchMock.mock.calls.find(
-            ([url, init]) => url === '/api/device/settings' && init?.method === 'POST'
-        );
-        expect(postCall[1].body.get('powerOffSdLog')).toBe('true');
         unmount();
     });
 

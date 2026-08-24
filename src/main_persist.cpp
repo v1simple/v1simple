@@ -3,7 +3,6 @@
  */
 
 #include "main_internals.h"
-#include "perf_metrics.h"
 #include "storage_manager.h"
 #include "wifi_manager.h"
 #include "v1_devices.h"
@@ -136,7 +135,6 @@ struct DirtySaveConfig {
     void (*clearDirty)();
     bool (*saveDirect)(fs::FS& fs, const char* path);
     void (*logSuccess)(const char* path);
-    void (*recordPerfUs)(uint32_t us);
 };
 
 struct DirtySaveState {
@@ -154,8 +152,6 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
     if (!cfg.saveDirect) {
         return;
     }
-    uint32_t startUs = PERF_TIMESTAMP_US();
-
     if (cfg.isDirty()) {
         if (state.dirtySinceMs == 0) {
             state.dirtySinceMs = nowMs;
@@ -260,7 +256,6 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
         maybeLogSaveDiag(cfg.tag, state.diag, nowMs);
     }
 
-    cfg.recordPerfUs(PERF_TIMESTAMP_US() - startUs);
 }
 
 // --- V1DeviceStore save instance ---
@@ -274,7 +269,6 @@ static const DirtySaveConfig v1DeviceStoreSaveConfig = {
     .clearDirty = []() {},
     .saveDirect = [](fs::FS& /*fs*/, const char* /*path*/) { return v1DeviceStore.flushPendingSave(); },
     .logSuccess = [](const char* /*path*/) {},
-    .recordPerfUs = [](uint32_t /*us*/) {},
 };
 
 static DirtySaveState v1DeviceStoreSaveState;

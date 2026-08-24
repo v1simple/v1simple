@@ -1,7 +1,6 @@
 #include "display_restore_module.h"
 
 #include "display_pipeline_module.h"
-#include "perf_metrics.h"
 
 void DisplayRestoreModule::begin(V1Display* disp, PacketParser* pktParser, V1BLEClient* ble,
                                  DisplayPreviewModule* preview, DisplayPipelineModule* displayPipeline) {
@@ -30,15 +29,11 @@ bool DisplayRestoreModule::process() {
     if (!restored && display_ && parser_ && bleClient_) {
         // Defensive fallback for tests or partial wiring; production should use the pipeline.
         display_->forceNextRedraw();
-        perfSetDisplayRenderScenario(PerfDisplayRenderScenario::Restore);
-        const unsigned long renderStartUs = micros();
         if (bleClient_->isConnected()) {
             display_->update(parser_->getDisplayState());
         } else {
             display_->showScanning();
         }
-        perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
-        perfClearDisplayRenderScenario();
         restored = true;
     }
 

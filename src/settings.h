@@ -285,8 +285,7 @@ struct V1Settings {
     uint32_t cycleTeardownAckTimeoutMs; // Per-step teardown ack timeout
 
     // ALP (Active Laser Protection) settings
-    bool alpEnabled;      // Enable ALP UART listener module
-    bool alpSdLogEnabled; // Enable ALP event logging to SD card (CSV)
+    bool alpEnabled; // Enable ALP UART listener module
     // Laser display persistence (seconds) after an ALP session closes.
     // Defaults to 0 — the ALP has its own speaker and users found the
     // post-engagement tail on the display unhelpful after a real hit.
@@ -303,11 +302,6 @@ struct V1Settings {
     bool gpsEnabled;             // Enable GPS runtime module
     uint32_t gpsBaud;            // UART baud rate (9600 / 38400 / 115200)
     bool gpsEnablePinActiveHigh; // Deprecated compatibility key; GPS EN is not driven
-    bool gpsLogUtcToPerf;        // Stamp UTC into perf CSV
-    bool gpsLogUtcToAlp;         // Stamp UTC into ALP CSV
-
-    // Debug / diagnostics
-    bool powerOffSdLog; // Log power-off diagnostics to /poweroff.log on SD
 
     // Default constructor with sensible defaults
     V1Settings()
@@ -391,15 +385,11 @@ struct V1Settings {
           v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
           cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
           alpEnabled(false),             // ALP disabled by default
-          alpSdLogEnabled(false),        // ALP SD logging off by default
           alpAlertPersistSec(0),         // ALP display persist off by default
           alpDisableV1LaserOnPush(true), // When ALP is enabled, let ALP own laser alerting
           gpsEnabled(false),             // GPS disabled by default until module is installed
-          gpsBaud(9600),                 // Default UART baud for MTK3339
-          gpsEnablePinActiveHigh(true),  // Deprecated compatibility key; normalized true
-          gpsLogUtcToPerf(true),         // UTC column on by default when GPS enabled
-          gpsLogUtcToAlp(true),          // UTC column on by default when GPS enabled
-          powerOffSdLog(false) {}        // Power-off SD logging off by default
+          gpsBaud(9600),                // Default UART baud for MTK3339
+          gpsEnablePinActiveHigh(true) {} // Deprecated compatibility key; normalized true
 
     int primaryWifiStaSlotIndex() const {
         int best = -1;
@@ -543,17 +533,11 @@ struct DeviceSettingsUpdate {
     bool hasAlpEnabled = false;
     bool alpEnabled = false;
 
-    bool hasAlpSdLogEnabled = false;
-    bool alpSdLogEnabled = false;
-
     bool hasAlpAlertPersistSec = false;
     uint8_t alpAlertPersistSec = 0;
 
     bool hasAlpDisableV1LaserOnPush = false;
     bool alpDisableV1LaserOnPush = true;
-
-    bool hasPowerOffSdLog = false;
-    bool powerOffSdLog = false;
 
     bool hasGpsEnabled = false;
     bool gpsEnabled = false;
@@ -564,11 +548,6 @@ struct DeviceSettingsUpdate {
     bool hasGpsEnablePinActiveHigh = false;
     bool gpsEnablePinActiveHigh = true; // Deprecated compatibility key; false is ignored
 
-    bool hasGpsLogUtcToPerf = false;
-    bool gpsLogUtcToPerf = true;
-
-    bool hasGpsLogUtcToAlp = false;
-    bool gpsLogUtcToAlp = true;
 };
 
 struct AudioSettingsUpdate {
@@ -805,7 +784,6 @@ class SettingsManager {
     void setWiFiEnabled(bool enabled);
     void setAPCredentials(const String& ssid, const String& password);
     void setProxyBLE(bool enabled);
-    void applyVolatileQualificationMode(bool proxyBLE, bool obdEnabled);
     void setProxyName(const String& name);
     void setAutoPowerOffMinutes(uint8_t minutes);
     void setApTimeoutMinutes(uint8_t minutes);

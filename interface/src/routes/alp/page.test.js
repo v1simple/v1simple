@@ -17,7 +17,6 @@ function installDefaultFetch(overrides = []) {
                 match: '/api/device/settings',
                 respond: jsonResponse({
                     alpEnabled: true,
-                    alpSdLogEnabled: false,
                     alpAlertPersistSec: 2,
                     alpDisableV1LaserOnPush: true
                 })
@@ -48,7 +47,7 @@ describe('alp route page', () => {
             screen.getByRole('checkbox', { name: /disable v1 laser alerts on auto-push/i })
         ).toBeChecked();
         expect(
-            screen.getByText(/Listener enable and SD logging start on the next normal boot/)
+            screen.getByText(/Listener enable starts on the next normal boot/)
         ).toBeInTheDocument();
         expect(screen.queryByText('Live ALP Status')).not.toBeInTheDocument();
         expect(countCalls(fetchMock, '/api/alp/status')).toBe(0);
@@ -84,7 +83,6 @@ describe('alp route page', () => {
     it('reconciles ALP settings after a failed save', async () => {
         let settings = {
             alpEnabled: false,
-            alpSdLogEnabled: false,
             alpAlertPersistSec: 0,
             alpDisableV1LaserOnPush: true
         };

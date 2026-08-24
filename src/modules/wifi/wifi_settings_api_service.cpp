@@ -37,10 +37,8 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
     doc["autoPowerOffMinutes"] = settings.autoPowerOffMinutes;
     doc["apTimeoutMinutes"] = settings.apTimeoutMinutes;
     doc["alpEnabled"] = settings.alpEnabled;
-    doc["alpSdLogEnabled"] = settings.alpSdLogEnabled;
     doc["alpAlertPersistSec"] = settings.alpAlertPersistSec;
     doc["alpDisableV1LaserOnPush"] = settings.alpDisableV1LaserOnPush;
-    doc["powerOffSdLog"] = settings.powerOffSdLog;
 
     // NVS persistence diagnostics — helps verify settings actually survive reboot
     if (runtime.getNvsDiagnostic) {
@@ -119,10 +117,6 @@ void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
         update.hasAlpEnabled = true;
         update.alpEnabled = argIsTrue(server.arg("alpEnabled"));
     }
-    if (server.hasArg("alpSdLogEnabled")) {
-        update.hasAlpSdLogEnabled = true;
-        update.alpSdLogEnabled = argIsTrue(server.arg("alpSdLogEnabled"));
-    }
     if (server.hasArg("alpAlertPersistSec")) {
         int sec = server.arg("alpAlertPersistSec").toInt();
         sec = std::max(0, std::min(sec, 5));
@@ -132,10 +126,6 @@ void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
     if (server.hasArg("alpDisableV1LaserOnPush")) {
         update.hasAlpDisableV1LaserOnPush = true;
         update.alpDisableV1LaserOnPush = argIsTrue(server.arg("alpDisableV1LaserOnPush"));
-    }
-    if (server.hasArg("powerOffSdLog")) {
-        update.hasPowerOffSdLog = true;
-        update.powerOffSdLog = argIsTrue(server.arg("powerOffSdLog"));
     }
     runtime.applySettingsUpdate(update, runtime.ctx);
 

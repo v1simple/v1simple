@@ -21,12 +21,7 @@ namespace {
 
 constexpr const char* kBleBondBackupPath = "/v1simple_ble_bonds.bin";
 constexpr UBaseType_t kBondBackupQueueDepth = 1;
-// 6144, not 4096: across the 7,625 [STACK] samples in .artifacts/bench this
-// task is present in only 30, and its minimum free was 1,024 B of 4,096 (3,072
-// used) -- the tightest margin of any measured task in the build, on a path
-// that is rarely exercised. Every other measured task sits between 40% and 89%
-// free. The extra 2,048 B of internal SRAM is bought against a 45,044 B
-// worst-case contiguous DMA block.
+// Keep extra headroom for the rarely exercised filesystem write and retry path.
 constexpr uint32_t kBondBackupWriterStackSize = 6144;
 constexpr UBaseType_t kBondBackupWriterPriority = 1;
 constexpr uint32_t kBondBackupRetryDelayMs = 1000;
@@ -57,34 +52,11 @@ struct BondBackupWriterState {
     std::atomic<bool> writerActive{false};
     std::atomic<uint32_t> writerAdmissionsInFlight{0};
     std::atomic<bool> shutdownRequested{false};
-    std::atomic<uint32_t> enqueuedSnapshots{0};
-    std::atomic<uint32_t> coalescedSnapshots{0};
-    std::atomic<uint32_t> droppedSnapshots{0};
-    std::atomic<uint32_t> successfulWrites{0};
-    std::atomic<uint32_t> writeFailures{0};
-    std::atomic<uint32_t> retryRequeues{0};
     std::atomic<uint32_t> nextSequence{0};
     std::atomic<uint32_t> lastSuccessfulSequence{0};
-    std::atomic<uint32_t> writerStackMinFreeBytes{UINT32_MAX};
 };
 
 BondBackupWriterState gBondBackupWriterState;
-
-bool shouldLogCount(uint32_t count) {
-    return count == 1 || (count != 0 && (count & (count - 1)) == 0);
-}
-
-void recordBondBackupWriterStackMinFreeBytes(uint32_t observedBytes) {
-    uint32_t current = gBondBackupWriterState.writerStackMinFreeBytes.load(std::memory_order_relaxed);
-    while (observedBytes < current &&
-           !gBondBackupWriterState.writerStackMinFreeBytes.compare_exchange_weak(
-               current, observedBytes, std::memory_order_relaxed, std::memory_order_relaxed)) {
-    }
-}
-
-void sampleBondBackupWriterStack() {
-    recordBondBackupWriterStackMinFreeBytes(static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)));
-}
 
 BondBackupSnapshot* allocateBondBackupSnapshot() {
     void* memory = heap_caps_malloc(sizeof(BondBackupSnapshot), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
@@ -184,7 +156,6 @@ int writeBondBackupSnapshotWithSdLock(const BondBackupSnapshot& snapshot) {
 
 void requeueOrReleaseFailedSnapshot(BondBackupSnapshot* snapshot) {
     if (gBondBackupWriterState.queue && xQueueSend(gBondBackupWriterState.queue, &snapshot, 0) == pdTRUE) {
-        gBondBackupWriterState.retryRequeues.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -199,18 +170,13 @@ bool processBondBackupSnapshot(BondBackupSnapshot* snapshot) {
     }
 
     if (writeBondBackupSnapshotWithSdLock(*snapshot) >= 0) {
-        gBondBackupWriterState.successfulWrites.fetch_add(1, std::memory_order_relaxed);
         gBondBackupWriterState.lastSuccessfulSequence.store(snapshot->sequence, std::memory_order_release);
         releaseBondBackupSnapshot(snapshot);
         return true;
     }
 
-    const uint32_t failures = gBondBackupWriterState.writeFailures.fetch_add(1, std::memory_order_relaxed) + 1;
     requeueOrReleaseFailedSnapshot(snapshot);
-    if (shouldLogCount(failures)) {
-        Serial.printf("[BLE] WARN: Core-0 bond backup failed; queued for retry (failures=%lu)\n",
-                      static_cast<unsigned long>(failures));
-    }
+    Serial.println("[BLE] WARN: Core-0 bond backup failed; queued for retry");
     return false;
 }
 
@@ -261,7 +227,6 @@ bool completeBondBackupWriterExit() {
 }
 
 void bondBackupWriterTaskEntry(void*) {
-    sampleBondBackupWriterStack();
     do {
         while (true) {
             if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) &&
@@ -275,10 +240,6 @@ void bondBackupWriterTaskEntry(void*) {
             }
 
             const bool ok = processBondBackupSnapshot(snapshot);
-            // uxTaskGetStackHighWaterMark retains the task's lifetime minimum, so
-            // sampling after each write captures the deepest filesystem path while
-            // keeping the periodic reporter independent of the live task handle.
-            sampleBondBackupWriterStack();
             if (!ok) {
                 if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire)) {
                     // Power-off is already bounded by the shutdown caller. Do not
@@ -294,7 +255,6 @@ void bondBackupWriterTaskEntry(void*) {
             taskYIELD();
         }
 
-        sampleBondBackupWriterStack();
     } while (completeBondBackupWriterExit());
     vTaskDeleteWithCaps(nullptr);
 }
@@ -342,21 +302,10 @@ bool enqueueLatestSnapshot(BondBackupSnapshot* snapshot) {
         releaseBondBackupSnapshot(displaced);
     }
     if (xQueueSend(gBondBackupWriterState.queue, &snapshot, 0) == pdTRUE) {
-        if (replaced) {
-            const uint32_t coalesced =
-                gBondBackupWriterState.coalescedSnapshots.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (shouldLogCount(coalesced)) {
-                Serial.printf("[BLE] Bond backup queue coalesced older snapshot (count=%lu)\n",
-                              static_cast<unsigned long>(coalesced));
-            }
-        }
         return true;
     }
 
-    const uint32_t dropped = gBondBackupWriterState.droppedSnapshots.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (shouldLogCount(dropped)) {
-        Serial.printf("[BLE] WARN: Bond backup snapshot dropped (count=%lu)\n", static_cast<unsigned long>(dropped));
-    }
+    Serial.println("[BLE] WARN: Bond backup snapshot dropped");
     releaseBondBackupSnapshot(snapshot);
     return false;
 }
@@ -367,11 +316,7 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
     // performed on this path.
     BondBackupSnapshot* snapshot = allocateBondBackupSnapshot();
     if (!snapshot) {
-        const uint32_t dropped = gBondBackupWriterState.droppedSnapshots.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (shouldLogCount(dropped)) {
-            Serial.printf("[BLE] WARN: Bond backup snapshot allocation failed (count=%lu)\n",
-                          static_cast<unsigned long>(dropped));
-        }
+        Serial.println("[BLE] WARN: Bond backup snapshot allocation failed");
         return -1;
     }
     collectCurrentBondSnapshot(*snapshot);
@@ -385,7 +330,6 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
     BondBackupWriterAdmission writerAdmission;
     if (!ensureBondBackupWriterReady()) {
         releaseBondBackupSnapshot(snapshot);
-        gBondBackupWriterState.droppedSnapshots.fetch_add(1, std::memory_order_relaxed);
         return -1;
     }
     // enqueueLatestSnapshot owns the allocation on both success and failure.
@@ -393,7 +337,6 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
         return -1;
     }
 
-    gBondBackupWriterState.enqueuedSnapshots.fetch_add(1, std::memory_order_relaxed);
     if (sequenceOut) {
         *sequenceOut = snapshotSequence;
     }
@@ -421,18 +364,6 @@ int backupCurrentBleBondsViaCore0AtBoot() {
         vTaskDelay(pdMS_TO_TICKS(kBootBackupPollMs));
     }
     return bondCount;
-}
-
-BleBondBackupWriterStats bleBondBackupWriterStats() {
-    BleBondBackupWriterStats stats;
-    stats.enqueuedSnapshots = gBondBackupWriterState.enqueuedSnapshots.load(std::memory_order_relaxed);
-    stats.coalescedSnapshots = gBondBackupWriterState.coalescedSnapshots.load(std::memory_order_relaxed);
-    stats.droppedSnapshots = gBondBackupWriterState.droppedSnapshots.load(std::memory_order_relaxed);
-    stats.successfulWrites = gBondBackupWriterState.successfulWrites.load(std::memory_order_relaxed);
-    stats.writeFailures = gBondBackupWriterState.writeFailures.load(std::memory_order_relaxed);
-    stats.retryRequeues = gBondBackupWriterState.retryRequeues.load(std::memory_order_relaxed);
-    stats.writerStackMinFreeBytes = gBondBackupWriterState.writerStackMinFreeBytes.load(std::memory_order_relaxed);
-    return stats;
 }
 
 void shutdownBleBondBackupWriter(uint32_t timeoutMs) {
@@ -474,15 +405,8 @@ void resetBleBondBackupWriterForTest() {
     }
     gBondBackupWriterState.queueInPsram = false;
     gBondBackupWriterState.shutdownRequested.store(false, std::memory_order_relaxed);
-    gBondBackupWriterState.enqueuedSnapshots.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.coalescedSnapshots.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.droppedSnapshots.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.successfulWrites.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.writeFailures.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.retryRequeues.store(0, std::memory_order_relaxed);
     gBondBackupWriterState.nextSequence.store(0, std::memory_order_relaxed);
     gBondBackupWriterState.lastSuccessfulSequence.store(0, std::memory_order_relaxed);
-    gBondBackupWriterState.writerStackMinFreeBytes.store(UINT32_MAX, std::memory_order_relaxed);
 }
 
 bool runBleBondBackupWriterOnceForTest() {
@@ -508,7 +432,4 @@ size_t bleBondBackupSnapshotSizeForTest() {
     return sizeof(BondBackupSnapshot);
 }
 
-void recordBleBondBackupWriterStackSampleForTest(uint32_t freeBytes) {
-    recordBondBackupWriterStackMinFreeBytes(freeBytes);
-}
 #endif

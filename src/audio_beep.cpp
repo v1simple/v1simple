@@ -445,19 +445,6 @@ static struct {
 SDAudioTaskParams g_sdAudioTaskParams;
 
 std::atomic<TaskHandle_t> audioTaskHandle{nullptr};
-// UINT32_MAX distinguishes "not sampled" from the critical valid result of
-// zero bytes remaining.
-std::atomic<uint32_t> g_audioPcmStackHighWaterBytes{UINT32_MAX};
-std::atomic<uint32_t> g_audioSdStackHighWaterBytes{UINT32_MAX};
-
-uint32_t audio_pcm_stack_high_water_bytes() {
-    return g_audioPcmStackHighWaterBytes.load(std::memory_order_relaxed);
-}
-
-uint32_t audio_sd_stack_high_water_bytes() {
-    return g_audioSdStackHighWaterBytes.load(std::memory_order_relaxed);
-}
-
 // ============================================================================
 // Static task allocation for SD audio playback.
 // Pre-allocates stack and TCB at compile time to avoid heap allocation failures
@@ -470,8 +457,6 @@ StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
 StaticTask_t g_sdAudioTaskTCB;
 
 static void finish_pcm_audio_task() {
-    audioRecordStackHighWater(g_audioPcmStackHighWaterBytes,
-                              static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)));
     audioResetTaskState(audio_playing, audioTaskHandle);
     // This task uses xTaskCreatePinnedToCoreWithCaps, so its matching delete
     // path must release the capability-allocated stack.
@@ -571,7 +556,6 @@ static void play_pcm_audio(const int16_t* pcm_data, int num_samples, int duratio
     // Atomic exchange: if already true, return; otherwise set to true
     if (audio_playing.exchange(true)) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 
@@ -597,10 +581,8 @@ static void play_pcm_audio(const int16_t* pcm_data, int num_samples, int duratio
 
     if (result != pdPASS) {
         Serial.println("[AUDIO] ERROR: Failed to create audio task!");
-        PERF_INC(audioTaskFail);
         audio_playing = false;
     } else {
-        PERF_INC(audioPlayCount);
     }
 }
 
@@ -610,7 +592,6 @@ void play_vol0_beep() {
 
     if (audio_playing) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 

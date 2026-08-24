@@ -225,7 +225,7 @@ describe('dashboard route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Proxy / App saved');
-        expect(screen.getByText(/owns the local display and logging only/)).toBeInTheDocument();
+        expect(screen.getByText(/owns the local display\. OBD speed and phone proxy are off/)).toBeInTheDocument();
         expect(screen.getByText(/V1 Simple owns local speed mute/)).toBeInTheDocument();
         expect(screen.getByText(/relays raw V1 data/)).toBeInTheDocument();
         expect(screen.getByText('Proxy / App').closest('button')).toHaveAttribute(

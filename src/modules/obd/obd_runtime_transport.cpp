@@ -29,7 +29,6 @@ extern "C" {
 #endif
 
 #include "../../psram_freertos_alloc.h"
-#include "perf_metrics.h"
 
 #ifndef UNIT_TEST
 #include "ble_client.h"
@@ -263,21 +262,6 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
     return true;
 }
 
-bool ObdRuntimeModule::transportTaskActive() const {
-    return sObdTransport.task != nullptr;
-}
-
-bool ObdRuntimeModule::transportTaskStackInPsram() const {
-    return sObdTransport.taskStackInPsram;
-}
-
-uint32_t ObdRuntimeModule::transportStackHighWaterBytes() const {
-    TaskHandle_t task = sObdTransport.task;
-    if (!task) {
-        return 0;
-    }
-    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(task));
-}
 #endif
 
 // ======================================================================
@@ -389,9 +373,7 @@ bool ObdRuntimeModule::connectBle(uint32_t timeoutMs, bool preferCachedAttribute
     const char* const address = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;
     const uint8_t addrType = connectAddress_[0] != '\0' ? connectAddrType_ : savedAddrType_;
 #ifndef UNIT_TEST
-    const uint32_t startUs = PERF_TIMESTAMP_US();
     const bool connected = bleClient_->connect(address, addrType, timeoutMs, preferCachedAttributes);
-    perfRecordObdConnectCallUs(PERF_TIMESTAMP_US() - startUs);
     return connected;
 #else
     (void)address;
@@ -413,9 +395,7 @@ bool ObdRuntimeModule::isBleConnected() const {
 
 bool ObdRuntimeModule::beginBleSecurity() {
 #ifndef UNIT_TEST
-    const uint32_t startUs = PERF_TIMESTAMP_US();
     const bool started = bleClient_->beginSecurity();
-    perfRecordObdSecurityStartCallUs(PERF_TIMESTAMP_US() - startUs);
     return started;
 #else
     testBeginSecurityCalls_++;
@@ -473,9 +453,7 @@ int ObdRuntimeModule::getBleSecurityFailure() const {
 
 bool ObdRuntimeModule::discoverBleServices() {
 #ifndef UNIT_TEST
-    const uint32_t startUs = PERF_TIMESTAMP_US();
     const bool discovered = bleClient_->discoverServices();
-    perfRecordObdDiscoveryCallUs(PERF_TIMESTAMP_US() - startUs);
     return discovered;
 #else
     testDiscoverCalls_++;
@@ -498,9 +476,7 @@ bool ObdRuntimeModule::subscribeBleNotifications() {
 
 bool ObdRuntimeModule::writeBleCommand(const char* cmd, bool withResponse) {
 #ifndef UNIT_TEST
-    const uint32_t startUs = PERF_TIMESTAMP_US();
     const bool wrote = bleClient_->writeCommand(cmd, withResponse);
-    perfRecordObdWriteCallUs(PERF_TIMESTAMP_US() - startUs);
     return wrote;
 #else
     testWriteCalls_++;
@@ -615,9 +591,7 @@ void ObdRuntimeModule::stopBleScan() {
 
 int8_t ObdRuntimeModule::readBleRssi(uint32_t nowMs) {
 #ifndef UNIT_TEST
-    const uint32_t startUs = PERF_TIMESTAMP_US();
     const int8_t rssi = bleClient_->getRssi(nowMs);
-    perfRecordObdRssiCallUs(PERF_TIMESTAMP_US() - startUs);
     return rssi;
 #else
     (void)nowMs;

@@ -34,7 +34,6 @@
         { href: '/alp', label: 'ALP' },
         { href: '/obd', label: 'OBD' },
         { href: '/gps', label: 'GPS' },
-        { href: '/logs', label: 'Logs' },
         { href: '/settings', label: 'Settings' }
     ];
     // Each status response reports the device's current maintenance deadline,

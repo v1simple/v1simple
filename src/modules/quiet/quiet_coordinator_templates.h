@@ -41,7 +41,6 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         speedVolActive_ = true;
         speedVolLastRetryMs_ = nowMs;
         sendVolume(QuietOwner::SpeedVolume, smSettings.v1Volume, speedVolSavedMuteVol_);
-        perfRecordSpeedVolDrop();
         Serial.printf("[SpeedVol] DROP: %d -> %d\n", speedVolSavedOriginal_, smSettings.v1Volume);
         updateSpeedVolPresentation(&speedMute);
         return true;
@@ -56,7 +55,6 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         pendingSpeedVolRestoreMuteVol_ = speedVolSavedMuteVol_;
         pendingSpeedVolRestoreSetMs_ = nowMs;
         pendingSpeedVolRestoreLastRetryMs_ = nowMs;
-        perfRecordSpeedVolRestore();
         Serial.printf("[SpeedVol] RESTORE: -> %d\n", speedVolSavedOriginal_);
         speedVolActive_ = false;
         speedVolSavedOriginal_ = 0xFF;
@@ -72,7 +70,6 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         if ((nowMs - speedVolLastRetryMs_) >= SPEED_VOL_RETRY_INTERVAL_MS) {
             speedVolLastRetryMs_ = nowMs;
             sendVolume(QuietOwner::SpeedVolume, smSettings.v1Volume, speedVolSavedMuteVol_);
-            perfRecordSpeedVolRetry();
         }
         updateSpeedVolPresentation(&speedMute);
         return true;

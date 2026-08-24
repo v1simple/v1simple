@@ -6,15 +6,6 @@
 #include "band_utils.h"
 #include <algorithm>
 
-#ifndef UNIT_TEST
-#include "perf_metrics.h"
-#define PARSER_PERF_INC(counter) PERF_INC(counter)
-#else
-#define PARSER_PERF_INC(counter)                                                                                       \
-    do {                                                                                                               \
-    } while (0)
-#endif
-
 namespace {
 uint16_t combineMSBLSB(uint8_t msb, uint8_t lsb) {
     return (static_cast<uint16_t>(msb) << 8) | lsb;
@@ -289,7 +280,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
     const bool replacingRow = alertChunkPresent_[rawSlot] && (alertChunkCountTag_[rawSlot] == receivedAlertCount);
     if (replacingRow) {
-        PARSER_PERF_INC(alertTableRowReplacements);
     }
     alertChunkPresent_[rawSlot] = true;
     alertChunkCountTag_[rawSlot] = receivedAlertCount;
@@ -329,7 +319,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     if (!completeZeroBased && !completeOneBased) {
         if ((alertTableFirstSeenMs_[receivedAlertCount] != 0) &&
             ((nowMs - alertTableFirstSeenMs_[receivedAlertCount]) > kAlertAssemblyTimeoutMs)) {
-            PARSER_PERF_INC(alertTableAssemblyTimeouts);
             clearAlertCacheForCount(receivedAlertCount);
             return true;
         }
@@ -342,7 +331,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     };
     AlertIndexMode decodeMode = completeZeroBased ? AlertIndexMode::ZeroBased : AlertIndexMode::OneBased;
     if (completeZeroBased && completeOneBased) {
-        PARSER_PERF_INC(prioritySelectAmbiguousIndex);
     }
 
     std::array<AlertData, MAX_ALERTS> nextAlerts{};
@@ -370,10 +358,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
         Band band = decodeBand(bandArrow);
         if (isKu) {
-            PARSER_PERF_INC(parserRowsKuRaw);
         }
         if (band == BAND_NONE) {
-            PARSER_PERF_INC(parserRowsBandNone);
         }
         Direction dir = decodeDirection(bandArrow);
         bool isPriority = (aux0 & 0x80) != 0; // (aux0 & 128) != 0
@@ -437,7 +423,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             }
         }
         if (priorityFromRowFlag >= 0 && !isUsableAlert(priorityFromRowFlag)) {
-            PARSER_PERF_INC(prioritySelectUnusableIndex);
         }
 
         enum class PrioritySource : uint8_t { RowFlag = 2, FirstUsable = 3, FirstEntry = 4 };
@@ -464,19 +449,15 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
         switch (source) {
         case PrioritySource::RowFlag:
-            PARSER_PERF_INC(prioritySelectRowFlag);
             break;
         case PrioritySource::FirstUsable:
-            PARSER_PERF_INC(prioritySelectFirstUsable);
             break;
         case PrioritySource::FirstEntry:
         default:
-            PARSER_PERF_INC(prioritySelectFirstEntry);
             break;
         }
 
         if (!isUsableAlert(priorityIdx)) {
-            PARSER_PERF_INC(prioritySelectInvalidChosen);
         }
 
         displayState_.v1PriorityIndex = priorityIdx;
@@ -492,9 +473,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     displayState_.hasKuAlert = anyKu;
 
 
-    PARSER_PERF_INC(alertTablePublishes);
     if (receivedAlertCount == 3) {
-        PARSER_PERF_INC(alertTablePublishes3Bogey);
     }
 
     notifyAlertTableObserver(nowMs);

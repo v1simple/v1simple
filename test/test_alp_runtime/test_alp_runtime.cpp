@@ -12,15 +12,8 @@
 
 #include <unity.h>
 
-#include <filesystem>
-#include <fstream>
-#include <iterator>
-#include <string>
-
 #include "../../src/modules/alp/alp_runtime_module.h"
-#include "../../src/modules/alp/alp_sd_logger.h"
 #include "../../src/modules/gps/gps_publishers.cpp"
-#include "../../src/modules/alp/alp_sd_logger.cpp"
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 #include "../../src/modules/system/system_event_bus.h"
 
@@ -44,15 +37,6 @@ static void inject(const uint8_t* data, size_t len) {
 
 static void processAt(uint32_t ms) {
     alpRuntimeModule.process(ms);
-}
-
-static std::string readProjectFile(const char* relativePath) {
-    const std::filesystem::path path = std::filesystem::path(PROJECT_DIR) / relativePath;
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream.is_open()) {
-        return {};
-    }
-    return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
 }
 
 // ── Alert burst test data (6 x 4-byte frames = 24 bytes) ───────────
@@ -425,7 +409,6 @@ void test_burst_identifies_pl3() {
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.lastIdentifiedGun());
     TEST_ASSERT_EQUAL(1000u, alpRuntimeModule.lastGunTimestampMs());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 void test_burst_identifies_dragoneye() {
@@ -555,7 +538,6 @@ void test_burst_unknown_gun_still_alerts() {
 
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 // ── Heartbeat parsing ────────────────────────────────────────────────
@@ -568,17 +550,15 @@ void test_heartbeat_transitions_idle_to_listening() {
     processAt(1000);
 
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetHeartbeatCount());
 }
 
-void test_paired_heartbeat_counted() {
+void test_paired_heartbeats_keep_listener_active() {
     beginEnabled();
     inject(HEARTBEAT_SINGLE, sizeof(HEARTBEAT_SINGLE));
     inject(HEARTBEAT_PAIRED, sizeof(HEARTBEAT_PAIRED));
     processAt(1000);
 
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetHeartbeatCount());
 }
 
 void test_discovery_poll_transitions_to_listening() {
@@ -821,7 +801,6 @@ void test_resync_discards_garbage_before_heartbeat() {
     processAt(1000);
 
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
-    TEST_ASSERT_TRUE(alpRuntimeModule.testGetFrameErrors() > 0);
 }
 
 void test_resync_discards_garbage_before_alert_burst() {
@@ -851,7 +830,6 @@ void test_bad_checksum_frame_rejected() {
 
     // Should still be IDLE — frame was rejected
     TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(0u, alpRuntimeModule.testGetHeartbeatCount());
 }
 
 // ── Noise window via consecutive bad checksums ──────────────────────
@@ -875,7 +853,6 @@ void test_consecutive_bad_checksums_trigger_noise_window() {
     processAt(2000);
 
     TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetNoiseWindowCount());
 }
 
 void test_noise_window_ends_on_valid_frame() {
@@ -918,7 +895,6 @@ void test_noise_window_exit_preserves_live_session_into_teardown() {
     processAt(3000);
 
     TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetNoiseWindowCount());
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_TRUE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
@@ -947,7 +923,6 @@ void test_snapshot_reflects_state() {
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, status.state);
     TEST_ASSERT_EQUAL(AlpGunType::STALKER_LZ1, status.lastGun);
     TEST_ASSERT_EQUAL(5000u, status.lastGunTimestampMs);
-    TEST_ASSERT_EQUAL(1u, status.statusBurstCount);
     TEST_ASSERT_TRUE(status.uartActive);
 }
 
@@ -956,8 +931,6 @@ void test_snapshot_default_values() {
     AlpStatus status = alpRuntimeModule.snapshot();
     TEST_ASSERT_EQUAL(AlpState::IDLE, status.state);
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, status.lastGun);
-    TEST_ASSERT_EQUAL(0u, status.statusBurstCount);
-    TEST_ASSERT_EQUAL(0u, status.heartbeatCount);
     TEST_ASSERT_FALSE(status.uartActive);
 }
 
@@ -1012,7 +985,6 @@ void test_sequential_bursts_update_gun() {
     inject(BURST_ULTRALYTE, sizeof(BURST_ULTRALYTE));
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, alpRuntimeModule.lastIdentifiedGun());
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 // ── Full lifecycle: heartbeat → burst → teardown → listening ─────────
@@ -1052,7 +1024,6 @@ void test_alert_trigger_standalone() {
     processAt(1000);
 
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
     // No gun identified yet — gun comes in a later frame
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
 }
@@ -1069,10 +1040,9 @@ void test_detect_trigger_alert_98_02_00() {
 
     // Should transition to ALERT_ACTIVE — Detect frame alert trigger
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
-void test_detect_trigger_rearm_increments_burst_count() {
+void test_detect_trigger_rearm_keeps_alert_active() {
     beginEnabled();
 
     // Already in ALERT_ACTIVE from LID-deploy trigger
@@ -1080,14 +1050,12 @@ void test_detect_trigger_rearm_increments_burst_count() {
     inject(trigger, sizeof(trigger));
     processAt(1000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
-    // 98 02 00 while already ALERT_ACTIVE — re-arm counts as a new burst
+    // 98 02 00 while already ALERT_ACTIVE re-arms the product timeout.
     const uint8_t detect[] = { 0x98, 0x02, 0x00, 0x1A };
     inject(detect, sizeof(detect));
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 // ── Other 98 XX YY status frames (not alert triggers) ───────────────
@@ -1103,7 +1071,6 @@ void test_status_frame_98_other() {
 
     // Should transition to LISTENING (not ALERT_ACTIVE)
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(0u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 // ── Heartbeat byte1 alert detection ─────────────────────────────────
@@ -1125,7 +1092,6 @@ void test_heartbeat_byte1_alert_transitions_to_alert_active() {
     processAt(2000);
 
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
     TEST_ASSERT_TRUE(alpRuntimeModule.testGetAlertDetectedViaHb());
     TEST_ASSERT_EQUAL(0x01, alpRuntimeModule.testGetLastHbByte1());
 }
@@ -1166,7 +1132,6 @@ void test_heartbeat_byte1_b8_does_not_trigger_alert() {
 
     // Should be LISTENING (from IDLE), NOT ALERT_ACTIVE
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(0u, alpRuntimeModule.testGetStatusBurstCount());
     TEST_ASSERT_FALSE(alpRuntimeModule.testGetAlertDetectedViaHb());
 }
 
@@ -1183,13 +1148,11 @@ void test_heartbeat_alert_repeated_01_no_double_trigger() {
     inject(hb_alert, sizeof(hb_alert));
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
-    // Second alert heartbeat (still 01) — should NOT increment burst count
+    // A repeated alert heartbeat must leave the active state stable.
     inject(hb_alert, sizeof(hb_alert));
     processAt(3000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 void test_heartbeat_alert_reopens_when_listening_inherits_stale_01() {
@@ -1229,7 +1192,6 @@ void test_heartbeat_alert_reopens_when_listening_inherits_stale_01() {
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_TRUE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_TRUE(alpRuntimeModule.testGetAlertDetectedViaHb());
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 void test_heartbeat_alert_resume_ignores_same_tick_teardown_housekeeping() {
@@ -1244,7 +1206,6 @@ void test_heartbeat_alert_resume_ignores_same_tick_teardown_housekeeping() {
     inject(hbAlert, sizeof(hbAlert));
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
     // Resolve to TEARDOWN, then leave lastHbByte1_ parked at 01.
     inject(hbIdle, sizeof(hbIdle));
@@ -1268,7 +1229,6 @@ void test_heartbeat_alert_resume_ignores_same_tick_teardown_housekeeping() {
     TEST_ASSERT_FALSE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_FALSE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
     // A later process tick with steady 01 still reopens correctly.
     inject(hbAlert, sizeof(hbAlert));
@@ -1277,7 +1237,6 @@ void test_heartbeat_alert_resume_ignores_same_tick_teardown_housekeeping() {
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_TRUE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 void test_heartbeat_alert_edge_ignores_same_tick_teardown_housekeeping_bounce() {
@@ -1292,7 +1251,6 @@ void test_heartbeat_alert_edge_ignores_same_tick_teardown_housekeeping_bounce() 
     inject(hbAlert, sizeof(hbAlert));
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
     // Resolve to TEARDOWN on 01->00, then let TEARDOWN housekeeping park
     // lastHbByte1_ back at 01 without reopening the session.
@@ -1315,7 +1273,6 @@ void test_heartbeat_alert_edge_ignores_same_tick_teardown_housekeeping_bounce() 
     TEST_ASSERT_FALSE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_FALSE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetStatusBurstCount());
 
     // A later process tick with a fresh heartbeat alert still reopens.
     inject(hbAlert, sizeof(hbAlert));
@@ -1324,7 +1281,6 @@ void test_heartbeat_alert_edge_ignores_same_tick_teardown_housekeeping_bounce() 
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_TRUE(alpRuntimeModule.hasLaserEvent());
     TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
-    TEST_ASSERT_EQUAL(2u, alpRuntimeModule.testGetStatusBurstCount());
 }
 
 void test_heartbeat_alert_then_noise_from_listening() {
@@ -1348,7 +1304,6 @@ void test_heartbeat_alert_then_noise_from_listening() {
     inject(noise, sizeof(noise));
     processAt(3000);
     TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.testGetNoiseWindowCount());
 }
 
 void test_noise_from_listening_with_hb_alert() {
@@ -1601,7 +1556,7 @@ void test_owns_laser_display_false_when_disabled() {
     TEST_ASSERT_FALSE(alpRuntimeModule.ownsLaserDisplay());
 
     // Explicit begin(disabled) → OFF → does not own.
-    alpRuntimeModule.begin(false, nullptr);
+    alpRuntimeModule.begin(false);
     TEST_ASSERT_FALSE(alpRuntimeModule.ownsLaserDisplay());
 }
 
@@ -1931,7 +1886,6 @@ void test_session_survives_teardown_rearm_cycle() {
     TEST_ASSERT_EQUAL(AlpGunType::LASER_ATLANTA_PL2, alpRuntimeModule.currentEvent().gun);
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AlpLaserDirection::FRONT),
                             static_cast<uint8_t>(alpRuntimeModule.currentSession().direction));
-    TEST_ASSERT_EQUAL(1u, alpRuntimeModule.currentSession().rearmCount);
 }
 
 void test_session_closes_on_teardown_to_listening() {
@@ -1961,7 +1915,7 @@ void test_session_closes_on_teardown_to_listening() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentEvent().gun);
 
     // But lastIdentifiedGun() still reflects the protocol-level cache,
-    // for SD logger / diagnostics. The display never reads this.
+    // as parser-owned product state. The display never reads this directly.
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE,
                       alpRuntimeModule.lastIdentifiedGun());
 }
@@ -2270,7 +2224,7 @@ void test_boot_self_test_does_not_promote_on_repeat_detect() {
     //   5144: B0 02 00  (Warm-Up mode heartbeat)
     //   5931: B0 04 00  (LID probe burst — 02→04 transition)
     //   8358: 98 02 00  (second Detect trigger)
-    // A triggerCount>=2 heuristic incorrectly promotes this Warm-Up. The
+    // Repeated speculative triggers must not promote this Warm-Up. The
     // heartbeat 02→04 transition is also a potential
     // promotion path, but it's gated by the boot envelope — within
     // WARM_UP_ENVELOPE_MS of firstFrameMs_ the transition is treated as
@@ -2310,7 +2264,6 @@ void test_boot_self_test_does_not_promote_on_repeat_detect() {
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
     TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().isWarmUp);
     TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
-    TEST_ASSERT_EQUAL_UINT32(2, alpRuntimeModule.currentSession().triggerCount);
 }
 
 void test_warmup_stays_suppressed_on_heartbeat_02_to_03_without_gun() {
@@ -2788,137 +2741,6 @@ void test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope() {
                             static_cast<uint8_t>(alpRuntimeModule.currentSession().direction));
 }
 
-// ── ALP SD logger CSV format regression tests ───────────────────────
-
-void test_sd_logger_frame_columns_match_header() {
-    AlpSdLogger logger;
-    logger.begin(true, true);
-
-    logger.logFrame(1234, "ALERT_DETECT", 0x98, 0x02, 0x00, 0x1A, AlpState::LISTENING);
-
-    TEST_ASSERT_EQUAL_STRING(
-        "1234,,ALERT_DETECT,LISTENING,,98,02,00,1A,UNKNOWN,,\n",
-        logger.testGetLastLine());
-}
-
-void test_sd_logger_heartbeat_includes_checksum_and_direction() {
-    AlpSdLogger logger;
-    logger.begin(true, true);
-
-    logger.logHeartbeat(5678, 0xB0, 0x03, 0x00, AlpState::ALERT_ACTIVE, "REAR");
-
-    TEST_ASSERT_EQUAL_STRING(
-        "5678,,HEARTBEAT,ALERT_ACTIVE,,B0,03,00,33,REAR,,\n",
-        logger.testGetLastLine());
-}
-
-void test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval() {
-    AlpSdLogger logger;
-    logger.begin(true, true);
-
-    logger.logHeartbeat(3000, 0xB0, 0x03, 0x00, AlpState::LISTENING, "UNKNOWN");
-    TEST_ASSERT_EQUAL_STRING(
-        "3000,,HEARTBEAT,LISTENING,,B0,03,00,33,UNKNOWN,,\n",
-        logger.testGetLastLine());
-
-    logger.testClearLastLine();
-    logger.logHeartbeat(4500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
-    TEST_ASSERT_EQUAL_STRING("", logger.testGetLastLine());
-
-    logger.logHeartbeat(6500, 0xB0, 0x04, 0x00, AlpState::LISTENING, "UNKNOWN");
-    TEST_ASSERT_EQUAL_STRING(
-        "6500,,HEARTBEAT,LISTENING,,B0,04,00,34,UNKNOWN,,\n",
-        logger.testGetLastLine());
-}
-
-void test_sd_logger_gun_id_lid_deploy_preserves_raw_frame() {
-    AlpSdLogger logger;
-    logger.begin(true, true);
-
-    logger.logGunIdentified(42, AlpGunType::MARKSMAN_ULTRALYTE,
-                            0xCD, 0xD6, false, AlpState::ALERT_ACTIVE);
-
-    TEST_ASSERT_EQUAL_STRING(
-        "42,,GUN_ID,ALERT_ACTIVE,,CD,00,D6,23,UNKNOWN,Marksman Ultralyte,lid_deploy\n",
-        logger.testGetLastLine());
-}
-
-void test_sd_logger_gun_id_detect_preserves_raw_frame() {
-    AlpSdLogger logger;
-    logger.begin(true, true);
-
-    logger.logGunIdentified(43, AlpGunType::PL3_PROLITE,
-                            0xC8, 0x0D, true, AlpState::ALERT_ACTIVE, "FRONT");
-
-    TEST_ASSERT_EQUAL_STRING(
-        "43,,GUN_ID,ALERT_ACTIVE,,C8,0D,00,55,FRONT,PL3 ProLite,detect\n",
-        logger.testGetLastLine());
-}
-
-void test_sd_logger_production_writer_reuses_handle_and_batches_flushes() {
-    // Native tests use the UNIT_TEST sink, so pin the production-only SD
-    // lifecycle textually: one persistent append handle, bounded batching, and
-    // a queue-idle flush instead of an alert-time flush after every row.
-    const std::string header = readProjectFile("src/modules/alp/alp_sd_logger.h");
-    const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
-    TEST_ASSERT_FALSE(header.empty());
-    TEST_ASSERT_FALSE(source.empty());
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("File persistentFile_{};"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("uint16_t rowsSinceFlush_ = 0;"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("ALP_SD_FLUSH_EVERY_ROWS = 16"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("ALP_SD_FLUSH_INTERVAL_MS = 15000"));
-
-    const size_t loopStart = source.find("void AlpSdLogger::writerTaskLoop()");
-    const size_t loopEnd = source.find("bool AlpSdLogger::ensureDirectory()", loopStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopEnd);
-    const std::string loop = source.substr(loopStart, loopEnd - loopStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loop.find("ALP_SD_QUEUE_RECEIVE_TIMEOUT_TICKS"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loop.find("flushPersistentFileLocked();"));
-
-    const size_t writerStart = source.find("bool AlpSdLogger::writeLineBlocking(const char* line)");
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writerStart);
-    const size_t writerEnd = source.find("\n#endif", writerStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writerEnd);
-    const std::string writer = source.substr(writerStart, writerEnd - writerStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          writer.find("persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("persistentFile_.print(line) != lineLen"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("rowsSinceFlush_++;"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, writer.find("flushPersistentFileIfDueLocked();"));
-    TEST_ASSERT_EQUAL(std::string::npos, writer.find("persistentFile_.flush();"));
-    TEST_ASSERT_EQUAL(std::string::npos, writer.find("File f = fs->open(csvPathBuf_, FILE_APPEND);"));
-}
-
-void test_sd_logger_begin_warms_storage_at_boot() {
-    // Warm-at-boot contract: production begin() pre-creates /alp, the CSV, and
-    // its header during setup, under the SD lock, so successful warm-up keeps
-    // the first logged row from paying FAT-allocation cost on the shared SD path
-    // (observed historically as bimodal ~47 ms schema-46 dispatch-time peaks
-    // when an alert lands inside the first-write window). Schema-47 pipeline-
-    // completion measurements are not comparable. Warm-up failure must stay non-fatal.
-    const std::string source = readProjectFile("src/modules/alp/alp_sd_logger.cpp");
-    TEST_ASSERT_FALSE(source.empty());
-
-    const size_t beginStart = source.find("void AlpSdLogger::begin(");
-    const size_t beginEnd = source.find("void AlpSdLogger::setBootId(");
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginEnd);
-    const std::string beginBody = source.substr(beginStart, beginEnd - beginStart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("StorageManager::SDLockBlocking"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("ensureDirectory() && ensureHeader()"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          beginBody.find("persistentFile_ = fs->open(csvPathBuf_, FILE_APPEND, true);"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, beginBody.find("storage warm-up deferred to first row"));
-
-    // A later path change must drop the warmed handle so writes cannot land in
-    // the previous boot's file (mirrors PerfSdLogger::setBootId).
-    const size_t bootIdEnd = source.find("void AlpSdLogger::setEnabled(");
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootIdEnd);
-    const std::string bootIdBody = source.substr(beginEnd, bootIdEnd - beginEnd);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootIdBody.find("persistentFile_.close();"));
-}
-
 // ── Event bus publishing tests ──────────────────────────────────────
 
 void test_transitionTo_publishes_display_edge() {
@@ -2931,7 +2753,6 @@ void test_transitionTo_publishes_display_edge() {
     alpRuntimeModule.testSetState(AlpState::LISTENING);
     alpRuntimeModule.testTransitionTo(AlpState::ALERT_ACTIVE, 1000);
 
-    TEST_ASSERT_GREATER_THAN_UINT32(0, bus.getPublishCount());
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
     TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
@@ -2964,7 +2785,6 @@ void test_session_open_publishes_display_edge() {
     inject(trigger, sizeof(trigger));
     processAt(2000);
 
-    TEST_ASSERT_GREATER_THAN_UINT32(0, bus.getPublishCount());
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
@@ -2988,12 +2808,9 @@ void test_session_close_publishes_display_edge() {
 
     // Clear the latch from earlier changes.
     bus.consumeAlpStateChanged();
-    const uint32_t publishCountBeforeClose = bus.getPublishCount();
-
     // Now trigger the closing transition
     alpRuntimeModule.testTransitionTo(AlpState::LISTENING, 6000);
 
-    TEST_ASSERT_GREATER_THAN_UINT32(publishCountBeforeClose, bus.getPublishCount());
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
@@ -3020,17 +2837,15 @@ void test_process_loop_does_not_spam_events() {
     alpRuntimeModule.testSetState(AlpState::LISTENING);
     alpRuntimeModule.testSetLastHeartbeat(1000);
 
-    uint32_t initialPublishCount = bus.getPublishCount();
+    (void)bus.consumeAlpStateChanged();
 
     // Run process multiple times without state change
     for (int i = 0; i < 10; i++) {
         processAt(1000 + i * 100);
     }
 
-    uint32_t afterPublishCount = bus.getPublishCount();
-
     // Should not have published anything (no state change)
-    TEST_ASSERT_EQUAL_UINT32(initialPublishCount, afterPublishCount);
+    TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
 
 // ── Atomic event snapshot tests ────────────────────────────────────────
@@ -3136,66 +2951,6 @@ void test_update_current_event_called_before_publish() {
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, ev.direction);
 }
 
-// ── logDisplayDecision dedup gate ────────────────────────────────────
-
-void test_log_display_decision_emits_first_call() {
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, "DISP_V1_EVENT", "active=1 gun=PL3");
-    TEST_ASSERT_EQUAL_STRING("DISP_V1_EVENT", alpRuntimeModule.testGetLastDisplayLogEvent());
-    TEST_ASSERT_EQUAL_STRING("active=1 gun=PL3", alpRuntimeModule.testGetLastDisplayLogDetail());
-    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
-void test_log_display_decision_dedups_identical_repeat() {
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, "DISP_V1_EVENT", "active=1 gun=PL3");
-    alpRuntimeModule.logDisplayDecision(1100, "DISP_V1_EVENT", "active=1 gun=PL3");
-    alpRuntimeModule.logDisplayDecision(1200, "DISP_V1_EVENT", "active=1 gun=PL3");
-    // Two identical repeats should be suppressed.
-    TEST_ASSERT_EQUAL_UINT32(2, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
-void test_log_display_decision_detail_change_emits() {
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, "DISP_V1_EVENT", "active=1 gun=PL3");
-    alpRuntimeModule.logDisplayDecision(1100, "DISP_V1_EVENT", "active=1 gun=PL2");
-    TEST_ASSERT_EQUAL_STRING("active=1 gun=PL2", alpRuntimeModule.testGetLastDisplayLogDetail());
-    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
-void test_log_display_decision_event_change_emits() {
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, "DISP_V1_EVENT", "active=1");
-    alpRuntimeModule.logDisplayDecision(1100, "DISP_ALP_EVENT", "active=1");
-    TEST_ASSERT_EQUAL_STRING("DISP_ALP_EVENT", alpRuntimeModule.testGetLastDisplayLogEvent());
-    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
-void test_log_display_decision_state_transition_clears_dedup() {
-    // A state-driven event that textually repeats across a state transition
-    // must still re-emit — the transition is semantically new even if the
-    // string is identical. transitionTo() clears the dedup cache.
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, "DISP_V1_EVENT", "active=1");
-    alpRuntimeModule.testTransitionTo(AlpState::ALERT_ACTIVE, 1100);
-    alpRuntimeModule.logDisplayDecision(1200, "DISP_V1_EVENT", "active=1");
-    // Both emitted (second one is NOT suppressed because transitionTo cleared the cache).
-    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
-void test_log_display_decision_null_event_is_noop() {
-    resetModule();
-    beginEnabled();
-    alpRuntimeModule.logDisplayDecision(1000, nullptr, "detail");
-    TEST_ASSERT_EQUAL_STRING("", alpRuntimeModule.testGetLastDisplayLogEvent());
-    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetDisplayLogSuppressedCount());
-}
-
 // ── Runner ───────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
@@ -3256,7 +3011,7 @@ int main(int argc, char** argv) {
 
     // Heartbeat parsing
     RUN_TEST(test_heartbeat_transitions_idle_to_listening);
-    RUN_TEST(test_paired_heartbeat_counted);
+    RUN_TEST(test_paired_heartbeats_keep_listener_active);
     RUN_TEST(test_discovery_poll_transitions_to_listening);
 
     // Timeouts
@@ -3308,7 +3063,7 @@ int main(int argc, char** argv) {
 
     // Observe-mode alert (98 02 00)
     RUN_TEST(test_detect_trigger_alert_98_02_00);
-    RUN_TEST(test_detect_trigger_rearm_increments_burst_count);
+    RUN_TEST(test_detect_trigger_rearm_keeps_alert_active);
     RUN_TEST(test_status_frame_98_other);
 
     // Heartbeat byte1 alert detection
@@ -3375,15 +3130,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_alp5_session7_dli_without_gun_id_stays_unknown_direction);
     RUN_TEST(test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope);
 
-    // ALP SD logger CSV format
-    RUN_TEST(test_sd_logger_frame_columns_match_header);
-    RUN_TEST(test_sd_logger_heartbeat_includes_checksum_and_direction);
-    RUN_TEST(test_sd_logger_heartbeat_sampling_skips_in_window_and_logs_after_interval);
-    RUN_TEST(test_sd_logger_gun_id_lid_deploy_preserves_raw_frame);
-    RUN_TEST(test_sd_logger_gun_id_detect_preserves_raw_frame);
-    RUN_TEST(test_sd_logger_production_writer_reuses_handle_and_batches_flushes);
-    RUN_TEST(test_sd_logger_begin_warms_storage_at_boot);
-
     // Display-edge publishing
     RUN_TEST(test_transitionTo_publishes_display_edge);
     RUN_TEST(test_transitionTo_leaving_alert_active_publishes_display_edge);
@@ -3399,13 +3145,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_current_event_lid_active_tracks_hb_byte1);
     RUN_TEST(test_update_current_event_called_before_publish);
 
-    // logDisplayDecision dedup gate
-    RUN_TEST(test_log_display_decision_emits_first_call);
-    RUN_TEST(test_log_display_decision_dedups_identical_repeat);
-    RUN_TEST(test_log_display_decision_detail_change_emits);
-    RUN_TEST(test_log_display_decision_event_change_emits);
-    RUN_TEST(test_log_display_decision_state_transition_clears_dedup);
-    RUN_TEST(test_log_display_decision_null_event_is_noop);
 
     return UNITY_END();
 }

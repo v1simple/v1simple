@@ -16,7 +16,6 @@
 #include "settings.h"
 #include "battery_manager.h"
 #include "wifi_manager.h"
-#include "perf_metrics.h"
 #include <cmath>
 #include <cstring>
 
@@ -50,8 +49,6 @@ void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     elementCaches_.volume.lastMuteVol = muteVol;
     elementCaches_.volume.lastMainColor = s.colorVolumeMain;
     elementCaches_.volume.lastMuteColor = s.colorVolumeMute;
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Volume);
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::VolumeChange);
 
     // Clear the area first - only clear what we need, BLE icon is at y=98
     drawnRegion_.add(clearRect.x, clearRect.y, clearRect.w, clearRect.h, DisplayDirtyRegionSource::Status);
@@ -96,7 +93,6 @@ void V1Display::drawRssiIndicator(int rssi) {
         if (elementCaches_.rssi.valid && elementCaches_.rssi.lastHidden) {
             return;
         }
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Rssi);
         drawnRegion_.add(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(rssiRect.x, rssiRect.y, rssiRect.w, rssiRect.h, PALETTE_BG);
         elementCaches_.rssi.valid = true;
@@ -144,8 +140,6 @@ void V1Display::drawRssiIndicator(int rssi) {
     elementCaches_.rssi.lastAppColor = appColor;
     elementCaches_.rssi.v1LineValid = true;
     elementCaches_.rssi.appLineValid = true;
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Rssi);
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::RssiRefresh);
 
     auto clearLine = [&](int lineY) {
         drawnRegion_.add(static_cast<int16_t>(x), static_cast<int16_t>(lineY), rssiRect.w,
@@ -233,7 +227,6 @@ void V1Display::drawProfileIndicator(int slot) {
         if (elementCaches_.profile.valid && elementCaches_.profile.hiddenRender) {
             return;
         }
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Profile);
         drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(profileRect.x, profileRect.y, profileRect.w, profileRect.h, PALETTE_BG);
         elementCaches_.profile.valid = true;
@@ -282,7 +275,6 @@ void V1Display::drawProfileIndicator(int slot) {
     elementCaches_.profile.lastColor = color;
     strncpy(elementCaches_.profile.lastName, name, sizeof(elementCaches_.profile.lastName) - 1);
     elementCaches_.profile.lastName[sizeof(elementCaches_.profile.lastName) - 1] = '\0';
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Profile);
 
     // Clear area under arrows
     drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
@@ -364,7 +356,6 @@ void V1Display::drawBatteryIndicator() {
         // Mode just transitioned from icon → percent, or first render.
         // Clear the icon area once; then cache state tracks percent-mode going forward.
         if (!elementCaches_.battery.iconValid) {
-            perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
             drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
             elementCaches_.battery.iconValid = true;
@@ -376,7 +367,6 @@ void V1Display::drawBatteryIndicator() {
         if (!s_batteryShowOnUSB) {
             // Clear percent area when not visible
             if (elementCaches_.battery.lastPctVisible) {
-                perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
                 drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h,
                                  DisplayDirtyRegionSource::Status);
                 FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
@@ -389,7 +379,6 @@ void V1Display::drawBatteryIndicator() {
         if (!needsRedraw) {
             return; // Skip expensive render when nothing changed
         }
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
         drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
 
         // Format percentage string (no % to save space)
@@ -452,7 +441,6 @@ void V1Display::drawBatteryIndicator() {
     }
     // Clear percent area (in case it was previously showing, or mode transition)
     if (elementCaches_.battery.lastPctVisible || !elementCaches_.battery.iconValid) {
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
         drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
         elementCaches_.battery.lastPctVisible = false;
@@ -461,7 +449,6 @@ void V1Display::drawBatteryIndicator() {
 
     // Hide the icon when no battery is present, the setting disables it, or USB is active.
     if (!shownNow) {
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
         drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
         elementCaches_.battery.iconValid = true;
@@ -480,7 +467,6 @@ void V1Display::drawBatteryIndicator() {
     const int sections = 5; // Number of charge sections
 
     // Clear area (including cap above)
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Battery);
     drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
 
@@ -529,7 +515,6 @@ void V1Display::drawBLEProxyIndicator() {
 
     if (!bleProxyEnabled_) {
         if (bleProxyDrawn_) {
-            perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
             drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
@@ -547,7 +532,6 @@ void V1Display::drawBLEProxyIndicator() {
     const V1Settings& s = settingsManager.get();
     if (s.hideBleIcon) {
         if (bleProxyDrawn_) {
-            perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
             drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
@@ -589,7 +573,6 @@ void V1Display::drawBLEProxyIndicator() {
     elementCaches_.bleProxy.lastColor = btColor;
 
     // Clear the area before redrawing
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::BleProxy);
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
 
@@ -672,7 +655,6 @@ void V1Display::drawWiFiIndicator() {
         if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
             return;
         }
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
         drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
         elementCaches_.wifi.valid = true;
@@ -689,7 +671,6 @@ void V1Display::drawWiFiIndicator() {
         if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
             return;
         }
-        perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
         drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
         // Clear the WiFi icon area when WiFi is fully inactive.
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
@@ -713,7 +694,6 @@ void V1Display::drawWiFiIndicator() {
     if (elementCaches_.wifi.valid && elementCaches_.wifi.lastVisible && elementCaches_.wifi.lastColor == wifiColor) {
         return;
     }
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Wifi);
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
     elementCaches_.wifi.valid = true;
     elementCaches_.wifi.lastVisible = true;

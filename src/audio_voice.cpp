@@ -75,7 +75,6 @@ static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
     // Atomic exchange: if already true, abort; otherwise set to true
     if (audio_playing.exchange(true)) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return false;
     }
 
@@ -100,7 +99,6 @@ static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
             );
         if (sdAudioWorkerHandle == nullptr) {
             Serial.println("[AUDIO] ERROR: Failed to create SD audio worker!");
-            PERF_INC(audioTaskFail);
             audio_playing.store(false);
             return false;
         }
@@ -108,13 +106,10 @@ static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
 
     audioTaskHandle.store(sdAudioWorkerHandle);
     xTaskNotifyGive(sdAudioWorkerHandle);
-    PERF_INC(audioPlayCount);
     return true;
 }
 
 static void finish_sd_audio_job() {
-    audioRecordStackHighWater(g_audioSdStackHighWaterBytes,
-                              static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)));
     audioResetTaskState(audio_playing, audioTaskHandle);
 }
 
@@ -309,7 +304,6 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 
@@ -356,7 +350,6 @@ void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direc
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 
@@ -471,7 +464,6 @@ void play_band_only(AlertBand band) {
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 
@@ -515,7 +507,6 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 
@@ -608,7 +599,6 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        PERF_INC(audioPlayBusy);
         return;
     }
 

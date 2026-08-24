@@ -3,7 +3,6 @@
 #ifndef UNIT_TEST
 #include "../../ble_client.h"
 #include "../../packet_parser.h"
-#include "../../perf_metrics.h"
 #else
 #include "../../../test/mocks/ble_client.h"
 #include "../../../test/mocks/packet_parser.h"
@@ -194,7 +193,6 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     pendingSpeedVolRestoreLastRetryMs_ = nowMs;
     sendVolume(QuietOwner::SpeedVolume, pendingSpeedVolRestoreVol_, pendingSpeedVolRestoreMuteVol_);
 #ifndef UNIT_TEST
-    perfRecordSpeedVolRetry();
 #endif
     return true;
 }

@@ -6,7 +6,6 @@
 #include "../mocks/packet_parser.h"
 #include "../mocks/settings.h"
 #include "../mocks/v1_profiles.h"
-#include "../../src/perf_metrics.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -14,7 +13,6 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-PerfCounters perfCounters;
 SettingsManager settingsManager;
 
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
@@ -71,7 +69,6 @@ void setUp() {
     parser.reset();
     settings = SettingsManager{};
     profiles.reset();
-    perfCounters.reset();
     mockMillis = 0;
     mockMicros = 0;
     quiet.begin(&ble, &parser);

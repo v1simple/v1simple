@@ -33,19 +33,6 @@ unsigned long mockMicros = 0;
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 
-// Stubs for symbols pulled in via packet_parser.cpp's perf hook.
-// Native parser tests don't link perf_metrics.cpp, so provide a no-op.
-#ifndef ARDUINO
-namespace {
-uint32_t g_lastRecordedV1FwVersion = 0;
-}
-void perfRecordV1FirmwareVersion(uint32_t version) {
-    g_lastRecordedV1FwVersion = version;
-}
-void perfRecordV1LedBitmapAnomaly() {}
-void perfRecordV1AllVolumeParsed() {}
-#endif
-
 #include <algorithm>
 #include <array>
 #include <cstdint>

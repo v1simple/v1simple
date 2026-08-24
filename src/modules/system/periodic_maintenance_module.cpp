@@ -29,26 +29,11 @@ void PeriodicMaintenanceModule::process(uint32_t nowMs, const Context& ctx) {
         connectedPersistenceWindowAnchored_ &&
         static_cast<uint32_t>(nowMs - connectedPersistenceWindowStartedMs_) >= kConnectedPersistenceDeferralMs;
     const bool admitDeferredPersistence = !hardPressure && (!ctx.bleConnected || connectedPersistenceDue);
-    if (providers.runPerfReport) {
-        uint32_t startUs = 0;
-        if (providers.timestampUs) {
-            startUs = providers.timestampUs(providers.timestampContext);
-        }
-
-        providers.runPerfReport(providers.perfReportContext);
-
-        if (providers.recordPerfReportUs && providers.timestampUs) {
-            const uint32_t elapsedUs =
-                static_cast<uint32_t>(providers.timestampUs(providers.timestampContext) - startUs);
-            providers.recordPerfReportUs(providers.perfReportRecordContext, elapsedUs);
-        }
-    }
-
     if (providers.runObdSettingsSync) {
         providers.runObdSettingsSync(providers.obdSettingsSyncContext, nowMs);
     }
 
-    // Lower-priority persistence/log-save work may touch NVS/SD. Hard loop
+    // Lower-priority persistence work may touch NVS/SD. Hard loop
     // pressure always blocks it. During a BLE connection, admit one pass per
     // bounded window so connect-time dirty state cannot starve for the drive.
     if (providers.runDeferredSettingsPersist && admitDeferredPersistence) {

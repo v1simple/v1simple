@@ -3,7 +3,6 @@
  */
 
 #include "wifi_manager_internals.h"
-#include "perf_metrics.h"
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "modules/wifi/wifi_client_enable_transaction.h"
@@ -273,7 +272,6 @@ bool WiFiManager::connectToNetwork(const String& ssid, const String& password, b
     wifiClientState_ = WIFI_CLIENT_CONNECTING;
     wifiConnectPhase_ = WifiConnectPhase::PREPARE_OFF;
     wifiConnectPhaseStartMs_ = millis();
-    PERF_INC(wifiConnectDeferred);
     return true;
 }
 

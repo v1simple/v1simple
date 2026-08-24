@@ -8,8 +8,6 @@
 
     let gpsEnabled = $state(false);
     let gpsBaud = $state(9600);
-    let gpsLogUtcToPerf = $state(true);
-    let gpsLogUtcToAlp = $state(true);
     let message = $state(null);
     let loaded = $state(false);
 
@@ -27,8 +25,6 @@
             const data = await res.json();
             if (typeof data.gpsEnabled === 'boolean') gpsEnabled = data.gpsEnabled;
             if (typeof data.gpsBaud === 'number') gpsBaud = data.gpsBaud;
-            if (typeof data.gpsLogUtcToPerf === 'boolean') gpsLogUtcToPerf = data.gpsLogUtcToPerf;
-            if (typeof data.gpsLogUtcToAlp === 'boolean') gpsLogUtcToAlp = data.gpsLogUtcToAlp;
         } catch (err) {
             console.error('Failed to load GPS config', err);
             message = { type: 'error', text: 'Failed to load GPS settings.' };
@@ -66,22 +62,13 @@
         await saveField({ gpsBaud });
     }
 
-    async function handleLogPerfChange(checked) {
-        gpsLogUtcToPerf = checked;
-        await saveField({ gpsLogUtcToPerf: checked });
-    }
-
-    async function handleLogAlpChange(checked) {
-        gpsLogUtcToAlp = checked;
-        await saveField({ gpsLogUtcToAlp: checked });
-    }
 </script>
 
 <div class="surface-card">
     <div class="card-body space-y-4">
         <CardSectionHead
             title="GPS"
-            subtitle="Adafruit Ultimate GPS v3 — attaches UTC timestamps to perf and ALP log rows."
+            subtitle="Adafruit Ultimate GPS v3 position, speed, and UTC source."
         />
 
         {#if message}
@@ -114,26 +101,12 @@
                 </select>
             </div>
 
-            <ToggleSetting
-                title="Log UTC to perf CSV"
-                description="Adds a utc column to every perf CSV row (schema v37). Has no effect when GPS has no fix."
-                checked={gpsLogUtcToPerf}
-                onChange={handleLogPerfChange}
-            />
-
-            <ToggleSetting
-                title="Log UTC to ALP CSV"
-                description="Adds a utc column to every ALP event row (schema v2). Has no effect when GPS has no fix."
-                checked={gpsLogUtcToAlp}
-                onChange={handleLogAlpChange}
-            />
-
             {#if gpsEnabled}
                 <div class="divider my-1"></div>
                 <div class="surface-note copy-muted text-sm">
                     GPS starts after exiting maintenance and returning to normal operation. Fix data
-                    is used by the runtime, and valid UTC is written to enabled logs. Live GPS data
-                    is not available in the maintenance interface.
+                    supplies product speed and time inputs. Live GPS data is not available in the
+                    maintenance interface.
                 </div>
             {/if}
         {/if}

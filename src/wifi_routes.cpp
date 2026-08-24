@@ -4,12 +4,10 @@
 
 #include "wifi_manager_internals.h"
 #include "main_globals.h"
-#include "perf_metrics.h"
 #include "settings.h"
 #include "littlefs_mount.h"
 #include "storage_manager.h"
 #include "modules/wifi/backup_api_service.h"
-#include "modules/wifi/wifi_diagnostics_api_service.h"
 #include "modules/wifi/wifi_system_api_service.h"
 #include "modules/wifi/wifi_quiet_api_service.h"
 #include "modules/wifi/wifi_client_api_service.h"
@@ -319,42 +317,6 @@ bool WiFiManager::setupWebServer() {
         BackupApiService::handleApiRestore(
             server_, makeBackupRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
             this, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
-    });
-
-    // Read-only, maintenance-only diagnostics. Keep the SD mutex held for the
-    // complete list/stream operation so background writers cannot race a file
-    // handle. The try-lock preserves the main-loop non-blocking invariant.
-    server_.on("/api/diagnostics/logs", HTTP_GET, [this]() {
-        const WifiDiagnosticsApiService::Runtime runtime = makeDiagnosticsRuntime();
-        if (!runtime.maintenanceBootActive) {
-            WifiDiagnosticsApiService::handleApiList(server_, runtime);
-            return;
-        }
-        // checkDmaHeap=true: maintenance-only route, radio up. See the
-        // WHO PAYS FOR THIS note in storage_manager.h.
-        StorageManager::SDTryLock lock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
-        if (!lock) {
-            markUiActivity();
-            server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");
-            return;
-        }
-        WifiDiagnosticsApiService::handleApiList(server_, runtime);
-    });
-    server_.on("/api/diagnostics/log", HTTP_GET, [this]() {
-        const WifiDiagnosticsApiService::Runtime runtime = makeDiagnosticsRuntime();
-        if (!runtime.maintenanceBootActive) {
-            WifiDiagnosticsApiService::handleApiDownload(server_, runtime);
-            return;
-        }
-        // checkDmaHeap=true: maintenance-only route, radio up. See the
-        // WHO PAYS FOR THIS note in storage_manager.h.
-        StorageManager::SDTryLock lock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
-        if (!lock) {
-            markUiActivity();
-            server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");
-            return;
-        }
-        WifiDiagnosticsApiService::handleApiDownload(server_, runtime);
     });
 
     server_.on("/api/system/reboot-normal", HTTP_POST, [this]() {

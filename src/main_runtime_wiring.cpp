@@ -1,32 +1,23 @@
 #include "main_runtime_wiring.h"
-#include "qualification_clock.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <FS.h>
 #include <algorithm>
-#include <esp_system.h>
 
 #include "battery_manager.h"
 #include "audio_beep.h"
 #include "ble_client.h"
-#include "build_metadata.h"
 #include "config.h"
 #include "display.h"
 #include "display_driver.h"
 #include "display_mode.h"
-#include "display_preview_api.h"
 #include "main_globals.h"
 #include "main_internals.h"
 #include "main_loop_wiring.h"
 #include "main_runtime_state.h"
 #include "packet_parser.h"
-#include "perf_metrics.h"
-#include "perf_sd_logger.h"
 #include "provider_callback_bindings.h"
 #include "settings.h"
-#include "settings_runtime_sync.h"
-#include "status_observability_payload.h"
 #include "storage_manager.h"
 #include "touch_handler.h"
 #include "v1_profiles.h"
@@ -44,13 +35,10 @@
 #include "modules/display/display_pipeline_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
-#include "modules/encounter/v1_encounter_logger.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/obd/obd_ble_client.h"
 #include "modules/obd/obd_runtime_module.h"
-#include "modules/perf/debug_macros.h"
 #include "modules/power/power_module.h"
-#include "modules/qualification/qualification_serial_module.h"
 #include "modules/quiet/quiet_coordinator_module.h"
 #include "modules/speed/speed_source_selector.h"
 #include "modules/speed_mute/speed_mute_module.h"
@@ -67,7 +55,7 @@
 #include "modules/wifi/wifi_visual_sync_module.h"
 
 namespace {
-bool wifiStatusObservabilityCallbackConfigured = false;
+bool wifiStatusCallbackConfigured = false;
 
 bool restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {
     auto* pipeline = static_cast<DisplayPipelineModule*>(context);
@@ -91,10 +79,10 @@ bool restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {
 
 static void requestMaintenanceBootRestart() {
     if (!requestMaintenanceBoot()) {
-        SerialLog.println("[MaintBoot] ERROR: failed to persist maintenance boot request");
+        Serial.println("[MaintBoot] ERROR: failed to persist maintenance boot request");
         return;
     }
-    SerialLog.println("[MaintBoot] rebooting into maintenance mode");
+    Serial.println("[MaintBoot] rebooting into maintenance mode");
     settingsManager.save();
     markCleanShutdown();
     delay(50);
@@ -120,7 +108,7 @@ void configureWifiRuntimeModule() {
     wifiManager.setObdDependencies(&obdRuntimeModule, &speedSourceSelector);
     wifiManager.setGpsRuntime(&gpsRuntimeModule);
     getWifiOrchestrator().ensureCallbacksConfigured();
-    if (!wifiStatusObservabilityCallbackConfigured) {
+    if (!wifiStatusCallbackConfigured) {
         wifiManager.appendStatusCallback(
             [](JsonObject obj, void* /*ctx*/) {
                 obj["maintenanceBoot"] = mainRuntimeState.maintenanceBootActive;
@@ -129,14 +117,6 @@ void configureWifiRuntimeModule() {
                         ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
                         : 0;
                 obj["maintenanceBootTimeoutMs"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;
-                StatusObservabilityPayload::WifiStatusSnapshot wifiStatus;
-                wifiStatus.apLastTransitionReasonCode = perfGetWifiApLastTransitionReason();
-                wifiStatus.apLastTransitionReason =
-                    perfWifiApTransitionReasonName(wifiStatus.apLastTransitionReasonCode);
-                wifiStatus.lowDmaCooldownRemainingMs = wifiManager.lowDmaCooldownRemainingMs();
-
-                StatusObservabilityPayload::appendStatusObservability(obj, wifiStatus);
-
                 const QuietCommittedState quietCommitted = quietCoordinatorModule.getCommittedState();
                 const QuietDesiredState& quietDesired = quietCoordinatorModule.getDesiredState();
                 const QuietPresentationState& quietPresentation = quietCoordinatorModule.getPresentationState();
@@ -172,7 +152,7 @@ void configureWifiRuntimeModule() {
                 presentationObj["effectiveMuted"] = quietPresentation.effectiveMuted;
             },
             nullptr);
-        wifiStatusObservabilityCallbackConfigured = true;
+        wifiStatusCallbackConfigured = true;
     }
 
     WifiRuntimeModule::Providers wifiRuntimeProviders;
@@ -183,7 +163,7 @@ void configureWifiRuntimeModule() {
     wifiRuntimeProviders.readWifiLifecyclePending =
         ProviderCallbackBindings::member<WiFiManager, &WiFiManager::hasPendingLifecycleWork>;
     wifiRuntimeProviders.wifiLifecycleContext = &wifiManager;
-    wifiRuntimeProviders.perfTimestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
+    wifiRuntimeProviders.processClockUs = [](void*) -> uint32_t { return micros(); };
     wifiRuntimeProviders.runWifiCadence =
         ProviderCallbackBindings::member<WifiProcessCadenceModule, &WifiProcessCadenceModule::process>;
     wifiRuntimeProviders.wifiCadenceContext = &wifiProcessCadenceModule;
@@ -193,7 +173,6 @@ void configureWifiRuntimeModule() {
     wifiRuntimeProviders.wifiTransitionAdmissionContext = &wifiManager;
     wifiRuntimeProviders.runWifiManagerProcess = ProviderCallbackBindings::member<WiFiManager, &WiFiManager::process>;
     wifiRuntimeProviders.wifiManagerProcessContext = &wifiManager;
-    wifiRuntimeProviders.recordWifiProcessUs = [](void*, uint32_t elapsedUs) { perfRecordWifiProcessUs(elapsedUs); };
     wifiRuntimeProviders.readWifiServiceActive =
         ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isWifiServiceActive>;
     wifiRuntimeProviders.wifiServiceContext = &wifiManager;
@@ -315,7 +294,6 @@ static void configureSystemLoopCoreModules() {
     configureConnectionStateDispatchModule();
     configurePeriodicMaintenanceModule();
     configureLoopTailModule();
-    configureLoopTelemetryModule();
     configureLoopIngestModule();
     displayRestoreModule.begin(&display, &parser, &bleClient, &displayPreviewModule, &displayPipelineModule);
     displayOrchestrationModule.begin(&display, &bleClient, &bleQueueModule, &displayPreviewModule,
@@ -359,70 +337,6 @@ void configureSystemLoopModules() {
     connectionCycleCoordinatorModule.begin(cycleProviders);
 }
 
-namespace {
-bool qualificationModeOverrideActive = false;
-bool qualificationModeSavedProxyBle = false;
-bool qualificationModeSavedObdEnabled = false;
-
-void syncQualificationModeRuntime() {
-    const V1Settings& settings = settingsManager.get();
-    bleClient.setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
-    SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, obdRuntimeModule, speedSourceSelector);
-    connectionCycleCoordinatorModule.reset();
-}
-
-bool applyQualificationModeOverride(uint8_t rawMode) {
-    const V1Settings& current = settingsManager.get();
-    if (!qualificationModeOverrideActive) {
-        qualificationModeSavedProxyBle = current.proxyBLE;
-        qualificationModeSavedObdEnabled = current.obdEnabled;
-        qualificationModeOverrideActive = true;
-    }
-
-    bool proxyBle = current.proxyBLE;
-    bool obdEnabled = current.obdEnabled;
-    switch (static_cast<QualificationSerialModule::Mode>(rawMode)) {
-    case QualificationSerialModule::Mode::Proxy:
-        proxyBle = true;
-        obdEnabled = false;
-        break;
-    case QualificationSerialModule::Mode::Obd:
-        proxyBle = false;
-        obdEnabled = true;
-        break;
-    case QualificationSerialModule::Mode::V1Only:
-        proxyBle = false;
-        obdEnabled = false;
-        break;
-    case QualificationSerialModule::Mode::Current:
-        break;
-    default:
-        return false;
-    }
-
-    settingsManager.applyVolatileQualificationMode(proxyBle, obdEnabled);
-    if (!proxyBle) {
-        bleClient.stopProxyAdvertising();
-        bleClient.disconnectProxyPhones();
-    }
-    if (!obdEnabled) {
-        obdRuntimeModule.stopActiveScan();
-        obdRuntimeModule.cancelPendingConnect();
-    }
-    syncQualificationModeRuntime();
-    return true;
-}
-
-void clearQualificationModeOverride() {
-    if (!qualificationModeOverrideActive) {
-        return;
-    }
-    settingsManager.applyVolatileQualificationMode(qualificationModeSavedProxyBle, qualificationModeSavedObdEnabled);
-    syncQualificationModeRuntime();
-    qualificationModeOverrideActive = false;
-}
-} // namespace
-
 static void configureRuntimeSensorModules() {
     speedSourceSelector.begin(&obdRuntimeModule, settingsManager.get().obdEnabled, &gpsRuntimeModule,
                               settingsManager.get().gpsEnabled);
@@ -435,7 +349,7 @@ static void configureRuntimeSensorModules() {
 
     // ALP (Active Laser Protection) — UART2 listener for gun identification.
     // When enabled, ALP can also own laser alerting via V1 profile-push policy.
-    alpRuntimeModule.begin(settingsManager.get().alpEnabled, &alpSdLogger);
+    alpRuntimeModule.begin(settingsManager.get().alpEnabled);
     alpRuntimeModule.setEventBus(&systemEventBus);
 }
 
@@ -443,48 +357,6 @@ static void configureRuntimeCoreModules() {
     configureRuntimeSensorModules();
 }
 
-static void configureQualificationSerialModule() {
-    QualificationSerialModule::Providers providers;
-    providers.isPerfEnabled = [](void*) { return perfSdLogger.isEnabled(); };
-    providers.perfCsvPath = [](void*) { return perfSdLogger.csvPath(); };
-    providers.startPerfSession = [](void*) { perfSdLogger.startNewSession(); };
-    providers.enqueueSnapshotNow = [](void*) { return perfMetricsEnqueueSnapshotNow(); };
-    providers.tryDrainPerf = [](void*) { return perfSdLogger.tryDrainAndClose(); };
-    providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes, void*) {
-        return perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes);
-    };
-    providers.tryDrainEvidence = [](void*) { return v1EncounterLogger.tryDrainQualificationEvidence(); };
-    providers.beginEvidenceSession = [](uint32_t sessionToken, uint32_t startedAtDutMs, void*) {
-        return v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
-                                                          bleQueueModule.rxSourceLossCount());
-    };
-    providers.endEvidenceSession = [](uint32_t sessionToken, uint32_t endedAtDutMs, void*) {
-        v1EncounterLogger.endQualificationSession(sessionToken, endedAtDutMs, bleQueueModule.rxSourceLossCount());
-    };
-    providers.newSessionToken = [](void*) { return static_cast<uint32_t>(esp_random()); };
-    providers.buildGitSha = [](void*) { return getBuildGitSha(); };
-    providers.runtimeImageId = [](void*) { return getRuntimeImageId(); };
-    providers.displayBrightness = [](void*) { return settingsManager.get().brightness; };
-    providers.displayMutedColorRgb565 = [](void*) { return settingsManager.get().colorMuted; };
-    providers.setSdCapturePaused = [](bool paused, void*) { perfMetricsSetSdCapturePaused(paused); };
-    providers.startDisplayPreview = [](uint32_t durationMs, void*) { requestColorPreviewHold(durationMs); };
-    providers.cancelDisplayPreview = [](void*) { cancelDisplayPreview(); };
-    providers.applyQualificationMode = [](uint8_t mode, void*) { return applyQualificationModeOverride(mode); };
-    providers.clearQualificationMode = [](void*) { clearQualificationModeOverride(); };
-    providers.isStorageReady = [](void*) { return storageManager.isReady(); };
-    providers.isSDCard = [](void*) { return storageManager.isSDCard(); };
-    providers.filesystem = [](void*) { return storageManager.getFilesystem(); };
-    providers.sdMutex = [](void*) { return storageManager.getSDMutex(); };
-    providers.tryProxyEpochSnapshot = [](BleProxyEpochQualificationSnapshot& snapshot, void*) {
-        return bleClient.trySnapshotProxyEpochQualification(snapshot);
-    };
-    providers.nowMs = [](void*) { return millis(); };
-    providers.nowUs = [](void*) { return QualificationClock::nowMicros(); };
-    providers.clockSegment = [](void*) { return QualificationClock::segment(); };
-    qualificationSerialModule.begin(&Serial, providers);
-}
-
 void configureRuntimeModules() {
     configureRuntimeCoreModules();
-    configureQualificationSerialModule();
 }

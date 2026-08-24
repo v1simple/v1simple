@@ -4,7 +4,6 @@
 
 #include "wifi_manager_internals.h"
 #include "client_write_retry.h"
-#include "perf_metrics.h"
 #include <LittleFS.h>
 #include <cstring>
 
@@ -75,7 +74,6 @@ bool streamOpenFile(WebServer& server_, File& file, const char* path, const char
 } // namespace
 
 bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* contentType) {
-    uint32_t startUs = PERF_TIMESTAMP_US();
     String acceptEncoding = server_.header("Accept-Encoding");
     bool clientAcceptsGzip = acceptEncoding.indexOf("gzip") >= 0;
     const bool immutableCache = isImmutableWebAsset(path);
@@ -100,7 +98,6 @@ bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* c
                     server_.send(500, "text/plain", "Stream error");
                     return true;
                 }
-                perfRecordFsServeUs(PERF_TIMESTAMP_US() - startUs);
                 return true;
             }
         }
@@ -124,6 +121,5 @@ bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* c
         server_.send(500, "text/plain", "Stream error");
         return true;
     }
-    perfRecordFsServeUs(PERF_TIMESTAMP_US() - startUs);
     return true;
 }

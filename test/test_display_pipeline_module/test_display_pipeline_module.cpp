@@ -18,19 +18,8 @@ unsigned long mockMicros = 0;
 #endif
 
 #include "../../src/modules/alert_persistence/alert_persistence_module.h"
-#include "../../src/perf_metrics.h"
 
-PerfCounters perfCounters;
-PerfExtendedMetrics perfExtended;
-static int g_displayLogCalls = 0;
 static int g_voiceProcessCalls = 0;
-static char g_lastDisplayLogEvent[24] = "";
-static char g_lastDisplayLogDetail[224] = "";
-void perfRecordDisplayRenderUs(uint32_t /*us*/) {}
-void perfRecordDisplayScenarioRenderUs(uint32_t /*us*/) {}
-void perfSetDisplayRenderScenario(PerfDisplayRenderScenario /*scenario*/) {}
-PerfDisplayRenderScenario perfGetDisplayRenderScenario() { return PerfDisplayRenderScenario::None; }
-void perfClearDisplayRenderScenario() {}
 
 AlertPersistenceModule::AlertPersistenceModule() = default;
 
@@ -90,13 +79,6 @@ const char* alpLaserDirectionName(AlpLaserDirection direction) {
 }
 AlpGunType alpLookupGun(uint8_t, uint8_t) { return AlpGunType::UNKNOWN; }
 AlpGunType alpLookupGunDetect(uint8_t, uint8_t) { return AlpGunType::UNKNOWN; }
-// Member-method stub — test does not include alp_runtime_module.cpp
-void AlpRuntimeModule::logDisplayDecision(uint32_t, const char* event, const char* detail) {
-    g_displayLogCalls++;
-    snprintf(g_lastDisplayLogEvent, sizeof(g_lastDisplayLogEvent), "%s", event ? event : "");
-    snprintf(g_lastDisplayLogDetail, sizeof(g_lastDisplayLogDetail), "%s", detail ? detail : "");
-}
-
 #include "../../src/modules/speed_mute/speed_mute_module.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
@@ -191,12 +173,7 @@ void setUp() {
     alpLatch = AlpEventLatch{};
     displayMode = DisplayMode::IDLE;
     settingsManager = SettingsManager{};
-    perfCounters.reset();
-    perfExtended.reset();
-    g_displayLogCalls = 0;
     g_voiceProcessCalls = 0;
-    g_lastDisplayLogEvent[0] = '\0';
-    g_lastDisplayLogDetail[0] = '\0';
     quiet.begin(&ble, &parser);
     beginModule();
 }
@@ -440,8 +417,6 @@ void test_handle_parsed_keeps_unknown_alp_direction_off_screen() {
     TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
     TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
     TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastAlpLaserEvent.direction);
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "dp=LASER/0/NONE"));
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "d=UNKNOWN"));
 }
 
 void test_handle_parsed_prioritizes_alp_laser_over_v1_radar() {
@@ -474,12 +449,6 @@ void test_handle_parsed_prioritizes_alp_laser_over_v1_radar() {
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastAlertDisplayState.arrows);
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastAlertDisplayState.priorityArrow);
     TEST_ASSERT_EQUAL(6, display.lastAlertDisplayState.signalBars);  // laser = full physical meter
-    TEST_ASSERT_TRUE(g_displayLogCalls > 0);
-    TEST_ASSERT_EQUAL_STRING("DISP_LIVE", g_lastDisplayLogEvent);
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "g=ULT"));
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "v1c=2"));
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "dp=LASER/0/FRONT"));
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "rc=2"));
 }
 
 void test_handle_parsed_keeps_v1_cards_when_alp_is_primary() {
@@ -559,9 +528,6 @@ void test_handle_parsed_clears_alp_projection_during_teardown_gap() {
     // The inactive ALP projection is delivered atomically.
     TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
     TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL_STRING("DISP_IDLE", g_lastDisplayLogEvent);
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "own=1"));
-    TEST_ASSERT_NOT_NULL(strstr(g_lastDisplayLogDetail, "dp=NONE"));
 }
 
 void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_returns() {

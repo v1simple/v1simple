@@ -6,7 +6,6 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
-#include "perf_metrics.h"
 
 // Forward declaration
 class V1BLEClient;
@@ -22,13 +21,6 @@ class SemaphoreGuard {
     explicit SemaphoreGuard(SemaphoreHandle_t sem, TickType_t timeout = 0) : sem_(sem), locked_(false) {
         if (sem_) {
             locked_ = xSemaphoreTake(sem_, timeout) == pdTRUE;
-            if (!locked_) {
-                if (timeout == 0) {
-                    PERF_INC(bleMutexSkip);
-                } else {
-                    PERF_INC(bleMutexTimeout);
-                }
-            }
         }
     }
     ~SemaphoreGuard() {
@@ -67,7 +59,6 @@ inline bool extractV1ShortUuidFrom128(const NimBLEUUID& uuid, uint16_t& out) {
 
     // 16-bit short UUID lives in bytes [12..13] (little-endian) for this custom base.
     out = static_cast<uint16_t>((static_cast<uint16_t>(raw[13]) << 8) | raw[12]);
-    PERF_INC(uuid128FallbackHits);
     return true;
 }
 

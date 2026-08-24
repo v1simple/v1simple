@@ -673,7 +673,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     // ALP Settings
     // ============================================================================
     restoreBool("alpEnabled", settings_.alpEnabled);
-    restoreBool("alpSdLogEnabled", settings_.alpSdLogEnabled);
     if (doc["alpAlertPersistSec"].is<int>()) {
         settings_.alpAlertPersistSec = clampU8(doc["alpAlertPersistSec"].as<int>(), 0, 5);
     }
@@ -687,11 +686,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     }
     // Retired compatibility field: GPS EN is not driven on supported hardware.
     settings_.gpsEnablePinActiveHigh = true;
-    restoreBool("gpsLogUtcToPerf", settings_.gpsLogUtcToPerf);
-    restoreBool("gpsLogUtcToAlp", settings_.gpsLogUtcToAlp);
-
-    // Debug / diagnostics
-    restoreBool("powerOffSdLog", settings_.powerOffSdLog);
 
     if (settings_.proxyBLE && settings_.obdEnabled) {
         // Legacy backups can contain both from the pre-mode era. OBD required

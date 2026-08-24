@@ -5,7 +5,6 @@
 #include "battery_manager.h"
 #include "battery_latch_shutdown_policy.h"
 #include "battery_source_policy.h"
-#include "storage_manager.h"
 #include "audio_i2c_utils.h"
 #include "display_driver.h"
 #include "poweroff_policy.h"
@@ -18,7 +17,6 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
-#include <SD_MMC.h>
 
 // Only compile for Waveshare 3.49 board
 
@@ -580,19 +578,6 @@ bool BatteryManager::latchPowerOn() {
     return true;
 }
 
-// Helper: append a line to /poweroff.log on SD card (best-effort, no mutex —
-// WiFi and other SD users are already stopped by prepareForShutdown).
-static bool sdLogEnabled_ = false;
-static void sdLog(const char* line) {
-    if (!sdLogEnabled_ || !storageManager.isSDCard())
-        return;
-    File f = SD_MMC.open("/poweroff.log", FILE_APPEND);
-    if (f) {
-        f.printf("[%lu] %s\n", millis(), line);
-        f.close();
-    }
-}
-
 static void blankPanelBacklightForSleepOrPowerOff() {
     Serial.println("[Battery] Fading backlight...");
     for (int i = 0; i <= 255; i += 5) {
@@ -606,22 +591,17 @@ static void blankPanelBacklightForSleepOrPowerOff() {
     delay(50);
 }
 
-bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64_t pullupMask, const char* outcome) {
-    sdLogEnabled_ = sdLogEnabled;
-
+bool BatteryManager::enterDeepSleep(uint64_t wakeMask, uint64_t pullupMask, const char* outcome) {
     Serial.println("[Battery] Executing deep sleep entry...");
-    sdLog("=== DEEP-SLEEP BEGIN ===");
 
     char buf[160];
     snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
-    sdLog(buf);
 
     blankPanelBacklightForSleepOrPowerOff();
 
     snprintf(buf, sizeof(buf), "ext1Mask=0x%016llX pu=0x%016llX trigger=ANY_LOW",
              static_cast<unsigned long long>(wakeMask), static_cast<unsigned long long>(pullupMask));
     Serial.printf("[Battery] Deep sleep config: %s\n", buf);
-    sdLog(buf);
 
     // Configure RTC pad pull-ups before enabling the wake source.
     for (int pin = 0; pin <= 21; ++pin) {
@@ -642,7 +622,6 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
 
     if (!wakeMaskIsInactive(wakeMask)) {
         Serial.println("[Battery] ERROR: selected deep-sleep wake input is already asserted");
-        sdLog("OUTCOME sleep_aborted reason=wake_input_asserted_before_arm");
         releaseBacklightSleepHoldAfterAbort();
         return false;
     }
@@ -653,24 +632,19 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
             snprintf(buf, sizeof(buf), "OUTCOME sleep_aborted reason=ext1_config_failed err=%d",
                      static_cast<int>(wakeResult));
             Serial.printf("[Battery] %s\n", buf);
-            sdLog(buf);
             releaseBacklightSleepHoldAfterAbort();
             return false;
         }
     }
 
-    // Keep the terminal outcome adjacent to the next BOOT record in
-    // /poweroff.log so a bounded diagnostics tail still shows the decision.
     if (outcome && outcome[0] != '\0') {
         Serial.printf("[Battery] Deep sleep outcome: %s\n", outcome);
-        sdLog(outcome);
     }
 
     delay(100); // Let serial flush
     Serial.flush();
     if (!wakeMaskIsInactive(wakeMask)) {
         Serial.println("[Battery] ERROR: deep-sleep wake input asserted before sleep entry");
-        sdLog("OUTCOME sleep_aborted reason=wake_input_asserted_before_sleep");
         esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
         releaseBacklightSleepHoldAfterAbort();
         return false;
@@ -679,35 +653,30 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled, uint64
     return true;
 }
 
-bool BatteryManager::powerOff(bool sdLogEnabled) {
+bool BatteryManager::powerOff() {
 #ifdef CAR_MODE_PWR_SHORT
     // Car-install builds have no onboard 18650 and no TCA9554 latch to drop.
     // Calling powerOff() in this configuration would access absent hardware and
     // could leave the unit unusable, so it is a confirmed no-op.
-    (void)sdLogEnabled;
     Serial.println("[Battery] powerOff: compile-time disabled (CAR_MODE_PWR_SHORT)");
     return true;
 #else
-    sdLogEnabled_ = sdLogEnabled;
     // Callers must run shutdown preparation before entering this final
     // hardware-only tail.
     Serial.println("[Battery] Executing final power-off sequence...");
 
-    sdLog("=== POWER-OFF BEGIN ===");
     char buf[128];
     snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
-    sdLog(buf);
 
     const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(onBattery_);
     snprintf(buf, sizeof(buf), "strategy=%s", poweroff_policy::strategyName(strategy));
     Serial.printf("[Battery] Power-off strategy: %s\n", poweroff_policy::strategyName(strategy));
-    sdLog(buf);
 
     blankPanelBacklightForSleepOrPowerOff();
 
     auto enterWithWakePlan = [&](const poweroff_policy::WakePlan& wakePlan, const char* outcome) {
         const uint64_t wakeMask = wakeMaskForPlan(wakePlan);
-        return enterDeepSleep(wakeMask, sdLogEnabled, wakeMask, outcome);
+        return enterDeepSleep(wakeMask, wakeMask, outcome);
     };
 
     if (strategy == poweroff_policy::Strategy::DEEP_SLEEP_EXTERNAL_POWER) {
@@ -743,7 +712,6 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
                      batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
             if (!enterWithWakePlan(wakePlan, buf)) {
                 Serial.println("[Battery] ERROR: external-power sleep aborted; no stable inactive wake input");
-                sdLog("OUTCOME shutdown_failed mode=external reason=no_stable_inactive_wake device=awake");
             }
         }
         return false; // Successful deep-sleep entry never returns on hardware.
@@ -754,7 +722,6 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
     // Deep sleep is only used as a last-resort fallback if the latch drop fails.
     if (isCritical()) {
         Serial.println("[Battery] Critical battery - hard power off to protect cell");
-        sdLog("CRITICAL battery - hard power off");
     } else {
         Serial.println("[Battery] Dropping power latch...");
     }
@@ -762,7 +729,6 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
     const bool latchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN, false, pdMS_TO_TICKS(250), 5);
     snprintf(buf, sizeof(buf), "latchDrop=%s", latchDropped ? "OK" : "FAILED");
     Serial.printf("[Battery] Latch drop result: %s\n", latchDropped ? "OK" : "FAILED");
-    sdLog(buf);
 
     bool latchReadbackSucceeded = false;
     bool latchLow = false;
@@ -777,11 +743,9 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
             latchLow = (readback & (1 << TCA9554_PWR_LATCH_PIN)) == 0;
             snprintf(buf, sizeof(buf), "readback=0x%02X pin6=%s", readback, latchLow ? "LOW" : "HIGH_STUCK");
             Serial.printf("[Battery] TCA9554 %s\n", buf);
-            sdLog(buf);
         } else {
             snprintf(buf, sizeof(buf), "readback=%s", audioI2cResultToString(readbackResult));
             Serial.printf("[Battery] TCA9554 readback failed (%s)\n", audioI2cResultToString(readbackResult));
-            sdLog(buf);
         }
     }
 
@@ -792,10 +756,8 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
         delay(500); // Wait for power rail to collapse
         // If we reach here, the latch drop didn't fully cut power.
         Serial.println("[Battery] WARN: Still running after latch drop - power rail did not collapse");
-        sdLog("WARN: still alive after 500ms latch drop wait");
     } else {
         Serial.println("[Battery] ERROR: Failed to drop power latch, falling back to deep sleep");
-        sdLog("ERROR: latch drop failed");
     }
 
     // The normal loop feed cannot run during this bounded fallback tail.
@@ -817,7 +779,6 @@ bool BatteryManager::powerOff(bool sdLogEnabled) {
                  fallbackReason, poweroff_policy::wakeInputName(wakePlan.input));
         if (!enterWithWakePlan(wakePlan, buf)) {
             Serial.println("[Battery] ERROR: battery fallback sleep aborted; no stable inactive wake input");
-            sdLog("OUTCOME shutdown_failed mode=battery_fallback reason=no_stable_inactive_wake device=awake");
         }
     }
     return false; // Successful hard cut or deep-sleep entry never returns.

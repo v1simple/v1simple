@@ -17,7 +17,6 @@ extern "C" {
 #include "obd_elm327_parser.h"
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
-#include "perf_metrics.h"
 
 #ifndef UNIT_TEST
 #include "ble_client.h"
@@ -52,8 +51,6 @@ void ObdRuntimeModule::resetForBegin() {
     stateEnteredMs_ = 0;
     bootReadyMs_ = 0;
     stateEntryPending_ = false;
-    connectionCycleStateCode_ = 0;
-    connectionCycleTimeInStateMs_ = 0;
     lastProxyAdvertising_ = false;
     lastProxyClientConnected_ = false;
     lastObdRetryAllowed_ = true;
@@ -344,8 +341,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     const bool obdScanAllowed = bootReadyContext.obdScanAllowed;
     const bool obdConnectAllowed = bootReadyContext.obdConnectAllowed;
     const bool obdRetryAllowed = bootReadyContext.obdRetryAllowed;
-    connectionCycleStateCode_ = bootReadyContext.connectionCycleStateCode;
-    connectionCycleTimeInStateMs_ = bootReadyContext.connectionCycleTimeInStateMs;
     lastProxyAdvertising_ = proxyAdvertising;
     lastProxyClientConnected_ = proxyClientConnected;
     lastObdRetryAllowed_ = obdRetryAllowed;

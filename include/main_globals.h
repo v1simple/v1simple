@@ -20,7 +20,6 @@ class LoopDisplayModule;
 class LoopRuntimeSnapshotModule;
 class LoopPowerTouchModule;
 class LoopTailModule;
-class LoopTelemetryModule;
 class PeriodicMaintenanceModule;
 class WifiRuntimeModule;
 class WifiPriorityPolicyModule;
@@ -31,7 +30,6 @@ class DisplayRestoreModule;
 class VolumeFadeModule;
 class SpeedMuteModule;
 class AlpEventLatch;
-class QualificationSerialModule;
 
 // Core subsystems
 class V1BLEClient;
@@ -61,8 +59,6 @@ class SpeedSourceSelector;
 
 // ALP (Active Laser Protection) subsystem (defined in src/modules/alp)
 class AlpRuntimeModule;
-class AlpSdLogger;
-class V1EncounterLogger;
 
 // GPS subsystem (defined in src/modules/gps)
 class GpsRuntimeModule;
@@ -90,7 +86,6 @@ extern WifiProcessCadenceModule wifiProcessCadenceModule;
 extern ConnectionCycleCoordinatorModule connectionCycleCoordinatorModule;
 extern PeriodicMaintenanceModule periodicMaintenanceModule;
 extern LoopTailModule loopTailModule;
-extern LoopTelemetryModule loopTelemetryModule;
 extern LoopPowerTouchModule loopPowerTouchModule;
 
 // ============================================================================
@@ -121,14 +116,11 @@ extern ObdBleClient obdBleClient;
 extern ObdSettingsSyncModule obdSettingsSyncModule;
 extern SpeedSourceSelector speedSourceSelector;
 extern AlpRuntimeModule alpRuntimeModule;
-extern AlpSdLogger alpSdLogger;
-extern V1EncounterLogger v1EncounterLogger;
 extern AlpEventLatch alpEventLatch;
 extern GpsRuntimeModule gpsRuntimeModule;
 extern GpsTimePublisher gpsTimePublisher;
 extern GpsGeoPublisher gpsGeoPublisher;
 extern SpeedMuteModule speedMuteModule;
-extern QualificationSerialModule qualificationSerialModule;
 
 #ifndef UNIT_TEST
 extern DisplayPipelineModule displayPipelineModule;

@@ -1,6 +1,5 @@
 #include "touch_ui_module.h"
 
-#include "../perf/debug_macros.h"
 #include "audio_beep.h"
 namespace {
 constexpr int kObdBadgeFlushX = 360;
@@ -127,7 +126,7 @@ bool TouchUiModule::preemptForLiveAlert() {
     if (!brightnessAdjustMode_) {
         return false;
     }
-    DBG_PRINTF("[Settings] Live alert preempts adjust mode\n");
+    Serial.printf("[Settings] Live alert preempts adjust mode\n");
     exitAdjustModeAndSave(/*deferPersistence=*/true);
     return true;
 }
@@ -164,7 +163,7 @@ void TouchUiModule::enterAdjustMode() {
     activeSlider_ = 0;
     lastVolumeChangeMs_ = 0;
     display_->showSettingsSliders(brightnessAdjustValue_, volumeAdjustValue_);
-    DBG_PRINTF("[Settings] Entering adjustment mode (brightness: %d, volume: %d)\n", brightnessAdjustValue_,
+    Serial.printf("[Settings] Entering adjustment mode (brightness: %d, volume: %d)\n", brightnessAdjustValue_,
                volumeAdjustValue_);
 }
 
@@ -182,7 +181,7 @@ void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
     display_->hideBrightnessSlider();
     if (callbacks_.restoreDisplay)
         callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
-    DBG_PRINTF("[Settings] Saved brightness: %d, volume: %d\n", brightnessAdjustValue_, volumeAdjustValue_);
+    Serial.printf("[Settings] Saved brightness: %d, volume: %d\n", brightnessAdjustValue_, volumeAdjustValue_);
 }
 
 bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {

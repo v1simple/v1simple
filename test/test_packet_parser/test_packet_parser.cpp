@@ -34,26 +34,6 @@ unsigned long mockMicros = 0;
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 
-#ifndef ARDUINO
-namespace {
-uint32_t g_lastRecordedV1FwVersion = 0;
-PacketParser* g_allVolumeHookParser = nullptr;
-uint32_t g_allVolumeHookCalls = 0;
-bool g_allVolumeHookSawCommittedState = false;
-}
-void perfRecordV1FirmwareVersion(uint32_t version) { g_lastRecordedV1FwVersion = version; }
-namespace { uint32_t g_ledBitmapAnomalies = 0; }
-void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
-void perfRecordV1AllVolumeParsed() {
-    ++g_allVolumeHookCalls;
-    if (g_allVolumeHookParser) {
-        const DisplayState& state = g_allVolumeHookParser->getDisplayState();
-        g_allVolumeHookSawCommittedState = state.mainVolume == 7 && state.muteVolume == 2 &&
-                                             state.savedMainVolume == 4 && state.savedMuteVolume == 0 &&
-                                             state.hasVolumeData && state.hasSavedVolume;
-    }
-}
-#endif
 
 #include <vector>
 
@@ -124,9 +104,6 @@ void setUp() {
 #ifndef ARDUINO
     mockMillis = 0;
     mockMicros = 0;
-    g_allVolumeHookParser = nullptr;
-    g_allVolumeHookCalls = 0;
-    g_allVolumeHookSawCommittedState = false;
 #endif
 }
 
@@ -289,7 +266,7 @@ void test_parse_packet_rejects_bad_framing() {
     TEST_ASSERT_FALSE(parsePacket(parser, badEnd));
 }
 
-void test_parse_version_packet_records_supported_volume_version() {
+void test_parse_version_packet_updates_supported_volume_version() {
     PacketParser parser;
     const auto packet = makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '2', '8'));
 
@@ -299,9 +276,6 @@ void test_parse_version_packet_records_supported_volume_version() {
     TEST_ASSERT_TRUE(state.hasV1Version);
     TEST_ASSERT_EQUAL_UINT32(41028, state.v1FirmwareVersion);
     TEST_ASSERT_TRUE(state.supportsVolume());
-    // Parser must publish the version into perf-metrics so SD logs can
-    // surface the connected V1's firmware identity.
-    TEST_ASSERT_EQUAL_UINT32(41028, g_lastRecordedV1FwVersion);
 }
 
 void test_reset_v1_version_requires_a_fresh_session_response() {
@@ -625,17 +599,14 @@ void test_parse_resp_all_volume_rejects_short_payload() {
     TEST_ASSERT_EQUAL_UINT8(0, s.savedMuteVolume);
 }
 
-void test_canonical_resp_all_volume_increments_parse_counter_once() {
+void test_canonical_resp_all_volume_updates_state() {
 #ifndef ARDUINO
     PacketParser parser;
     const uint8_t packet[] = {
         0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x04, 0x00, 0xB9, 0xAB,
     };
 
-    g_allVolumeHookParser = &parser;
     TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
-    TEST_ASSERT_EQUAL_UINT32(1, g_allVolumeHookCalls);
-    TEST_ASSERT_TRUE(g_allVolumeHookSawCommittedState);
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_EQUAL_UINT8(7, state.mainVolume);
     TEST_ASSERT_EQUAL_UINT8(2, state.muteVolume);
@@ -644,7 +615,7 @@ void test_canonical_resp_all_volume_increments_parse_counter_once() {
 #endif
 }
 
-void test_noncanonical_resp_all_volume_shapes_update_state_without_counting() {
+void test_noncanonical_resp_all_volume_shapes_update_state() {
 #ifndef ARDUINO
     PacketParser parser;
     const uint8_t shortPacket[] = {
@@ -662,23 +633,19 @@ void test_noncanonical_resp_all_volume_shapes_update_state_without_counting() {
 
     TEST_ASSERT_TRUE(parser.parse(shortPacket, sizeof(shortPacket), kDefaultParseNowMs));
     TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
-    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
 
     TEST_ASSERT_TRUE(parser.parse(overlongPacket, sizeof(overlongPacket), kDefaultParseNowMs));
     TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().mainVolume);
-    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
 
     TEST_ASSERT_TRUE(parser.parse(declaredShortPacket, sizeof(declaredShortPacket), kDefaultParseNowMs));
     TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().mainVolume);
-    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
 
     TEST_ASSERT_TRUE(parser.parse(declaredLongPacket, sizeof(declaredLongPacket), kDefaultParseNowMs));
     TEST_ASSERT_EQUAL_UINT8(4, parser.getDisplayState().mainVolume);
-    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
 #endif
 }
 
-void test_resp_all_volume_any_out_of_range_field_updates_state_without_counting() {
+void test_resp_all_volume_any_out_of_range_field_updates_state() {
 #ifndef ARDUINO
     PacketParser parser;
     const uint8_t packets[][11] = {
@@ -691,12 +658,11 @@ void test_resp_all_volume_any_out_of_range_field_updates_state_without_counting(
     for (const auto& packet : packets) {
         TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
         TEST_ASSERT_TRUE(parser.getDisplayState().hasSavedVolume);
-        TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
     }
 #endif
 }
 
-void test_canonical_width_wrong_id_does_not_increment_all_volume_counter() {
+void test_canonical_width_wrong_id_does_not_update_volume() {
 #ifndef ARDUINO
     PacketParser parser;
     const uint8_t packet[] = {
@@ -705,7 +671,6 @@ void test_canonical_width_wrong_id_does_not_increment_all_volume_counter() {
 
     TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
     TEST_ASSERT_FALSE(parser.getDisplayState().hasSavedVolume);
-    TEST_ASSERT_EQUAL_UINT32(0, g_allVolumeHookCalls);
 #endif
 }
 
@@ -779,7 +744,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_packet_rejects_six_byte_frame);
     RUN_TEST(test_parse_packet_rejects_seven_byte_frame);
     RUN_TEST(test_parse_packet_rejects_bad_framing);
-    RUN_TEST(test_parse_version_packet_records_supported_volume_version);
+    RUN_TEST(test_parse_version_packet_updates_supported_volume_version);
     RUN_TEST(test_reset_v1_version_requires_a_fresh_session_response);
     RUN_TEST(test_parse_version_packet_ignores_non_digit_payload);
     RUN_TEST(test_parse_version_packet_ignores_short_payload);
@@ -798,10 +763,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_resp_all_volume_populates_volume_fields);
     RUN_TEST(test_resp_all_volume_overrides_display_aux2_inference);
     RUN_TEST(test_parse_resp_all_volume_rejects_short_payload);
-    RUN_TEST(test_canonical_resp_all_volume_increments_parse_counter_once);
-    RUN_TEST(test_noncanonical_resp_all_volume_shapes_update_state_without_counting);
-    RUN_TEST(test_resp_all_volume_any_out_of_range_field_updates_state_without_counting);
-    RUN_TEST(test_canonical_width_wrong_id_does_not_increment_all_volume_counter);
+    RUN_TEST(test_canonical_resp_all_volume_updates_state);
+    RUN_TEST(test_noncanonical_resp_all_volume_shapes_update_state);
+    RUN_TEST(test_resp_all_volume_any_out_of_range_field_updates_state);
+    RUN_TEST(test_canonical_width_wrong_id_does_not_update_volume);
     RUN_TEST(test_decode_signal_bars_renders_valid_bitmaps_literally_and_fails_loud);
     RUN_TEST(test_all_v1_bitmaps_are_bounded_by_eight_protocol_leds);
     return UNITY_END();

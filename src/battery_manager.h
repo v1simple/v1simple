@@ -87,15 +87,13 @@ class BatteryManager {
     // Battery power uses a verified latch cut; attached external/USB power
     // isolates the battery latch and enters BOOT/GPIO0-wake deep sleep because
     // firmware cannot remove the external rail. A battery fallback waits for
-    // PWR/GPIO16 release and uses BOOT if PWR remains asserted. When
-    // sdLogEnabled is true, writes the selected path and terminal outcome to
-    // /poweroff.log on SD. A successful portable cut/sleep never returns;
-    // false means the shutdown tail aborted and the CPU is still awake.
-    bool powerOff(bool sdLogEnabled = false);
+    // PWR/GPIO16 release and uses BOOT if PWR remains asserted. A successful
+    // portable cut/sleep never returns; false means the shutdown tail aborted
+    // and the CPU is still awake.
+    bool powerOff();
 
     // Enter deep sleep with an EXT1 wake mask.
-    bool enterDeepSleep(uint64_t wakeMask, bool sdLogEnabled = false, uint64_t pullupMask = 0,
-                        const char* outcome = nullptr);
+    bool enterDeepSleep(uint64_t wakeMask, uint64_t pullupMask = 0, const char* outcome = nullptr);
 
     // Check if power button is pressed
     bool isPowerButtonPressed();

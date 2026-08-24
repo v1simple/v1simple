@@ -8,7 +8,6 @@
 #include <string>
 #include <WiFi.h>
 #include "settings.h"
-#include "perf_metrics.h"
 #include "ble_log_rate_limit.h"
 #include "config.h"
 #include "ble_internals.h"
@@ -57,8 +56,6 @@ void V1BLEClient::process() {
             versionRequestStartedMs_ = 0;
             connectCompletedAtMs_.store(0, std::memory_order_relaxed);
             firstRxAfterConnectMs_.store(0, std::memory_order_relaxed);
-            lastBleProcessDurationUs_.store(0, std::memory_order_relaxed);
-            lastDisplayPipelineDurationUs_.store(0, std::memory_order_relaxed);
             connectBurstStableLoopCount_ = 0;
             proxyClientConnected_ = false;
             proxyDisconnectRequestedByCoordinator_ = false;
@@ -182,10 +179,6 @@ void V1BLEClient::process() {
         pServer_->getConnectedCount() > 0) {
         proxyDisconnectRequestedByCoordinator_ = true;
         proxySuppressedForObdHold_ = true;
-        if (proxySuppressedResumeReasonCode_ == static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
-            proxySuppressedResumeReasonCode_ =
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow);
-        }
         for (uint16_t h : pServer_->getPeerDevices()) {
             pServer_->disconnect(h);
         }
@@ -197,30 +190,17 @@ void V1BLEClient::process() {
         clearProxyAdvertisingSchedule();
         if (!proxyConnected && proxyAdvertisingActive) {
             proxySuppressedForObdHold_ = true;
-            if (proxySuppressedResumeReasonCode_ ==
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
-                proxySuppressedResumeReasonCode_ =
-                    static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow);
-            }
-            stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
+            stopProxyAdvertisingFromMainLoop();
         }
     } else if (!proxyConnected && !proxyAdvertisingActive && proxyAdvertisingStartMs_ == 0) {
         proxyAdvertisingStartMs_ = now + PROXY_STABILIZE_MS;
-        proxyAdvertisingStartReasonCode_ =
-            proxySuppressedResumeReasonCode_ == 0
-                ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow)
-                : proxySuppressedResumeReasonCode_;
         proxySuppressedForObdHold_ = false;
-        proxySuppressedResumeReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
-        Serial.printf("[BLE] Proxy advertising scheduled (%lums, cycle=%s cycleMs=%lu)\n",
-                      static_cast<unsigned long>(PROXY_STABILIZE_MS),
-                      perfConnectionCycleStateName(connectionCycleStateCode_),
-                      static_cast<unsigned long>(connectionCycleTimeInStateMs_));
+        Serial.printf("[BLE] Proxy advertising scheduled (%lums)\n",
+                      static_cast<unsigned long>(PROXY_STABILIZE_MS));
     }
 
     if (proxyAdvertisingAllowed && !proxyConnected && proxyAdvertisingActive) {
-        refreshProxyAdvertisingCadence(now,
-                                       static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow));
+        refreshProxyAdvertisingCadence(now);
     }
 
     // Handle deferred proxy advertising start (non-blocking replacement for delay(1500))
@@ -228,19 +208,12 @@ void V1BLEClient::process() {
         if (static_cast<int32_t>(now - proxyAdvertisingStartMs_) >= 0) {
             if (!proxyAdvertisingAllowed) {
                 proxySuppressedForObdHold_ = true;
-                if (proxySuppressedResumeReasonCode_ ==
-                    static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
-                    proxySuppressedResumeReasonCode_ = proxyAdvertisingStartReasonCode_;
-                }
             } else if (isConnected() && proxyEnabled_ && proxyServerInitialized_) {
-                const uint8_t startReason = proxyAdvertisingStartReasonCode_;
                 proxyAdvertisingStartMs_ = 0; // Clear pending flag
-                proxyAdvertisingStartReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
                 // Advertising data already configured in initProxyServer() with proper flags
-                startProxyAdvertising(startReason);
+                startProxyAdvertising();
             } else {
                 proxyAdvertisingStartMs_ = 0;
-                proxyAdvertisingStartReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
             }
         }
     }
@@ -509,13 +482,10 @@ void V1BLEClient::setWifiPriority(bool enabled) {
             if (shouldLog)
                 Serial.println("[BLE] Stopping proxy advertising for WiFi priority mode");
             NimBLEDevice::stopAdvertising();
-            perfRecordProxyAdvertisingTransition(
-                false, static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopWifiPriority), nowMs);
         }
 
         // Cancel any pending deferred advertising start
         proxyAdvertisingStartMs_ = 0;
-        proxyAdvertisingStartReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
 
         // Preserve an existing V1 connection while WiFi has radio priority.
 

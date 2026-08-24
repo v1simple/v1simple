@@ -6,7 +6,6 @@
 
 #include <cstdint>
 #include "esp_system.h" // esp_reset_reason_t
-#include "main_runtime_services.h"
 
 class QuietCoordinatorModule;
 
@@ -70,9 +69,6 @@ void prepareForShutdown(void* context);
 /// Restore persistence admission and the unclean marker after the hardware
 /// shutdown tail returns without powering down or entering deep sleep.
 void resumeAfterAbortedShutdown(void* context);
-
-/// Initialize perf/observation CSV loggers and return the boot session id.
-uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services);
 
 /// Initialize touch hardware and apply persisted display controls.
 void initializeTouchAndDisplayControls();

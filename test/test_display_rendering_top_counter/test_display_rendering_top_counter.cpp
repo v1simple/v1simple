@@ -40,9 +40,6 @@ V1Display::~V1Display() = default;
 
 V1Display display;
 
-#include "../../src/perf_metrics.h"
-void perfRecordDisplayRedrawReason(PerfDisplayRedrawReason) {}
-
 bool DisplayFontManager::getTopCounterBounds(char symbol, bool showDot, int& xMin, int& xMax) {
     // Mirror production semantics: bounds come from a boot-primed cache and
     // never change afterwards. First lookup measures (boot prime); later

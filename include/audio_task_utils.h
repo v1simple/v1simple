@@ -38,11 +38,3 @@ inline void audioResetTaskState(std::atomic<bool>& audioPlaying, std::atomic<Tas
     audioTaskHandle.store(NULL);
     audioPlaying.store(false);
 }
-
-inline void audioRecordStackHighWater(std::atomic<uint32_t>& minimumBytes, uint32_t observedBytes) {
-    uint32_t current = minimumBytes.load(std::memory_order_relaxed);
-    while (observedBytes < current &&
-           !minimumBytes.compare_exchange_weak(current, observedBytes, std::memory_order_relaxed,
-                                               std::memory_order_relaxed)) {
-    }
-}

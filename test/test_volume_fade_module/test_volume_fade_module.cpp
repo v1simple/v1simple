@@ -19,10 +19,6 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-#include "../../src/perf_metrics.h"
-
-void perfRecordVolumeFadeDecision(PerfFadeDecision /*decision*/, uint8_t /*currentVolume*/,
-                                  uint8_t /*originalVolume*/, uint32_t /*nowMs*/) {}
 
 #include "../../src/modules/volume_fade/volume_fade_module.cpp"
 

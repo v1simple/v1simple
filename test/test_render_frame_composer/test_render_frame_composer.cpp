@@ -24,11 +24,6 @@ unsigned long mockMicros = 0;
 
 #include "../../src/modules/alp/alp_runtime_module.h"
 
-// The composer reads AlpLaserEvent/AlpSnapshot only; the ALP runtime itself is
-// not linked here. Stub the one member the header declares but this suite does
-// not exercise, matching test_display_pipeline_module.
-void AlpRuntimeModule::logDisplayDecision(uint32_t, const char*, const char*) {}
-
 #include "../../src/modules/display/render_frame_composer.cpp"
 
 namespace {

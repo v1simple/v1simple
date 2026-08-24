@@ -23,17 +23,7 @@ unsigned long mockMicros = 0;
 #include "../../src/ble_client.h"
 #undef private
 
-#include "../../src/perf_metrics.h"
 
-PerfCounters perfCounters;
-PerfExtendedMetrics perfExtended;
-
-void perfRecordBleProxyStartUs(uint32_t) {}
-void perfRecordBleConnectUs(uint32_t) {}
-void perfRecordBleDiscoveryUs(uint32_t) {}
-void perfRecordBleSubscribeUs(uint32_t) {}
-void perfRecordProxyAdvertisingTransition(bool, uint8_t, uint32_t) {}
-const char* perfConnectionCycleStateName(uint8_t) { return "UNKNOWN"; }
 
 portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
 V1BLEClient* instancePtr = nullptr;
@@ -50,16 +40,6 @@ void resetPhoneCommandSendState() {
     g_sentCommandHistory.clear();
 }
 
-void assertPhoneCmdDropMetrics(const V1BLEClient& client,
-                               uint32_t overflow,
-                               uint32_t invalid,
-                               uint32_t bleFail,
-                               uint32_t lockBusy) {
-    TEST_ASSERT_EQUAL_UINT32(overflow, client.getPhoneCmdDropsOverflow());
-    TEST_ASSERT_EQUAL_UINT32(invalid, client.getPhoneCmdDropsInvalid());
-    TEST_ASSERT_EQUAL_UINT32(bleFail, client.getPhoneCmdDropsBleFail());
-    TEST_ASSERT_EQUAL_UINT32(lockBusy, client.getPhoneCmdDropsLockBusy());
-}
 
 SemaphoreHandle_t g_releaseNotifyMutex = nullptr;
 SemaphoreHandle_t g_releasePhoneMutex = nullptr;
@@ -171,8 +151,6 @@ void setUp() {
     mock_reset_nimble_state();
     mockMillis = 0;
     mockMicros = 0;
-    perfCounters.reset();
-    perfExtended.reset();
     resetPhoneCommandSendState();
     g_releaseNotifyMutex = nullptr;
     g_releasePhoneMutex = nullptr;
@@ -413,15 +391,9 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
     TEST_ASSERT_EQUAL_UINT32(1, client.proxyQueueCount_);
 
-    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
-    TEST_ASSERT_EQUAL_UINT32(1, observation.staleV1ToProxyRejections);
-    TEST_ASSERT_EQUAL_UINT32(1, observation.staleProxyToV1Rejections);
-    TEST_ASSERT_EQUAL_UINT32(1, observation.v1ToProxyAdmissions);
-    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1Admissions);
-    TEST_ASSERT_FALSE(observation.oldEpochForwarded);
 }
 
-void test_missing_phone_queue_records_rejected_epoch_admission() {
+void test_missing_phone_queue_rejects_command() {
     V1BLEClient client;
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.phoneCmdMutex_ = xSemaphoreCreateMutex();
@@ -429,18 +401,11 @@ void test_missing_phone_queue_records_rejected_epoch_admission() {
     client.phone2v1Queue_ = nullptr;
     const uint32_t queueEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
 
-    // Keep admission open for the callback epoch while making a rejected
-    // decision observable in the epoch-accounting snapshot.
-    client.proxyEpochObserver_.currentEpoch_.store(queueEpoch + 1, std::memory_order_release);
     TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(queueEpoch));
 
     const uint8_t packet[] = {0x11};
     TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch));
 
-    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
-    TEST_ASSERT_EQUAL_UINT32(1, observation.staleProxyToV1Rejections);
-    TEST_ASSERT_EQUAL_UINT32(0, observation.proxyToV1Admissions);
-    TEST_ASSERT_EQUAL_UINT32(1, client.getPhoneCmdDropsInvalid());
 }
 
 void test_runtime_disable_closes_epoch_admission_before_queue_release() {
@@ -455,28 +420,6 @@ void test_runtime_disable_closes_epoch_admission_before_queue_release() {
 
     TEST_ASSERT_FALSE(client.proxyEpochObserver_.accepts(epoch));
     TEST_ASSERT_FALSE(client.proxyEnabled_);
-}
-
-void test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state() {
-    V1BLEClient client;
-    TEST_ASSERT_TRUE(client.allocateProxyQueues());
-    client.bleNotifyMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8101u);
-    client.phoneCmdMutex_ = reinterpret_cast<SemaphoreHandle_t>(0x8102u);
-    BleProxyEpochQualificationSnapshot snapshot;
-    snapshot.proxyQueueCapacity = 99;
-
-    mock_queue_semaphore_take_result(pdFALSE);
-    TEST_ASSERT_FALSE(client.trySnapshotProxyEpochQualification(snapshot));
-    TEST_ASSERT_EQUAL_UINT32(0, g_mock_semaphore_state.lastTakeTimeout);
-    TEST_ASSERT_EQUAL_UINT32(99, snapshot.proxyQueueCapacity);
-
-    mock_queue_semaphore_take_result(pdTRUE);
-    mock_queue_semaphore_take_result(pdTRUE);
-    TEST_ASSERT_TRUE(client.trySnapshotProxyEpochQualification(snapshot));
-    TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PROXY_QUEUE_SIZE, snapshot.proxyQueueCapacity);
-    TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PHONE_CMD_QUEUE_SIZE, snapshot.phoneQueueCapacity);
-    TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_free_size, snapshot.freeInternalBytes);
-    TEST_ASSERT_EQUAL_UINT32(g_mock_heap_caps_largest_block, snapshot.largestInternalBlockBytes);
 }
 
 void test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation() {
@@ -512,15 +455,14 @@ void test_initProxyServer_partial_failure_frees_partial_allocation_and_resets_st
     TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.createServerCalls);
 }
 
-void test_phone_command_invalid_drop_updates_getters_and_metrics_payload() {
+void test_phone_command_rejects_invalid_input() {
     V1BLEClient client;
 
     TEST_ASSERT_FALSE(client.enqueuePhoneCommand(nullptr, 0, 0xB2CE));
 
-    assertPhoneCmdDropMetrics(client, 0, 1, 0, 0);
 }
 
-void test_phone_command_lock_busy_drop_updates_getters_and_metrics_payload() {
+void test_phone_command_rejects_missing_lock() {
     V1BLEClient client;
     const uint8_t cmd[] = {0x11};
 
@@ -528,7 +470,6 @@ void test_phone_command_lock_busy_drop_updates_getters_and_metrics_payload() {
     client.phoneCmdMutex_ = nullptr;
     TEST_ASSERT_FALSE(client.enqueuePhoneCommand(cmd, sizeof(cmd), 0xB2CE));
 
-    assertPhoneCmdDropMetrics(client, 0, 0, 0, 1);
 }
 
 void test_phone_command_overflow_drops_oldest_and_keeps_newest() {
@@ -542,7 +483,6 @@ void test_phone_command_overflow_drops_oldest_and_keeps_newest() {
         TEST_ASSERT_TRUE(client.enqueuePhoneCommand(&i, 1, 0xB2CE));
     }
 
-    assertPhoneCmdDropMetrics(client, 1, 0, 0, 0);
     TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PHONE_CMD_QUEUE_SIZE, client.phone2v1QueueCount_);
 
     while (client.processPhoneCommandQueue() == 1) {
@@ -553,7 +493,7 @@ void test_phone_command_overflow_drops_oldest_and_keeps_newest() {
     TEST_ASSERT_EQUAL_UINT8(V1BLEClient::PHONE_CMD_QUEUE_SIZE + 1, g_sentCommandHistory.back());
 }
 
-void test_phone_command_ble_failure_updates_getters_and_metrics_payload() {
+void test_phone_command_reports_ble_failure() {
     V1BLEClient client;
     const uint8_t cmd[] = {0x22};
 
@@ -565,25 +505,6 @@ void test_phone_command_ble_failure_updates_getters_and_metrics_payload() {
     g_sendCommandResult = SendResult::FAILED;
     TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
 
-    assertPhoneCmdDropMetrics(client, 0, 0, 1, 0);
-}
-
-void test_phone_command_drop_metrics_reset_zeroes_all_observable_surfaces() {
-    V1BLEClient client;
-    const uint8_t cmd[] = {0x33};
-
-    TEST_ASSERT_TRUE(client.allocateProxyQueues());
-    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
-    client.connected_ = true;
-
-    TEST_ASSERT_FALSE(client.enqueuePhoneCommand(nullptr, 0, 0xB2CE));
-    TEST_ASSERT_TRUE(client.enqueuePhoneCommand(cmd, sizeof(cmd), 0xB2CE));
-    g_sendCommandResult = SendResult::FAILED;
-    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
-    assertPhoneCmdDropMetrics(client, 0, 1, 1, 0);
-
-    perfCounters.reset();
-    assertPhoneCmdDropMetrics(client, 0, 0, 0, 0);
 }
 
 void test_proxy_app_connect_defers_conn_param_update_until_drained() {
@@ -635,9 +556,6 @@ void test_proxy_app_disconnect_only_clears_state_when_drained() {
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyAdvertisingStartMs_);
     TEST_ASSERT_EQUAL_UINT32(mockMillis + V1BLEClient::PROXY_FAST_RECONNECT_WINDOW_MS,
                              client.proxyFastAdvertisingUntilMs_);
-    TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown),
-        client.proxyAdvertisingStartReasonCode_);
 }
 
 void test_proxy_advertising_downshifts_from_fast_to_slow_cadence() {
@@ -649,9 +567,7 @@ void test_proxy_advertising_downshifts_from_fast_to_slow_cadence() {
     mockMillis = 1000;
 
     TEST_ASSERT_FALSE(g_mock_nimble_state.advertising);
-    client.startProxyAdvertising(
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow),
-        true);
+    client.startProxyAdvertising(true);
 
     TEST_ASSERT_TRUE(g_mock_nimble_state.advertising);
     TEST_ASSERT_TRUE(client.proxyAdvertisingFastCadence_);
@@ -663,9 +579,7 @@ void test_proxy_advertising_downshifts_from_fast_to_slow_cadence() {
     const uint32_t startsBeforeDownshift = g_mock_nimble_state.startAdvertisingCalls;
     const uint32_t stopsBeforeDownshift = g_mock_nimble_state.stopAdvertisingCalls;
     mockMillis = client.proxyFastAdvertisingUntilMs_ + 1;
-    client.refreshProxyAdvertisingCadence(
-        mockMillis,
-        static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow));
+    client.refreshProxyAdvertisingCadence(mockMillis);
 
     TEST_ASSERT_TRUE(g_mock_nimble_state.advertising);
     TEST_ASSERT_FALSE(client.proxyAdvertisingFastCadence_);
@@ -724,10 +638,9 @@ void test_forward_to_proxy_immediate_queues_until_main_loop_send() {
 
     TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.characteristicNotifyCalls);
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
-    TEST_ASSERT_EQUAL_UINT32(1, client.proxyMetrics_.sendCount);
 }
 
-void test_proxy_write_callback_records_real_direction_and_admission() {
+void test_proxy_write_callback_queues_command() {
     V1BLEClient client;
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.connected_.store(true, std::memory_order_relaxed);
@@ -740,10 +653,6 @@ void test_proxy_write_callback_records_real_direction_and_admission() {
 
     callbacks.onWrite(&writeCharacteristic, connInfo);
 
-    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
-    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1CallbackEntries);
-    TEST_ASSERT_EQUAL_UINT32(1, observation.proxyToV1Admissions);
-    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
 }
 
 void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding() {
@@ -789,9 +698,6 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
     TEST_ASSERT_EQUAL_UINT32(sizeof(longData), g_mock_nimble_state.lastNotifyData.size());
     TEST_ASSERT_EQUAL_UINT8_ARRAY(longData, g_mock_nimble_state.lastNotifyData.data(), sizeof(longData));
 
-    const BleProxyEpochObserverSnapshot observation = client.proxyEpochObserver_.snapshot();
-    TEST_ASSERT_EQUAL_UINT32(2, observation.v1ToProxyCallbackEntries);
-    TEST_ASSERT_EQUAL_UINT32(2, observation.v1ToProxyAdmissions);
 }
 
 int main(int argc, char** argv) {
@@ -807,23 +713,21 @@ int main(int argc, char** argv) {
     RUN_TEST(test_pending_release_gates_queue_producers_and_consumers);
     RUN_TEST(test_allocateProxyQueues_does_not_overwrite_a_pending_release);
     RUN_TEST(test_reallocated_queues_reject_callbacks_from_the_previous_epoch);
-    RUN_TEST(test_missing_phone_queue_records_rejected_epoch_admission);
+    RUN_TEST(test_missing_phone_queue_rejects_command);
     RUN_TEST(test_runtime_disable_closes_epoch_admission_before_queue_release);
-    RUN_TEST(test_proxy_epoch_snapshot_is_zero_timeout_and_never_returns_partial_busy_state);
     RUN_TEST(test_initProxyServer_full_allocation_failure_disables_proxy_before_server_creation);
     RUN_TEST(test_initProxyServer_partial_failure_frees_partial_allocation_and_resets_state);
-    RUN_TEST(test_phone_command_invalid_drop_updates_getters_and_metrics_payload);
-    RUN_TEST(test_phone_command_lock_busy_drop_updates_getters_and_metrics_payload);
+    RUN_TEST(test_phone_command_rejects_invalid_input);
+    RUN_TEST(test_phone_command_rejects_missing_lock);
     RUN_TEST(test_phone_command_overflow_drops_oldest_and_keeps_newest);
-    RUN_TEST(test_phone_command_ble_failure_updates_getters_and_metrics_payload);
-    RUN_TEST(test_phone_command_drop_metrics_reset_zeroes_all_observable_surfaces);
+    RUN_TEST(test_phone_command_reports_ble_failure);
     RUN_TEST(test_proxy_app_connect_defers_conn_param_update_until_drained);
     RUN_TEST(test_proxy_app_disconnect_only_clears_state_when_drained);
     RUN_TEST(test_proxy_advertising_downshifts_from_fast_to_slow_cadence);
     RUN_TEST(test_proxy_default_name_adopts_v1_advertised_name);
     RUN_TEST(test_proxy_custom_name_does_not_adopt_v1_advertised_name);
     RUN_TEST(test_forward_to_proxy_immediate_queues_until_main_loop_send);
-    RUN_TEST(test_proxy_write_callback_records_real_direction_and_admission);
+    RUN_TEST(test_proxy_write_callback_queues_command);
     RUN_TEST(test_notify_callback_preserves_source_characteristic_for_proxy_forwarding);
 
     return UNITY_END();

@@ -14,13 +14,9 @@
 #include "battery_manager.h"
 #include "wifi_manager.h"
 #include "storage_manager.h"
-#include "perf_metrics.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <algorithm>
-
-// Display logging macro — shared header (also used by display_screens.cpp etc.)
-#include "display_log.h"
 
 // Font rendering — all OpenFontRender instances and caches are owned by
 // DisplayFontManager (see display_font_manager.h).
@@ -83,28 +79,6 @@ using ActiveAxs15231B = PatchedAxs15231B;
 
 // Use centralized constant from display_layout.h
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
-
-PerfDisplayScreen V1Display::perfScreenForMode(ScreenMode mode) {
-    switch (mode) {
-    case ScreenMode::Unknown:
-        return PerfDisplayScreen::Unknown;
-    case ScreenMode::Resting:
-        return PerfDisplayScreen::Resting;
-    case ScreenMode::Scanning:
-        return PerfDisplayScreen::Scanning;
-    case ScreenMode::Disconnected:
-        return PerfDisplayScreen::Unknown;
-    case ScreenMode::Maintenance:
-        return PerfDisplayScreen::Unknown;
-    case ScreenMode::Live:
-        return PerfDisplayScreen::Live;
-    case ScreenMode::Persisted:
-        return PerfDisplayScreen::Persisted;
-    case ScreenMode::Stealth:
-        return PerfDisplayScreen::Resting;
-    }
-    return PerfDisplayScreen::Unknown;
-}
 
 // ============================================================================
 // Volume-zero warning state machine
@@ -268,7 +242,6 @@ bool V1Display::begin() {
     tft_->setTextColor(PALETTE_TEXT);
     tft_->setTextSize(2);
 
-    DISPLAY_LOG("[DISPLAY] Initialized successfully %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
     logDisplayStage("hw_init");
 
     // Initialize OpenFontRender via the font manager.
@@ -429,8 +402,6 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
         return;
     }
 
-    const uint32_t startUs = PERF_TIMESTAMP_US();
-
     // Row-by-row blit remains the known-good path on hardware. One-call
     // multi-row partial batches were re-tested with contiguous/packed sources
     // and still produced wrong-region artifacts on this panel path.
@@ -439,9 +410,6 @@ void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
                            static_cast<uint32_t>(phys_px0);
         gfxPanel_->draw16bitRGBBitmap(phys_px0, phys_py0 + row, rowPtr, phys_pw, 1);
     }
-    const uint32_t elapsedUs = PERF_TIMESTAMP_US() - startUs;
-    perfRecordFlushUs(elapsedUs, areaPx, false);
-    perfRecordPartialFlushShape(elapsedUs, areaPx, static_cast<uint16_t>(w), static_cast<uint16_t>(h));
 }
 
 const char* V1Display::bandToString(Band band) {

@@ -170,10 +170,6 @@ void test_runtime_enqueue_is_nonblocking_and_writer_is_pinned_to_core_zero() {
     TEST_ASSERT_EQUAL_UINT32(1, header.ourSecCount);
     TEST_ASSERT_EQUAL_UINT32(1, header.peerSecCount);
 
-    const BleBondBackupWriterStats stats = bleBondBackupWriterStats();
-    TEST_ASSERT_EQUAL_UINT32(1, stats.enqueuedSnapshots);
-    TEST_ASSERT_EQUAL_UINT32(1, stats.successfulWrites);
-    TEST_ASSERT_EQUAL_UINT32(0, stats.writeFailures);
 }
 
 void test_zero_bond_snapshot_replaces_stale_backup_after_auto_heal() {
@@ -206,10 +202,6 @@ void test_full_queue_coalesces_to_latest_snapshot_without_waiting() {
     TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
     TEST_ASSERT_EQUAL_UINT8(31, readFirstOurAddressByte());
 
-    const BleBondBackupWriterStats stats = bleBondBackupWriterStats();
-    TEST_ASSERT_EQUAL_UINT32(2, stats.enqueuedSnapshots);
-    TEST_ASSERT_EQUAL_UINT32(1, stats.coalescedSnapshots);
-    TEST_ASSERT_EQUAL_UINT32(0, stats.droppedSnapshots);
 }
 
 void test_writer_failure_retains_snapshot_for_retry() {
@@ -224,13 +216,9 @@ void test_writer_failure_retains_snapshot_for_retry() {
     TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
     TEST_ASSERT_EQUAL_UINT8(44, readFirstOurAddressByte());
 
-    const BleBondBackupWriterStats stats = bleBondBackupWriterStats();
-    TEST_ASSERT_EQUAL_UINT32(1, stats.writeFailures);
-    TEST_ASSERT_EQUAL_UINT32(1, stats.retryRequeues);
-    TEST_ASSERT_EQUAL_UINT32(1, stats.successfulWrites);
 }
 
-void test_writer_setup_failure_drops_observably_without_sd_access() {
+void test_writer_setup_failure_releases_snapshot_without_sd_access() {
     gOurSecs = {makeSec(55)};
     g_mock_task_create_state.failCaps = true;
 
@@ -238,7 +226,6 @@ void test_writer_setup_failure_drops_observably_without_sd_access() {
 
     TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
     TEST_ASSERT_EQUAL_UINT32(0, StorageManager::mockSdLockState.blockingAcquireCalls);
-    TEST_ASSERT_EQUAL_UINT32(1, bleBondBackupWriterStats().droppedSnapshots);
 }
 
 void test_aborted_shutdown_reopens_bond_backup_writer_admission() {
@@ -303,25 +290,6 @@ void test_shutdown_exit_drains_late_bond_snapshot_and_waits_for_admissions() {
     TEST_ASSERT_TRUE(bondBackupWriterQuiesced());
 }
 
-void test_writer_stack_minimum_preserves_zero_and_reset_restores_unsampled() {
-    TEST_ASSERT_EQUAL_UINT32(
-        UINT32_MAX, bleBondBackupWriterStats().writerStackMinFreeBytes);
-
-    recordBleBondBackupWriterStackSampleForTest(768);
-    recordBleBondBackupWriterStackSampleForTest(1024);
-    TEST_ASSERT_EQUAL_UINT32(
-        768, bleBondBackupWriterStats().writerStackMinFreeBytes);
-
-    recordBleBondBackupWriterStackSampleForTest(0);
-    recordBleBondBackupWriterStackSampleForTest(512);
-    TEST_ASSERT_EQUAL_UINT32(
-        0, bleBondBackupWriterStats().writerStackMinFreeBytes);
-
-    resetBleBondBackupWriterForTest();
-    TEST_ASSERT_EQUAL_UINT32(
-        UINT32_MAX, bleBondBackupWriterStats().writerStackMinFreeBytes);
-}
-
 void test_runtime_callers_contain_no_sd_lock_or_filesystem_write() {
     const std::string client = readProjectFile("src/ble_client.cpp");
     const std::string followup = readProjectFile("src/ble_connected_followup.cpp");
@@ -363,8 +331,6 @@ void test_runtime_callers_contain_no_sd_lock_or_filesystem_write() {
     const std::string writerTask = functionBody(
         writer, "void bondBackupWriterTaskEntry(void*)");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          writerTask.find("sampleBondBackupWriterStack()"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           writerTask.find("vTaskDeleteWithCaps(nullptr)"));
 }
 
@@ -374,11 +340,10 @@ int main() {
     RUN_TEST(test_zero_bond_snapshot_replaces_stale_backup_after_auto_heal);
     RUN_TEST(test_full_queue_coalesces_to_latest_snapshot_without_waiting);
     RUN_TEST(test_writer_failure_retains_snapshot_for_retry);
-    RUN_TEST(test_writer_setup_failure_drops_observably_without_sd_access);
+    RUN_TEST(test_writer_setup_failure_releases_snapshot_without_sd_access);
     RUN_TEST(test_aborted_shutdown_reopens_bond_backup_writer_admission);
     RUN_TEST(test_resume_handoffs_snapshot_queued_while_old_bond_writer_exits);
     RUN_TEST(test_shutdown_exit_drains_late_bond_snapshot_and_waits_for_admissions);
-    RUN_TEST(test_writer_stack_minimum_preserves_zero_and_reset_restores_unsampled);
     RUN_TEST(test_runtime_callers_contain_no_sd_lock_or_filesystem_write);
     return UNITY_END();
 }

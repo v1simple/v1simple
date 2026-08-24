@@ -23,8 +23,6 @@ bool V1BLEClient::isConnected() {
 
 #include "../../src/ble_commands.cpp"
 
-PerfCounters perfCounters;
-
 namespace {
 
 struct AlertRequestHarness {

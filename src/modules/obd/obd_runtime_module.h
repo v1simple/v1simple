@@ -148,8 +148,6 @@ struct ObdBleContext {
     bool obdScanAllowed = true;
     bool obdConnectAllowed = true;
     bool obdRetryAllowed = true;
-    uint8_t connectionCycleStateCode = 0;
-    uint32_t connectionCycleTimeInStateMs = 0;
 };
 
 class ObdRuntimeModule {
@@ -166,12 +164,6 @@ class ObdRuntimeModule {
     void setEnabled(bool enabled);
     void setMinRssi(int8_t minRssi);
     bool isEnabled() const { return enabled_; }
-#ifndef UNIT_TEST
-    bool transportTaskActive() const;
-    bool transportTaskStackInPsram() const;
-    uint32_t transportStackHighWaterBytes() const;
-#endif
-
     bool getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const;
 
     const char* getSavedAddress() const { return savedAddress_; }
@@ -373,8 +365,6 @@ class ObdRuntimeModule {
     uint32_t stateEnteredMs_ = 0;
     uint32_t bootReadyMs_ = 0;
     bool stateEntryPending_ = false;
-    uint8_t connectionCycleStateCode_ = 0;
-    uint32_t connectionCycleTimeInStateMs_ = 0;
     bool lastProxyAdvertising_ = false;
     bool lastProxyClientConnected_ = false;
     bool lastObdRetryAllowed_ = true;

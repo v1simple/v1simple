@@ -882,19 +882,13 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
 
     // ALP settings
     written += prefs.putBool(kNvsAlpEnabled, settings_.alpEnabled);
-    written += prefs.putBool(kNvsAlpSdLog, settings_.alpSdLogEnabled);
     written += prefs.putUChar(kNvsAlpPersistSec, std::min<uint8_t>(5, settings_.alpAlertPersistSec));
     written += prefs.putBool(kNvsAlpNoV1Laser, settings_.alpDisableV1LaserOnPush);
-
-    // Debug / diagnostics
-    written += prefs.putBool(kNvsPowerOffSdLog, settings_.powerOffSdLog);
 
     // GPS settings
     written += prefs.putBool(kNvsGpsEnabled, settings_.gpsEnabled);
     written += prefs.putUInt(kNvsGpsBaud, settings_.gpsBaud);
     written += prefs.putBool(kNvsGpsEnablePolarity, settings_.gpsEnablePinActiveHigh);
-    written += prefs.putBool(kNvsGpsLogUtcToPerf, settings_.gpsLogUtcToPerf);
-    written += prefs.putBool(kNvsGpsLogUtcToAlp, settings_.gpsLogUtcToAlp);
 
     // NVS validity marker - used to detect if NVS was wiped.
     // Written LAST so its presence proves the entire write completed.

@@ -30,7 +30,7 @@ class V1BLEClient;
 // charUUID: last 16-bit of source characteristic UUID (0xB2CE, 0xB4E0, etc)
 // sessionGeneration: immutable V1 link generation captured by the notify callback
 typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                             uint32_t callbackDutMillis, uint64_t callbackDutMicros);
+                             uint32_t callbackMillis);
 
 // Callback for V1 connection events
 typedef void (*ConnectionCallback)();
@@ -120,24 +120,6 @@ enum class SendResult {
     FAILED   // Hard failure: drop and count
 };
 
-// Proxy metrics for monitoring proxy health
-struct ProxyMetrics {
-    uint32_t sendCount = 0; // Successful notify sends
-    std::atomic<uint32_t> dropCount{
-        0};                      // Dropped due to queue full (atomic: incremented outside mutex on fast-fail path)
-    uint32_t errorCount = 0;     // Notify failures
-    uint32_t queueHighWater = 0; // Max queue depth seen
-    uint32_t lastResetMs = 0;    // When metrics were last reset
-
-    void reset() {
-        sendCount = 0;
-        dropCount.store(0, std::memory_order_relaxed);
-        errorCount = 0;
-        queueHighWater = 0;
-        lastResetMs = millis();
-    }
-};
-
 class V1BLEClient {
   public:
     V1BLEClient();
@@ -162,10 +144,6 @@ class V1BLEClient {
     // Check if proxy client (app) is connected_
     bool isProxyClientConnected();
     bool hasProxyClientConnectedThisBoot() const { return proxyClientConnectedOnceThisBoot_; }
-    // Backward-compatible metrics surface; proxy no longer hard-latches off when
-    // no phone connects, it downshifts to slow advertising instead.
-    bool isProxyNoClientTimeoutLatched() const { return false; }
-
     // Check if BLE proxy is enabled
     bool isProxyEnabled() const { return proxyEnabled_; }
     bool setProxyRuntimeEnabled(bool enabled, const char* proxyName = nullptr);
@@ -176,12 +154,10 @@ class V1BLEClient {
     void disconnectProxyPhones();
     bool isProxyFullyStopped() const;
     void setConnectionCycleProxyPolicy(bool advertisingAllowed, bool keepConnectionAllowed);
-    void setConnectionCycleState(uint8_t stateCode, uint32_t timeInStateMs);
-
     void setObdBleArbitrationRequest(ObdBleArbitrationRequest request);
 
     // Debug/test control: force proxy advertising on/off at runtime.
-    bool forceProxyAdvertising(bool enable, uint8_t reasonCode = 0);
+    bool forceProxyAdvertising(bool enable);
 
     // Set proxy client connection status (for internal callback use)
     void setProxyClientConnected(bool connected_);
@@ -201,9 +177,6 @@ class V1BLEClient {
     // Register callback for stable V1 connection work after the connect burst settles.
     void onV1Connected(ConnectionCallback callback);
 
-    // Record latest loop timings used by the connect-burst settle gate.
-    void noteBleProcessDuration(uint32_t us);
-    void noteDisplayPipelineDuration(uint32_t us);
     bool isConnectBurstSettling() const;
     uint32_t lastV1ConnectionEventMs() const { return lastV1ConnectionEventMs_.load(std::memory_order_relaxed); }
     uint32_t sessionGeneration() const { return sessionGeneration_.load(std::memory_order_acquire); }
@@ -290,9 +263,6 @@ class V1BLEClient {
     bool isConnectInProgress() const { return connectInProgress_; }
     bool isAsyncConnectPending() const { return asyncConnectPending_.load(std::memory_order_relaxed); }
     bool hasPendingDisconnectCleanup() const { return pendingDisconnectCleanup_.load(std::memory_order_relaxed); }
-    uint32_t discoveryTaskStackMinFreeBytes() const {
-        return discoveryTaskStackMinFreeBytes_.load(std::memory_order_relaxed);
-    }
     uint32_t quiesceTimeoutRecoveryCount() const {
         return quiesceTimeoutRecoveryCount_.load(std::memory_order_relaxed);
     }
@@ -309,22 +279,6 @@ class V1BLEClient {
     // Process pending proxy notifications (call from main loop after display update)
     // Returns number of packets sent
     int processProxyQueue();
-
-    // Phone->V1 command drop counters (observability)
-    uint32_t getPhoneCmdDropsOverflow() const;
-    uint32_t getPhoneCmdDropsInvalid() const; // Malformed packets
-    uint32_t getPhoneCmdDropsBleFail() const; // Hard BLE failures
-    uint32_t getPhoneCmdDropsLockBusy() const;
-
-    // Get proxy metrics (for instrumentation)
-    const ProxyMetrics& getProxyMetrics() const { return proxyMetrics_; }
-
-    // Reset proxy notify/send metrics only; phone command drop counters reset with perfMetricsReset().
-    void resetProxyMetrics() { proxyMetrics_.reset(); }
-
-    // Main-loop qualification snapshot. Both callback-owned queue mutexes are
-    // attempted with zero timeout; false means busy and never waits.
-    bool trySnapshotProxyEpochQualification(BleProxyEpochQualificationSnapshot& snapshot);
 
     // WiFi priority mode - deprioritize BLE when web UI is active
     void setWifiPriority(bool enabled); // Enable = suppress BLE activity
@@ -447,7 +401,6 @@ class V1BLEClient {
     std::atomic<size_t> proxyQueueHead_{0};  // Next write position
     std::atomic<size_t> proxyQueueTail_{0};  // Next read position
     std::atomic<size_t> proxyQueueCount_{0}; // Current items in queue
-    ProxyMetrics proxyMetrics_;
 
     DataCallback dataCallback_;
     ConnectionCallback connectImmediateCallback_;
@@ -489,7 +442,6 @@ class V1BLEClient {
     std::atomic<uint32_t> discoveryCompletedGeneration_{0};
     // UINT32_MAX means no discovery task has completed; zero is a valid and
     // critical measured minimum that must remain visible.
-    std::atomic<uint32_t> discoveryTaskStackMinFreeBytes_{UINT32_MAX};
     DiscoveryTaskContext discoveryTaskContext_{};
     std::atomic<uint32_t> sessionGeneration_{0};
     BleAlertDataRequestGate alertDataRequestGate_;
@@ -551,7 +503,6 @@ class V1BLEClient {
     static constexpr uint32_t NIMBLE_CONNECT_TIMEOUT_ACTIVE_MS = CONNECT_TIMEOUT_MS;
     static constexpr uint32_t DISCOVERY_TIMEOUT_MS = 5000; // 5s for discovery
     static constexpr uint32_t SUBSCRIBE_TIMEOUT_MS = 3000; // 3s for subscriptions
-    uint32_t connectPhaseStartUs_ = 0;                     // For timing individual phases
 
     // Fresh flash detection - set when firmware version changed
     bool freshFlashBoot_ = false;
@@ -591,12 +542,9 @@ class V1BLEClient {
     };
     SubscribeStep subscribeStep_ = SubscribeStep::GET_SERVICE;
     ConnectedFollowupStep connectedFollowupStep_ = ConnectedFollowupStep::NONE;
-    uint32_t subscribeStepStartUs_ = 0;                         // When current step started
     uint32_t subscribeYieldUntilMs_ = 0;                        // When to resume from SUBSCRIBE_YIELD
     static constexpr uint32_t SUBSCRIBE_STEP_BUDGET_US = 50000; // 50ms per step max
     static constexpr uint32_t SUBSCRIBE_YIELD_MS = 5;           // 5ms yield between steps
-    static constexpr uint32_t CONNECT_BURST_STABLE_BLE_MAX_US = 25000;
-    static constexpr uint32_t CONNECT_BURST_STABLE_DISP_MAX_US = 50000;
     static constexpr uint8_t CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS = 3;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_FIRST_RX_MS = 1500;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_CONNECTED_MS = 2500;
@@ -606,8 +554,6 @@ class V1BLEClient {
     std::atomic<uint32_t> lastV1ConnectionEventMs_{0};
     std::atomic<uint32_t> connectCompletedAtMs_{0};
     std::atomic<uint32_t> firstRxAfterConnectMs_{0};
-    std::atomic<uint32_t> lastBleProcessDurationUs_{0};
-    std::atomic<uint32_t> lastDisplayPipelineDurationUs_{0};
     std::atomic<uint32_t> v1FirmwareVersion_{0};
     uint32_t versionRequestStartedMs_ = 0;
     uint32_t connectedFollowupNextAttemptMs_ = 0;
@@ -654,7 +600,6 @@ class V1BLEClient {
     // Deferred proxy advertising start (non-blocking - avoids stall)
     // Tuned lower to reduce post-connect latency while preserving radio settle margin
     uint32_t proxyAdvertisingStartMs_ = 0;        // When to start advertising (0 = not pending)
-    uint8_t proxyAdvertisingStartReasonCode_ = 0; // PerfProxyAdvertisingTransitionReason
     static constexpr uint32_t PROXY_STABILIZE_MS = 100;
     // Fast advertising is only for app discovery. If no phone attaches, keep
     // proxy available but downshift to low-duty advertising for the rest of the
@@ -671,11 +616,8 @@ class V1BLEClient {
     bool proxyClientConnectedOnceThisBoot_ = false;
     bool proxySuppressedForObdHold_ = false;
     bool proxyDisconnectRequestedByCoordinator_ = false;
-    uint8_t proxySuppressedResumeReasonCode_ = 0;
     bool proxyAdvertisingAllowed_ = false;
     bool proxyKeepConnectionAllowed_ = false;
-    uint8_t connectionCycleStateCode_ = 0;
-    uint32_t connectionCycleTimeInStateMs_ = 0;
     ObdBleArbitrationRequest obdBleArbitrationRequest_ = ObdBleArbitrationRequest::NONE;
 
     // Write verification state
@@ -710,14 +652,14 @@ class V1BLEClient {
     void handleProxyCallbackEvent(const ProxyCallbackEvent& event);
     bool localV1WriteSuppressedByProxy(const char* operation) const;
     void clearProxyAdvertisingSchedule();
-    void stopProxyAdvertisingFromMainLoop(uint8_t reasonCode);
+    void stopProxyAdvertisingFromMainLoop();
     void armProxyFastAdvertisingWindow(uint32_t nowMs, uint32_t durationMs);
     bool proxyFastAdvertisingActive(uint32_t nowMs) const;
     void applyProxyAdvertisingCadence(bool fastCadence);
-    void refreshProxyAdvertisingCadence(uint32_t nowMs, uint8_t reasonCode);
+    void refreshProxyAdvertisingCadence(uint32_t nowMs);
 
     // Start advertising proxy service
-    void startProxyAdvertising(uint8_t reasonCode = 0, bool ignoreWifiPriority = false);
+    void startProxyAdvertising(bool ignoreWifiPriority = false);
 
     // Internal callbacks
     static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify);

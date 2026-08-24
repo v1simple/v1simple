@@ -80,7 +80,7 @@ describe('root layout', () => {
         );
         const colorLinks = screen.getAllByRole('link', { name: 'Colors' });
         expect(colorLinks.some((link) => link.classList.contains('active'))).toBe(true);
-        expect(screen.getAllByRole('link', { name: 'Logs' })).toHaveLength(2);
+        expect(screen.queryByRole('link', { name: 'Logs' })).not.toBeInTheDocument();
 
         unmount();
     });

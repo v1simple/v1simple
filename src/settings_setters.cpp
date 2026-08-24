@@ -50,18 +50,6 @@ void SettingsManager::setProxyBLE(bool enabled) {
     save();
 }
 
-void SettingsManager::applyVolatileQualificationMode(bool proxyBLE, bool obdEnabled) {
-    // Runtime-only serial bench override. This intentionally does
-    // not call save(), requestDeferredPersist(), or touch NVS: long automated
-    // bench loops must be able to exercise proxy/OBD/V1-only modes without
-    // changing the user's persisted mode.
-    settings_.proxyBLE = proxyBLE;
-    settings_.obdEnabled = obdEnabled;
-    if (settings_.proxyBLE && settings_.obdEnabled) {
-        settings_.proxyBLE = false;
-    }
-}
-
 void SettingsManager::setProxyName(const String& name) {
     settings_.proxyName = sanitizeProxyNameValue(name);
     save();
@@ -469,17 +457,11 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     if (update.hasAlpEnabled) {
         changed |= assignIfChanged(settings_.alpEnabled, update.alpEnabled);
     }
-    if (update.hasAlpSdLogEnabled) {
-        changed |= assignIfChanged(settings_.alpSdLogEnabled, update.alpSdLogEnabled);
-    }
     if (update.hasAlpAlertPersistSec) {
         changed |= assignIfChanged(settings_.alpAlertPersistSec, std::min<uint8_t>(5, update.alpAlertPersistSec));
     }
     if (update.hasAlpDisableV1LaserOnPush) {
         changed |= assignIfChanged(settings_.alpDisableV1LaserOnPush, update.alpDisableV1LaserOnPush);
-    }
-    if (update.hasPowerOffSdLog) {
-        changed |= assignIfChanged(settings_.powerOffSdLog, update.powerOffSdLog);
     }
     if (update.hasGpsEnabled) {
         changed |= assignIfChanged(settings_.gpsEnabled, update.gpsEnabled);
@@ -489,12 +471,6 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     }
     if (update.hasGpsEnablePinActiveHigh) {
         changed |= assignIfChanged(settings_.gpsEnablePinActiveHigh, true);
-    }
-    if (update.hasGpsLogUtcToPerf) {
-        changed |= assignIfChanged(settings_.gpsLogUtcToPerf, update.gpsLogUtcToPerf);
-    }
-    if (update.hasGpsLogUtcToAlp) {
-        changed |= assignIfChanged(settings_.gpsLogUtcToAlp, update.gpsLogUtcToAlp);
     }
 
     if (changed) {

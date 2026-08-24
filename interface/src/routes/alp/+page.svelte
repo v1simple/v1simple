@@ -13,7 +13,6 @@
 
     let settings = $state({
         alpEnabled: false,
-        alpSdLogEnabled: false,
         alpAlertPersistSec: 0,
         alpDisableV1LaserOnPush: true
     });
@@ -36,9 +35,6 @@
     function applySettings(data) {
         if (!data) return;
         if (typeof data.alpEnabled === 'boolean') settings.alpEnabled = data.alpEnabled;
-        if (typeof data.alpSdLogEnabled === 'boolean') {
-            settings.alpSdLogEnabled = data.alpSdLogEnabled;
-        }
         if (typeof data.alpAlertPersistSec === 'number') {
             settings.alpAlertPersistSec = data.alpAlertPersistSec;
         }
@@ -106,11 +102,6 @@
         await saveField({ alpDisableV1LaserOnPush: checked });
     }
 
-    async function handleSdLog(checked) {
-        settings.alpSdLogEnabled = checked;
-        await saveField({ alpSdLogEnabled: checked });
-    }
-
     async function handlePersistChange(event) {
         const value = Math.max(0, Math.min(5, Number(event.currentTarget.value) || 0));
         settings.alpAlertPersistSec = value;
@@ -135,9 +126,9 @@
                     subtitle="ALP owns laser alerting; Auto-Push can suppress duplicate V1 laser alerts."
                 />
                 <p class="copy-caption-soft">
-                    Listener enable and SD logging start on the next normal boot. Display
-                    persistence applies during normal operation, and laser handoff applies on the
-                    next automatic profile push.
+                    Listener enable starts on the next normal boot. Display persistence applies
+                    during normal operation, and laser handoff applies on the next automatic
+                    profile push.
                 </p>
 
                 <ToggleSetting
@@ -154,14 +145,6 @@
                     checked={settings.alpDisableV1LaserOnPush}
                     disabled={saving}
                     onChange={handleDisableV1Laser}
-                />
-
-                <ToggleSetting
-                    title="Enable ALP SD logging"
-                    description="Writes ALP state transitions, heartbeats, gun IDs, and session events to CSV on the SD card."
-                    checked={settings.alpSdLogEnabled}
-                    disabled={saving}
-                    onChange={handleSdLog}
                 />
 
                 <div class="field-control">

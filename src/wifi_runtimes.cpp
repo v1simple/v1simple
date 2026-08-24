@@ -5,7 +5,6 @@
 #include "wifi_manager_internals.h"
 #include "display_preview_api.h"
 #include "audio_beep.h"
-#include "perf_metrics.h"
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "display.h"
@@ -21,7 +20,6 @@
 #include "modules/wifi/wifi_v1_profile_api_service.h"
 #include "modules/wifi/wifi_v1_devices_api_service.h"
 #include "modules/wifi/backup_api_service.h"
-#include "modules/wifi/wifi_diagnostics_api_service.h"
 #include "modules/obd/obd_api_service.h"
 #include "backup_payload_builder.h"
 #include "storage_manager.h"
@@ -527,18 +525,6 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // ctx
         this,
     };
-    return runtime;
-}
-
-WifiDiagnosticsApiService::Runtime WiFiManager::makeDiagnosticsRuntime() {
-    WifiDiagnosticsApiService::Runtime runtime;
-    runtime.filesystem = getFilesystem_ ? getFilesystem_(getFilesystemCtx_) : nullptr;
-    runtime.panicFilesystem = storageManager.getLittleFS();
-    runtime.storageReady = storageManager.isReady();
-    runtime.sdCard = storageManager.isSDCard();
-    runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
-    runtime.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
-    runtime.ctx = this;
     return runtime;
 }
 

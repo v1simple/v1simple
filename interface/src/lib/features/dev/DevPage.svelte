@@ -1,6 +1,5 @@
 <script>
     import { onMount } from 'svelte';
-    import { postSettingsForm } from '$lib/api/settings';
     import {
         invalidateDeviceSettings,
         refreshDeviceSettings,
@@ -21,21 +20,13 @@
         hideDevWarningBanner: false
     });
 
-    let settings = $state({
-        powerOffSdLog: false
-    });
     let loading = $state(true);
-    let saving = $state(false);
     let message = $state(null);
     let nvsDiag = $state(null);
     let settings_proxy_ble = $state(null);
 
     function setMessage(type, text) {
         message = { type, text };
-    }
-
-    function clearMessage() {
-        message = null;
     }
 
     function loadWarningPreferences() {
@@ -78,7 +69,6 @@
 
     function applySettings(data) {
         if (!data) return;
-        settings.powerOffSdLog = data.powerOffSdLog || false;
         nvsDiag = data.nvsDiag || null;
         settings_proxy_ble = data.proxy_ble ?? null;
     }
@@ -103,52 +93,12 @@
         }
     }
 
-    async function saveSettings() {
-        if (!acknowledged) {
-            setMessage('warning', 'Please acknowledge the warning before saving');
-            return;
-        }
-
-        saving = true;
-        clearMessage();
-
-        try {
-            const formData = new FormData();
-            formData.append('powerOffSdLog', settings.powerOffSdLog.toString());
-
-            const response = await postSettingsForm(formData, '/api/device/settings');
-
-            if (response.ok) {
-                setMessage('success', 'Settings saved!');
-                applySettings(await invalidateDeviceSettings());
-            } else {
-                setMessage('error', 'Failed to save settings');
-            }
-        } catch (error) {
-            console.error('Save failed:', error);
-            setMessage('error', 'Failed to save settings');
-        } finally {
-            saving = false;
-        }
-    }
-
-    async function resetDefaults() {
-        if (!acknowledged) {
-            setMessage('warning', 'Please acknowledge the warning before resetting');
-            return;
-        }
-
-        if (!confirm('Reset all development settings to defaults?')) return;
-
-        settings.powerOffSdLog = false;
-        await saveSettings();
-    }
 </script>
 
 <div class="page-stack">
     <PageHeader
         title="Development Settings"
-        subtitle="Local-only maintenance toggles. HTTP debug metrics and perf-file endpoints are intentionally disabled; use SD logs instead."
+        subtitle="Local-only maintenance information and warning preferences."
     />
 
     {#if loading}
@@ -245,33 +195,6 @@
 
         <StatusAlert {message} />
 
-        <div class="surface-card" class:opacity-50={!acknowledged}>
-            <div class="card-body">
-                <CardSectionHead
-                    title="Power Diagnostics"
-                    subtitle="Maintenance-only shutdown logging for hardware validation."
-                />
-
-                <div class="field-control">
-                    <label class="label cursor-pointer">
-                        <div>
-                            <span class="field-label font-semibold">Power-Off SD Log</span>
-                            <p class="copy-caption-soft mt-1">
-                                Log power-off diagnostics and boot reason to /poweroff.log on SD
-                                card. For verifying battery-only shutdown.
-                            </p>
-                        </div>
-                        <input
-                            type="checkbox"
-                            class="toggle toggle-primary"
-                            bind:checked={settings.powerOffSdLog}
-                            disabled={!acknowledged}
-                        />
-                    </label>
-                </div>
-            </div>
-        </div>
-
         {#if nvsDiag}
             <div class="surface-card">
                 <div class="card-body">
@@ -308,38 +231,5 @@
             </div>
         {/if}
 
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead
-                    title="Runtime Diagnostics"
-                    subtitle="Use SD logs instead of live HTTP debug polling."
-                />
-                <p class="copy-caption-soft">
-                    The HTTP debug metrics, scenario playback, and perf-file endpoints are disabled
-                    to reduce maintenance-server load. Perf CSV logging still writes to SD for
-                    offline analysis.
-                </p>
-            </div>
-        </div>
-
-        <div class="flex gap-4">
-            <button
-                class="btn flex-1 btn-primary"
-                onclick={saveSettings}
-                disabled={!acknowledged || saving}
-            >
-                {#if saving}
-                    <span class="loading loading-sm loading-spinner"></span>
-                {/if}
-                Save Settings
-            </button>
-            <button
-                class="btn flex-1 btn-outline"
-                onclick={resetDefaults}
-                disabled={!acknowledged || saving}
-            >
-                Reset to Defaults
-            </button>
-        </div>
     {/if}
 </div>

@@ -30,8 +30,6 @@ class BleQueueModule {
     // repeated begin() cycles — as native test fixtures do per test case —
     // must not orphan the previous queue allocation.
     void end();
-    uint32_t rxSourceLossCount() const { return rxSourceLosses_.load(std::memory_order_relaxed); }
-
     bool isReady() const { return queueHandle_ != nullptr && rxBufferReady_; }
 
     // Returns timestamp of last successfully parsed packet (for display latency tracking)
@@ -46,9 +44,9 @@ class BleQueueModule {
 
     // Callback entry from BLE notifications.
     void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                  uint32_t callbackDutMillis, uint64_t callbackDutMicros);
+                  uint32_t callbackMillis);
     bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                     uint32_t callbackDutMillis, uint64_t callbackDutMicros);
+                     uint32_t callbackMillis);
 
     // Open/close the V1 notification boundary. closeSession() rejects new
     // notifications and discards every queued, buffered, and parsed signal
@@ -73,10 +71,7 @@ class BleQueueModule {
         size_t length;
         uint16_t charUUID;
         uint32_t tsMs;
-        uint64_t tsUs;
-        uint64_t clockSegment;
         uint32_t sessionGeneration;
-        uint32_t rxSeq;
     };
 
     struct RxSpan {
@@ -100,8 +95,6 @@ class BleQueueModule {
     uint32_t lastNotifyTsMs_ = 0;
     uint32_t lastParsedTsMs_ = 0;     // Timestamp of last successful parse (for display latency)
     bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
-    std::atomic<uint32_t> rxSeq_{0};
-    std::atomic<uint32_t> rxSourceLosses_{0};
     bool backpressureActive_ = false;
     BleLogRateLimitState tooLargeWarningLog_;
     BleLogRateLimitState missingEndWarningLog_;

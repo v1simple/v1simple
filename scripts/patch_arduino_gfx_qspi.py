@@ -8,18 +8,9 @@ two 16-bit pixels at a time.
 
 Both cost real time on the full-canvas flush. A 640x172 push is 110,080
 pixels / 220,160 bytes; at ESP32QSPI_FREQUENCY=80 MHz over four lanes the wire
-time is ~5.5 ms, but the measured flush subphase runs 33-57 ms
-(``displayFlushSubphaseMax_us`` in the bench perf CSVs). The remainder is the
-pack loop against the PSRAM framebuffer plus per-transaction driver overhead.
-Raising ESP32QSPI_MAX_PIXELS_AT_ONCE 1024 -> 4096 (commit 683f944) cut 108
-transactions to 27 and moved max flush ~57 -> ~47 ms, which puts per-transaction
-overhead near 123 us and leaves ~44 ms in the pack-and-transfer body.
-
-This matters to the schema-47 notification-to-display-pipeline-completion
-measurement because that interval ends only after the triggered display
-pipeline returns. A full-frame flush performed by that pipeline is therefore
-inside the measured interval. The schema-46 dispatch-time observation used
-different semantics and cannot be compared with it.
+time is ~5.5 ms. Raising ESP32QSPI_MAX_PIXELS_AT_ONCE from 1024 to 4096 reduces
+the number of transactions from 108 to 27 and removes much of the fixed
+per-transaction overhead while retaining the same framebuffer output.
 
 The patch makes two changes to writePixels and nothing else:
 

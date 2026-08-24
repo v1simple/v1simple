@@ -54,10 +54,6 @@ V1Display display;
 // Real rendering code under test
 // ---------------------------------------------------------------------------
 
-// Stub: perf_metrics is not linked in rendering-only tests
-#include "../../src/perf_metrics.h"
-void perfRecordDisplayRedrawReason(PerfDisplayRedrawReason) {}
-
 #include "../../src/display_bands.cpp"
 
 // ---------------------------------------------------------------------------

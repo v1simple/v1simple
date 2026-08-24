@@ -3,11 +3,9 @@
 
 #include "alert_persistence_module.h"
 
-#include "../perf/debug_macros.h"
 #include "ble_client.h"
 #include "display.h"
 #include "packet_parser.h"
-#include "perf_metrics.h"
 #include "settings.h"
 
 AlertPersistenceModule::AlertPersistenceModule() {
@@ -21,7 +19,7 @@ void AlertPersistenceModule::begin(V1BLEClient* ble, PacketParser* pParser, V1Di
     display_ = disp;
     settings_ = settings;
 
-    DBG_PRINTLN("[AlertPersistenceModule] Initialized");
+    Serial.println("[AlertPersistenceModule] Initialized");
 }
 
 // ============================================================================
@@ -35,33 +33,23 @@ void AlertPersistenceModule::setPersistedAlert(const AlertData& alert) {
 }
 
 void AlertPersistenceModule::startPersistence(unsigned long now) {
-    // Every outcome is observable: success increments alertPersistStarts,
-    // and each refusal path increments its own counter so the module
-    // boundary is not silent on no-op calls.
     if (!persistedAlert_.isValid) {
         // Caller invoked startPersistence() with no valid alert latched.
         // Display pipeline already guards this; any nonzero count here is
         // a call-site regression.
-        PERF_INC(alertPersistStartsSkippedInvalid);
         return;
     }
     if (alertClearedTime_ != 0) {
         // Persistence window already in flight. Expected high-frequency
         // no-op — renderIdleOwner() calls us every idle tick during a
         // window and we idempotently ignore repeats.
-        PERF_INC(alertPersistStartsSkippedActive);
         return;
     }
     alertClearedTime_ = now;
     alertPersistenceActive_ = true;
-    PERF_INC(alertPersistStarts);
 }
 
 void AlertPersistenceModule::clearPersistence() {
-    const bool hadState = alertPersistenceActive_ || persistedAlert_.isValid || (alertClearedTime_ != 0);
-    if (hadState) {
-        PERF_INC(alertPersistClears);
-    }
     persistedAlert_ = AlertData();
     alertPersistenceActive_ = false;
     alertClearedTime_ = 0;

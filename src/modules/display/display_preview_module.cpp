@@ -7,7 +7,6 @@
 #include "display_layout.h"
 #include "display_visual_contract.h"
 #include "modules/alp/alp_runtime_module.h" // AlpState enum
-#include "perf_metrics.h"
 
 #include <algorithm>
 #include <cstring>
@@ -366,7 +365,7 @@ void DisplayPreviewModule::requestHold(uint32_t durationMs) {
     previewActive_ = true;
     previewStartMs_ = millis();
     const uint32_t autoDurationMs = (static_cast<uint32_t>(STEP_COUNT) * STEP_DURATION_MS) + PREVIEW_TAIL_MS;
-    // A zero duration keeps the manual "run the full diagnostic sequence"
+    // A zero duration keeps the manual "run the full preview sequence"
     // behavior. Non-zero durations are caller-owned holds, such as the short
     // color-save preview, and must release display ownership when requested.
     previewDurationMs_ = (durationMs == 0) ? autoDurationMs : durationMs;
@@ -374,7 +373,6 @@ void DisplayPreviewModule::requestHold(uint32_t durationMs) {
     previewStep_ = 0;
     previewEnded_ = false;
     hasLastResolved_ = false;
-    blinkRefreshCount_ = 0;
     resetCarryState();
     if (display_) {
         display_->setPreviewIndicatorOverridesActive(true);
@@ -474,7 +472,7 @@ void DisplayPreviewModule::update() {
     }
 
     // Determine which timed frame we should be on.  Short previews and the
-    // manual diagnostic run once through the table.  Long qualification holds
+    // manual preview run once through the table. Long caller-owned holds
     // keep cycling the same visual test instead of parking on the final frame.
     int targetStep = static_cast<int>(elapsed / STEP_DURATION_MS);
     if (!loopSequence_ && targetStep >= STEP_COUNT)
@@ -516,7 +514,6 @@ void DisplayPreviewModule::update() {
     // rather than replaying the intervals it missed.
     if (blinkRefreshDue(now)) {
         renderResolvedStep(lastResolved_, false);
-        ++blinkRefreshCount_;
     }
 }
 
@@ -691,12 +688,7 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
 
     // ── Render ──────────────────────────────────────────────────────
 
-    perfSetDisplayRenderScenario(firstFrame ? PerfDisplayRenderScenario::PreviewFirstFrame
-                                            : PerfDisplayRenderScenario::PreviewSteadyFrame);
-    const unsigned long renderStartUs = micros();
     display_->update(primary, allAlerts, alertCount, state);
-    perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
-    perfClearDisplayRenderScenario();
 }
 
 #endif // !UNIT_TEST || V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK

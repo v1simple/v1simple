@@ -17,7 +17,6 @@ unsigned long mockMicros = 0;
 #include "../../src/modules/power/power_module.cpp"
 #include "../../src/modules/system/loop_connection_early_module.cpp"
 #include "../../src/modules/system/loop_display_module.cpp"
-#include "../../src/modules/system/parsed_frame_event_module.cpp"
 #include "../../src/modules/system/loop_power_touch_module.cpp"
 
 namespace {
@@ -83,19 +82,16 @@ struct DisplayProbe {
     int refreshCalls = 0;
     int blinkCalls = 0;
     int displayClockReads = 0;
-    int notifyCalls = 0;
     uint32_t pipelineNowMs = 0;
-    uint32_t notifyElapsedMs = 0;
-    uint32_t displayClockValues[2] = {100, 145};
+    uint32_t displayClockValue = 100;
     std::string order;
 };
 
 uint32_t readDisplayNow(void* ctx) {
     auto* probe = static_cast<DisplayProbe*>(ctx);
     probe->order.push_back('T');
-    const int index = probe->displayClockReads < 2 ? probe->displayClockReads : 1;
     ++probe->displayClockReads;
-    return probe->displayClockValues[index];
+    return probe->displayClockValue;
 }
 
 ParsedFrameSignal collectParsedSignal(void* ctx) {
@@ -106,24 +102,6 @@ ParsedFrameSignal collectParsedSignal(void* ctx) {
     signal.parsedReady = true;
     signal.parsedTsMs = 90;
     return signal;
-}
-
-struct RuntimeParsedProbe {
-    DisplayProbe display;
-    SystemEventBus eventBus;
-    bool queueParsedReady = false;
-    uint32_t queueParsedTsMs = 0;
-};
-
-ParsedFrameSignal collectRuntimeParsedSignal(void* ctx) {
-    auto* probe = static_cast<RuntimeParsedProbe*>(ctx);
-    ++probe->display.collectCalls;
-    probe->display.order.push_back('S');
-    return ParsedFrameEventModule::collect(
-        probe->queueParsedReady,
-        probe->queueParsedTsMs,
-        probe->eventBus
-    );
 }
 
 DisplayOrchestrationParsedResult runParsedFrame(void* ctx, const DisplayOrchestrationParsedContext&) {
@@ -140,13 +118,6 @@ void runDisplayPipeline(void* ctx, uint32_t nowMs) {
     ++probe->pipelineCalls;
     probe->pipelineNowMs = nowMs;
     probe->order.push_back('D');
-}
-
-void recordNotifyToDisplayPipelineComplete(void* ctx, uint32_t elapsedMs) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    ++probe->notifyCalls;
-    probe->notifyElapsedMs = elapsedMs;
-    probe->order.push_back('N');
 }
 
 DisplayOrchestrationRefreshResult runRefresh(void* ctx, const DisplayOrchestrationRefreshContext&) {
@@ -372,8 +343,6 @@ void test_display_phase_consumes_event_but_suppresses_pipeline_and_blink() {
     providers.lightweightRefreshContext = &probe;
     providers.runBlinkRefresh = runBlink;
     providers.blinkRefreshContext = &probe;
-    providers.recordNotifyToDisplayPipelineCompleteMs = recordNotifyToDisplayPipelineComplete;
-    providers.notifyPipelineCompletePerfContext = &probe;
     module.begin(providers);
 
     LoopDisplayContext ctx;
@@ -385,125 +354,7 @@ void test_display_phase_consumes_event_but_suppresses_pipeline_and_blink() {
     TEST_ASSERT_EQUAL(0, probe.pipelineCalls);
     TEST_ASSERT_EQUAL(0, probe.refreshCalls);
     TEST_ASSERT_EQUAL(0, probe.blinkCalls);
-    TEST_ASSERT_EQUAL(0, probe.notifyCalls);
     TEST_ASSERT_EQUAL_STRING("TS", probe.order.c_str());
-}
-
-void test_display_notify_latency_uses_fresh_clock_after_pipeline_completion() {
-    DisplayProbe probe;
-    LoopDisplayModule module;
-    LoopDisplayModule::Providers providers;
-    providers.readDisplayNowMs = readDisplayNow;
-    providers.displayNowContext = &probe;
-    providers.collectParsedSignal = collectParsedSignal;
-    providers.parsedSignalContext = &probe;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &probe;
-    providers.runDisplayPipeline = runDisplayPipeline;
-    providers.displayPipelineContext = &probe;
-    providers.runLightweightRefresh = runRefresh;
-    providers.lightweightRefreshContext = &probe;
-    providers.recordNotifyToDisplayPipelineCompleteMs = recordNotifyToDisplayPipelineComplete;
-    providers.notifyPipelineCompletePerfContext = &probe;
-    module.begin(providers);
-
-    module.process(LoopDisplayContext{});
-
-    TEST_ASSERT_EQUAL(1, probe.pipelineCalls);
-    TEST_ASSERT_EQUAL_UINT32(100, probe.pipelineNowMs);
-    TEST_ASSERT_EQUAL(2, probe.displayClockReads);
-    TEST_ASSERT_EQUAL(1, probe.notifyCalls);
-    TEST_ASSERT_EQUAL_UINT32(55, probe.notifyElapsedMs);
-    TEST_ASSERT_EQUAL_STRING("TSPDTNR", probe.order.c_str());
-}
-
-void test_display_notify_latency_requires_completed_callback_and_fresh_clock() {
-    DisplayProbe missingPipeline;
-    LoopDisplayModule module;
-    LoopDisplayModule::Providers providers;
-    providers.readDisplayNowMs = readDisplayNow;
-    providers.displayNowContext = &missingPipeline;
-    providers.collectParsedSignal = collectParsedSignal;
-    providers.parsedSignalContext = &missingPipeline;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &missingPipeline;
-    providers.recordNotifyToDisplayPipelineCompleteMs = recordNotifyToDisplayPipelineComplete;
-    providers.notifyPipelineCompletePerfContext = &missingPipeline;
-    module.begin(providers);
-
-    module.process(LoopDisplayContext{});
-
-    TEST_ASSERT_EQUAL(0, missingPipeline.notifyCalls);
-    TEST_ASSERT_EQUAL(1, missingPipeline.displayClockReads);
-
-    DisplayProbe missingClock;
-    providers = LoopDisplayModule::Providers{};
-    providers.collectParsedSignal = collectParsedSignal;
-    providers.parsedSignalContext = &missingClock;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &missingClock;
-    providers.runDisplayPipeline = runDisplayPipeline;
-    providers.displayPipelineContext = &missingClock;
-    providers.recordNotifyToDisplayPipelineCompleteMs = recordNotifyToDisplayPipelineComplete;
-    providers.notifyPipelineCompletePerfContext = &missingClock;
-    module.begin(providers);
-
-    LoopDisplayContext ctx;
-    ctx.nowMs = 100;
-    module.process(ctx);
-
-    TEST_ASSERT_EQUAL(1, missingClock.pipelineCalls);
-    TEST_ASSERT_EQUAL(0, missingClock.notifyCalls);
-    TEST_ASSERT_EQUAL(0, missingClock.displayClockReads);
-
-    DisplayProbe missingRecorder;
-    providers = LoopDisplayModule::Providers{};
-    providers.readDisplayNowMs = readDisplayNow;
-    providers.displayNowContext = &missingRecorder;
-    providers.collectParsedSignal = collectParsedSignal;
-    providers.parsedSignalContext = &missingRecorder;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &missingRecorder;
-    providers.runDisplayPipeline = runDisplayPipeline;
-    providers.displayPipelineContext = &missingRecorder;
-    module.begin(providers);
-
-    module.process(LoopDisplayContext{});
-
-    TEST_ASSERT_EQUAL(1, missingRecorder.pipelineCalls);
-    TEST_ASSERT_EQUAL(0, missingRecorder.notifyCalls);
-    TEST_ASSERT_EQUAL(1, missingRecorder.displayClockReads);
-}
-
-void test_alp_only_display_update_does_not_reuse_stale_v1_timestamp() {
-    RuntimeParsedProbe probe;
-    probe.queueParsedReady = false;
-    probe.queueParsedTsMs = 25; // Last V1 timestamp retained by the queue.
-    probe.display.displayClockValues[0] = 100;
-    probe.display.displayClockValues[1] = 145;
-
-    probe.eventBus.publishAlpStateChanged();
-
-    LoopDisplayModule module;
-    LoopDisplayModule::Providers providers;
-    providers.readDisplayNowMs = readDisplayNow;
-    providers.displayNowContext = &probe.display;
-    providers.collectParsedSignal = collectRuntimeParsedSignal;
-    providers.parsedSignalContext = &probe;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &probe.display;
-    providers.runDisplayPipeline = runDisplayPipeline;
-    providers.displayPipelineContext = &probe.display;
-    providers.recordNotifyToDisplayPipelineCompleteMs = recordNotifyToDisplayPipelineComplete;
-    providers.notifyPipelineCompletePerfContext = &probe.display;
-    module.begin(providers);
-
-    module.process(LoopDisplayContext{});
-
-    TEST_ASSERT_EQUAL(1, probe.display.pipelineCalls);
-    TEST_ASSERT_EQUAL(0, probe.display.notifyCalls);
-    TEST_ASSERT_EQUAL(1, probe.display.displayClockReads);
-    TEST_ASSERT_EQUAL_STRING("TSPD", probe.display.order.c_str());
 }
 
 int main() {
@@ -521,8 +372,5 @@ int main() {
     RUN_TEST(test_power_touch_phase_suppresses_touch_after_warning_acquires_owner);
     RUN_TEST(test_connection_early_keeps_runtime_live_but_suppresses_presentations);
     RUN_TEST(test_display_phase_consumes_event_but_suppresses_pipeline_and_blink);
-    RUN_TEST(test_display_notify_latency_uses_fresh_clock_after_pipeline_completion);
-    RUN_TEST(test_display_notify_latency_requires_completed_callback_and_fresh_clock);
-    RUN_TEST(test_alp_only_display_update_does_not_reuse_stale_v1_timestamp);
     return UNITY_END();
 }

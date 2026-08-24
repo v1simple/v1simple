@@ -106,7 +106,6 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
 
     // ALP settings
     doc["alpEnabled"] = settings.alpEnabled;
-    doc["alpSdLogEnabled"] = settings.alpSdLogEnabled;
     doc["alpAlertPersistSec"] = settings.alpAlertPersistSec;
     doc["alpDisableV1LaserOnPush"] = settings.alpDisableV1LaserOnPush;
 
@@ -115,11 +114,6 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["gpsBaud"] = settings.gpsBaud;
     // Retired compatibility field: GPS EN is not driven on supported hardware.
     doc["gpsEnablePinActiveHigh"] = true;
-    doc["gpsLogUtcToPerf"] = settings.gpsLogUtcToPerf;
-    doc["gpsLogUtcToAlp"] = settings.gpsLogUtcToAlp;
-
-    // Debug / diagnostics
-    doc["powerOffSdLog"] = settings.powerOffSdLog;
 
     doc["brightness"] = settings.brightness;
     doc["turnOffDisplay"] = settings.turnOffDisplay;

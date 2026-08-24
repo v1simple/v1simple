@@ -5,7 +5,6 @@
 #include "ble_client.h"
 #include "ble_internals.h"
 #include "config.h"
-#include "perf_metrics.h"
 #include "v1_firmware_compat.h"
 #include <atomic>
 #include <cstring>
@@ -54,7 +53,6 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     uint32_t nowMs = millis();
     uint32_t last = lastCommandMs.load(std::memory_order_relaxed);
     if (last != 0 && nowMs - last < 5) {
-        PERF_INC(cmdPaceNotYet);
         return SendResult::NOT_YET;
     }
     lastCommandMs.store(nowMs, std::memory_order_relaxed);
@@ -71,7 +69,6 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     if (!ok) {
         // Write failed after isConnected() check - likely transient (BLE busy/queue full)
         // Return NOT_YET to retry; if connection truly dead, next isConnected() will catch it
-        PERF_INC(cmdBleBusy);
         return SendResult::NOT_YET;
     }
     return SendResult::SENT;

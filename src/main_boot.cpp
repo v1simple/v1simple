@@ -7,7 +7,6 @@
 #include "settings.h"
 #include "settings_keys.h"
 #include "littlefs_mount.h"
-#include "modules/perf/debug_macros.h" // SerialLog
 #include "esp_heap_caps.h"
 #include "esp_core_dump.h"
 #include <Arduino.h>
@@ -98,8 +97,7 @@ void logPanicBreadcrumbs() {
     // FILE_APPEND, not FILE_WRITE. FILE_WRITE is "w" -- it truncates -- so every
     // panic used to erase the one before it. A device that panics three times in
     // a row kept only the third record, which is exactly the case where the
-    // pattern across crashes is the thing you need to see. poweroff.log has
-    // always appended (battery_manager.cpp:589); this path was the odd one out.
+    // pattern across crashes is the thing you need to see.
     //
     // Capped so a crash loop cannot fill LittleFS: once the file passes the cap
     // it is rotated to panic.prev.txt and started fresh, keeping the two most
@@ -121,8 +119,8 @@ void logPanicBreadcrumbs() {
         File f = LittleFS.open("/panic.txt", FILE_APPEND);
         if (f) {
             // Boot id is not available here -- logPanicBreadcrumbs() runs before
-            // storage init and before nextBootId(). Records are ordered by append
-            // position, so correlate against poweroff.log line order.
+            // storage init and before nextBootId(). Records remain ordered by
+            // append position.
             f.printf("--- CRASH at boot (millis=%lu)\n", millis());
             f.printf("Reset reason: %s\n", resetReasonToString(reason));
             f.printf("Heap: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap, (unsigned long)largestBlock,
@@ -266,23 +264,23 @@ bool readAndClearMaintenanceBootRequest() {
 // Report a fatal boot error, wait, and restart. displayAvailable indicates
 // whether display.begin() succeeded.
 void fatalBootError(const char* message, bool displayAvailable) {
-    SerialLog.printf("FATAL: %s\n", message);
+    Serial.printf("FATAL: %s\n", message);
 
     if (displayAvailable) {
         display.showDisconnected(); // Clear screen with base frame
-        SerialLog.println("Showing error on display, will restart in 10 seconds...");
+        Serial.println("Showing error on display, will restart in 10 seconds...");
 
         // Keep the error visible during the restart countdown.
         for (int i = 10; i > 0; i--) {
-            SerialLog.printf("Restarting in %d...\n", i);
+            Serial.printf("Restarting in %d...\n", i);
             delay(1000);
         }
     } else {
         // No display - just wait and restart
-        SerialLog.println("Display unavailable. Restarting in 10 seconds...");
+        Serial.println("Display unavailable. Restarting in 10 seconds...");
         delay(10000);
     }
 
-    SerialLog.println("Restarting...");
+    Serial.println("Restarting...");
     ESP.restart();
 }

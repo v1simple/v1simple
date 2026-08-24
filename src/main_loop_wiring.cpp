@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <esp_heap_caps.h>
 
 #include "main_loop_wiring.h"
 #include "main_globals.h"
@@ -8,8 +7,6 @@
 #include "settings.h"
 #include "storage_manager.h"
 #include "wifi_manager.h"
-#include "perf_metrics.h"
-#include "modules/perf/debug_macros.h"
 #include "provider_callback_bindings.h"
 
 #include "modules/ble/ble_queue_module.h"
@@ -27,7 +24,6 @@
 #include "modules/system/loop_power_touch_module.h"
 #include "modules/system/loop_runtime_snapshot_module.h"
 #include "modules/system/loop_tail_module.h"
-#include "modules/system/loop_telemetry_module.h"
 #include "modules/system/periodic_maintenance_module.h"
 #include "modules/system/parsed_frame_event_module.h"
 #include "modules/system/system_event_bus.h"
@@ -46,17 +42,8 @@ void configureLoopRuntimeSnapshotModule() {
     loopRuntimeSnapshotModule.begin(loopRuntimeSnapshotProviders);
 }
 
-static uint32_t readCurrentFreeHeap(void*) {
-    return ESP.getFreeHeap();
-}
-
-static void recordHeapStatsSample(void*, uint32_t freeHeap) {
-    perfRecordHeapStats(freeHeap);
-}
-
 void configureLoopPowerTouchModule() {
     LoopPowerTouchModule::Providers loopPowerTouchProviders;
-    loopPowerTouchProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     loopPowerTouchProviders.runPowerProcess = ProviderCallbackBindings::member<PowerModule, &PowerModule::process>;
     loopPowerTouchProviders.powerContext = &powerModule;
     loopPowerTouchProviders.readPresentationSuppressed =
@@ -65,9 +52,6 @@ void configureLoopPowerTouchModule() {
     loopPowerTouchProviders.runTouchUiProcess =
         ProviderCallbackBindings::member<TouchUiModule, &TouchUiModule::process>;
     loopPowerTouchProviders.touchUiContext = &touchUiModule;
-    loopPowerTouchProviders.recordTouchUs = [](void*, uint32_t elapsedUs) { perfRecordTouchUs(elapsedUs); };
-    loopPowerTouchProviders.readFreeHeap = readCurrentFreeHeap;
-    loopPowerTouchProviders.recordHeapStats = recordHeapStatsSample;
     loopPowerTouchModule.begin(loopPowerTouchProviders);
 }
 
@@ -92,24 +76,6 @@ void configureConnectionStateDispatchModule() {
     connectionStateDispatchProviders.runConnectionStateProcess =
         ProviderCallbackBindings::memberDiscardReturn<ConnectionStateModule, &ConnectionStateModule::process>;
     connectionStateDispatchProviders.connectionStateContext = &connectionStateModule;
-    connectionStateDispatchProviders.recordDecision = [](void*, const ConnectionStateDispatchDecision& decision) {
-        PERF_INC(connectionDispatchRuns);
-        if (decision.cadence.displayUpdateDue) {
-            PERF_INC(connectionCadenceDisplayDue);
-        }
-        if (decision.cadence.holdScanDwell) {
-            PERF_INC(connectionCadenceHoldScanDwell);
-        }
-        if (decision.elapsedSinceLastProcessMs > 0) {
-            PERF_MAX(connectionStateProcessGapMaxMs, decision.elapsedSinceLastProcessMs);
-        }
-        if (decision.watchdogForced) {
-            PERF_INC(connectionStateWatchdogForces);
-        }
-        if (decision.ranConnectionStateProcess) {
-            PERF_INC(connectionStateProcessRuns);
-        }
-    };
     connectionStateDispatchModule.begin(connectionStateDispatchProviders);
 }
 
@@ -117,11 +83,6 @@ void configurePeriodicMaintenanceModule() {
     obdSettingsSyncModule.begin(&settingsManager, &obdRuntimeModule);
 
     PeriodicMaintenanceModule::Providers periodicMaintenanceProviders;
-    periodicMaintenanceProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
-    periodicMaintenanceProviders.runPerfReport = [](void*) { perfMetricsCheckReport(); };
-    periodicMaintenanceProviders.recordPerfReportUs = [](void*, uint32_t elapsedUs) {
-        perfRecordPerfReportUs(elapsedUs);
-    };
     periodicMaintenanceProviders.runObdSettingsSync =
         ProviderCallbackBindings::member<ObdSettingsSyncModule, &ObdSettingsSyncModule::process>;
     periodicMaintenanceProviders.obdSettingsSyncContext = &obdSettingsSyncModule;
@@ -140,37 +101,20 @@ void configurePeriodicMaintenanceModule() {
 
 void configureLoopTailModule() {
     LoopTailModule::Providers loopTailProviders;
-    loopTailProviders.perfTimestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     loopTailProviders.loopMicrosUs = [](void*) -> uint32_t { return micros(); };
     loopTailProviders.runBleDrain = ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
     loopTailProviders.bleDrainContext = &bleQueueModule;
-    loopTailProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) { perfRecordBleDrainUs(elapsedUs); };
-    loopTailProviders.recordLoopJitterUs = [](void*, uint32_t jitterUs) { perfRecordLoopJitterUs(jitterUs); };
     loopTailProviders.yieldOneTick = [](void*) { vTaskDelay(pdMS_TO_TICKS(1)); };
     const bool loopTailConfigured = loopTailModule.begin(loopTailProviders);
     configASSERT(loopTailConfigured);
 }
 
-void configureLoopTelemetryModule() {
-    LoopTelemetryModule::Providers loopTelemetryProviders;
-    loopTelemetryProviders.readFreeHeap = readCurrentFreeHeap;
-    loopTelemetryProviders.recordHeapStats = recordHeapStatsSample;
-    loopTelemetryModule.begin(loopTelemetryProviders);
-}
-
 void configureLoopIngestModule() {
     LoopIngestModule::Providers loopIngestProviders;
-    loopIngestProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
     loopIngestProviders.runBleProcess = ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::process>;
     loopIngestProviders.bleProcessContext = &bleClient;
-    loopIngestProviders.recordBleProcessUs = [](void* ctx, uint32_t elapsedUs) {
-        perfRecordBleProcessUs(elapsedUs);
-        static_cast<V1BLEClient*>(ctx)->noteBleProcessDuration(elapsedUs);
-    };
-    loopIngestProviders.bleProcessPerfContext = &bleClient;
     loopIngestProviders.runBleDrain = ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::process>;
     loopIngestProviders.bleDrainContext = &bleQueueModule;
-    loopIngestProviders.recordBleDrainUs = [](void*, uint32_t elapsedUs) { perfRecordBleDrainUs(elapsedUs); };
     loopIngestProviders.readBleBackpressure =
         ProviderCallbackBindings::member<BleQueueModule, &BleQueueModule::isBackpressured>;
     loopIngestProviders.bleBackpressureContext = &bleQueueModule;
@@ -200,14 +144,5 @@ void configureLoopDisplayModule() {
     loopDisplayProviders.runBlinkRefresh =
         ProviderCallbackBindings::member<DisplayPipelineModule, &DisplayPipelineModule::refreshBlinkTick>;
     loopDisplayProviders.blinkRefreshContext = &displayPipelineModule;
-    loopDisplayProviders.timestampUs = [](void*) -> uint32_t { return PERF_TIMESTAMP_US(); };
-    loopDisplayProviders.recordDispPipeUs = [](void* ctx, uint32_t elapsedUs) {
-        perfRecordDispPipeUs(elapsedUs);
-        static_cast<V1BLEClient*>(ctx)->noteDisplayPipelineDuration(elapsedUs);
-    };
-    loopDisplayProviders.dispPipePerfContext = &bleClient;
-    loopDisplayProviders.recordNotifyToDisplayPipelineCompleteMs = [](void*, uint32_t elapsedMs) {
-        perfRecordNotifyToDisplayPipelineCompleteMs(elapsedMs);
-    };
     loopDisplayModule.begin(loopDisplayProviders);
 }

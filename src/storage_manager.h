@@ -1,7 +1,7 @@
 /**
  * Storage Manager - SD card and LittleFS mounting
  *
- * Provides shared filesystem access for profiles, web files, and logs.
+ * Provides shared filesystem access for profiles, web files, and product persistence.
  */
 
 #pragma once
@@ -63,14 +63,13 @@ class StorageManager {
     // loop branch, and wifiManager.process() has one, main.cpp:620 in that same
     // branch. Commit bd2435c removed the last normal-runtime autostart path.
     //
-    // So only seven lock sites in the tree can ever evaluate this gate with the
+    // So only five lock sites in the tree can ever evaluate this gate with the
     // radio up:
     //
     //   settings_backup.cpp:850      serviceDeferredBackup  <- main.cpp:647
     //   settings_nvs.cpp:332/385/433/471   wifi client secrets <- wifi_client.cpp
-    //   wifi_routes.cpp:333/347      /api/diagnostics/log{,s}
     //
-    // Those seven opt in with checkDmaHeap=true. Every other site runs where
+    // Those five opt in with checkDmaHeap=true. Every other site runs where
     // WiFi is structurally incapable of being on -- normal boot, or the pre-WiFi
     // part of maintenance boot -- so the default is false and they skip two heap
     // traversals per lock. Do not flip this default back without re-deriving the

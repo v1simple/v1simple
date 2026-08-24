@@ -1,21 +1,5 @@
 #include "power_module.h"
 
-#ifndef UNIT_TEST
-#include "perf_metrics.h"
-#define POWER_PERF_INC(counter) PERF_INC(counter)
-#define POWER_PERF_FLUSH_NOW()                                                                                         \
-    do {                                                                                                               \
-        (void)perfMetricsEnqueueSnapshotNow();                                                                         \
-    } while (0)
-#else
-#define POWER_PERF_INC(counter)                                                                                        \
-    do {                                                                                                               \
-    } while (0)
-#define POWER_PERF_FLUSH_NOW()                                                                                         \
-    do {                                                                                                               \
-    } while (0)
-#endif
-
 void PowerModule::performShutdownRequest() {
     performShutdown();
 }
@@ -39,17 +23,14 @@ void PowerModule::performShutdown() {
         display_->clear();
     }
 
-    POWER_PERF_FLUSH_NOW();
     if (battery_) {
-        const bool sdLog = settings_ && settings_->get().powerOffSdLog;
-        Serial.printf("[Power] Shutdown handoff: source=%s sdLog=%d\n",
-                      battery_->isOnBattery() ? "battery" : "external", sdLog ? 1 : 0);
+        Serial.printf("[Power] Shutdown handoff: source=%s\n", battery_->isOnBattery() ? "battery" : "external");
 #ifdef UNIT_TEST
         if (shutdownHandoffObserverForTest_) {
             shutdownHandoffObserverForTest_(shutdownHandoffObserverContextForTest_);
         }
 #endif
-        const bool shutdownCompleted = battery_->powerOff(sdLog);
+        const bool shutdownCompleted = battery_->powerOff();
         if (!shutdownCompleted) {
             Serial.println("[Power] ERROR: shutdown hardware tail returned; device remains awake");
             if (shutdownAbortCallback_) {
@@ -145,7 +126,6 @@ void PowerModule::onV1DataReceived() {
 #ifndef CAR_MODE_PWR_SHORT
     if (!autoPowerOffArmed_) {
         autoPowerOffArmed_ = true;
-        POWER_PERF_INC(powerAutoPowerArmed);
         Serial.println("[AutoPowerOff] Armed - V1 data received");
     }
 #endif
@@ -176,7 +156,6 @@ void PowerModule::onAlpSignalChange(bool active) {
 
     if (active && !alpSignalPresent_ && !autoPowerOffArmed_) {
         autoPowerOffArmed_ = true;
-        POWER_PERF_INC(powerAutoPowerArmed);
         Serial.println("[AutoPowerOff] Armed - ALP heartbeat received");
     }
 
@@ -195,7 +174,6 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
         if (autoPowerOffTimerStart_ != 0) {
             Serial.println("[AutoPowerOff] Timer cancelled - activity resumed");
             autoPowerOffTimerStart_ = 0;
-            POWER_PERF_INC(powerAutoPowerTimerCancel);
         }
         return;
     }
@@ -205,7 +183,6 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
         // when this transition happens on the first millisecond of a host test
         // or immediately around boot.
         autoPowerOffTimerStart_ = nowMs == 0 ? 1 : nowMs;
-        POWER_PERF_INC(powerAutoPowerTimerStart);
         Serial.printf("[AutoPowerOff] Timer started: %d minutes\n", s.autoPowerOffMinutes);
     }
 #endif
@@ -235,7 +212,6 @@ void PowerModule::process(unsigned long nowMs) {
             display_->showLowBattery();
             criticalBatteryPresentationActive_ = true;
             criticalBatteryTime_ = nowMs;
-            POWER_PERF_INC(powerCriticalWarn);
         } else if (nowMs - criticalBatteryTime_ > 5000) {
             // Any successful sample from the warning window is fresh enough to
             // confirm the cached decision. Only force one immediate acquisition
@@ -249,8 +225,6 @@ void PowerModule::process(unsigned long nowMs) {
                 releaseCriticalBatteryPresentation();
             } else {
                 Serial.println("[Battery] CRITICAL - auto shutdown to protect battery");
-                POWER_PERF_INC(powerCriticalShutdown);
-                POWER_PERF_FLUSH_NOW();
                 performShutdownRequest();
                 return;
             }
@@ -270,8 +244,6 @@ void PowerModule::process(unsigned long nowMs) {
         if (elapsedMs >= timeoutMs) {
             Serial.printf("[AutoPowerOff] Timer expired after %d minutes - powering off\n", s.autoPowerOffMinutes);
             autoPowerOffTimerStart_ = 0;
-            POWER_PERF_INC(powerAutoPowerTimerExpire);
-            POWER_PERF_FLUSH_NOW();
             performShutdownRequest();
             return;
         }

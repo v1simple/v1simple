@@ -44,7 +44,6 @@
 
 #include "alp_laser_event.h"
 
-class AlpSdLogger;
 class SystemEventBus;
 
 // ── ALP connection / protocol states ─────────────────────────────────
@@ -86,10 +85,6 @@ enum class AlpLaserDirection : uint8_t {
 
 const char* alpLaserDirectionName(AlpLaserDirection direction);
 
-// Display-side instrumentation should route through the ALP module's
-// existing logging owner rather than reaching for its global instance.
-void alpLogDisplayDecision(uint32_t nowMs, const char* event, const char* detail);
-
 // ── Gun lookup ───────────────────────────────────────────────────────
 
 struct AlpGunCode {
@@ -119,10 +114,6 @@ struct AlpStatus {
     AlpGunType lastGun;
     uint32_t lastGunTimestampMs;      // millis() when gun was identified
     uint32_t lastHeartbeatMs;         // millis() of most recent valid frame
-    uint32_t statusBurstCount;        // lifetime alert trigger count
-    uint32_t heartbeatCount;          // lifetime heartbeat count
-    uint32_t frameErrors;             // lifetime framing / checksum errors
-    uint32_t noiseWindowCount;        // lifetime noise window entries
     uint8_t lastHbByte1;              // most recent B0 heartbeat byte1 (01=Targeted, 02=Warm-Up, 03=DLI, 04=LID)
     AlpLaserDirection laserDirection; // live-alert front/rear classifier projected for display/API
     uint8_t directionSampleByte1;     // raw B0 byte1 that latched laserDirection (0 when unknown)
@@ -168,8 +159,6 @@ struct AlertSession {
     uint8_t directionSampleByte1 = 0x00;  // raw B0 byte1 that latched direction
     AlpGunType gun = AlpGunType::UNKNOWN; // session's identified gun
     uint32_t gunIdentifiedMs = 0;         // 0 if not yet identified
-    uint32_t triggerCount = 0;            // 98 frames in this session
-    uint32_t rearmCount = 0;              // TEARDOWN→ALERT cycles within session
     uint8_t modeAtOpen = 0xFF;            // lastHbByte1_ when session opened:
                                           //   01 = Targeted (mid-engagement reopen)
                                           //   02 = Warm-Up
@@ -235,9 +224,8 @@ class AlpRuntimeModule {
     /**
      * Initialize the module.
      * @param enabled  true to open UART2 and begin listening
-     * @param sdLogger  optional SD logger (nullptr disables logging)
      */
-    void begin(bool enabled, AlpSdLogger* sdLogger = nullptr);
+    void begin(bool enabled);
 
     /**
      * Wire the event bus for state-change notifications.
@@ -254,7 +242,7 @@ class AlpRuntimeModule {
     /**
      * Snapshot of current state for display / API consumers.
      *
-     * NOT thread-safe. Reads module state (state_, counters, session,
+     * NOT thread-safe. Reads module state (state_, session,
      * lastGun_) without synchronization. This is safe only because every
      * current caller runs on Core 1 alongside process() — the display
      * sync path and the main-loop pipeline are both main-loop work.
@@ -338,16 +326,8 @@ class AlpRuntimeModule {
                (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
     }
 
-    /** Full current session for diagnostics / tests. */
+    /** Full current session for product state consumers and tests. */
     const AlertSession& currentSession() const { return session_; }
-
-    /**
-     * Log a display-side ALP decision change to the SD card.
-     * Called by display pipeline when the ALP frequency override or
-     * laser-active flag changes — keeps display decisions in the same
-     * CSV timeline as protocol and session events.
-     */
-    void logDisplayDecision(uint32_t nowMs, const char* event, const char* detail);
 
     /**
      * Is the ALP connected and producing data? True when ALP is enabled
@@ -398,10 +378,6 @@ class AlpRuntimeModule {
     void testSetLastHbByte1(uint8_t byte1) { lastHbByte1_ = byte1; }
     void testSetLastHeartbeat(uint32_t ms) { lastHeartbeatMs_ = ms; }
     AlpState testGetState() const { return state_; }
-    uint32_t testGetHeartbeatCount() const { return heartbeatCount_; }
-    uint32_t testGetStatusBurstCount() const { return statusBurstCount_; }
-    uint32_t testGetFrameErrors() const { return frameErrors_; }
-    uint32_t testGetNoiseWindowCount() const { return noiseWindowCount_; }
     uint8_t testGetLastHbByte1() const { return lastHbByte1_; }
     bool testGetAlertDetectedViaHb() const { return alertDetectedViaHb_; }
     const uint8_t* testGetRingBuf() const { return ringBuf_; }
@@ -431,14 +407,10 @@ class AlpRuntimeModule {
         testSyncCurrentEvent(nowMs);
     }
     void testTransitionTo(AlpState state, uint32_t nowMs) { transitionTo(state, nowMs); }
-    uint32_t testGetDisplayLogSuppressedCount() const { return displayLogSuppressedCount_; }
-    const char* testGetLastDisplayLogEvent() const { return lastDisplayLogEvent_; }
-    const char* testGetLastDisplayLogDetail() const { return lastDisplayLogDetail_; }
 #endif
 
   private:
     // ── State ────────────────────────────────────────────────────────
-    AlpSdLogger* sdLogger_ = nullptr;
     SystemEventBus* bus_ = nullptr;
     bool enabled_ = false;
     bool begun_ = false;
@@ -489,28 +461,7 @@ class AlpRuntimeModule {
     uint32_t firstFrameMs_ = 0;     // first valid frame after begin()
     uint32_t warmUpPreambleMs_ = 0; // F0/A8 within 5s of firstFrameMs_; 0 = not seen
 
-    // Counters
-    uint32_t statusBurstCount_ = 0;
-    uint32_t heartbeatCount_ = 0;
-    uint32_t frameErrors_ = 0;
-    uint32_t noiseWindowCount_ = 0;
     uint32_t consecutiveBadChecksums_ = 0;
-
-    // Display-edge logging.
-    bool lastHasLaserEventLogged_ = false;
-    void maybeLogDisplayWindowEdge(uint32_t nowMs);
-
-    // ── Display-decision log dedup ───────────────────────────────────
-    // logDisplayDecision() is a public SD-writer reachable from several
-    // call-sites (display_indicators, display_pipeline_module, edge log).
-    // Callers edge-gate independently; this final deduplication layer prevents
-    // a missed gate from adding peak SD-write latency. These fields hold the
-    // the body can drop an exact repeat. Cleared on every transitionTo()
-    // so genuinely new state-driven events always re-emit after a state
-    // change.
-    char lastDisplayLogEvent_[32] = "";
-    char lastDisplayLogDetail_[96] = "";
-    uint32_t displayLogSuppressedCount_ = 0; // observability: total drops
 
     // Current display-event snapshot.
     AlpLaserEvent currentEvent_{};

@@ -229,15 +229,11 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     ASSERT_UINT32_FIELD(v1SettleFallbackMs);
     ASSERT_UINT32_FIELD(cycleTeardownAckTimeoutMs);
     ASSERT_BOOL_FIELD(alpEnabled);
-    ASSERT_BOOL_FIELD(alpSdLogEnabled);
     ASSERT_UINT8_FIELD(alpAlertPersistSec);
     ASSERT_BOOL_FIELD(alpDisableV1LaserOnPush);
     ASSERT_BOOL_FIELD(gpsEnabled);
     ASSERT_UINT32_FIELD(gpsBaud);
     ASSERT_BOOL_FIELD(gpsEnablePinActiveHigh);
-    ASSERT_BOOL_FIELD(gpsLogUtcToPerf);
-    ASSERT_BOOL_FIELD(gpsLogUtcToAlp);
-    ASSERT_BOOL_FIELD(powerOffSdLog);
 
 #undef ASSERT_BOOL_FIELD
 #undef ASSERT_INT_FIELD
@@ -454,7 +450,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     settings.v1SettleFallbackMs = 2200;
     settings.cycleTeardownAckTimeoutMs = 150;
     settings.alpEnabled = true;
-    settings.alpSdLogEnabled = true;
     settings.alpAlertPersistSec = 4;
     settings.alpDisableV1LaserOnPush = false;
 
@@ -533,7 +528,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_UINT32(2200u, loaded.v1SettleFallbackMs);
     TEST_ASSERT_EQUAL_UINT32(150u, loaded.cycleTeardownAckTimeoutMs);
     TEST_ASSERT_TRUE(loaded.alpEnabled);
-    TEST_ASSERT_TRUE(loaded.alpSdLogEnabled);
     TEST_ASSERT_EQUAL_UINT8(4, loaded.alpAlertPersistSec);
     TEST_ASSERT_FALSE(loaded.alpDisableV1LaserOnPush);
 
@@ -580,7 +574,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_INT(2200, backupDoc["v1SettleFallbackMs"].as<int>());
     TEST_ASSERT_EQUAL_INT(150, backupDoc["cycleTeardownAckTimeoutMs"].as<int>());
     TEST_ASSERT_TRUE(backupDoc["alpEnabled"].as<bool>());
-    TEST_ASSERT_TRUE(backupDoc["alpSdLogEnabled"].as<bool>());
     TEST_ASSERT_EQUAL_INT(4, backupDoc["alpAlertPersistSec"].as<int>());
     TEST_ASSERT_FALSE(backupDoc["alpDisableV1LaserOnPush"].as<bool>());
     TEST_ASSERT_TRUE(backupDoc["obdCachedVinPrefix11"].isNull());
@@ -1682,8 +1675,6 @@ void test_gps_fields_round_trip_through_backup_and_restore_normalizes_deprecated
     src.gpsEnabled             = true;
     src.gpsBaud                = 38400;
     src.gpsEnablePinActiveHigh = false;
-    src.gpsLogUtcToPerf        = false;
-    src.gpsLogUtcToAlp         = false;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
@@ -1697,8 +1688,6 @@ void test_gps_fields_round_trip_through_backup_and_restore_normalizes_deprecated
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(38400u, target.get().gpsBaud);
     TEST_ASSERT_TRUE(target.get().gpsEnablePinActiveHigh);
-    TEST_ASSERT_FALSE(target.get().gpsLogUtcToPerf);
-    TEST_ASSERT_FALSE(target.get().gpsLogUtcToAlp);
 }
 
 void test_voice_fields_round_trip_through_sd_backup_and_restore() {
@@ -1767,8 +1756,6 @@ void test_gps_fields_partial_recovery() {
     src.gpsEnabled             = true;
     src.gpsBaud                = 115200;
     src.gpsEnablePinActiveHigh = true;
-    src.gpsLogUtcToPerf        = true;
-    src.gpsLogUtcToAlp         = false;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
@@ -1785,8 +1772,6 @@ void test_gps_fields_partial_recovery() {
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(115200u, target.get().gpsBaud);
     TEST_ASSERT_TRUE(target.get().gpsEnablePinActiveHigh);
-    TEST_ASSERT_TRUE(target.get().gpsLogUtcToPerf);
-    TEST_ASSERT_FALSE(target.get().gpsLogUtcToAlp);
 }
 
 void test_gps_device_batch_update_saves_all_live_fields_and_ignores_deprecated_polarity() {
@@ -1796,15 +1781,11 @@ void test_gps_device_batch_update_saves_all_live_fields_and_ignores_deprecated_p
     update.hasGpsEnabled             = true;  update.gpsEnabled             = true;
     update.hasGpsBaud                = true;  update.gpsBaud                = 38400;
     update.hasGpsEnablePinActiveHigh = true;  update.gpsEnablePinActiveHigh = false;
-    update.hasGpsLogUtcToPerf        = true;  update.gpsLogUtcToPerf        = false;
-    update.hasGpsLogUtcToAlp         = true;  update.gpsLogUtcToAlp         = false;
     manager.applyDeviceSettingsUpdate(update, SettingsPersistMode::Deferred);
 
     TEST_ASSERT_TRUE(manager.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(38400u, manager.get().gpsBaud);
     TEST_ASSERT_TRUE(manager.get().gpsEnablePinActiveHigh);
-    TEST_ASSERT_FALSE(manager.get().gpsLogUtcToPerf);
-    TEST_ASSERT_FALSE(manager.get().gpsLogUtcToAlp);
 }
 
 // M-04: applyDisplaySettingsUpdate must sanitize incoming color values the same

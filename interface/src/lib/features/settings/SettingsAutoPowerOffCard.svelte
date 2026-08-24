@@ -36,28 +36,5 @@
                 </span>
             </div>
         </div>
-
-        <div class="divider my-1"></div>
-
-        <div class="field-control">
-            <div class="label gap-4">
-                <div>
-                    <label class="field-label cursor-pointer" for="power-off-sd-log"
-                        >Record Shutdown Evidence</label
-                    >
-                    <p class="copy-caption-soft mt-1">
-                        Records power source, latch/deep-sleep outcome, and the next boot reason to
-                        <code>/poweroff.log</code> on the SD card. Review it from the
-                        <a class="link link-primary" href="/logs">Logs page</a>.
-                    </p>
-                </div>
-                <input
-                    id="power-off-sd-log"
-                    type="checkbox"
-                    class="toggle shrink-0 toggle-primary"
-                    bind:checked={settings.powerOffSdLog}
-                />
-            </div>
-        </div>
     </div>
 </div>

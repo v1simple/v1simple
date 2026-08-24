@@ -14,12 +14,10 @@
 #include "display_palette.h"
 #include "display_text.h"
 #include "display_segments.h"
-#include "display_log.h"
 #include "display_flush.h"
 #include "display_font_manager.h"
 #include "v1simple_logo.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include <esp_heap_caps.h>
 
 using namespace DisplaySegments;
@@ -85,7 +83,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 
     lastState_ = DisplayState();
     if (currentScreen_ != ScreenMode::Maintenance) {
-        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Unknown, millis());
     }
     currentScreen_ = ScreenMode::Maintenance;
     lastRestingProfileSlot_ = -1;
@@ -98,10 +95,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 // ============================================================================
 
 void V1Display::showResting(bool forceRedraw) {
-    const PerfDisplayRenderScenario renderScenario = perfGetDisplayRenderScenario();
-    const bool restoreRender = (renderScenario == PerfDisplayRenderScenario::Restore);
-    unsigned long renderStartUs = 0;
-    bool recordRenderTiming = false;
     // Always use multi-alert layout positioning
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
@@ -120,10 +113,6 @@ void V1Display::showResting(bool forceRedraw) {
     bool profileChanged = (profileSlot != lastRestingProfileSlot_);
 
     if (forceRedraw || screenChanged || paletteChanged) {
-        perfRecordDisplayRenderPath(restoreRender ? PerfDisplayRenderPath::Restore
-                                                  : PerfDisplayRenderPath::RestingFull);
-        renderStartUs = micros();
-        recordRenderTiming = true;
         // Full redraw when forced, coming from another screen, or after theme change
         drawBaseFrame();
 
@@ -166,19 +155,10 @@ void V1Display::showResting(bool forceRedraw) {
         lastRestingPaletteRevision_ = paletteRevision_;
         lastRestingProfileSlot_ = profileSlot;
 
-        // Log screen mode transition for debugging display refresh issues
-        if (currentScreen_ != ScreenMode::Resting) {
-            DISPLAY_LOG("[DISP] Screen mode: %d -> Resting (showResting)\n", (int)currentScreen_);
-            perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Resting, millis());
-        }
         currentScreen_ = ScreenMode::Resting;
 
         DISPLAY_FLUSH();
     } else if (profileChanged) {
-        perfRecordDisplayRenderPath(restoreRender ? PerfDisplayRenderPath::Restore
-                                                  : PerfDisplayRenderPath::RestingIncremental);
-        renderStartUs = micros();
-        recordRenderTiming = true;
         // Only the profile changed while already resting; redraw just the indicator
         drawProfileIndicator(profileSlot);
         lastRestingProfileSlot_ = profileSlot;
@@ -194,9 +174,6 @@ void V1Display::showResting(bool forceRedraw) {
     // Reset lastState_ so next update() detects changes from this "resting" state
     lastState_ = DisplayState(); // All defaults: bands=0, arrows=0, bars=0, hasMode=false, modeChar=0
 
-    if (recordRenderTiming) {
-        perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
-    }
 }
 
 // ============================================================================
@@ -204,7 +181,6 @@ void V1Display::showResting(bool forceRedraw) {
 // ============================================================================
 
 void V1Display::forceNextRedraw() {
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::ForceRedraw);
     // Reset lastState_ to force next update() to detect all changes and redraw
     lastState_ = DisplayState();
     // Set screen mode to Unknown so any next update/showResting detects a screen change
@@ -223,12 +199,6 @@ void V1Display::resetChangeTracking() {
 // ============================================================================
 
 void V1Display::showScanning() {
-    const PerfDisplayRenderScenario renderScenario = perfGetDisplayRenderScenario();
-    const bool restoreRender = (renderScenario == PerfDisplayRenderScenario::Restore);
-    const unsigned long renderStartUs = micros();
-    if (restoreRender) {
-        perfRecordDisplayRenderPath(PerfDisplayRenderPath::Restore);
-    }
     // Always use multi-alert layout positioning
     dirty_.multiAlert = true;
 
@@ -314,11 +284,9 @@ void V1Display::showScanning() {
     DISPLAY_FLUSH();
 
     if (currentScreen_ != ScreenMode::Scanning) {
-        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Scanning, millis());
     }
     currentScreen_ = ScreenMode::Scanning;
     lastRestingProfileSlot_ = -1;
-    perfRecordDisplayScenarioRenderUs(micros() - renderStartUs);
 }
 
 // ============================================================================
@@ -460,7 +428,6 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     if (currentScreen_ == ScreenMode::Stealth && !dirty_.resetTracking && !hadPendingExternalDraws &&
         lastStealthPaletteRevision_ == paletteRevision_ && lastStealthSpeedValid_ == displaySpeedValid &&
         lastStealthRoundedMph_ == roundedSpeedMph) {
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
         return;
     }
 

@@ -199,21 +199,16 @@ inline constexpr const char* kNvsCycleTeardownAckTimeout = "cycTdAck";
 
 // ── ALP ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsAlpEnabled = "alpEn";
-inline constexpr const char* kNvsAlpSdLog = "alpSdLog";
 // ALP display persistence is independent of the V1 alert window. The default
 // of zero removes the visual tail as soon as the ALP session closes.
 inline constexpr const char* kNvsAlpPersistSec = "alpPersist";
 inline constexpr const char* kNvsAlpNoV1Laser = "alpNoV1Laser";
 
-// ── Debug / diagnostics ──────────────────────────────────────────────────
-inline constexpr const char* kNvsPowerOffSdLog = "pwrOffSdLog";
 inline constexpr const char* kNvsMaintenanceBootReq = "maintBoot";
 // ── GPS ───────────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsGpsEnabled = "gpsEnabled";
 inline constexpr const char* kNvsGpsBaud = "gpsBaud";
 inline constexpr const char* kNvsGpsEnablePolarity = "gpsEnHi";
-inline constexpr const char* kNvsGpsLogUtcToPerf = "gpsLogUtcP";
-inline constexpr const char* kNvsGpsLogUtcToAlp = "gpsLogUtcA";
 // ── Separate namespaces ───────────────────────────────────────────────────
 // Namespace: v1wificlient (WIFI_CLIENT_NS)
 inline constexpr const char* kSettingsWifiClientNamespace = "v1wificlient";

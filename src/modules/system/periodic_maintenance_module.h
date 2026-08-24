@@ -18,14 +18,6 @@ class PeriodicMaintenanceModule {
     };
 
     struct Providers {
-        uint32_t (*timestampUs)(void* ctx) = nullptr;
-        void* timestampContext = nullptr;
-
-        void (*runPerfReport)(void* ctx) = nullptr;
-        void* perfReportContext = nullptr;
-        void (*recordPerfReportUs)(void* ctx, uint32_t elapsedUs) = nullptr;
-        void* perfReportRecordContext = nullptr;
-
         void (*runObdSettingsSync)(void* ctx, uint32_t nowMs) = nullptr;
         void* obdSettingsSyncContext = nullptr;
 

@@ -22,7 +22,6 @@
 #include "ble_bond_backup_writer.h"
 #include "ble_fresh_flash_policy.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include "storage_manager.h"
 #include "config.h"
 #include <Arduino.h>
@@ -171,26 +170,17 @@ void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
     }
 
     if (newState == BLEState::SCANNING) {
-        PERF_INC(bleScanStateEntries);
     }
     if (oldState == BLEState::SCANNING && newState != BLEState::SCANNING) {
-        PERF_INC(bleScanStateExits);
-        PERF_MAX(bleScanDwellMaxMs, stateTime);
     }
 
     if (newState == BLEState::SCANNING) {
-        perfRecordBleTimelineEvent(PerfBleTimelineEvent::ScanStart, now);
     } else if (newState == BLEState::SCAN_STOPPING && reason && strstr(reason, "V1 found")) {
-        PERF_INC(bleScanTargetFound);
-        perfRecordBleTimelineEvent(PerfBleTimelineEvent::TargetFound, now);
     } else if (newState == BLEState::CONNECTING) {
-        perfRecordBleTimelineEvent(PerfBleTimelineEvent::ConnectStart, now);
     } else if (newState == BLEState::CONNECTED) {
-        perfRecordBleTimelineEvent(PerfBleTimelineEvent::Connected, now);
     }
     if (oldState == BLEState::SCANNING && newState == BLEState::DISCONNECTED && reason &&
         strstr(reason, "scan ended without finding V1")) {
-        PERF_INC(bleScanNoTargetExits);
     }
 }
 
@@ -513,11 +503,6 @@ void V1BLEClient::setConnectionCycleProxyPolicy(const bool advertisingAllowed, c
     proxyKeepConnectionAllowed_ = keepConnectionAllowed;
 }
 
-void V1BLEClient::setConnectionCycleState(const uint8_t stateCode, const uint32_t timeInStateMs) {
-    connectionCycleStateCode_ = stateCode;
-    connectionCycleTimeInStateMs_ = timeInStateMs;
-}
-
 void V1BLEClient::setObdBleArbitrationRequest(ObdBleArbitrationRequest request) {
     if (obdBleArbitrationRequest_ == request) {
         return;
@@ -531,10 +516,6 @@ void V1BLEClient::setObdBleArbitrationRequest(ObdBleArbitrationRequest request) 
 
     if (releasingAutoHold || releasingManualPreempt) {
         proxySuppressedForObdHold_ = true;
-        if (proxySuppressedResumeReasonCode_ == static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown)) {
-            proxySuppressedResumeReasonCode_ =
-                static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartRetryWindow);
-        }
     }
 
     obdBleArbitrationRequest_ = request;
@@ -571,14 +552,6 @@ void V1BLEClient::onV1SessionClosed(SessionBoundaryCallback callback) {
 void V1BLEClient::onV1Connected(ConnectionCallback callback) {
     SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));
     connectStableCallback_ = callback;
-}
-
-void V1BLEClient::noteBleProcessDuration(uint32_t us) {
-    lastBleProcessDurationUs_.store(us, std::memory_order_relaxed);
-}
-
-void V1BLEClient::noteDisplayPipelineDuration(uint32_t us) {
-    lastDisplayPipelineDurationUs_.store(us, std::memory_order_relaxed);
 }
 
 bool V1BLEClient::isConnectBurstSettling() const {

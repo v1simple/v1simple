@@ -3,7 +3,7 @@
  *
  * GpsTimePublisher: UTC wall-clock time from GPS RMC sentences.
  *   - Written by GpsRuntimeModule once every GPS_TIME_UPDATE_INTERVAL_MS (~5 min).
- *   - Read by perf CSV logger and ALP CSV logger.
+ *   - Available to product features that need GPS-provided wall-clock time.
  *
  * GpsGeoPublisher: position/course/speed from GPS fixes.
  *   - Written by GpsRuntimeModule on each valid NMEA fix.

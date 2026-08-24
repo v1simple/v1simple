@@ -50,10 +50,6 @@ namespace BackupApiService {
 struct BackupRuntime;
 }
 
-namespace WifiDiagnosticsApiService {
-struct Runtime;
-}
-
 namespace ObdApiService {
 struct Runtime;
 }
@@ -381,7 +377,6 @@ class WiFiManager {
     WifiV1ProfileApiService::Runtime makeV1ProfileRuntime();
     WifiV1DevicesApiService::Runtime makeV1DevicesRuntime();
     BackupApiService::BackupRuntime makeBackupRuntime();
-    WifiDiagnosticsApiService::Runtime makeDiagnosticsRuntime();
 
     // API endpoints
     void handleNotFound();

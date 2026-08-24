@@ -213,8 +213,8 @@
                     <div class="copy-mini-title">Operating mode</div>
                     <h2 class="card-title">Choose who controls V1 features</h2>
                     <p class="copy-subtle">
-                        OBD and proxy are mutually exclusive to keep V1 BLE stable. Display,
-                        logging, and Wi-Fi stay the same in both modes.
+                        OBD and proxy are mutually exclusive to keep V1 BLE stable. Display and
+                        Wi-Fi stay the same in both modes.
                     </p>
                 </div>
                 {#if modeLoading || modeSaving}
@@ -256,8 +256,7 @@
                         </span>
                     </div>
                     <p class="copy-subtle mt-2">
-                        TL;DR: V1 Simple owns the local display and logging only. OBD speed and
-                        phone proxy are off.
+                        TL;DR: V1 Simple owns the local display. OBD speed and phone proxy are off.
                     </p>
                 </button>
 

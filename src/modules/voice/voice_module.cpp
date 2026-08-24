@@ -3,7 +3,6 @@
 #include "voice_module.h"
 
 #include "settings.h"
-#include "../perf/debug_macros.h"
 
 // ============================================================================
 // Constructor and Initialization
@@ -17,7 +16,7 @@ void VoiceModule::begin(SettingsManager* settings, V1BLEClient* ble) {
     settings_ = settings;
     bleClient_ = ble;
 
-    DBG_PRINTLN("[VoiceModule] Initialized");
+    Serial.println("[VoiceModule] Initialized");
 }
 
 // ============================================================================

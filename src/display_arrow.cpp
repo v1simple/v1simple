@@ -12,7 +12,6 @@
 #include "display_element_caches.h"
 #include "display_palette.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include "packet_parser.h"                  // Direction enum, DIR_FRONT/SIDE/REAR
 #include "modules/alp/alp_runtime_module.h" // AlpLaserDirection enum (for laser-color override)
 
@@ -180,7 +179,6 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         const DisplayLayout::DisplayRect r = V1Display::arrowBoundingRect(raisedLayout);
         drawnRegion_.add(r.x, r.y, r.w, r.h, DisplayDirtyRegionSource::Arrows);
     }
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::ArrowChange);
 
     // Calculate clear regions for each arrow
     const int maxW = (topW > bottomW) ? topW : bottomW;

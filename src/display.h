@@ -51,7 +51,6 @@ static_assert(SIGNAL_BAR_COLOR_COUNT == DisplayLayout::MAIN_SIGNAL_BAR_COUNT,
 static_assert(SIGNAL_BAR_COLOR_COUNT == DisplayLayout::CARD_METER_BAR_COUNT,
               "Card meter colors must match the physical display segments");
 
-enum class PerfDisplayScreen : uint8_t;
 class ObdRuntimeModule;
 class AlpRuntimeModule;
 
@@ -188,7 +187,6 @@ class V1Display {
 
   private:
     enum class ScreenMode { Unknown, Resting, Scanning, Disconnected, Maintenance, Live, Persisted, Stealth };
-    static PerfDisplayScreen perfScreenForMode(ScreenMode mode);
 
     // Display driver (Arduino_GFX)
     std::unique_ptr<Arduino_ESP32QSPI> bus_;

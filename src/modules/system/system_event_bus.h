@@ -9,25 +9,17 @@
 
 // ALP state changes only need to wake the display path once before its next
 // collection pass. Multiple changes before that pass are therefore one pending
-// edge, while publishCount_ still records every producer notification.
+// edge.
 class SystemEventBus {
   public:
     void reset() {
         LockGuard guard(*this);
         alpStateChangedPending_ = false;
-        publishCount_ = 0;
-    }
-
-    // Reset only counters while preserving a pending display edge.
-    void resetStats() {
-        LockGuard guard(*this);
-        publishCount_ = 0;
     }
 
     void publishAlpStateChanged() {
         LockGuard guard(*this);
         alpStateChangedPending_ = true;
-        publishCount_++;
     }
 
     bool consumeAlpStateChanged() {
@@ -39,10 +31,6 @@ class SystemEventBus {
         return true;
     }
 
-    uint32_t getPublishCount() const {
-        LockGuard guard(*this);
-        return publishCount_;
-    }
     uint8_t size() const {
         LockGuard guard(*this);
         return alpStateChangedPending_ ? 1 : 0;
@@ -73,7 +61,6 @@ class SystemEventBus {
     };
 
     bool alpStateChangedPending_ = false;
-    uint32_t publishCount_ = 0;
 #ifdef UNIT_TEST
     mutable std::atomic_flag lockFlag_ = ATOMIC_FLAG_INIT;
 #else

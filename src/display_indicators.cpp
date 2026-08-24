@@ -12,11 +12,9 @@
 #include "display_palette.h"
 #include "display_text.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "modules/alp/alp_laser_event.h"
-#include "modules/display/display_edge_log.h"
 #include "main_globals.h"
 #include "modules/gps/gps_runtime_module.h"
 
@@ -111,7 +109,6 @@ void V1Display::drawObdIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::obdBadgeRect();
 
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Obd);
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
@@ -149,7 +146,6 @@ void V1Display::drawGpsIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::gpsBadgeRect();
 
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Gps);
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
@@ -205,7 +201,6 @@ void V1Display::drawAlpIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::alpBadgeRect();
 
-    perfRecordDisplayStatusPaint(PerfDisplayStatusPaint::Alp);
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
@@ -359,21 +354,6 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
         elementCaches_.frequency.invalidate();
     }
 
-    // Edge log on change (matches prior edge-log behavior from pipeline)
-    if (visualChanged) {
-        char detail[48];
-        const char* gunStr = nextFreqOverride ? nextGunAbbr : "none";
-        const char* dirStr = "UNKNOWN";
-        if (ev.direction == AlpLaserDirection::FRONT)
-            dirStr = "FRONT";
-        else if (ev.direction == AlpLaserDirection::REAR)
-            dirStr = "REAR";
-        snprintf(detail, sizeof(detail), "active=%d gun=%s dir=%s lid=%d", ev.active ? 1 : 0, gunStr, dirStr,
-                 nextLidActive ? 1 : 0);
-        if (alpRtMod_) {
-            alpRtMod_->logDisplayDecision(millis(), "DISP_V1_EVENT", detail);
-        }
-    }
 }
 
 void V1Display::setAlpFrequencyOverride(const char* gunAbbrev, bool lidActive) {
@@ -381,30 +361,16 @@ void V1Display::setAlpFrequencyOverride(const char* gunAbbrev, bool lidActive) {
         clearAlpFrequencyOverride();
         return;
     }
-    const bool detailChanged =
-        !alpFreqOverride_ || alpLidActive_ != lidActive || strncmp(alpFreqText_, gunAbbrev, sizeof(alpFreqText_)) != 0;
     alpFreqOverride_ = true;
     alpLidActive_ = lidActive;
     strncpy(alpFreqText_, gunAbbrev, sizeof(alpFreqText_));
     alpFreqText_[sizeof(alpFreqText_) - 1] = '\0';
-
-    if (detailChanged) {
-        char detail[32];
-        snprintf(detail, sizeof(detail), "%s lid=%d", gunAbbrev, lidActive ? 1 : 0);
-        logV1DisplaySetterEdge(millis(), "setAlpFrequencyOverride", detail);
-    }
 }
 
 void V1Display::clearAlpFrequencyOverride() {
-    const bool wasOverride = alpFreqOverride_;
     alpFreqOverride_ = false;
     alpLidActive_ = false;
     alpFreqText_[0] = '\0';
-
-    // Edge log if this is a transition from override to no override
-    if (wasOverride) {
-        logV1DisplaySetterEdge(millis(), "clearAlpFrequencyOverride", "");
-    }
 }
 
 // ============================================================================

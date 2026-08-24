@@ -72,13 +72,6 @@ release **BOOT** after about four seconds to reboot into maintenance mode. Join
 the default `V1-Simple` network with `setupv1simple`, open
 `http://192.168.35.5`, and change that default password during first setup.
 
-With an SD card mounted, completed V1 alert tables are saved under
-`/encounters` for maintenance-mode download. They preserve the detector's own
-alert assignments and contain no GPS or vehicle-speed data. On each normal
-boot, the firmware keeps the newest 20 generated CSV files in each of `/perf`,
-`/alp`, and `/encounters`. Files with other names are never removed by this
-retention policy.
-
 ## Verify a change
 
 Install and verify the fail-closed privacy boundary once per clone before making

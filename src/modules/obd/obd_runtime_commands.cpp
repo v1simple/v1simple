@@ -24,7 +24,6 @@
 #include "obd_elm327_parser.h"
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
-#include "../../perf_metrics.h"
 
 // ======================================================================
 // FILE-SCOPE HELPERS — string utilities for command parsing
@@ -301,10 +300,9 @@ void ObdRuntimeModule::handleConnectFailure(uint32_t nowMs, ObdFailureReason rea
     const uint32_t obdStateMs = stateEnteredMs_ == 0 ? 0 : (nowMs - stateEnteredMs_);
     const bool directAttemptsExhausted = !manualScanPending_ && connectAttempts_ >= obd::MAX_DIRECT_CONNECT_FAILURES;
 #ifndef UNIT_TEST
-    Serial.printf("[OBD] connect failure reason=%s cycle=%s cycleMs=%lu obdState=%s obdStateMs=%lu attempt=%u/%u "
+    Serial.printf("[OBD] connect failure reason=%s obdState=%s obdStateMs=%lu attempt=%u/%u "
                   "proxyAdv=%d proxyClient=%d retryAllowed=%d bleReason=%d (%s) next=%s\n",
-                  obdFailureReasonName(reason), perfConnectionCycleStateName(connectionCycleStateCode_),
-                  static_cast<unsigned long>(connectionCycleTimeInStateMs_), obdStateName(state_),
+                  obdFailureReasonName(reason), obdStateName(state_),
                   static_cast<unsigned long>(obdStateMs), static_cast<unsigned int>(connectAttempts_),
                   static_cast<unsigned int>(obd::MAX_DIRECT_CONNECT_FAILURES), lastProxyAdvertising_ ? 1 : 0,
                   lastProxyClientConnected_ ? 1 : 0, lastObdRetryAllowed_ ? 1 : 0, bleReason, bleReasonName(bleReason),

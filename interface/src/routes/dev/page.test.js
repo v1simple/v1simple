@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
@@ -27,14 +27,7 @@ function installDefaultFetch(overrides = []) {
             {
                 method: 'GET',
                 match: '/api/device/settings',
-                respond: jsonResponse({
-                    powerOffSdLog: false
-                })
-            },
-            {
-                method: 'POST',
-                match: '/api/device/settings',
-                respond: jsonResponse({ success: true })
+                respond: jsonResponse({})
             }
         ],
         jsonResponse({})
@@ -73,45 +66,12 @@ describe('dev route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Development Settings');
-        await screen.findByText('Power-Off SD Log');
-        expect(screen.getByText('Runtime Diagnostics')).toBeInTheDocument();
         expect(
-            screen.getByText(
-                /HTTP debug metrics, scenario playback, and perf-file endpoints are disabled/i
-            )
+            screen.getByText(/Local-only maintenance information and warning preferences/i)
         ).toBeInTheDocument();
         expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/debug/'))).toBe(
             false
         );
-
-        unmount();
-    });
-
-    it('saves only dev-owned device settings', async () => {
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'GET',
-                match: '/api/device/settings',
-                respond: jsonResponse({
-                    powerOffSdLog: true,
-                    alpEnabled: true,
-                    alpSdLogEnabled: true
-                })
-            }
-        ]);
-        const { unmount } = render(Page);
-
-        await screen.findByText('Power-Off SD Log');
-        await fireEvent.click(screen.getByRole('checkbox', { name: /i understand the risks/i }));
-        await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
-
-        await screen.findByText('Settings saved!');
-        const postCall = fetchMock.mock.calls.find(
-            ([url, init]) => url === '/api/device/settings' && init?.method === 'POST'
-        );
-        expect(postCall?.[1]?.body?.get('powerOffSdLog')).toBe('true');
-        expect(postCall?.[1]?.body?.has('alpEnabled')).toBe(false);
-        expect(postCall?.[1]?.body?.has('alpSdLogEnabled')).toBe(false);
 
         unmount();
     });
@@ -122,7 +82,6 @@ describe('dev route page', () => {
                 method: 'GET',
                 match: '/api/device/settings',
                 respond: jsonResponse({
-                    powerOffSdLog: false,
                     proxy_ble: true,
                     nvsDiag: {
                         healthy: true,

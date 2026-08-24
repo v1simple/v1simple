@@ -12,7 +12,6 @@
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
 #include "packet_parser.h"
-#include "perf_metrics.h"
 #include "settings.h"
 #endif
 

@@ -6,10 +6,7 @@
 #include "main_globals.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <FS.h>
 #include <algorithm>
-#include <esp_system.h>
 #include <esp_task_wdt.h>
 
 #include "config.h"
@@ -21,10 +18,6 @@
 #include "display.h"
 #include "display_mode.h"
 #include "packet_parser.h"
-#include "perf_sd_logger.h"
-#include "qualification_clock.h"
-#include "modules/alp/alp_sd_logger.h"
-#include "modules/encounter/v1_encounter_logger.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_publishers.h"
 #include "settings.h"
@@ -39,8 +32,6 @@
 #include "modules/ble/connection_state_module.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/obd/obd_runtime_module.h"
-#include "modules/perf/debug_macros.h"
-#include "diagnostic_log_retention.h"
 #include "modules/touch/tap_gesture_module.h"
 #include <driver/gpio.h>
 
@@ -121,15 +112,6 @@ void prepareForShutdown(void* /*context*/) {
     delay(50); // Brief settle for disconnect packets to transmit
     feedLoopTaskWatchdogDuringShutdown();
 
-    // Drain SD loggers (car power mode shutdown)
-    Serial.println("[Battery] Draining SD loggers before shutdown...");
-    perfSdLogger.drainAndClose(500);
-    feedLoopTaskWatchdogDuringShutdown();
-    v1EncounterLogger.drainAndClose(500);
-    feedLoopTaskWatchdogDuringShutdown();
-    alpSdLogger.drainAndClose(500);
-    feedLoopTaskWatchdogDuringShutdown();
-
     // Drain the best-effort bond snapshot before the final synchronous
     // settings write takes exclusive ownership of SD.
     shutdownBleBondBackupWriter(1500);
@@ -173,9 +155,6 @@ void onV1ConnectImmediate() {
     mainRuntimeState.v1ConnectedAtMs = millis();
     connectionStateModule.handleConnected(mainRuntimeState.v1ConnectedAtMs, bleClient.sessionGeneration());
 
-    // Start a new perf CSV session so the harness can isolate
-    // V1-connected data from idle boot noise.
-    perfSdLogger.startNewSession();
 }
 
 void onV1SessionOpened(uint32_t sessionGeneration) {
@@ -198,7 +177,7 @@ void onV1Connected() {
     }
 
     const AutoPushSlot& slot = settingsManager.getSlot(selection.selectedSlotIndex);
-    SerialLog.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u mode=%d\n",
+    Serial.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u mode=%d\n",
                      s.autoPushEnabled ? "on" : "off", selection.activeSlotIndex, selection.selectedSlotIndex,
                      static_cast<unsigned>(selection.deviceDefaultProfile), static_cast<int>(slot.mode));
     if (!s.autoPushEnabled) {
@@ -212,16 +191,16 @@ void onV1Connected() {
 
 void initializeStorageAndProfiles() {
     // Mount storage (SD if available, else LittleFS) for profiles and settings.
-    SerialLog.println("[Setup] Mounting storage...");
+    Serial.println("[Setup] Mounting storage...");
     if (storageManager.begin()) {
-        SerialLog.printf("[Setup] Storage ready: %s\n", storageManager.statusText().c_str());
+        Serial.printf("[Setup] Storage ready: %s\n", storageManager.statusText().c_str());
         v1ProfileManager.begin(storageManager.getFilesystem(), storageManager.getLittleFS());
         v1DeviceStore.begin(storageManager.getFilesystem(), storageManager.getLittleFS());
         if (!mainRuntimeState.maintenanceBootActive) {
             audio_init_buffers();
             audio_init_sd();
         } else {
-            SerialLog.println("[Setup] Maintenance boot: skipping audio buffer/voice init");
+            Serial.println("[Setup] Maintenance boot: skipping audio buffer/voice init");
         }
 
         // Retry settings restore now that SD is mounted
@@ -251,101 +230,40 @@ void initializeStorageAndProfiles() {
         // Clear references to profiles that don't exist.
         settingsManager.validateProfileReferences(v1ProfileManager);
     } else {
-        SerialLog.println("[Setup] Storage unavailable - profiles will be disabled");
+        Serial.println("[Setup] Storage unavailable - profiles will be disabled");
         const String storedFallback = settingsManager.loadLastV1AddressFallback();
         const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
         if (degradedFallback.length() > 0) {
             settingsManager.setLastV1Address(degradedFallback);
-            SerialLog.println("[Setup] Restored degraded V1 address fallback from NVS");
+            Serial.println("[Setup] Restored degraded V1 address fallback from NVS");
         } else if (storedFallback.length() > 0) {
             settingsManager.clearLastV1AddressFallback();
         }
     }
-}
 
-uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) {
-    const uint32_t bootId = nextBootId();
-    const uint32_t bootToken = static_cast<uint32_t>(esp_random());
-
-    // Standalone perf CSV loggers (SD only).
-    const bool sdEnabled = services.storage.isReady() && services.storage.isSDCard();
-    if (sdEnabled) {
-        // Was SDLockBootRetry, which retried up to 5x/100ms apart waiting for DMA
-        // starvation to clear. This runs only in normal boot -- the whole function
-        // is called only from main.cpp:551 on the non-maintenance side -- where
-        // WiFi cannot be running, so there was nothing for the retries to wait
-        // out; the mutex take itself is portMAX_DELAY and never needed them.
-        StorageManager::SDLockBlocking lock(services.storage.getSDMutex());
-        fs::FS* filesystem = services.storage.getFilesystem();
-        if (lock && filesystem) {
-            const DiagnosticLogRetention::BootPruneResult pruned =
-                DiagnosticLogRetention::pruneBeforeCurrentBoot(*filesystem, bootId);
-            const size_t removed = pruned.perf.removedFiles + pruned.alp.removedFiles + pruned.encounters.removedFiles;
-            const size_t failures =
-                pruned.perf.failedRemovals + pruned.alp.failedRemovals + pruned.encounters.failedRemovals;
-            if (removed > 0 || failures > 0) {
-                SerialLog.printf("[Storage] Log retention removed=%u failed=%u cap=%u/category\n",
-                                 static_cast<unsigned>(removed), static_cast<unsigned>(failures),
-                                 static_cast<unsigned>(DiagnosticLogLimits::MANAGED_FILES_PER_CATEGORY));
-            }
-        } else {
-            SerialLog.println("[Storage] WARN: Log retention skipped; SD lock unavailable");
-        }
+    const V1Settings& gpsSettings = settingsManager.get();
+    gpsRuntimeModule.begin(gpsSettings.gpsEnabled, gpsSettings.gpsEnablePinActiveHigh, gpsSettings.gpsBaud,
+                           &gpsTimePublisher, &gpsGeoPublisher);
+    if (gpsSettings.gpsEnabled) {
+        Serial.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
+                      static_cast<unsigned long>(gpsSettings.gpsBaud), 1, 5);
     }
-
-    services.perfLogger.setBootId(bootId, bootToken);
-    services.perfLogger.begin(sdEnabled);
-    if (services.perfLogger.isEnabled()) {
-        SerialLog.printf("[PERF] SD logger enabled (%s)\n", services.perfLogger.csvPath());
-    } else {
-        SerialLog.println("[PERF] SD logger disabled (no SD)");
-    }
-
-    // V1 encounter snapshots use only detector-provided alert-table data.
-    v1EncounterLogger.setBootId(bootId, bootToken);
-    v1EncounterLogger.begin(sdEnabled);
-    v1EncounterLogger.attach(parser);
-    if (v1EncounterLogger.isEnabled()) {
-        SerialLog.printf("[Encounter] SD logger enabled (%s)\n", v1EncounterLogger.csvPath());
-    }
-
-
-    // ALP SD logger — event-level CSV for drive data capture
-    const bool alpLogEnabled = services.settings.get().alpSdLogEnabled;
-    services.alpLogger.setBootId(bootId, bootToken);
-    services.alpLogger.begin(alpLogEnabled, sdEnabled, &services.gpsTime);
-    if (services.alpLogger.isEnabled()) {
-        SerialLog.printf("[ALP_SD] logger enabled (%s)\n", services.alpLogger.csvPath());
-    }
-
-    // GPS module
-    {
-        const V1Settings& gs = services.settings.get();
-        services.gpsRuntime.begin(gs.gpsEnabled, gs.gpsEnablePinActiveHigh, gs.gpsBaud, &services.gpsTime,
-                                  &services.gpsGeo);
-        if (gs.gpsEnabled) {
-            SerialLog.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
-                             static_cast<unsigned long>(gs.gpsBaud), 1, 5);
-        }
-    }
-
-    return bootId;
 }
 
 void initializeTouchAndDisplayControls() {
     // Initialize touch handler early - before BLE to avoid interleaved logs
-    SerialLog.println("Initializing touch handler...");
+    Serial.println("Initializing touch handler...");
     if (touchHandler.begin(17, 18, AXS_TOUCH_ADDR, -1)) {
-        SerialLog.println("Touch handler initialized successfully");
+        Serial.println("Touch handler initialized successfully");
     } else {
-        SerialLog.println("[Touch] WARN: Touch handler failed to initialize - continuing anyway");
+        Serial.println("[Touch] WARN: Touch handler failed to initialize - continuing anyway");
     }
 
     // Initialize BOOT button (GPIO 0) for brightness adjustment
     pinMode(BOOT_BUTTON_GPIO, INPUT_PULLUP);
     const V1Settings& displaySettings = settingsManager.get();
     display.setBrightness(displaySettings.brightness); // Apply saved brightness
-    SerialLog.printf("[Settings] Applied saved brightness: %d\n", displaySettings.brightness);
+    Serial.printf("[Settings] Applied saved brightness: %d\n", displaySettings.brightness);
 }
 
 namespace {
@@ -387,26 +305,21 @@ void configureUiInteractionModules(QuietCoordinatorModule& quietCoordinator) {
 
 void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason) {
     const V1Settings& bootSettings = settingsManager.get();
-    const char* scenario = "default";
     const char* gitSha = getBuildGitSha();
     const char* imageId = getRuntimeImageId();
     const char* resetStr = resetReasonToString(resetReason);
-    const uint64_t dutMicros = QualificationClock::nowMicros();
-    SerialLog.printf(
-        "BOOT bootId=%lu dutMillis=%lu dutMicros=%llu clockSegment=%llu reset=%s git=%s image=%s scenario=%s "
-        "wifiMaster=%s\n",
-        static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()),
-        static_cast<unsigned long long>(dutMicros), static_cast<unsigned long long>(QualificationClock::segment()),
-        resetStr, gitSha, imageId, scenario, bootSettings.enableWifi ? "on" : "off");
+    Serial.printf("BOOT bootId=%lu uptimeMs=%lu reset=%s git=%s image=%s wifiMaster=%s\n",
+                  static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()), resetStr, gitSha,
+                  imageId, bootSettings.enableWifi ? "on" : "off");
 }
 
 void logBootSummaryAndWifiStartup(uint32_t bootId, esp_reset_reason_t resetReason) {
     logBootIdentity(bootId, resetReason);
     const V1Settings& bootSettings = settingsManager.get();
     if (!bootSettings.enableWifi) {
-        SerialLog.println("[WiFi] Master disabled - startup and loop processing skipped");
+        Serial.println("[WiFi] Master disabled - startup and loop processing skipped");
     } else {
-        SerialLog.println("[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance");
+        Serial.println("[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance");
     }
 }
 

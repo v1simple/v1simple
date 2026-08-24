@@ -105,11 +105,7 @@ void TouchHandler::noteNoTouch(uint32_t now) {
     }
 }
 
-void TouchHandler::recordI2cFailure(uint32_t now, uint32_t elapsedUs) {
-    if (elapsedUs > i2cMaxUs_) {
-        i2cMaxUs_ = elapsedUs;
-    }
-    ++i2cStallCount_;
+void TouchHandler::recordI2cFailure(uint32_t now) {
     if (consecutiveI2cFailures_ < UINT8_MAX) {
         ++consecutiveI2cFailures_;
     }
@@ -201,31 +197,27 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     Wire.beginTransmission(i2cAddr_);
     Wire.write(AXS_TOUCH_READ_CMD, sizeof(AXS_TOUCH_READ_CMD));
-    uint32_t i2cStart = micros();
     uint8_t err = Wire.endTransmission(false); // Keep connection open for read
 
     if (err != 0) {
-        recordI2cFailure(now, micros() - i2cStart);
+        recordI2cFailure(now);
         return false;
     }
 
     // Read 32 bytes of touch data
     uint8_t buff[32] = {0};
     const size_t bytesRead = Wire.requestFrom(i2cAddr_, static_cast<uint8_t>(32));
-    uint32_t i2cElapsed = micros() - i2cStart;
     if (bytesRead != 32) {
         while (Wire.available()) {
             (void)Wire.read();
         }
-        recordI2cFailure(now, i2cElapsed);
+        recordI2cFailure(now);
         return false;
     }
 
-    if (i2cElapsed > i2cMaxUs_)
-        i2cMaxUs_ = i2cElapsed;
     for (int i = 0; i < 32; i++) {
         if (!Wire.available()) {
-            recordI2cFailure(now, micros() - i2cStart);
+            recordI2cFailure(now);
             return false;
         }
         buff[i] = Wire.read();

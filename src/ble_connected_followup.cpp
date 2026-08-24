@@ -2,7 +2,6 @@
 
 #include "config.h"
 #include "ble_internals.h"
-#include "perf_metrics.h"
 
 namespace {
 
@@ -36,9 +35,7 @@ void V1BLEClient::processConnectedFollowup() {
     case ConnectedFollowupStep::NONE:
         return;
     case ConnectedFollowupStep::REQUEST_ALERT_DATA: {
-        const uint32_t startUs = micros();
         const bool ok = requestAlertData();
-        perfRecordBleFollowupRequestAlertUs(micros() - startUs);
         if (!ok) {
             logNonCriticalFollowupFailure(followupRequestAlertFailLog_,
                                           "[BLE] Failed to request alert data (non-critical)");
@@ -48,16 +45,8 @@ void V1BLEClient::processConnectedFollowup() {
         connectedFollowupStep_ = ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE;
         return;
     case ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE: {
-        const uint32_t bleProcessUs = lastBleProcessDurationUs_.load(std::memory_order_relaxed);
-        const uint32_t displayPipeUs = lastDisplayPipelineDurationUs_.load(std::memory_order_relaxed);
-        const bool bleStable = bleProcessUs <= CONNECT_BURST_STABLE_BLE_MAX_US;
-        const bool displayStable = (displayPipeUs == 0u || displayPipeUs <= CONNECT_BURST_STABLE_DISP_MAX_US);
-        if (bleStable && displayStable) {
-            if (connectBurstStableLoopCount_ < 0xFF) {
-                ++connectBurstStableLoopCount_;
-            }
-        } else {
-            connectBurstStableLoopCount_ = 0;
+        if (connectBurstStableLoopCount_ < 0xFF) {
+            ++connectBurstStableLoopCount_;
         }
 
         const uint32_t nowMs = static_cast<uint32_t>(millis());
@@ -83,9 +72,7 @@ void V1BLEClient::processConnectedFollowup() {
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
             return;
         }
-        const uint32_t startUs = micros();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_VERSION);
-        perfRecordBleFollowupRequestVersionUs(micros() - startUs);
         if (result != SendResult::SENT) {
             const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
             if (result == SendResult::NOT_YET && !retryTimedOut) {
@@ -157,7 +144,6 @@ void V1BLEClient::processConnectedFollowup() {
         if (connectStableCallback_) {
             const uint32_t startUs = micros();
             connectStableCallback_();
-            perfRecordBleConnectStableCallbackUs(micros() - startUs);
         }
         connectedFollowupStep_ = ConnectedFollowupStep::BACKUP_BONDS;
         return;

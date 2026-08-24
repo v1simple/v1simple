@@ -4,7 +4,7 @@
 </script>
 
 <div class="page-stack">
-    <PageHeader title="GPS" subtitle="GPS module and UTC logging settings for normal operation." />
+    <PageHeader title="GPS" subtitle="GPS module settings for normal operation." />
 
     <SettingsGpsCard />
 </div>

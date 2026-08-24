@@ -4,7 +4,6 @@
 #include "ble_client.h"
 #include "modules/auto_push/auto_push_module.h"
 #include "modules/ble/connection_state_dispatch_module.h"
-#include "modules/perf/debug_macros.h"
 #include "modules/system/loop_tail_module.h"
 #include "modules/system/periodic_maintenance_module.h"
 #include "modules/touch/tap_gesture_module.h"
@@ -27,7 +26,7 @@ LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bo
     if (!bootReady && nowMs >= bootReadyDeadlineMs) {
         bootReady = true;
         bleClient.setBootReady(true);
-        SerialLog.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", nowMs);
+        Serial.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", nowMs);
     }
     wifiPriorityPolicyModule.apply(nowMs, bleClient, wifiManager);
 

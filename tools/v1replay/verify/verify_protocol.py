@@ -109,12 +109,6 @@ unsigned long mockMicros = 0;
 #include "packet_parser.cpp"
 #include "packet_parser_alerts.cpp"
 
-#ifndef ARDUINO
-void perfRecordV1FirmwareVersion(uint32_t) {}
-void perfRecordV1LedBitmapAnomaly() {}
-void perfRecordV1AllVolumeParsed() {}
-#endif
-
 #include <cstdint>
 #include <iostream>
 #include <sstream>

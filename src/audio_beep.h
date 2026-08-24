@@ -61,5 +61,3 @@ void audio_process_amp_timeout();
 
 // Minimum free stack observed at audio task/job completion.  Zero means that
 // the corresponding playback path has not completed since boot.
-uint32_t audio_pcm_stack_high_water_bytes();
-uint32_t audio_sd_stack_high_water_bytes();

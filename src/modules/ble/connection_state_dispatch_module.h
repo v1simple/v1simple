@@ -32,8 +32,6 @@ class ConnectionStateDispatchModule {
         void (*runConnectionStateProcess)(void* ctx, uint32_t nowMs) = nullptr;
         void* connectionStateContext = nullptr;
 
-        void (*recordDecision)(void* ctx, const ConnectionStateDispatchDecision& decision) = nullptr;
-        void* decisionContext = nullptr;
     };
 
     void begin(const Providers& hooks);

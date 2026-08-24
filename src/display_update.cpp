@@ -18,14 +18,11 @@
 #include "display_element_caches.h"
 #include "display_palette.h"
 #include "display_text.h"
-#include "display_log.h"
 #include "display_flush.h"
 #include "display_vol_warn.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include "packet_parser.h"
-#include "qualification_clock.h"
 #if defined(DISPLAY_WAVESHARE_349)
 #include "battery_manager.h"
 #include "wifi_manager.h"
@@ -37,31 +34,6 @@
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
 namespace {
-
-PerfDisplayRenderPath liveRenderPathForScenario() {
-    const PerfDisplayRenderScenario scenario = perfGetDisplayRenderScenario();
-    if (scenario == PerfDisplayRenderScenario::Restore) {
-        return PerfDisplayRenderPath::Restore;
-    }
-    if (scenario == PerfDisplayRenderScenario::PreviewFirstFrame ||
-        scenario == PerfDisplayRenderScenario::PreviewSteadyFrame) {
-        return PerfDisplayRenderPath::Preview;
-    }
-    return PerfDisplayRenderPath::Full;
-}
-
-PerfDisplayRenderPath restingRenderPathForScenario() {
-    const PerfDisplayRenderScenario scenario = perfGetDisplayRenderScenario();
-    if (scenario == PerfDisplayRenderScenario::Restore) {
-        return PerfDisplayRenderPath::Restore;
-    }
-    return PerfDisplayRenderPath::RestingFull;
-}
-
-PerfDisplayRenderPath persistedRenderPathForScenario() {
-    return (perfGetDisplayRenderScenario() == PerfDisplayRenderScenario::Restore) ? PerfDisplayRenderPath::Restore
-                                                                                  : PerfDisplayRenderPath::Persisted;
-}
 
 struct DispatchRectList {
     DrawnRegion::Rect rects[DrawnRegion::MAX_RECTS]{};
@@ -650,14 +622,10 @@ void V1Display::update(const DisplayState& state) {
     // Mode transition → full redraw via element cache invalidation
     if (needsFullRedraw) {
         if (currentScreen_ == ScreenMode::Live) {
-            perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::LeaveLive);
         } else if (currentScreen_ == ScreenMode::Persisted) {
-            perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::LeavePersisted);
         }
-        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Resting, millis());
     }
 
-    perfRecordDisplayRenderPath(restingRenderPathForScenario());
 
     // In resting mode, never show muted visual — apps commonly set volume to 0
     // when idle, adjusting on new alerts.
@@ -694,9 +662,6 @@ void V1Display::update(const DisplayState& state) {
     if (allowRestingNoOpSkip) {
         restingNoOpKey = buildRestingNoOpKey(state, nowMs, bleContextFresh);
         if (!needsFullRedraw && !hadPendingExternalDraws && canSkipRestingNoOp(restingNoOpKey)) {
-            perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
-            perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting,
-                                           PerfDisplayFlushDecisionReason::CacheHit);
             lastState_ = state;
             return;
         }
@@ -709,17 +674,12 @@ void V1Display::update(const DisplayState& state) {
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
 
-    uint32_t stageStartUs = 0;
     if (needsFullRedraw) {
-        stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     char topChar = state.bogeyCounterChar;
-    stageStartUs = micros();
     drawStatusStrip(state, topChar, effectiveMuted, state.bogeyCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // B1: Ku alerts have no dedicated LED on the V1 band row — they light K.
     // OR BAND_KU into the mask so drawBandIndicators relabels K -> "Ku".
@@ -733,41 +693,22 @@ void V1Display::update(const DisplayState& state) {
     if (showVolumeWarning) {
         drawVolumeZeroWarning();
     } else {
-        stageStartUs = micros();
         drawFrequency(0, BAND_NONE, effectiveMuted);
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
     }
 
-    stageStartUs = micros();
     drawVerticalSignalBars(state.signalBars, state.signalBars, BAND_KA, effectiveMuted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
-    stageStartUs = micros();
     drawDirectionArrow(DIR_NONE, effectiveMuted, 0);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     // Clear any persisted card slots
     AlertData emptyPriority;
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, effectiveMuted);
 
-    stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
-    PerfDisplayFlushDecisionReason flushDecision = PerfDisplayFlushDecisionReason::CacheHit;
-    if (needsFullRedraw) {
-        flushDecision = PerfDisplayFlushDecisionReason::FullRedraw;
-    } else if (hadPendingExternalDraws) {
-        flushDecision = PerfDisplayFlushDecisionReason::PendingExternal;
-    } else if (paintedThisFrame) {
-        flushDecision = PerfDisplayFlushDecisionReason::Painted;
-    }
-    if (flushDecision != PerfDisplayFlushDecisionReason::CacheHit) {
+    if (needsFullRedraw || hadPendingExternalDraws || paintedThisFrame) {
         DISPLAY_FLUSH();
-    } else {
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
-    perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Resting, flushDecision);
     drawnRegion_.reset();
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Resting;
@@ -804,76 +745,47 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 
     if (needsFullRedraw) {
         if (currentScreen_ == ScreenMode::Live) {
-            perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::LeaveLive);
         }
-        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Persisted, millis());
     }
 
-    perfRecordDisplayRenderPath(persistedRenderPathForScenario());
 
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
 
-    uint32_t stageStartUs = 0;
     if (needsFullRedraw) {
-        stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     // Bogey counter shows V1's decoded display — NOT greyed, always visible
     char topChar = state.bogeyCounterChar;
     syncTopIndicators(static_cast<uint32_t>(millis()));
-    stageStartUs = micros();
     drawStatusStrip(state, topChar, false, state.bogeyCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // Band indicator in persisted color
-    stageStartUs = micros();
     const bool bandsPainted = drawBandIndicators(alert.band, true);
     if (bandsPainted || dirty_.gpsIndicator) {
         drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Frequency in persisted color
     const bool isPhotoRadar = (alert.photoType != 0) || state.hasPhotoAlert || (state.bogeyCounterChar == 'P');
-    stageStartUs = micros();
     drawFrequency(alert.frequency, alert.band, true, isPhotoRadar);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
 
     // No signal bars — draw empty
-    stageStartUs = micros();
     drawVerticalSignalBars(0, 0, alert.band, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Arrows in persisted grey
-    stageStartUs = micros();
     drawDirectionArrow(alert.direction, true);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     // Clear card area
     AlertData emptyPriority;
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, true);
 
-    stageStartUs = micros();
     const bool paintedThisFrame = !drawnRegion_.empty();
-    PerfDisplayFlushDecisionReason flushDecision = PerfDisplayFlushDecisionReason::CacheHit;
-    if (needsFullRedraw) {
-        flushDecision = PerfDisplayFlushDecisionReason::FullRedraw;
-    } else if (hadPendingExternalDraws) {
-        flushDecision = PerfDisplayFlushDecisionReason::PendingExternal;
-    } else if (paintedThisFrame) {
-        flushDecision = PerfDisplayFlushDecisionReason::Painted;
-    }
-    if (flushDecision != PerfDisplayFlushDecisionReason::CacheHit) {
+    if (needsFullRedraw || hadPendingExternalDraws || paintedThisFrame) {
         DISPLAY_FLUSH();
-    } else {
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     }
-    perfRecordDisplayFlushDecision(PerfDisplayFlushDecisionPath::Persisted, flushDecision);
     drawnRegion_.reset();
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Persisted;
@@ -891,7 +803,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         // Do not clear drawnRegion_ here: a lower-level external setter may
         // have painted an indicator before this invalid live packet. Leaving
         // the region queued lets the next real display frame flush it.
-        PERF_INC(displayLiveInvalidPrioritySkips);
         return;
     }
 
@@ -930,13 +841,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     // actual mode transitions, not every blink frame.
     const bool blinkForceFullFlush = (state.flashBits != 0) || (state.bandFlashBits != 0);
 
-    if (needsFullRedraw) {
-        DISPLAY_LOG("[DISP] Entering Live mode (was %d), alertCount=%d\n", (int)currentScreen_, alertCount);
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::EnterLive);
-        perfRecordDisplayScreenTransition(perfScreenForMode(currentScreen_), PerfDisplayScreen::Live, millis());
-    }
-
-    perfRecordDisplayRenderPath(liveRenderPathForScenario());
 
     dirty_.multiAlert = true;
     multiAlertMode_ = true;
@@ -956,28 +860,20 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     char liveTopCounterChar = state.bogeyCounterChar;
     bool liveTopCounterDot = state.bogeyCounterDot;
 
-    uint32_t stageStartUs = 0;
     if (needsFullRedraw) {
-        stageStartUs = micros();
         drawBaseFrame();
-        perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BaseFrame, micros() - stageStartUs);
     }
 
     syncTopIndicators(static_cast<uint32_t>(millis()));
-    stageStartUs = micros();
     drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::StatusStrip, micros() - stageStartUs);
 
     // Photo-radar detection: image1 is the steady displayed character. If V1
     // is showing 'P' (steady or in the on-phase of a blink), liveTopCounterChar
     // == 'P'. Under blink-pair semantics image2=='P' implies image1=='P'
     // (steady-P case), so a separate byte2 check would be redundant.
     const bool isPhotoRadar = (priority.photoType != 0) || state.hasPhotoAlert || (liveTopCounterChar == 'P');
-    stageStartUs = micros();
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Frequency, micros() - stageStartUs);
 
-    stageStartUs = micros();
     // B1: see above — re-label K cell as "Ku" when a Ku alert is active.
     const uint8_t bandMaskWithKu2 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
     const bool bandsPainted = drawBandIndicators(bandMaskWithKu2, state.muted, state.bandFlashBits);
@@ -985,7 +881,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
     drawVerticalSignalBars(state.signalBars, state.signalBars, priority.band, state.muted);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::BandsBars, micros() - stageStartUs);
 
     // Arrow blink: V1 reports the priority-arrow blink directly via image1 vs
     // image2 in the InfDisplayData packet (image1 = currently lit, image2 =
@@ -996,9 +891,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     // explicitly reports "no blink" (image1 == image2), so we use the
     // packet-reported flash bits as-is.
     const uint8_t arrowFlashBits = state.flashBits;
-    stageStartUs = micros();
     drawDirectionArrow(arrowsToShow, state.muted, arrowFlashBits);
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::ArrowsIcons, micros() - stageStartUs);
 
     if (needsFullRedraw) {
         // Force card redraw only when a full screen clear invalidated the card area.
@@ -1069,12 +962,9 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         !needsFullRedraw && !smallWindowForceFullFlush &&
         shouldUseMultiRectDispatch(drawnRegion_, kPartialFlushAreaCap, arrowPaintedThisFrame_, multiRectDispatch);
 
-    stageStartUs = micros();
     if (needsFullRedraw) {
         DISPLAY_FLUSH();
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::FullFlushForRedraw);
     } else if (drawnRegion_.empty()) {
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::CacheHitSkipFlush);
     } else if (smallWindowForceFullFlush) {
         // Bypass partial flush only when this blink-bearing or arrow
         // visibility-changing frame painted pixels. Cache-hit blink packets
@@ -1082,23 +972,17 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         // states; if the previous frame was a blink-off PALETTE_BG phase, a
         // missed small-window partial flush leaves the resting glyph blank.
         DISPLAY_FLUSH();
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::FullFlushForRedraw);
     } else if (useMultiRectDispatch) {
         for (uint8_t i = 0; i < multiRectDispatch.count; ++i) {
             const DrawnRegion::Rect& rect = multiRectDispatch.rects[i];
             flushRegion(rect.x, rect.y, rect.w, rect.h);
         }
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     } else if (estimatedFlushRegionUs(static_cast<uint32_t>(drawnRegion_.w()),
                                       static_cast<uint32_t>(drawnRegion_.h())) >= kFullFlushUs) {
-        perfRecordDisplayUnionExceedsCap(drawnRegion_.areaPx(), drawnRegion_.rectCount(), drawnRegion_.sourceMask());
         DISPLAY_FLUSH();
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::UnionExceedsCap);
     } else {
         flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
-        perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::PartialRegionFlush);
     }
-    perfRecordDisplayRenderSubphaseUs(PerfDisplayRenderSubphase::Flush, micros() - stageStartUs);
 
     // Consume the live-frame region after dispatch. This prevents the next
     // live frame from mistaking already-flushed paint for pending external

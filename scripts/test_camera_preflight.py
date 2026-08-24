@@ -435,14 +435,12 @@ def make_live_args() -> SimpleNamespace:
         baud=115200,
         ready_timeout_seconds=1,
         completion_grace_seconds=1,
-        export_idle_timeout_seconds=1,
-        export_retries=0,
-        export_recovery_idle_timeout_seconds=1,
+        scenario="",
     )
 
 
 def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> None:
-    events = {"serial": 0, "qstart": 0, "emulator_start": 0}
+    events = {"serial": 0, "emulator_start": 0}
     cameras: list[FakeCamera] = []
     pending_profile_updates: list[dict[str, Any]] = []
 
@@ -457,7 +455,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         def health_problem(self) -> str:
             return ""
 
-        def wait_for_session_transport(self, _timeout_s: float) -> None:
+        def wait_for_transport(self, _timeout_s: float) -> None:
             assert_true(self.started, "idle ownership was checked before emulator start")
 
         def finish(self, completed: bool) -> dict[str, Any]:
@@ -466,6 +464,11 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
             events["serial"] += 1
+            self.boot_marker_count = 0
+            self.line_count = 0
+
+        def read_line(self, _timeout: float) -> str:
+            return ""
 
         def close(self) -> None:
             pass
@@ -484,9 +487,6 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         "V1Emulator": run_window_module.V1Emulator,
         "BenchSerial": run_window_module.BenchSerial,
         "wait_for_port": run_window_module.wait_for_port,
-        "wait_ready": run_window_module.wait_ready,
-        "start_and_wait": run_window_module.start_and_wait,
-        "download_csv": run_window_module.download_csv,
         "V1RadioLease": run_window_module.V1RadioLease,
     }
     run_window_module.CameraCapture = lambda out, duration: (  # type: ignore[assignment]
@@ -502,34 +502,13 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     run_window_module.V1Emulator = FakeEmulator  # type: ignore[assignment]
     run_window_module.BenchSerial = FakeSerial  # type: ignore[assignment]
     run_window_module.wait_for_port = lambda *_args: "fixture-port"  # type: ignore[assignment]
-    run_window_module.wait_ready = lambda *_args: {}  # type: ignore[assignment]
-
-    def fake_start_and_wait(
-        *_args: Any,
-        after_started: Any,
-        health_check: Any,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        events["qstart"] += 1
-        after_started()
-        assert_true(health_check() == "", "healthy camera blocked the managed window")
-        return {"csvPath": "/perf/perf_boot_1.csv"}
-
-    run_window_module.start_and_wait = fake_start_and_wait  # type: ignore[assignment]
-
-    def fake_download(_q: Any, out_dir: Path, *_args: Any) -> Path:
-        path = out_dir / "perf.csv"
-        path.write_text("millis\n0\n", encoding="utf-8")
-        return path
-
-    run_window_module.download_csv = fake_download  # type: ignore[assignment]
     run_window_module.V1RadioLease = FakeLease  # type: ignore[assignment]
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pending_profile_updates.append({"video_exposure_time_abs": 156})
             try:
-                collect_live(make_live_args(), root / "profile-mismatch")
+                collect_live(make_live_args(), root / "profile-mismatch", {})
             except CameraPreflightFailure as exc:
                 assert_true(
                     exc.preflight["diagnostics"][0]["code"] == "camera_profile_mismatch",
@@ -540,7 +519,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             profile_camera = cameras[-1]
             assert_true(profile_camera.start_calls == 0 and not profile_camera.running, "camera opened")
             assert_true(
-                events == {"serial": 0, "qstart": 0, "emulator_start": 0},
+                events == {"serial": 0, "emulator_start": 0},
                 f"profile mismatch entered product path: {events}",
             )
 
@@ -548,7 +527,10 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
                 rectangle_fixture(0.0, 0.0)
             )
             try:
-                with_calibrator(refused, lambda: collect_live(make_live_args(), root / "refused"))
+                with_calibrator(
+                    refused,
+                    lambda: collect_live(make_live_args(), root / "refused", {}),
+                )
             except CameraPreflightFailure as exc:
                 assert_true(
                     exc.preflight["diagnostics"][0]["code"] == "screen_landmark_unreadable",
@@ -562,25 +544,28 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
                 "camera was not stopped",
             )
             assert_true(
-                events == {"serial": 0, "qstart": 0, "emulator_start": 0},
+                events == {"serial": 0, "emulator_start": 0},
                 f"product path ran: {events}",
             )
 
             def calibrate(_path: Path, _ffmpeg: str) -> tuple[float, float, dict[str, Any]]:
                 return detect_display_crop_registration(registration_fixture(0.0, 0.0))
 
-            with_calibrator(calibrate, lambda: collect_live(make_live_args(), root / "passed"))
+            with_calibrator(
+                calibrate,
+                lambda: collect_live(make_live_args(), root / "passed", {}),
+            )
             passed_camera = cameras[-1]
             assert_true(
                 passed_camera.start_calls == 1 and passed_camera.stop_calls == 1,
                 "pass did not continue once",
             )
             assert_true(
-                passed_camera.health_checks == 0,
-                "diagnostic core camera health unexpectedly gated product collection",
+                passed_camera.health_checks > 0,
+                "camera health was not checked during external collection",
             )
             assert_true(
-                events == {"serial": 1, "qstart": 1, "emulator_start": 1},
+                events == {"serial": 1, "emulator_start": 1},
                 f"wrong pass lifecycle: {events}",
             )
     finally:

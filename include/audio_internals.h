@@ -6,7 +6,6 @@
 
 #include "audio_beep.h"
 #include "audio_i2c_utils.h"
-#include "perf_metrics.h"
 #include <atomic>
 #include <cstdint>
 #include "driver/i2s_std.h"
@@ -42,8 +41,6 @@ extern bool es8311_initialized;
 extern bool i2s_initialized;
 extern i2s_chan_handle_t i2s_tx_chan;
 extern std::atomic<TaskHandle_t> audioTaskHandle;
-extern std::atomic<uint32_t> g_audioPcmStackHighWaterBytes;
-extern std::atomic<uint32_t> g_audioSdStackHighWaterBytes;
 
 // --- Shared atomic state (defined in audio_beep.cpp) ---
 extern std::atomic<bool> audio_playing;

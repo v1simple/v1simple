@@ -15,7 +15,6 @@
 #include "display_visual_contract.h"
 #include "FreeSansBold24pt7b.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include "packet_parser.h"
 #include <algorithm> // std::max
 #include <cstring>
@@ -169,7 +168,6 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     if (gpsNeedsRestore) {
         dirty_.gpsIndicator = true;
     }
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::BandSetChange);
 
     // The K/X clear windows reach into the top-left of card position 0.  When
     // that card is already on the framebuffer, subtract its rectangle from
@@ -285,7 +283,6 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
         muted == elementCaches_.bars.lastMuted && elementCaches_.bars.lastPaletteRevision == paletteRevision_) {
         return;
     }
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::SignalBarChange);
 
     bool hasSignal = (strength > 0);
 

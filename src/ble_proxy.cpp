@@ -5,7 +5,6 @@
 #include "ble_client.h"
 #include "ble_internals.h"
 #include "config.h"
-#include "perf_metrics.h"
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <cctype>
@@ -56,22 +55,6 @@ void V1BLEClient::deferLastV1Address(const char* addr, const char* advertisedNam
     portEXIT_CRITICAL(&pendingAddrMux);
 }
 
-uint32_t V1BLEClient::getPhoneCmdDropsOverflow() const {
-    return perfCounters.phoneCmdDropsOverflow.load(std::memory_order_relaxed);
-}
-
-uint32_t V1BLEClient::getPhoneCmdDropsInvalid() const {
-    return perfCounters.phoneCmdDropsInvalid.load(std::memory_order_relaxed);
-}
-
-uint32_t V1BLEClient::getPhoneCmdDropsBleFail() const {
-    return perfCounters.phoneCmdDropsBleFail.load(std::memory_order_relaxed);
-}
-
-uint32_t V1BLEClient::getPhoneCmdDropsLockBusy() const {
-    return perfCounters.phoneCmdDropsLockBusy.load(std::memory_order_relaxed);
-}
-
 bool V1BLEClient::enqueueProxyCallbackEvent(const ProxyCallbackEvent& event) {
     taskENTER_CRITICAL(&proxyCallbackEventMux_);
     if (proxyCallbackEventQueueCount_ >= PROXY_CALLBACK_EVENT_QUEUE_DEPTH) {
@@ -103,7 +86,6 @@ bool V1BLEClient::popProxyCallbackEvent(ProxyCallbackEvent& event) {
 
 void V1BLEClient::clearProxyAdvertisingSchedule() {
     proxyAdvertisingStartMs_ = 0;
-    proxyAdvertisingStartReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
 }
 
 void V1BLEClient::armProxyFastAdvertisingWindow(const uint32_t nowMs, const uint32_t durationMs) {
@@ -130,7 +112,7 @@ void V1BLEClient::applyProxyAdvertisingCadence(const bool fastCadence) {
     proxyAdvertisingFastCadence_ = fastCadence;
 }
 
-void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs, const uint8_t reasonCode) {
+void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs) {
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     if (!pAdvertising || !pAdvertising->isAdvertising()) {
         return;
@@ -147,23 +129,21 @@ void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs, const uin
     NimBLEDevice::stopAdvertising();
     applyProxyAdvertisingCadence(fastCadence);
     if (NimBLEDevice::startAdvertising()) {
-        perfRecordProxyAdvertisingTransition(true, reasonCode, nowMs);
         Serial.printf("[BLE] Proxy advertising cadence=%s\n", fastCadence ? "fast" : "slow");
     }
 }
 
-void V1BLEClient::stopProxyAdvertisingFromMainLoop(uint8_t reasonCode) {
+void V1BLEClient::stopProxyAdvertisingFromMainLoop() {
     clearProxyAdvertisingSchedule();
 
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
     if (pAdv && pAdv->isAdvertising()) {
         NimBLEDevice::stopAdvertising();
-        perfRecordProxyAdvertisingTransition(false, reasonCode, static_cast<uint32_t>(millis()));
     }
 }
 
 void V1BLEClient::stopProxyAdvertising() {
-    stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
+    stopProxyAdvertisingFromMainLoop();
 }
 
 bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
@@ -200,7 +180,7 @@ bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
     // callback on the other core cannot enter during the main-loop sequence.
     proxyEpochObserver_.close();
     clearProxyAdvertisingSchedule();
-    stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther));
+    stopProxyAdvertisingFromMainLoop();
     disconnectProxyPhones();
     proxyClientConnected_ = false;
     proxyEnabled_ = false;
@@ -310,10 +290,6 @@ void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
         proxyFastAdvertisingUntilMs_ = 0;
         proxySuppressedForObdHold_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
-        proxySuppressedResumeReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
-        perfRecordProxyAdvertisingTransition(
-            false, static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopAppConnected),
-            static_cast<uint32_t>(millis()));
         return;
 
     case ProxyCallbackEventType::APP_DISCONNECTED:
@@ -327,8 +303,7 @@ void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
         proxyClientConnected_ = false;
         proxySuppressedForObdHold_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
-        proxySuppressedResumeReasonCode_ = static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::Unknown);
-        stopProxyAdvertisingFromMainLoop(static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopV1Disconnect));
+        stopProxyAdvertisingFromMainLoop();
         return;
     }
 }
@@ -428,7 +403,6 @@ bool V1BLEClient::allocateProxyQueues() {
     phone2v1QueueHead_ = 0;
     phone2v1QueueTail_ = 0;
     phone2v1QueueCount_ = 0;
-    proxyMetrics_.reset();
     const uint32_t queueEpoch = proxyQueueEpoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
     proxyQueueReleasePending_.store(false, std::memory_order_release);
     proxyEpochObserver_.open(queueEpoch);
@@ -451,6 +425,9 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
     if (!proxyQueueReleasePending_.load(std::memory_order_acquire)) {
         return true;
     }
+    if (proxyEpochObserver_.hasActiveCallbacks()) {
+        return false;
+    }
 
     // Repeated teardown after a completed release is intentionally lock-free.
     if (!proxyQueue_ && !phone2v1Queue_) {
@@ -472,14 +449,12 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
     bool phoneLocked = false;
     if (bleNotifyMutex_) {
         if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
-            proxyEpochObserver_.noteReleaseTryLockFailed(BleProxyCallbackDirection::V1ToProxy);
             return false;
         }
         notifyLocked = true;
     }
     if (phoneCmdMutex_) {
         if (xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
-            proxyEpochObserver_.noteReleaseTryLockFailed(BleProxyCallbackDirection::ProxyToV1);
             if (notifyLocked) {
                 xSemaphoreGive(bleNotifyMutex_);
             }
@@ -508,7 +483,6 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
         heap_caps_free(phoneQueue);
     }
     proxyQueueReleasePending_.store(false, std::memory_order_release);
-    proxyEpochObserver_.noteReleaseCompleted();
 
     if (phoneLocked) {
         xSemaphoreGive(phoneCmdMutex_);
@@ -601,15 +575,10 @@ bool V1BLEClient::isProxyAdvertising() const {
     return proxyEnabled_ && proxyServerInitialized_ && NimBLEDevice::getAdvertising()->isAdvertising();
 }
 
-bool V1BLEClient::forceProxyAdvertising(bool enable, uint8_t reasonCode) {
+bool V1BLEClient::forceProxyAdvertising(bool enable) {
     if (!proxyEnabled_ || !proxyServerInitialized_ || !pServer_) {
         return false;
     }
-
-    const uint8_t startReason =
-        reasonCode == 0 ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StartDirect) : reasonCode;
-    const uint8_t stopReason =
-        reasonCode == 0 ? static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopOther) : reasonCode;
 
     if (enable) {
         if (!connected_.load(std::memory_order_relaxed)) {
@@ -618,15 +587,15 @@ bool V1BLEClient::forceProxyAdvertising(bool enable, uint8_t reasonCode) {
         // Explicit debug/test control refreshes fast discovery so transition
         // drive flaps do not inherit a stale boot-time cadence.
         armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_START_WINDOW_MS);
-        startProxyAdvertising(startReason, true);
+        startProxyAdvertising(true);
         return isProxyAdvertising();
     }
 
-    stopProxyAdvertisingFromMainLoop(stopReason);
+    stopProxyAdvertisingFromMainLoop();
     return true;
 }
 
-void V1BLEClient::startProxyAdvertising(uint8_t reasonCode, bool ignoreWifiPriority) {
+void V1BLEClient::startProxyAdvertising(bool ignoreWifiPriority) {
     if (!proxyServerInitialized_ || !pServer_) {
         Serial.println("Cannot start advertising - proxy server not initialized");
         return;
@@ -643,27 +612,17 @@ void V1BLEClient::startProxyAdvertising(uint8_t reasonCode, bool ignoreWifiPrior
     }
     applyProxyAdvertisingCadence(proxyFastAdvertisingActive(nowMs));
 
-    const uint32_t startUs = micros();
-
     // An active app connection already owns the server.
     if (pServer_->getConnectedCount() > 0) {
-        perfRecordBleProxyStartUs(micros() - startUs);
         return;
     }
 
     // Advertising starts inline because this path performs no blocking work.
     if (!NimBLEDevice::getAdvertising()->isAdvertising()) {
         if (NimBLEDevice::startAdvertising()) {
-            perfRecordProxyAdvertisingTransition(true, reasonCode, nowMs);
-            Serial.printf("Proxy advertising started (%s, cycle=%s cycleMs=%lu)\n",
-                          proxyAdvertisingFastCadence_ ? "fast" : "slow",
-                          perfConnectionCycleStateName(connectionCycleStateCode_),
-                          static_cast<unsigned long>(connectionCycleTimeInStateMs_));
+            Serial.printf("Proxy advertising started (%s)\n", proxyAdvertisingFastCadence_ ? "fast" : "slow");
         }
-    } else {
-        perfRecordProxyAdvertisingTransition(true, reasonCode, static_cast<uint32_t>(millis()));
     }
-    perfRecordBleProxyStartUs(micros() - startUs);
 }
 
 void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
@@ -674,7 +633,6 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
                                          uint32_t queueEpoch) {
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
         !proxyClientConnected_) {
-        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, false);
         return;
     }
 
@@ -686,16 +644,11 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     // Protect queue operations from concurrent access (BLE callback vs main loop)
     if (bleNotifyMutex_ && xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
         // Queue busy – drop to avoid blocking in callback path
-        proxyMetrics_.dropCount++;
         return;
     }
-    proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::V1ToProxy);
 
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
         proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_) {
-        proxyMetrics_.dropCount++;
-        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, false);
-        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
         if (bleNotifyMutex_)
             xSemaphoreGive(bleNotifyMutex_);
         return;
@@ -707,7 +660,6 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
         // Queue full - drop oldest packet
         proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
         proxyQueueCount_--;
-        proxyMetrics_.dropCount++;
     }
 
     // Add packet to queue
@@ -718,18 +670,8 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     pkt.tsMs = static_cast<uint32_t>(millis());
     proxyQueueHead_ = (proxyQueueHead_ + 1) % PROXY_QUEUE_SIZE;
     proxyQueueCount_++;
-    proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::V1ToProxy, queueEpoch, true);
-
-    // Track high water mark
-    if (proxyQueueCount_ > proxyMetrics_.queueHighWater) {
-        proxyMetrics_.queueHighWater = proxyQueueCount_;
-    }
-
     if (bleNotifyMutex_) {
-        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
         xSemaphoreGive(bleNotifyMutex_);
-    } else {
-        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::V1ToProxy);
     }
 }
 
@@ -762,10 +704,7 @@ int V1BLEClient::processProxyQueue() {
 
         if (targetChar) {
             if (targetChar->notify(pkt.data, pkt.length)) {
-                proxyMetrics_.sendCount++;
                 sent++;
-            } else {
-                proxyMetrics_.errorCount++;
             }
         }
 
@@ -783,30 +722,20 @@ bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16
 bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
                                               uint32_t queueEpoch) {
     if (!data || length == 0 || length > 32) {
-        PERF_INC(phoneCmdDropsInvalid);
         return false;
     }
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
-        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
         return false;
     }
 
     if (!phoneCmdMutex_ || xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
-        PERF_INC(phoneCmdDropsLockBusy);
         return false;
     }
-    proxyEpochObserver_.noteQueueLockAcquired(BleProxyCallbackDirection::ProxyToV1);
-
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
-        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
-        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
     if (!phone2v1Queue_) {
-        PERF_INC(phoneCmdDropsInvalid);
-        proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, false);
-        proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
@@ -815,7 +744,6 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
         // Preserve the established queue policy: evict oldest, keep newest.
         phone2v1QueueTail_ = (phone2v1QueueTail_ + 1) % PHONE_CMD_QUEUE_SIZE;
         phone2v1QueueCount_--;
-        PERF_INC(phoneCmdDropsOverflow);
     }
 
     ProxyPacket& pkt = phone2v1Queue_[phone2v1QueueHead_];
@@ -824,47 +752,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     pkt.charUUID = sourceCharUUID;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
-    proxyEpochObserver_.noteAdmission(BleProxyCallbackDirection::ProxyToV1, queueEpoch, true);
-
-    proxyEpochObserver_.noteQueueLockReleased(BleProxyCallbackDirection::ProxyToV1);
     xSemaphoreGive(phoneCmdMutex_);
-    return true;
-}
-
-bool V1BLEClient::trySnapshotProxyEpochQualification(BleProxyEpochQualificationSnapshot& snapshot) {
-    bool notifyLocked = false;
-    if (bleNotifyMutex_) {
-        if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
-            return false;
-        }
-        notifyLocked = true;
-    }
-    if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
-        if (notifyLocked) {
-            xSemaphoreGive(bleNotifyMutex_);
-        }
-        return false;
-    }
-    const bool phoneLocked = phoneCmdMutex_ != nullptr;
-
-    snapshot.epoch = proxyEpochObserver_.snapshot();
-    snapshot.proxyQueueHead = static_cast<uint32_t>(proxyQueueHead_.load(std::memory_order_relaxed));
-    snapshot.proxyQueueTail = static_cast<uint32_t>(proxyQueueTail_.load(std::memory_order_relaxed));
-    snapshot.proxyQueueCount = static_cast<uint32_t>(proxyQueueCount_.load(std::memory_order_relaxed));
-    snapshot.proxyQueueCapacity = static_cast<uint32_t>(PROXY_QUEUE_SIZE);
-    snapshot.phoneQueueHead = static_cast<uint32_t>(phone2v1QueueHead_.load(std::memory_order_relaxed));
-    snapshot.phoneQueueTail = static_cast<uint32_t>(phone2v1QueueTail_.load(std::memory_order_relaxed));
-    snapshot.phoneQueueCount = static_cast<uint32_t>(phone2v1QueueCount_.load(std::memory_order_relaxed));
-    snapshot.phoneQueueCapacity = static_cast<uint32_t>(PHONE_CMD_QUEUE_SIZE);
-    snapshot.freeInternalBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    snapshot.largestInternalBlockBytes = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-
-    if (phoneLocked) {
-        xSemaphoreGive(phoneCmdMutex_);
-    }
-    if (notifyLocked) {
-        xSemaphoreGive(bleNotifyMutex_);
-    }
     return true;
 }
 
@@ -941,7 +829,6 @@ int V1BLEClient::processPhoneCommandQueue() {
             if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
-                PERF_INC(cmdBleBusy);
                 result = SendResult::NOT_YET; // Transient - retry
             }
         } else {
@@ -961,7 +848,6 @@ int V1BLEClient::processPhoneCommandQueue() {
             if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
-                PERF_INC(cmdBleBusy);
                 result = SendResult::NOT_YET; // Transient - retry
             }
         } else {
@@ -985,7 +871,6 @@ int V1BLEClient::processPhoneCommandQueue() {
     default:
         // Hard failure: drop packet, clear pending, count error
         hasPending = false;
-        PERF_INC(phoneCmdDropsBleFail);
         return 0;
     }
 }

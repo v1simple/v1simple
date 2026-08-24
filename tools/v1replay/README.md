@@ -77,26 +77,16 @@ ready again. `--no-alerts`, `--no-wait`, and `--always-alerts` are therefore
 rejected for managed playback.
 `--exit-on-complete` closes the peripheral and returns after the resting tail.
 The unified bench instead uses `--machine-events`, keeps the peripheral alive
-through the end of the firmware metrics window, and then stops its process group.
+through the complete external evidence window, and then stops its process group.
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
-
-The unified runner alone uses `bench --handshake-only` before replay.
-That mode reacts directly to each accepted start-alert request and ensures one
-canonical count-zero alert row is queued until CoreBluetooth accepts it for
-delivery; it does not depend on the player's polling cadence. Once delivery is
-recorded it stays quiet and alive until the runner removes the peripheral. Its
-raw machine-event log records the accepted notification and readiness boundary;
-it does not enter the scenario or idle stream.
 
 Bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
 multi-alert interval (57 samples) and leaves all single-alert periods steady.
-This is deliberately isolated in `BenchScenario.swift` so encounter evidence
-that includes the real V1's display image planes can replace the assumption
-without changing firmware or packet semantics. The firmware's current compact
-encounter CSV records alert-table assignments, not those image planes, so it
-cannot establish blink intent by itself.
+This is deliberately isolated in `BenchScenario.swift` so later external input
+evidence can replace the assumption without changing firmware or packet
+semantics. Physical display behavior is checked by the camera leg.
 `--blink-profile steady` is the negative control; `--blink-profile stress`
 blinks every active priority arrow (708 samples) as the worst-case repaint
 control. `--blink-arrow` remains a legacy alias for the stress profile.
@@ -198,26 +188,13 @@ The public contract inventory uses these stable behavior IDs:
   characteristic. A transient local pacing or transport deferral retains the
   unsent query for a later loop instead of skipping it. Exact retry count,
   delay, and reply arrival order are not gated.
-- `V1-RECONNECT-SESSION-001` pins a managed same-boot reconnect boundary. A
-  handshake-only process must independently reach its startup-ready event,
-  then disappear; after the still-open serial session observes the board's V1
-  cleanup, a replacement process must independently become ready. The raw
-  process logs and serial fences keep those two sessions distinct. The evidence is
-  `ConnectionStateModule::DATA_REQUEST_INTERVAL_MS` in
-  `src/modules/ble/connection_state_module.h`, the strict `>` rate-limit check
-  in `src/modules/ble/connection_state_module.cpp`, and
-  `V1SessionContractTests.testDuplicateStartIsDeterministicAndStopEmitsNoReply`.
-  This is host emulator and board-cleanup integration evidence, not proof of
-  physical-V1 reconnect timing, cache or bond behavior, or control persistence.
 - `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
   V1-to-app reply, and selection of the B2CE short-display channel.
 - `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
   B2CE short-packet route. Equal current and saved values are emulator fixture
-  configuration, not a universal device default. For the default-v4.1038
-  managed replay, the raw replacement process log records the accepted canonical
-  reply and the same replacement metrics window must record exactly one canonical
-  four-field parser commit. The counter is recorded only after the four values
-  enter parser state; it does not claim that a physical V1 was used.
+  configuration, not a universal device default. Parser product tests verify
+  that the four values enter parser state; the managed process log records the
+  exact external reply that was requested and accepted.
 - `V1-CONTROL-MODE-001` pins the default-US one-byte mode commands `01`, `02`,
   and `03`. They update the current mode without a semantic reply. Later idle
   display information carries the matching mode glyph and Aux1 mode bits; active
@@ -308,19 +285,11 @@ delivery, or a future long-packet chunk wrapper. B4E0 segmentation is outside
 this slice and is not synthesized for packets that already fit B2CE.
 
 The tool is a stimulus source, not the sole oracle. Literal host contract tests,
-firmware parser tests, and attached-device bench evidence each own a distinct
-layer of assertions.
-
-With metrics reset before a complete bench run, the generated timeline presents
-708 complete active tables, including 30 three-bogey tables, and 708 selections
-with a valid priority-row flag. Healthy informational evidence therefore has
-matching `alertTablePublishes`, `alertTablePublishes3Bogey`, and
-`prioritySelectRowFlag` relationships, with no assembly timeouts, invalid
-priority selections, invalid-band rows, live-display priority skips/fallbacks,
-queue drops, or parse failures. The replacement window must also advance
-`v1AllVolumeParsed` exactly once; earlier preflight credit cannot satisfy it.
-Display-update and notification-to-display-pipeline-completion latency counters
-provide transport context; they are not synthetic pass/fail proof.
+firmware parser tests, raw process continuity, and camera evidence each own a
+distinct layer of assertions. The generated default scenario contains 708
+complete active tables, including 30 three-bogey tables, so it continues to
+exercise priority selection and multi-row product behavior without depending on
+firmware-generated evidence.
 
 ## Verification
 

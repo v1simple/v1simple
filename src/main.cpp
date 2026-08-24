@@ -36,16 +36,12 @@
 #include "wifi_manager.h"
 #include "settings.h"
 #include "settings_runtime_sync.h"
-#include "status_observability_payload.h"
 #include "touch_handler.h"
 #include "v1_profiles.h"
 #include "v1_devices.h"
 #include "battery_manager.h"
 #include "storage_manager.h"
-#include <SD_MMC.h>
 #include "audio_beep.h"
-#include "perf_metrics.h"
-#include "perf_sd_logger.h"
 #include "config.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/display/display_preview_module.h"
@@ -66,7 +62,6 @@
 #include "modules/system/parsed_frame_event_module.h"
 #include "modules/system/periodic_maintenance_module.h"
 #include "modules/system/loop_tail_module.h"
-#include "modules/system/loop_telemetry_module.h"
 #include "modules/system/loop_ingest_module.h"
 #include "modules/system/loop_display_module.h"
 #include "modules/system/loop_power_touch_module.h"
@@ -93,14 +88,10 @@
 #include "modules/wifi/wifi_visual_sync_module.h"
 #include "modules/wifi/wifi_process_cadence_module.h"
 #include "modules/wifi/wifi_runtime_module.h"
-#include "modules/qualification/qualification_serial_module.h"
-#include "qualification_clock.h"
 
-#include "modules/perf/debug_macros.h"
 #include "provider_callback_bindings.h"
 #include <driver/gpio.h>
 #include "display_driver.h"
-#include <FS.h>
 #include <algorithm>
 
 // Global objects
@@ -133,9 +124,9 @@ static void registerMainLoopTaskWatchdog() {
     const esp_err_t result = esp_task_wdt_add(nullptr);
     mainLoopTaskWatchdogRegistered = result == ESP_OK;
     if (mainLoopTaskWatchdogRegistered) {
-        SerialLog.println("[WDT] Main loop task registered");
+        Serial.println("[WDT] Main loop task registered");
     } else {
-        SerialLog.printf("[WDT] WARN: main loop task registration failed: %d\n", static_cast<int>(result));
+        Serial.printf("[WDT] WARN: main loop task registration failed: %d\n", static_cast<int>(result));
     }
 }
 
@@ -190,7 +181,6 @@ PeriodicMaintenanceModule periodicMaintenanceModule;
 ObdSettingsSyncModule obdSettingsSyncModule;
 SpeedMuteModule speedMuteModule;
 LoopTailModule loopTailModule;
-LoopTelemetryModule loopTelemetryModule;
 LoopIngestModule loopIngestModule;
 LoopDisplayModule loopDisplayModule;
 LoopPowerTouchModule loopPowerTouchModule;
@@ -201,20 +191,19 @@ WifiPriorityPolicyModule wifiPriorityPolicyModule;
 WifiVisualSyncModule wifiVisualSyncModule;
 WifiProcessCadenceModule wifiProcessCadenceModule;
 WifiRuntimeModule wifiRuntimeModule;
-QualificationSerialModule qualificationSerialModule;
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
 void onV1Data(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-              uint32_t callbackDutMillis, uint64_t callbackDutMicros) {
-    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration, callbackDutMillis, callbackDutMicros);
+              uint32_t callbackMillis) {
+    bleQueueModule.onNotify(data, length, charUUID, sessionGeneration, callbackMillis);
 }
 
 template <typename StageLogger>
 static void finalizeBootReadyAndBleScan(const unsigned long setupStartMs, const StageLogger& logBootStage) {
     mainRuntimeState.bootReady = true;
     bleClient.setBootReady(true);
-    SerialLog.printf("[Boot] Ready gate opened at %lu ms\n", millis());
+    Serial.printf("[Boot] Ready gate opened at %lu ms\n", millis());
 
     // Absorb BLE scan-stop settle cost in setup rather than first loop iteration.
     // Keep this call after bootReady/setBootReady to avoid starving BLE state
@@ -222,46 +211,46 @@ static void finalizeBootReadyAndBleScan(const unsigned long setupStartMs, const 
     {
         const unsigned long absorbStartMs = millis();
         bleClient.process();
-        SerialLog.printf("[BootTiming] ble_absorb_ms=%lu\n", millis() - absorbStartMs);
+        Serial.printf("[BootTiming] ble_absorb_ms=%lu\n", millis() - absorbStartMs);
     }
-    SerialLog.println("BLE scan active from setup path");
+    Serial.println("BLE scan active from setup path");
     logBootStage("core_pipeline");
 
     // Normal runtime WiFi is disabled by split-boot architecture. Explicit
     // maintenance entry reboots before WiFi starts.
     const V1Settings& wifiSettings = settingsManager.get();
     if (!wifiSettings.enableWifi) {
-        SerialLog.println("[WiFi] Master disabled in settings — startup and loop processing skipped");
+        Serial.println("[WiFi] Master disabled in settings — startup and loop processing skipped");
     } else {
-        SerialLog.println("Setup complete - BLE scanning, WiFi off; BOOT long-press requests maintenance reboot");
+        Serial.println("Setup complete - BLE scanning, WiFi off; BOOT long-press requests maintenance reboot");
     }
     logBootStage("wifi");
-    SerialLog.printf("[Boot] setup total: %lu ms\n", millis() - setupStartMs);
+    Serial.printf("[Boot] setup total: %lu ms\n", millis() - setupStartMs);
 }
 
 template <typename CheckpointLogger>
 static esp_reset_reason_t initializeResetReasonAndCadenceState(const CheckpointLogger& logBootCheckpoint) {
-    SerialLog.println("\n===================================");
-    SerialLog.println("V1 Gen2 Simple Display");
-    SerialLog.println("Firmware: " FIRMWARE_VERSION);
-    SerialLog.println("[Build] core-only");
-    SerialLog.print("Board: ");
-    SerialLog.println(DISPLAY_NAME);
+    Serial.println("\n===================================");
+    Serial.println("V1 Gen2 Simple Display");
+    Serial.println("Firmware: " FIRMWARE_VERSION);
+    Serial.println("[Build] core-only");
+    Serial.print("Board: ");
+    Serial.println(DISPLAY_NAME);
 
     // Check reset reason - if firmware flash, clear BLE bonds
     esp_reset_reason_t resetReason = esp_reset_reason();
-    SerialLog.printf("Reset reason: %d ", resetReason);
+    Serial.printf("Reset reason: %d ", resetReason);
     if (resetReason == ESP_RST_SW || resetReason == ESP_RST_UNKNOWN) {
-        SerialLog.println("(SW/Upload - will clear BLE bonds for clean reconnect)");
+        Serial.println("(SW/Upload - will clear BLE bonds for clean reconnect)");
     } else if (resetReason == ESP_RST_POWERON) {
-        SerialLog.println("(Power-on)");
+        Serial.println("(Power-on)");
     } else if (resetReason == ESP_RST_DEEPSLEEP) {
-        SerialLog.println("(Wake from deep sleep)");
+        Serial.println("(Wake from deep sleep)");
     } else {
-        SerialLog.printf("(Other: %d)\n", resetReason);
+        Serial.printf("(Other: %d)\n", resetReason);
     }
-    SerialLog.println("===================================\n");
-    SerialLog.printf("[BootTiming] reset=%s (%d)\n", resetReasonToString(resetReason), static_cast<int>(resetReason));
+    Serial.println("===================================\n");
+    Serial.printf("[BootTiming] reset=%s (%d)\n", resetReasonToString(resetReason), static_cast<int>(resetReason));
     if (resetReason == ESP_RST_DEEPSLEEP) {
         logBootCheckpoint("wake_deepsleep");
 
@@ -297,11 +286,11 @@ static esp_reset_reason_t initializeResetReasonAndCadenceState(const CheckpointL
             break;
         }
         const uint64_t ext1Status = esp_sleep_get_ext1_wakeup_status();
-        SerialLog.printf("[DeepSleep] wake_cause=%s (%d) ext1_status=0x%016llX\n", causeName, static_cast<int>(cause),
+        Serial.printf("[DeepSleep] wake_cause=%s (%d) ext1_status=0x%016llX\n", causeName, static_cast<int>(cause),
                          static_cast<unsigned long long>(ext1Status));
     }
     mainRuntimeState.activeScanScreenDwellMs = MIN_SCAN_SCREEN_DWELL_MS;
-    SerialLog.printf("[BootTiming] scan_dwell_target_ms=%lu\n", mainRuntimeState.activeScanScreenDwellMs);
+    Serial.printf("[BootTiming] scan_dwell_target_ms=%lu\n", mainRuntimeState.activeScanScreenDwellMs);
     connectionStateCadenceModule.reset();
     wifiProcessCadenceModule.reset();
     return resetReason;
@@ -317,10 +306,10 @@ static void initializeBlePreInitAndScan(const CheckpointLogger& logBootCheckpoin
         logBootCheckpoint("ble_preinit_begin");
         const unsigned long blePreInitStartMs = millis();
         if (!bleClient.initBLE(blePreInitSettings.proxyBLE, blePreInitSettings.proxyName.c_str())) {
-            SerialLog.println("BLE pre-initialization failed!");
+            Serial.println("BLE pre-initialization failed!");
             fatalBootError("BLE pre-init failed", true);
         }
-        SerialLog.printf("[BootTiming] ble_preinit_ms=%lu\n", millis() - blePreInitStartMs);
+        Serial.printf("[BootTiming] ble_preinit_ms=%lu\n", millis() - blePreInitStartMs);
         logBootStage("ble_preinit");
 
         // Scan starts in setup; connection state-machine work still waits for
@@ -332,14 +321,14 @@ static void initializeBlePreInitAndScan(const CheckpointLogger& logBootCheckpoin
         bleClient.onV1Connected(onV1Connected);
         logBootCheckpoint("ble_callbacks_registered");
         const V1Settings& bleScanSettings = settingsManager.get();
-        SerialLog.printf("Starting BLE scan for V1 (proxy: %s)\n", bleScanSettings.proxyBLE ? "enabled" : "disabled");
+        Serial.printf("Starting BLE scan for V1 (proxy: %s)\n", bleScanSettings.proxyBLE ? "enabled" : "disabled");
         logBootCheckpoint("ble_scan_begin");
         const unsigned long bleScanStartMs = millis();
         if (!bleClient.begin(bleScanSettings.proxyBLE, bleScanSettings.proxyName.c_str())) {
-            SerialLog.println("BLE scan failed to start!");
+            Serial.println("BLE scan failed to start!");
             fatalBootError("BLE scan failed", true);
         }
-        SerialLog.printf("[BootTiming] ble_scan_start_ms=%lu\n", millis() - bleScanStartMs);
+        Serial.printf("[BootTiming] ble_scan_start_ms=%lu\n", millis() - bleScanStartMs);
     }
 }
 
@@ -352,7 +341,7 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     uint32_t psramTotal = static_cast<uint32_t>(ESP.getPsramSize());
     uint32_t psramFree = static_cast<uint32_t>(ESP.getFreePsram());
     uint32_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    SerialLog.printf("[Memory] PSRAM: found=%s total=%lu free=%lu largest=%lu\n", psramOk ? "yes" : "no",
+    Serial.printf("[Memory] PSRAM: found=%s total=%lu free=%lu largest=%lu\n", psramOk ? "yes" : "no",
                      static_cast<unsigned long>(psramTotal), static_cast<unsigned long>(psramFree),
                      static_cast<unsigned long>(psramLargest));
     logBootStage("preflight");
@@ -364,7 +353,7 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
 
     // Initialize display.
     if (!display.begin()) {
-        SerialLog.println("Display initialization failed!");
+        Serial.println("Display initialization failed!");
         fatalBootError("Display init failed", false);
     }
     mainRuntimeState.bootReadyDeadlineMs = millis() + 5000;
@@ -374,7 +363,7 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     // Brief post-display settle before settings init.
     constexpr unsigned long postDisplaySettleMs = 10UL;
     delay(postDisplaySettleMs);
-    SerialLog.printf("[BootTiming] post_display_settle_ms=%lu\n", postDisplaySettleMs);
+    Serial.printf("[BootTiming] post_display_settle_ms=%lu\n", postDisplaySettleMs);
     logBootStage("display");
 
     // Initialize settings before showing any screens.
@@ -390,21 +379,21 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
         logBootCheckpoint("maintenance_ui_begin");
         const unsigned long maintenanceUiStartMs = millis();
         display.showMaintenanceMode();
-        SerialLog.printf("[BootTiming] maintenance_ui_ms=%lu\n", millis() - maintenanceUiStartMs);
+        Serial.printf("[BootTiming] maintenance_ui_ms=%lu\n", millis() - maintenanceUiStartMs);
     } else if (resetReason == ESP_RST_POWERON) {
         // Show boot splash only on true power-on (not crash reboots or firmware uploads).
         // True cold boot: brief non-blocking splash for immediate visual confirmation.
         logBootCheckpoint("splash_begin");
         const unsigned long splashCallStartMs = millis();
         display.showBootSplash();
-        SerialLog.printf("[BootTiming] splash_call_ms=%lu\n", millis() - splashCallStartMs);
+        Serial.printf("[BootTiming] splash_call_ms=%lu\n", millis() - splashCallStartMs);
         mainRuntimeState.bootSplashHoldActive = true;
         mainRuntimeState.bootSplashHoldUntilMs = millis() + BOOT_SPLASH_HOLD_MS;
     } else {
         logBootCheckpoint("wake_ui_scan_begin");
         const unsigned long wakeUiStartMs = millis();
         showInitialScanningScreen();
-        SerialLog.printf("[BootTiming] wake_ui_scan_ms=%lu\n", millis() - wakeUiStartMs);
+        Serial.printf("[BootTiming] wake_ui_scan_ms=%lu\n", millis() - wakeUiStartMs);
     }
     logBootStage("boot_ui");
 
@@ -436,7 +425,7 @@ static void servicePowerDisplayOwnership(unsigned long nowMs) {
         if (restoreBrightness) {
             const uint8_t savedBrightness = settingsManager.get().brightness;
             display.setBrightness(savedBrightness);
-            SerialLog.printf("[Power] Restored display brightness=%u after shutdown abort\n",
+            Serial.printf("[Power] Restored display brightness=%u after shutdown abort\n",
                              static_cast<unsigned>(savedBrightness));
         }
     };
@@ -475,7 +464,7 @@ static void logMaintenanceHeapSnapshot(const char* stage) {
     const uint32_t freeDma = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     const uint32_t largestDma =
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    SerialLog.printf("[MaintBoot] heap stage=%s freeInternal=%lu largestInternal=%lu freeDma=%lu largestDma=%lu\n",
+    Serial.printf("[MaintBoot] heap stage=%s freeInternal=%lu largestInternal=%lu freeDma=%lu largestDma=%lu\n",
                      stage, static_cast<unsigned long>(freeInternal), static_cast<unsigned long>(largestInternal),
                      static_cast<unsigned long>(freeDma), static_cast<unsigned long>(largestDma));
 }
@@ -483,7 +472,7 @@ static void logMaintenanceHeapSnapshot(const char* stage) {
 template <typename StageLogger>
 static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, const uint32_t bootId,
                                           const esp_reset_reason_t resetReason, const StageLogger& logBootStage) {
-    SerialLog.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu maxSessionMs=%lu\n",
+    Serial.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu maxSessionMs=%lu\n",
                      static_cast<unsigned long>(bootId), resetReasonToString(resetReason),
                      static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs),
                      static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootMaxSessionMs));
@@ -497,7 +486,7 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
 
     const unsigned long wifiStartMs = millis();
     const bool wifiStarted = wifiManager.startSetupMode(false);
-    SerialLog.printf("[MaintBoot] wifi_start ok=%s elapsedMs=%lu\n", wifiStarted ? "true" : "false",
+    Serial.printf("[MaintBoot] wifi_start ok=%s elapsedMs=%lu\n", wifiStarted ? "true" : "false",
                      static_cast<unsigned long>(millis() - wifiStartMs));
     logMaintenanceHeapSnapshot(wifiStarted ? "post_wifi" : "wifi_start_failed");
     logBootStage("maintenance_wifi");
@@ -510,7 +499,7 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
         (maintenanceSessionStartMs == 0) ? 1UL : maintenanceSessionStartMs;
     mainRuntimeState.maintenanceLastUiActivityMs = 0;
     mainRuntimeState.maintenanceBootStartedMs = mainRuntimeState.maintenanceBootSessionStartedMs;
-    SerialLog.printf("[MaintBoot] setup total: %lu ms\n", millis() - setupStartMs);
+    Serial.printf("[MaintBoot] setup total: %lu ms\n", millis() - setupStartMs);
 }
 
 template <typename CheckpointLogger, typename StageLogger>
@@ -528,27 +517,12 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
     // "unclean" once and move on.
     const bool prevShutdownClean = readAndResetCleanShutdownMarker();
     if (!prevShutdownClean) {
-        PERF_INC(perfUncleanShutdown);
-        SerialLog.println("[Boot] Previous shutdown was UNCLEAN (no clean-shutdown marker)");
+        Serial.println("[Boot] Previous shutdown was UNCLEAN (no clean-shutdown marker)");
     } else {
-        SerialLog.println("[Boot] Previous shutdown was clean");
+        Serial.println("[Boot] Previous shutdown was clean");
     }
 
-    // Log boot reason to SD so battery-only power-off can be verified
-    // without USB serial.  Gated behind the powerOffSdLog dev setting.
-    if (settingsManager.get().powerOffSdLog && storageManager.isSDCard()) {
-        File f = SD_MMC.open("/poweroff.log", FILE_APPEND);
-        if (f) {
-            f.printf("[%lu] BOOT reset=%s (%d) onBattery=%d voltage=%dmV lastShutdown=%s\n", millis(),
-                     resetReasonToString(resetReason), static_cast<int>(resetReason), batteryManager.isOnBattery(),
-                     batteryManager.getVoltageMillivolts(), prevShutdownClean ? "clean" : "unclean");
-            f.close();
-        }
-    }
-
-    BootLoggingRuntimeServices bootLoggingServices(storageManager, settingsManager, perfSdLogger, alpSdLogger,
-                                                   gpsRuntimeModule, gpsTimePublisher, gpsGeoPublisher);
-    const uint32_t bootId = maintenanceBoot ? nextBootId() : initializeBootPerformanceLoggers(bootLoggingServices);
+    const uint32_t bootId = nextBootId();
 
     logBootStage("storage");
 
@@ -556,7 +530,7 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
         // Bind the consumed one-shot request to this boot's reset identity
         // before any maintenance-mode service emits runtime diagnostics.
         logBootIdentity(bootId, resetReason);
-        SerialLog.println("[MaintBoot] request consumed; entering maintenance boot");
+        Serial.println("[MaintBoot] request consumed; entering maintenance boot");
         initializeMaintenanceBootFlow(setupStartMs, bootId, resetReason, logBootStage);
         return;
     }
@@ -579,7 +553,6 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
 }
 
 void setup() {
-    QualificationClock::initialize();
     const unsigned long setupStartMs = millis();
     unsigned long setupStageStartMs = setupStartMs;
 
@@ -587,13 +560,13 @@ void setup() {
 
     auto logBootStage = [&](const char* stageName) {
         const unsigned long now = millis();
-        SerialLog.printf("[Boot] stage=%s delta=%lu total=%lu\n", stageName, now - setupStageStartMs,
+        Serial.printf("[Boot] stage=%s delta=%lu total=%lu\n", stageName, now - setupStageStartMs,
                          now - setupStartMs);
         setupStageStartMs = now;
     };
     auto logBootCheckpoint = [&](const char* label) {
         const unsigned long now = millis();
-        SerialLog.printf("[BootTiming] checkpoint=%s total=%lu\n", label, now - setupStartMs);
+        Serial.printf("[BootTiming] checkpoint=%s total=%lu\n", label, now - setupStartMs);
     };
 
     const bool maintenanceBoot = readAndClearMaintenanceBootRequest();
@@ -636,10 +609,10 @@ void loop() {
             const WifiMaintenanceRecoveryResult wifiRecovery =
                 wifiMaintenanceRecoveryModule.evaluate(wifiRecoveryInput);
             if (wifiRecovery.attemptRestart) {
-                SerialLog.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
+                Serial.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
                                  static_cast<unsigned long>(wifiRecovery.attemptNumber));
                 const bool wifiRestarted = wifiManager.startSetupMode(false);
-                SerialLog.printf("[MaintBoot] wifi_restart ok=%s\n", wifiRestarted ? "true" : "false");
+                Serial.printf("[MaintBoot] wifi_restart ok=%s\n", wifiRestarted ? "true" : "false");
             }
         }
 
@@ -699,7 +672,7 @@ void loop() {
         } else if (!exitRequestFired && bootButtonPressStartMs != 0 &&
                    (now - bootButtonPressStartMs) >= MAINTENANCE_EXIT_LONG_PRESS_MS) {
             exitRequestFired = true;
-            SerialLog.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
+            Serial.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
             settingsManager.save();
             markCleanShutdown();
             ESP.restart();
@@ -727,7 +700,7 @@ void loop() {
         mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;
 
         if (maintenanceSession.shouldReboot) {
-            SerialLog.printf("[MaintBoot] timeout reason=%s sessionMs=%lu idleMs=%lu -> rebooting normal runtime\n",
+            Serial.printf("[MaintBoot] timeout reason=%s sessionMs=%lu idleMs=%lu -> rebooting normal runtime\n",
                              maintenanceSession.maxSessionReached ? "max_session" : "idle",
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
@@ -841,8 +814,6 @@ void loop() {
         if (obdStatus.manualScanPending) {
             bleArbitrationRequest = ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
         }
-        bleClient.setConnectionCycleState(static_cast<uint8_t>(connectionCycleCoordinatorModule.state()),
-                                          connectionCycleCoordinatorModule.timeInStateMs(now));
         const bool proxyModeEnabled = currentSettings.proxyBLE && bleClient.isProxyEnabled();
         bleClient.setConnectionCycleProxyPolicy(
             proxyModeEnabled && connectionCycleCoordinatorModule.proxyAdvertisingAllowed(),
@@ -852,7 +823,6 @@ void loop() {
 
     // Refresh speed inputs before display so the current loop sees the latest OBD state.
     {
-        const uint32_t obdStartUs = micros();
         if (bleClient.isProxyClientConnected()) {
             obdRuntimeModule.stopActiveScan();
             obdRuntimeModule.cancelPendingConnect();
@@ -870,8 +840,6 @@ void loop() {
             connectionCycleCoordinatorModule.obdScanAllowed(),
             connectionCycleCoordinatorModule.obdConnectAllowed(),
             obdRetryAllowedNow,
-            static_cast<uint8_t>(connectionCycleCoordinatorModule.state()),
-            connectionCycleCoordinatorModule.timeInStateMs(now),
         };
         obdRuntimeModule.update(now, obdBleContext);
         const ObdConnectionState obdStateAfterUpdate = obdRuntimeModule.getState();
@@ -881,15 +849,7 @@ void loop() {
             obdStateAfterUpdate == ObdConnectionState::CONNECTING) {
             connectionCycleCoordinatorModule.recordObdRetryAttempt(now);
         }
-        perfRecordObdUs(micros() - obdStartUs);
     }
-
-    perfSetConnectionCycleSnapshot(
-        static_cast<uint8_t>(connectionCycleCoordinatorModule.state()),
-        connectionCycleCoordinatorModule.timeInStateMs(now), connectionCycleCoordinatorModule.totalTransitionCount(),
-        connectionCycleCoordinatorModule.lastTeardownDurationMs(),
-        connectionCycleCoordinatorModule.totalObdRetryAttempts(),
-        connectionCycleCoordinatorModule.totalWifiManualPhoneKicks(), bleClient.isProxyNoClientTimeoutLatched());
 
     // ALP UART listener — drain and parse ALP serial data.
     // Runs every loop; process() is a no-op when disabled. Skipped only when
@@ -937,8 +897,6 @@ void loop() {
                              mainRuntimeState.bootSplashHoldActive || powerPresentationOwned);
     const LoopRuntimeSnapshotValues& loopRuntimeSnapshotValues = loopWifiValues.loopRuntimeSnapshotValues;
 
-    loopTelemetryModule.process();
-
     const LoopFinalizePhaseValues loopFinalizeValues =
         processLoopFinalizePhase(mainRuntimeState.bootSplashHoldActive,
                                  loopRuntimeSnapshotValues.displayPreviewRunning || powerPresentationOwned,
@@ -948,5 +906,4 @@ void loop() {
     bleConnectedNow = loopFinalizeValues.bleConnectedNow;
     mainRuntimeState.lastLoopUs = loopFinalizeValues.lastLoopUs;
 
-    qualificationSerialModule.process();
 }

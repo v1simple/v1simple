@@ -14,7 +14,6 @@
 #include "display_segments.h"
 #include "display_font_manager.h"
 #include "settings.h"
-#include "perf_metrics.h"
 #include <cstring>
 
 using namespace DisplaySegments;
@@ -320,7 +319,6 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     const int clearW = (kBandsColumnLeftX - clearX);
     drawnRegion_.add(static_cast<int16_t>(clearX), DisplayLayout::kTopCounterRect.y, static_cast<int16_t>(clearW),
                      DisplayLayout::kTopCounterRect.h, DisplayDirtyRegionSource::Status);
-    perfRecordDisplayRedrawReason(PerfDisplayRedrawReason::BogeyCounterChange);
     elementCaches_.topCounter.counterValid = true;
     elementCaches_.topCounter.lastMuted = muted;
     elementCaches_.topCounter.lastBogeyColor = s.colorBogey;

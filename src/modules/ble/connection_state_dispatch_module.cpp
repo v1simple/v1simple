@@ -44,9 +44,5 @@ ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(const Con
         hasRunProcess_ = true;
     }
 
-    if (providers.recordDecision) {
-        providers.recordDecision(providers.decisionContext, decision);
-    }
-
     return decision;
 }

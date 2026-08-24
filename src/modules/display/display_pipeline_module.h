@@ -71,19 +71,10 @@ class DisplayPipelineModule {
     // resets it because the pipeline assumes synchronous ticks.
     bool lastPresentedAlpEventActive_ = false;
 
-    // ALP display decision tracking — log only on transitions
-    bool lastAlpDisplayTraceRelevant_ = false;
-    char lastAlpDisplayLogEvent_[24] = "";
-    char lastAlpDisplayLogDetail_[192] = "";
-    uint32_t lastAlpDisplaySnapshotLogMs_ = 0;
-
-    void logAlpDisplaySnapshot(uint32_t nowMs, const char* event, const char* detail, bool traceRelevant);
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
     RenderFrame buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef);
     AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
     void runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs);
-    void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool restoreContext, const char* logEvent,
-                             bool forceRedraw = false);
-    void recordPerfTiming(unsigned long startUs, unsigned long endUs);
+    void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool forceRedraw = false);
 };

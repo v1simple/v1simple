@@ -203,8 +203,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 // Recover ALP settings
                 if (parseBoolVariant(bestBackupDoc["alpEnabled"], boolVal))
                     settings_.alpEnabled = boolVal;
-                if (parseBoolVariant(bestBackupDoc["alpSdLogEnabled"], boolVal))
-                    settings_.alpSdLogEnabled = boolVal;
                 if (bestBackupDoc["alpAlertPersistSec"].is<int>()) {
                     settings_.alpAlertPersistSec = clampU8(bestBackupDoc["alpAlertPersistSec"].as<int>(), 0, 5);
                 }
@@ -218,10 +216,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(bestBackupDoc["gpsBaud"].as<int>()));
                 }
                 settings_.gpsEnablePinActiveHigh = true;
-                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToPerf"], boolVal))
-                    settings_.gpsLogUtcToPerf = boolVal;
-                if (parseBoolVariant(bestBackupDoc["gpsLogUtcToAlp"], boolVal))
-                    settings_.gpsLogUtcToAlp = boolVal;
                 if (settings_.proxyBLE && settings_.obdEnabled) {
                     Serial.println("[Settings] HEAL: recovered proxyBLE+obdEnabled — keeping OBD, disabling proxy");
                     settings_.proxyBLE = false;

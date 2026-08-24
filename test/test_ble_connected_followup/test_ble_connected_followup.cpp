@@ -77,10 +77,6 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
     return 0;
 }
 
-void perfRecordBleFollowupRequestAlertUs(uint32_t) {}
-void perfRecordBleFollowupRequestVersionUs(uint32_t) {}
-void perfRecordBleConnectStableCallbackUs(uint32_t) {}
-
 #include "../../src/ble_connected_followup.cpp"
 
 void setUp() {
@@ -278,8 +274,6 @@ void test_disconnect_none_cancels_retry_and_new_settle_restarts_at_version() {
     client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE;
     client.connectCompletedAtMs_.store(590, std::memory_order_relaxed);
     client.firstRxAfterConnectMs_.store(0, std::memory_order_relaxed);
-    client.lastBleProcessDurationUs_.store(0, std::memory_order_relaxed);
-    client.lastDisplayPipelineDurationUs_.store(0, std::memory_order_relaxed);
     client.connectBurstStableLoopCount_ = V1BLEClient::CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS - 1;
     client.processConnectedFollowup();
     TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_VERSION, client.connectedFollowupStep_);

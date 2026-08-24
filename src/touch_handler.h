@@ -70,22 +70,6 @@ class TouchHandler {
     uint32_t touchDebounceMs_;
     uint32_t releaseDebounceMs_; // Time finger must be lifted before new tap
 
-    // I2C stall tracking
-    uint32_t i2cStallCount_ = 0; // Transactions that returned error
-    uint32_t i2cMaxUs_ = 0;      // Longest I2C transaction observed
-
-  public:
-    uint32_t getI2cStallCount() const { return i2cStallCount_; }
-    uint32_t getI2cMaxUs() const { return i2cMaxUs_; }
-    uint32_t getI2cRecoveryCount() const { return i2cRecoveryCount_; }
-    void resetI2cStats() {
-        i2cStallCount_ = 0;
-        i2cMaxUs_ = 0;
-        i2cRecoveryCount_ = 0;
-        consecutiveI2cFailures_ = 0;
-    }
-
-  private:
     static constexpr uint8_t I2C_RECOVERY_THRESHOLD = 3;
     static constexpr uint32_t I2C_RECOVERY_COOLDOWN_MS = 250;
     static constexpr uint32_t I2C_RECOVERY_BACKOFF_MS = 50;
@@ -99,7 +83,7 @@ class TouchHandler {
     // I2C communication
     void configureWireBus();
     void noteNoTouch(uint32_t now);
-    void recordI2cFailure(uint32_t now, uint32_t elapsedUs);
+    void recordI2cFailure(uint32_t now);
     void recordI2cSuccess();
     void maybeRecoverI2cBus(uint32_t now);
     void recoverI2cBus(uint32_t now);

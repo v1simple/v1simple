@@ -31,31 +31,8 @@ void LoopDisplayModule::process(const LoopDisplayContext& ctx) {
 
     bool pipelineRanThisLoop = false;
     if (parsedResult.runDisplayPipeline) {
-        bool hasDisplayPipelineCompletedAtMs = false;
-        uint32_t displayPipelineCompletedAtMs = 0;
         if (providers.runDisplayPipeline) {
-            const bool measurePipelineDuration = providers.timestampUs && providers.recordDispPipeUs;
-            const uint32_t pipelineStartedAtUs =
-                measurePipelineDuration ? providers.timestampUs(providers.timestampContext) : 0;
             providers.runDisplayPipeline(providers.displayPipelineContext, displayNowMs);
-            const uint32_t pipelineCompletedAtUs =
-                measurePipelineDuration ? providers.timestampUs(providers.timestampContext) : 0;
-
-            if (providers.readDisplayNowMs && providers.recordNotifyToDisplayPipelineCompleteMs &&
-                parsedSignal.parsedTsMs != 0) {
-                displayPipelineCompletedAtMs = providers.readDisplayNowMs(providers.displayNowContext);
-                hasDisplayPipelineCompletedAtMs = true;
-            }
-            if (measurePipelineDuration) {
-                providers.recordDispPipeUs(providers.dispPipePerfContext, pipelineCompletedAtUs - pipelineStartedAtUs);
-            }
-        }
-        if (hasDisplayPipelineCompletedAtMs) {
-            if (displayPipelineCompletedAtMs >= parsedSignal.parsedTsMs) {
-                providers.recordNotifyToDisplayPipelineCompleteMs(providers.notifyPipelineCompletePerfContext,
-                                                                  displayPipelineCompletedAtMs -
-                                                                      parsedSignal.parsedTsMs);
-            }
         }
         pipelineRanThisLoop = true;
     }
@@ -69,14 +46,7 @@ void LoopDisplayModule::process(const LoopDisplayContext& ctx) {
         const DisplayOrchestrationRefreshResult refreshResult =
             providers.runLightweightRefresh(providers.lightweightRefreshContext, refreshCtx);
         if (refreshResult.runBlinkRefresh && providers.runBlinkRefresh) {
-            if (providers.timestampUs && providers.recordDispPipeUs) {
-                const uint32_t startUs = providers.timestampUs(providers.timestampContext);
-                providers.runBlinkRefresh(providers.blinkRefreshContext, displayNowMs);
-                providers.recordDispPipeUs(providers.dispPipePerfContext,
-                                           providers.timestampUs(providers.timestampContext) - startUs);
-            } else {
-                providers.runBlinkRefresh(providers.blinkRefreshContext, displayNowMs);
-            }
+            providers.runBlinkRefresh(providers.blinkRefreshContext, displayNowMs);
         }
     }
 }

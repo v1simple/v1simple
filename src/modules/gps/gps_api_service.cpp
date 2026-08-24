@@ -76,8 +76,6 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     doc["gpsEnabled"] = s.gpsEnabled;
     doc["gpsBaud"] = s.gpsBaud;
     doc["gpsEnablePinActiveHigh"] = s.gpsEnablePinActiveHigh;
-    doc["gpsLogUtcToPerf"] = s.gpsLogUtcToPerf;
-    doc["gpsLogUtcToAlp"] = s.gpsLogUtcToAlp;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
@@ -122,13 +120,6 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     if (update.hasGpsBaud) {
         update.gpsBaud = sanitizeGpsBaudValue(update.gpsBaud);
     }
-    if (!readOptionalBool(server, body, "gpsLogUtcToPerf", update.hasGpsLogUtcToPerf, update.gpsLogUtcToPerf)) {
-        return;
-    }
-    if (!readOptionalBool(server, body, "gpsLogUtcToAlp", update.hasGpsLogUtcToAlp, update.gpsLogUtcToAlp)) {
-        return;
-    }
-
     // Deprecated/no-op compatibility field. Old clients may include a boolean
     // value alongside writable settings, but it does not count as an update and
     // never reaches persistence or the live UART runtime.
@@ -140,8 +131,7 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     (void)hasDeprecatedPolarity;
     (void)ignoredDeprecatedPolarity;
 
-    const bool hasWritableSetting =
-        update.hasGpsEnabled || update.hasGpsBaud || update.hasGpsLogUtcToPerf || update.hasGpsLogUtcToAlp;
+    const bool hasWritableSetting = update.hasGpsEnabled || update.hasGpsBaud;
     if (!hasWritableSetting) {
         sendRequestError(server, "No writable GPS settings provided");
         return;

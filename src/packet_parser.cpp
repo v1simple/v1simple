@@ -10,9 +10,7 @@
  */
 
 #include "packet_parser.h"
-#include "qualification_clock.h"
 #include "config.h"
-#include "perf_metrics.h" // perfRecordV1FirmwareVersion
 
 namespace {
 struct BandArrowData {
@@ -226,9 +224,6 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                         !displayState_.hasV1Version || displayState_.v1FirmwareVersion != version;
                     displayState_.v1FirmwareVersion = version;
                     displayState_.hasV1Version = true;
-                    // Surface the V1 firmware version through the perf-metrics channel
-                    // for SD perf logs and serial diagnostics.
-                    perfRecordV1FirmwareVersion(version);
                     if (versionChanged) {
                         Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n", major, minor, rev1,
                                       rev2, ctrl, version);
@@ -255,15 +250,6 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             displayState_.savedMuteVolume = payload[3] & 0x0F;
             displayState_.hasVolumeData = true;
             displayState_.hasSavedVolume = true;
-
-            // Keep the existing tolerant state update above for compatibility,
-            // but count only the canonical checked-width response used as
-            // connection readback evidence. payloadLen includes the checksum.
-            const bool canonicalShape = length == 11 && declaredPayloadLen == 5 && payloadLen == 5;
-            const bool canonicalValues = payload[0] <= 9 && payload[1] <= 9 && payload[2] <= 9 && payload[3] <= 9;
-            if (canonicalShape && canonicalValues) {
-                perfRecordV1AllVolumeParsed();
-            }
         }
         return true;
     }
@@ -476,7 +462,6 @@ uint8_t PacketParser::decodeLEDBitmap(uint8_t bitmap) const {
             return index;
         }
     }
-    perfRecordV1LedBitmapAnomaly();
     return kLedBitmapMaxBars;
 }
 

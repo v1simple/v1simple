@@ -143,35 +143,6 @@
         }
       ]
     },
-    "diagnostics_routes": {
-      "GET /api/diagnostics/log": [
-        {
-          "body": "header\nrow\n",
-          "contentType": "text/csv",
-          "status": 200
-        }
-      ],
-      "GET /api/diagnostics/logs": [
-        {
-          "body": {
-            "files": [
-              {
-                "category": "performance",
-                "path": "/perf/perf_boot_7.csv",
-                "sizeBytes": 11
-              }
-            ],
-            "maxDownloadBytes": 16777216,
-            "maxListedFiles": 64,
-            "maxScannedEntries": 128,
-            "success": true,
-            "truncated": false
-          },
-          "contentType": "application/json",
-          "status": 200
-        }
-      ]
-    },
     "display_colors_success": {
       "GET /api/display/settings": [
         {
@@ -331,9 +302,7 @@
           "body": {
             "gpsBaud": 9600,
             "gpsEnablePinActiveHigh": true,
-            "gpsEnabled": true,
-            "gpsLogUtcToAlp": true,
-            "gpsLogUtcToPerf": true
+            "gpsEnabled": true
           },
           "contentType": "application/json",
           "status": 200
@@ -516,13 +485,11 @@
             "alpAlertPersistSec": 0,
             "alpDisableV1LaserOnPush": true,
             "alpEnabled": false,
-            "alpSdLogEnabled": false,
             "apTimeoutMinutes": 0,
             "ap_password": "********",
             "ap_ssid": "BeforeRestoreAP",
             "autoPowerOffMinutes": 0,
             "isDefaultPassword": false,
-            "powerOffSdLog": false,
             "proxy_ble": true,
             "proxy_name": "V1-Proxy"
           },
@@ -534,13 +501,11 @@
             "alpAlertPersistSec": 0,
             "alpDisableV1LaserOnPush": true,
             "alpEnabled": false,
-            "alpSdLogEnabled": false,
             "apTimeoutMinutes": 0,
             "ap_password": "********",
             "ap_ssid": "RestoredAP",
             "autoPowerOffMinutes": 0,
             "isDefaultPassword": false,
-            "powerOffSdLog": false,
             "proxy_ble": true,
             "proxy_name": "V1-Proxy"
           },

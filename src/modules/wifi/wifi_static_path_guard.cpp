@@ -76,7 +76,7 @@ bool isHtmlPagePath(const char* path) {
     static constexpr const char* kPagePaths[] = {
         "/",         "/index.html",    "/alp",      "/alp.html",      "/audio",   "/audio.html",
         "/autopush", "/autopush.html", "/colors",   "/colors.html",   "/devices", "/devices.html",
-        "/gps",      "/gps.html",      "/logs",     "/logs.html",     "/obd",     "/obd.html",
+        "/gps",      "/gps.html",      "/obd",      "/obd.html",
         "/profiles", "/profiles.html", "/settings", "/settings.html",
     };
 

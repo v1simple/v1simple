@@ -6,8 +6,6 @@
 #include "ble_log_rate_limit.h"
 #include "ble_internals.h"
 #include "config.h"
-#include "perf_metrics.h"
-#include "qualification_clock.h"
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -151,7 +149,6 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         }
     }
 
-    PERF_INC(disconnects);
     // If the disconnect was unexpected (e.g., V1 powered off), clear bonding info
     // to ensure a clean reconnect next time.
     // deleteBond() writes NVS, so defer it rather than blocking the host task.
@@ -235,7 +232,6 @@ bool V1BLEClient::connectToServer() {
     connectAttemptNumber_ = 0; // Reset for new connection sequence
     asyncConnectPending_ = false;
     asyncConnectSuccess_ = false;
-    connectPhaseStartUs_ = micros(); // Start timing connect phase
     setBLEState(BLEState::CONNECTING, "connectToServer");
     return true;
 }
@@ -250,8 +246,6 @@ bool V1BLEClient::startAsyncConnect() {
     // Stop proxy advertising before using the radio for the client connection.
     if (proxyEnabled_ && NimBLEDevice::getAdvertising()->isAdvertising()) {
         NimBLEDevice::stopAdvertising();
-        perfRecordProxyAdvertisingTransition(
-            false, static_cast<uint8_t>(PerfProxyAdvertisingTransitionReason::StopBeforeV1Connect), millis());
     }
 
     // Ensure no scan remains active before connecting.
@@ -324,7 +318,6 @@ bool V1BLEClient::startAsyncConnect() {
 
         // All attempts exhausted
         consecutiveConnectFailures_++;
-        perfRecordBleConnectUs(micros() - connectPhaseStartUs_);
 
         if (hitsV1BleHardResetThreshold(consecutiveConnectFailures_)) {
             hardResetBLEClient();
@@ -357,15 +350,10 @@ bool V1BLEClient::finishConnection() {
     consecutiveConnectFailures_ = 0;
     nextConnectAllowedMs_ = 0;
 
-    // Record connect phase time
-    perfRecordBleConnectUs(micros() - connectPhaseStartUs_);
-    PERF_INC(reconnects); // Count successful (re)connections
-
     // Log the negotiated connection parameters (interval units = 1.25ms, timeout units = 10ms)
     logConnParams("post-connect");
 
     // Transition to discovery phase
-    connectPhaseStartUs_ = micros(); // Reset timer for discovery phase
     activeDiscoveryGeneration_ = currentGeneration;
     discoveryTaskDone_.store(false, std::memory_order_relaxed);
     discoveryTaskResult_.store(false, std::memory_order_relaxed);
@@ -390,7 +378,6 @@ void V1BLEClient::processConnectingWait() {
         // Check for overall timeout
         if (elapsed > CONNECT_TIMEOUT_MS) {
             consecutiveConnectFailures_++;
-            perfRecordBleConnectUs(micros() - connectPhaseStartUs_);
 
             if (hitsV1BleHardResetThreshold(consecutiveConnectFailures_)) {
                 hardResetBLEClient();
@@ -430,7 +417,6 @@ void V1BLEClient::processConnectingWait() {
 
     // All attempts exhausted
     consecutiveConnectFailures_++;
-    perfRecordBleConnectUs(micros() - connectPhaseStartUs_);
 
     if (hitsV1BleHardResetThreshold(consecutiveConnectFailures_)) {
         hardResetBLEClient();
@@ -594,14 +580,6 @@ void V1BLEClient::discoveryTaskFunc(void* param) {
     V1BLEClient* self = context.owner;
     const bool result = context.client && context.client->discoverAttributes();
 
-    // This task is short-lived, so capture its minimum remaining stack at exit
-    // rather than relying on a periodic poll that will usually miss it.
-    const uint32_t stackFreeBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
-    uint32_t observed = self->discoveryTaskStackMinFreeBytes_.load(std::memory_order_relaxed);
-    while (stackFreeBytes < observed && !self->discoveryTaskStackMinFreeBytes_.compare_exchange_weak(
-                                            observed, stackFreeBytes, std::memory_order_relaxed)) {
-    }
-
     self->discoveryTaskResult_.store(result, std::memory_order_relaxed);
     self->discoveryCompletedGeneration_.store(context.generation, std::memory_order_relaxed);
     self->discoveryTaskDone_.store(true, std::memory_order_release);
@@ -628,7 +606,6 @@ void V1BLEClient::processDiscovering() {
         if (shouldLogBleConnectionEvent(discoveryTimeoutLog, now)) {
             Serial.println("[BLE] Discovery timeout");
         }
-        perfRecordBleDiscoveryUs(micros() - connectPhaseStartUs_);
         connectInProgress_ = false;
         connectStartMs_ = 0;
         beginClientQuiesce("discovery timeout");
@@ -653,7 +630,6 @@ void V1BLEClient::processDiscovering() {
             if (shouldLogBleConnectionEvent(discoveryTaskCreateFailedLog, now)) {
                 Serial.println("[BLE] disc task create failed - backing off");
             }
-            PERF_INC(bleDiscTaskCreateFail);
             discoveryTaskResult_.store(false);
             discoveryTaskDone_.store(true);
             discoveryTaskRunning_.store(false);
@@ -671,7 +647,6 @@ void V1BLEClient::processDiscovering() {
         return; // Yield to loop while task runs
     }
 
-    perfRecordBleDiscoveryUs(micros() - connectPhaseStartUs_);
 
     const uint32_t completedGeneration = discoveryCompletedGeneration_.load(std::memory_order_acquire);
     if (completedGeneration != activeDiscoveryGeneration_ ||
@@ -692,9 +667,7 @@ void V1BLEClient::processDiscovering() {
     }
 
     // Transition to subscribe phase (uses step machine to break up CCCD writes)
-    connectPhaseStartUs_ = micros(); // Reset timer for subscribe phase
     subscribeStep_ = SubscribeStep::GET_SERVICE;
-    subscribeStepStartUs_ = micros();
     setBLEState(BLEState::SUBSCRIBING, "discovery complete");
 }
 
@@ -712,7 +685,6 @@ void V1BLEClient::processSubscribing() {
         if (shouldLogBleConnectionEvent(subscribeTimeoutLog, now)) {
             Serial.println("[BLE] Subscribe timeout");
         }
-        perfRecordBleSubscribeUs(micros() - connectPhaseStartUs_);
         {
             SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: subscribe timeout
             shouldConnect_ = false;
@@ -725,14 +697,7 @@ void V1BLEClient::processSubscribing() {
     }
 
     // Execute one subscribe step
-    subscribeStepStartUs_ = micros();
     bool done = executeSubscribeStep();
-    uint32_t stepDuration = micros() - subscribeStepStartUs_;
-
-    // Record step timing for attribution
-    if (perfExtended.bleSubscribeMaxUs < stepDuration) {
-        perfExtended.bleSubscribeMaxUs = stepDuration;
-    }
 
     if (done) {
         // All steps complete. Revalidate the session before each externally
@@ -767,7 +732,6 @@ void V1BLEClient::processSubscribing() {
         firstRxAfterConnectMs_.store(0, std::memory_order_relaxed);
         connectBurstStableLoopCount_ = 0;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALERT_DATA;
-        perfRecordBleSubscribeUs(micros() - connectPhaseStartUs_);
         connectInProgress_ = false;
         connectStartMs_ = 0;
         if (!sessionStillAccepted()) {
@@ -942,8 +906,7 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (!pData || !instancePtr || !pChar) {
         return;
     }
-    const uint32_t callbackDutMillis = static_cast<uint32_t>(millis());
-    const uint64_t callbackDutMicros = QualificationClock::nowMicros();
+    const uint32_t callbackMillis = static_cast<uint32_t>(millis());
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
     BleProxyEpochObserver::CallbackLease callbackLease(instancePtr->proxyEpochObserver_,
@@ -976,13 +939,13 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
 
     if (instancePtr->connected_.load(std::memory_order_relaxed) &&
         instancePtr->firstRxAfterConnectMs_.load(std::memory_order_relaxed) == 0) {
-        instancePtr->firstRxAfterConnectMs_.store(callbackDutMillis, std::memory_order_relaxed);
+        instancePtr->firstRxAfterConnectMs_.store(callbackMillis, std::memory_order_relaxed);
     }
 
     // Call user callback for display processing (queued to main loop for SPI safety)
     if (instancePtr->dataCallback_ && instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) &&
         instancePtr->sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration &&
         instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
-        instancePtr->dataCallback_(pData, length, charId, callbackGeneration, callbackDutMillis, callbackDutMicros);
+        instancePtr->dataCallback_(pData, length, charId, callbackGeneration, callbackMillis);
     }
 }

@@ -45,16 +45,6 @@ unsigned long mockMicros = 0;
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 
-#ifndef ARDUINO
-namespace {
-uint32_t g_lastRecordedV1FwVersion = 0;
-}
-void perfRecordV1FirmwareVersion(uint32_t version) { g_lastRecordedV1FwVersion = version; }
-namespace { uint32_t g_ledBitmapAnomalies = 0; }
-void perfRecordV1LedBitmapAnomaly() { ++g_ledBitmapAnomalies; }
-void perfRecordV1AllVolumeParsed() {}
-#endif
-
 #include <vector>
 
 #include "../../src/v1_profiles.h"
@@ -176,40 +166,6 @@ void test_led_bitmap_outside_the_valid_domain_takes_the_sentinel() {
         std::snprintf(msg, sizeof(msg), "outside-domain bitmap=0x%02X", bitmap);
         TEST_ASSERT_EQUAL_UINT8_MESSAGE(protocol_spec::kLedBitmapOverflowBars,
                                         parser.getDisplayState().signalBars, msg);
-    }
-}
-
-// The anomaly counter is the only observable difference between an in-domain
-// byte and a substituted one, so it is the thing that has to be pinned. Before
-// this was asserted, treating spec-legal $7F/$FF as anomalies was invisible to
-// the entire suite: the substituted value happened to equal the expected one.
-void test_spec_legal_bitmaps_do_not_record_anomalies() {
-    for (const auto& c : protocol_spec::kLedBitmapBars) {
-        PacketParser parser;
-        const uint32_t before = g_ledBitmapAnomalies;
-        const auto packet =
-            makePacket(PACKET_ID_DISPLAY_DATA, makeDisplayPayload(c.bitmap));
-        TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), kNowMs));
-        char msg[72];
-        std::snprintf(msg, sizeof(msg),
-                      "Table 9.1 bitmap=0x%02X recorded an anomaly", c.bitmap);
-        TEST_ASSERT_EQUAL_UINT32_MESSAGE(before, g_ledBitmapAnomalies, msg);
-    }
-}
-
-// The converse: a byte the table does not define must still fail loud.
-void test_undefined_bitmaps_do_record_anomalies() {
-    const uint8_t samples[] = {0x80, 0xAA, 0x02, 0x3E};
-    for (uint8_t bitmap : samples) {
-        PacketParser parser;
-        const uint32_t before = g_ledBitmapAnomalies;
-        const auto packet =
-            makePacket(PACKET_ID_DISPLAY_DATA, makeDisplayPayload(bitmap));
-        TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), kNowMs));
-        char msg[72];
-        std::snprintf(msg, sizeof(msg),
-                      "undefined bitmap=0x%02X recorded no anomaly", bitmap);
-        TEST_ASSERT_EQUAL_UINT32_MESSAGE(before + 1u, g_ledBitmapAnomalies, msg);
     }
 }
 
@@ -554,8 +510,6 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_led_bitmap_decode_matches_spec_table);
     RUN_TEST(test_led_bitmap_outside_the_valid_domain_takes_the_sentinel);
-    RUN_TEST(test_spec_legal_bitmaps_do_not_record_anomalies);
-    RUN_TEST(test_undefined_bitmaps_do_record_anomalies);
     RUN_TEST(test_alert_band_values_match_spec_table);
     RUN_TEST(test_alert_direction_bits_match_spec_table);
     RUN_TEST(test_ka_strength_thresholds_match_spec_table);

@@ -25,20 +25,6 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-#include "../../src/perf_metrics.h"
-
-PerfCounters perfCounters;
-PerfExtendedMetrics perfExtended;
-static int g_renderScenarioSets = 0;
-static PerfDisplayRenderScenario g_lastScenario = PerfDisplayRenderScenario::None;
-void perfRecordDisplayRenderUs(uint32_t /*us*/) {}
-void perfRecordDisplayScenarioRenderUs(uint32_t /*us*/) {}
-void perfSetDisplayRenderScenario(PerfDisplayRenderScenario scenario) {
-    ++g_renderScenarioSets;
-    g_lastScenario = scenario;
-}
-PerfDisplayRenderScenario perfGetDisplayRenderScenario() { return g_lastScenario; }
-void perfClearDisplayRenderScenario() {}
 
 #ifndef V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK
 #define V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK
@@ -64,7 +50,7 @@ struct Harness {
     DisplayPreviewModule preview;
 
     // `requestHold(0)` runs the table once; a duration longer than the whole
-    // table makes it loop, which is how the qualification hold behaves.
+    // table makes the caller-owned preview loop.
     void begin(unsigned long startMs, uint32_t durationMs) {
         mockMillis = startMs;
         display.reset();
@@ -91,10 +77,7 @@ unsigned long enterStep(Harness& h, int stepIndex) {
 
 // ---------------------------------------------------------------- tests
 
-void setUp() {
-    g_renderScenarioSets = 0;
-    g_lastScenario = PerfDisplayRenderScenario::None;
-}
+void setUp() {}
 void tearDown() {}
 
 /** Step 14 must not refresh before the shared phase is due, and must after. */
@@ -235,19 +218,6 @@ void test_cancelled_or_expired_preview_never_refreshes() {
                               "an expired preview still reports itself running");
 }
 
-/** The refresh is a steady frame, never a first frame. */
-void test_a_refresh_is_reported_as_a_steady_frame() {
-    Harness h;
-    h.begin(0, 120000);
-    const unsigned long stepStart = enterStep(h, kArrowFlashStep);
-    h.display.lastBlinkToggleMs = stepStart + 1;
-    g_lastScenario = PerfDisplayRenderScenario::None;
-    h.loopAt(stepStart + 1 + kBlinkMs);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(PerfDisplayRenderScenario::PreviewSteadyFrame),
-                                  static_cast<int>(g_lastScenario),
-                                  "a blink refresh was reported as a first frame");
-}
-
 /** Preview must not toggle or reset the renderer's shared phase itself. */
 void test_preview_does_not_own_the_blink_phase() {
     Harness h;
@@ -320,43 +290,6 @@ void test_a_refresh_has_no_other_side_effect() {
                                   "a blink refresh re-armed preview ownership");
 }
 
-/** The refresh count is the one value that separates blinks from step renders. */
-void test_blink_refreshes_are_counted_separately() {
-    Harness h;
-    h.begin(0, 120000);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, h.preview.blinkRefreshCount(),
-                                     "a fresh preview already counted refreshes");
-    const unsigned long stepStart = enterStep(h, kArrowFlashStep);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, h.preview.blinkRefreshCount(),
-                                     "a step render was counted as a blink refresh");
-    for (int tick = 1; tick <= 3; ++tick) {
-        h.display.lastBlinkToggleMs = stepStart + static_cast<unsigned long>(tick) * kBlinkMs;
-        h.loopAt(stepStart + static_cast<unsigned long>(tick + 1) * kBlinkMs);
-    }
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, h.preview.blinkRefreshCount(),
-                                     "blink refreshes were not counted deterministically");
-}
-
-/** A restarted preview starts from a clean slate. */
-void test_a_restarted_preview_forgets_the_previous_state() {
-    Harness h;
-    h.begin(0, 120000);
-    const unsigned long stepStart = enterStep(h, kArrowFlashStep);
-    h.display.lastBlinkToggleMs = stepStart + 1;
-    h.loopAt(stepStart + 1 + kBlinkMs);
-    TEST_ASSERT_GREATER_THAN_UINT32(0, h.preview.blinkRefreshCount());
-
-    mockMillis = stepStart + 5000;
-    h.preview.requestHold(120000);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, h.preview.blinkRefreshCount(),
-                                     "a restarted preview kept the old refresh count");
-    const int before = h.display.updateCalls;
-    h.display.lastBlinkToggleMs = mockMillis;
-    h.loopAt(mockMillis + kBlinkMs);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(before + 1, h.display.updateCalls,
-                                  "a restarted preview rendered the wrong number of frames");
-}
-
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_arrow_flash_step_refreshes_only_when_the_shared_phase_is_due);
@@ -367,12 +300,9 @@ int main(int, char**) {
     RUN_TEST(test_a_refresh_does_not_advance_the_scenario);
     RUN_TEST(test_a_delayed_loop_renders_once_not_a_burst);
     RUN_TEST(test_cancelled_or_expired_preview_never_refreshes);
-    RUN_TEST(test_a_refresh_is_reported_as_a_steady_frame);
     RUN_TEST(test_preview_does_not_own_the_blink_phase);
     RUN_TEST(test_a_short_caller_hold_blinks_then_releases);
     RUN_TEST(test_a_suppressed_loop_produces_no_refresh);
     RUN_TEST(test_a_refresh_has_no_other_side_effect);
-    RUN_TEST(test_blink_refreshes_are_counted_separately);
-    RUN_TEST(test_a_restarted_preview_forgets_the_previous_state);
     return UNITY_END();
 }

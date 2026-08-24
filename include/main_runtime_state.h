@@ -39,8 +39,8 @@ struct MaintenanceSessionDecision {
     bool shouldReboot = false;
     bool idleWindowExpired = false;
     bool maxSessionReached = false;
-    // True when UI activity has actually pushed the deadline out past the
-    // original elapsed-since-start deadline. Logging/diagnostics only.
+    // True when UI activity has pushed the deadline past the original
+    // elapsed-since-start deadline.
     bool extended = false;
     uint32_t elapsedSinceStartMs = 0;
     uint32_t elapsedSinceActivityMs = 0;
@@ -112,8 +112,8 @@ struct MainRuntimeState {
     // Countdown anchor published through /api/status; not the immutable
     // session start.
     unsigned long maintenanceBootStartedMs = 0;
-    // Immutable maintenance session start. Anchors the absolute cap and the
-    // boot-time diagnostics; never moves for the life of the session.
+    // Immutable maintenance session start. Anchors the absolute cap and never
+    // moves for the life of the session.
     unsigned long maintenanceBootSessionStartedMs = 0;
     // Last maintenance-loop observation of UI activity, latched from
     // WiFiManager::isUiActive(). 0 means "no UI request seen this session".

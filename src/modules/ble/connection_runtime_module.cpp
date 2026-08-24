@@ -1,6 +1,5 @@
 #include "connection_runtime_module.h"
 
-#include "modules/perf/debug_macros.h"
 
 void ConnectionRuntimeModule::begin(const Providers& hooks) {
     begin(hooks, Config{});
@@ -55,7 +54,7 @@ ConnectionRuntimeSnapshot ConnectionRuntimeModule::process(unsigned long nowMs, 
         if (bleReady || timeReady) {
             runStartLogged_ = true;
             const char* trigger = bleReady ? "ble_connected" : "timeout_30s";
-            SerialLog.printf("RUN_START trigger=%s millis=%lu\n", trigger, nowMs);
+            Serial.printf("RUN_START trigger=%s millis=%lu\n", trigger, nowMs);
         }
     }
 

@@ -37,23 +37,17 @@ void test_device_latch_publish_consume() {
 
     bus.publishAlpStateChanged();
 
-    TEST_ASSERT_EQUAL_UINT32(1, bus.getPublishCount());
     TEST_ASSERT_EQUAL_UINT8(1, bus.size());
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
     TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
 
-void test_device_latch_coalesces_and_reset_stats_preserves_pending_edge() {
+void test_device_latch_coalesces_pending_edges() {
     static constexpr uint32_t PUBLISH_COUNT = 1000;
     for (uint32_t i = 0; i < PUBLISH_COUNT; ++i) {
         bus.publishAlpStateChanged();
     }
 
-    TEST_ASSERT_EQUAL_UINT32(PUBLISH_COUNT, bus.getPublishCount());
-    TEST_ASSERT_EQUAL_UINT8(1, bus.size());
-
-    bus.resetStats();
-    TEST_ASSERT_EQUAL_UINT32(0, bus.getPublishCount());
     TEST_ASSERT_EQUAL_UINT8(1, bus.size());
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
     TEST_ASSERT_EQUAL_UINT8(0, bus.size());
@@ -134,10 +128,8 @@ void test_device_latch_cross_core_publish_consume() {
 
     TEST_ASSERT_TRUE_MESSAGE(producerDone, "Producer task did not complete before timeout");
     TEST_ASSERT_TRUE_MESSAGE(args.started, "Producer task did not pass its bounded start gate");
-    TEST_ASSERT_EQUAL_UINT32(PUBLISH_COUNT, bus.getPublishCount());
     TEST_ASSERT_GREATER_THAN_UINT32(0, consumed);
 
-    deviceTestMetricU32("cross_core_published_total", "alp_edge_latch", bus.getPublishCount(), "count");
     deviceTestMetricU32("cross_core_consumed_total", "alp_edge_latch", consumed, "count");
     deviceTestMetricU32("cross_core_duration_ms", "alp_edge_latch", millis() - startMs, "ms");
 }
@@ -151,7 +143,7 @@ void setup() {
         RUN_TEST(test_device_latch_publish_consume);
     }
     if (DEVICE_EVENT_BUS_TEST_ID == 0 || DEVICE_EVENT_BUS_TEST_ID == 2) {
-        RUN_TEST(test_device_latch_coalesces_and_reset_stats_preserves_pending_edge);
+        RUN_TEST(test_device_latch_coalesces_pending_edges);
     }
     if (DEVICE_EVENT_BUS_TEST_ID == 0 || DEVICE_EVENT_BUS_TEST_ID == 3) {
         RUN_TEST(test_device_latch_cross_core_publish_consume);

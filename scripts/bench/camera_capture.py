@@ -632,7 +632,7 @@ class CameraCapture:
             self._extract_video_still(self.native_preflight_path, self.preflight_path, 0.5)
             self._write_result("RECORDING")
             return True
-        except Exception as exc:  # noqa: BLE001 - retain evidence and keep the metrics run going
+        except Exception as exc:  # noqa: BLE001 - retain evidence and keep the capture run going
             self.errors.append(str(exc))
             self._stop_process()
             self._write_result("CAPTURE_FAILED")

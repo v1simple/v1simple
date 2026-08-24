@@ -1,7 +1,6 @@
 #include "auto_push_module.h"
 
 #include "../quiet/quiet_coordinator_module.h"
-#include "perf_metrics.h"
 #include "v1_profile_push_policy.h"
 
 #include <cstdio>
@@ -119,7 +118,6 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
         settings_->setActiveSlot(clampedIndex);
     }
     if (countAutoPushStart) {
-        PERF_INC(autoPushStarts);
     }
 
     armState(clampedIndex, slot, profileLoaded, profile, isPushNow, updateProfileIndicator);
@@ -190,7 +188,6 @@ void AutoPushModule::finishOperation() {
     if (!status_.anyFailed) {
         status_.result = Result::SUCCEEDED;
         if (!state_.isPushNow) {
-            PERF_INC(autoPushCompletes);
         }
     } else if (anyApplied) {
         status_.result = Result::PARTIAL;
@@ -199,7 +196,6 @@ void AutoPushModule::finishOperation() {
     }
 
     if (state_.isPushNow && status_.result != Result::SUCCEEDED) {
-        PERF_INC(pushNowFailures);
     }
     state_ = State{};
 }
@@ -217,14 +213,12 @@ void AutoPushModule::retryOrFailProfile(uint32_t nowMs, FailureReason reason) {
     if (state_.profileWriteRetries < kMaxProfileWriteRetries) {
         state_.profileWriteRetries++;
         if (state_.isPushNow) {
-            PERF_INC(pushNowRetries);
         }
         state_.step = Step::Profile;
         state_.nextStepAtMs = nowMs + 30;
         return;
     }
 
-    PERF_INC(autoPushProfileWriteFail);
     markFailure(reason);
     scheduleNextAfterProfile(nowMs);
 }
@@ -236,7 +230,6 @@ void AutoPushModule::process() {
 
     if (!bleClient_ || !bleClient_->isConnected()) {
         if (!state_.isPushNow) {
-            PERF_INC(autoPushDisconnectAbort);
         }
         if (bleClient_) {
             bleClient_->cancelUserBytesVerification();
@@ -261,7 +254,6 @@ void AutoPushModule::process() {
         }
         if (state_.commandRetries < kMaxPushNowCommandRetries) {
             state_.commandRetries++;
-            PERF_INC(pushNowRetries);
             state_.nextStepAtMs = now + 30;
             return true;
         }
@@ -285,13 +277,11 @@ void AutoPushModule::process() {
                     status_.profileLoaded = true;
                 } else {
                     if (!state_.isPushNow) {
-                        PERF_INC(autoPushProfileLoadFail);
                     }
                     markFailure(FailureReason::PROFILE_LOAD_FAILED);
                 }
             } else {
                 if (!state_.isPushNow) {
-                    PERF_INC(autoPushNoProfile);
                 }
             }
         }
@@ -309,7 +299,6 @@ void AutoPushModule::process() {
                 return;
             }
             if (!state_.isPushNow) {
-                PERF_INC(autoPushBusyRetries);
             }
             retryOrFailProfile(now, FailureReason::PROFILE_WRITE_FAILED);
             return;
@@ -370,7 +359,6 @@ void AutoPushModule::process() {
                 if (schedulePushNowRetry()) {
                     return;
                 }
-                PERF_INC(autoPushModeFail);
                 markFailure(FailureReason::MODE_FAILED);
             } else {
                 status_.modeApplied = true;
@@ -392,7 +380,6 @@ void AutoPushModule::process() {
                 if (schedulePushNowRetry()) {
                     return;
                 }
-                PERF_INC(autoPushVolumeFail);
                 markFailure(FailureReason::VOLUME_FAILED);
             } else {
                 status_.volumeApplied = true;

@@ -22,7 +22,7 @@ describe('gps route page', () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
-        await screen.findByText('GPS module and UTC logging settings for normal operation.');
+        await screen.findByText('GPS module settings for normal operation.');
         await screen.findByText('Enable GPS');
 
         expect(countCalls(fetchMock, '/api/gps/config')).toBe(1);

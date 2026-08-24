@@ -17,8 +17,7 @@
         ap_ssid: '',
         ap_password: '',
         autoPowerOffMinutes: 0,
-        apTimeoutMinutes: 0,
-        powerOffSdLog: false
+        apTimeoutMinutes: 0
     });
 
     let loading = $state(true);
@@ -804,7 +803,6 @@
             formData.append('ap_password', settings.ap_password);
             formData.append('autoPowerOffMinutes', settings.autoPowerOffMinutes);
             formData.append('apTimeoutMinutes', settings.apTimeoutMinutes);
-            formData.append('powerOffSdLog', settings.powerOffSdLog ? 'true' : 'false');
 
             const res = await postSettingsForm(formData, '/api/device/settings');
 

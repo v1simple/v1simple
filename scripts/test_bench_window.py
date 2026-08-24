@@ -24,6 +24,7 @@ from run_window import (  # noqa: E402
     BenchTimeline,
     V1Emulator,
     V1RadioLease,
+    establish_serial_boundary,
     file_artifact,
     publish_replay_stimulus_evidence,
     resolve_runner_log_paths,
@@ -213,6 +214,85 @@ def test_runner_source_is_external_only_and_serial_is_read_only() -> None:
     assert_true('"evidence_contract": "external_only"' in source, "contract is not explicit")
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class FakeTimeline:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def record(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+
+class FakeSerialObserver:
+    def __init__(self, clock: FakeClock, lines: dict[int, str]) -> None:
+        self.clock = clock
+        self.lines = lines
+        self.read_count = 0
+        self.boot_marker_count = 0
+        self.timeline = FakeTimeline()
+
+    def read_line(self, timeout_s: float) -> str:
+        self.clock.now += timeout_s
+        self.read_count += 1
+        line = self.lines.get(self.read_count, "")
+        if line.startswith(run_window_module.BOOT_PREFIX):
+            self.boot_marker_count += 1
+        return line
+
+
+def test_serial_boundary_waits_for_attach_time_boot_past_initial_observation() -> None:
+    clock = FakeClock()
+    observer = FakeSerialObserver(
+        clock,
+        {
+            8: "ESP-ROM:esp32s3-20210327",
+            10: "BOOT bootId=4 uptimeMs=2053 reset=USB",
+        },
+    )
+    result = establish_serial_boundary(
+        observer, 5.0, monotonic=clock.monotonic  # type: ignore[arg-type]
+    )
+    assert_true(result["mode"] == "startup_completed", str(result))
+    assert_true(result["startup_detected"] is True, str(result))
+    assert_true(result["boot_markers_observed"] == 1, str(result))
+    assert_true(clock.now > 2.0, f"boundary did not extend past warmup: {clock.now}")
+    assert_true(
+        observer.timeline.events[-1][0] == "serial_boundary_established",
+        str(observer.timeline.events),
+    )
+
+
+def test_serial_boundary_admits_an_already_running_quiet_board() -> None:
+    clock = FakeClock()
+    observer = FakeSerialObserver(clock, {})
+    result = establish_serial_boundary(
+        observer, 5.0, monotonic=clock.monotonic  # type: ignore[arg-type]
+    )
+    assert_true(result["mode"] == "already_running", str(result))
+    assert_true(result["boot_markers_observed"] == 0, str(result))
+    assert_true(clock.now == 2.0, f"unexpected observation duration: {clock.now}")
+
+
+def test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity() -> None:
+    clock = FakeClock()
+    observer = FakeSerialObserver(clock, {1: "rst:0x15 (USB_UART_CHIP_RESET)"})
+    try:
+        establish_serial_boundary(
+            observer, 3.0, monotonic=clock.monotonic  # type: ignore[arg-type]
+        )
+    except RuntimeError as exc:
+        assert_true("did not reach boot identity" in str(exc), str(exc))
+    else:
+        raise AssertionError("incomplete startup was admitted to the evidence window")
+
+
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
@@ -221,6 +301,9 @@ def main() -> int:
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
+    test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
+    test_serial_boundary_admits_an_already_running_quiet_board()
+    test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
     print("bench window tests passed")
     return 0
 

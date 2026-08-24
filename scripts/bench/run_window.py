@@ -53,6 +53,20 @@ RUNTIME_IMAGE_ID_HEX_LENGTH = 9
 RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
 RUN_PROGRESS_INTERVAL_S = 15
 BOOT_PREFIX = "BOOT bootId="
+SERIAL_BOUNDARY_OBSERVE_SECONDS = 2.0
+BOOT_START_PREFIXES = (
+    "ESP-ROM:",
+    "Build:Mar ",
+    "rst:",
+    "Saved PC:",
+    "SPIWP:",
+    "load:",
+    "entry ",
+    "[NVS] Entries:",
+    "V1 Gen2 Simple Display",
+    "[BootTiming] reset=",
+    "[Boot] stage=",
+)
 
 ACCOUNT_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
 V1_RADIO_LEASE_PATH = (
@@ -461,6 +475,53 @@ class BenchSerial:
             self.log.close()
 
 
+def establish_serial_boundary(
+    observer: BenchSerial,
+    ready_timeout_s: float,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Keep an attach-time boot outside the external evidence window."""
+    if ready_timeout_s <= 0:
+        raise ValueError("serial readiness timeout must be positive")
+
+    started = monotonic()
+    observe_deadline = started + min(
+        SERIAL_BOUNDARY_OBSERVE_SECONDS, ready_timeout_s
+    )
+    readiness_deadline = started + ready_timeout_s
+    initial_boot_markers = observer.boot_marker_count
+    startup_detected = False
+
+    while True:
+        if observer.boot_marker_count != initial_boot_markers:
+            mode = "startup_completed"
+            break
+
+        now = monotonic()
+        deadline = readiness_deadline if startup_detected else observe_deadline
+        if now >= deadline:
+            if startup_detected:
+                raise RuntimeError(
+                    "board startup did not reach boot identity before the external evidence window"
+                )
+            mode = "already_running"
+            break
+
+        line = observer.read_line(min(0.25, deadline - now))
+        if line.startswith(BOOT_START_PREFIXES):
+            startup_detected = True
+
+    result = {
+        "mode": mode,
+        "startup_detected": startup_detected,
+        "boot_markers_observed": observer.boot_marker_count - initial_boot_markers,
+        "duration_seconds": max(0.0, monotonic() - started),
+    }
+    observer.timeline.record("serial_boundary_established", **result)
+    return result
+
+
 class V1Emulator:
     """Own one managed external V1 input source for the complete host window."""
 
@@ -725,9 +786,7 @@ def collect_live(
                     raise CameraPreflightFailure(preflight, camera_result)
 
             observer = BenchSerial(port, args.baud, out_dir / "bench_serial.log", timeline)
-            warmup_deadline = time.monotonic() + min(2.0, args.ready_timeout_seconds)
-            while time.monotonic() < warmup_deadline:
-                observer.read_line(min(0.25, warmup_deadline - time.monotonic()))
+            establish_serial_boundary(observer, args.ready_timeout_seconds)
             initial_boot_markers = observer.boot_marker_count
 
             emulator.start()
@@ -854,6 +913,8 @@ def main() -> int:
         return fail(str(exc))
     if args.duration_seconds < 1:
         return fail("duration must be positive")
+    if args.ready_timeout_seconds < 1:
+        return fail("readiness timeout must be positive")
     if args.post_upload_settle_seconds < 0:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:

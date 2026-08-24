@@ -466,6 +466,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             events["serial"] += 1
             self.boot_marker_count = 0
             self.line_count = 0
+            self.timeline = _args[-1]
 
         def read_line(self, _timeout: float) -> str:
             return ""

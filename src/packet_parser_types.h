@@ -64,34 +64,6 @@ struct AlertData {
     }
 };
 
-// Identity of the BLE notification(s) and framed packet that caused a parser
-// publication. dutMillis is the receive time of the last contributing
-// notification. A frame can span notifications, hence the inclusive first/last
-// RX sequence range. eventSeq orders both completed frames and rejected framing
-// candidates owned by the BLE queue parser.
-struct V1CausalIdentity {
-    uint32_t dutMillis = 0;
-    uint32_t bleSessionGeneration = 0;
-    uint32_t rxFirstSeq = 0;
-    uint32_t rxLastSeq = 0;
-    uint32_t eventSeq = 0;
-    uint32_t payloadDigest = 0;
-    uint16_t characteristic = 0;
-    uint16_t payloadLength = 0;
-    uint64_t clockSegment = 0;
-    uint64_t dutMicros = 0;
-};
-
-struct V1SemanticRevisionEvidence {
-    uint32_t stateRevision = 0;
-    uint32_t alertRevision = 0;
-    uint32_t alertTableDigest = 0;
-    V1CausalIdentity stateSource{};
-    V1CausalIdentity alertSource{};
-    uint64_t statePublishedDutMicros = 0;
-    uint64_t alertPublishedDutMicros = 0;
-};
-
 // --- DisplayState ---
 
 struct DisplayState {
@@ -155,9 +127,6 @@ struct DisplayState {
     uint8_t savedMainVolume;
     uint8_t savedMuteVolume;
     bool hasSavedVolume;
-    // Parser publication identity carried with the semantic state all the way
-    // into renderer commits. Synthetic/non-V1 frames leave this zeroed.
-    V1SemanticRevisionEvidence causal{};
 
     DisplayState()
         : activeBands(BAND_NONE), arrows(DIR_NONE), priorityArrow(DIR_NONE), signalBars(0), muted(false),

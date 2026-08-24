@@ -30,7 +30,6 @@ class QualificationSerialModule {
         bool (*tryResolvePerfExportSize)(size_t physicalBytes, size_t& selectedBytes, void* ctx) = nullptr;
         const char* (*displayCommitCsvPath)(void* ctx) = nullptr;
         bool (*tryDrainDisplayCommit)(void* ctx) = nullptr;
-        const char* (*causalTraceCsvPath)(void* ctx) = nullptr;
         bool (*tryDrainEvidence)(void* ctx) = nullptr;
         bool (*beginEvidenceSession)(uint32_t sessionToken, uint32_t startedAtDutMs, void* ctx) = nullptr;
         void (*endEvidenceSession)(uint32_t sessionToken, uint32_t endedAtDutMs, void* ctx) = nullptr;

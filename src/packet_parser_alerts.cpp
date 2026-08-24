@@ -4,7 +4,6 @@
 
 #include "packet_parser.h"
 #include "band_utils.h"
-#include "causal_evidence_types.h"
 #include <algorithm>
 
 #ifndef UNIT_TEST
@@ -37,7 +36,6 @@ void PacketParser::resetAlertAssembly() {
 }
 
 void PacketParser::resetAlertState() {
-    currentCausalIdentity_ = V1CausalIdentity{};
     resetAlertStateAt(static_cast<uint32_t>(millis()));
 }
 
@@ -51,7 +49,6 @@ void PacketParser::resetAlertStateAt(uint32_t nowMs) {
     clearAlertCache();
     clearPublishedAlerts();
     if (hadPublishedAlerts) {
-        publishAlertRevision();
         notifyAlertTableObserver(nowMs);
     }
 }
@@ -221,7 +218,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         resetAlertStateAt(nowMs);
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
         if (!hadPublishedAlerts && arrowsChanged) {
-            publishStateRevision();
         }
         // Preserve muted; its authoritative state comes from
         // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
@@ -495,7 +491,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // while a Ku alert is active.  Cleared above on count=0 alert tables.
     displayState_.hasKuAlert = anyKu;
 
-    publishAlertRevision();
 
     PARSER_PERF_INC(alertTablePublishes);
     if (receivedAlertCount == 3) {

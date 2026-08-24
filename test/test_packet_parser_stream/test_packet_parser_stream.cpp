@@ -841,53 +841,6 @@ void test_strict_contract_live_top_counter_follows_raw_v1_symbol() {
                              "strict: live top counter must not normalize to alert count");
 }
 
-void test_causal_identity_advances_only_on_semantic_publication() {
-    PacketParser parser;
-
-    V1CausalIdentity displayIdentity;
-    displayIdentity.dutMillis = 100;
-    displayIdentity.bleSessionGeneration = 4;
-    displayIdentity.rxFirstSeq = 7;
-    displayIdentity.rxLastSeq = 7;
-    displayIdentity.eventSeq = 11;
-    displayIdentity.characteristic = 0xFFF4;
-    parser.setCausalIdentity(displayIdentity);
-    const auto displayPacket = makePacket(PACKET_ID_DISPLAY_DATA, makeDisplayPayload(6, 0x03, 0x22, 0x22, 0x04));
-    TEST_ASSERT_TRUE(parsePacket(parser, displayPacket, displayIdentity.dutMillis));
-    TEST_ASSERT_EQUAL_UINT32(1, parser.getCausalEvidence().stateRevision);
-    TEST_ASSERT_EQUAL_UINT32(0, parser.getCausalEvidence().alertRevision);
-    TEST_ASSERT_EQUAL_UINT32(11, parser.getCausalEvidence().stateSource.eventSeq);
-
-    V1CausalIdentity firstRowIdentity = displayIdentity;
-    firstRowIdentity.dutMillis = 110;
-    firstRowIdentity.rxFirstSeq = 8;
-    firstRowIdentity.rxLastSeq = 8;
-    firstRowIdentity.eventSeq = 12;
-    parser.setCausalIdentity(firstRowIdentity);
-    const auto row1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 34700, 0xB0, 0x20, 0x22, 0x80));
-    TEST_ASSERT_TRUE(parsePacket(parser, row1, firstRowIdentity.dutMillis));
-    TEST_ASSERT_EQUAL_UINT32(1, parser.getCausalEvidence().stateRevision);
-    TEST_ASSERT_EQUAL_UINT32(0, parser.getCausalEvidence().alertRevision);
-
-    V1CausalIdentity publishIdentity = firstRowIdentity;
-    publishIdentity.dutMillis = 120;
-    publishIdentity.rxFirstSeq = 9;
-    publishIdentity.rxLastSeq = 10;
-    publishIdentity.eventSeq = 13;
-    parser.setCausalIdentity(publishIdentity);
-    const auto row2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 24150, 0x90, 0x70, 0x84, 0x00));
-    TEST_ASSERT_TRUE(parsePacket(parser, row2, publishIdentity.dutMillis));
-
-    const V1SemanticRevisionEvidence& evidence = parser.getCausalEvidence();
-    TEST_ASSERT_EQUAL_UINT32(2, evidence.stateRevision);
-    TEST_ASSERT_EQUAL_UINT32(1, evidence.alertRevision);
-    TEST_ASSERT_EQUAL_UINT32(13, evidence.stateSource.eventSeq);
-    TEST_ASSERT_EQUAL_UINT32(9, evidence.alertSource.rxFirstSeq);
-    TEST_ASSERT_EQUAL_UINT32(10, evidence.alertSource.rxLastSeq);
-    TEST_ASSERT_EQUAL_UINT32(v1AlertTableFnv1a32(parser.getAllAlerts().data(), parser.getAlertCount()),
-                             evidence.alertTableDigest);
-}
-
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_display_stream_decodes_junk_counter_char);
@@ -917,7 +870,6 @@ int main() {
     RUN_TEST(test_alert_table_observer_receives_only_complete_tables_and_clear);
     RUN_TEST(test_renderable_priority_alert_prefers_usable_priority);
     RUN_TEST(test_renderable_priority_alert_returns_false_when_all_rows_unusable);
-    RUN_TEST(test_causal_identity_advances_only_on_semantic_publication);
 
     RUN_TEST(test_strict_alert_stream_duplicate_index_replaces_prior_row);
     RUN_TEST(test_strict_contract_parser_aux0_fields_exist);

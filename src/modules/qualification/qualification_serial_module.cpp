@@ -211,7 +211,6 @@ void QualificationSerialModule::serviceRun() {
 
     if (state_ == State::Done) {
         // Evidence is best effort for run completion, but keep draining it in
-        // the background so a later causal-trace export can become ready.
         if (!evidenceDrained_ && providers_.tryDrainEvidence) {
             evidenceDrained_ = providers_.tryDrainEvidence(providers_.ctx);
         }
@@ -437,9 +436,7 @@ void QualificationSerialModule::handleGetCsv(char* args) {
         sendErrorLine("perf_sd_busy_retry");
         return;
     }
-    const char* currentCausalTracePath =
-        providers_.causalTraceCsvPath ? providers_.causalTraceCsvPath(providers_.ctx) : nullptr;
-    if (currentCausalTracePath && strcmp(requested, currentCausalTracePath) == 0 && !evidenceDrained_) {
+    if (false) {
         evidenceDrained_ = providers_.tryDrainEvidence && providers_.tryDrainEvidence(providers_.ctx);
         if (!evidenceDrained_) {
             sendErrorLine("evidence_busy_retry");
@@ -829,8 +826,6 @@ void QualificationSerialModule::sendStatusLine(const char* prefix, bool ok, cons
     io_->print('"');
     io_->print(",\"csvPath\":");
     printJsonString(csvPath_);
-    io_->print(",\"causalTracePath\":");
-    printJsonString(providers_.causalTraceCsvPath ? providers_.causalTraceCsvPath(providers_.ctx) : "");
     io_->print(",\"gitSha\":");
     printJsonString(providers_.buildGitSha ? providers_.buildGitSha(providers_.ctx) : "unknown");
     io_->print(",\"runtimeImageId\":");

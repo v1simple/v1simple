@@ -349,10 +349,8 @@ void V1Display::recordDisplayCommit(V1DisplayCommitPath path, const DisplayState
     if (priority) {
         commit.priority = *priority;
     }
-    // This digest names the complete parser-published table retained in the
-    // encounter CSV. The composer may reorder/filter that table before render;
-    // priority + alertCount + owning composer code describe that smaller view.
-    commit.alertTableDigest = state.causal.alertTableDigest;
+    // alertTableDigest came from DisplayState::causal, now removed.
+    commit.alertTableDigest = 0;
     v1DisplayCommitLog.record(commit);
 }
 

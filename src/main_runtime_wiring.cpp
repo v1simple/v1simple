@@ -310,12 +310,6 @@ static void configureSystemLoopCoreModules() {
     if (!bleQueueModule.begin(&bleClient, &parser, &v1ProfileManager, &displayPreviewModule, &powerModule)) {
         fatalBootError("BLE queue init failed", true);
     }
-    bleQueueModule.setCausalTraceObserver(
-        [](const V1CausalTraceRecord& record, const uint8_t* exactPayload, size_t exactPayloadLength, void* context) {
-            static_cast<V1EncounterLogger*>(context)->recordCausalTrace(record, exactPayload, exactPayloadLength);
-        },
-        [](void* context) { return static_cast<V1EncounterLogger*>(context)->isQualificationSessionActive(); },
-        &v1EncounterLogger);
     configureConnectionRuntimeModule();
     connectionStateModule.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
     connectionStateModule.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, &displayPipelineModule);
@@ -462,7 +456,6 @@ static void configureQualificationSerialModule() {
     };
     providers.displayCommitCsvPath = [](void*) { return v1DisplayCommitLog.csvPath(); };
     providers.tryDrainDisplayCommit = [](void*) { return v1DisplayCommitLog.tryDrainAndClose(); };
-    providers.causalTraceCsvPath = [](void*) { return v1EncounterLogger.causalTraceCsvPath(); };
     providers.tryDrainEvidence = [](void*) {
         const bool encounterReady = v1EncounterLogger.tryDrainQualificationEvidence();
         const bool displayReady = v1DisplayCommitLog.tryDrainAndClose();
@@ -473,7 +466,7 @@ static void configureQualificationSerialModule() {
             return false;
         }
         if (!v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
-                                                         bleQueueModule.causalSourceLossCount())) {
+                                                         bleQueueModule.rxSourceLossCount())) {
             v1DisplayCommitLog.endQualificationSession(sessionToken);
             return false;
         }
@@ -481,7 +474,7 @@ static void configureQualificationSerialModule() {
     };
     providers.endEvidenceSession = [](uint32_t sessionToken, uint32_t endedAtDutMs, void*) {
         v1DisplayCommitLog.endQualificationSession(sessionToken);
-        v1EncounterLogger.endQualificationSession(sessionToken, endedAtDutMs, bleQueueModule.causalSourceLossCount());
+        v1EncounterLogger.endQualificationSession(sessionToken, endedAtDutMs, bleQueueModule.rxSourceLossCount());
     };
     providers.newSessionToken = [](void*) { return static_cast<uint32_t>(esp_random()); };
     providers.buildGitSha = [](void*) { return getBuildGitSha(); };

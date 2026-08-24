@@ -9,7 +9,6 @@
 #include "ble_log_rate_limit.h"
 #include "ble_client.h"
 #include "packet_parser.h"
-#include "causal_evidence_types.h"
 
 class DisplayPreviewModule;
 class PowerModule;
@@ -31,6 +30,7 @@ class BleQueueModule {
     // repeated begin() cycles — as native test fixtures do per test case —
     // must not orphan the previous queue allocation.
     void end();
+    uint32_t rxSourceLossCount() const { return rxSourceLosses_.load(std::memory_order_relaxed); }
 
     bool isReady() const { return queueHandle_ != nullptr && rxBufferReady_; }
 
@@ -59,18 +59,9 @@ class BleQueueModule {
     // Drain queue, frame packets, parse, and forward to display pipeline.
     void process();
 
-    using CausalTraceObserver = void (*)(const V1CausalTraceRecord& record, const uint8_t* exactPayload,
-                                         size_t exactPayloadLength, void* context);
-    using CausalTraceEnabled = bool (*)(void* context);
-    void setCausalTraceObserver(CausalTraceObserver observer, CausalTraceEnabled enabled, void* context = nullptr) {
-        causalTraceObserver_ = observer;
-        causalTraceEnabled_ = enabled;
-        causalTraceObserverContext_ = context;
-    }
 
     unsigned long getLastRxMillis() const { return lastRxMillis_; }
     bool isBackpressured() const { return backpressureActive_; }
-    uint32_t causalSourceLossCount() const { return causalSourceLosses_.load(std::memory_order_relaxed); }
 
 #ifdef UNIT_TEST
     bool enqueueStampedForTest(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration);
@@ -91,7 +82,6 @@ class BleQueueModule {
     struct RxSpan {
         size_t begin = 0;
         size_t end = 0;
-        V1CausalIdentity identity{};
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -110,23 +100,15 @@ class BleQueueModule {
     uint32_t lastNotifyTsMs_ = 0;
     uint32_t lastParsedTsMs_ = 0;     // Timestamp of last successful parse (for display latency)
     bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
-    uint32_t causalEventSeq_ = 0;
     std::atomic<uint32_t> rxSeq_{0};
-    std::atomic<uint32_t> causalSourceLosses_{0};
+    std::atomic<uint32_t> rxSourceLosses_{0};
     bool backpressureActive_ = false;
     BleLogRateLimitState tooLargeWarningLog_;
     BleLogRateLimitState missingEndWarningLog_;
 
     Config config_;
-    CausalTraceObserver causalTraceObserver_ = nullptr;
-    CausalTraceEnabled causalTraceEnabled_ = nullptr;
-    void* causalTraceObserverContext_ = nullptr;
     void refreshBackpressureState();
-    bool appendRxPacket(const BLEDataPacket& packet, V1CausalIdentity& identity);
+    bool appendRxPacket(const BLEDataPacket& packet);
     void compactRxState();
     void clearRxState();
-    V1CausalIdentity identityForFrame(size_t frameBegin, size_t frameLength) const;
-    void emitFramingReject(size_t begin, size_t length, V1CausalOutcome outcome);
-    void emitCausalTrace(const V1CausalTraceRecord& record, const uint8_t* exactPayload = nullptr,
-                         size_t exactPayloadLength = 0) const;
 };

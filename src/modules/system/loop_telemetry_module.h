@@ -5,20 +5,21 @@
 // Owns per-loop telemetry sampling and heap/cache perf recording.
 class LoopTelemetryModule {
   public:
+    // The cached-DMA half of this module is gone. It refreshed
+    // StorageManager::dmaCache_ from Core 1 and fed the freeDma / largestDma /
+    // freeDmaMin / largestDmaMin CSV columns, all of which reported the
+    // MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT pool. Those columns were near-duplicates
+    // of the freeDmaCap / largestDmaCap pair that perf_snapshot samples directly
+    // (largestDma matched largestDmaCap in 42,374 of 42,437 bench rows), and the
+    // refresh was the only cross-core writer of a non-atomic cache. Removing it
+    // leaves dmaCache_ single-threaded, written only by hasDmaHeapForSD() on
+    // Core 1.
     struct Providers {
-        void (*refreshDmaCache)(void* ctx) = nullptr;
-        void* dmaCacheContext = nullptr;
-
         uint32_t (*readFreeHeap)(void* ctx) = nullptr;
         void* freeHeapContext = nullptr;
         uint32_t (*readLargestHeapBlock)(void* ctx) = nullptr;
         void* largestHeapBlockContext = nullptr;
-        uint32_t (*readCachedFreeDma)(void* ctx) = nullptr;
-        void* cachedFreeDmaContext = nullptr;
-        uint32_t (*readCachedLargestDma)(void* ctx) = nullptr;
-        void* cachedLargestDmaContext = nullptr;
-        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock, uint32_t cachedFreeDma,
-                                uint32_t cachedLargestDma) = nullptr;
+        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock) = nullptr;
         void* heapStatsContext = nullptr;
     };
 

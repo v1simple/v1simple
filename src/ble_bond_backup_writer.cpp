@@ -21,7 +21,13 @@ namespace {
 
 constexpr const char* kBleBondBackupPath = "/v1simple_ble_bonds.bin";
 constexpr UBaseType_t kBondBackupQueueDepth = 1;
-constexpr uint32_t kBondBackupWriterStackSize = 4096;
+// 6144, not 4096: across the 7,625 [STACK] samples in .artifacts/bench this
+// task is present in only 30, and its minimum free was 1,024 B of 4,096 (3,072
+// used) -- the tightest margin of any measured task in the build, on a path
+// that is rarely exercised. Every other measured task sits between 40% and 89%
+// free. The extra 2,048 B of internal SRAM is bought against a 45,044 B
+// worst-case contiguous DMA block.
+constexpr uint32_t kBondBackupWriterStackSize = 6144;
 constexpr UBaseType_t kBondBackupWriterPriority = 1;
 constexpr uint32_t kBondBackupRetryDelayMs = 1000;
 constexpr uint32_t kBootBackupWaitTimeoutMs = 1500;

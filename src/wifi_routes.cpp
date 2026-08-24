@@ -330,7 +330,9 @@ bool WiFiManager::setupWebServer() {
             WifiDiagnosticsApiService::handleApiList(server_, runtime);
             return;
         }
-        StorageManager::SDTryLock lock(storageManager.getSDMutex());
+        // checkDmaHeap=true: maintenance-only route, radio up. See the
+        // WHO PAYS FOR THIS note in storage_manager.h.
+        StorageManager::SDTryLock lock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
         if (!lock) {
             markUiActivity();
             server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");
@@ -344,7 +346,9 @@ bool WiFiManager::setupWebServer() {
             WifiDiagnosticsApiService::handleApiDownload(server_, runtime);
             return;
         }
-        StorageManager::SDTryLock lock(storageManager.getSDMutex());
+        // checkDmaHeap=true: maintenance-only route, radio up. See the
+        // WHO PAYS FOR THIS note in storage_manager.h.
+        StorageManager::SDTryLock lock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
         if (!lock) {
             markUiActivity();
             server_.send(503, "application/json", "{\"success\":false,\"error\":\"storage_busy\"}");

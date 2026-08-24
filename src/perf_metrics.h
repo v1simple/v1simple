@@ -478,8 +478,6 @@ struct PerfExtendedMetrics {
     uint32_t v1LedBitmapAnomalies = 0;
     uint32_t minFreeHeap = UINT32_MAX;
     uint32_t minLargestBlock = UINT32_MAX;
-    uint32_t minFreeDma = UINT32_MAX;    // DMA-capable internal SRAM (WiFi/SD contention)
-    uint32_t minLargestDma = UINT32_MAX; // Largest DMA block (fragmentation detection)
     uint32_t wifiMaxUs = 0;
     uint32_t wifiHandleClientMaxUs = 0;
     uint32_t wifiMaintenanceMaxUs = 0;
@@ -639,8 +637,6 @@ struct PerfExtendedMetrics {
         loopMaxUs = 0;
         minFreeHeap = UINT32_MAX;
         minLargestBlock = UINT32_MAX;
-        minFreeDma = UINT32_MAX;
-        minLargestDma = UINT32_MAX;
         wifiMaxUs = 0;
         wifiHandleClientMaxUs = 0;
         wifiMaintenanceMaxUs = 0;
@@ -797,7 +793,7 @@ extern PerfExtendedMetrics perfExtended;
 
 void perfRecordNotifyToDisplayPipelineCompleteMs(uint32_t ms);
 void perfRecordLoopJitterUs(uint32_t us);
-void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock, uint32_t freeDma, uint32_t largestDma);
+void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock);
 void perfRecordWifiProcessUs(uint32_t us);
 void perfRecordWifiHandleClientUs(uint32_t us);
 void perfRecordWifiMaintenanceUs(uint32_t us);
@@ -862,7 +858,6 @@ void perfRecordWifiApTransition(bool apActive, uint8_t reasonCode, uint32_t nowM
 void perfRecordProxyAdvertisingTransition(bool advertising, uint8_t reasonCode, uint32_t nowMs);
 
 uint32_t perfGetMinFreeHeap();
-uint32_t perfGetMinFreeDma();
 void perfRecordObdUs(uint32_t us);
 uint32_t perfGetPrevWindowLoopMaxUs();
 uint32_t perfGetPrevWindowWifiMaxUs();

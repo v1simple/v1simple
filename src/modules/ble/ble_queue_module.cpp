@@ -463,7 +463,7 @@ void BleQueueModule::process() {
             // Set flag and timestamp for main loop to drive display pipeline
             // This decouples BLE processing from slow display updates
             hadSuccessfulParse_ = true;
-            lastParsedTsMs_ = frameDutMillis;
+            lastParsedTsMs_ = parseTimestampMs;
         }
     }
 

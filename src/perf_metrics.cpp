@@ -195,18 +195,12 @@ void perfRecordLoopJitterUs(uint32_t us) {
     }
 }
 
-void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock, uint32_t freeDma, uint32_t largestDma) {
+void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock) {
     if (freeHeap < perfExtended.minFreeHeap) {
         perfExtended.minFreeHeap = freeHeap;
     }
     if (largestBlock < perfExtended.minLargestBlock) {
         perfExtended.minLargestBlock = largestBlock;
-    }
-    if (freeDma < perfExtended.minFreeDma) {
-        perfExtended.minFreeDma = freeDma;
-    }
-    if (largestDma < perfExtended.minLargestDma) {
-        perfExtended.minLargestDma = largestDma;
     }
 }
 
@@ -884,9 +878,6 @@ void perfRecordProxyAdvertisingTransition(bool advertising, uint8_t reasonCode, 
 
 uint32_t perfGetMinFreeHeap() {
     return perfExtended.minFreeHeap == UINT32_MAX ? 0 : perfExtended.minFreeHeap;
-}
-uint32_t perfGetMinFreeDma() {
-    return perfExtended.minFreeDma == UINT32_MAX ? 0 : perfExtended.minFreeDma;
 }
 uint32_t perfGetPrevWindowLoopMaxUs() {
     return sPrevWindowLoopMaxUs.load(std::memory_order_relaxed);

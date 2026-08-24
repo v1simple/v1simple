@@ -57,6 +57,34 @@ from pathlib import Path
 
 MARKER = "v1simple-gfx-qspi-flush-patch-v1"
 
+# --- Second, independent patch: spi_bus_config_t::max_transfer_sz -----------
+#
+# Upstream sizes the bus transfer ceiling at (MAX_PIXELS_AT_ONCE * 16) + 8.
+# With ESP32QSPI_MAX_PIXELS_AT_ONCE=4096 (platformio.ini) that is 65,544 B,
+# but no transaction this driver issues is larger than 8,192 B. Every transmit
+# path clamps its chunk before setting base.length, and all of them land on the
+# same 65,536 bits:
+#
+#   writeCommandBytes      l << 3   l <= MAX<<1  = 8192   -> 8192 B
+#   writeC8Bytes           len << 3 caller passes _buffer -> <= 8192 B
+#   writeRepeat            xferLen << 4  xferLen <= MAX   -> 8192 B
+#   writePixels            l << 4   l <= MAX             -> 8192 B
+#   writeBytes             l << 3   l <= MAX<<1          -> 8192 B
+#   write16bitBeRGBBitmapR1  h << 4 h <= MAX (rejected above) -> 8192 B
+#   writeIndexedPixels     l << 4   l <= MAX             -> 8192 B
+#   writeIndexedPixelsDouble l << 5 l <= MAX>>1          -> 8192 B
+#
+# IDF sizes the bus DMA descriptor pool from max_transfer_sz, so the declared
+# ceiling is 8x the real one. Correcting it is right regardless of the saving;
+# the descriptor arithmetic lives in ESP-IDF and is not checked into this repo,
+# so the byte figure is not quoted here.
+#
+# This is applied independently of MARKER: the marker gates the writePixels
+# replacement only, and a tree patched by an earlier version of this script
+# still needs the bus-config fix. Idempotency is by content.
+BUS_UPSTREAM = ".max_transfer_sz = (ESP32QSPI_MAX_PIXELS_AT_ONCE * 16) + 8,"
+BUS_PATCHED = ".max_transfer_sz = (ESP32QSPI_MAX_PIXELS_AT_ONCE * 2) + 8,"
+
 UPSTREAM = """void Arduino_ESP32QSPI::writePixels(uint16_t *data, uint32_t len)
 {
 
@@ -230,23 +258,45 @@ def apply_patch() -> None:
         raw = handle.read()
     crlf = "\r\n" in raw
     text = raw.replace("\r\n", "\n")
+    original = text
 
+    # --- 1. writePixels ping-pong flush patch (marker-gated) ---------------
     if MARKER in text:
-        print("[patch_arduino_gfx_qspi] already applied (v1)")
-        return
-
-    if UPSTREAM not in text:
+        print("[patch_arduino_gfx_qspi] flush patch already applied (v1)")
+    elif UPSTREAM not in text:
         _fail(
             "vendored Arduino_ESP32QSPI.cpp does not match the expected "
             "upstream writePixels and carries no patch marker. The pinned "
             "GFX Library for Arduino version changed; re-evaluate the patch "
             "before building (see this script's header)."
         )
+    else:
+        text = text.replace(UPSTREAM, PATCHED, 1)
+        print("[patch_arduino_gfx_qspi] applied full-frame flush patch")
 
-    text = text.replace(UPSTREAM, PATCHED, 1)
+    # --- 2. max_transfer_sz ceiling (idempotent by content) ----------------
+    if BUS_PATCHED in text:
+        print("[patch_arduino_gfx_qspi] max_transfer_sz already corrected")
+    elif BUS_UPSTREAM not in text:
+        _fail(
+            "vendored Arduino_ESP32QSPI.cpp carries neither the upstream "
+            "max_transfer_sz initializer nor the corrected one. The pinned "
+            "GFX Library for Arduino version changed; re-evaluate the patch "
+            "before building (see this script's header)."
+        )
+    else:
+        text = text.replace(BUS_UPSTREAM, BUS_PATCHED, 1)
+        print(
+            "[patch_arduino_gfx_qspi] corrected max_transfer_sz "
+            "(MAX_PIXELS_AT_ONCE * 16 + 8 -> * 2 + 8; no transaction exceeds "
+            "8192 B)"
+        )
+
+    if text == original:
+        return
+
     with source.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text.replace("\n", "\r\n") if crlf else text)
-    print("[patch_arduino_gfx_qspi] applied full-frame flush patch")
 
 
 apply_patch()

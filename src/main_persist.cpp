@@ -15,23 +15,33 @@
 #endif
 
 namespace {
-// If dirty data remains unsaved for too long, allow a cautious retry using a
-// lower free-heap floor tuned to observed AP+STA steady-state with a stricter
-// largest-block guard.
-static constexpr uint32_t BACKGROUND_SAVE_AGED_DMA_FREE = 16896;
-static constexpr uint32_t BACKGROUND_SAVE_AGED_DMA_BLOCK = 10240;
-static constexpr uint32_t BACKGROUND_SAVE_MAX_DIRTY_AGE_MS = 90000; // 90 seconds
-static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000;     // 60 seconds
+static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000; // 60 seconds
 
+// This path is normal-boot only. processV1DeviceStoreSave() has one caller,
+// main_loop_wiring.cpp:158, which binds it into PeriodicMaintenanceModule;
+// that module is configured from main_runtime_wiring.cpp:323 on the
+// non-maintenance side of main.cpp:555-562. WiFi starts only in maintenance
+// boot (startSetupMode() at main.cpp:499 and :641), so WiFi.getMode() here can
+// only be WIFI_OFF.
+//
+// That made two thirds of this gate unreachable, and it has now been removed:
+//
+//   - the AP+STA and STA-only threshold branches (staRadioOn was always false)
+//   - BACKGROUND_SAVE_AGED_DMA_FREE / _BLOCK / MAX_DIRTY_AGE_MS and the whole
+//     aged-retry path, which was gated on thresholds.allowAgedRetry -- set true
+//     only in the dead AP+STA branch, so the && short-circuited every time and
+//     hasAgedDmaHeadroomForBackgroundSave() was never once called
+//   - withinDeficitTolerance(), which took a tolerance that was always 0:
+//     `sample < required && (required - sample) <= 0` is unsatisfiable on
+//     unsigned arithmetic, so it could never return true
+//   - the freeJitter/blockJitter/agedFree/agedBlock/modeLabel fields those fed
+//
+// What is left is the AP-only pair that was always in force. The names are kept
+// pointing at WiFiManager because that is where the numbers were calibrated,
+// even though the radio cannot be on when they are read.
 struct SaveDmaThresholds {
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
-    uint32_t freeJitterTolerance = 0;
-    uint32_t blockJitterTolerance = 0;
-    uint32_t agedFree = 0;
-    uint32_t agedBlock = 0;
-    bool allowAgedRetry = false;
-    const char* modeLabel = "unknown";
 };
 
 struct SaveDiagStats {
@@ -40,7 +50,6 @@ struct SaveDiagStats {
     uint32_t fail = 0;
     uint32_t deferLowDma = 0;
     uint32_t deferSdBusy = 0;
-    uint32_t agedRetryAttempts = 0;
     uint32_t minFreeOnSuccess = UINT32_MAX;
     uint32_t minBlockOnSuccess = UINT32_MAX;
     uint32_t minFreeOnFail = UINT32_MAX;
@@ -54,66 +63,31 @@ struct SaveDiagStats {
     uint32_t lastReportedAttempts = 0;
 };
 
-inline bool withinDeficitTolerance(uint32_t sample, uint32_t required, uint32_t tolerance) {
-    return sample < required && (required - sample) <= tolerance;
-}
-
 SaveDmaThresholds getSaveDmaThresholds() {
     SaveDmaThresholds thresholds{};
-    const wifi_mode_t mode = WiFi.getMode();
-    const bool staRadioOn = (mode == WIFI_AP_STA || mode == WIFI_STA);
-    const bool apStaMode = wifiManager.isSetupModeActive() && staRadioOn;
-    const bool staOnlyMode = staRadioOn && !apStaMode;
-
-    if (apStaMode) {
-        thresholds.minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_STA;
-        thresholds.minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_STA;
-        thresholds.freeJitterTolerance = WiFiManager::WIFI_RUNTIME_AP_STA_FREE_JITTER_TOLERANCE;
-        thresholds.blockJitterTolerance = 0;
-        thresholds.agedFree = BACKGROUND_SAVE_AGED_DMA_FREE;
-        thresholds.agedBlock = BACKGROUND_SAVE_AGED_DMA_BLOCK;
-        thresholds.allowAgedRetry = true;
-        thresholds.modeLabel = "AP+STA";
-        return thresholds;
-    }
-
-    if (staOnlyMode) {
-        thresholds.minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_STA_ONLY;
-        thresholds.minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_STA_ONLY;
-        thresholds.freeJitterTolerance = 0;
-        thresholds.blockJitterTolerance = WiFiManager::WIFI_RUNTIME_STA_BLOCK_JITTER_TOLERANCE;
-        thresholds.agedFree = thresholds.minFree;
-        thresholds.agedBlock = thresholds.minBlock;
-        thresholds.allowAgedRetry = false;
-        thresholds.modeLabel = "STA";
-        return thresholds;
-    }
-
     thresholds.minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY;
     thresholds.minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY;
-    thresholds.freeJitterTolerance = 0;
-    thresholds.blockJitterTolerance = 0;
-    thresholds.agedFree = thresholds.minFree;
-    thresholds.agedBlock = thresholds.minBlock;
-    thresholds.allowAgedRetry = false;
-    thresholds.modeLabel = "AP";
     return thresholds;
 }
 
+// Note the mask: this samples MALLOC_CAP_DMA while the thresholds above were
+// sized against MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, the pool the WiFi runtime
+// guard reads at wifi_manager_lifecycle.cpp:641-642. The two disagree by a stable
+// offset (min 2,296 / median 7,664 / max 14,756 bytes across 42,437 bench rows,
+// equal in none of them), which makes the 16,384 B floor effectively ~24,000 B
+// here.
+//
+// Left as-is on purpose. The worst freeDmaCap ever recorded on the bench is
+// 77,584 B -- 4.7x the floor, with 61 KB of slack -- and the worst largestDmaCap
+// is 45,044 B against a 12,288 B block floor. The offset changes no decision and
+// cannot be pushed toward one, because the WiFi that the constants anticipate
+// cannot run in this mode. Switching the mask would tighten a gate that has never
+// come close to firing.
 inline bool hasDmaHeadroomForBackgroundSave(uint32_t& freeDma, uint32_t& largestDma,
                                             const SaveDmaThresholds& thresholds) {
     freeDma = heap_caps_get_free_size(MALLOC_CAP_DMA);
     largestDma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
-    const bool freeOk = (freeDma >= thresholds.minFree) ||
-                        withinDeficitTolerance(freeDma, thresholds.minFree, thresholds.freeJitterTolerance);
-    const bool blockOk = (largestDma >= thresholds.minBlock) ||
-                         withinDeficitTolerance(largestDma, thresholds.minBlock, thresholds.blockJitterTolerance);
-    return freeOk && blockOk;
-}
-
-inline bool hasAgedDmaHeadroomForBackgroundSave(uint32_t freeDma, uint32_t largestDma,
-                                                const SaveDmaThresholds& thresholds) {
-    return (freeDma >= thresholds.agedFree) && (largestDma >= thresholds.agedBlock);
+    return (freeDma >= thresholds.minFree) && (largestDma >= thresholds.minBlock);
 }
 
 inline void noteMin(uint32_t& target, uint32_t sample) {
@@ -137,12 +111,12 @@ void maybeLogSaveDiag(const char* tag, SaveDiagStats& stats, uint32_t nowMs) {
     stats.lastReportMs = nowMs;
     stats.lastReportedAttempts = stats.attempts;
     Serial.printf(
-        "[%s] SaveDiag attempts=%lu ok=%lu fail=%lu deferLow=%lu deferBusy=%lu agedTry=%lu minOk=%lu/%lu "
+        "[%s] SaveDiag attempts=%lu ok=%lu fail=%lu deferLow=%lu deferBusy=%lu minOk=%lu/%lu "
         "minFail=%lu/%lu minDeferLow=%lu/%lu recoveries=%lu lastDeferMs=%lu maxDeferMs=%lu\n",
         tag, static_cast<unsigned long>(stats.attempts), static_cast<unsigned long>(stats.success),
         static_cast<unsigned long>(stats.fail), static_cast<unsigned long>(stats.deferLowDma),
-        static_cast<unsigned long>(stats.deferSdBusy), static_cast<unsigned long>(stats.agedRetryAttempts),
-        sampleOrZero(stats.minFreeOnSuccess), sampleOrZero(stats.minBlockOnSuccess), sampleOrZero(stats.minFreeOnFail),
+        static_cast<unsigned long>(stats.deferSdBusy), sampleOrZero(stats.minFreeOnSuccess),
+        sampleOrZero(stats.minBlockOnSuccess), sampleOrZero(stats.minFreeOnFail),
         sampleOrZero(stats.minBlockOnFail), sampleOrZero(stats.minFreeOnDeferLow),
         sampleOrZero(stats.minBlockOnDeferLow), static_cast<unsigned long>(stats.deferRecoveries),
         static_cast<unsigned long>(stats.lastDeferToSaveMs), static_cast<unsigned long>(stats.maxDeferToSaveMs));
@@ -210,26 +184,13 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                 uint32_t largestDma = 0;
                 const bool normalHeadroom = hasDmaHeadroomForBackgroundSave(freeDma, largestDma, thresholds);
                 const uint32_t dirtyAgeMs = (state.dirtySinceMs == 0) ? 0 : (nowMs - state.dirtySinceMs);
-                const bool allowAgedRetry = thresholds.allowAgedRetry && !normalHeadroom &&
-                                            (dirtyAgeMs >= BACKGROUND_SAVE_MAX_DIRTY_AGE_MS) &&
-                                            hasAgedDmaHeadroomForBackgroundSave(freeDma, largestDma, thresholds);
                 hadDmaSample = true;
                 sampledFreeDma = freeDma;
                 sampledLargestDma = largestDma;
 
-                if (normalHeadroom || allowAgedRetry) {
-                    if (allowAgedRetry) {
-                        state.diag.agedRetryAttempts++;
-                        static uint32_t lastAgedRetryLogMs = 0;
-                        if ((nowMs - lastAgedRetryLogMs) >= 10000) {
-                            lastAgedRetryLogMs = nowMs;
-                            Serial.printf("[%s] Save retry (aged dirty=%lus free=%lu block=%lu relaxed>=%lu/%lu)\n",
-                                          cfg.tag, static_cast<unsigned long>(dirtyAgeMs / 1000),
-                                          static_cast<unsigned long>(freeDma), static_cast<unsigned long>(largestDma),
-                                          static_cast<unsigned long>(thresholds.agedFree),
-                                          static_cast<unsigned long>(thresholds.agedBlock));
-                        }
-                    }
+                if (normalHeadroom) {
+                    // checkDmaHeap=false: hasDmaHeadroomForBackgroundSave() just
+                    // sampled the same heap against a stricter pair of floors.
                     StorageManager::SDTryLock sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
                     if (sdLock) {
                         saveOk = cfg.saveDirect(*fs, cfg.filePath);
@@ -251,9 +212,9 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                     if ((nowMs - lastLowDmaLogMs) >= 10000) {
                         lastLowDmaLogMs = nowMs;
                         Serial.printf(
-                            "[%s] Save deferred (low DMA heap mode=%s free=%lu block=%lu need>=%lu/%lu dirty=%lus)\n",
-                            cfg.tag, thresholds.modeLabel, static_cast<unsigned long>(freeDma),
-                            static_cast<unsigned long>(largestDma), static_cast<unsigned long>(thresholds.minFree),
+                            "[%s] Save deferred (low DMA heap free=%lu block=%lu need>=%lu/%lu dirty=%lus)\n",
+                            cfg.tag, static_cast<unsigned long>(freeDma), static_cast<unsigned long>(largestDma),
+                            static_cast<unsigned long>(thresholds.minFree),
                             static_cast<unsigned long>(thresholds.minBlock),
                             static_cast<unsigned long>(dirtyAgeMs / 1000));
                     }

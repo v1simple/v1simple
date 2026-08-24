@@ -273,7 +273,12 @@ uint32_t initializeBootPerformanceLoggers(BootLoggingRuntimeServices& services) 
     // Standalone perf CSV loggers (SD only).
     const bool sdEnabled = services.storage.isReady() && services.storage.isSDCard();
     if (sdEnabled) {
-        StorageManager::SDLockBootRetry lock(services.storage.getSDMutex());
+        // Was SDLockBootRetry, which retried up to 5x/100ms apart waiting for DMA
+        // starvation to clear. This runs only in normal boot -- the whole function
+        // is called only from main.cpp:551 on the non-maintenance side -- where
+        // WiFi cannot be running, so there was nothing for the retries to wait
+        // out; the mutex take itself is portMAX_DELAY and never needed them.
+        StorageManager::SDLockBlocking lock(services.storage.getSDMutex());
         fs::FS* filesystem = services.storage.getFilesystem();
         if (lock && filesystem) {
             const DiagnosticLogRetention::BootPruneResult pruned =

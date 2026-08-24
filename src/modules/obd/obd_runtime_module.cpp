@@ -163,9 +163,18 @@ void ObdRuntimeModule::begin(ObdBleClient* bleClient, bool enabled, const char* 
         return;
     }
 
-    ensureRuntimeResources();
-
+    // Provision only when there is something to talk to. ensureRuntimeResources()
+    // allocates the NimBLE client -- one of only NIMBLE_MAX_CONNECTIONS==3 slots
+    // in NimBLEDevice's fixed m_pClients array -- and the ObdTransport task with
+    // its 8 KiB internal-SRAM stack and queues. Calling it before the saved-address
+    // check meant that merely enabling OBD in settings paid ~8.5 KiB of internal
+    // SRAM plus a connection slot on a unit that had never been paired.
+    //
+    // Both the enable path (setEnabled) and the manual-scan entry point
+    // (requestManualPairScan) call ensureRuntimeResources() themselves, so an
+    // unpaired unit still provisions the moment it actually needs a client.
     if (savedAddress_[0] != '\0') {
+        ensureRuntimeResources();
         state_ = ObdConnectionState::WAIT_BOOT;
     }
 }
@@ -769,6 +778,12 @@ bool ObdRuntimeModule::requestManualPairScan(uint32_t nowMs) {
         state_ == ObdConnectionState::SCANNING) {
         return false;
     }
+
+    // Companion to begin(): provisioning is no longer unconditional there, so a
+    // unit that booted OBD-enabled but unpaired arrives here with a null
+    // pClient_ and would fail to connect forever. Idempotent, so the already-
+    // provisioned paths pay nothing.
+    ensureRuntimeResources();
 
     stopBleScan();
     disconnectBle();

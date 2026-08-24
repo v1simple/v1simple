@@ -25,8 +25,6 @@ struct RuntimeSnapshotCaptureContext {
     uint64_t nowMicros = 0;
     uint64_t clockSegment = 0;
     uint32_t freeHeap = 0;
-    uint32_t freeDma = 0;
-    uint32_t largestDma = 0;
     uint32_t freeDmaCap = 0;
     uint32_t largestDmaCap = 0;
     ObdRuntimeStatus obdStatus = {};
@@ -46,8 +44,6 @@ static RuntimeSnapshotCaptureContext captureRuntimeSnapshotContext() {
     ctx.clockSegment = QualificationClock::segment();
     ctx.nowMs = millis();
     ctx.freeHeap = ESP.getFreeHeap();
-    ctx.freeDma = StorageManager::getCachedFreeDma();
-    ctx.largestDma = StorageManager::getCachedLargestDma();
     ctx.freeDmaCap = heap_caps_get_free_size(MALLOC_CAP_DMA);
     ctx.largestDmaCap = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
     ctx.obdStatus = obdRuntimeModule.snapshot(ctx.nowMs);
@@ -162,8 +158,6 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.dutMicros = ctx.nowMicros;
     flat.clockSegment = ctx.clockSegment;
     flat.freeHeap = ctx.freeHeap;
-    flat.freeDma = ctx.freeDma;
-    flat.largestDma = ctx.largestDma;
     flat.freeDmaCap = ctx.freeDmaCap;
     flat.largestDmaCap = ctx.largestDmaCap;
 
@@ -224,15 +218,12 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.bleDiscTaskCreateFail = perfCounters.bleDiscTaskCreateFail.load(std::memory_order_relaxed);
     flat.displayUpdates = perfCounters.displayUpdates.load(std::memory_order_relaxed);
     flat.displaySkips = perfCounters.displaySkips.load(std::memory_order_relaxed);
-    flat.wifiConnectDeferred = perfCounters.wifiConnectDeferred.load(std::memory_order_relaxed);
     flat.pushNowRetries = perfCounters.pushNowRetries.load(std::memory_order_relaxed);
     flat.pushNowFailures = perfCounters.pushNowFailures.load(std::memory_order_relaxed);
     PerfExtendedSnapshot extended{};
     capturePerfExtendedSnapshot(extended, ctx);
     const PerfExtendedMetrics& metrics = extended.metrics;
 
-    flat.freeDmaMin = (metrics.minFreeDma == UINT32_MAX) ? ctx.freeDma : metrics.minFreeDma;
-    flat.largestDmaMin = (metrics.minLargestDma == UINT32_MAX) ? ctx.largestDma : metrics.minLargestDma;
     flat.bleState = bleClient.getBLEStateCode();
     flat.subscribeStep = bleClient.getSubscribeStepCode();
     flat.connectInProgress = bleClient.isConnectInProgress() ? 1 : 0;
@@ -240,7 +231,6 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.pendingDisconnectCleanup = bleClient.hasPendingDisconnectCleanup() ? 1 : 0;
     flat.proxyAdvertising = perfGetProxyAdvertisingState() != 0 ? 1 : 0;
     flat.proxyAdvertisingLastTransitionReason = static_cast<uint8_t>(perfGetProxyAdvertisingLastTransitionReason());
-    flat.wifiPriorityMode = bleClient.isWifiPriority() ? 1 : 0;
 
     flat.dmaFreeMin = extended.dmaFreeMin;
     flat.dmaLargestMin = extended.dmaLargestMin;
@@ -304,19 +294,6 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
         flat.gpsStableHasFix = gpsStatus.stableHasFix;
         flat.gpsEnableTransitions = gpsStatus.enableTransitions;
     }
-    flat.wifiMaxUs = metrics.wifiMaxUs;
-    flat.wifiHandleClientMaxUs = metrics.wifiHandleClientMaxUs;
-    flat.wifiMaintenanceMaxUs = metrics.wifiMaintenanceMaxUs;
-    flat.wifiStatusCheckMaxUs = metrics.wifiStatusCheckMaxUs;
-    flat.wifiTimeoutCheckMaxUs = metrics.wifiTimeoutCheckMaxUs;
-    flat.wifiHeapGuardMaxUs = metrics.wifiHeapGuardMaxUs;
-    flat.wifiApStaPollMaxUs = metrics.wifiApStaPollMaxUs;
-    flat.wifiStopHttpServerMaxUs = metrics.wifiStopHttpServerMaxUs;
-    flat.wifiStopStaDisconnectMaxUs = metrics.wifiStopStaDisconnectMaxUs;
-    flat.wifiStopApDisableMaxUs = metrics.wifiStopApDisableMaxUs;
-    flat.wifiStopModeOffMaxUs = metrics.wifiStopModeOffMaxUs;
-    flat.wifiStartPreflightMaxUs = metrics.wifiStartPreflightMaxUs;
-    flat.wifiStartApBringupMaxUs = metrics.wifiStartApBringupMaxUs;
     flat.fsMaxUs = metrics.fsMaxUs;
     flat.sdMaxUs = metrics.sdMaxUs;
     flat.sdWriteCount = metrics.sdWriteCount;

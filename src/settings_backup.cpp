@@ -422,10 +422,16 @@ bool SettingsManager::backupToSD() {
     }
 
     // Acquire SD mutex to protect file I/O.
-    // checkDmaHeap=false: backupToSD() is called from save() which runs inside
-    // WiFi handlers — WiFi's SRAM buffers reduce DMA heap below the guard
-    // thresholds, causing every web-UI save to silently skip the SD backup.
-    // The write is small (one JSON file) and infrequent, so bypassing is safe.
+    //
+    // Kept explicit even though false is now the default, because this site is
+    // one of the few that IS reachable with the radio up (save() at main.cpp:703
+    // and :734, and the route provider at wifi_runtimes.cpp:506) and opts out on
+    // purpose. That is a different fact from the sites that are ungated merely
+    // because WiFi cannot be running when they execute.
+    //
+    // WiFi's SRAM buffers reduce DMA heap below the guard thresholds, which made
+    // every web-UI save silently skip the SD backup. The write is small (one JSON
+    // file) and infrequent, so bypassing is safe.
     StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
     if (!sdLock) {
         Serial.println("[Settings] Failed to acquire SD mutex for backup");
@@ -554,6 +560,10 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
         return false;
     }
 
+    // Explicit false, same reasoning as backupToSD(): the SettingsBackup writer
+    // task is created from serviceDeferredBackup(), which runs in both boot
+    // modes, so this can execute with the AP up. It opts out deliberately rather
+    // than by reachability.
     StorageManager::SDLockBlocking lock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
     if (!lock) {
         return false;
@@ -847,7 +857,10 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     }
 
     {
-        StorageManager::SDTryLock sdLock(storageManager.getSDMutex());
+        // checkDmaHeap=true: reachable from the maintenance loop (main.cpp:647)
+        // with the AP up. One of seven sites in the tree where the DMA gate can
+        // actually fire -- see the WHO PAYS FOR THIS note in storage_manager.h.
+        StorageManager::SDTryLock sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
         if (!sdLock) {
             scheduleDeferredBackupRetry(nowMs);
             return;

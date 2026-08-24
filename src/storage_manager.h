@@ -49,12 +49,6 @@ class StorageManager {
     // when multiple cores/tasks may access SD simultaneously
     SemaphoreHandle_t getSDMutex() const { return sdMutex_; }
 
-    // Atomic try-lock failure counter (cross-core safe for monitoring)
-    static inline std::atomic<uint32_t> sdTryLockFailCount{0};
-
-    // DMA heap starvation counter (SD ops skipped due to low internal SRAM)
-    static inline std::atomic<uint32_t> sdDmaStarvationCount{0};
-
     // ============================================================================
     // DMA HEAP GATING - prevents SD ops when WiFi starves internal SRAM
     // ============================================================================
@@ -62,6 +56,26 @@ class StorageManager {
     // - WiFi uses ~50-80KB of DMA-capable internal SRAM
     // - SD_MMC needs contiguous DMA buffers for each operation
     // - Fragmentation can cause failures even with "enough" total free
+    //
+    // WHO PAYS FOR THIS. Split boot means WiFi runs only in maintenance boot:
+    // startSetupMode() has exactly two call sites, main.cpp:499 inside
+    // initializeMaintenanceBootFlow() and main.cpp:641 inside the maintenance
+    // loop branch, and wifiManager.process() has one, main.cpp:620 in that same
+    // branch. Commit bd2435c removed the last normal-runtime autostart path.
+    //
+    // So only seven lock sites in the tree can ever evaluate this gate with the
+    // radio up:
+    //
+    //   settings_backup.cpp:850      serviceDeferredBackup  <- main.cpp:647
+    //   settings_nvs.cpp:332/385/433/471   wifi client secrets <- wifi_client.cpp
+    //   wifi_routes.cpp:333/347      /api/diagnostics/log{,s}
+    //
+    // Those seven opt in with checkDmaHeap=true. Every other site runs where
+    // WiFi is structurally incapable of being on -- normal boot, or the pre-WiFi
+    // part of maintenance boot -- so the default is false and they skip two heap
+    // traversals per lock. Do not flip this default back without re-deriving the
+    // reachability; a site that does not need the gate paying for it is the
+    // whole reason it was inverted.
     static constexpr uint32_t MIN_DMA_FREE_FOR_SD = 16384; // 16KB total free
     static constexpr uint32_t MIN_DMA_BLOCK_FOR_SD = 2048; // 2KB largest block
     static constexpr uint32_t DMA_CHECK_CACHE_MS = 100;    // Cache check for 100ms
@@ -86,22 +100,20 @@ class StorageManager {
     // Check if there's enough DMA-capable heap for SD operations
     // Uses cached values if recent, otherwise updates cache
     // Returns false if WiFi has starved internal SRAM (free OR fragmented)
+    //
+    // This is now the only writer of dmaCache_, and every caller that reaches it
+    // runs on the main-loop task (Core 1): the seven opt-in sites listed above
+    // are driven either from the maintenance loop directly (main.cpp:647) or
+    // from route handlers dispatched inside wifiManager.process() at
+    // main.cpp:620. The cache is therefore single-threaded and needs no atomics.
     static bool hasDmaHeapForSD() {
         uint32_t now = millis();
         if (!dmaCache_.valid || (now - dmaCache_.lastCheckMs) > DMA_CHECK_CACHE_MS) {
             updateDmaHeapCache();
         }
 
-        bool ok = (dmaCache_.freeDma >= MIN_DMA_FREE_FOR_SD) && (dmaCache_.largestDma >= MIN_DMA_BLOCK_FOR_SD);
-        if (!ok) {
-            sdDmaStarvationCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        return ok;
+        return (dmaCache_.freeDma >= MIN_DMA_FREE_FOR_SD) && (dmaCache_.largestDma >= MIN_DMA_BLOCK_FOR_SD);
     }
-
-    // Get cached values for metrics (no API call)
-    static uint32_t getCachedFreeDma() { return dmaCache_.freeDma; }
-    static uint32_t getCachedLargestDma() { return dmaCache_.largestDma; }
 
     // ============================================================================
     // SD access policy: two explicit lock types.
@@ -115,15 +127,14 @@ class StorageManager {
     // The BLE-to-display path must not block on best-effort SD work.
     // ============================================================================
 
-    // Blocking Core 0 writer lock. DMA starvation fails before acquisition;
-    // boot-time callers that require retries use SDLockBootRetry.
+    // Blocking Core 0 writer lock. When the DMA gate is requested, starvation
+    // fails before acquisition.
     class SDLockBlocking {
       public:
-        explicit SDLockBlocking(SemaphoreHandle_t mutex, bool checkDmaHeap = true)
-            : mutex_(mutex), acquired_(false), dmaStarved_(false) {
+        explicit SDLockBlocking(SemaphoreHandle_t mutex, bool checkDmaHeap = false)
+            : mutex_(mutex), acquired_(false) {
             // Check DMA heap first - fail fast if WiFi has starved internal SRAM
             if (checkDmaHeap && !hasDmaHeapForSD()) {
-                dmaStarved_ = true;
                 return;
             }
             if (mutex_) {
@@ -132,7 +143,6 @@ class StorageManager {
         }
         ~SDLockBlocking() { release(); }
         bool acquired() const { return acquired_; }
-        bool isDmaStarved() const { return dmaStarved_; }
         operator bool() const { return acquired_; }
 
         void release() {
@@ -145,44 +155,6 @@ class StorageManager {
       private:
         SemaphoreHandle_t mutex_;
         bool acquired_;
-        bool dmaStarved_;
-    };
-
-    // Startup-only blocking lock with bounded retries for DMA starvation.
-    class SDLockBootRetry {
-      public:
-        static constexpr int MAX_RETRIES = 5;
-        static constexpr int BACKOFF_MS = 100; // 100ms between retries
-
-        explicit SDLockBootRetry(SemaphoreHandle_t mutex) : mutex_(mutex), acquired_(false), retryCount_(0) {
-            for (int i = 0; i < MAX_RETRIES; ++i) {
-                if (hasDmaHeapForSD()) {
-                    if (mutex_ && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
-                        acquired_ = true;
-                        retryCount_ = i;
-                        return;
-                    }
-                }
-                vTaskDelay(pdMS_TO_TICKS(BACKOFF_MS));
-            }
-            retryCount_ = MAX_RETRIES;
-        }
-        ~SDLockBootRetry() { release(); }
-        bool acquired() const { return acquired_; }
-        int retryCount() const { return retryCount_; }
-        operator bool() const { return acquired_; }
-
-        void release() {
-            if (acquired_ && mutex_) {
-                xSemaphoreGive(mutex_);
-                acquired_ = false;
-            }
-        }
-
-      private:
-        SemaphoreHandle_t mutex_;
-        bool acquired_;
-        int retryCount_;
     };
 
     // There is no generic SDLock alias; each caller chooses blocking or
@@ -191,23 +163,18 @@ class StorageManager {
     // Non-blocking Core 1 lock. DMA starvation also fails immediately.
     class SDTryLock {
       public:
-        explicit SDTryLock(SemaphoreHandle_t mutex, bool checkDmaHeap = true)
-            : mutex_(mutex), acquired_(false), dmaStarved_(false) {
+        explicit SDTryLock(SemaphoreHandle_t mutex, bool checkDmaHeap = false)
+            : mutex_(mutex), acquired_(false) {
             // Check DMA heap first - fail fast if WiFi has starved internal SRAM
             if (checkDmaHeap && !hasDmaHeapForSD()) {
-                dmaStarved_ = true;
                 return;
             }
             if (mutex_) {
                 acquired_ = (xSemaphoreTake(mutex_, 0) == pdTRUE);
-                if (!acquired_) {
-                    sdTryLockFailCount.fetch_add(1, std::memory_order_relaxed);
-                }
             }
         }
         ~SDTryLock() { release(); }
         bool acquired() const { return acquired_; }
-        bool isDmaStarved() const { return dmaStarved_; }
         operator bool() const { return acquired_; }
 
         void release() {
@@ -220,7 +187,6 @@ class StorageManager {
       private:
         SemaphoreHandle_t mutex_;
         bool acquired_;
-        bool dmaStarved_;
     };
 
     // Promote a temp file to the live path with rollback if promotion fails.

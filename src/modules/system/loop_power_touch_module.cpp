@@ -41,20 +41,11 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
     }
     heapSampleSkip_ = 0;
 
-    if (providers.refreshDmaCache) {
-        providers.refreshDmaCache(providers.dmaCacheContext);
-    }
-
     if (providers.recordHeapStats) {
         const uint32_t freeHeap = providers.readFreeHeap ? providers.readFreeHeap(providers.freeHeapContext) : 0;
         const uint32_t largestHeapBlock =
             providers.readLargestHeapBlock ? providers.readLargestHeapBlock(providers.largestHeapBlockContext) : 0;
-        const uint32_t cachedFreeDma =
-            providers.readCachedFreeDma ? providers.readCachedFreeDma(providers.cachedFreeDmaContext) : 0;
-        const uint32_t cachedLargestDma =
-            providers.readCachedLargestDma ? providers.readCachedLargestDma(providers.cachedLargestDmaContext) : 0;
-        providers.recordHeapStats(providers.heapStatsContext, freeHeap, largestHeapBlock, cachedFreeDma,
-                                  cachedLargestDma);
+        providers.recordHeapStats(providers.heapStatsContext, freeHeap, largestHeapBlock);
     }
 
     return result;

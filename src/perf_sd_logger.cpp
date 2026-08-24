@@ -23,17 +23,16 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 49; // adds 64-bit DUT time and reboot clock segment
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 50; // drops 19 structurally-dead DMA/wifi columns
 static constexpr char PERF_CSV_HEADER[] =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
-    "freeDma,largestDma,freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,wifiMax_us,"
-    "uiToScan,uiToRest,uiScanToRest,uiFastScanExit,uiLastScanDwellMs,uiMinScanDwellMs,fadeDown,fadeRestore,"
-    "fadeSkipEqual,fadeSkipNoBaseline,fadeSkipNotFaded,fadeLastDecision,fadeLastCurrentVol,fadeLastOriginalVol,"
-    "fadeLastDecisionMs,speedVolDrop,speedVolRestore,speedVolRetry,bleScanStartMs,bleTargetFoundMs,bleConnectStartMs,"
-    "bleConnectedMs,bleFirstRxMs,bleFollowupRequestAlertMax_us,bleFollowupRequestVersionMax_us,"
-    "bleConnectStableCallbackMax_us,bleProxyStartMax_us,displayFullRenderCount,"
-    "displayRestingFullRenderCount,displayRestingIncrementalRenderCount,displayPersistedRenderCount,"
-    "displayPreviewRenderCount,displayRestoreRenderCount,displayLiveScenarioRenderCount,"
+    "freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,uiToScan,uiToRest,uiScanToRest,"
+    "uiFastScanExit,uiLastScanDwellMs,uiMinScanDwellMs,fadeDown,fadeRestore,fadeSkipEqual,fadeSkipNoBaseline,"
+    "fadeSkipNotFaded,fadeLastDecision,fadeLastCurrentVol,fadeLastOriginalVol,fadeLastDecisionMs,speedVolDrop,"
+    "speedVolRestore,speedVolRetry,bleScanStartMs,bleTargetFoundMs,bleConnectStartMs,bleConnectedMs,bleFirstRxMs,"
+    "bleFollowupRequestAlertMax_us,bleFollowupRequestVersionMax_us,bleConnectStableCallbackMax_us,"
+    "bleProxyStartMax_us,displayFullRenderCount,displayRestingFullRenderCount,displayRestingIncrementalRenderCount,"
+    "displayPersistedRenderCount,displayPreviewRenderCount,displayRestoreRenderCount,displayLiveScenarioRenderCount,"
     "displayRestingScenarioRenderCount,displayPersistedScenarioRenderCount,displayPreviewScenarioRenderCount,"
     "displayRestoreScenarioRenderCount,displayRestingFlushReasonFullRedrawCount,"
     "displayRestingFlushReasonPendingExternalCount,displayRestingFlushReasonPaintedCount,"
@@ -44,48 +43,46 @@ static constexpr char PERF_CSV_HEADER[] =
     "displayStatusWifiPaintCount,displayStatusObdPaintCount,displayStatusGpsPaintCount,displayStatusAlpPaintCount,"
     "displayRedrawReasonFirstRunCount,displayRedrawReasonEnterLiveCount,displayRedrawReasonLeaveLiveCount,"
     "displayRedrawReasonLeavePersistedCount,displayRedrawReasonForceRedrawCount,"
-    "displayRedrawReasonFrequencyChangeCount,displayRedrawReasonBandSetChangeCount,displayRedrawReasonArrowChangeCount,"
-    "displayRedrawReasonSignalBarChangeCount,displayRedrawReasonVolumeChangeCount,"
-    "displayRedrawReasonBogeyCounterChangeCount,displayRedrawReasonRssiRefreshCount,displayRedrawReasonFlashTickCount,"
+    "displayRedrawReasonFrequencyChangeCount,displayRedrawReasonBandSetChangeCount,"
+    "displayRedrawReasonArrowChangeCount,displayRedrawReasonSignalBarChangeCount,"
+    "displayRedrawReasonVolumeChangeCount,displayRedrawReasonBogeyCounterChangeCount,"
+    "displayRedrawReasonRssiRefreshCount,displayRedrawReasonFlashTickCount,"
     "displayRedrawReasonFullFlushForRedrawCount,displayRedrawReasonCacheHitSkipFlushCount,"
     "displayRedrawReasonUnionExceedsCapCount,displayRedrawReasonPartialRegionFlushCount,displayFullFlushCount,"
     "displayPartialFlushCount,displayPartialFlushAreaPeakPx,displayPartialFlushAreaTotalPx,"
     "displayFlushEquivalentAreaTotalPx,displayFlushMaxAreaPx,displayPartialFlushLogicalWidthPeakPx,"
     "displayPartialFlushLogicalHeightPeakPx,displayPartialFlushRowCallsPeak,displayPartialFlushPixelsPerRowPeakPx,"
     "displayPartialFlushUsPeak_us,displayPartialFlushWorstUsLogicalWidthPx,displayPartialFlushWorstUsLogicalHeightPx,"
-    "displayPartialFlushWorstUsAreaPx,displayPartialFlushWouldFullRows64Count,displayPartialFlushWouldFullRows128Count,"
-    "displayPartialFlushWouldFullRows256Count,displayUnionExceedsCapAreaPeakPx,displayUnionExceedsCapRectCountPeak,"
-    "displayUnionExceedsCapAreaPeakSourceMask,displayUnionExceedsCapWithFrequencyCount,"
-    "displayUnionExceedsCapWithBandsBarsCount,displayUnionExceedsCapWithArrowsCount,"
-    "displayUnionExceedsCapWithStatusCount,displayUnionExceedsCapWithIndicatorsCount,"
-    "displayUnionExceedsCapWithExternalCount,displayUnionExceedsCapUnclassifiedCount,displayBaseFrameMax_us,"
-    "displayStatusStripMax_us,displayFrequencyMax_us,displayBandsBarsMax_us,displayArrowsIconsMax_us,"
-    "displayFlushSubphaseMax_us,displayLiveRenderMax_us,displayRestingRenderMax_us,displayPersistedRenderMax_us,"
-    "displayPreviewRenderMax_us,displayRestoreRenderMax_us,displayPreviewFirstRenderMax_us,"
-    "displayPreviewSteadyRenderMax_us,alertPersistStarts,alertPersistStartsSkippedActive,"
-    "alertPersistStartsSkippedInvalid,alertPersistExpires,alertPersistClears,autoPushStarts,autoPushCompletes,"
-    "autoPushNoProfile,autoPushProfileLoadFail,autoPushProfileWriteFail,autoPushBusyRetries,autoPushModeFail,"
-    "autoPushVolumeFail,autoPushDisconnectAbort,powerAutoPowerArmed,powerAutoPowerTimerStart,powerAutoPowerTimerCancel,"
-    "powerAutoPowerTimerExpire,powerCarModeAlpSilenceExpire,powerCriticalWarn,powerCriticalShutdown,"
-    "perfUncleanShutdown,cmdBleBusy,rxBytes,oversizeDrops,queueHighWater,bleMutexSkip,bleMutexTimeout,cmdPaceNotYet,"
-    "bleDiscTaskCreateFail,displayUpdates,displaySkips,wifiConnectDeferred,pushNowRetries,pushNowFailures,"
-    "minLargestBlock,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,sdWriteGe10ms,flushMax_"
-    "us,bleConnectMax_us,bleDiscoveryMax_us,bleSubscribeMax_us,dispPipeMax_us,perfReportMax_us,prioritySelectRowFlag,"
-    "prioritySelectFirstUsable,prioritySelectFirstEntry,prioritySelectAmbiguousIndex,prioritySelectUnusableIndex,"
-    "prioritySelectInvalidChosen,alertTablePublishes,alertTablePublishes3Bogey,alertTableRowReplacements,"
-    "alertTableAssemblyTimeouts,parserRowsBandNone,parserRowsKuRaw,displayLiveInvalidPrioritySkips,"
-    "displayLiveFallbackToUsable,obdMax_us,obdConnectCallMax_us,obdSecurityStartCallMax_us,obdDiscoveryCallMax_us,"
-    "obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,obdStaleCount,perfDrop,"
-    "wifiHandleClientMax_us,wifiMaintenanceMax_us,wifiStatusCheckMax_us,wifiTimeoutCheckMax_us,wifiHeapGuardMax_us,"
-    "wifiApStaPollMax_us,wifiStopHttpServerMax_us,wifiStopStaDisconnectMax_us,wifiStopApDisableMax_us,"
-    "wifiStopModeOffMax_us,wifiStartPreflightMax_us,wifiStartApBringupMax_us,freeDmaMin,largestDmaMin,bleState,"
-    "subscribeStep,connectInProgress,asyncConnectPending,pendingDisconnectCleanup,proxyAdvertising,"
-    "proxyAdvertisingLastTransitionReason,wifiPriorityMode,speedSourceSelected,speedSourceValid,speedSelectedMph_x10,"
+    "displayPartialFlushWorstUsAreaPx,displayPartialFlushWouldFullRows64Count,"
+    "displayPartialFlushWouldFullRows128Count,displayPartialFlushWouldFullRows256Count,"
+    "displayUnionExceedsCapAreaPeakPx,displayUnionExceedsCapRectCountPeak,displayUnionExceedsCapAreaPeakSourceMask,"
+    "displayUnionExceedsCapWithFrequencyCount,displayUnionExceedsCapWithBandsBarsCount,"
+    "displayUnionExceedsCapWithArrowsCount,displayUnionExceedsCapWithStatusCount,"
+    "displayUnionExceedsCapWithIndicatorsCount,displayUnionExceedsCapWithExternalCount,"
+    "displayUnionExceedsCapUnclassifiedCount,displayBaseFrameMax_us,displayStatusStripMax_us,displayFrequencyMax_us,"
+    "displayBandsBarsMax_us,displayArrowsIconsMax_us,displayFlushSubphaseMax_us,displayLiveRenderMax_us,"
+    "displayRestingRenderMax_us,displayPersistedRenderMax_us,displayPreviewRenderMax_us,displayRestoreRenderMax_us,"
+    "displayPreviewFirstRenderMax_us,displayPreviewSteadyRenderMax_us,alertPersistStarts,"
+    "alertPersistStartsSkippedActive,alertPersistStartsSkippedInvalid,alertPersistExpires,alertPersistClears,"
+    "autoPushStarts,autoPushCompletes,autoPushNoProfile,autoPushProfileLoadFail,autoPushProfileWriteFail,"
+    "autoPushBusyRetries,autoPushModeFail,autoPushVolumeFail,autoPushDisconnectAbort,powerAutoPowerArmed,"
+    "powerAutoPowerTimerStart,powerAutoPowerTimerCancel,powerAutoPowerTimerExpire,powerCarModeAlpSilenceExpire,"
+    "powerCriticalWarn,powerCriticalShutdown,perfUncleanShutdown,cmdBleBusy,rxBytes,oversizeDrops,queueHighWater,"
+    "bleMutexSkip,bleMutexTimeout,cmdPaceNotYet,bleDiscTaskCreateFail,displayUpdates,displaySkips,pushNowRetries,"
+    "pushNowFailures,minLargestBlock,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,"
+    "sdWriteGe10ms,flushMax_us,bleConnectMax_us,bleDiscoveryMax_us,bleSubscribeMax_us,dispPipeMax_us,"
+    "perfReportMax_us,prioritySelectRowFlag,prioritySelectFirstUsable,prioritySelectFirstEntry,"
+    "prioritySelectAmbiguousIndex,prioritySelectUnusableIndex,prioritySelectInvalidChosen,alertTablePublishes,"
+    "alertTablePublishes3Bogey,alertTableRowReplacements,alertTableAssemblyTimeouts,parserRowsBandNone,"
+    "parserRowsKuRaw,displayLiveInvalidPrioritySkips,displayLiveFallbackToUsable,obdMax_us,obdConnectCallMax_us,"
+    "obdSecurityStartCallMax_us,obdDiscoveryCallMax_us,obdWriteCallMax_us,obdRssiCallMax_us,obdPollErrors,"
+    "obdStaleCount,perfDrop,bleState,subscribeStep,connectInProgress,asyncConnectPending,pendingDisconnectCleanup,"
+    "proxyAdvertising,proxyAdvertisingLastTransitionReason,speedSourceSelected,speedSourceValid,speedSelectedMph_x10,"
     "speedSelectedAgeMs,speedSourceSwitches,speedNoSourceSelections,speedGpsSelections,cycleState,"
     "cycleTransitionsTotal,cycleTimeInStateMs,cycleTeardownDurationMs,cycleObdRetryAttemptsTotal,"
     "cycleWifiManualPhoneKicksTotal,cycleProxyNoClientLatched,gpsSentencesOk,gpsSentencesChecksumFail,"
-    "gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,gpsStableFixAgeMs,"
-    "gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,"
+    "gpsSentencesUnknown,gpsBufferOverruns,gpsBytesIn,gpsFirstFixMs,gpsLastSentenceAgeMs,gpsFixAgeMs,"
+    "gpsStableFixAgeMs,gpsSatellitesInUse,gpsHdopX10,gpsHasFix,gpsStableHasFix,gpsEnableTransitions,"
     "notifyToDisplayPipelineCompleteMax_ms,notifyToDisplayPipelineCompleteTotalCount,v1AllVolumeParsed,"
     "dutMicros,clockSegment\n";
 static constexpr UBaseType_t PERF_SD_QUEUE_DEPTH = 16;      // Halved from 32 to reclaim ~7 KiB internal SRAM
@@ -921,15 +918,12 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleDrainMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.dispMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.freeHeap) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.freeDma) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.largestDma) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.freeDmaCap) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.largestDmaCap) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.dmaFreeMin) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.dmaLargestMin) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleProcessMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.touchMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.uiToScanCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.uiToRestCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.uiScanToRestCount) &&
@@ -1074,7 +1068,6 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.bleDiscTaskCreateFail) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displayUpdates) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displaySkips) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiConnectDeferred) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.pushNowRetries) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.pushNowFailures) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.minLargestBlock) &&
@@ -1114,20 +1107,6 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdPollErrors) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.obdStaleCount) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.perfDrop) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiHandleClientMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiMaintenanceMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStatusCheckMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiTimeoutCheckMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiHeapGuardMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiApStaPollMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStopHttpServerMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStopStaDisconnectMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStopApDisableMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStopModeOffMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStartPreflightMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.wifiStartApBringupMaxUs) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.freeDmaMin) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.largestDmaMin) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.bleState) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.subscribeStep) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.connectInProgress) &&
@@ -1135,7 +1114,6 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.pendingDisconnectCleanup) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.proxyAdvertising) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.proxyAdvertisingLastTransitionReason) &&
-        appendCsvUInt8(line, lineBufferLen, offset, snapshot.wifiPriorityMode) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.speedSourceSelected) &&
         appendCsvUInt8(line, lineBufferLen, offset, snapshot.speedSourceValid) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.speedSelectedMph_x10) &&

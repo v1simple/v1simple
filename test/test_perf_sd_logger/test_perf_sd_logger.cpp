@@ -263,7 +263,12 @@ void test_perf_sd_logger_reserve_source_contract_is_fail_safe_and_measured() {
     const std::string source = readProjectFile("src/perf_sd_logger.cpp");
     TEST_ASSERT_FALSE(source.empty());
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 49"));
+    // 50: dropped 19 structurally-dead columns -- the 15 wifi* fields, which only
+    // a maintenance boot can produce and only a normal boot can log, plus the four
+    // cached-DMA columns. Existing CSVs are not column-comparable across the bump.
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 50"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("wifiStartApBringupMax_us"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("snapshot.freeDmaMin"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("dutMicros,clockSegment"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("snapshot.dutMicros"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("snapshot.clockSegment"));

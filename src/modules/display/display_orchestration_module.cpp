@@ -138,10 +138,6 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
     // is not suppressed by a higher-priority state.
     if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
         ble_->isConnected() && loopHasRenderablePriority) {
-        if (displayPipeline_ && displayPipeline_->companionFrameRefreshDue(ctx.nowMs)) {
-            result.runBlinkRefresh = true;
-            return result;
-        }
         const DisplayState liveState = parser_->getDisplayState();
         const bool flashActive = (liveState.flashBits != 0) || (liveState.bandFlashBits != 0) ||
                                  (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE) ||

@@ -21,15 +21,12 @@ struct PerfSdSnapshot {
     uint32_t bleDrainMaxUs;
     uint32_t dispMaxUs;
     uint32_t freeHeap;
-    uint32_t freeDma;                                         // Cached internal 8-bit heap (legacy column)
-    uint32_t largestDma;                                      // Cached largest internal 8-bit block (legacy column)
     uint32_t freeDmaCap;                                      // True MALLOC_CAP_DMA free bytes
     uint32_t largestDmaCap;                                   // True MALLOC_CAP_DMA largest free block
     uint32_t dmaFreeMin;                                      // Min MALLOC_CAP_DMA free bytes since session start
     uint32_t dmaLargestMin;                                   // Min MALLOC_CAP_DMA largest block since session start
     uint32_t bleProcessMaxUs;                                 // Window max bleClient.process() duration
     uint32_t touchMaxUs;                                      // Window max touchUiModule.process() duration
-    uint32_t wifiMaxUs;                                       // Window max wifiManager.process() duration
     uint32_t uiToScanCount;                                   // Screen transitions to scanning
     uint32_t uiToRestCount;                                   // Screen transitions to resting
     uint32_t uiScanToRestCount;                               // Scanning -> resting transitions
@@ -176,7 +173,6 @@ struct PerfSdSnapshot {
     uint32_t bleDiscTaskCreateFail;
     uint32_t displayUpdates;
     uint32_t displaySkips;
-    uint32_t wifiConnectDeferred;
     uint32_t pushNowRetries;
     uint32_t pushNowFailures;
     uint32_t minLargestBlock;
@@ -216,20 +212,6 @@ struct PerfSdSnapshot {
     uint32_t obdPollErrors;                       // OBD poll errors this window
     uint32_t obdStaleCount;                       // OBD stale speed readings this window
     uint32_t perfDrop;                            // Perf snapshot drops since session start
-    uint32_t wifiHandleClientMaxUs;               // Window max HTTP client servicing duration
-    uint32_t wifiMaintenanceMaxUs;                // Window max WiFi maintenance duration
-    uint32_t wifiStatusCheckMaxUs;                // Window max STA status check duration
-    uint32_t wifiTimeoutCheckMaxUs;               // Window max auto-timeout check duration
-    uint32_t wifiHeapGuardMaxUs;                  // Window max WiFi heap guard duration
-    uint32_t wifiApStaPollMaxUs;                  // Window max AP station polling duration
-    uint32_t wifiStopHttpServerMaxUs;             // Window max HTTP stop duration
-    uint32_t wifiStopStaDisconnectMaxUs;          // Window max STA disconnect duration
-    uint32_t wifiStopApDisableMaxUs;              // Window max AP disable duration
-    uint32_t wifiStopModeOffMaxUs;                // Window max radio-off duration
-    uint32_t wifiStartPreflightMaxUs;             // Window max WiFi start preflight duration
-    uint32_t wifiStartApBringupMaxUs;             // Window max AP bring-up duration
-    uint32_t freeDmaMin;                          // Min cached internal 8-bit heap free bytes since session start
-    uint32_t largestDmaMin;                       // Min cached internal 8-bit largest block since session start
     uint8_t bleState;                             // BLE runtime state code
     uint8_t subscribeStep;                        // BLE subscribe-step machine code
     uint8_t connectInProgress;                    // BLE connect attempt active
@@ -237,7 +219,6 @@ struct PerfSdSnapshot {
     uint8_t pendingDisconnectCleanup;             // BLE deferred disconnect cleanup pending
     uint8_t proxyAdvertising;                     // Proxy advertising currently active
     uint8_t proxyAdvertisingLastTransitionReason; // PerfProxyAdvertisingTransitionReason code
-    uint8_t wifiPriorityMode;                     // BLE WiFi-priority suppression active
     uint8_t speedSourceSelected;                  // SpeedSource code for selected speed source
     uint8_t speedSourceValid;                     // Selected speed sample valid/fresh
     uint32_t speedSelectedMph_x10;                // Selected speed mph * 10 when valid

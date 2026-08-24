@@ -329,7 +329,10 @@ bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String
         return false;
     }
 
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    // checkDmaHeap=true: WiFi client secrets are written from route handlers
+    // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
+    // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
+    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         Serial.println("[Settings] WARN: Failed to acquire SD mutex for WiFi secret save");
         return false;
@@ -382,7 +385,10 @@ String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlo
         return "";
     }
 
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    // checkDmaHeap=true: WiFi client secrets are written from route handlers
+    // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
+    // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
+    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return "";
     }
@@ -430,7 +436,10 @@ void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid) {
         return;
     }
 
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    // checkDmaHeap=true: WiFi client secrets are written from route handlers
+    // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
+    // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
+    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return;
     }
@@ -468,7 +477,10 @@ void clearWifiClientSecretFromSD() {
         return;
     }
 
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    // checkDmaHeap=true: WiFi client secrets are written from route handlers
+    // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
+    // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
+    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return;
     }

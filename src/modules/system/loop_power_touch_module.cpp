@@ -43,9 +43,7 @@ LoopPowerTouchResult LoopPowerTouchModule::process(const LoopPowerTouchContext& 
 
     if (providers.recordHeapStats) {
         const uint32_t freeHeap = providers.readFreeHeap ? providers.readFreeHeap(providers.freeHeapContext) : 0;
-        const uint32_t largestHeapBlock =
-            providers.readLargestHeapBlock ? providers.readLargestHeapBlock(providers.largestHeapBlockContext) : 0;
-        providers.recordHeapStats(providers.heapStatsContext, freeHeap, largestHeapBlock);
+        providers.recordHeapStats(providers.heapStatsContext, freeHeap);
     }
 
     return result;

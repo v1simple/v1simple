@@ -177,7 +177,6 @@ class ObdRuntimeModule {
     const char* getSavedAddress() const { return savedAddress_; }
     uint8_t getSavedAddrType() const { return savedAddrType_; }
 
-    bool startScan();
     void stopActiveScan();
     bool requestManualPairScan(uint32_t nowMs);
     void cancelPendingConnect();

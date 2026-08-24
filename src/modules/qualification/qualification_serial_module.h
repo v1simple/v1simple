@@ -28,8 +28,6 @@ class QualificationSerialModule {
         bool (*enqueueSnapshotNow)(void* ctx) = nullptr;
         bool (*tryDrainPerf)(void* ctx) = nullptr;
         bool (*tryResolvePerfExportSize)(size_t physicalBytes, size_t& selectedBytes, void* ctx) = nullptr;
-        const char* (*displayCommitCsvPath)(void* ctx) = nullptr;
-        bool (*tryDrainDisplayCommit)(void* ctx) = nullptr;
         bool (*tryDrainEvidence)(void* ctx) = nullptr;
         bool (*beginEvidenceSession)(uint32_t sessionToken, uint32_t startedAtDutMs, void* ctx) = nullptr;
         void (*endEvidenceSession)(uint32_t sessionToken, uint32_t endedAtDutMs, void* ctx) = nullptr;

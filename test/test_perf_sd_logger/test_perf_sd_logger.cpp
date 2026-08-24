@@ -263,10 +263,12 @@ void test_perf_sd_logger_reserve_source_contract_is_fail_safe_and_measured() {
     const std::string source = readProjectFile("src/perf_sd_logger.cpp");
     TEST_ASSERT_FALSE(source.empty());
 
-    // 50: dropped 19 structurally-dead columns -- the 15 wifi* fields, which only
-    // a maintenance boot can produce and only a normal boot can log, plus the four
-    // cached-DMA columns. Existing CSVs are not column-comparable across the bump.
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 50"));
+    // 51: schema 50 dropped 19 structurally-dead columns (15 wifi* + 4 cached-DMA);
+    // 51 dropped the largest-block watermark, which sampled MALLOC_CAP_DEFAULT
+    // (PSRAM on this board) and read 7,077,876 in every row ever collected.
+    // Existing CSVs are not column-comparable across either bump.
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("PERF_CSV_SCHEMA_VERSION = 51"));
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("minLargestBlock"));
     TEST_ASSERT_EQUAL(std::string::npos, source.find("wifiStartApBringupMax_us"));
     TEST_ASSERT_EQUAL(std::string::npos, source.find("snapshot.freeDmaMin"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("dutMicros,clockSegment"));
@@ -413,12 +415,9 @@ void test_qualification_export_uses_current_perf_logical_prefix_without_changing
     const size_t exportDrain = handleGetBody.find("providers_.tryDrainPerf(providers_.ctx)", currentExport);
     const size_t openAfterDrain = handleGetBody.find("openExport(requested)", exportDrain);
     TEST_ASSERT_TRUE(currentExport < exportDrain && exportDrain < openAfterDrain);
-    const size_t currentDisplayExport =
-        handleGetBody.find("strcmp(requested, currentDisplayCommitPath) == 0", exportDrain);
-    const size_t displayDrain =
-        handleGetBody.find("providers_.tryDrainDisplayCommit(providers_.ctx)", currentDisplayExport);
-    const size_t openAfterDisplayDrain = handleGetBody.find("openExport(requested)", displayDrain);
-    TEST_ASSERT_TRUE(currentDisplayExport < displayDrain && displayDrain < openAfterDisplayDrain);
+    // The display-commit export/drain gate is gone with the commit log itself.
+    TEST_ASSERT_EQUAL(std::string::npos, handleGetBody.find("currentDisplayCommitPath"));
+    TEST_ASSERT_EQUAL(std::string::npos, handleGetBody.find("tryDrainDisplayCommit"));
 
     const size_t serviceRun = qualification.find("void QualificationSerialModule::serviceRun(");
     const size_t serviceRunEnd = qualification.find("\nvoid QualificationSerialModule::serviceExport", serviceRun);
@@ -465,10 +464,9 @@ void test_qualification_export_uses_current_perf_logical_prefix_without_changing
         wiring.find("providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           wiring.find("perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes)"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          wiring.find("providers.displayCommitCsvPath = [](void*)"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          wiring.find("v1DisplayCommitLog.tryDrainAndClose()"));
+    // The display commit log is gone; its export/drain wiring must not return.
+    TEST_ASSERT_EQUAL(std::string::npos, wiring.find("displayCommitCsvPath"));
+    TEST_ASSERT_EQUAL(std::string::npos, wiring.find("v1DisplayCommitLog"));
 }
 
 int main() {

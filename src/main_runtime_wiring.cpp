@@ -41,7 +41,6 @@
 #include "modules/ble/connection_state_dispatch_module.h"
 #include "modules/ble/connection_state_module.h"
 #include "modules/display/display_orchestration_module.h"
-#include "modules/display/display_commit_log.h"
 #include "modules/display/display_pipeline_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
@@ -454,26 +453,12 @@ static void configureQualificationSerialModule() {
     providers.tryResolvePerfExportSize = [](size_t physicalBytes, size_t& selectedBytes, void*) {
         return perfSdLogger.tryResolveExportSize(physicalBytes, selectedBytes);
     };
-    providers.displayCommitCsvPath = [](void*) { return v1DisplayCommitLog.csvPath(); };
-    providers.tryDrainDisplayCommit = [](void*) { return v1DisplayCommitLog.tryDrainAndClose(); };
-    providers.tryDrainEvidence = [](void*) {
-        const bool encounterReady = v1EncounterLogger.tryDrainQualificationEvidence();
-        const bool displayReady = v1DisplayCommitLog.tryDrainAndClose();
-        return encounterReady && displayReady;
-    };
+    providers.tryDrainEvidence = [](void*) { return v1EncounterLogger.tryDrainQualificationEvidence(); };
     providers.beginEvidenceSession = [](uint32_t sessionToken, uint32_t startedAtDutMs, void*) {
-        if (!v1DisplayCommitLog.beginQualificationSession(sessionToken)) {
-            return false;
-        }
-        if (!v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
-                                                         bleQueueModule.rxSourceLossCount())) {
-            v1DisplayCommitLog.endQualificationSession(sessionToken);
-            return false;
-        }
-        return true;
+        return v1EncounterLogger.beginQualificationSession(sessionToken, startedAtDutMs,
+                                                          bleQueueModule.rxSourceLossCount());
     };
     providers.endEvidenceSession = [](uint32_t sessionToken, uint32_t endedAtDutMs, void*) {
-        v1DisplayCommitLog.endQualificationSession(sessionToken);
         v1EncounterLogger.endQualificationSession(sessionToken, endedAtDutMs, bleQueueModule.rxSourceLossCount());
     };
     providers.newSessionToken = [](void*) { return static_cast<uint32_t>(esp_random()); };

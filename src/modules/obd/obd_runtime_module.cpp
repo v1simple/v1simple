@@ -746,15 +746,8 @@ bool ObdRuntimeModule::getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_
 }
 
 // ======================================================================
-// PUBLIC CONTROL API — startScan, stopActiveScan, requestManualPairScan, etc.
+// PUBLIC CONTROL API — stopActiveScan, requestManualPairScan, etc.
 // ======================================================================
-
-bool ObdRuntimeModule::startScan() {
-    if (!enabled_ || state_ == ObdConnectionState::SCANNING || scanRequested_)
-        return false;
-    scanRequested_ = true;
-    return true;
-}
 
 void ObdRuntimeModule::stopActiveScan() {
     stopBleScan();

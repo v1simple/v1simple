@@ -23,7 +23,7 @@
 namespace {
 static constexpr const char* PERF_DIR_PATH = "/perf";
 static constexpr const char* PERF_CSV_PATH_FALLBACK = "/perf/perf.csv";
-static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 50; // drops 19 structurally-dead DMA/wifi columns
+static constexpr uint32_t PERF_CSV_SCHEMA_VERSION = 51; // drops the largest-block watermark (sampled PSRAM)
 static constexpr char PERF_CSV_HEADER[] =
     "millis,utc,rx,qDrop,parseOK,parseFail,parseResync,disc,reconn,loopMax_us,bleDrainMax_us,dispMax_us,freeHeap,"
     "freeDmaCap,largestDmaCap,dmaFreeMin,dmaLargestMin,bleProcessMax_us,touchMax_us,uiToScan,uiToRest,uiScanToRest,"
@@ -69,7 +69,7 @@ static constexpr char PERF_CSV_HEADER[] =
     "powerAutoPowerTimerStart,powerAutoPowerTimerCancel,powerAutoPowerTimerExpire,powerCarModeAlpSilenceExpire,"
     "powerCriticalWarn,powerCriticalShutdown,perfUncleanShutdown,cmdBleBusy,rxBytes,oversizeDrops,queueHighWater,"
     "bleMutexSkip,bleMutexTimeout,cmdPaceNotYet,bleDiscTaskCreateFail,displayUpdates,displaySkips,pushNowRetries,"
-    "pushNowFailures,minLargestBlock,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,"
+    "pushNowFailures,fsMax_us,sdMax_us,sdWriteCount,sdWriteLt1ms,sdWrite1to5ms,sdWrite5to10ms,"
     "sdWriteGe10ms,flushMax_us,bleConnectMax_us,bleDiscoveryMax_us,bleSubscribeMax_us,dispPipeMax_us,"
     "perfReportMax_us,prioritySelectRowFlag,prioritySelectFirstUsable,prioritySelectFirstEntry,"
     "prioritySelectAmbiguousIndex,prioritySelectUnusableIndex,prioritySelectInvalidChosen,alertTablePublishes,"
@@ -1070,7 +1070,6 @@ bool PerfSdLogger::appendSnapshotLine(const PerfSdSnapshot& snapshot) {
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.displaySkips) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.pushNowRetries) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.pushNowFailures) &&
-        appendCsvUInt32(line, lineBufferLen, offset, snapshot.minLargestBlock) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.fsMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.sdMaxUs) &&
         appendCsvUInt32(line, lineBufferLen, offset, snapshot.sdWriteCount) &&

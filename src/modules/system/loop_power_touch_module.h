@@ -30,15 +30,12 @@ class LoopPowerTouchModule {
         void (*recordTouchUs)(void* ctx, uint32_t elapsedUs) = nullptr;
         void* touchPerfContext = nullptr;
 
-        // Cached-DMA providers removed alongside LoopTelemetryModule's; see the
-        // note there. This phase mirrored that module's refresh, so it was the
-        // second cross-core writer of StorageManager::dmaCache_.
+        // Only free-heap remains: the cached-DMA providers went with
+        // LoopTelemetryModule's, and largestHeapBlock went with minLargestBlock.
         uint32_t (*readFreeHeap)(void* ctx) = nullptr;
         void* freeHeapContext = nullptr;
-        uint32_t (*readLargestHeapBlock)(void* ctx) = nullptr;
-        void* largestHeapBlockContext = nullptr;
 
-        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock) = nullptr;
+        void (*recordHeapStats)(void* ctx, uint32_t freeHeap) = nullptr;
         void* heapStatsContext = nullptr;
     };
 

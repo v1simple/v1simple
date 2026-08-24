@@ -175,7 +175,6 @@ struct PerfSdSnapshot {
     uint32_t displaySkips;
     uint32_t pushNowRetries;
     uint32_t pushNowFailures;
-    uint32_t minLargestBlock;
     uint32_t fsMaxUs;
     uint32_t sdMaxUs;
     uint32_t sdWriteCount;

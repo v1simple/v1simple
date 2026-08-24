@@ -17,9 +17,7 @@ class LoopTelemetryModule {
     struct Providers {
         uint32_t (*readFreeHeap)(void* ctx) = nullptr;
         void* freeHeapContext = nullptr;
-        uint32_t (*readLargestHeapBlock)(void* ctx) = nullptr;
-        void* largestHeapBlockContext = nullptr;
-        void (*recordHeapStats)(void* ctx, uint32_t freeHeap, uint32_t largestHeapBlock) = nullptr;
+        void (*recordHeapStats)(void* ctx, uint32_t freeHeap) = nullptr;
         void* heapStatsContext = nullptr;
     };
 

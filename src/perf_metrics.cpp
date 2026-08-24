@@ -195,12 +195,9 @@ void perfRecordLoopJitterUs(uint32_t us) {
     }
 }
 
-void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock) {
+void perfRecordHeapStats(uint32_t freeHeap) {
     if (freeHeap < perfExtended.minFreeHeap) {
         perfExtended.minFreeHeap = freeHeap;
-    }
-    if (largestBlock < perfExtended.minLargestBlock) {
-        perfExtended.minLargestBlock = largestBlock;
     }
 }
 

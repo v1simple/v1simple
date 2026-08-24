@@ -129,7 +129,6 @@ static void resetPerfExtendedWindowPeaks() {
     perfExtended.bleDiscoveryMaxUs = 0;
     perfExtended.bleSubscribeMaxUs = 0;
     perfExtended.perfReportMaxUs = 0;
-    perfExtended.minLargestBlock = UINT32_MAX;
 }
 
 static void capturePerfExtendedSnapshot(PerfExtendedSnapshot& snapshot, const RuntimeSnapshotCaptureContext& ctx) {
@@ -307,7 +306,6 @@ static void populateFlatSnapshot(PerfSdSnapshot& flat, const RuntimeSnapshotCapt
     flat.bleSubscribeMaxUs = metrics.bleSubscribeMaxUs;
     flat.dispPipeMaxUs = metrics.dispPipeMaxUs;
     flat.perfReportMaxUs = metrics.perfReportMaxUs;
-    flat.minLargestBlock = (metrics.minLargestBlock == UINT32_MAX) ? 0 : metrics.minLargestBlock;
 
     flat.uiToScanCount = metrics.uiToScanCount;
     flat.uiToRestCount = metrics.uiToRestCount;

@@ -477,7 +477,6 @@ struct PerfExtendedMetrics {
     // happened so the substitution is never silent.
     uint32_t v1LedBitmapAnomalies = 0;
     uint32_t minFreeHeap = UINT32_MAX;
-    uint32_t minLargestBlock = UINT32_MAX;
     uint32_t wifiMaxUs = 0;
     uint32_t wifiHandleClientMaxUs = 0;
     uint32_t wifiMaintenanceMaxUs = 0;
@@ -636,7 +635,6 @@ struct PerfExtendedMetrics {
         notifyToDisplayPipelineCompleteMs.reset();
         loopMaxUs = 0;
         minFreeHeap = UINT32_MAX;
-        minLargestBlock = UINT32_MAX;
         wifiMaxUs = 0;
         wifiHandleClientMaxUs = 0;
         wifiMaintenanceMaxUs = 0;
@@ -793,7 +791,7 @@ extern PerfExtendedMetrics perfExtended;
 
 void perfRecordNotifyToDisplayPipelineCompleteMs(uint32_t ms);
 void perfRecordLoopJitterUs(uint32_t us);
-void perfRecordHeapStats(uint32_t freeHeap, uint32_t largestBlock);
+void perfRecordHeapStats(uint32_t freeHeap);
 void perfRecordWifiProcessUs(uint32_t us);
 void perfRecordWifiHandleClientUs(uint32_t us);
 void perfRecordWifiMaintenanceUs(uint32_t us);

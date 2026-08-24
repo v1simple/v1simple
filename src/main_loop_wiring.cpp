@@ -50,12 +50,8 @@ static uint32_t readCurrentFreeHeap(void*) {
     return ESP.getFreeHeap();
 }
 
-static uint32_t readCurrentLargestHeapBlock(void*) {
-    return static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
-}
-
-static void recordHeapStatsSample(void*, uint32_t freeHeap, uint32_t largestHeapBlock) {
-    perfRecordHeapStats(freeHeap, largestHeapBlock);
+static void recordHeapStatsSample(void*, uint32_t freeHeap) {
+    perfRecordHeapStats(freeHeap);
 }
 
 void configureLoopPowerTouchModule() {
@@ -71,7 +67,6 @@ void configureLoopPowerTouchModule() {
     loopPowerTouchProviders.touchUiContext = &touchUiModule;
     loopPowerTouchProviders.recordTouchUs = [](void*, uint32_t elapsedUs) { perfRecordTouchUs(elapsedUs); };
     loopPowerTouchProviders.readFreeHeap = readCurrentFreeHeap;
-    loopPowerTouchProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;
     loopPowerTouchProviders.recordHeapStats = recordHeapStatsSample;
     loopPowerTouchModule.begin(loopPowerTouchProviders);
 }
@@ -159,7 +154,6 @@ void configureLoopTailModule() {
 void configureLoopTelemetryModule() {
     LoopTelemetryModule::Providers loopTelemetryProviders;
     loopTelemetryProviders.readFreeHeap = readCurrentFreeHeap;
-    loopTelemetryProviders.readLargestHeapBlock = readCurrentLargestHeapBlock;
     loopTelemetryProviders.recordHeapStats = recordHeapStatsSample;
     loopTelemetryModule.begin(loopTelemetryProviders);
 }

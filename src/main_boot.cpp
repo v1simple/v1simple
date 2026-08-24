@@ -94,16 +94,43 @@ void logPanicBreadcrumbs() {
 
     // Best-effort: Try to write panic.txt to LittleFS (SD not mounted yet)
     // This runs BEFORE storage init, so we use LittleFS directly
+    //
+    // FILE_APPEND, not FILE_WRITE. FILE_WRITE is "w" -- it truncates -- so every
+    // panic used to erase the one before it. A device that panics three times in
+    // a row kept only the third record, which is exactly the case where the
+    // pattern across crashes is the thing you need to see. poweroff.log has
+    // always appended (battery_manager.cpp:589); this path was the odd one out.
+    //
+    // Capped so a crash loop cannot fill LittleFS: once the file passes the cap
+    // it is rotated to panic.prev.txt and started fresh, keeping the two most
+    // recent generations.
+    static constexpr size_t kPanicLogMaxBytes = 8192;
     if (fsmount::mountStorage()) { // never auto-format during panic logging
-        File f = LittleFS.open("/panic.txt", FILE_WRITE);
+        if (LittleFS.exists("/panic.txt")) {
+            File probe = LittleFS.open("/panic.txt", FILE_READ);
+            const size_t existing = probe ? probe.size() : 0;
+            if (probe) {
+                probe.close();
+            }
+            if (existing >= kPanicLogMaxBytes) {
+                LittleFS.remove("/panic.prev.txt");
+                LittleFS.rename("/panic.txt", "/panic.prev.txt");
+            }
+        }
+
+        File f = LittleFS.open("/panic.txt", FILE_APPEND);
         if (f) {
-            f.printf("CRASH at boot (millis=%lu)\n", millis());
+            // Boot id is not available here -- logPanicBreadcrumbs() runs before
+            // storage init and before nextBootId(). Records are ordered by append
+            // position, so correlate against poweroff.log line order.
+            f.printf("--- CRASH at boot (millis=%lu)\n", millis());
             f.printf("Reset reason: %s\n", resetReasonToString(reason));
             f.printf("Heap: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap, (unsigned long)largestBlock,
                      (unsigned long)minFreeHeap);
 
             if (err == ESP_OK) {
                 f.printf("Task: %s\n", summary.exc_task);
+                f.printf("Exception cause: %lu\n", (unsigned long)summary.ex_info.exc_cause);
                 f.printf("PC: 0x%08lx\n", (unsigned long)summary.exc_pc);
                 if (summary.exc_bt_info.depth > 0) {
                     f.print("BT: ");
@@ -112,9 +139,11 @@ void logPanicBreadcrumbs() {
                     }
                     f.println();
                 }
+            } else {
+                f.printf("No coredump available (err=%d)\n", static_cast<int>(err));
             }
             f.close();
-            Serial.println("[PANIC] Wrote /panic.txt to LittleFS");
+            Serial.println("[PANIC] Appended to /panic.txt on LittleFS");
         }
         LittleFS.end(); // Release mount before storage manager takes ownership
     }

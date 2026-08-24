@@ -115,7 +115,7 @@ class StorageManager {
     }
 
     // ============================================================================
-    // SD access policy: two explicit lock types.
+    // SD access policy: explicit blocking, bounded, and zero-wait lock types.
     // ============================================================================
     //
     // SDLockBlocking is limited to Core 0 writers and boot/shutdown paths.
@@ -141,6 +141,37 @@ class StorageManager {
             }
         }
         ~SDLockBlocking() { release(); }
+        bool acquired() const { return acquired_; }
+        operator bool() const { return acquired_; }
+
+        void release() {
+            if (acquired_ && mutex_) {
+                xSemaphoreGive(mutex_);
+                acquired_ = false;
+            }
+        }
+
+      private:
+        SemaphoreHandle_t mutex_;
+        bool acquired_;
+    };
+
+    // Bounded lock for best-effort boot, shutdown, and Core 0 writer work.
+    // Unlike SDLockBlocking, failure is observable after the caller-supplied
+    // deadline so optional storage work cannot hold a lifecycle boundary
+    // indefinitely.
+    class SDLockTimed {
+      public:
+        SDLockTimed(SemaphoreHandle_t mutex, uint32_t timeoutMs, bool checkDmaHeap = false)
+            : mutex_(mutex), acquired_(false) {
+            if (checkDmaHeap && !hasDmaHeapForSD()) {
+                return;
+            }
+            if (mutex_) {
+                acquired_ = (xSemaphoreTake(mutex_, pdMS_TO_TICKS(timeoutMs)) == pdTRUE);
+            }
+        }
+        ~SDLockTimed() { release(); }
         bool acquired() const { return acquired_; }
         operator bool() const { return acquired_; }
 

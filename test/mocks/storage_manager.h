@@ -149,6 +149,34 @@ public:
         bool acquired_ = false;
     };
 
+    class SDLockTimed {
+    public:
+        SDLockTimed(SemaphoreHandle_t mutex, uint32_t timeoutMs, bool /*checkDmaHeap*/ = false)
+            : mutex_(mutex), acquired_(false) {
+            StorageManager::mockSdLockState.blockingAcquireCalls++;
+            if (StorageManager::mockSdLockState.failNextBlockingLock) {
+                StorageManager::mockSdLockState.failNextBlockingLock = false;
+                return;
+            }
+            acquired_ = !mutex_ || xSemaphoreTake(mutex_, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        }
+
+        ~SDLockTimed() { release(); }
+        bool acquired() const { return acquired_; }
+        operator bool() const { return acquired_; }
+
+        void release() {
+            if (acquired_ && mutex_) {
+                xSemaphoreGive(mutex_);
+                acquired_ = false;
+            }
+        }
+
+    private:
+        SemaphoreHandle_t mutex_ = nullptr;
+        bool acquired_ = false;
+    };
+
 private:
     bool ready_ = false;
     bool usingSdCard_ = false;

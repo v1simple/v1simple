@@ -66,6 +66,9 @@ void initializeStorageAndProfiles();
 /// Prepare persistence/runtime services for a power-off sequence before the final hardware tail runs.
 void prepareForShutdown(void* context);
 
+/// Bounded event drain plus lifecycle END for controlled reboot paths.
+void completeLoggingForControlledRestart();
+
 /// Restore persistence admission and the unclean marker after the hardware
 /// shutdown tail returns without powering down or entering deep sleep.
 void resumeAfterAbortedShutdown(void* context);

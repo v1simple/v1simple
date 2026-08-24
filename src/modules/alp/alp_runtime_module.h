@@ -119,6 +119,8 @@ struct AlpStatus {
     uint8_t directionSampleByte1;     // raw B0 byte1 that latched laserDirection (0 when unknown)
     bool uartActive;                  // true if UART has received any data
     bool hasLaserEvent;               // mirror of AlpRuntimeModule::hasLaserEvent() — live alert indicator for display
+    uint32_t detectGeneration;        // changes only for accepted sparse 98 detection records
+    uint8_t detectRaw[3];             // most recent accepted sparse detection payload
 };
 
 // ── Alert Session ────────────────────────────────────────────────────
@@ -462,6 +464,11 @@ class AlpRuntimeModule {
     uint32_t warmUpPreambleMs_ = 0; // F0/A8 within 5s of firstFrameMs_; 0 = not seen
 
     uint32_t consecutiveBadChecksums_ = 0;
+
+    // Sparse product-domain detection identity. This is not a frame trace:
+    // only the two accepted 98 detection forms advance the generation.
+    uint32_t detectGeneration_ = 0;
+    uint8_t detectRaw_[3] = {};
 
     // Current display-event snapshot.
     AlpLaserEvent currentEvent_{};

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "config.h"
+#include "modules/health/health_journal.h"
 
 #ifndef UNIT_TEST
 #include "modules/display/display_preview_module.h"
@@ -152,6 +153,9 @@ bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t ch
         }
 
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
+        if (result != pdTRUE) {
+            HealthCounters::recordInputDrop();
+        }
         return result == pdTRUE;
     }
     return false;
@@ -251,6 +255,7 @@ void BleQueueModule::process() {
             continue;
         }
         if (!appendRxPacket(pkt)) {
+            HealthCounters::recordInputDrop();
         }
         latestPktTs = pkt.tsMs;
     }

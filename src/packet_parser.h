@@ -19,7 +19,8 @@
 class PacketParser {
   public:
     static constexpr size_t MAX_ALERTS = 15; // V1 spec supports up to 15 simultaneous alerts
-    using AlertTableObserver = void (*)(const AlertData* alerts, size_t count, uint32_t nowMs, void* context);
+    using AlertTableObserver =
+        void (*)(const AlertData* alerts, size_t count, uint8_t priorityIndex, uint32_t nowMs, void* context);
 
     PacketParser();
 

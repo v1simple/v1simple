@@ -21,6 +21,7 @@
 #endif
 
 #include "../system/system_event_bus.h"
+#include "modules/health/health_journal.h"
 
 // ── Global instance ──────────────────────────────────────────────────
 // Global runtime instance.
@@ -198,6 +199,8 @@ void AlpRuntimeModule::begin(bool enabled) {
     session_ = AlertSession{};
     firstFrameMs_ = 0;
     warmUpPreambleMs_ = 0;
+    detectGeneration_ = 0;
+    std::memset(detectRaw_, 0, sizeof(detectRaw_));
 
     if (!enabled) {
         state_ = AlpState::OFF;
@@ -297,6 +300,8 @@ AlpStatus AlpRuntimeModule::snapshot() const {
     s.directionSampleByte1 = currentEvent_.active ? session_.directionSampleByte1 : 0x00;
     s.uartActive = uartHasReceivedData_;
     s.hasLaserEvent = currentEvent_.active;
+    s.detectGeneration = detectGeneration_;
+    std::memcpy(s.detectRaw, detectRaw_, sizeof(s.detectRaw));
     return s;
 }
 
@@ -481,6 +486,7 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
         const size_t keep = RING_CAPACITY / 2;
         memmove(ringBuf_, ringBuf_ + (RING_CAPACITY - keep), keep);
         ringLen_ = keep;
+        HealthCounters::recordInputDrop();
     }
 
     const size_t toRead = (space < (size_t)available) ? space : (size_t)available;
@@ -617,6 +623,12 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
     lastFrameMs_ = nowMs;
 
     if (b1 == ALERT_BYTE1 && b2 == ALERT_BYTE2) {
+        detectRaw_[0] = ALERT_BYTE0;
+        detectRaw_[1] = b1;
+        detectRaw_[2] = b2;
+        if (++detectGeneration_ == 0) {
+            ++detectGeneration_;
+        }
         // LID-deploy trigger: 98 00 E3 — ALP is actively firing IR
         // countermeasures at the source. Fires only when LID is above speed
         // limit and a real laser hit is detected. Rare in daily driving.
@@ -640,6 +652,12 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
             publishDisplayEdge();
         }
     } else if (b1 == 0x02 && b2 == 0x00) {
+        detectRaw_[0] = ALERT_BYTE0;
+        detectRaw_[1] = b1;
+        detectRaw_[2] = b2;
+        if (++detectGeneration_ == 0) {
+            ++detectGeneration_;
+        }
         // Detect trigger: 98 02 00 — generic laser-detected trigger, fires
         // in all operational states (DLI, LID pre-deploy, LID post-deploy).
         alertActiveWatchdogMs_ = nowMs;

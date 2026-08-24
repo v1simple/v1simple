@@ -149,13 +149,15 @@ bool parsePacket(PacketParser& parser, const std::vector<uint8_t>& packet, uint3
 struct AlertObserverCapture {
     uint32_t calls = 0;
     size_t count = 0;
+    uint8_t priorityIndex = 0;
     uint32_t nowMs = 0;
 };
 
-void captureAlertTable(const AlertData*, size_t count, uint32_t nowMs, void* context) {
+void captureAlertTable(const AlertData*, size_t count, uint8_t priorityIndex, uint32_t nowMs, void* context) {
     auto* capture = static_cast<AlertObserverCapture*>(context);
     capture->calls++;
     capture->count = count;
+    capture->priorityIndex = priorityIndex;
     capture->nowMs = nowMs;
 }
 
@@ -727,6 +729,7 @@ void test_alert_table_observer_receives_only_complete_tables_and_clear() {
     TEST_ASSERT_TRUE(parsePacket(parser, row2, 110));
     TEST_ASSERT_EQUAL_UINT32(1, capture.calls);
     TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(capture.count));
+    TEST_ASSERT_EQUAL_UINT8(0, capture.priorityIndex);
     TEST_ASSERT_EQUAL_UINT32(110, capture.nowMs);
 
     TEST_ASSERT_TRUE(parsePacket(parser, clear, 200));

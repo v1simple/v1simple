@@ -41,6 +41,7 @@
 #include "v1_devices.h"
 #include "battery_manager.h"
 #include "storage_manager.h"
+#include "build_metadata.h"
 #include "audio_beep.h"
 #include "config.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
@@ -83,6 +84,8 @@
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/gps/gps_publishers.h"
 #include "modules/alp/alp_event_latch.h"
+#include "modules/event_log/product_event_log.h"
+#include "modules/health/health_journal.h"
 #include "modules/wifi/wifi_boot_policy.h"
 #include "modules/wifi/wifi_priority_policy_module.h"
 #include "modules/wifi/wifi_visual_sync_module.h"
@@ -93,6 +96,7 @@
 #include <driver/gpio.h>
 #include "display_driver.h"
 #include <algorithm>
+#include <cstring>
 
 // Global objects
 // ObdRuntimeModule, ObdBleClient, SpeedSourceSelector are forward-declared
@@ -113,6 +117,45 @@ static constexpr unsigned long BOOT_SPLASH_HOLD_MS = 400;
 static constexpr unsigned long MIN_SCAN_SCREEN_DWELL_MS = 400;
 static constexpr unsigned long CONNECTION_STATE_PROCESS_MAX_GAP_MS = 1000;
 MainRuntimeState mainRuntimeState;
+
+namespace {
+
+ProductAlpState productAlpState(uint8_t heartbeatByte1) {
+    switch (heartbeatByte1) {
+    case 0x01:
+        return ProductAlpState::TARGETED;
+    case 0x03:
+        return ProductAlpState::DLI;
+    case 0x04:
+        return ProductAlpState::LID;
+    default:
+        return ProductAlpState::UNKNOWN;
+    }
+}
+
+void observeAlpProductState(uint32_t nowMs) {
+    const AlpStatus status = alpRuntimeModule.snapshot();
+    AlpProductObservation observation{};
+    observation.connected = alpRuntimeModule.isEnabled() && status.uartActive && status.lastHeartbeatMs != 0 &&
+                            static_cast<uint32_t>(nowMs - status.lastHeartbeatMs) <=
+                                AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS;
+    observation.active = status.hasLaserEvent;
+    observation.state = productAlpState(status.lastHbByte1);
+    observation.direction = static_cast<uint8_t>(status.laserDirection);
+    observation.gun = static_cast<uint8_t>(status.lastGun);
+    observation.detectGeneration = status.detectGeneration;
+    memcpy(observation.detectRaw, status.detectRaw, sizeof(observation.detectRaw));
+    productEventLog.observeAlp(observation, nowMs);
+}
+
+bool preservedPanicEvidencePresent(esp_reset_reason_t resetReason) {
+    const bool crashReset = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT ||
+                            resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_WDT;
+    fs::FS* internalFs = storageManager.getLittleFS();
+    return crashReset || (internalFs && (internalFs->exists("/panic.txt") || internalFs->exists("/panic.prev.txt")));
+}
+
+} // namespace
 static bool mainLoopTaskWatchdogRegistered = false;
 
 static void registerMainLoopTaskWatchdog() {
@@ -203,6 +246,7 @@ template <typename StageLogger>
 static void finalizeBootReadyAndBleScan(const unsigned long setupStartMs, const StageLogger& logBootStage) {
     mainRuntimeState.bootReady = true;
     bleClient.setBootReady(true);
+    healthJournal.ready(millis());
     Serial.printf("[Boot] Ready gate opened at %lu ms\n", millis());
 
     // Absorb BLE scan-stop settle cost in setup rather than first loop iteration.
@@ -492,6 +536,7 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
     logBootStage("maintenance_wifi");
 
     mainRuntimeState.bootReady = true;
+    healthJournal.ready(millis());
     // Session start is immutable (it anchors the absolute cap); the deadline
     // anchor starts equal to it and is republished every loop by the policy.
     const unsigned long maintenanceSessionStartMs = millis();
@@ -523,6 +568,13 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
     }
 
     const uint32_t bootId = nextBootId();
+
+    HealthCounters::reset();
+    (void)healthJournal.begin(storageManager, bootId, getRuntimeImageId(), resetReasonToString(resetReason),
+                              prevShutdownClean, preservedPanicEvidencePresent(resetReason));
+    if (!maintenanceBoot) {
+        (void)productEventLog.begin(bootId, storageManager);
+    }
 
     logBootStage("storage");
 
@@ -674,6 +726,7 @@ void loop() {
             exitRequestFired = true;
             Serial.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
             settingsManager.save();
+            completeLoggingForControlledRestart();
             markCleanShutdown();
             ESP.restart();
         }
@@ -705,6 +758,7 @@ void loop() {
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
             settingsManager.save();
+            completeLoggingForControlledRestart();
             markCleanShutdown();
             ESP.restart();
         }
@@ -763,6 +817,7 @@ void loop() {
         const bool alpLiveAlert = alpRuntimeModule.ownsLaserDisplay() && alpRuntimeModule.currentEvent().active;
         const bool preempted = (v1LiveAlert || alpLiveAlert) && touchUiModule.preemptForLiveAlert();
         if (!preempted) {
+            observeAlpProductState(static_cast<uint32_t>(now));
             mainRuntimeState.lastLoopUs = processLoopSettingsEarlyReturnPhase(now, loopStartUs, bleConnectedNow);
             return; // Skip normal loop processing while in settings mode.
         }
@@ -857,6 +912,7 @@ void loop() {
     if (!alpProcessedThisLoop) {
         alpRuntimeModule.process(now);
     }
+    observeAlpProductState(static_cast<uint32_t>(now));
     const bool alpLiveAlert = alpRuntimeModule.ownsLaserDisplay() && alpRuntimeModule.currentEvent().active;
     if (alpLiveAlert && displayPreviewModule.isRunning()) {
         // V1 alerts cancel previews in BleQueueModule. ALP arrives on its own

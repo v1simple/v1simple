@@ -35,6 +35,8 @@
 #include "modules/display/display_pipeline_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
+#include "modules/event_log/product_event_log.h"
+#include "modules/health/health_journal.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/obd/obd_ble_client.h"
 #include "modules/obd/obd_runtime_module.h"
@@ -84,6 +86,7 @@ static void requestMaintenanceBootRestart() {
     }
     Serial.println("[MaintBoot] rebooting into maintenance mode");
     settingsManager.save();
+    completeLoggingForControlledRestart();
     markCleanShutdown();
     delay(50);
     ESP.restart();
@@ -358,5 +361,9 @@ static void configureRuntimeCoreModules() {
 }
 
 void configureRuntimeModules() {
+    parser.setAlertTableObserver(
+        [](const AlertData* alerts, size_t count, uint8_t priorityIndex, uint32_t nowMs, void*) {
+            productEventLog.observeV1Table(alerts, count, priorityIndex, nowMs);
+        });
     configureRuntimeCoreModules();
 }

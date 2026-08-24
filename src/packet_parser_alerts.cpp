@@ -46,7 +46,8 @@ void PacketParser::resetAlertStateAt(uint32_t nowMs) {
 
 void PacketParser::notifyAlertTableObserver(uint32_t nowMs) {
     if (alertTableObserver_) {
-        alertTableObserver_(alerts_.data(), alertCount_, nowMs, alertTableObserverContext_);
+        alertTableObserver_(alerts_.data(), alertCount_, displayState_.v1PriorityIndex, nowMs,
+                            alertTableObserverContext_);
     }
 }
 

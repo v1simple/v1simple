@@ -32,6 +32,8 @@
 #include "modules/ble/connection_state_module.h"
 #include "modules/alert_persistence/alert_persistence_module.h"
 #include "modules/obd/obd_runtime_module.h"
+#include "modules/event_log/product_event_log.h"
+#include "modules/health/health_journal.h"
 #include "modules/touch/tap_gesture_module.h"
 #include <driver/gpio.h>
 
@@ -112,6 +114,9 @@ void prepareForShutdown(void* /*context*/) {
     delay(50); // Brief settle for disconnect packets to transmit
     feedLoopTaskWatchdogDuringShutdown();
 
+    productEventLog.stopAndFlush(millis(), 750);
+    feedLoopTaskWatchdogDuringShutdown();
+
     // Drain the best-effort bond snapshot before the final synchronous
     // settings write takes exclusive ownership of SD.
     shutdownBleBondBackupWriter(1500);
@@ -131,11 +136,19 @@ void prepareForShutdown(void* /*context*/) {
     shutdownDeferredSettingsBackupWriter(1500);
     feedLoopTaskWatchdogDuringShutdown();
 
+    healthJournal.end(millis());
+    feedLoopTaskWatchdogDuringShutdown();
+
     // Mark this shutdown as clean LAST.  If anything below fails or the
     // user yanks power mid-teardown we want the next boot to still see
     // "unclean" and record the integrity event.
     Serial.println("[Battery] Writing clean-shutdown marker...");
     markCleanShutdown();
+}
+
+void completeLoggingForControlledRestart() {
+    productEventLog.stopAndFlush(millis(), 750);
+    healthJournal.end(millis());
 }
 
 void resumeAfterAbortedShutdown(void* /*context*/) {
@@ -154,7 +167,7 @@ void resumeAfterAbortedShutdown(void* /*context*/) {
 void onV1ConnectImmediate() {
     mainRuntimeState.v1ConnectedAtMs = millis();
     connectionStateModule.handleConnected(mainRuntimeState.v1ConnectedAtMs, bleClient.sessionGeneration());
-
+    productEventLog.observeV1Link(true, static_cast<uint32_t>(mainRuntimeState.v1ConnectedAtMs));
 }
 
 void onV1SessionOpened(uint32_t sessionGeneration) {
@@ -162,7 +175,9 @@ void onV1SessionOpened(uint32_t sessionGeneration) {
 }
 
 void onV1SessionClosed(uint32_t sessionGeneration) {
-    connectionStateModule.handleSessionClosed(millis(), sessionGeneration);
+    const uint32_t nowMs = millis();
+    productEventLog.observeV1Link(false, nowMs);
+    connectionStateModule.handleSessionClosed(nowMs, sessionGeneration);
 }
 
 void onV1Connected() {
@@ -286,6 +301,7 @@ void configureUiTouchInteractionModules(QuietCoordinatorModule& quietCoordinator
                                        if (requestMaintenanceBoot()) {
                                            Serial.println("[MaintBoot] touch long-press requested maintenance reboot");
                                            settingsManager.save();
+                                           completeLoggingForControlledRestart();
                                            markCleanShutdown();
                                            delay(50);
                                            ESP.restart();

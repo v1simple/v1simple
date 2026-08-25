@@ -8,12 +8,6 @@
 #pragma once
 
 #include "wifi_manager.h"
-#include "ble_client.h"
-#include "modules/system/system_event_bus.h"
-
-// --- External globals used across wifi_manager TU split ---
-extern V1BLEClient bleClient;
-extern SystemEventBus systemEventBus;
 
 // --- Promoted helper declarations ---
 

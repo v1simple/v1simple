@@ -57,6 +57,12 @@ struct Runtime;
 class ObdRuntimeModule;
 class SpeedSourceSelector;
 class GpsRuntimeModule;
+class BatteryManager;
+class DisplayPreviewModule;
+class HealthJournal;
+class ProductEventLog;
+class V1BLEClient;
+class V1Display;
 
 // WiFi service state (AP may be enabled or disabled while service is active)
 enum SetupModeState {
@@ -196,6 +202,16 @@ class WiFiManager {
 
     // GPS runtime dependency (used by /api/gps/status)
     void setGpsRuntime(GpsRuntimeModule* gps) { gpsRuntime_ = gps; }
+    void setMaintenanceDependencies(V1BLEClient& ble, V1Display& display,
+                                    DisplayPreviewModule& preview, BatteryManager& battery,
+                                    ProductEventLog& events, HealthJournal& health) {
+        bleRuntime_ = &ble;
+        display_ = &display;
+        displayPreview_ = &preview;
+        battery_ = &battery;
+        productEvents_ = &events;
+        health_ = &health;
+    }
 
     // Maintenance boot intentionally skips BLE/V1 scan. Routes that would
     // mutate BLE runtime state must become no-ops while this is true.
@@ -338,6 +354,12 @@ class WiFiManager {
     ObdRuntimeModule* obdRuntime_ = nullptr;
     SpeedSourceSelector* speedSelector_ = nullptr;
     GpsRuntimeModule* gpsRuntime_ = nullptr;
+    V1BLEClient* bleRuntime_ = nullptr;
+    V1Display* display_ = nullptr;
+    DisplayPreviewModule* displayPreview_ = nullptr;
+    BatteryManager* battery_ = nullptr;
+    ProductEventLog* productEvents_ = nullptr;
+    HealthJournal* health_ = nullptr;
     bool maintenanceBootMode_ = false;
 
     // Setup functions
@@ -382,6 +404,4 @@ class WiFiManager {
     bool serveLittleFSFile(const char* path, const char* contentType);
 };
 
-// Global instance
-extern WiFiManager wifiManager;
 #endif // WIFI_MANAGER_H

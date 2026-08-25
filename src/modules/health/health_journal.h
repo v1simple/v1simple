@@ -79,5 +79,3 @@ class HealthJournal {
     bool readyWritten_ = false;
     bool endWritten_ = false;
 };
-
-extern HealthJournal healthJournal;

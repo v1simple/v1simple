@@ -3,7 +3,6 @@
  */
 
 #include "wifi_manager_internals.h"
-#include "main_globals.h"
 #include "settings.h"
 #include "littlefs_mount.h"
 #include "storage_manager.h"
@@ -323,9 +322,11 @@ bool WiFiManager::setupWebServer() {
         if (!requireMaintenanceApiWriteHeader())
             return;
         WifiSystemApiService::RebootRuntime runtime;
-        runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
-        runtime.prepareCleanRestart = [](void*) {
-            return completeLoggingForControlledRestart();
+        runtime.maintenanceBootActive = maintenanceBootMode_;
+        runtime.prepareCleanRestart = [](void* ctx) {
+            auto& self = *static_cast<WiFiManager*>(ctx);
+            return self.productEvents_ && self.health_ &&
+                   completeLoggingForControlledRestart(*self.productEvents_, *self.health_);
         };
         runtime.persistSettings = [](void*) {
             settingsManager.save();
@@ -463,7 +464,7 @@ bool WiFiManager::setupWebServer() {
         GpsApiService::Runtime r;
         r.ctx = this;
         r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
-        r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+        r.maintenanceBootActive = maintenanceBootMode_;
         GpsApiService::handleApiConfigSave(server_, settingsManager, gpsRuntime_, r);
     });
     server_.on("/api/gps/status", HTTP_GET, [this]() {

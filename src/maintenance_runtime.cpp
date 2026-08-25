@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 
 #include "audio_beep.h"
+#include "battery_manager.h"
 #include "ble_bond_backup_writer.h"
 #include "ble_client.h"
 #include "build_metadata.h"
@@ -15,6 +16,7 @@
 #include "modules/display/display_preview_module.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/health/health_journal.h"
+#include "modules/event_log/product_event_log.h"
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/power/power_module.h"
 #include "modules/quiet/quiet_coordinator_module.h"
@@ -33,13 +35,16 @@ constexpr uint32_t kMaintenanceExitLongPressMs = 4000UL;
 
 MaintenanceRuntime::MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, V1ProfileManager& profiles,
                                        V1DeviceStore& devices, StorageManager& storage, V1Display& display,
-                                       DisplayPreviewModule& preview, PowerModule& power, TouchHandler& touch,
+                                       DisplayPreviewModule& preview, PowerModule& power, BatteryManager& battery,
+                                       TouchHandler& touch,
                                        V1BLEClient& ble, PacketParser& parser, AutoPushModule& autoPush,
                                        ObdRuntimeModule& obd, SpeedSourceSelector& speed, GpsRuntimeModule& gps,
-                                       QuietCoordinatorModule& quiet, HealthJournal& health, MainRuntimeState& state)
+                                       QuietCoordinatorModule& quiet, ProductEventLog& events, HealthJournal& health,
+                                       MainRuntimeState& state)
     : wifi_(wifi), settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), display_(display),
-      preview_(preview), power_(power), touch_(touch), ble_(ble), parser_(parser), autoPush_(autoPush), obd_(obd),
-      speed_(speed), gps_(gps), quiet_(quiet), health_(health), state_(state),
+      preview_(preview), power_(power), battery_(battery), touch_(touch), ble_(ble), parser_(parser),
+      autoPush_(autoPush), obd_(obd),
+      speed_(speed), gps_(gps), quiet_(quiet), events_(events), health_(health), state_(state),
       wifiOrchestrator_(wifi, ble, parser, storage, autoPush) {}
 
 void MaintenanceRuntime::logHeapSnapshot(const char* stage) const {
@@ -96,6 +101,7 @@ void MaintenanceRuntime::appendStatus(JsonObject obj, void* context) {
 }
 
 void MaintenanceRuntime::configureWebApi() {
+    wifi_.setMaintenanceDependencies(ble_, display_, preview_, battery_, events_, health_);
     wifi_.setObdDependencies(&obd_, &speed_);
     wifi_.setGpsRuntime(&gps_);
     wifiOrchestrator_.ensureCallbacksConfigured();
@@ -264,7 +270,7 @@ void MaintenanceRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
 
 void MaintenanceRuntime::restartNormal(const char* reason) {
     Serial.printf("[MaintBoot] %s -> rebooting normal runtime\n", reason);
-    const bool persistenceSafe = completeLoggingForControlledRestart();
+    const bool persistenceSafe = completeLoggingForControlledRestart(events_, health_);
     if (persistenceSafe) {
         settings_.save();
         markCleanShutdown();
@@ -377,16 +383,20 @@ void MaintenanceRuntime::stop() {
 }
 
 void MaintenanceRuntime::prepareForShutdown() {
-    ::prepareForShutdown(nullptr);
+    const bool persistenceSafe = preparePersistenceForShutdown(events_, health_, settings_);
     if (wifi_.isWifiServiceActive()) {
         Serial.println("[Battery] Stopping WiFi after shutdown flush...");
         wifi_.stopSetupMode(true, "poweroff");
         delay(100);
     }
+    if (persistenceSafe) {
+        Serial.println("[Battery] Writing clean-shutdown marker...");
+        markCleanShutdown();
+    }
 }
 
 void MaintenanceRuntime::resumeAfterAbortedShutdown() {
-    ::resumeAfterAbortedShutdown(nullptr);
+    resumePersistenceAfterAbortedShutdown(events_);
     if (!wifi_.isWifiServiceActive()) {
         const bool restored = wifi_.startSetupMode(false);
         Serial.printf("[Battery] Maintenance WiFi restore ok=%s\n", restored ? "true" : "false");

@@ -131,5 +131,3 @@ class ProductEventLog {
 static_assert(ProductEventLog::kQueueStorageBytes <= 2048, "product event queue exceeds the 2 KiB budget");
 static_assert(ProductEventLog::kWriterStackBytes <= 4096, "product event writer stack exceeds the 4 KiB budget");
 static_assert(ProductEventLog::kMaxFiles > 1, "event retention needs one prior-file slot and one active-file slot");
-
-extern ProductEventLog productEventLog;

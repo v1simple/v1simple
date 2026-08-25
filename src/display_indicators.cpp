@@ -15,7 +15,6 @@
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "modules/alp/alp_laser_event.h"
-#include "main_globals.h"
 #include "modules/gps/gps_runtime_module.h"
 
 // ============================================================================
@@ -131,7 +130,7 @@ void V1Display::drawObdIndicator() {
 
 void V1Display::drawGpsIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
-    const GpsRuntimeStatus gs = gpsRuntimeModule.snapshot(millis());
+    const GpsRuntimeStatus gs = gpsRtMod_ ? gpsRtMod_->snapshot(millis()) : GpsRuntimeStatus{};
     const bool wantShow = gs.enabled && gs.stableHasFix;
     const uint8_t sats = wantShow ? gs.stableSatellites : 0;
 

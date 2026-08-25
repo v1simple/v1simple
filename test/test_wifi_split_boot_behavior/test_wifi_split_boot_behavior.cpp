@@ -56,12 +56,16 @@ void tearDown() {}
 
 void test_normal_driving_boot_has_no_wifi_start_or_runtime_process_path() {
     const std::string mainSource = readFile(projectRoot() + "/src/main.cpp");
-    const std::string normalSetup = extractFunctionBody(mainSource, "static void initializeStorageToReadyFlow(");
+    const std::string driveSource = readFile(projectRoot() + "/src/drive_runtime.cpp");
+    const std::string normalSetup = extractFunctionBody(driveSource, "void DriveRuntime::start(");
+    const std::string driveLoop = extractFunctionBody(driveSource, "void DriveRuntime::tick()");
     const std::string loopBody = extractFunctionBody(mainSource, "void loop()");
 
     TEST_ASSERT_FALSE(normalSetup.empty());
     TEST_ASSERT_EQUAL(std::string::npos, normalSetup.find("wifiManager.process()"));
     TEST_ASSERT_EQUAL(std::string::npos, normalSetup.find("startSetupMode("));
+    TEST_ASSERT_EQUAL(std::string::npos, driveLoop.find("wifi_.process()"));
+    TEST_ASSERT_EQUAL(std::string::npos, driveLoop.find("startSetupMode("));
     TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("wifiManager.process()"));
     TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("startSetupMode("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceRuntime.tick(millis())"));

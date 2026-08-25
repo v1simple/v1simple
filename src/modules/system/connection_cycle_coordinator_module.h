@@ -5,6 +5,18 @@
 #include "../obd/obd_ble_arbitration.h"
 #include "../obd/obd_runtime_module.h"
 
+class ConnectionCycleLifecycle {
+  public:
+    virtual ~ConnectionCycleLifecycle() = default;
+    virtual void stopObdScan() = 0;
+    virtual void cancelObdConnect() = 0;
+    virtual void stopProxyAdvertising() = 0;
+    virtual void disconnectProxyPhones() = 0;
+    virtual bool isObdScanStopped() const = 0;
+    virtual bool isObdConnectIdle() const = 0;
+    virtual bool isProxyFullyStopped() const = 0;
+};
+
 enum class CycleState : uint8_t {
     SCAN_V1 = 0,
     V1_SETTLING = 1,
@@ -42,30 +54,7 @@ struct CycleContext {
 
 class ConnectionCycleCoordinatorModule {
   public:
-    struct Providers {
-        void (*stopObdScan)(void* ctx) = nullptr;
-        void* stopObdScanContext = nullptr;
-
-        void (*cancelObdConnect)(void* ctx) = nullptr;
-        void* cancelObdConnectContext = nullptr;
-
-        void (*stopProxyAdvertising)(void* ctx) = nullptr;
-        void* stopProxyAdvertisingContext = nullptr;
-
-        void (*disconnectProxyPhone)(void* ctx) = nullptr;
-        void* disconnectProxyPhoneContext = nullptr;
-
-        bool (*isObdScanStopped)(void* ctx) = nullptr;
-        void* isObdScanStoppedContext = nullptr;
-
-        bool (*isObdConnectIdle)(void* ctx) = nullptr;
-        void* isObdConnectIdleContext = nullptr;
-
-        bool (*isProxyFullyStopped)(void* ctx) = nullptr;
-        void* isProxyFullyStoppedContext = nullptr;
-    };
-
-    void begin(const Providers& hooks);
+    void begin(ConnectionCycleLifecycle& lifecycle);
     void reset();
     void update(const CycleContext& ctx);
 
@@ -95,7 +84,7 @@ class ConnectionCycleCoordinatorModule {
     void enterTeardown(uint32_t nowMs);
     void updateTeardown(uint32_t nowMs);
     void updateTimingConfig(const CycleContext& ctx);
-    Providers providers{};
+    ConnectionCycleLifecycle* lifecycle_ = nullptr;
     CycleState state_ = CycleState::SCAN_V1;
     uint32_t stateEnteredMs_ = 0;
     bool stateEnteredMsValid_ = false;

@@ -27,7 +27,6 @@
 #if defined(DISPLAY_WAVESHARE_349)
 #include "battery_manager.h"
 #include "wifi_manager.h"
-#include "main_globals.h"
 #include "modules/gps/gps_runtime_module.h"
 #endif
 
@@ -400,8 +399,8 @@ void V1Display::renderFrame(const RenderFrame& frame) {
 V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& state, uint32_t nowMs,
                                                          bool bleContextFresh) const {
     const V1Settings& s = settingsManager.get();
-    const uint16_t batteryMv = batteryManager.getVoltageMillivolts();
-    const GpsRuntimeStatus gpsStatus = gpsRuntimeModule.snapshot(nowMs);
+    const uint16_t batteryMv = battery_ ? battery_->getVoltageMillivolts() : 0;
+    const GpsRuntimeStatus gpsStatus = gpsRtMod_ ? gpsRtMod_->snapshot(nowMs) : GpsRuntimeStatus{};
 
     RestingNoOpKey key;
     key.paletteRevision = paletteRevision_;
@@ -448,7 +447,7 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.muteVolume = state.muteVolume;
     key.alpStateRaw = alpStateRaw_;
     key.alpHbByte1 = alpHbByte1_;
-    key.batteryPct = batteryManager.getPercentage();
+    key.batteryPct = battery_ ? battery_->getPercentage() : 0;
     key.batteryVoltageBand = batteryVoltageBand(batteryMv);
     key.gpsShown = gpsStatus.enabled && gpsStatus.stableHasFix;
     key.gpsSats = key.gpsShown ? gpsStatus.stableSatellites : 0;
@@ -467,10 +466,10 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.bleProxyEnabled = bleProxyEnabled_;
     key.bleProxyClientConnected = bleProxyClientConnected_;
     key.bleReceivingData = bleReceivingData_;
-    key.wifiServiceActive = wifiManager.isWifiServiceActive();
-    key.wifiConnected = wifiManager.isConnected();
-    key.wifiGaveUp = wifiManager.isReconnectGaveUp();
-    key.hasBattery = batteryManager.hasBattery();
+    key.wifiServiceActive = wifi_ && wifi_->isWifiServiceActive();
+    key.wifiConnected = wifi_ && wifi_->isConnected();
+    key.wifiGaveUp = wifi_ && wifi_->isReconnectGaveUp();
+    key.hasBattery = battery_ && battery_->hasBattery();
     key.showBatteryPercent = s.showBatteryPercent;
     key.hideBatteryIcon = s.hideBatteryIcon;
     key.hideVolumeIndicator = s.hideVolumeIndicator;

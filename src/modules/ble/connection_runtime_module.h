@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 
+class BleQueueModule;
+class V1BLEClient;
+
 struct ConnectionRuntimeSnapshot {
     bool connected = false;
     bool receiving = false;
@@ -22,16 +25,8 @@ class ConnectionRuntimeModule {
         unsigned long runStartTimeoutMs = 30000;
     };
 
-    struct Providers {
-        bool (*isBleConnected)(void* ctx) = nullptr;
-        bool (*isBackpressured)(void* ctx) = nullptr;
-        unsigned long (*getLastRxMillis)(void* ctx) = nullptr;
-        void* bleContext = nullptr;
-        void* queueContext = nullptr;
-    };
-
-    void begin(const Providers& hooks);
-    void begin(const Providers& hooks, const Config& cfg);
+    void begin(V1BLEClient& ble, BleQueueModule& queue);
+    void begin(V1BLEClient& ble, BleQueueModule& queue, const Config& cfg);
 
     ConnectionRuntimeSnapshot process(unsigned long nowMs, unsigned long nowUs, unsigned long lastLoopUs,
                                       bool bootSplashHoldActive, unsigned long bootSplashHoldUntilMs,
@@ -39,7 +34,8 @@ class ConnectionRuntimeModule {
 
   private:
     void reset();
-    Providers providers{};
+    V1BLEClient* ble_ = nullptr;
+    BleQueueModule* queue_ = nullptr;
     Config config_;
     unsigned long lastTickUs_ = 0;
     bool runStartLogged_ = false;

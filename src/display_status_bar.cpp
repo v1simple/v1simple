@@ -318,7 +318,7 @@ void V1Display::drawBatteryIndicator() {
 
     // Hide battery when on USB power (voltage near max)
     // Use hysteresis to prevent flickering: hide above 4125, show below 4095
-    uint16_t voltage = batteryManager.getVoltageMillivolts();
+    const uint16_t voltage = battery_ ? battery_->getVoltageMillivolts() : 0;
     if (voltage > 4125) {
         s_batteryShowOnUSB = false; // On USB or fully charged
     } else if (voltage < 4095) {
@@ -327,10 +327,10 @@ void V1Display::drawBatteryIndicator() {
     // Between 4095-4125: keep previous state (hysteresis)
 
     // Get battery percentage for display
-    uint8_t pct = batteryManager.getPercentage();
+    const uint8_t pct = battery_ ? battery_->getPercentage() : 0;
 
     // If percent is enabled, ONLY show percent (never icon)
-    if (s.showBatteryPercent && !s.hideBatteryIcon && batteryManager.hasBattery()) {
+    if (s.showBatteryPercent && !s.hideBatteryIcon && battery_ && battery_->hasBattery()) {
         const unsigned long PCT_FORCE_REDRAW_MS = 60000; // 60s safety refresh
 
         // Choose color based on level
@@ -405,7 +405,7 @@ void V1Display::drawBatteryIndicator() {
 
     // Percent is disabled, show icon instead.
     // Compute icon state up front so we can cache-compare before touching pixels.
-    const bool hasBat = batteryManager.hasBattery();
+    const bool hasBat = battery_ && battery_->hasBattery();
     const bool hideIcon = s.hideBatteryIcon;
     const bool shownNow = hasBat && !hideIcon && s_batteryShowOnUSB;
 
@@ -662,8 +662,8 @@ void V1Display::drawWiFiIndicator() {
         return;
     }
 
-    const bool wifiServiceActive = wifiManager.isWifiServiceActive();
-    const bool staConnected = wifiManager.isConnected();
+    const bool wifiServiceActive = wifi_ && wifi_->isWifiServiceActive();
+    const bool staConnected = wifi_ && wifi_->isConnected();
     const bool showWifiIcon = wifiServiceActive || staConnected;
 
     if (!showWifiIcon) {
@@ -682,7 +682,7 @@ void V1Display::drawWiFiIndicator() {
     // WiFi icon color: gave-up (red) > operational (green).
     // If the icon is visible at all, WiFi is running — show green.
     // Red only when STA reconnect has exhausted all retries.
-    const bool gaveUp = wifiManager.isReconnectGaveUp();
+    const bool gaveUp = wifi_ && wifi_->isReconnectGaveUp();
     uint16_t wifiColor;
     if (gaveUp && !staConnected) {
         wifiColor = 0xF800; // Bright red — STA gave up after max reconnect failures

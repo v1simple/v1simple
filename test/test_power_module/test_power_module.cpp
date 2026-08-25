@@ -15,9 +15,6 @@ unsigned long mockMicros = 0;
 
 #include "../../include/battery_math.h"
 #include "../../src/modules/power/power_module.cpp"
-#include "../../src/modules/system/loop_connection_early_module.cpp"
-#include "../../src/modules/system/loop_display_module.cpp"
-#include "../../src/modules/system/loop_power_touch_module.cpp"
 
 namespace {
 
@@ -30,12 +27,6 @@ void setTime(unsigned long nowMs) {
     mockMillis = nowMs;
     mockMicros = nowMs * 1000UL;
 }
-
-struct PowerTouchProbe {
-    bool suppressed = false;
-    int powerCalls = 0;
-    int touchCalls = 0;
-};
 
 struct ProbePowerLifecycle final : PowerLifecycle {
     int* preparationCalls = nullptr;
@@ -52,101 +43,6 @@ struct ProbePowerLifecycle final : PowerLifecycle {
         }
     }
 };
-
-void acquirePresentation(void* ctx, uint32_t) {
-    auto* probe = static_cast<PowerTouchProbe*>(ctx);
-    ++probe->powerCalls;
-    probe->suppressed = true;
-}
-
-bool readPresentationSuppressed(void* ctx) {
-    return static_cast<PowerTouchProbe*>(ctx)->suppressed;
-}
-
-bool runTouch(void* ctx, uint32_t, bool) {
-    ++static_cast<PowerTouchProbe*>(ctx)->touchCalls;
-    return true;
-}
-
-struct ConnectionEarlyProbe {
-    int runtimeCalls = 0;
-    int scanningCalls = 0;
-    int displayEarlyCalls = 0;
-};
-
-ConnectionRuntimeSnapshot runConnectionRuntime(void* ctx, uint32_t, uint32_t, uint32_t, bool, uint32_t, bool) {
-    auto* probe = static_cast<ConnectionEarlyProbe*>(ctx);
-    ++probe->runtimeCalls;
-    ConnectionRuntimeSnapshot snapshot;
-    snapshot.requestShowInitialScanning = true;
-    snapshot.connected = true;
-    return snapshot;
-}
-
-void showInitialScanning(void* ctx) {
-    ++static_cast<ConnectionEarlyProbe*>(ctx)->scanningCalls;
-}
-
-void runDisplayEarly(void* ctx, const DisplayOrchestrationEarlyContext&) {
-    ++static_cast<ConnectionEarlyProbe*>(ctx)->displayEarlyCalls;
-}
-
-struct DisplayProbe {
-    int collectCalls = 0;
-    int parsedCalls = 0;
-    int pipelineCalls = 0;
-    int refreshCalls = 0;
-    int blinkCalls = 0;
-    int displayClockReads = 0;
-    uint32_t pipelineNowMs = 0;
-    uint32_t displayClockValue = 100;
-    std::string order;
-};
-
-uint32_t readDisplayNow(void* ctx) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    probe->order.push_back('T');
-    ++probe->displayClockReads;
-    return probe->displayClockValue;
-}
-
-ParsedFrameSignal collectParsedSignal(void* ctx) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    ++probe->collectCalls;
-    probe->order.push_back('S');
-    ParsedFrameSignal signal;
-    signal.parsedReady = true;
-    return signal;
-}
-
-DisplayOrchestrationParsedResult runParsedFrame(void* ctx, const DisplayOrchestrationParsedContext&) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    ++probe->parsedCalls;
-    probe->order.push_back('P');
-    DisplayOrchestrationParsedResult result;
-    result.runDisplayPipeline = true;
-    return result;
-}
-
-void runDisplayPipeline(void* ctx, uint32_t nowMs) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    ++probe->pipelineCalls;
-    probe->pipelineNowMs = nowMs;
-    probe->order.push_back('D');
-}
-
-DisplayOrchestrationRefreshResult runRefresh(void* ctx, const DisplayOrchestrationRefreshContext&) {
-    auto* probe = static_cast<DisplayProbe*>(ctx);
-    ++probe->refreshCalls;
-    probe->order.push_back('R');
-    DisplayOrchestrationRefreshResult result;
-    result.runBlinkRefresh = true;
-    return result;
-}
-
-void runBlink(void* ctx, uint32_t) {
-    ++static_cast<DisplayProbe*>(ctx)->blinkCalls;
-}
 
 } // namespace
 
@@ -320,79 +216,6 @@ void test_shutdown_preparation_cannot_veto_physical_poweroff() {
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
 }
 
-void test_power_touch_phase_suppresses_touch_after_warning_acquires_owner() {
-    PowerTouchProbe probe;
-    LoopPowerTouchModule module;
-    LoopPowerTouchModule::Providers providers;
-    providers.runPowerProcess = acquirePresentation;
-    providers.powerContext = &probe;
-    providers.readPresentationSuppressed = readPresentationSuppressed;
-    providers.presentationContext = &probe;
-    providers.runTouchUiProcess = runTouch;
-    providers.touchUiContext = &probe;
-    module.begin(providers);
-
-    const LoopPowerTouchResult result = module.process(LoopPowerTouchContext{});
-
-    TEST_ASSERT_EQUAL(1, probe.powerCalls);
-    TEST_ASSERT_EQUAL(0, probe.touchCalls);
-    TEST_ASSERT_TRUE(result.presentationSuppressed);
-    TEST_ASSERT_FALSE(result.inSettings);
-}
-
-void test_connection_early_keeps_runtime_live_but_suppresses_presentations() {
-    ConnectionEarlyProbe probe;
-    LoopConnectionEarlyModule module;
-    LoopConnectionEarlyModule::Providers providers;
-    providers.runConnectionRuntime = runConnectionRuntime;
-    providers.connectionRuntimeContext = &probe;
-    providers.showInitialScanning = showInitialScanning;
-    providers.scanningContext = &probe;
-    providers.runDisplayEarly = runDisplayEarly;
-    providers.displayEarlyContext = &probe;
-    module.begin(providers);
-
-    LoopConnectionEarlyContext ctx;
-    ctx.presentationSuppressed = true;
-    const LoopConnectionEarlyResult result = module.process(ctx);
-
-    TEST_ASSERT_TRUE(result.bleConnectedNow);
-    TEST_ASSERT_TRUE(result.initialScanningScreenShown);
-    TEST_ASSERT_EQUAL(1, probe.runtimeCalls);
-    TEST_ASSERT_EQUAL(0, probe.scanningCalls);
-    TEST_ASSERT_EQUAL(0, probe.displayEarlyCalls);
-}
-
-void test_display_phase_consumes_event_but_suppresses_pipeline_and_blink() {
-    DisplayProbe probe;
-    LoopDisplayModule module;
-    LoopDisplayModule::Providers providers;
-    providers.readDisplayNowMs = readDisplayNow;
-    providers.displayNowContext = &probe;
-    providers.collectParsedSignal = collectParsedSignal;
-    providers.parsedSignalContext = &probe;
-    providers.runParsedFrame = runParsedFrame;
-    providers.parsedFrameContext = &probe;
-    providers.runDisplayPipeline = runDisplayPipeline;
-    providers.displayPipelineContext = &probe;
-    providers.runLightweightRefresh = runRefresh;
-    providers.lightweightRefreshContext = &probe;
-    providers.runBlinkRefresh = runBlink;
-    providers.blinkRefreshContext = &probe;
-    module.begin(providers);
-
-    LoopDisplayContext ctx;
-    ctx.presentationSuppressed = true;
-    module.process(ctx);
-
-    TEST_ASSERT_EQUAL(1, probe.collectCalls);
-    TEST_ASSERT_EQUAL(0, probe.parsedCalls);
-    TEST_ASSERT_EQUAL(0, probe.pipelineCalls);
-    TEST_ASSERT_EQUAL(0, probe.refreshCalls);
-    TEST_ASSERT_EQUAL(0, probe.blinkCalls);
-    TEST_ASSERT_EQUAL_STRING("TS", probe.order.c_str());
-}
-
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_critical_protection_keeps_zero_invalid_but_accepts_deep_discharge);
@@ -406,8 +229,5 @@ int main() {
     RUN_TEST(test_critical_shutdown_does_not_treat_trigger_sample_as_confirmation);
     RUN_TEST(test_auto_power_abort_retries_only_after_a_full_interval);
     RUN_TEST(test_shutdown_preparation_cannot_veto_physical_poweroff);
-    RUN_TEST(test_power_touch_phase_suppresses_touch_after_warning_acquires_owner);
-    RUN_TEST(test_connection_early_keeps_runtime_live_but_suppresses_presentations);
-    RUN_TEST(test_display_phase_consumes_event_but_suppresses_pipeline_and_blink);
     return UNITY_END();
 }

@@ -40,8 +40,6 @@ using ObdStringUtils::stringContainsCI;
 // SINGLETON — file-scope module instance
 // ======================================================================
 
-ObdRuntimeModule obdRuntimeModule;
-
 // ======================================================================
 // LIFECYCLE — resetForBegin / begin constructor and reset sequence
 // ======================================================================

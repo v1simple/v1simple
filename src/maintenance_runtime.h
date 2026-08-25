@@ -9,11 +9,13 @@
 #include "modules/wifi/wifi_orchestrator_module.h"
 
 class AutoPushModule;
+class BatteryManager;
 class DisplayPreviewModule;
 class GpsRuntimeModule;
 class HealthJournal;
 class ObdRuntimeModule;
 class PacketParser;
+class ProductEventLog;
 class QuietCoordinatorModule;
 class SettingsManager;
 class SpeedSourceSelector;
@@ -32,10 +34,11 @@ class MaintenanceRuntime : public PowerLifecycle {
   public:
     MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, V1ProfileManager& profiles,
                        V1DeviceStore& devices, StorageManager& storage, V1Display& display,
-                       DisplayPreviewModule& preview, PowerModule& power, TouchHandler& touch,
+                       DisplayPreviewModule& preview, PowerModule& power, BatteryManager& battery, TouchHandler& touch,
                        V1BLEClient& ble, PacketParser& parser, AutoPushModule& autoPush,
                        ObdRuntimeModule& obd, SpeedSourceSelector& speed, GpsRuntimeModule& gps,
-                       QuietCoordinatorModule& quiet, HealthJournal& health, MainRuntimeState& state);
+                       QuietCoordinatorModule& quiet, ProductEventLog& events, HealthJournal& health,
+                       MainRuntimeState& state);
 
     void start(uint32_t setupStartMs, esp_reset_reason_t resetReason);
     void tick(uint32_t nowMs);
@@ -64,6 +67,7 @@ class MaintenanceRuntime : public PowerLifecycle {
     V1Display& display_;
     DisplayPreviewModule& preview_;
     PowerModule& power_;
+    BatteryManager& battery_;
     TouchHandler& touch_;
     V1BLEClient& ble_;
     PacketParser& parser_;
@@ -72,6 +76,7 @@ class MaintenanceRuntime : public PowerLifecycle {
     SpeedSourceSelector& speed_;
     GpsRuntimeModule& gps_;
     QuietCoordinatorModule& quiet_;
+    ProductEventLog& events_;
     HealthJournal& health_;
     MainRuntimeState& state_;
     WifiOrchestrator wifiOrchestrator_;

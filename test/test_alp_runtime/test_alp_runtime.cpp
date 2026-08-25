@@ -16,6 +16,10 @@
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 #include "../../src/modules/system/system_event_bus.h"
 
+namespace {
+AlpRuntimeModule alpRuntimeModule;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 static void resetModule() {

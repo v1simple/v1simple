@@ -16,10 +16,8 @@
 namespace {
 static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000; // 60 seconds
 
-// This path is normal-boot only. processV1DeviceStoreSave() has one caller,
-// main_loop_wiring.cpp:158, which binds it into PeriodicMaintenanceModule;
-// that module is configured from main_runtime_wiring.cpp:323 on the
-// non-maintenance side of main.cpp:555-562. WiFi starts only in maintenance
+// This path is normal-boot only. processV1DeviceStoreSave() has one caller in
+// DriveRuntime's typed periodic-maintenance phase. WiFi starts only in maintenance
 // boot (MaintenanceRuntime owns every startSetupMode() call), so
 // WiFi.getMode() here can only be WIFI_OFF.
 //

@@ -8,8 +8,6 @@
 
 #include "storage_manager.h"
 
-HealthJournal healthJournal;
-
 namespace {
 
 constexpr uint32_t kHealthLockTimeoutMs = 500;

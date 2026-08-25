@@ -1,7 +1,11 @@
 #include "connection_state_dispatch_module.h"
 
-void ConnectionStateDispatchModule::begin(const Providers& hooks) {
-    providers = hooks;
+#include "modules/ble/connection_state_module.h"
+
+void ConnectionStateDispatchModule::begin(ConnectionStateCadenceModule& cadence,
+                                          ConnectionStateModule& connectionState) {
+    cadence_ = &cadence;
+    connectionState_ = &connectionState;
     reset();
 }
 
@@ -13,7 +17,7 @@ void ConnectionStateDispatchModule::reset() {
 ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(const ConnectionStateDispatchContext& ctx) {
     ConnectionStateDispatchDecision decision;
 
-    if (providers.runCadence) {
+    if (cadence_) {
         ConnectionStateCadenceContext cadenceCtx;
         cadenceCtx.nowMs = ctx.nowMs;
         cadenceCtx.displayUpdateIntervalMs = ctx.displayUpdateIntervalMs;
@@ -21,7 +25,7 @@ ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(const Con
         cadenceCtx.bleConnectedNow = ctx.bleConnectedNow;
         cadenceCtx.bootSplashHoldActive = ctx.bootSplashHoldActive;
         cadenceCtx.displayPreviewRunning = ctx.displayPreviewRunning;
-        decision.cadence = providers.runCadence(providers.cadenceContext, cadenceCtx);
+        decision.cadence = cadence_->process(cadenceCtx);
     }
 
     bool shouldRunConnectionStateProcess = decision.cadence.shouldRunConnectionStateProcess;
@@ -37,8 +41,8 @@ ConnectionStateDispatchDecision ConnectionStateDispatchModule::process(const Con
         }
     }
 
-    if (shouldRunConnectionStateProcess && providers.runConnectionStateProcess) {
-        providers.runConnectionStateProcess(providers.connectionStateContext, ctx.nowMs);
+    if (shouldRunConnectionStateProcess && connectionState_) {
+        connectionState_->process(ctx.nowMs);
         decision.ranConnectionStateProcess = true;
         lastProcessRunMs_ = ctx.nowMs;
         hasRunProcess_ = true;

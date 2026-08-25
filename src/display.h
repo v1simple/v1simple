@@ -53,6 +53,9 @@ static_assert(SIGNAL_BAR_COLOR_COUNT == DisplayLayout::CARD_METER_BAR_COUNT,
 
 class ObdRuntimeModule;
 class AlpRuntimeModule;
+class BatteryManager;
+class GpsRuntimeModule;
+class WiFiManager;
 
 class V1Display {
   public:
@@ -146,6 +149,11 @@ class V1Display {
     // ALP indicator (shows current ALP status left of MUTED badge)
     void refreshAlpIndicator(uint32_t nowMs);
     void setAlpRuntimeModule(AlpRuntimeModule* m);
+    void setSystemStatusSources(BatteryManager& battery, WiFiManager& wifi, GpsRuntimeModule& gps) {
+        battery_ = &battery;
+        wifi_ = &wifi;
+        gpsRtMod_ = &gps;
+    }
 
     // Preview-mode direct setters — bypass runtime modules for display test
     void setPreviewIndicatorOverridesActive(bool active);
@@ -431,6 +439,9 @@ class V1Display {
     bool previewIndicatorOverridesActive_ = false; // Display preview owns ALP/OBD badges
     ObdRuntimeModule* obdRtMod_ = nullptr;         // Injected in begin(); used by syncTopIndicators
     AlpRuntimeModule* alpRtMod_ = nullptr;         // Injected in begin(); used by syncTopIndicators
+    BatteryManager* battery_ = nullptr;
+    WiFiManager* wifi_ = nullptr;
+    GpsRuntimeModule* gpsRtMod_ = nullptr;
     bool alpEnabled_ = false;                      // ALP module enabled
     uint8_t alpStateRaw_ = 0;                      // AlpState cast to uint8_t for badge color selection
     uint8_t alpHbByte1_ = 0;                       // Last B0 heartbeat byte1 (02=Warm-Up, 03=DLI, 04=LID)
@@ -506,5 +517,4 @@ class V1Display {
 };
 
 // Global display instance (defined in main.cpp)
-extern V1Display display;
 #endif // DISPLAY_H

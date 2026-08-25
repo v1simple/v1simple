@@ -149,8 +149,6 @@ class BatteryManager {
     battery_source_policy::Result observeSourceRound(uint32_t nowMs);
 };
 
-extern BatteryManager batteryManager;
-
 // Pure button-state helper for hardware-independent tests. pinLow=true means
 // GPIO16 is low and the button is pressed. Returns true after a two-second hold.
 bool processPowerButtonState(bool pinLow, uint32_t nowMs, BatteryManager::PwrButtonState& state);

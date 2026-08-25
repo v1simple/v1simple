@@ -76,8 +76,8 @@ CycleState nextPostObdState(const CycleContext& ctx) {
 
 } // namespace
 
-void ConnectionCycleCoordinatorModule::begin(const Providers& hooks) {
-    providers = hooks;
+void ConnectionCycleCoordinatorModule::begin(ConnectionCycleLifecycle& lifecycle) {
+    lifecycle_ = &lifecycle;
     reset();
 }
 
@@ -167,9 +167,7 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         } else if (isObdConnectingState(ctx.obdState)) {
             transitionTo(CycleState::OBD_CONNECT, ctx.nowMs);
         } else if (hasElapsed(ctx.nowMs, stateEnteredMs_, obdScanWindowMs_)) {
-            if (providers.stopObdScan) {
-                providers.stopObdScan(providers.stopObdScanContext);
-            }
+            lifecycle_->stopObdScan();
             transitionTo(nextPostObdState(ctx), ctx.nowMs);
         }
         break;
@@ -178,9 +176,7 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         if (obdSettled) {
             transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
         } else if (isObdConnectFailureState(ctx.obdState)) {
-            if (providers.cancelObdConnect) {
-                providers.cancelObdConnect(providers.cancelObdConnectContext);
-            }
+            lifecycle_->cancelObdConnect();
             transitionTo(nextPostObdState(ctx), ctx.nowMs);
         }
         break;
@@ -192,9 +188,7 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
     case CycleState::PROXY_OPEN:
         if (!isExplicitProxyAppMode(ctx) && !ctx.proxyClientConnected &&
             hasElapsed(ctx.nowMs, stateEnteredMs_, proxyOpenWindowMs_)) {
-            if (providers.stopProxyAdvertising) {
-                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-            }
+            lifecycle_->stopProxyAdvertising();
             transitionTo(CycleState::STEADY, ctx.nowMs);
         }
         break;
@@ -328,12 +322,8 @@ void ConnectionCycleCoordinatorModule::enterTeardown(const uint32_t nowMs) {
     v1VerifyPushMatched_ = false;
     v1VerifyPushMatchedAtMs_ = 0;
     transitionTo(CycleState::TEARDOWN, nowMs);
-    if (providers.stopObdScan) {
-        providers.stopObdScan(providers.stopObdScanContext);
-    }
-    if (providers.cancelObdConnect) {
-        providers.cancelObdConnect(providers.cancelObdConnectContext);
-    }
+    lifecycle_->stopObdScan();
+    lifecycle_->cancelObdConnect();
 }
 
 void ConnectionCycleCoordinatorModule::updateTeardown(const uint32_t nowMs) {
@@ -343,17 +333,11 @@ void ConnectionCycleCoordinatorModule::updateTeardown(const uint32_t nowMs) {
         return;
 
     case TeardownStep::WaitObdStop: {
-        const bool obdScanStopped =
-            !providers.isObdScanStopped || providers.isObdScanStopped(providers.isObdScanStoppedContext);
-        const bool obdConnectIdle =
-            !providers.isObdConnectIdle || providers.isObdConnectIdle(providers.isObdConnectIdleContext);
+        const bool obdScanStopped = lifecycle_->isObdScanStopped();
+        const bool obdConnectIdle = lifecycle_->isObdConnectIdle();
         if ((obdScanStopped && obdConnectIdle) || hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
-            if (providers.stopProxyAdvertising) {
-                providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
-            }
-            if (providers.disconnectProxyPhone) {
-                providers.disconnectProxyPhone(providers.disconnectProxyPhoneContext);
-            }
+            lifecycle_->stopProxyAdvertising();
+            lifecycle_->disconnectProxyPhones();
             teardownStep_ = TeardownStep::WaitProxyStop;
             teardownStepStartedMs_ = nowMs;
         }
@@ -361,8 +345,7 @@ void ConnectionCycleCoordinatorModule::updateTeardown(const uint32_t nowMs) {
     }
 
     case TeardownStep::WaitProxyStop: {
-        const bool proxyStopped =
-            !providers.isProxyFullyStopped || providers.isProxyFullyStopped(providers.isProxyFullyStoppedContext);
+        const bool proxyStopped = lifecycle_->isProxyFullyStopped();
         if (proxyStopped || hasElapsed(nowMs, teardownStepStartedMs_, teardownAckTimeoutMs_)) {
             teardownStep_ = TeardownStep::Idle;
             transitionTo(CycleState::SCAN_V1, nowMs);

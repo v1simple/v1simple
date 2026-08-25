@@ -17,6 +17,10 @@ SerialClass Serial;
 unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 
+namespace {
+GpsRuntimeModule gpsRuntimeModule;
+}
+
 static void resetRuntime() {
     gpsRuntimeModule = GpsRuntimeModule();
     mockMillis = 1;

@@ -753,9 +753,6 @@ bool WiFiManager::serveLittleFSFile(const char* path, const char* contentType) {
 // Core WiFiManager methods
 // ============================================================================
 
-// Global instance
-WiFiManager wifiManager;
-
 WiFiManager::WiFiManager()
     : server_(80), setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0) {}
 

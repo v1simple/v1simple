@@ -15,9 +15,6 @@
 #include <nvs_flash.h>
 #include <nvs.h>
 
-// Display is defined in main.cpp; needed by fatalBootError().
-extern V1Display display;
-
 // --- resetReasonToString ---
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
@@ -263,7 +260,7 @@ bool readAndClearMaintenanceBootRequest() {
 
 // Report a fatal boot error, wait, and restart. displayAvailable indicates
 // whether display.begin() succeeded.
-void fatalBootError(const char* message, bool displayAvailable) {
+void fatalBootError(V1Display& display, const char* message, bool displayAvailable) {
     Serial.printf("FATAL: %s\n", message);
 
     if (displayAvailable) {

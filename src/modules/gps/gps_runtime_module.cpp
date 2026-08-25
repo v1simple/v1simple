@@ -4,8 +4,6 @@
 #include <cstdlib>
 #include <cstring>
 
-GpsRuntimeModule gpsRuntimeModule;
-
 namespace {
 bool elapsedExceeded(uint32_t nowMs, uint32_t startMs, uint32_t thresholdMs) {
     if (startMs == 0) {

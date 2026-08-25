@@ -38,8 +38,6 @@ bool stringEquals(const std::string& lhs, const char* rhs) {
 
 } // namespace
 
-ObdBleClient obdBleClient;
-
 void ObdScanCallback::configure(ObdRuntimeModule* parent, int8_t minRssi) {
     parent_ = parent;
     minRssi_ = minRssi;

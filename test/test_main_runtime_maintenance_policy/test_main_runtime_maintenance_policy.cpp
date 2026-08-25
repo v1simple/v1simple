@@ -365,15 +365,15 @@ void test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("restartNormal(\"BOOT long-press exit\")"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("if (session.shouldReboot)"));
     TEST_ASSERT_EQUAL(std::string::npos, restartBody.find("restart cancelled"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("completeLoggingForControlledRestart()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("completeLoggingForControlledRestart("));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("ESP.restart();"));
 }
 
 void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
-    const std::string wiring = readFile(projectRoot() + "/src/main_runtime_wiring.cpp");
-    const std::string entryBody = extractFunctionBody(wiring, "static void requestMaintenanceBootRestart()");
+    const std::string wiring = readFile(projectRoot() + "/src/drive_runtime.cpp");
+    const std::string entryBody = extractFunctionBody(wiring, "void DriveRuntime::requestMaintenanceBootRestart()");
     const size_t request = entryBody.find("requestMaintenanceBoot()");
-    const size_t cleanup = entryBody.find("completeLoggingForControlledRestart()");
+    const size_t cleanup = entryBody.find("completeLoggingForControlledRestart(");
     const size_t restart = entryBody.find("ESP.restart();");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, request);
@@ -387,26 +387,28 @@ void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
 
 void test_returned_poweroff_tail_restores_stopped_services() {
     const std::string helpers = readFile(projectRoot() + "/src/main_setup_helpers.cpp");
+    const std::string drive = readFile(projectRoot() + "/src/drive_runtime.cpp");
     const std::string maintenance = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
-    const std::string prepareBody = extractFunctionBody(helpers, "void prepareForShutdown(");
-    const std::string resumeBody = extractFunctionBody(helpers, "void resumeAfterAbortedShutdown(");
+    const std::string prepareBody = extractFunctionBody(helpers, "bool preparePersistenceForShutdown(");
+    const std::string resumeBody = extractFunctionBody(helpers, "void resumePersistenceAfterAbortedShutdown(");
+    const std::string drivePrepare = extractFunctionBody(drive, "void DriveRuntime::prepareForShutdown(");
+    const std::string driveResume = extractFunctionBody(drive, "void DriveRuntime::resumeAfterAbortedShutdown(");
     const std::string maintenancePrepare =
         extractFunctionBody(maintenance, "void MaintenanceRuntime::prepareForShutdown(");
     const std::string maintenanceResume =
         extractFunctionBody(maintenance, "void MaintenanceRuntime::resumeAfterAbortedShutdown(");
 
-    const size_t loggerCleanup = prepareBody.find("productEventLog.stopAndFlush");
-    const size_t bleStop = prepareBody.find("bleClient.disconnect()");
+    const size_t loggerCleanup = prepareBody.find("events.stopAndFlush");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, loggerCleanup);
-    TEST_ASSERT_TRUE(loggerCleanup < bleStop);
-    TEST_ASSERT_TRUE(maintenancePrepare.find("::prepareForShutdown(nullptr)") <
+    TEST_ASSERT_TRUE(drivePrepare.find("preparePersistenceForShutdown") < drivePrepare.find("ble_.disconnect()"));
+    TEST_ASSERT_TRUE(maintenancePrepare.find("preparePersistenceForShutdown") <
                      maintenancePrepare.find("wifi_.stopSetupMode"));
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("productEventLog.resumeAfterAbortedShutdown"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("events.resumeAfterAbortedShutdown"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeBleBondBackupWriterAfterAbortedShutdown"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeDeferredSettingsBackupWriterAfterAbortedShutdown"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("bleClient.startScanning()"));
-    TEST_ASSERT_TRUE(maintenanceResume.find("::resumeAfterAbortedShutdown(nullptr)") <
+    TEST_ASSERT_TRUE(driveResume.find("resumePersistenceAfterAbortedShutdown") < driveResume.find("ble_.startScanning()"));
+    TEST_ASSERT_TRUE(maintenanceResume.find("resumePersistenceAfterAbortedShutdown") <
                      maintenanceResume.find("wifi_.startSetupMode(false)"));
 }
 

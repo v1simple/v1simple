@@ -3,12 +3,11 @@
  */
 
 #include "wifi_manager_internals.h"
-#include "display_preview_api.h"
+#include "ble_client.h"
 #include "audio_beep.h"
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "display.h"
-#include "main_globals.h"
 #include "v1_profiles.h"
 #include "v1_devices.h"
 #include "battery_manager.h"
@@ -26,6 +25,7 @@
 #include "settings_runtime_sync.h"
 #include "modules/speed/speed_source_selector.h"
 #include "modules/obd/obd_runtime_module.h"
+#include "modules/display/display_preview_module.h"
 #include "config.h"
 
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
@@ -160,8 +160,8 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         nullptr,
         [](void* /*ctx*/) { return static_cast<int>(settingsManager.get().activeSlot); },
         nullptr,
-        [](int slot, void* /*ctx*/) { display.drawProfileIndicator(slot); },
-        nullptr,
+        [](int slot, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->drawProfileIndicator(slot); },
+        this,
         [](const WifiAutoPushApiService::ActivationRequest& request, void* /*ctx*/) {
             AutoPushStateUpdate update;
             update.hasActiveSlot = true;
@@ -199,19 +199,20 @@ WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
         nullptr,
         [](void* /*ctx*/) { settingsManager.resetDisplaySettings(SettingsPersistMode::ImmediateNvsDeferredBackup); },
         nullptr,
-        [](uint8_t brightness, void* /*ctx*/) { display.setBrightness(brightness); },
-        nullptr,
-        [](void* /*ctx*/) {
-            display.updateColorTheme();
-            display.forceNextRedraw();
+        [](uint8_t brightness, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->setBrightness(brightness); },
+        this,
+        [](void* ctx) {
+            auto* self = static_cast<WiFiManager*>(ctx);
+            self->display_->updateColorTheme();
+            self->display_->forceNextRedraw();
         },
-        nullptr,
-        [](uint32_t durationMs, void* /*ctx*/) { requestColorPreviewHold(durationMs); },
-        nullptr,
-        [](void* /*ctx*/) { return isDisplayPreviewRunning(); },
-        nullptr,
-        [](void* /*ctx*/) { cancelDisplayPreview(); },
-        nullptr,
+        this,
+        [](uint32_t durationMs, void* ctx) { static_cast<WiFiManager*>(ctx)->displayPreview_->requestHold(durationMs); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->displayPreview_->isRunning(); },
+        this,
+        [](void* ctx) { static_cast<WiFiManager*>(ctx)->displayPreview_->cancel(); },
+        this,
     };
 }
 
@@ -255,16 +256,16 @@ WifiStatusApiService::StatusRuntime WiFiManager::makeStatusRuntime() {
         nullptr,
         [](void* /*ctx*/) { return String(FIRMWARE_VERSION); },
         nullptr,
-        [](void* /*ctx*/) { return batteryManager.getVoltageMillivolts(); },
-        nullptr,
-        [](void* /*ctx*/) { return batteryManager.getPercentage(); },
-        nullptr,
-        [](void* /*ctx*/) { return batteryManager.isOnBattery(); },
-        nullptr,
-        [](void* /*ctx*/) { return batteryManager.hasBattery(); },
-        nullptr,
-        [](void* /*ctx*/) { return bleClient.isConnected(); },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->battery_->getVoltageMillivolts(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->battery_->getPercentage(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->battery_->isOnBattery(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->battery_->hasBattery(); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
+        this,
         mergeStatus_,
         mergeStatusCtx_,
         mergeStatus2_,
@@ -287,7 +288,7 @@ WifiSettingsApiService::Runtime WiFiManager::makeSettingsRuntime() {
         if (maintenanceBoot) {
             return;
         }
-        bleClient.setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
+        self->bleRuntime_->setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
         if (self && self->obdRuntime_ && self->speedSelector_) {
             SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, *self->obdRuntime_, *self->speedSelector_);
         }
@@ -348,7 +349,7 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         this,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->disableWifiClient(); },
         this,
-        mainRuntimeState.maintenanceBootActive,
+        maintenanceBootMode_,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->getSavedNetworkSlots(); },
         this,
         [](const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut, void* ctx) {
@@ -416,8 +417,8 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         nullptr,
         [](void* /*ctx*/) { return v1ProfileManager.settingsToJson(v1ProfileManager.getCurrentSettings()); },
         nullptr,
-        [](void* /*ctx*/) { return bleClient.isConnected(); },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
+        this,
         [](void* /*ctx*/) { settingsManager.requestDeferredBackupFromCurrentState(); },
         nullptr,
     };
@@ -425,7 +426,8 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
 
 WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
     return WifiV1DevicesApiService::Runtime{
-        [](void* /*ctx*/) {
+        [](void* ctx) {
+            auto* self = static_cast<WiFiManager*>(ctx);
             std::vector<WifiV1DevicesApiService::DeviceInfo> payload;
             if (!v1DeviceStore.isReady()) {
                 return payload;
@@ -451,7 +453,7 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
             }
 
             String connectedAddress;
-            NimBLEAddress connected = bleClient.getConnectedAddress();
+            NimBLEAddress connected = self->bleRuntime_->getConnectedAddress();
             if (!connected.isNull()) {
                 connectedAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
                 if (!hasAddress(connectedAddress)) {
@@ -471,7 +473,7 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
             }
             return payload;
         },
-        nullptr,
+        this,
         [](const String& address, const String& name, void* /*ctx*/) {
             return v1DeviceStore.setDeviceName(address, name);
         },
@@ -519,7 +521,7 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
             if (self && self->isMaintenanceBootMode()) {
                 return;
             }
-            bleClient.setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
+            self->bleRuntime_->setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
             SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, *self->obdRuntime_, *self->speedSelector_);
         },
         // ctx
@@ -543,9 +545,9 @@ ObdApiService::Runtime WiFiManager::makeObdRuntime() {
             return;
         }
         const V1Settings& settings = settingsManager.get();
-        bleClient.setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
+        self->bleRuntime_->setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
         SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, *self->obdRuntime_, *self->speedSelector_);
     };
-    r.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
+    r.maintenanceBootActive = maintenanceBootMode_;
     return r;
 }

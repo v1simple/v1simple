@@ -41,7 +41,7 @@ struct DisplayOrchestrationRefreshContext {
 };
 
 struct DisplayOrchestrationRefreshResult {
-    // When true, LoopDisplayModule should call the blink-refresh provider this
+    // When true, DriveRuntime should call the renderer's blink refresh this
     // loop. Set by processLightweightRefresh when V1 has live blink sources
     // active and no parsed frame ran. Throttled internally to ~80 ms so the
     // renderer's 96 ms BLINK toggle has a fresh chance each period.

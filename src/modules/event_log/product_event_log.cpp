@@ -7,8 +7,6 @@
 #include "product_event_csv.h"
 #include "storage_manager.h"
 
-ProductEventLog productEventLog;
-
 namespace {
 
 constexpr uint32_t kWriterLockTimeoutMs = 250;

@@ -186,13 +186,13 @@ void test_pure_button_logic_still_triggers_at_2000ms() {
 }
 
 void test_car_mode_maintenance_entry_uses_boot_button_not_power_button() {
-    const std::string runtimeWiringSource = readProjectFile("src/main_runtime_wiring.cpp");
+    const std::string driveRuntimeSource = readProjectFile("src/drive_runtime.cpp");
     const std::string powerSource = readProjectFile("src/modules/power/power_module.cpp");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          runtimeWiringSource.find("static void requestMaintenanceBootRestart()"));
+                          driveRuntimeSource.find("void DriveRuntime::requestMaintenanceBootRestart()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          runtimeWiringSource.find(".requestMaintenanceBoot = [](void* /*ctx*/) { requestMaintenanceBootRestart(); },"));
+                          driveRuntimeSource.find("requestMaintenanceBoot = [](void* context)"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           powerSource.find("#ifndef CAR_MODE_PWR_SHORT"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

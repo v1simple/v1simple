@@ -20,8 +20,6 @@
 
 // Only compile for Waveshare 3.49 board
 
-BatteryManager batteryManager;
-
 #define BATTERY_LOGF(...)                                                                                              \
     do {                                                                                                               \
     } while (0)

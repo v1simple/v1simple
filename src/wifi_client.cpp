@@ -3,6 +3,7 @@
  */
 
 #include "wifi_manager_internals.h"
+#include "ble_client.h"
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "modules/wifi/wifi_client_enable_transaction.h"
@@ -752,7 +753,8 @@ void WiFiManager::checkWifiClientStatus() {
 
         // Defer background STA reconnect attempts during early boot until V1 is
         // connected. This protects BLE acquisition from AP+STA mode churn.
-        const bool v1Connected = isV1Connected_ ? isV1Connected_(isV1ConnectedCtx_) : bleClient.isConnected();
+        const bool v1Connected = isV1Connected_ ? isV1Connected_(isV1ConnectedCtx_)
+                                                : (bleRuntime_ && bleRuntime_->isConnected());
         const uint32_t bootNowMs = millis();
         const WifiReconnectPolicy::BootDecision bootDecision = WifiReconnectPolicy::evaluateBoot({
             v1Connected,

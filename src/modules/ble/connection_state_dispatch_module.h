@@ -4,6 +4,8 @@
 
 #include "connection_state_cadence_module.h"
 
+class ConnectionStateModule;
+
 struct ConnectionStateDispatchContext {
     uint32_t nowMs = 0;
     uint32_t displayUpdateIntervalMs = 50;
@@ -24,22 +26,13 @@ struct ConnectionStateDispatchDecision {
 // Executes the connection-state cadence gate and applies starvation watchdog safety.
 class ConnectionStateDispatchModule {
   public:
-    struct Providers {
-        ConnectionStateCadenceDecision (*runCadence)(void* ctx,
-                                                     const ConnectionStateCadenceContext& cadenceCtx) = nullptr;
-        void* cadenceContext = nullptr;
-
-        void (*runConnectionStateProcess)(void* ctx, uint32_t nowMs) = nullptr;
-        void* connectionStateContext = nullptr;
-
-    };
-
-    void begin(const Providers& hooks);
+    void begin(ConnectionStateCadenceModule& cadence, ConnectionStateModule& connectionState);
     void reset();
     ConnectionStateDispatchDecision process(const ConnectionStateDispatchContext& ctx);
 
   private:
-    Providers providers{};
+    ConnectionStateCadenceModule* cadence_ = nullptr;
+    ConnectionStateModule* connectionState_ = nullptr;
     uint32_t lastProcessRunMs_ = 0;
     bool hasRunProcess_ = false;
 };

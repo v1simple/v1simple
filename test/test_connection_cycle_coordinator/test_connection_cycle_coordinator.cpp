@@ -11,7 +11,7 @@ unsigned long mockMicros = 0;
 
 namespace {
 
-struct ProviderProbe {
+struct ProviderProbe final : ConnectionCycleLifecycle {
     uint32_t stopObdScanCalls = 0;
     uint32_t cancelObdConnectCalls = 0;
     uint32_t stopProxyAdvertisingCalls = 0;
@@ -19,28 +19,14 @@ struct ProviderProbe {
     bool obdScanStopped = true;
     bool obdConnectIdle = true;
     bool proxyFullyStopped = true;
+    void stopObdScan() override { ++stopObdScanCalls; }
+    void cancelObdConnect() override { ++cancelObdConnectCalls; }
+    void stopProxyAdvertising() override { ++stopProxyAdvertisingCalls; }
+    void disconnectProxyPhones() override { ++disconnectProxyPhoneCalls; }
+    bool isObdScanStopped() const override { return obdScanStopped; }
+    bool isObdConnectIdle() const override { return obdConnectIdle; }
+    bool isProxyFullyStopped() const override { return proxyFullyStopped; }
 };
-
-ConnectionCycleCoordinatorModule::Providers providersFor(ProviderProbe& probe) {
-    ConnectionCycleCoordinatorModule::Providers providers;
-    providers.stopObdScan = [](void* ctx) { static_cast<ProviderProbe*>(ctx)->stopObdScanCalls++; };
-    providers.stopObdScanContext = &probe;
-    providers.cancelObdConnect = [](void* ctx) { static_cast<ProviderProbe*>(ctx)->cancelObdConnectCalls++; };
-    providers.cancelObdConnectContext = &probe;
-    providers.stopProxyAdvertising =
-        [](void* ctx) { static_cast<ProviderProbe*>(ctx)->stopProxyAdvertisingCalls++; };
-    providers.stopProxyAdvertisingContext = &probe;
-    providers.disconnectProxyPhone =
-        [](void* ctx) { static_cast<ProviderProbe*>(ctx)->disconnectProxyPhoneCalls++; };
-    providers.disconnectProxyPhoneContext = &probe;
-    providers.isObdScanStopped = [](void* ctx) { return static_cast<ProviderProbe*>(ctx)->obdScanStopped; };
-    providers.isObdScanStoppedContext = &probe;
-    providers.isObdConnectIdle = [](void* ctx) { return static_cast<ProviderProbe*>(ctx)->obdConnectIdle; };
-    providers.isObdConnectIdleContext = &probe;
-    providers.isProxyFullyStopped = [](void* ctx) { return static_cast<ProviderProbe*>(ctx)->proxyFullyStopped; };
-    providers.isProxyFullyStoppedContext = &probe;
-    return providers;
-}
 
 CycleContext connectedContext(uint32_t nowMs) {
     CycleContext ctx;
@@ -72,7 +58,7 @@ void tearDown() {}
 void test_proxy_window_exits_directly_to_steady_without_wifi_dwell() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
-    module.begin(providersFor(probe));
+    module.begin(probe);
     CycleContext ctx = connectedContext(0);
     ctx.proxyEnabled = true;
     ctx.obdEnabled = true;
@@ -98,7 +84,7 @@ void test_proxy_window_exits_directly_to_steady_without_wifi_dwell() {
 void test_obd_failure_reaches_steady_and_retry_keeps_original_attempt_anchor() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
-    module.begin(providersFor(probe));
+    module.begin(probe);
     CycleContext ctx = connectedContext(0);
     ctx.obdEnabled = true;
     ctx.obdSavedAddressValid = true;
@@ -124,7 +110,7 @@ void test_obd_failure_reaches_steady_and_retry_keeps_original_attempt_anchor() {
 void test_obd_scan_timeout_stops_scan_before_opening_proxy() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
-    module.begin(providersFor(probe));
+    module.begin(probe);
     CycleContext ctx = connectedContext(0);
     ctx.obdEnabled = true;
     ctx.obdSavedAddressValid = true;
@@ -144,7 +130,7 @@ void test_obd_scan_timeout_stops_scan_before_opening_proxy() {
 void test_successful_obd_settle_is_not_reordered_behind_proxy() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
-    module.begin(providersFor(probe));
+    module.begin(probe);
     CycleContext ctx = connectedContext(0);
     ctx.obdEnabled = true;
     ctx.obdSavedAddressValid = true;
@@ -169,7 +155,7 @@ void test_successful_obd_settle_is_not_reordered_behind_proxy() {
 void test_v1_drop_teardown_returns_to_scan_before_any_new_obd_attempt() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
-    module.begin(providersFor(probe));
+    module.begin(probe);
     CycleContext ctx = connectedContext(0);
 
     enterPostV1Phase(module, ctx);

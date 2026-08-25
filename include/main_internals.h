@@ -7,7 +7,10 @@
 #include <cstdint>
 #include "esp_system.h" // esp_reset_reason_t
 
-class QuietCoordinatorModule;
+class HealthJournal;
+class ProductEventLog;
+class SettingsManager;
+class V1Display;
 
 // --- Boot helper declarations (main_boot.cpp) ---
 
@@ -45,47 +48,24 @@ bool requestMaintenanceBoot();
 bool readAndClearMaintenanceBootRequest();
 
 /// Show fatal error on display (if available), wait, then restart.
-void fatalBootError(const char* message, bool displayAvailable);
+void fatalBootError(V1Display& display, const char* message, bool displayAvailable);
 
-// --- Setup orchestration helper declarations (main_setup_helpers.cpp) ---
+// --- Shared persistence/boot helper declarations (main_setup_helpers.cpp) ---
 
-/// Callback invoked immediately when BLE subscribe completes.
-void onV1ConnectImmediate();
-
-/// Callbacks invoked at authoritative main-loop V1 session boundaries.
-void onV1SessionOpened(uint32_t sessionGeneration);
-void onV1SessionClosed(uint32_t sessionGeneration);
-
-/// Callback invoked once the BLE connect burst has settled.
-void onV1Connected();
-
-/// Mount storage + initialize profile/device stores and restore dependent
-/// settings.
-void initializeStorageAndProfiles();
-
-/// Prepare persistence/runtime services for a power-off sequence before the final hardware tail runs.
-/// Best-effort support failures never veto the physical power-off handoff.
-void prepareForShutdown(void* context);
+/// Stop and flush shared persistence services before a runtime tears down its
+/// own transports. Returns true when final writes and the clean marker remain safe.
+bool preparePersistenceForShutdown(ProductEventLog& events, HealthJournal& health, SettingsManager& settings);
 
 /// Bounded event drain plus lifecycle END for controlled reboot paths. Returns
 /// false only while a timed-out writer still owns storage; restart still wins.
-bool completeLoggingForControlledRestart();
+bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal& health);
 
-/// Restore persistence admission and the unclean marker after the hardware
-/// shutdown tail returns without powering down or entering deep sleep.
-void resumeAfterAbortedShutdown(void* context);
-
-/// Initialize touch hardware and apply persisted display controls.
-void initializeTouchAndDisplayControls();
-
-/// Configure auto-push + touch interaction modules after storage/BLE setup.
-void configureUiInteractionModules(QuietCoordinatorModule& quietCoordinator);
+/// Restore shared persistence admission and the unclean marker after the
+/// hardware shutdown tail returns without powering down or entering deep sleep.
+void resumePersistenceAfterAbortedShutdown(ProductEventLog& events);
 
 /// Emit the privacy-safe identity line shared by normal and maintenance boots.
 void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason);
-
-/// Emit the boot identity followed by normal-runtime WiFi startup policy logs.
-void logBootSummaryAndWifiStartup(uint32_t bootId, esp_reset_reason_t resetReason);
 
 /// Early setup diagnostics: serial settle, GPIO hold release, panic/NVS checks.
 void initializeEarlyBootDiagnostics();

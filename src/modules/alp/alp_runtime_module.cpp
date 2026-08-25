@@ -25,8 +25,6 @@
 
 // ── Global instance ──────────────────────────────────────────────────
 // Global runtime instance.
-AlpRuntimeModule alpRuntimeModule;
-
 // ── String helpers ───────────────────────────────────────────────────
 
 const char* alpStateName(AlpState s) {

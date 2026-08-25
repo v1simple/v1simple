@@ -136,7 +136,7 @@ void WiFiManager::resetWifiScanState() {
 std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSavedNetworkSlots() const {
     std::vector<WifiClientApiService::SavedNetworkSlotPayload> slots;
     slots.reserve(kWifiStaSlotCount);
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         const WifiStaSlot& slot = settings.wifiStaSlots[i];
         WifiClientApiService::SavedNetworkSlotPayload payload;
@@ -146,7 +146,7 @@ std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSaved
         payload.priority = slot.priority;
         payload.lastConnectedAtSec = slot.lastConnectedAtSec;
         payload.configured = slot.isConfigured();
-        payload.hasPassword = payload.configured && settingsManager.getWifiStaSlotPassword(i).length() > 0;
+        payload.hasPassword = payload.configured && settings_.getWifiStaSlotPassword(i).length() > 0;
         slots.push_back(payload);
     }
     return slots;
@@ -158,7 +158,7 @@ int WiFiManager::selectSlotForNetworkConnect(const String& ssid) const {
         return -1;
     }
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         if (settings.wifiStaSlots[i].isConfigured() && settings.wifiStaSlots[i].ssid == sanitizedSsid) {
             return static_cast<int>(i);
@@ -178,7 +178,7 @@ int WiFiManager::findConfiguredSlotBySsid(const String& ssid) const {
         return -1;
     }
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         if (settings.wifiStaSlots[i].isConfigured() && settings.wifiStaSlots[i].ssid == sanitizedSsid) {
             return static_cast<int>(i);
@@ -194,7 +194,7 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
     }
 
     int selectedIndex = -1;
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     if (request.hasIndex) {
         if (request.index >= kWifiStaSlotCount) {
             return false;
@@ -212,13 +212,13 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
 
     const size_t index = static_cast<size_t>(selectedIndex);
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
-    const String password = request.hasPassword ? request.password : settingsManager.getWifiStaSlotPassword(index);
+    const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index);
     const String label = request.hasLabel ? request.label : currentSlot.label;
     const uint8_t priority = request.hasPriority
                                  ? request.priority
                                  : (currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(index));
 
-    settingsManager.setWifiStaSlotCredentials(index, ssid, password, label, priority);
+    settings_.setWifiStaSlotCredentials(index, ssid, password, label, priority);
     indexOut = index;
     return true;
 }
@@ -231,7 +231,7 @@ bool WiFiManager::deleteSavedNetwork(size_t index) {
     if (currentConnectedSlotIndex_ == static_cast<int>(index)) {
         currentConnectedSlotIndex_ = -1;
     }
-    settingsManager.clearWifiStaSlot(index);
+    settings_.clearWifiStaSlot(index);
     return true;
 }
 
@@ -239,7 +239,7 @@ bool WiFiManager::testSavedNetwork(size_t index) {
     if (index >= kWifiStaSlotCount) {
         return false;
     }
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     const WifiStaSlot& slot = settings.wifiStaSlots[index];
     if (!slot.isConfigured()) {
         return false;
@@ -247,9 +247,9 @@ bool WiFiManager::testSavedNetwork(size_t index) {
 
     cancelMaintenanceAutoConnect("slot_test");
 
-    settingsManager.setWifiClientEnabled(true);
+    settings_.setWifiClientEnabled(true);
     resetReconnectFailures();
-    return connectToNetwork(slot.ssid, settingsManager.getWifiStaSlotPassword(index), false, static_cast<int>(index));
+    return connectToNetwork(slot.ssid, settings_.getWifiStaSlotPassword(index), false, static_cast<int>(index));
 }
 
 bool WiFiManager::connectToNetwork(const String& ssid, const String& password, bool persistCredentialsOnSuccess,
@@ -283,7 +283,7 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
         int priorConnectedSlotIndex;
     };
 
-    const bool wasEnabled = settingsManager.get().wifiClientEnabled;
+    const bool wasEnabled = settings_.get().wifiClientEnabled;
     EnableContext transaction{this, wifiClientState_, currentConnectedSlotIndex_};
 
     WifiClientEnableTransaction::Runtime runtime;
@@ -300,17 +300,17 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
             if (self->beginMaintenanceAutoConnectScan(true)) {
                 return true;
             }
-            return !settingsManager.get().hasConfiguredWifiStaSlot();
+            return !self->settings_.get().hasConfiguredWifiStaSlot();
         }
 
-        const String savedSsid = settingsManager.get().wifiClientSSID;
+        const String savedSsid = self->settings_.get().wifiClientSSID;
         if (savedSsid.length() == 0) {
             self->wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
             self->currentConnectedSlotIndex_ = -1;
             return true;
         }
 
-        if (self->connectToNetwork(savedSsid, settingsManager.getWifiClientPassword())) {
+        if (self->connectToNetwork(savedSsid, self->settings_.getWifiClientPassword())) {
             return true;
         }
 
@@ -323,7 +323,10 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
         transaction->manager->wifiClientState_ = transaction->priorState;
         transaction->manager->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
     };
-    runtime.commitEnabled = [](void* /*ctx*/) { settingsManager.setWifiClientEnabled(true); };
+    runtime.commitEnabled = [](void* ctx) {
+        auto* transaction = static_cast<EnableContext*>(ctx);
+        transaction->manager->settings_.setWifiClientEnabled(true);
+    };
     return WifiClientEnableTransaction::execute(runtime);
 }
 
@@ -345,7 +348,7 @@ void WiFiManager::disconnectFromNetwork() {
 
 void WiFiManager::disableWifiClient() {
     disconnectFromNetwork();
-    settingsManager.setWifiClientEnabled(false);
+    settings_.setWifiClientEnabled(false);
     wifiClientState_ = WIFI_CLIENT_DISABLED;
     WiFi.mode(WIFI_AP);
 }
@@ -354,7 +357,7 @@ void WiFiManager::forgetWifiClient() {
     cancelMaintenanceAutoConnect("forget");
 
     disconnectFromNetwork();
-    settingsManager.clearWifiClientCredentials();
+    settings_.clearWifiClientCredentials();
     wifiClientState_ = WIFI_CLIENT_DISABLED;
     WiFi.mode(WIFI_AP);
 }
@@ -438,7 +441,7 @@ bool WiFiManager::beginMaintenanceAutoConnectScan(bool explicitEnableRequest) {
         return false;
     }
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     if (!settings.hasConfiguredWifiStaSlot()) {
         Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: no saved slots");
         wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
@@ -505,7 +508,7 @@ void WiFiManager::processMaintenanceAutoConnect() {
         wifiScanOwner_.copySnapshot(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
     wifiScanOwner_.clearSnapshot(WifiScanConsumer::MAINTENANCE);
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     size_t ordered[kWifiStaSlotCount] = {};
     const size_t orderedCount = WifiStaSlotPolicy::orderConfiguredSlots(settings, ordered, kWifiStaSlotCount);
     maintenanceAutoConnectSlotCount_ = 0;
@@ -542,7 +545,7 @@ bool WiFiManager::queueNextMaintenanceAutoConnectSlot() {
         return false;
     }
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     while (maintenanceAutoConnectSlotCursor_ < maintenanceAutoConnectSlotCount_) {
         const size_t slotIndex = maintenanceAutoConnectSlots_[maintenanceAutoConnectSlotCursor_++];
         if (slotIndex >= kWifiStaSlotCount) {
@@ -555,7 +558,7 @@ bool WiFiManager::queueNextMaintenanceAutoConnectSlot() {
         }
 
         Serial.printf("[WiFiClient] Maintenance STA auto-connect trying slot %u\n", static_cast<unsigned>(slotIndex));
-        if (connectToNetwork(slot.ssid, settingsManager.getWifiStaSlotPassword(slotIndex), false,
+        if (connectToNetwork(slot.ssid, settings_.getWifiStaSlotPassword(slotIndex), false,
                              static_cast<int>(slotIndex), true)) {
             return true;
         }
@@ -655,20 +658,20 @@ void WiFiManager::checkWifiClientStatus() {
                 if (pendingConnectPersistCredentials_) {
                     if (hasPendingSlot) {
                         const size_t slotIndex = static_cast<size_t>(pendingConnectSlotIndex_);
-                        const V1Settings& currentSettings = settingsManager.get();
+                        const V1Settings& currentSettings = settings_.get();
                         const WifiStaSlot& currentSlot = currentSettings.wifiStaSlots[slotIndex];
                         const String label = currentSlot.label;
                         const uint8_t priority =
                             currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(slotIndex);
-                        settingsManager.setWifiStaSlotCredentials(slotIndex, pendingConnectSSID_,
+                        settings_.setWifiStaSlotCredentials(slotIndex, pendingConnectSSID_,
                                                                   pendingConnectPassword_, label, priority);
                     } else {
-                        const V1Settings& currentSettings = settingsManager.get();
+                        const V1Settings& currentSettings = settings_.get();
                         const bool ssidChanged = (pendingConnectSSID_ != currentSettings.wifiClientSSID);
                         const bool passwordChanged =
-                            (pendingConnectPassword_ != settingsManager.getWifiClientPassword());
+                            (pendingConnectPassword_ != settings_.getWifiClientPassword());
                         if (ssidChanged || passwordChanged) {
-                            settingsManager.setWifiClientCredentials(pendingConnectSSID_, pendingConnectPassword_);
+                            settings_.setWifiClientCredentials(pendingConnectSSID_, pendingConnectPassword_);
                         } else {
                             Serial.println("[WiFiClient] Connected with unchanged credentials; skipping re-save");
                         }
@@ -678,7 +681,7 @@ void WiFiManager::checkWifiClientStatus() {
                 }
                 if (hasPendingSlot) {
                     currentConnectedSlotIndex_ = pendingConnectSlotIndex_;
-                    settingsManager.markWifiStaSlotConnected(static_cast<size_t>(pendingConnectSlotIndex_),
+                    settings_.markWifiStaSlotConnected(static_cast<size_t>(pendingConnectSlotIndex_),
                                                              static_cast<uint32_t>(millis() / 1000UL));
                 } else {
                     currentConnectedSlotIndex_ = findConfiguredSlotBySsid(pendingConnectSSID_);
@@ -778,7 +781,7 @@ void WiFiManager::checkWifiClientStatus() {
         }
 
         // Auto-reconnect if we have saved credentials (with failure limit).
-        const V1Settings& settings = settingsManager.get();
+        const V1Settings& settings = settings_.get();
         const uint32_t retryNowMs = millis();
         const WifiReconnectPolicy::AttemptDecision reconnectDecision = WifiReconnectPolicy::evaluateAttempt({
             settings.wifiClientEnabled && settings.wifiClientSSID.length() > 0,
@@ -797,7 +800,7 @@ void WiFiManager::checkWifiClientStatus() {
             break;
         }
 
-        const String savedPassword = settingsManager.getWifiClientPassword();
+        const String savedPassword = settings_.getWifiClientPassword();
         lastReconnectAttemptMs_ = retryNowMs;
         wifiReconnectFailures_ = reconnectDecision.nextFailures;
 

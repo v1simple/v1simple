@@ -30,7 +30,7 @@ static bool s_batteryShowOnUSB = true;
 
 void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     // Draw volume indicator below bogey counter: "5V  0M" format
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const DisplayLayout::DisplayRect mainRect = DisplayLayout::volumeMainRect();
     const DisplayLayout::DisplayRect muteRect = DisplayLayout::volumeMuteRect();
     const DisplayLayout::DisplayRect clearRect = DisplayLayout::volumeIndicatorRect();
@@ -84,7 +84,7 @@ void V1Display::drawRssiIndicator(int rssi) {
     const int lineHeight = rssiRect.h / 2;
 
     // Check if RSSI indicator is hidden
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const bool hidden = (s.hideRssiIndicator || s.hideVolumeIndicator);
     if (hidden) {
         // Cache short-circuit: skip the clear-FILL_RECT when we already
@@ -201,7 +201,7 @@ void V1Display::setProfileIndicatorSlot(int slot) {
 
 void V1Display::drawProfileIndicator(int slot) {
     // Get custom slot names and colors from settings
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
 
     setProfileIndicatorSlot(slot);
 
@@ -303,7 +303,7 @@ void V1Display::drawProfileIndicator(int slot) {
 
 void V1Display::drawBatteryIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
 
     // Battery icon position - VERTICAL at bottom-right
     // Position to the right of profile indicator area, avoiding direction arrows
@@ -529,7 +529,7 @@ void V1Display::drawBLEProxyIndicator() {
     }
 
     // Check if BLE icon should be hidden
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     if (s.hideBleIcon) {
         if (bleProxyDrawn_) {
             drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
@@ -641,7 +641,7 @@ void V1Display::drawBLEProxyIndicator() {
 
 void V1Display::drawWiFiIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::wifiBadgeRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::wifiIconRect();

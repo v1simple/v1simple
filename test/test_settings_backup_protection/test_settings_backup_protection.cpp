@@ -40,6 +40,9 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
+V1ProfileManager profiles;
+SettingsManager settings(storage, profiles);
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -110,8 +113,8 @@ void resetRuntimeState() {
     mock_reset_heap_caps();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
-    v1ProfileManager = V1ProfileManager();
-    settingsManager = SettingsManager();
+    profiles = V1ProfileManager();
+    settings = SettingsManager(storage, profiles);
     mockMillis = 1000;
     mockMicros = 1000000;
 }

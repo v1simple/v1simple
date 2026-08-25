@@ -398,7 +398,7 @@ void V1Display::renderFrame(const RenderFrame& frame) {
 #if defined(DISPLAY_WAVESHARE_349)
 V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& state, uint32_t nowMs,
                                                          bool bleContextFresh) const {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const uint16_t batteryMv = battery_ ? battery_->getVoltageMillivolts() : 0;
     const GpsRuntimeStatus gpsStatus = gpsRtMod_ ? gpsRtMod_->snapshot(nowMs) : GpsRuntimeStatus{};
 
@@ -577,7 +577,7 @@ void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool to
         bogeyDot = state.bogeyCounterDot2;
     }
     drawTopCounterPair(bogeyChar, topMuted, bogeyDot);
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const bool showVolumeAndRssi = state.supportsVolume() && !s.hideVolumeIndicator;
     if (showVolumeAndRssi) {
         drawVolumeIndicator(state.mainVolume, state.muteVolume);
@@ -807,7 +807,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     arrowVisibilityForceFullFlush_ = false;
     arrowPaintedThisFrame_ = false;
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
 
     // Correctness override for V1 blink frames. Diag14 proved the framebuffer
@@ -837,7 +837,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     // This is applied only when explicitly enabled per slot; never make it the
     // default.
     Direction arrowsToShow;
-    if (settingsManager.getSlotPriorityArrowOnly(s.activeSlot)) {
+    if (settings_.getSlotPriorityArrowOnly(s.activeSlot)) {
         arrowsToShow = static_cast<Direction>(state.priorityArrow & state.arrows);
     } else {
         arrowsToShow = state.arrows;

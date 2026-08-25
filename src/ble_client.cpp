@@ -69,17 +69,17 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
 
 // Restore bond keys from SD card. Must be called after NimBLEDevice::init()
 // but before scanning/connecting. Returns number of bonds restored, or -1 on error.
-static int restoreBondsFromSD() {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+static int restoreBondsFromSD(StorageManager& storage) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return -1;
     }
 
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex());
     if (!sdLock) {
         return -1;
     }
 
-    fs::FS* sdFs = storageManager.getFilesystem();
+    fs::FS* sdFs = storage.getFilesystem();
     if (!sdFs) {
         return -1;
     }
@@ -244,7 +244,8 @@ void V1BLEClient::completeHardResetBLEClient() {
 }
 
 // Initialize BLE stack without starting scan
-bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
+bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char* proxyName) {
+    registerBleBondBackupStorage(storage);
     static bool initialized = false;
     if (initialized) {
         return true; // Already initialized
@@ -341,7 +342,7 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
 
     // Restore bonds from SD backup if NVS was cleared (fresh-flash or NVS corruption)
     if (NimBLEDevice::getNumBonds() == 0) {
-        const int restored = restoreBondsFromSD();
+        const int restored = restoreBondsFromSD(storage);
         if (restored > 0) {
             Serial.printf("[BLE] Restored %d bond(s) from SD\n", restored);
         }
@@ -379,9 +380,9 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
     return true;
 }
 
-bool V1BLEClient::begin(bool enableProxy, const char* proxyName) {
+bool V1BLEClient::begin(StorageManager& storage, bool enableProxy, const char* proxyName) {
     // Initialize BLE stack first (idempotent)
-    if (!initBLE(enableProxy, proxyName)) {
+    if (!initBLE(storage, enableProxy, proxyName)) {
         return false;
     }
 

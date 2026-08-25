@@ -23,6 +23,8 @@
 
 // Forward declarations
 class V1BLEClient;
+class SettingsManager;
+class StorageManager;
 
 // Callback for receiving V1 display data packets
 // data: pointer to packet data
@@ -123,11 +125,11 @@ class V1BLEClient {
     ~V1BLEClient();
 
     // Initialize BLE stack only (no scanning)
-    bool initBLE(bool enableProxy = false, const char* proxyName = "V1C-LE-S3");
+    bool initBLE(StorageManager& storage, bool enableProxy = false, const char* proxyName = "V1C-LE-S3");
 
     // Initialize BLE and start scanning
     // If enableProxy is true, also starts BLE server for app connections
-    bool begin(bool enableProxy = false, const char* proxyName = "V1C-LE-S3");
+    bool begin(StorageManager& storage, bool enableProxy = false, const char* proxyName = "V1C-LE-S3");
 
     // Check connection status
     bool isConnected();
@@ -243,7 +245,7 @@ class V1BLEClient {
     void hardResetBLEClient();
 
     // Process BLE events (call in loop)
-    void process();
+    void process(SettingsManager& settings);
 
     // Retry deferred bond backup work outside the ingest phase.
     void serviceDeferredBondBackup(uint32_t nowMs);

@@ -61,8 +61,11 @@ class BatteryManager;
 class DisplayPreviewModule;
 class HealthJournal;
 class ProductEventLog;
+class StorageManager;
 class V1BLEClient;
+class V1DeviceStore;
 class V1Display;
+class V1ProfileManager;
 
 // WiFi service state (AP may be enabled or disabled while service is active)
 enum SetupModeState {
@@ -92,7 +95,8 @@ inline bool wifiUiActiveSince(unsigned long lastActivityMs, unsigned long nowMs,
 
 class WiFiManager {
   public:
-    WiFiManager();
+    WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
+                StorageManager& storage);
 
     // Internal SRAM guardrails for WiFi lifecycle.
     // AP+STA needs more headroom than AP-only.
@@ -226,6 +230,10 @@ class WiFiManager {
     void pumpHttpServer() { server_.handleClient(); }
 
   private:
+    SettingsManager& settings_;
+    V1ProfileManager& profiles_;
+    V1DeviceStore& devices_;
+    StorageManager& storage_;
     WebServer server_;
     bool webRoutesInitialized_ = false;
     SetupModeState setupModeState_;

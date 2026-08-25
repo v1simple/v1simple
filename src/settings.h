@@ -30,7 +30,8 @@
 #include <cstdint>
 #include "color_themes.h"
 
-// Forward declaration
+// Forward declarations
+class StorageManager;
 class V1ProfileManager;
 
 // V1 operating modes (from ESP library)
@@ -738,7 +739,7 @@ struct AutoPushStateUpdate {
 
 class SettingsManager {
   public:
-    SettingsManager();
+    SettingsManager(StorageManager& storage, V1ProfileManager& profiles);
 
     // Initialize and load settings
     void begin();
@@ -852,6 +853,8 @@ class SettingsManager {
     void validateProfileReferences(V1ProfileManager& profileMgr);
 
   private:
+    StorageManager* storage_;
+    V1ProfileManager* profiles_;
     V1Settings settings_;
     Preferences preferences_;
     uint32_t backupRevisionCounter_ = 1;
@@ -882,6 +885,4 @@ class SettingsManager {
     void cleanupNamespacesIfNeeded(bool hasSdBackup);
 };
 
-// Global settings instance
-extern SettingsManager settingsManager;
 #endif // SETTINGS_H

@@ -12,7 +12,7 @@
 class WifiOrchestrator {
   public:
     WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser,
-                     StorageManager& storageManager, AutoPushModule& autoPushModule);
+                     StorageManager& storage, AutoPushModule& autoPushModule);
 
     void ensureCallbacksConfigured();
 
@@ -22,7 +22,7 @@ class WifiOrchestrator {
     WiFiManager& wifiManager;
     V1BLEClient& bleClient;
     PacketParser& parser;
-    StorageManager& storageManager;
+    StorageManager& storage;
     AutoPushModule& autoPushModule;
     bool callbacksConfigured_ = false;
 };

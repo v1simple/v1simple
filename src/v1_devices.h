@@ -67,5 +67,3 @@ class V1DeviceStore {
 
     bool dirty_ = false;
 };
-
-extern V1DeviceStore v1DeviceStore;

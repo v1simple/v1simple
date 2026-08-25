@@ -29,8 +29,10 @@ bool restoreWifiClientPasswordObfFromBackupDoc(const JsonDocument& doc, const St
 String legacyWifiClientSsidFromBackupDoc(const JsonDocument& doc);
 bool restoreLegacyStationPasswordFromBackupDoc(const JsonDocument& doc, const String& expectedSsid);
 bool restoreWifiStaSlotPasswordObfFromBackupSlot(JsonObjectConst slotObj, size_t index);
-void clearWifiStaSlotPasswordsForRestore(bool clearSdSecret);
-bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, bool clearSdSecret);
+class StorageManager;
+void clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSecret);
+bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, StorageManager& storage,
+                                      bool clearSdSecret);
 
 bool backupFieldMatchesBool(const JsonDocument& doc, const char* key, bool expected);
 bool backupFieldMatchesInt(const JsonDocument& doc, const char* key, int expected);

@@ -28,17 +28,17 @@ SerialClass Serial;
 #include "../../include/display_layout.h"
 
 V1Display* g_displayInstance = nullptr;
-SettingsManager settingsManager;
+SettingsManager settings;
 
-V1Display::V1Display() {
+V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settingsManager.get().colorMuted;
-    currentPalette_.colorPersisted = settingsManager.get().colorPersisted;
+    currentPalette_.colorMuted = settings_.get().colorMuted;
+    currentPalette_.colorPersisted = settings_.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-V1Display display;
+V1Display display(settings);
 
 bool DisplayFontManager::getTopCounterBounds(char symbol, bool showDot, int& xMin, int& xMax) {
     // Mirror production semantics: bounds come from a boot-primed cache and

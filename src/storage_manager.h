@@ -281,6 +281,4 @@ class StorageManager {
     SemaphoreHandle_t sdMutex_;
 };
 
-// Global instance
-extern StorageManager storageManager;
 #endif // STORAGE_MANAGER_H

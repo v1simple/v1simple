@@ -29,8 +29,8 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
 #if defined(DISPLAY_WAVESHARE_349)
     const DisplayLayout::DisplayRect cardsClearRect = DisplayLayout::cardsClearRect();
 
-    const V1Settings& settings = settingsManager.get();
-    uint8_t persistSec = settingsManager.getSlotAlertPersistSec(settings.activeSlot);
+    const V1Settings& settings = settings_.get();
+    uint8_t persistSec = settings_.getSlotAlertPersistSec(settings.activeSlot);
     unsigned long gracePeriodMs = persistSec * 1000UL;
 
     if (gracePeriodMs == 0) {

@@ -49,7 +49,8 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
 void play_band_only(AlertBand band);
 
 // Initialize SD audio (call after storage manager is ready)
-void audio_init_sd();
+class StorageManager;
+void audio_init_sd(StorageManager& storage);
 
 // Allocate audio decode buffers in PSRAM (call once from setup, before audio_init_sd).
 // Frees ~5 KiB of internal .bss to preserve contiguous DMA headroom.

@@ -121,7 +121,7 @@ using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
 using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
-V1Display::V1Display() {
+V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
     // Initialize with standard theme by default
     currentPalette_ = ColorThemes::STANDARD();
     // Set global instance for color palette access
@@ -417,7 +417,7 @@ const char* V1Display::bandToString(Band band) {
 }
 
 uint16_t V1Display::getBandColor(Band band) {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     switch (band) {
     case BAND_LASER:
         return s.colorBandL;
@@ -437,7 +437,7 @@ uint16_t V1Display::getBandColor(Band band) {
 void V1Display::updateColorTheme() {
     // The base palette is fixed; settings provide per-element overrides.
     currentPalette_ = ColorThemes::STANDARD();
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     currentPalette_.colorMuted = s.colorMuted;
     currentPalette_.colorPersisted = s.colorPersisted;
     ++paletteRevision_;

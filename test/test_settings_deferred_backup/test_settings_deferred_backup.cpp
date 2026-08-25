@@ -34,6 +34,9 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
+V1ProfileManager profiles;
+SettingsManager settings(storage, profiles);
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -68,21 +71,21 @@ bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
 }
 
 void writeSeedBackup(fs::FS& fs, const char* apSsid, uint8_t brightness) {
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     source.mutableSettings().apSSID = apSsid;
     source.mutableSettings().brightness = brightness;
 
     SerializedSettingsBackupPayload payload;
-    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, source.get(), v1ProfileManager, 5000));
+    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 }
 
 void createRestorePendingNvsWithoutSd() {
-    storageManager.reset();
-    v1ProfileManager = V1ProfileManager();
+    storage.reset();
+    profiles = V1ProfileManager();
 
-    SettingsManager noSdBoot;
+    SettingsManager noSdBoot(storage, profiles);
     noSdBoot.begin();
     noSdBoot.save();
 
@@ -98,11 +101,11 @@ void resetRuntimeState() {
     mock_reset_heap_caps();
     mock_reset_queue_create_state();
     mock_reset_task_create_state();
-    storageManager.reset();
+    storage.reset();
     StorageManager::resetMockSdLockState();
     resetDeferredSettingsBackupStateForTest();
-    v1ProfileManager = V1ProfileManager();
-    settingsManager = SettingsManager();
+    profiles = V1ProfileManager();
+    settings = SettingsManager(storage, profiles);
     mockMillis = 1000;
     mockMicros = 1000000;
 }
@@ -123,10 +126,10 @@ void tearDown() {
 
 void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "DeferredSave";
     manager.mutableSettings().brightness = 88;
 
@@ -150,7 +153,7 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_queue_create_state.staticCalls);
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
 
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
 
     JsonDocument backupDoc;
@@ -161,10 +164,10 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
 
 void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "RetryPath";
     manager.requestDeferredBackupFromCurrentState();
 
@@ -196,10 +199,10 @@ void test_service_deferred_backup_retries_after_sd_trylock_busy() {
 
 void test_repeated_requests_coalesce_to_latest_snapshot() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "OldValue";
     manager.requestDeferredBackupFromCurrentState();
     manager.mutableSettings().apSSID = "NewValue";
@@ -207,7 +210,7 @@ void test_repeated_requests_coalesce_to_latest_snapshot() {
 
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -216,10 +219,10 @@ void test_repeated_requests_coalesce_to_latest_snapshot() {
 
 void test_repeated_save_deferred_backup_calls_coalesce_to_latest_snapshot() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "FirstValue";
     manager.saveDeferredBackup();
     manager.mutableSettings().apSSID = "FinalValue";
@@ -230,7 +233,7 @@ void test_repeated_save_deferred_backup_calls_coalesce_to_latest_snapshot() {
 
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -239,10 +242,10 @@ void test_repeated_save_deferred_backup_calls_coalesce_to_latest_snapshot() {
 
 void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_intent() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager beforeReset;
+    SettingsManager beforeReset(storage, profiles);
     beforeReset.mutableSettings().brightness = 91;
     TEST_ASSERT_TRUE(beforeReset.saveDeferredBackup());
     beforeReset.mutableSettings().stealthEnabled = true;
@@ -262,7 +265,7 @@ void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_int
     // Model an immediate hard reset: NVS and media survive, all task/queue and
     // SettingsManager RAM state does not.
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager afterReset;
+    SettingsManager afterReset(storage, profiles);
     afterReset.load();
 
     TEST_ASSERT_EQUAL_UINT8(91, afterReset.get().brightness);
@@ -273,7 +276,7 @@ void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_int
 
     afterReset.serviceDeferredBackup(2000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
 
     JsonDocument backupDoc;
@@ -288,7 +291,7 @@ void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_int
     // A second reboot sees completion bound to the same revision and must not
     // enqueue or rewrite the already-current file.
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager secondBoot;
+    SettingsManager secondBoot(storage, profiles);
     secondBoot.load();
     TEST_ASSERT_FALSE(secondBoot.deferredBackupPending());
     secondBoot.serviceDeferredBackup(3000);
@@ -297,10 +300,10 @@ void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_int
 
 void test_older_writer_completion_does_not_suppress_newer_persisted_due_revision() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().brightness = 81;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     const uint32_t olderRevision = manager.backupDueRevision();
@@ -312,19 +315,19 @@ void test_older_writer_completion_does_not_suppress_newer_persisted_due_revision
     const uint32_t newerRevision = manager.backupDueRevision();
     TEST_ASSERT_TRUE(newerRevision != olderRevision);
 
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT64(
         olderRevision,
         mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager rebooted;
+    SettingsManager rebooted(storage, profiles);
     rebooted.load();
     TEST_ASSERT_EQUAL_UINT32(newerRevision, rebooted.backupDueRevision());
     TEST_ASSERT_TRUE(rebooted.deferredBackupPending());
     rebooted.serviceDeferredBackup(2000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -336,10 +339,10 @@ void test_older_writer_completion_does_not_suppress_newer_persisted_due_revision
 
 void test_completion_revision_write_failure_preserves_deferred_retry() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().brightness = 84;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     const uint32_t dueRevision = manager.backupDueRevision();
@@ -347,7 +350,7 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
 
     mock_preferences::set_fail_writes(true);
-    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
     mock_preferences::set_fail_writes(false);
     TEST_ASSERT_TRUE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_EQUAL_UINT64(
@@ -356,7 +359,7 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
 
     manager.serviceDeferredBackup(2000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT64(
         dueRevision,
         mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
@@ -365,15 +368,15 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
 
 void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     for (uint8_t brightness : {81u, 82u, 83u}) {
         manager.mutableSettings().brightness = brightness;
         TEST_ASSERT_TRUE(manager.saveDeferredBackup());
         manager.serviceDeferredBackup(1000u + brightness);
-        TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+        TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     }
     const uint32_t completedRevision = manager.backupDueRevision();
     const String newestNamespace = activeNamespaceOrEmpty();
@@ -389,7 +392,7 @@ void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset()
     meta.end();
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager recovered;
+    SettingsManager recovered(storage, profiles);
     recovered.load();
     TEST_ASSERT_EQUAL_UINT32(rollbackDue, recovered.backupDueRevision());
     TEST_ASSERT_TRUE(recovered.deferredBackupPending());
@@ -401,13 +404,13 @@ void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset()
     TEST_ASSERT_TRUE(latestRevision != completedRevision);
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager afterImmediateReset;
+    SettingsManager afterImmediateReset(storage, profiles);
     afterImmediateReset.load();
     TEST_ASSERT_EQUAL_UINT32(latestRevision, afterImmediateReset.backupDueRevision());
     TEST_ASSERT_TRUE(afterImmediateReset.deferredBackupPending());
     afterImmediateReset.serviceDeferredBackup(3000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -417,17 +420,17 @@ void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset()
         mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager settled;
+    SettingsManager settled(storage, profiles);
     settled.load();
     TEST_ASSERT_FALSE(settled.deferredBackupPending());
 }
 
 void test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager seed;
+    SettingsManager seed(storage, profiles);
     seed.mutableSettings().brightness = 70;
     TEST_ASSERT_TRUE(seed.saveDeferredBackup());
     const String activeNamespace = activeNamespaceOrEmpty();
@@ -442,7 +445,7 @@ void test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest(
     meta.end();
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager wrapped;
+    SettingsManager wrapped(storage, profiles);
     wrapped.load();
     TEST_ASSERT_FALSE(wrapped.deferredBackupPending());
     wrapped.mutableSettings().brightness = 71;
@@ -462,13 +465,13 @@ void test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest(
         2u, settings_backup_revision::nextFresh(UINT32_MAX, UINT32_MAX, 1u));
 
     resetDeferredSettingsBackupStateForTest();
-    SettingsManager afterImmediateReset;
+    SettingsManager afterImmediateReset(storage, profiles);
     afterImmediateReset.load();
     TEST_ASSERT_EQUAL_UINT32(latestRevision, afterImmediateReset.backupDueRevision());
     TEST_ASSERT_TRUE(afterImmediateReset.deferredBackupPending());
     afterImmediateReset.serviceDeferredBackup(4000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -477,10 +480,10 @@ void test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest(
 
 void test_service_deferred_backup_keeps_pending_when_writer_setup_fails() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "QueueFail";
     manager.requestDeferredBackupFromCurrentState();
 
@@ -495,10 +498,10 @@ void test_service_deferred_backup_keeps_pending_when_writer_setup_fails() {
 
 void test_aborted_shutdown_reopens_deferred_backup_writer_admission() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "AbortRecovery";
     shutdownDeferredSettingsBackupWriter(0);
     manager.requestDeferredBackupFromCurrentState();
@@ -514,7 +517,7 @@ void test_aborted_shutdown_reopens_deferred_backup_writer_admission() {
 
     TEST_ASSERT_FALSE(manager.deferredBackupPending());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -523,15 +526,15 @@ void test_aborted_shutdown_reopens_deferred_backup_writer_admission() {
 
 void test_resume_handoffs_work_queued_while_old_deferred_writer_exits() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "BeforeAbort";
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     // Model the bounded-timeout boundary: the old task has committed to exit,
     // abort recovery reopens admission, and service queues work before the old
@@ -548,7 +551,7 @@ void test_resume_handoffs_work_queued_while_old_deferred_writer_exits() {
 
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
     TEST_ASSERT_TRUE(gDeferredSettingsBackupState.writerActive.load(std::memory_order_acquire));
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -557,10 +560,10 @@ void test_resume_handoffs_work_queued_while_old_deferred_writer_exits() {
 
 void test_shutdown_exit_discards_late_deferred_payload_and_waits_for_admissions() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
@@ -582,27 +585,27 @@ void test_shutdown_exit_discards_late_deferred_payload_and_waits_for_admissions(
 
 void test_writer_failure_requeues_backup_request_for_rebuild() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "Initial";
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
 
-    storageManager.reset();
+    storage.reset();
     StorageManager::resetMockSdLockState();
-    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_TRUE(deferredSettingsBackupPendingForTest());
 
-    storageManager.setFilesystem(&fs, true);
+    storage.setFilesystem(&fs, true);
     manager.mutableSettings().apSSID = "Recovered";
     manager.serviceDeferredBackup(2000);
 
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -611,18 +614,18 @@ void test_writer_failure_requeues_backup_request_for_rebuild() {
 
 void test_restore_pending_deferred_backup_preserves_existing_sd_backup() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     writeSeedBackup(fs, "SD-Rig", 88);
 
     mock_preferences::reset();
     createRestorePendingNvsWithoutSd();
 
-    storageManager.setFilesystem(&fs, true);
-    v1ProfileManager = V1ProfileManager();
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    profiles = V1ProfileManager();
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager pendingWriter;
+    SettingsManager pendingWriter(storage, profiles);
     pendingWriter.load();
     pendingWriter.mutableSettings().apSSID = "Factory-Default";
     pendingWriter.mutableSettings().brightness = 200;
@@ -631,7 +634,7 @@ void test_restore_pending_deferred_backup_preserves_existing_sd_backup() {
 
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
 
     JsonDocument backupDoc;
@@ -645,11 +648,11 @@ void test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_back
 
     createRestorePendingNvsWithoutSd();
 
-    storageManager.setFilesystem(&fs, true);
-    v1ProfileManager = V1ProfileManager();
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    profiles = V1ProfileManager();
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager pendingWriter;
+    SettingsManager pendingWriter(storage, profiles);
     pendingWriter.load();
     pendingWriter.mutableSettings().apSSID = "Factory-Baseline";
     pendingWriter.mutableSettings().brightness = 200;
@@ -658,7 +661,7 @@ void test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_back
 
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
 
     JsonDocument backupDoc;

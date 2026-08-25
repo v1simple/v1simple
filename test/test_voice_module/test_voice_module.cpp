@@ -24,15 +24,15 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-SettingsManager settingsManager;
+SettingsManager settings;
 static VoiceModule voiceModule;
 static V1BLEClient bleClient;
 
 void setUp() {
-    settingsManager = SettingsManager();
+    settings = SettingsManager();
     bleClient.reset();
     voiceModule = VoiceModule();
-    voiceModule.begin(&settingsManager, &bleClient);
+    voiceModule.begin(&settings, &bleClient);
     mockMillis = 10000;  // Start at 10 s so cooldown (2 s) is always pre-satisfied
 }
 
@@ -88,25 +88,25 @@ void test_to_audio_direction_none_is_side() {
 // ---------------------------------------------------------------------------
 
 void test_is_band_enabled_for_secondary_ka_follows_setting() {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     TEST_ASSERT_TRUE(VoiceModule::isBandEnabledForSecondary(BAND_KA, s));
 
-    settingsManager.settings.secondaryKa = false;
-    TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_KA, settingsManager.get()));
-    settingsManager.settings.secondaryKa = true;  // restore
+    settings.settings.secondaryKa = false;
+    TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_KA, settings.get()));
+    settings.settings.secondaryKa = true;  // restore
 }
 
 void test_is_band_enabled_for_secondary_laser_follows_setting() {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     TEST_ASSERT_TRUE(VoiceModule::isBandEnabledForSecondary(BAND_LASER, s));
 
-    settingsManager.settings.secondaryLaser = false;
-    TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_LASER, settingsManager.get()));
-    settingsManager.settings.secondaryLaser = true;
+    settings.settings.secondaryLaser = false;
+    TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_LASER, settings.get()));
+    settings.settings.secondaryLaser = true;
 }
 
 void test_is_band_enabled_for_secondary_unknown_band_false() {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_NONE, s));
 }
 
@@ -144,7 +144,7 @@ void test_process_returns_none_when_no_priority() {
 }
 
 void test_process_returns_none_when_voice_disabled() {
-    settingsManager.settings.voiceAlertMode = VOICE_MODE_DISABLED;
+    settings.settings.voiceAlertMode = VOICE_MODE_DISABLED;
 
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -158,7 +158,7 @@ void test_process_returns_none_when_voice_disabled() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
                           static_cast<int>(action.type));
 
-    settingsManager.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;  // restore
+    settings.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;  // restore
 }
 
 void test_process_returns_none_when_muted() {
@@ -227,7 +227,7 @@ void test_process_returns_none_when_proxy_connected() {
 }
 
 void test_process_returns_none_when_vol_zero_and_mute_voice_setting() {
-    settingsManager.settings.muteVoiceIfVolZero = true;
+    settings.settings.muteVoiceIfVolZero = true;
 
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -243,7 +243,7 @@ void test_process_returns_none_when_vol_zero_and_mute_voice_setting() {
 }
 
 void test_process_announces_when_vol_zero_but_mute_voice_disabled() {
-    settingsManager.settings.muteVoiceIfVolZero = false;
+    settings.settings.muteVoiceIfVolZero = false;
 
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -257,7 +257,7 @@ void test_process_announces_when_vol_zero_but_mute_voice_disabled() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
                           static_cast<int>(action.type));
 
-    settingsManager.settings.muteVoiceIfVolZero = true;  // restore
+    settings.settings.muteVoiceIfVolZero = true;  // restore
 }
 
 void test_process_returns_none_when_priority_band_is_none() {
@@ -415,7 +415,7 @@ void test_process_announces_direction_change_on_same_alert() {
 }
 
 void test_process_does_not_announce_direction_when_dir_disabled() {
-    settingsManager.settings.voiceDirectionEnabled = false;
+    settings.settings.voiceDirectionEnabled = false;
 
     AlertData kaFront = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -435,7 +435,7 @@ void test_process_does_not_announce_direction_when_dir_disabled() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
                           static_cast<int>(action.type));
 
-    settingsManager.settings.voiceDirectionEnabled = true;  // restore
+    settings.settings.voiceDirectionEnabled = true;  // restore
 }
 
 // Photo radar (K band with photoType != 0) does not trigger a voice
@@ -492,7 +492,7 @@ static VoiceAction runWithSecondary(const AlertData& priority, const AlertData& 
 }
 
 void test_announced_set_evicts_oldest_instead_of_saturating() {
-    settingsManager.settings.announceSecondaryAlerts = true;
+    settings.settings.announceSecondaryAlerts = true;
 
     // Establish a stable priority alert. This also consumes one announced slot.
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700);

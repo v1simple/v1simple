@@ -104,12 +104,10 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlo
     wifiPrefs.end();
 }
 
-// Global instance
-SettingsManager settingsManager;
-
 // XOR_KEY and OBFUSCATION_HEX_PREFIX are defined in settings_backup.cpp.
 
-SettingsManager::SettingsManager() {}
+SettingsManager::SettingsManager(StorageManager& storage, V1ProfileManager& profiles)
+    : storage_(&storage), profiles_(&profiles) {}
 
 void SettingsManager::noteNvsCommitWithoutBackupIntent() {
     backupCompletedRevision_ = readBackupRevisionCompleted();

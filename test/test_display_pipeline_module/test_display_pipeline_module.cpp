@@ -12,7 +12,7 @@
 
 #ifndef ARDUINO
 SerialClass Serial;
-SettingsManager settingsManager;
+SettingsManager settings;
 unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
@@ -148,7 +148,7 @@ static void beginModule() {
     dependencies.displayMode = &displayMode;
     dependencies.display = &display;
     dependencies.parser = &parser;
-    dependencies.settings = &settingsManager;
+    dependencies.settings = &settings;
     dependencies.ble = &ble;
     dependencies.alertPersistence = &alertPersistence;
     dependencies.voice = &voice;
@@ -172,7 +172,7 @@ void setUp() {
     alpModule = AlpRuntimeModule{};
     alpLatch = AlpEventLatch{};
     displayMode = DisplayMode::IDLE;
-    settingsManager = SettingsManager{};
+    settings = SettingsManager{};
     g_voiceProcessCalls = 0;
     quiet.begin(&ble, &parser);
     beginModule();
@@ -216,7 +216,7 @@ void test_handle_parsed_updates_resting_display_when_idle() {
 }
 
 void test_handle_parsed_prefers_persisted_alert_when_configured() {
-    settingsManager.slotAlertPersistSec[0] = 2;
+    settings.slotAlertPersistSec[0] = 2;
     // Establish the active persistence slot before preloading a previously
     // live alert; production clears persistence on slot changes.
     module.handleParsed(900);
@@ -236,7 +236,7 @@ void test_handle_parsed_prefers_persisted_alert_when_configured() {
 }
 
 void test_first_post_disconnect_display_frame_is_idle_not_stale_v1() {
-    settingsManager.slotAlertPersistSec[0] = 2;
+    settings.slotAlertPersistSec[0] = 2;
     parser.setAlerts({makeKAlert(24150)});
     alertPersistence.setPersistedAlert(makeKAlert(24150));
     alertPersistence.startPersistence(900);
@@ -323,7 +323,7 @@ void test_restore_current_owner_restores_live_display_when_alerts_present() {
 }
 
 void test_restore_current_owner_restores_v1_persisted_owner() {
-    settingsManager.slotAlertPersistSec[0] = 2;
+    settings.slotAlertPersistSec[0] = 2;
     module.handleParsed(900); // Establish the active persistence slot.
     alertPersistence.setPersistedAlert(makeKAlert());
     display.reset();
@@ -531,7 +531,7 @@ void test_handle_parsed_clears_alp_projection_during_teardown_gap() {
 }
 
 void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_returns() {
-    settingsManager.alpAlertPersistSec = 0;
+    settings.alpAlertPersistSec = 0;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::FRONT);
 
@@ -576,7 +576,7 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
 }
 
 void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell() {
-    settingsManager.alpAlertPersistSec = 0;
+    settings.alpAlertPersistSec = 0;
     configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
                               AlpLaserDirection::REAR);
 
@@ -639,7 +639,7 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
 }
 
 void test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap() {
-    settingsManager.alpAlertPersistSec = 0;
+    settings.alpAlertPersistSec = 0;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::FRONT);
 
@@ -719,7 +719,7 @@ void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
 }
 
 void test_restore_current_owner_restores_alp_persisted_owner() {
-    settingsManager.alpAlertPersistSec = 2;
+    settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::REAR);
     module.handleParsed(1000);
 
@@ -765,7 +765,7 @@ void test_restore_current_owner_prioritizes_alp_laser_over_v1_radar() {
 
 void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
     // ALP uses its own persist window — not V1's per-slot alertPersistSec.
-    settingsManager.alpAlertPersistSec = 2;
+    settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::REAR);
 
@@ -793,7 +793,7 @@ void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
 }
 
 void test_handle_parsed_clears_latched_alp_event_after_persist_window() {
-    settingsManager.alpAlertPersistSec = 2;
+    settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::REAR);
 
@@ -823,7 +823,7 @@ void test_handle_parsed_clears_latched_alp_event_after_persist_window() {
 }
 
 void test_handle_parsed_does_not_restart_alp_persistence_window() {
-    settingsManager.alpAlertPersistSec = 2;
+    settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
                               AlpLaserDirection::FRONT);
 
@@ -856,7 +856,7 @@ void test_handle_parsed_does_not_restart_alp_persistence_window() {
 }
 
 void test_handle_parsed_keeps_latched_alp_event_after_live_ownership_drops() {
-    settingsManager.alpAlertPersistSec = 5;
+    settings.alpAlertPersistSec = 5;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::REAR);
 
@@ -887,7 +887,7 @@ void test_handle_parsed_keeps_latched_alp_event_after_live_ownership_drops() {
 }
 
 void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_persist() {
-    settingsManager.alpAlertPersistSec = 5;
+    settings.alpAlertPersistSec = 5;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::REAR);
 
@@ -934,8 +934,8 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
     // followed by DISP_V1_EVENT active=0 3s later because the ALP was
     // reading the V1 persist window (2s). With the dedicated ALP setting at
     // 0 the display must drop to IDLE the first tick after close.
-    settingsManager.alpAlertPersistSec = 0;
-    settingsManager.slotAlertPersistSec[0] = 5;  // V1 window is long; ALP must ignore it
+    settings.alpAlertPersistSec = 0;
+    settings.slotAlertPersistSec[0] = 5;  // V1 window is long; ALP must ignore it
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::REAR);
 

@@ -292,7 +292,7 @@ int V1Display::draw14SegmentText(const char* text, int x, int y, float scale, ui
 // Segment7 bogey counter (original V1 style).
 // Uses Segment7 TTF font if available, falls back to software renderer.
 void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary, bool secondaryDot) {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const bool hasSecondary = hasTrailingTopCounterSymbol(secondary, secondaryDot);
     const bool primaryIsDigit = isTopCounterDigit(primary);
     const bool secondaryIsDigit = !hasSecondary || isTopCounterDigit(secondary);

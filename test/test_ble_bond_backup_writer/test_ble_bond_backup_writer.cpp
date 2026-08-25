@@ -134,13 +134,14 @@ void setUp() {
     gFs = fs::FS(gRoot);
     gOurSecs.clear();
     gPeerSecs.clear();
-    storageManager.reset();
-    storageManager.setFilesystem(&gFs, true);
+    storage.reset();
+    storage.setFilesystem(&gFs, true);
     StorageManager::resetMockSdLockState();
     mock_reset_heap_caps();
     mock_reset_queue_create_state();
     mock_reset_task_create_state();
     resetBleBondBackupWriterForTest();
+    registerBleBondBackupStorage(storage);
 }
 
 void tearDown() {
@@ -208,11 +209,11 @@ void test_writer_failure_retains_snapshot_for_retry() {
     gOurSecs = {makeSec(44)};
     TEST_ASSERT_EQUAL(1, enqueueCurrentBleBondBackupSnapshot());
 
-    storageManager.reset();
+    storage.reset();
     TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
     TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
 
-    storageManager.setFilesystem(&gFs, true);
+    storage.setFilesystem(&gFs, true);
     TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
     TEST_ASSERT_EQUAL_UINT8(44, readFirstOurAddressByte());
 
@@ -329,7 +330,7 @@ void test_runtime_callers_contain_no_sd_lock_or_filesystem_write() {
                       bootBackup.find("writeBondBackupSnapshotWithSdLock"));
 
     const std::string writerTask = functionBody(
-        writer, "void bondBackupWriterTaskEntry(void*)");
+        writer, "void bondBackupWriterTaskEntry(void* context)");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           writerTask.find("vTaskDeleteWithCaps(nullptr)"));
 }

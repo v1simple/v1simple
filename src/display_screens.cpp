@@ -200,7 +200,7 @@ void V1Display::showScanning() {
     // Always use multi-alert layout positioning
     dirty_.multiAlert = true;
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
 
     // Clear and draw the base frame
     drawBaseFrame();

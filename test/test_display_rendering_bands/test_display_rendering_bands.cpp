@@ -33,22 +33,22 @@ SerialClass Serial;
 // Required extern definitions
 // ---------------------------------------------------------------------------
 V1Display* g_displayInstance = nullptr;  // Set by V1Display constructor
-SettingsManager settingsManager;
+SettingsManager settings;
 
 // ---------------------------------------------------------------------------
 // Minimal V1Display constructor / destructor stubs
 // (avoids pulling in all of display.cpp with its hardware dependencies)
 // ---------------------------------------------------------------------------
-V1Display::V1Display() {
+V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settingsManager.get().colorMuted;
-    currentPalette_.colorPersisted = settingsManager.get().colorPersisted;
+    currentPalette_.colorMuted = settings_.get().colorMuted;
+    currentPalette_.colorPersisted = settings_.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
 // Global test display instance (owns the injected canvas via unique_ptr)
-V1Display display;
+V1Display display(settings);
 
 // ---------------------------------------------------------------------------
 // Real rendering code under test
@@ -344,7 +344,7 @@ static size_t signalBarsRedrawCount(uint8_t front, uint8_t rear, bool muted) {
 // Each segment carries its own colour; the renderer paints the stored value
 // with no draw-time interpolation.
 static uint16_t expectedBarColor(int i) {
-    return settingsManager.get().colorBars[i];
+    return settings.get().colorBars[i];
 }
 
 void test_drawSignalBars_strength_4_draws_6_bars() {
@@ -364,7 +364,7 @@ void test_drawSignalBars_lit_bars_use_per_segment_colors() {
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
 
     // Bars 0-3 (i < strength=4) paint their own stored segment colour.
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[0], expectedBarColor(0));
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[5], expectedBarColor(5));
     for (int i = 0; i < 4; ++i) {
@@ -393,7 +393,7 @@ void test_drawSignalBars_muted_uses_muted_color() {
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
 
     // All lit bars (i < 4) must use PALETTE_MUTED = colorMuted
-    const uint16_t expectedMuted = settingsManager.get().colorMuted;
+    const uint16_t expectedMuted = settings.get().colorMuted;
     for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_EQUAL_UINT16(expectedMuted, calls[i].color);
     }
@@ -447,7 +447,7 @@ void test_drawSignalBars_strength_6_lights_all_6_bars() {
     for (int i = 0; i < 6; ++i) {
         TEST_ASSERT_EQUAL_UINT16(expectedBarColor(i), calls[i].color);
     }
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[0], calls[0].color);
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[5], calls[5].color);
 }

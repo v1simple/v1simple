@@ -417,7 +417,7 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
 // Backup display/color settings to SD card
 
 bool SettingsManager::backupToSD() {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+    if (!storage_->isReady() || !storage_->isSDCard()) {
         return false; // SD not available, skip silently
     }
 
@@ -432,13 +432,13 @@ bool SettingsManager::backupToSD() {
     // WiFi's SRAM buffers reduce DMA heap below the guard thresholds, which made
     // every web-UI save silently skip the SD backup. The write is small (one JSON
     // file) and infrequent, so bypassing is safe.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
+    StorageManager::SDLockBlocking sdLock(storage_->getSDMutex(), /*checkDmaHeap=*/false);
     if (!sdLock) {
         Serial.println("[Settings] Failed to acquire SD mutex for backup");
         return false;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage_->getFilesystem();
     if (!fs)
         return false;
 
@@ -454,7 +454,7 @@ bool SettingsManager::backupToSD() {
 
     const uint32_t snapshotRevision = backupDueRevision_;
     SerializedSettingsBackupPayload payload;
-    if (!buildSerializedSdBackupPayload(payload, settings_, v1ProfileManager, millis())) {
+    if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, millis())) {
         return false;
     }
 
@@ -550,12 +550,12 @@ void clearDeferredBackupRetry() {
     gDeferredSettingsBackupState.nextAttemptAtMs = 0;
 }
 
-bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payload) {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payload, StorageManager& storage) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return false;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage.getFilesystem();
     if (!fs) {
         return false;
     }
@@ -564,7 +564,7 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
     // task is created from serviceDeferredBackup(), which runs in both boot
     // modes, so this can execute with the AP up. It opts out deliberately rather
     // than by reachability.
-    StorageManager::SDLockBlocking lock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
+    StorageManager::SDLockBlocking lock(storage.getSDMutex(), /*checkDmaHeap=*/false);
     if (!lock) {
         return false;
     }
@@ -583,8 +583,8 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
     return writeBackupAtomically(fs, payload);
 }
 
-bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload) {
-    bool ok = writeDeferredBackupPayloadNow(payload);
+bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload, StorageManager& storage) {
+    bool ok = writeDeferredBackupPayloadNow(payload, storage);
     if (ok && payload.markCompleted != nullptr) {
         ok = payload.markCompleted(payload.backupRevision, payload.completionContext);
     }
@@ -658,7 +658,8 @@ bool completeDeferredBackupWriterExit() {
                                                                              std::memory_order_acq_rel);
 }
 
-void deferredBackupWriterTaskEntry(void*) {
+void deferredBackupWriterTaskEntry(void* context) {
+    auto& storage = *static_cast<StorageManager*>(context);
     do {
         while (true) {
             if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
@@ -673,14 +674,14 @@ void deferredBackupWriterTaskEntry(void*) {
                 continue;
             }
 
-            processDeferredBackupQueueItem(payload);
+            processDeferredBackupQueueItem(payload, storage);
             taskYIELD();
         }
     } while (completeDeferredBackupWriterExit());
     vTaskDeleteWithCaps(nullptr);
 }
 
-bool ensureDeferredBackupWriterReady() {
+bool ensureDeferredBackupWriterReady(StorageManager& storage) {
     if (gDeferredSettingsBackupState.shutdownRequested.load(std::memory_order_acquire)) {
         // Shutdown has been requested; refuse to spin up (or respawn) the writer.
         return false;
@@ -701,7 +702,7 @@ bool ensureDeferredBackupWriterReady() {
                                                                           std::memory_order_acq_rel)) {
         TaskHandle_t createdTask = nullptr;
         const BaseType_t rc = createTaskPinnedToCoreInternalStack(
-            deferredBackupWriterTaskEntry, "SettingsBackup", SETTINGS_DEFERRED_BACKUP_WRITER_STACK_SIZE, nullptr,
+            deferredBackupWriterTaskEntry, "SettingsBackup", SETTINGS_DEFERRED_BACKUP_WRITER_STACK_SIZE, &storage,
             SETTINGS_DEFERRED_BACKUP_WRITER_PRIORITY, &createdTask, 0);
         if (rc != pdPASS) {
             gDeferredSettingsBackupState.writerActive.store(false, std::memory_order_release);
@@ -755,7 +756,7 @@ void resetDeferredSettingsBackupStateForTest() {
     gDeferredSettingsBackupState.nextAttemptAtMs = 0;
 }
 
-bool runDeferredSettingsBackupWriterOnceForTest() {
+bool runDeferredSettingsBackupWriterOnceForTest(StorageManager& storage) {
     if (gDeferredSettingsBackupState.queue == nullptr) {
         return false;
     }
@@ -764,7 +765,7 @@ bool runDeferredSettingsBackupWriterOnceForTest() {
     if (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, 0) != pdTRUE) {
         return false;
     }
-    return processDeferredBackupQueueItem(payload);
+    return processDeferredBackupQueueItem(payload, storage);
 }
 
 size_t deferredSettingsBackupQueueDepthForTest() {
@@ -851,7 +852,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     }
 
     DeferredBackupWriterAdmission writerAdmission;
-    if (!ensureDeferredBackupWriterReady()) {
+    if (!ensureDeferredBackupWriterReady(*storage_)) {
         scheduleDeferredBackupRetry(nowMs);
         return;
     }
@@ -860,7 +861,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
         // checkDmaHeap=true: reachable from the maintenance loop (main.cpp:647)
         // with the AP up. One of seven sites in the tree where the DMA gate can
         // actually fire -- see the WHO PAYS FOR THIS note in storage_manager.h.
-        StorageManager::SDTryLock sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
+        StorageManager::SDTryLock sdLock(storage_->getSDMutex(), /*checkDmaHeap=*/true);
         if (!sdLock) {
             scheduleDeferredBackupRetry(nowMs);
             return;
@@ -868,7 +869,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     }
 
     SerializedSettingsBackupPayload payload;
-    if (!buildSerializedSdBackupPayload(payload, settings_, v1ProfileManager, nowMs)) {
+    if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, nowMs)) {
         scheduleDeferredBackupRetry(nowMs);
         return;
     }

@@ -90,8 +90,6 @@ int parseDefaultProfile(const String& raw) {
 
 } // namespace
 
-V1DeviceStore v1DeviceStore;
-
 String normalizeV1DeviceAddress(const String& rawAddress) {
     String value = rawAddress;
     value.trim();

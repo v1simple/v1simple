@@ -9,9 +9,6 @@
 #include <SD_MMC.h>
 #include <LittleFS.h>
 
-// Global instance
-StorageManager storageManager;
-
 StorageManager::StorageManager()
     : fs_(nullptr), ready_(false), usingSDMMC_(false), littlefsReady_(false), sdMutex_(nullptr) {
     // Create SD access mutex - critical for thread safety across cores

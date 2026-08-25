@@ -54,6 +54,7 @@ struct BondBackupWriterState {
     std::atomic<bool> shutdownRequested{false};
     std::atomic<uint32_t> nextSequence{0};
     std::atomic<uint32_t> lastSuccessfulSequence{0};
+    StorageManager* storage = nullptr;
 };
 
 BondBackupWriterState gBondBackupWriterState;
@@ -134,19 +135,19 @@ int writeBondBackupSnapshot(fs::FS& sdFs, const BondBackupSnapshot& snapshot) {
     return total;
 }
 
-int writeBondBackupSnapshotWithSdLock(const BondBackupSnapshot& snapshot) {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+int writeBondBackupSnapshotWithSdLock(const BondBackupSnapshot& snapshot, StorageManager& storage) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return -1;
     }
 
-    fs::FS* sdFs = storageManager.getFilesystem();
+    fs::FS* sdFs = storage.getFilesystem();
     if (!sdFs) {
         return -1;
     }
 
     // This function is called only by the Core-0 writer or the explicit
     // pre-runtime fresh-flash migration path.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex());
     if (!sdLock) {
         return -1;
     }
@@ -164,12 +165,12 @@ void requeueOrReleaseFailedSnapshot(BondBackupSnapshot* snapshot) {
     releaseBondBackupSnapshot(snapshot);
 }
 
-bool processBondBackupSnapshot(BondBackupSnapshot* snapshot) {
+bool processBondBackupSnapshot(BondBackupSnapshot* snapshot, StorageManager& storage) {
     if (!snapshot) {
         return false;
     }
 
-    if (writeBondBackupSnapshotWithSdLock(*snapshot) >= 0) {
+    if (writeBondBackupSnapshotWithSdLock(*snapshot, storage) >= 0) {
         gBondBackupWriterState.lastSuccessfulSequence.store(snapshot->sequence, std::memory_order_release);
         releaseBondBackupSnapshot(snapshot);
         return true;
@@ -226,7 +227,8 @@ bool completeBondBackupWriterExit() {
                                                                        std::memory_order_acq_rel);
 }
 
-void bondBackupWriterTaskEntry(void*) {
+void bondBackupWriterTaskEntry(void* context) {
+    auto& storage = *static_cast<StorageManager*>(context);
     do {
         while (true) {
             if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) &&
@@ -239,7 +241,7 @@ void bondBackupWriterTaskEntry(void*) {
                 continue;
             }
 
-            const bool ok = processBondBackupSnapshot(snapshot);
+            const bool ok = processBondBackupSnapshot(snapshot, storage);
             if (!ok) {
                 if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire)) {
                     // Power-off is already bounded by the shutdown caller. Do not
@@ -260,7 +262,8 @@ void bondBackupWriterTaskEntry(void*) {
 }
 
 bool ensureBondBackupWriterReady() {
-    if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire)) {
+    if (gBondBackupWriterState.shutdownRequested.load(std::memory_order_acquire) ||
+        gBondBackupWriterState.storage == nullptr) {
         return false;
     }
 
@@ -280,7 +283,8 @@ bool ensureBondBackupWriterReady() {
         TaskHandle_t createdTask = nullptr;
         const BaseType_t rc =
             createTaskPinnedToCoreInternalStack(bondBackupWriterTaskEntry, "BleBondBackup", kBondBackupWriterStackSize,
-                                                nullptr, kBondBackupWriterPriority, &createdTask, 0);
+                                                gBondBackupWriterState.storage, kBondBackupWriterPriority, &createdTask,
+                                                0);
         if (rc != pdPASS) {
             gBondBackupWriterState.writerActive.store(false, std::memory_order_release);
             Serial.println("[BLE] ERROR: Failed to create Core-0 bond backup writer");
@@ -345,6 +349,10 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
 
 } // namespace
 
+void registerBleBondBackupStorage(StorageManager& storage) {
+    gBondBackupWriterState.storage = &storage;
+}
+
 int enqueueCurrentBleBondBackupSnapshot() {
     return enqueueCurrentBondSnapshotImpl(nullptr);
 }
@@ -407,6 +415,7 @@ void resetBleBondBackupWriterForTest() {
     gBondBackupWriterState.shutdownRequested.store(false, std::memory_order_relaxed);
     gBondBackupWriterState.nextSequence.store(0, std::memory_order_relaxed);
     gBondBackupWriterState.lastSuccessfulSequence.store(0, std::memory_order_relaxed);
+    gBondBackupWriterState.storage = nullptr;
 }
 
 bool runBleBondBackupWriterOnceForTest() {
@@ -418,7 +427,11 @@ bool runBleBondBackupWriterOnceForTest() {
     if (xQueueReceive(gBondBackupWriterState.queue, &snapshot, 0) != pdTRUE) {
         return false;
     }
-    return processBondBackupSnapshot(snapshot);
+    if (gBondBackupWriterState.storage == nullptr) {
+        releaseBondBackupSnapshot(snapshot);
+        return false;
+    }
+    return processBondBackupSnapshot(snapshot, *gBondBackupWriterState.storage);
 }
 
 size_t bleBondBackupQueueDepthForTest() {

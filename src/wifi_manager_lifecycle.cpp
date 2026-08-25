@@ -68,7 +68,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
         return false;
     }
 
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
     getWifiStartThresholds(shouldUseApSta(settings), minFree, minBlock);
@@ -79,7 +79,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
 // (called on every HTTP request via checkRateLimit/markUiActivity)
 
 bool WiFiManager::startSetupMode(const bool autoStarted) {
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     const bool apStaMode = shouldUseApSta(settings);
     const bool restartingFromStopping = (setupModeState_ == SETUP_MODE_STOPPING);
     const auto cancelDeferredStopForRestart = [this]() {
@@ -226,7 +226,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
             (void)beginMaintenanceAutoConnectScan(false);
         } else {
             Serial.println("[SetupMode] STA connect queued");
-            (void)connectToNetwork(settings.wifiClientSSID, settingsManager.getWifiClientPassword(), false);
+            (void)connectToNetwork(settings.wifiClientSSID, settings_.getWifiClientPassword(), false);
         }
     }
 
@@ -440,7 +440,7 @@ bool WiFiManager::stopSetupMode(bool manual, const char* reason) {
 
 bool WiFiManager::setupAP() {
     // Use saved SSID/password when available; fall back to defaults if missing/too short
-    const V1Settings& settings = settingsManager.get();
+    const V1Settings& settings = settings_.get();
     String apSSID = settings.apSSID.length() ? settings.apSSID : "V1-Simple";
     String apPass = (settings.apPassword.length() >= 8) ? settings.apPassword : "setupv1simple"; // WPA2 requires 8+
 
@@ -462,7 +462,7 @@ bool WiFiManager::setupAP() {
 }
 
 void WiFiManager::checkAutoTimeout() {
-    uint8_t timeoutMins = settingsManager.getApTimeoutMinutes();
+    uint8_t timeoutMins = settings_.getApTimeoutMinutes();
     if (timeoutMins == 0)
         return; // Disabled (always on)
     if (!isSetupModeActive())
@@ -629,9 +629,9 @@ void WiFiManager::process() {
             Serial.println("[WiFi] WARN: STA dropped during AP retire; reconnecting");
             wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
             currentConnectedSlotIndex_ = -1;
-            const V1Settings& settings = settingsManager.get();
+            const V1Settings& settings = settings_.get();
             if (settings.wifiClientEnabled && settings.wifiClientSSID.length() > 0) {
-                String savedPassword = settingsManager.getWifiClientPassword();
+                String savedPassword = settings_.getWifiClientPassword();
                 connectToNetwork(settings.wifiClientSSID, savedPassword, false);
             }
         }
@@ -753,8 +753,10 @@ bool WiFiManager::serveLittleFSFile(const char* path, const char* contentType) {
 // Core WiFiManager methods
 // ============================================================================
 
-WiFiManager::WiFiManager()
-    : server_(80), setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0) {}
+WiFiManager::WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
+                         StorageManager& storage)
+    : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), server_(80),
+      setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0) {}
 
 bool WiFiManager::isStopping() const {
     return setupModeState_ == SETUP_MODE_STOPPING;

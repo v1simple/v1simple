@@ -328,8 +328,8 @@ bool WiFiManager::setupWebServer() {
             return self.productEvents_ && self.health_ &&
                    completeLoggingForControlledRestart(*self.productEvents_, *self.health_);
         };
-        runtime.persistSettings = [](void*) {
-            settingsManager.save();
+        runtime.persistSettings = [](void* ctx) {
+            static_cast<WiFiManager*>(ctx)->settings_.save();
             ::markCleanShutdown();
         };
         runtime.delayBeforeRestart = [](uint32_t delayMs, void*) { delay(delayMs); };
@@ -417,14 +417,14 @@ bool WiFiManager::setupWebServer() {
         WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::OBD_RUNTIME);
     });
     server_.on("/api/obd/devices", HTTP_GET, [this]() {
-        ObdApiService::handleApiDevicesList(server_, obdRuntime_, settingsManager, makeObdRuntime());
+        ObdApiService::handleApiDevicesList(server_, obdRuntime_, settings_, makeObdRuntime());
     });
     server_.on("/api/obd/config", HTTP_GET,
-               [this]() { ObdApiService::handleApiConfigGet(server_, settingsManager, makeObdRuntime()); });
+               [this]() { ObdApiService::handleApiConfigGet(server_, settings_, makeObdRuntime()); });
     server_.on("/api/obd/devices/name", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        ObdApiService::handleApiDeviceNameSave(server_, settingsManager, makeObdRuntime());
+        ObdApiService::handleApiDeviceNameSave(server_, settings_, makeObdRuntime());
     });
     server_.on("/api/obd/scan", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
@@ -437,12 +437,12 @@ bool WiFiManager::setupWebServer() {
     server_.on("/api/obd/forget", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        ObdApiService::handleApiForget(server_, obdRuntime_, settingsManager, makeObdRuntime());
+        ObdApiService::handleApiForget(server_, obdRuntime_, settings_, makeObdRuntime());
     });
     server_.on("/api/obd/config", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
             return;
-        ObdApiService::handleApiConfig(server_, obdRuntime_, settingsManager, makeObdRuntime());
+        ObdApiService::handleApiConfig(server_, obdRuntime_, settings_, makeObdRuntime());
     });
 
     // ALP API routes — runtime status snapshot for diagnostics/UI
@@ -456,7 +456,7 @@ bool WiFiManager::setupWebServer() {
         GpsApiService::Runtime r;
         r.ctx = this;
         r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
-        GpsApiService::handleApiConfigGet(server_, settingsManager, r);
+        GpsApiService::handleApiConfigGet(server_, settings_, r);
     });
     server_.on("/api/gps/config", HTTP_POST, [this]() {
         if (!requireMaintenanceApiWriteHeader())
@@ -465,7 +465,7 @@ bool WiFiManager::setupWebServer() {
         r.ctx = this;
         r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
         r.maintenanceBootActive = maintenanceBootMode_;
-        GpsApiService::handleApiConfigSave(server_, settingsManager, gpsRuntime_, r);
+        GpsApiService::handleApiConfigSave(server_, settings_, gpsRuntime_, r);
     });
     server_.on("/api/gps/status", HTTP_GET, [this]() {
         markUiActivity();

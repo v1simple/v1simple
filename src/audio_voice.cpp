@@ -22,11 +22,11 @@ static constexpr unsigned long AMP_TIMEOUT_CHECK_INTERVAL_MS = 100UL;
 // Initialize filesystem audio system
 // Audio files are stored in LittleFS (uploaded with firmware)
 // This works regardless of whether SD card is the primary storage
-void audio_init_sd() {
+void audio_init_sd(StorageManager& storage) {
     sd_audio_ready = false;
     audioFS = nullptr;
 
-    fs::FS* littlefs = storageManager.getLittleFS();
+    fs::FS* littlefs = storage.getLittleFS();
     if (!littlefs) {
         Serial.println("[AUDIO] LittleFS not available");
         return;

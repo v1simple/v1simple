@@ -7,9 +7,6 @@
 #include <ArduinoJson.h>
 #include <vector>
 
-// Global instance
-V1ProfileManager v1ProfileManager;
-
 // Shared CRC32 from settings_backup.cpp (canonical IEEE 802.3 table, check value 0xCBF43926).
 extern uint32_t computeCrc32(const uint8_t* data, size_t length);
 

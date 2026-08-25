@@ -99,7 +99,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Bottom arrow center: below side arrow with gap
     int bottomArrowCenterY = cy + sideBarH / 2 + gap + bottomH / 2;
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     // Get individual arrow colors (use muted color if muted)
     uint16_t frontCol = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorArrowFront;
     if (!muted && frontColorOverride != 0) {

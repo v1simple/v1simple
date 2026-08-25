@@ -186,6 +186,6 @@ private:
     SemaphoreHandle_t sdMutex_ = xSemaphoreCreateMutex();
 };
 
-inline StorageManager storageManager;
+inline StorageManager storage;
 
 #endif  // STORAGE_MANAGER_H

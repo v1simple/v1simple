@@ -40,8 +40,8 @@ bool SettingsManager::checkAndRestoreFromSD() {
     bool hasSdBackup = false;
     JsonDocument bestBackupDoc;
     const char* bestBackupPath = nullptr;
-    if (storageManager.isReady() && storageManager.isSDCard()) {
-        fs = storageManager.getFilesystem();
+    if (storage_->isReady() && storage_->isSDCard()) {
+        fs = storage_->getFilesystem();
         hasSdBackup = loadBestBackupDocument(fs, bestBackupDoc, &bestBackupPath, false);
     }
 
@@ -60,7 +60,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
         // Attempt partial recovery from whatever sources are available so the
         // device boots with WiFi, profiles, and other critical settings intact
         // instead of falling back to factory defaults permanently.
-        if (storageManager.isReady() && storageManager.isSDCard()) {
+        if (storage_->isReady() && storage_->isSDCard()) {
             bool partialRecovered = false;
 
             // Recover as many settings as possible from the best backup document.
@@ -81,7 +81,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
                 const String backupSsid = legacyWifiClientSsidFromBackupDoc(bestBackupDoc);
                 if (hasRestorableWifiStaSlots(bestBackupDoc) &&
-                    restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, false)) {
+                    restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, *storage_, false)) {
                     settings_.wifiClientEnabled = true;
                 } else if (backupSsid.length() > 0) {
                     settings_.wifiClientEnabled = true;
@@ -244,7 +244,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
         Serial.println("[Settings] NVS healthy; skipping automatic SD settings_ restore");
     }
 
-    if (!needsRestore && storageManager.isReady() && storageManager.isSDCard()) {
+    if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
         const WifiClientKeyPresence wifiKeyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
         const bool legacySsidKeyRequired = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
         const bool wifiKeysMissing =
@@ -270,7 +270,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
             String recoveredSsid = "";
             const char* recoveredFrom = "none";
             bool recoveredFromSlots = false;
-            if (backupHasStaSlots && restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, false)) {
+            if (backupHasStaSlots && restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, *storage_, false)) {
                 recoveredSsid = settings_.wifiClientSSID;
                 recoveredFrom = "settings_backup_slots";
                 recoveredFromSlots = true;
@@ -315,7 +315,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
     }
 
     // Keep SD backup schema fresh so newly added settings survive the next reflash.
-    if (!needsRestore && storageManager.isReady() && storageManager.isSDCard()) {
+    if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
         if (!hasSdBackup) {
             Serial.println("[Settings] No valid SD backup found; creating backup from current settings_");
             backupToSD();
@@ -455,18 +455,18 @@ bool SettingsManager::checkNeedsRestore() {
 // Restore ALL settings from SD card
 
 bool SettingsManager::restoreFromSD() {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+    if (!storage_->isReady() || !storage_->isSDCard()) {
         return false;
     }
 
     // Acquire SD mutex to protect file I/O
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex());
+    StorageManager::SDLockBlocking sdLock(storage_->getSDMutex());
     if (!sdLock) {
         Serial.println("[Settings] Failed to acquire SD mutex for restore");
         return false;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage_->getFilesystem();
     if (!fs)
         return false;
 

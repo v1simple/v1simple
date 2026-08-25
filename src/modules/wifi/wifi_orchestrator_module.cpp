@@ -1,8 +1,8 @@
 #include "wifi_orchestrator_module.h"
 
 WifiOrchestrator::WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser,
-                                   StorageManager& storageManager, AutoPushModule& autoPushModule)
-    : wifiManager(wifiManager), bleClient(bleClient), parser(parser), storageManager(storageManager),
+                                   StorageManager& storage, AutoPushModule& autoPushModule)
+    : wifiManager(wifiManager), bleClient(bleClient), parser(parser), storage(storage),
       autoPushModule(autoPushModule) {}
 
 void WifiOrchestrator::ensureCallbacksConfigured() {
@@ -51,7 +51,7 @@ void WifiOrchestrator::configureCallbacks() {
     wifiManager.setFilesystemCallback(
         [](void* ctx) -> fs::FS* {
             auto* self = static_cast<WifiOrchestrator*>(ctx);
-            return self->storageManager.isReady() ? self->storageManager.getFilesystem() : nullptr;
+            return self->storage.isReady() ? self->storage.getFilesystem() : nullptr;
         },
         this);
 

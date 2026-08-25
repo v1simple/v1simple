@@ -201,7 +201,7 @@ void MaintenanceRuntime::start(uint32_t setupStartMs, esp_reset_reason_t resetRe
     HealthCounters::reset();
     (void)health_.begin(storage_, bootId, getRuntimeImageId(), resetReasonToString(resetReason),
                         previousShutdownClean, preservedPanicEvidencePresent(resetReason));
-    logBootIdentity(bootId, resetReason);
+    logBootIdentity(bootId, resetReason, settings_);
     Serial.println("[MaintBoot] request consumed; entering maintenance boot");
     logBootStage("storage");
 

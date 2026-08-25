@@ -224,7 +224,7 @@ bool preserveStoredPasswordForMatchingSsid(const String& ssid, size_t targetInde
     return false;
 }
 
-void clearWifiStaSlotPasswordsForRestore(bool clearSdSecret) {
+void clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSecret) {
     Preferences prefs;
     if (prefs.begin(WIFI_CLIENT_NS, false)) {
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
@@ -238,11 +238,12 @@ void clearWifiStaSlotPasswordsForRestore(bool clearSdSecret) {
         prefs.end();
     }
     if (clearSdSecret) {
-        clearWifiClientSecretFromSD();
+        clearWifiClientSecretFromSD(storage);
     }
 }
 
-bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, bool clearSdSecret) {
+bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, StorageManager& storage,
+                                      bool clearSdSecret) {
     if (!doc["wifiStaSlots"].is<JsonArrayConst>()) {
         return false;
     }
@@ -252,7 +253,7 @@ bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& setti
     StoredSlotPasswordSnapshot storedPasswords[kWifiStaSlotCount];
     snapshotWifiStaSlotPasswords(settings, storedPasswords);
 
-    clearWifiStaSlotPasswordsForRestore(clearSdSecret);
+    clearWifiStaSlotPasswordsForRestore(storage, clearSdSecret);
 
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         settings.wifiStaSlots[i] = WifiStaSlot();
@@ -346,10 +347,11 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     if (wifiClientEnabledExplicit) {
         settings_.wifiClientEnabled = parsedWifiClientEnabled;
     }
-    const bool restoredWifiStaSlots = restoreWifiStaSlotsFromBackupDoc(doc, settings_, deferBackupRewrite);
+    const bool restoredWifiStaSlots =
+        restoreWifiStaSlotsFromBackupDoc(doc, settings_, *storage_, deferBackupRewrite);
     const String legacyWifiClientSsid = legacyWifiClientSsidFromBackupDoc(doc);
     if (!restoredWifiStaSlots && legacyWifiClientSsid.length() > 0) {
-        clearWifiStaSlotPasswordsForRestore(deferBackupRewrite);
+        clearWifiStaSlotPasswordsForRestore(*storage_, deferBackupRewrite);
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
             settings_.wifiStaSlots[i] = WifiStaSlot();
         }
@@ -696,7 +698,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     feedWatchdog();
 
     int profilesRestored = 0;
-    if (v1ProfileManager.isReady() && doc["profiles"].is<JsonArrayConst>()) {
+    if (profiles_->isReady() && doc["profiles"].is<JsonArrayConst>()) {
         JsonArrayConst profilesArr = doc["profiles"].as<JsonArrayConst>();
         int profilesProcessed = 0;
         for (JsonObjectConst p : profilesArr) {
@@ -731,7 +733,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
             if (p["mutedVolume"].is<int>())
                 profile.mutedVolume = clampSlotVolumeValue(p["mutedVolume"].as<int>());
 
-            ProfileSaveResult saveResult = v1ProfileManager.saveProfile(profile);
+            ProfileSaveResult saveResult = profiles_->saveProfile(profile);
             if (saveResult.success) {
                 profilesRestored++;
             } else {

@@ -65,7 +65,7 @@ bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal&
 void resumePersistenceAfterAbortedShutdown(ProductEventLog& events);
 
 /// Emit the privacy-safe identity line shared by normal and maintenance boots.
-void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason);
+void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason, const SettingsManager& settings);
 
 /// Early setup diagnostics: serial settle, GPIO hold release, panic/NVS checks.
 void initializeEarlyBootDiagnostics();
@@ -73,4 +73,6 @@ void initializeEarlyBootDiagnostics();
 // --- Persistence helper declarations (main_persist.cpp) ---
 
 /// Periodic best-effort save of deferred V1 device-store updates (Tier 7).
-void processV1DeviceStoreSave(uint32_t nowMs);
+class StorageManager;
+class V1DeviceStore;
+void processV1DeviceStoreSave(uint32_t nowMs, StorageManager& storage, V1DeviceStore& devices);

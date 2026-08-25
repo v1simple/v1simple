@@ -105,7 +105,7 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const cha
 // --- Segment7 frequency display. Uses Segment7 TTF font if available, falls back to software renderer. ---
 
 void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar) {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
 
     const bool usingOfr = fontMgr_.segment7Ready;
     const bool hasFreq = freqMHz > 0;

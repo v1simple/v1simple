@@ -41,6 +41,9 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
+V1ProfileManager profiles;
+SettingsManager settings(storage, profiles);
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -72,7 +75,7 @@ struct FeedRecorder {
 
 void recordFeed(void* ctx) {
     auto* recorder = static_cast<FeedRecorder*>(ctx);
-    recorder->profilesOnDiskAtFeed.push_back(v1ProfileManager.listProfiles().size());
+    recorder->profilesOnDiskAtFeed.push_back(profiles.listProfiles().size());
 }
 
 SettingsRestoreWatchdog makeWatchdog(FeedRecorder& recorder) {
@@ -132,10 +135,10 @@ void addManyScalarFields(JsonDocument& doc) {
 void resetRuntimeState() {
     mock_preferences::reset();
     mock_nvs::reset();
-    storageManager.reset();
+    storage.reset();
     StorageManager::resetMockSdLockState();
-    v1ProfileManager = V1ProfileManager();
-    settingsManager = SettingsManager();
+    profiles = V1ProfileManager();
+    settings = SettingsManager(storage, profiles);
     resetDeferredSettingsBackupStateForTest();
     mockMillis = 1000;
     mockMicros = 1000000;
@@ -158,10 +161,10 @@ void tearDown() {
 // count must not scale with the number of restored fields.
 void test_field_only_restore_feeds_once_per_phase_and_not_per_field() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     FeedRecorder recorder;
 
     JsonDocument doc;
@@ -184,10 +187,10 @@ void test_field_only_restore_feeds_once_per_phase_and_not_per_field() {
 // bracketing the NVS rewrite.
 void test_profile_restore_feeds_inside_loop_every_batch() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     FeedRecorder recorder;
 
     JsonDocument doc;
@@ -229,10 +232,10 @@ void test_feed_count_grows_with_profile_count_in_batches() {
     for (const Case& testCase : cases) {
         resetRuntimeState();
         fs::FS fs(g_tempRoot);
-        storageManager.setFilesystem(&fs, true);
-        TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+        storage.setFilesystem(&fs, true);
+        TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-        SettingsManager manager;
+        SettingsManager manager(storage, profiles);
         FeedRecorder recorder;
 
         JsonDocument doc;
@@ -255,17 +258,17 @@ void test_feed_count_grows_with_profile_count_in_batches() {
 // still count toward the feed batch.
 void test_invalid_profile_entries_still_count_toward_feed_batches() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     FeedRecorder recorder;
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
-    JsonArray profiles = doc["profiles"].to<JsonArray>();
+    JsonArray profileArray = doc["profiles"].to<JsonArray>();
     for (int i = 0; i < 8; ++i) {
-        JsonObject junk = profiles.add<JsonObject>();
+        JsonObject junk = profileArray.add<JsonObject>();
         junk["name"] = "no-bytes";
     }
 
@@ -281,10 +284,10 @@ void test_invalid_profile_entries_still_count_toward_feed_batches() {
 // A null feed must be a no-op, never a crash.
 void test_absent_watchdog_is_a_no_op_and_restore_still_succeeds() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
@@ -306,10 +309,10 @@ void test_absent_watchdog_is_a_no_op_and_restore_still_succeeds() {
 // the failure path is not the one that panics.
 void test_pre_persist_feed_runs_before_the_nvs_rewrite() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     FeedRecorder recorder;
 
     JsonDocument doc;

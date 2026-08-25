@@ -30,8 +30,8 @@
 
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
     WifiAutoPushApiService::Runtime runtime{
-        [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* /*ctx*/) {
-            const V1Settings& s = settingsManager.get();
+        [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
+            const V1Settings& s = static_cast<WiFiManager*>(ctx)->settings_.get();
             snapshot.enabled = s.autoPushEnabled;
             snapshot.activeSlot = s.activeSlot;
 
@@ -50,7 +50,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
                 snapshot.slots[slotIndex].priorityArrowOnly = slot.priorityArrow;
             }
         },
-        nullptr,
+        this,
         [](String& json, void* ctx) {
             auto* mgr = static_cast<WiFiManager*>(ctx);
             if (!mgr->getPushStatusJson_) {
@@ -60,7 +60,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             return true;
         },
         this,
-        [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* /*ctx*/) {
+        [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = request.slot;
             update.hasName = request.hasName;
@@ -83,122 +83,138 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.profileName = request.profile;
             update.hasMode = true;
             update.mode = normalizeV1ModeValue(request.mode);
-            return settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, const String& name, void* /*ctx*/) {
+        this,
+        [](int slot, const String& name, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasName = true;
             update.name = name;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, uint16_t color, void* /*ctx*/) {
+        this,
+        [](int slot, uint16_t color, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasColor = true;
             update.color = color;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, void* /*ctx*/) { return settingsManager.getSlotVolume(slot); },
-        nullptr,
-        [](int slot, void* /*ctx*/) { return settingsManager.getSlotMuteVolume(slot); },
-        nullptr,
-        [](int slot, uint8_t volume, uint8_t muteVolume, void* /*ctx*/) {
+        this,
+        [](int slot, void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getSlotVolume(slot); },
+        this,
+        [](int slot, void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getSlotMuteVolume(slot); },
+        this,
+        [](int slot, uint8_t volume, uint8_t muteVolume, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasVolume = true;
             update.volume = volume;
             update.hasMuteVolume = true;
             update.muteVolume = muteVolume;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, bool darkMode, void* /*ctx*/) {
+        this,
+        [](int slot, bool darkMode, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasDarkMode = true;
             update.darkMode = darkMode;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, bool muteToZero, void* /*ctx*/) {
+        this,
+        [](int slot, bool muteToZero, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasMuteToZero = true;
             update.muteToZero = muteToZero;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, uint8_t alertPersistSec, void* /*ctx*/) {
+        this,
+        [](int slot, uint8_t alertPersistSec, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasAlertPersist = true;
             update.alertPersist = alertPersistSec;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, bool priorityArrowOnly, void* /*ctx*/) {
+        this,
+        [](int slot, bool priorityArrowOnly, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasPriorityArrowOnly = true;
             update.priorityArrowOnly = priorityArrowOnly;
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, const String& profile, int mode, void* /*ctx*/) {
+        this,
+        [](int slot, const String& profile, int mode, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = slot;
             update.hasProfileName = true;
             update.profileName = profile;
             update.hasMode = true;
             update.mode = normalizeV1ModeValue(mode);
-            (void)settingsManager.applyAutoPushSlotUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](void* /*ctx*/) { return static_cast<int>(settingsManager.get().activeSlot); },
-        nullptr,
+        this,
+        [](void* ctx) { return static_cast<int>(static_cast<WiFiManager*>(ctx)->settings_.get().activeSlot); },
+        this,
         [](int slot, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->drawProfileIndicator(slot); },
         this,
-        [](const WifiAutoPushApiService::ActivationRequest& request, void* /*ctx*/) {
+        [](const WifiAutoPushApiService::ActivationRequest& request, void* ctx) {
             AutoPushStateUpdate update;
             update.hasActiveSlot = true;
             update.activeSlot = request.slot;
             update.hasEnabled = true;
             update.enabled = request.enable;
-            return settingsManager.applyAutoPushStateUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](int slot, void* /*ctx*/) {
+        this,
+        [](int slot, void* ctx) {
             AutoPushStateUpdate update;
             update.hasActiveSlot = true;
             update.activeSlot = slot;
-            (void)settingsManager.applyAutoPushStateUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](bool enabled, void* /*ctx*/) {
+        this,
+        [](bool enabled, void* ctx) {
             AutoPushStateUpdate update;
             update.hasEnabled = true;
             update.enabled = enabled;
-            (void)settingsManager.applyAutoPushStateUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
+        this,
     };
     return runtime;
 }
 
 WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
     return WifiDisplayColorsApiService::Runtime{
-        [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); },
-        nullptr,
-        [](const DisplaySettingsUpdate& update, void* /*ctx*/) {
-            settingsManager.applyDisplaySettingsUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+        [](void* ctx) -> const V1Settings& { return static_cast<WiFiManager*>(ctx)->settings_.get(); },
+        this,
+        [](const DisplaySettingsUpdate& update, void* ctx) {
+            static_cast<WiFiManager*>(ctx)->settings_.applyDisplaySettingsUpdate(
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
-        nullptr,
-        [](void* /*ctx*/) { settingsManager.resetDisplaySettings(SettingsPersistMode::ImmediateNvsDeferredBackup); },
-        nullptr,
+        this,
+        [](void* ctx) {
+            static_cast<WiFiManager*>(ctx)->settings_.resetDisplaySettings(
+                SettingsPersistMode::ImmediateNvsDeferredBackup);
+        },
+        this,
         [](uint8_t brightness, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->setBrightness(brightness); },
         this,
         [](void* ctx) {
@@ -219,9 +235,12 @@ WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
 WifiAudioSettingsRuntime WiFiManager::makeAudioRuntime() {
     WifiAudioSettingsRuntime r;
     r.ctx = this;
-    r.getSettings = [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); };
-    r.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* /*ctx*/) {
-        settingsManager.applyAudioSettingsUpdate(update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    r.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<WiFiManager*>(ctx)->settings_.get();
+    };
+    r.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* ctx) {
+        static_cast<WiFiManager*>(ctx)->settings_.applyAudioSettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
     };
     r.setAudioVolume = [](uint8_t volume, void* /*ctx*/) { audio_set_volume(volume); };
     r.checkRateLimit = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); };
@@ -242,12 +261,12 @@ WifiStatusApiService::StatusRuntime WiFiManager::makeStatusRuntime() {
         nullptr,
         [](void* /*ctx*/) { return static_cast<int32_t>(WiFi.RSSI()); },
         nullptr,
-        [](void* /*ctx*/) { return settingsManager.get().wifiClientEnabled; },
-        nullptr,
-        [](void* /*ctx*/) { return settingsManager.get().wifiClientSSID; },
-        nullptr,
-        [](void* /*ctx*/) { return settingsManager.get().apSSID; },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().wifiClientEnabled; },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().wifiClientSSID; },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().apSSID; },
+        this,
         [](void* /*ctx*/) -> unsigned long { return millis() / 1000; },
         nullptr,
         [](void* /*ctx*/) { return ESP.getFreeHeap(); },
@@ -278,13 +297,15 @@ WifiStatusApiService::StatusRuntime WiFiManager::makeStatusRuntime() {
 WifiSettingsApiService::Runtime WiFiManager::makeSettingsRuntime() {
     WifiSettingsApiService::Runtime r;
     r.ctx = this;
-    r.getSettings = [](void* /*ctx*/) -> const V1Settings& { return settingsManager.get(); };
+    r.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<WiFiManager*>(ctx)->settings_.get();
+    };
     r.applySettingsUpdate = [](const DeviceSettingsUpdate& update, void* ctx) {
         auto* self = static_cast<WiFiManager*>(ctx);
         const bool maintenanceBoot = self && self->isMaintenanceBootMode();
-        settingsManager.applyDeviceSettingsUpdate(
+        self->settings_.applyDeviceSettingsUpdate(
             update, maintenanceBoot ? SettingsPersistMode::Immediate : SettingsPersistMode::ImmediateNvsDeferredBackup);
-        const V1Settings& settings = settingsManager.get();
+        const V1Settings& settings = self->settings_.get();
         if (maintenanceBoot) {
             return;
         }
@@ -294,16 +315,16 @@ WifiSettingsApiService::Runtime WiFiManager::makeSettingsRuntime() {
         }
     };
     r.checkRateLimit = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); };
-    r.getNvsDiagnostic = [](void* /*ctx*/) { return settingsManager.getNvsDiagnostic(); };
+    r.getNvsDiagnostic = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getNvsDiagnostic(); };
     return r;
 }
 
 WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
     return WifiClientApiService::Runtime{
-        [](void* /*ctx*/) { return settingsManager.get().wifiClientEnabled; },
-        nullptr,
-        [](void* /*ctx*/) { return settingsManager.get().wifiClientSSID; },
-        nullptr,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().wifiClientEnabled; },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().wifiClientSSID; },
+        this,
         [](void* ctx) { return wifiClientStateApiName(static_cast<WiFiManager*>(ctx)->wifiClientState_); },
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanRunning(); },
@@ -365,11 +386,12 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
 
 WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
     return WifiV1ProfileApiService::Runtime{
-        [](void* /*ctx*/) { return v1ProfileManager.listProfiles(); },
-        nullptr,
-        [](const String& name, WifiV1ProfileApiService::ProfileSummary& summary, void* /*ctx*/) {
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.listProfiles(); },
+        this,
+        [](const String& name, WifiV1ProfileApiService::ProfileSummary& summary, void* ctx) {
+            auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
             V1Profile profile;
-            if (!v1ProfileManager.loadProfile(name, profile)) {
+            if (!profiles.loadProfile(name, profile)) {
                 return false;
             }
             summary.name = profile.name;
@@ -377,50 +399,54 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             summary.displayOn = profile.displayOn;
             return true;
         },
-        nullptr,
-        [](const String& name, String& json, void* /*ctx*/) {
+        this,
+        [](const String& name, String& json, void* ctx) {
+            auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
             V1Profile profile;
-            if (!v1ProfileManager.loadProfile(name, profile)) {
+            if (!profiles.loadProfile(name, profile)) {
                 return false;
             }
-            json = v1ProfileManager.profileToJson(profile);
+            json = profiles.profileToJson(profile);
             return true;
         },
-        nullptr,
-        [](const JsonObject& settingsObj, uint8_t outBytes[6], void* /*ctx*/) {
+        this,
+        [](const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) {
             V1UserSettings settings;
-            if (!v1ProfileManager.jsonToSettings(settingsObj, settings)) {
+            if (!static_cast<WiFiManager*>(ctx)->profiles_.jsonToSettings(settingsObj, settings)) {
                 return false;
             }
             memcpy(outBytes, settings.bytes, 6);
             return true;
         },
-        nullptr,
+        this,
         [](const String& name, const String& description, bool displayOn, const uint8_t inBytes[6], String& error,
-           void* /*ctx*/) {
+           void* ctx) {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
             profile.displayOn = displayOn;
             memcpy(profile.settings.bytes, inBytes, 6);
-            ProfileSaveResult result = v1ProfileManager.saveProfile(profile);
+            ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile);
             if (!result.success) {
                 error = result.error;
                 return false;
             }
             return true;
         },
-        nullptr,
-        [](const String& name, void* /*ctx*/) { return v1ProfileManager.deleteProfile(name); },
-        nullptr,
-        [](void* /*ctx*/) { return v1ProfileManager.hasCurrentSettings(); },
-        nullptr,
-        [](void* /*ctx*/) { return v1ProfileManager.settingsToJson(v1ProfileManager.getCurrentSettings()); },
-        nullptr,
+        this,
+        [](const String& name, void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.deleteProfile(name); },
+        this,
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.hasCurrentSettings(); },
+        this,
+        [](void* ctx) {
+            auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
+            return profiles.settingsToJson(profiles.getCurrentSettings());
+        },
+        this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
         this,
-        [](void* /*ctx*/) { settingsManager.requestDeferredBackupFromCurrentState(); },
-        nullptr,
+        [](void* ctx) { static_cast<WiFiManager*>(ctx)->settings_.requestDeferredBackupFromCurrentState(); },
+        this,
     };
 }
 
@@ -429,11 +455,11 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
         [](void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
             std::vector<WifiV1DevicesApiService::DeviceInfo> payload;
-            if (!v1DeviceStore.isReady()) {
+            if (!self->devices_.isReady()) {
                 return payload;
             }
 
-            auto devices = v1DeviceStore.listDevices();
+            auto devices = self->devices_.listDevices();
             auto hasAddress = [&](const String& address) {
                 if (address.length() == 0) {
                     return true;
@@ -446,10 +472,10 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
                 return false;
             };
 
-            const String lastV1Address = normalizeV1DeviceAddress(settingsManager.get().lastV1Address);
+            const String lastV1Address = normalizeV1DeviceAddress(self->settings_.get().lastV1Address);
             if (!hasAddress(lastV1Address)) {
-                v1DeviceStore.touchDeviceInMemory(lastV1Address);
-                devices = v1DeviceStore.listDevices();
+                self->devices_.touchDeviceInMemory(lastV1Address);
+                devices = self->devices_.listDevices();
             }
 
             String connectedAddress;
@@ -457,8 +483,8 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
             if (!connected.isNull()) {
                 connectedAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
                 if (!hasAddress(connectedAddress)) {
-                    v1DeviceStore.touchDeviceInMemory(connectedAddress);
-                    devices = v1DeviceStore.listDevices();
+                    self->devices_.touchDeviceInMemory(connectedAddress);
+                    devices = self->devices_.listDevices();
                 }
             }
 
@@ -474,42 +500,43 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
             return payload;
         },
         this,
-        [](const String& address, const String& name, void* /*ctx*/) {
-            return v1DeviceStore.setDeviceName(address, name);
+        [](const String& address, const String& name, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->devices_.setDeviceName(address, name);
         },
-        nullptr,
-        [](const String& address, uint8_t defaultProfile, void* /*ctx*/) {
-            return v1DeviceStore.setDeviceDefaultProfile(address, defaultProfile);
+        this,
+        [](const String& address, uint8_t defaultProfile, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->devices_.setDeviceDefaultProfile(address, defaultProfile);
         },
-        nullptr,
-        [](const String& address, void* /*ctx*/) { return v1DeviceStore.removeDevice(address); },
-        nullptr,
+        this,
+        [](const String& address, void* ctx) { return static_cast<WiFiManager*>(ctx)->devices_.removeDevice(address); },
+        this,
     };
 }
 
 BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
     BackupApiService::BackupRuntime runtime{
         // getBackupRevision
-        [](void* /*ctx*/) -> uint32_t { return settingsManager.backupRevision(); },
+        [](void* ctx) -> uint32_t { return static_cast<WiFiManager*>(ctx)->settings_.backupRevision(); },
         // getCatalogRevision
-        [](void* /*ctx*/) -> uint32_t { return v1ProfileManager.catalogRevision(); },
+        [](void* ctx) -> uint32_t { return static_cast<WiFiManager*>(ctx)->profiles_.catalogRevision(); },
         // buildDocument
-        [](JsonDocument& doc, uint32_t snapshotMs, void* /*ctx*/) {
-            BackupPayloadBuilder::buildBackupDocument(doc, settingsManager.get(), v1ProfileManager,
+        [](JsonDocument& doc, uint32_t snapshotMs, void* ctx) {
+            auto* self = static_cast<WiFiManager*>(ctx);
+            BackupPayloadBuilder::buildBackupDocument(doc, self->settings_.get(), self->profiles_,
                                                       BackupPayloadBuilder::BackupTransport::HttpDownload, snapshotMs);
         },
         // isStorageReady
-        [](void* /*ctx*/) -> bool { return storageManager.isReady(); },
+        [](void* ctx) -> bool { return static_cast<WiFiManager*>(ctx)->storage_.isReady(); },
         // isSDCard
-        [](void* /*ctx*/) -> bool { return storageManager.isSDCard(); },
+        [](void* ctx) -> bool { return static_cast<WiFiManager*>(ctx)->storage_.isSDCard(); },
         // backupToSD
-        [](void* /*ctx*/) -> bool { return settingsManager.backupToSD(); },
+        [](void* ctx) -> bool { return static_cast<WiFiManager*>(ctx)->settings_.backupToSD(); },
         // applyBackup
-        [](const JsonDocument& doc, bool fullRestore, int& profilesRestored, void* /*ctx*/) -> bool {
+        [](const JsonDocument& doc, bool fullRestore, int& profilesRestored, void* ctx) -> bool {
             // A restore rewrites NVS and re-saves every profile in the backup;
             // on a slow SD that outruns the task watchdog. Feed it between
             // restore phases so a large backup cannot panic mid-restore.
-            const SettingsBackupApplyResult result = settingsManager.applyBackupDocument(
+            const SettingsBackupApplyResult result = static_cast<WiFiManager*>(ctx)->settings_.applyBackupDocument(
                 doc, fullRestore, SettingsRestoreWatchdog{&BackupApiService::feedTaskWatchdog, nullptr});
             profilesRestored = result.profilesRestored;
             return result.success;
@@ -517,7 +544,7 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // syncAfterRestore
         [](void* ctx) {
             WiFiManager* self = static_cast<WiFiManager*>(ctx);
-            const V1Settings& settings = settingsManager.get();
+            const V1Settings& settings = self->settings_.get();
             if (self && self->isMaintenanceBootMode()) {
                 return;
             }
@@ -544,7 +571,7 @@ ObdApiService::Runtime WiFiManager::makeObdRuntime() {
         if (self && self->isMaintenanceBootMode()) {
             return;
         }
-        const V1Settings& settings = settingsManager.get();
+        const V1Settings& settings = self->settings_.get();
         self->bleRuntime_->setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
         SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, *self->obdRuntime_, *self->speedSelector_);
     };

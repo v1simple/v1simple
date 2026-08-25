@@ -60,7 +60,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     const int spacing = kBandLabelSpacing;
     const int startY = kBandLabelStartY;
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     struct BandCell {
         const char* label;
         uint8_t mask;
@@ -286,7 +286,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
 
     bool hasSignal = (strength > 0);
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     // Each segment carries its own colour. There is no draw-time interpolation:
     // the six stored values are painted as-is.
     const uint16_t* barColors = s.colorBars;

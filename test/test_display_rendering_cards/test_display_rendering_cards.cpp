@@ -23,7 +23,7 @@ SerialClass Serial;
 #include "../../src/display.h"
 
 V1Display* g_displayInstance = nullptr;
-SettingsManager settingsManager;
+SettingsManager settings;
 int bandIndicatorDrawCount = 0;
 uint8_t lastBandIndicatorMask = 0;
 bool lastBandIndicatorMuted = false;
@@ -32,10 +32,10 @@ int bandIndicatorDrawOrder = 0;
 int gpsIndicatorDrawOrder = 0;
 int drawOrder = 0;
 
-V1Display::V1Display() {
+V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settingsManager.get().colorMuted;
-    currentPalette_.colorPersisted = settingsManager.get().colorPersisted;
+    currentPalette_.colorMuted = settings_.get().colorMuted;
+    currentPalette_.colorPersisted = settings_.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
@@ -56,7 +56,7 @@ const char* V1Display::bandToString(Band band) {
 }
 
 uint16_t V1Display::getBandColor(Band band) {
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings.get();
     switch (band) {
         case BAND_LASER: return s.colorBandL;
         case BAND_KA: return s.colorBandKa;
@@ -88,7 +88,7 @@ void V1Display::drawGpsIndicator() {
 
 #include "../../src/display_cards.cpp"
 
-V1Display display;
+V1Display display(settings);
 
 namespace {
 
@@ -98,7 +98,7 @@ Arduino_Canvas* canvas() {
 
 void resetDisplayForTest() {
     display.~V1Display();
-    new (&display) V1Display();
+    new (&display) V1Display(settings);
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
     display.ut_elementCaches() = DisplayElementCaches{};
     display.ut_resetDrawnRegion();
@@ -181,7 +181,7 @@ void test_empty_card_clear_is_noop_when_no_cards_were_drawn() {
 void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     auto& cards = display.ut_elementCaches().cards;
     cards.lastDrawnCount = 1;
-    cards.lastProfileSlot = settingsManager.get().activeSlot;
+    cards.lastProfileSlot = settings.get().activeSlot;
     cards.lastDrawnPositions[0].band = BAND_KA;
     cards.lastDrawnPositions[0].frequency = 34700;
     cards.lastDrawnPositions[0].direction = DIR_FRONT;
@@ -242,7 +242,7 @@ void test_priority_frequency_jitter_does_not_admit_ghost_card() {
 // admitted as a "new" bogey into the other — two cards for one source, able to
 // evict a genuine third bogey's card.
 void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
-    settingsManager.slotAlertPersistSec[0] = 2;  // grace so a stale copy would persist
+    settings.slotAlertPersistSec[0] = 2;  // grace so a stale copy would persist
 
     AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData b1 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
@@ -272,14 +272,14 @@ void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(2, cards.lastDrawnCount,
         "a bogey outside the continuity window is a distinct card");
 
-    settingsManager.slotAlertPersistSec[0] = 0;
+    settings.slotAlertPersistSec[0] = 0;
 }
 
 // A genuine secondary bogey whose signal ends must hold through the grace
 // window (dimmed) and then clear its position with a repaint — while the
 // priority stays live and leads the alert list every frame.
 void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remains() {
-    settingsManager.slotAlertPersistSec[0] = 2;  // 2 s grace window
+    settings.slotAlertPersistSec[0] = 2;  // 2 s grace window
 
     AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData b = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
@@ -306,7 +306,7 @@ void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remai
     TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0u, canvas()->fillRectCalls.size(),
         "expiring the last card must repaint (clear) its screen position");
 
-    settingsManager.slotAlertPersistSec[0] = 0;
+    settings.slotAlertPersistSec[0] = 0;
 }
 
 void test_removing_card0_restores_exposed_ku_label_in_same_frame() {
@@ -349,7 +349,7 @@ void test_removing_card0_restores_exposed_ku_label_in_same_frame() {
 }
 
 void test_visual_preview_bypasses_profile_card_grace() {
-    settingsManager.slotAlertPersistSec[0] = 5;
+    settings.slotAlertPersistSec[0] = 5;
 
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData secondary = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, true);
@@ -368,7 +368,7 @@ void test_visual_preview_bypasses_profile_card_grace() {
     TEST_ASSERT_EQUAL_UINT32(0u, display.ut_elementCaches().cards.slots[0].lastSeen);
 
     display.setPreviewIndicatorOverridesActive(false);
-    settingsManager.slotAlertPersistSec[0] = 0;
+    settings.slotAlertPersistSec[0] = 0;
 }
 
 
@@ -422,7 +422,7 @@ void test_card_meter_clamps_strength_above_full_scale() {
 // Lit segments take their own stored colour, with no interpolation at draw
 // time -- the same rule the main meter follows.
 void test_card_meter_lit_segments_use_their_own_stored_colors() {
-    V1Settings& s = settingsManager.mutableSettings();
+    V1Settings& s = settings.mutableSettings();
     for (int seg = 0; seg < SIGNAL_BAR_COLOR_COUNT; ++seg) {
         s.colorBars[seg] = static_cast<uint16_t>(0x1000 + seg);
     }

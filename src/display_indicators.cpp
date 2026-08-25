@@ -114,7 +114,7 @@ void V1Display::drawObdIndicator() {
         return;
     }
 
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const uint16_t textColor = curConnected ? s.colorObd : (curAttention ? 0xF800 : s.colorMuted);
 
     GFX_setTextDatum(MC_DATUM);
@@ -220,7 +220,7 @@ void V1Display::drawAlpIndicator() {
     //
     // Rationale: the display follows live alert ownership only. byte1 drives
     // the mode colors whenever no live laser event is active.
-    const V1Settings& s = settingsManager.get();
+    const V1Settings& s = settings_.get();
     const AlpState alpState = static_cast<AlpState>(alpStateRaw_);
     uint16_t textColor;
     if (alpState == AlpState::OFF || alpState == AlpState::IDLE) {

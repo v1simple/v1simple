@@ -90,7 +90,7 @@ void resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
 
 #ifdef UNIT_TEST
 void resetDeferredSettingsBackupStateForTest();
-bool runDeferredSettingsBackupWriterOnceForTest();
+bool runDeferredSettingsBackupWriterOnceForTest(StorageManager& storage);
 size_t deferredSettingsBackupQueueDepthForTest();
 bool deferredSettingsBackupPendingForTest();
 #endif
@@ -144,8 +144,10 @@ String decodeObfuscatedFromStorage(const String& stored);
 uint32_t computeCrc32(const uint8_t* data, size_t length);
 
 // WiFi client SD secret helpers
-bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String& encodedPassword);
-String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlotIndex = kWifiStaSlotCount);
-void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid);
-void clearWifiClientSecretFromSD();
+bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const String& ssid,
+                              const String& encodedPassword);
+String loadWifiClientSecretFromSD(StorageManager& storage, const String& expectedSsid,
+                                  size_t expectedSlotIndex = kWifiStaSlotCount);
+void removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, const String& ssid);
+void clearWifiClientSecretFromSD(StorageManager& storage);
 bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex = 0);

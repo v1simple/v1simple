@@ -17,7 +17,6 @@
 
 #ifndef ARDUINO
 SerialClass Serial;
-SettingsManager settingsManager;
 unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif

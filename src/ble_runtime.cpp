@@ -12,7 +12,7 @@
 #include "config.h"
 #include "ble_internals.h"
 
-void V1BLEClient::process() {
+void V1BLEClient::process(SettingsManager& settings) {
     // Runtime proxy disable is non-blocking. Finish deferred queue teardown as
     // soon as both short-lived callback locks are available.
     if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
@@ -141,7 +141,7 @@ void V1BLEClient::process() {
         }
         portEXIT_CRITICAL(&pendingAddrMux);
         if (shouldWrite) {
-            settingsManager.setLastV1Address(addrCopy);
+            settings.setLastV1Address(addrCopy);
         }
         if (shouldAdoptName) {
             adoptV1AdvertisedNameForProxy(nameCopy);

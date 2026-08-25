@@ -30,13 +30,16 @@ constexpr uint32_t kBootSplashHoldMs = 400;
 constexpr uint32_t kMinimumScanScreenDwellMs = 400;
 
 BatteryManager batteryManager;
-WiFiManager wifiManager;
+StorageManager storage;
+V1ProfileManager profiles;
+V1DeviceStore devices;
+SettingsManager settings(storage, profiles);
+WiFiManager wifiManager(settings, profiles, devices, storage);
 ProductEventLog productEventLog;
 HealthJournal healthJournal;
-DriveRuntime driveRuntime(settingsManager, v1ProfileManager, v1DeviceStore, storageManager, batteryManager,
-                          productEventLog, healthJournal);
+DriveRuntime driveRuntime(settings, profiles, devices, storage, batteryManager, productEventLog, healthJournal);
 MaintenanceRuntime maintenanceRuntime(
-    wifiManager, settingsManager, v1ProfileManager, v1DeviceStore, storageManager, driveRuntime.display(),
+    wifiManager, settings, profiles, devices, storage, driveRuntime.display(),
     driveRuntime.preview(), driveRuntime.power(), batteryManager, driveRuntime.touch(), driveRuntime.ble(), driveRuntime.parser(),
     driveRuntime.autoPush(), driveRuntime.obd(), driveRuntime.speed(), driveRuntime.gps(), driveRuntime.quiet(),
     productEventLog, healthJournal, driveRuntime.state());
@@ -171,8 +174,8 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
                   static_cast<unsigned long>(kPostDisplaySettleMs));
     logBootStage("display", setupStartMs, stageStartedMs);
 
-    settingsManager.begin();
-    driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settingsManager);
+    settings.begin();
+    driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settings);
     driveRuntime.power().logStartupStatus();
     logBootStage("settings", setupStartMs, stageStartedMs);
 

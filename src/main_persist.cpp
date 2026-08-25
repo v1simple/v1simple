@@ -124,15 +124,8 @@ void maybeLogSaveDiag(const char* tag, SaveDiagStats& stats, uint32_t nowMs) {
 
 struct DirtySaveConfig {
     const char* tag;         // Log prefix, e.g. "V1DeviceStore"
-    const char* filePath;    // Destination file path
     uint32_t saveIntervalMs; // Minimum interval between successful saves
     uint32_t retryMs;        // Minimum interval between attempts
-
-    // Data source callbacks (no virtual overhead)
-    bool (*isDirty)();
-    void (*clearDirty)();
-    bool (*saveDirect)(fs::FS& fs, const char* path);
-    void (*logSuccess)(const char* path);
 };
 
 struct DirtySaveState {
@@ -146,11 +139,9 @@ struct DirtySaveState {
 static constexpr uint32_t V1_DEVICE_STORE_SAVE_INTERVAL_MS = 5000;
 static constexpr uint32_t V1_DEVICE_STORE_SAVE_RETRY_MS = 1000;
 
-static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, uint32_t nowMs) {
-    if (!cfg.saveDirect) {
-        return;
-    }
-    if (cfg.isDirty()) {
+static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, uint32_t nowMs,
+                             StorageManager& storage, V1DeviceStore& devices) {
+    if (devices.hasPendingSave()) {
         if (state.dirtySinceMs == 0) {
             state.dirtySinceMs = nowMs;
         }
@@ -159,12 +150,12 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
         state.deferredSinceMs = 0;
     }
 
-    if (cfg.isDirty() && storageManager.isReady() && (nowMs - state.lastSaveMs) >= cfg.saveIntervalMs &&
+    if (devices.hasPendingSave() && storage.isReady() && (nowMs - state.lastSaveMs) >= cfg.saveIntervalMs &&
         (nowMs - state.lastAttemptMs) >= cfg.retryMs) {
         state.diag.attempts++;
         state.lastAttemptMs = nowMs;
 
-        fs::FS* fs = storageManager.getFilesystem();
+        fs::FS* fs = storage.getFilesystem();
         bool saveOk = false;
         bool saveDeferred = false;
         bool hadDmaSample = false;
@@ -172,7 +163,7 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
         uint32_t sampledLargestDma = 0;
 
         if (fs) {
-            if (storageManager.isSDCard()) {
+            if (storage.isSDCard()) {
                 const SaveDmaThresholds thresholds = getSaveDmaThresholds();
                 uint32_t freeDma = 0;
                 uint32_t largestDma = 0;
@@ -185,9 +176,9 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                 if (normalHeadroom) {
                     // checkDmaHeap=false: hasDmaHeadroomForBackgroundSave() just
                     // sampled the same heap against a stricter pair of floors.
-                    StorageManager::SDTryLock sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/false);
+                    StorageManager::SDTryLock sdLock(storage.getSDMutex(), /*checkDmaHeap=*/false);
                     if (sdLock) {
-                        saveOk = cfg.saveDirect(*fs, cfg.filePath);
+                        saveOk = devices.flushPendingSave();
                     } else {
                         saveDeferred = true;
                         state.diag.deferSdBusy++;
@@ -214,7 +205,7 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                     }
                 }
             } else {
-                saveOk = cfg.saveDirect(*fs, cfg.filePath);
+                saveOk = devices.flushPendingSave();
             }
         }
 
@@ -233,14 +224,12 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
                 state.deferredSinceMs = 0;
             }
             state.lastSaveMs = nowMs;
-            cfg.clearDirty();
             state.dirtySinceMs = 0;
             state.diag.success++;
             if (hadDmaSample) {
                 noteMin(state.diag.minFreeOnSuccess, sampledFreeDma);
                 noteMin(state.diag.minBlockOnSuccess, sampledLargestDma);
             }
-            cfg.logSuccess(cfg.filePath);
         } else if (!saveDeferred) {
             state.diag.fail++;
             if (hadDmaSample) {
@@ -258,19 +247,14 @@ static void processDirtySave(const DirtySaveConfig& cfg, DirtySaveState& state, 
 
 // --- V1DeviceStore save instance ---
 
-static const DirtySaveConfig v1DeviceStoreSaveConfig = {
+static const DirtySaveConfig deviceStoreSaveConfig = {
     .tag = "V1DeviceStore",
-    .filePath = "/v1devices.json",
     .saveIntervalMs = V1_DEVICE_STORE_SAVE_INTERVAL_MS,
     .retryMs = V1_DEVICE_STORE_SAVE_RETRY_MS,
-    .isDirty = []() { return v1DeviceStore.hasPendingSave(); },
-    .clearDirty = []() {},
-    .saveDirect = [](fs::FS& /*fs*/, const char* /*path*/) { return v1DeviceStore.flushPendingSave(); },
-    .logSuccess = [](const char* /*path*/) {},
 };
 
-static DirtySaveState v1DeviceStoreSaveState;
+static DirtySaveState deviceStoreSaveState;
 
-void processV1DeviceStoreSave(uint32_t nowMs) {
-    processDirtySave(v1DeviceStoreSaveConfig, v1DeviceStoreSaveState, nowMs);
+void processV1DeviceStoreSave(uint32_t nowMs, StorageManager& storage, V1DeviceStore& devices) {
+    processDirtySave(deviceStoreSaveConfig, deviceStoreSaveState, nowMs, storage, devices);
 }

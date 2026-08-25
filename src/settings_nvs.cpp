@@ -324,21 +324,22 @@ bool attemptNvsRecovery(const char* activeNs) {
 // encodeObfuscatedForStorage, decodeObfuscatedFromStorage
 // are defined in settings_backup.cpp.
 
-bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String& encodedPassword) {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const String& ssid,
+                              const String& encodedPassword) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return false;
     }
 
     // checkDmaHeap=true: WiFi client secrets are written from route handlers
     // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
     // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         Serial.println("[Settings] WARN: Failed to acquire SD mutex for WiFi secret save");
         return false;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage.getFilesystem();
     if (!fs) {
         return false;
     }
@@ -380,20 +381,21 @@ bool saveWifiClientSecretToSD(size_t slotIndex, const String& ssid, const String
     return writeWifiClientSdSecretEntries(fs, entries, slotIndex);
 }
 
-String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlotIndex) {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+String loadWifiClientSecretFromSD(StorageManager& storage, const String& expectedSsid,
+                                  size_t expectedSlotIndex) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return "";
     }
 
     // checkDmaHeap=true: WiFi client secrets are written from route handlers
     // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
     // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return "";
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage.getFilesystem();
     if (!fs) {
         return "";
     }
@@ -431,20 +433,20 @@ String loadWifiClientSecretFromSD(const String& expectedSsid, size_t expectedSlo
     return encoded.length() > 0 ? encoded : backupFallback();
 }
 
-void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid) {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+void removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, const String& ssid) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return;
     }
 
     // checkDmaHeap=true: WiFi client secrets are written from route handlers
     // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
     // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage.getFilesystem();
     if (!fs) {
         return;
     }
@@ -472,20 +474,20 @@ void removeWifiClientSecretFromSD(size_t slotIndex, const String& ssid) {
     }
 }
 
-void clearWifiClientSecretFromSD() {
-    if (!storageManager.isReady() || !storageManager.isSDCard()) {
+void clearWifiClientSecretFromSD(StorageManager& storage) {
+    if (!storage.isReady() || !storage.isSDCard()) {
         return;
     }
 
     // checkDmaHeap=true: WiFi client secrets are written from route handlers
     // dispatched inside wifiManager.process() (main.cpp:620), so the radio is
     // up here. See the WHO PAYS FOR THIS note in storage_manager.h.
-    StorageManager::SDLockBlocking sdLock(storageManager.getSDMutex(), /*checkDmaHeap=*/true);
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex(), /*checkDmaHeap=*/true);
     if (!sdLock) {
         return;
     }
 
-    fs::FS* fs = storageManager.getFilesystem();
+    fs::FS* fs = storage.getFilesystem();
     if (!fs) {
         return;
     }
@@ -1002,7 +1004,7 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
 
     // Fallback: recover password from SD-backed secret store if available.
     const String expectedSsid = settings_.wifiStaSlots[index].ssid;
-    String sdEncoded = loadWifiClientSecretFromSD(expectedSsid, index);
+    String sdEncoded = loadWifiClientSecretFromSD(*storage_, expectedSsid, index);
     if (sdEncoded.length() == 0) {
         return "";
     }
@@ -1109,7 +1111,7 @@ void SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     }
 
     // Redundant SD copy for recovery when NVS gets wiped/corrupted.
-    if (slot.ssid.length() > 0 && saveWifiClientSecretToSD(index, slot.ssid, encodedPassword)) {
+    if (slot.ssid.length() > 0 && saveWifiClientSecretToSD(*storage_, index, slot.ssid, encodedPassword)) {
         Serial.println("[Settings] WiFi client secret mirrored to SD");
     }
 
@@ -1149,9 +1151,9 @@ void SettingsManager::clearWifiStaSlot(size_t index) {
     }
 
     if (!settings_.hasConfiguredWifiStaSlot()) {
-        clearWifiClientSecretFromSD();
+        clearWifiClientSecretFromSD(*storage_);
     } else {
-        removeWifiClientSecretFromSD(index, removedSsid);
+        removeWifiClientSecretFromSD(*storage_, index, removedSsid);
     }
 
     save();
@@ -1172,7 +1174,7 @@ void SettingsManager::clearWifiClientCredentials() {
         Serial.println("[Settings] WiFi client credentials cleared");
     }
 
-    clearWifiClientSecretFromSD();
+    clearWifiClientSecretFromSD(*storage_);
 
     save();
 }

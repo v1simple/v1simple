@@ -3,6 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 
+class StorageManager;
+
+// Register the composition-root storage owner used by the Core-0 C task entry.
+// The owner outlives the BLE runtime and writer task.
+void registerBleBondBackupStorage(StorageManager& storage);
+
 // Runtime bond persistence is best-effort and must never perform SD I/O on the
 // caller. enqueueCurrentBleBondBackupSnapshot() captures the small NimBLE bond
 // table in memory and hands it to a dedicated Core-0 writer through a bounded,

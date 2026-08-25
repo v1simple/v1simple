@@ -506,7 +506,4 @@ public:
     }
 };
 
-// Global settings instance
-extern SettingsManager settingsManager;
-
 #endif // SETTINGS_H

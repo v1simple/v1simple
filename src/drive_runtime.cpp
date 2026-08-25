@@ -41,7 +41,7 @@ DriveRuntime::DriveRuntime(SettingsManager& settings, V1ProfileManager& profiles
                            StorageManager& storage, BatteryManager& battery, ProductEventLog& events,
                            HealthJournal& health)
     : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), battery_(battery),
-      events_(events), health_(health) {}
+      events_(events), health_(health), display_(settings) {}
 
 void DriveRuntime::logBootStage(const char* stage, uint32_t setupStartMs, uint32_t& stageStartedMs) const {
     const uint32_t nowMs = millis();
@@ -65,7 +65,7 @@ void DriveRuntime::initializeStorageAndProfiles() {
         profiles_.begin(storage_.getFilesystem(), storage_.getLittleFS());
         devices_.begin(storage_.getFilesystem(), storage_.getLittleFS());
         audio_init_buffers();
-        audio_init_sd();
+        audio_init_sd(storage_);
 
         if (settings_.checkAndRestoreFromSD()) {
             display_.setBrightness(settings_.get().brightness);
@@ -110,7 +110,7 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
     Serial.printf("[BootTiming] checkpoint=ble_preinit_begin total=%lu\n",
                   static_cast<unsigned long>(millis() - setupStartMs));
     const uint32_t preInitStartedMs = millis();
-    if (!ble_.initBLE(preInitSettings.proxyBLE, preInitSettings.proxyName.c_str())) {
+    if (!ble_.initBLE(storage_, preInitSettings.proxyBLE, preInitSettings.proxyName.c_str())) {
         Serial.println("BLE pre-initialization failed!");
         fatalBootError(display_, "BLE pre-init failed", true);
     }
@@ -131,7 +131,7 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
     Serial.printf("[BootTiming] checkpoint=ble_scan_begin total=%lu\n",
                   static_cast<unsigned long>(millis() - setupStartMs));
     const uint32_t scanStartedMs = millis();
-    if (!ble_.begin(scanSettings.proxyBLE, scanSettings.proxyName.c_str())) {
+    if (!ble_.begin(storage_, scanSettings.proxyBLE, scanSettings.proxyName.c_str())) {
         Serial.println("BLE scan failed to start!");
         fatalBootError(display_, "BLE scan failed", true);
     }
@@ -268,7 +268,7 @@ void DriveRuntime::finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs)
     Serial.printf("[Boot] Ready gate opened at %lu ms\n", static_cast<unsigned long>(millis()));
 
     const uint32_t absorbStartedMs = millis();
-    ble_.process();
+    ble_.process(settings_);
     Serial.printf("[BootTiming] ble_absorb_ms=%lu\n", static_cast<unsigned long>(millis() - absorbStartedMs));
     Serial.println("BLE scan active from setup path");
     logBootStage("core_pipeline", setupStartMs, stageStartedMs);
@@ -303,7 +303,7 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
     initializeBle(setupStartMs, stageStartedMs);
     initializeTouchAndUi();
     logBootStage("ui_modules", setupStartMs, stageStartedMs);
-    logBootIdentity(bootId, resetReason);
+    logBootIdentity(bootId, resetReason, settings_);
     Serial.println(settings_.get().enableWifi ? "[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance"
                                               : "[WiFi] Master disabled - startup and loop processing skipped");
 
@@ -433,7 +433,7 @@ void DriveRuntime::openBootReadyGate(uint32_t nowMs) {
 }
 
 void DriveRuntime::processBleRuntime() {
-    ble_.process();
+    ble_.process(settings_);
 }
 
 void DriveRuntime::processBleQueue() {
@@ -631,7 +631,7 @@ void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected,
         ble_.serviceDeferredBondBackup(nowMs);
     }
     if (admitPersistence) {
-        processV1DeviceStoreSave(nowMs);
+        processV1DeviceStoreSave(nowMs, storage_, devices_);
     }
     if (bleConnected && admitPersistence) {
         connectedPersistenceWindowStartedMs_ = nowMs;

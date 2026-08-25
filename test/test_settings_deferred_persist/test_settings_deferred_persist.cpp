@@ -35,6 +35,9 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
+V1ProfileManager profiles;
+SettingsManager settings(storage, profiles);
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -61,11 +64,11 @@ void resetRuntimeState() {
     mock_reset_heap_caps();
     mock_reset_queue_create_state();
     mock_reset_task_create_state();
-    storageManager.reset();
+    storage.reset();
     StorageManager::resetMockSdLockState();
     resetDeferredSettingsBackupStateForTest();
-    v1ProfileManager = V1ProfileManager();
-    settingsManager = SettingsManager();
+    profiles = V1ProfileManager();
+    settings = SettingsManager(storage, profiles);
     mockMillis = 1000;
     mockMicros = 1000000;
 }
@@ -89,7 +92,7 @@ void tearDown() {
 }
 
 void test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DeviceSettingsUpdate firstUpdate;
     firstUpdate.hasProxyName = true;
@@ -138,7 +141,7 @@ void test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup()
 }
 
 void test_deferred_persist_retries_after_failed_nvs_write() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "RetryPath";
     manager.requestDeferredPersist();
 
@@ -173,7 +176,7 @@ void test_deferred_persist_retries_after_failed_nvs_write() {
 }
 
 void test_save_flushes_immediately_and_clears_deferred_persist() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().proxyName = "Pending";
     manager.requestDeferredPersist();
     manager.mutableSettings().proxyName = "Immediate";
@@ -191,7 +194,7 @@ void test_save_flushes_immediately_and_clears_deferred_persist() {
 }
 
 void test_last_v1_address_does_not_schedule_full_settings_persist() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.setLastV1Address("  aa:bb:cc:dd:ee:ff  ");
 
@@ -219,7 +222,7 @@ void test_last_v1_address_does_not_schedule_full_settings_persist() {
 }
 
 void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
     TEST_ASSERT_EQUAL_STRING(
@@ -256,7 +259,7 @@ void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
 }
 
 void test_full_settings_save_supersedes_pending_degraded_fallback() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.setLastV1Address("11:22:33:44:55:66");
     manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");

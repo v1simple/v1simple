@@ -55,11 +55,12 @@ class ObdRuntimeModule;
 class AlpRuntimeModule;
 class BatteryManager;
 class GpsRuntimeModule;
+class SettingsManager;
 class WiFiManager;
 
 class V1Display {
   public:
-    V1Display();
+    explicit V1Display(SettingsManager& settings);
     ~V1Display();
 
     // Initialize display
@@ -194,6 +195,7 @@ class V1Display {
     static DisplayLayout::DisplayRect arrowBoundingRect(bool raisedLayout);
 
   private:
+    SettingsManager& settings_;
     enum class ScreenMode { Unknown, Resting, Scanning, Disconnected, Maintenance, Live, Persisted, Stealth };
 
     // Display driver (Arduino_GFX)

@@ -32,6 +32,9 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
+V1ProfileManager profiles;
+SettingsManager settings(storage, profiles);
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -55,10 +58,10 @@ std::filesystem::path nextTempRoot() {
 void resetRuntimeState() {
     mock_preferences::reset();
     mock_nvs::reset();
-    storageManager.reset();
+    storage.reset();
     StorageManager::resetMockSdLockState();
-    v1ProfileManager = V1ProfileManager();
-    settingsManager = SettingsManager();
+    profiles = V1ProfileManager();
+    settings = SettingsManager(storage, profiles);
     resetDeferredSettingsBackupStateForTest();
     mockMillis = 1000;
     mockMicros = 1000000;
@@ -254,7 +257,7 @@ void tearDown() {
 
 void test_fresh_nvs_load_matches_authoritative_constructor_defaults() {
     const V1Settings expected;
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.load();
 
@@ -277,7 +280,7 @@ void test_empty_wifi_slot_backup_is_not_an_automatic_recovery_source() {
     emptySlot["ssid"] = "";
     TEST_ASSERT_FALSE(hasRestorableWifiStaSlots(doc));
 
-    clearWifiStaSlotPasswordsForRestore(false);
+    clearWifiStaSlotPasswordsForRestore(storage, false);
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingRemoveCount(kNvsWifiStaSlotPassword[i]));
     }
@@ -304,7 +307,7 @@ void test_configured_wifi_slot_missing_priority_uses_slot_index() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
 
     TEST_ASSERT_EQUAL_STRING("PhoneHotspot", manager.get().wifiStaSlots[2].ssid.c_str());
@@ -326,7 +329,7 @@ void test_absent_auto_push_key_uses_authoritative_default() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
 
     TEST_ASSERT_EQUAL(kDefaultAutoPushEnabled, manager.get().autoPushEnabled);
@@ -338,7 +341,7 @@ void test_absent_auto_push_key_uses_authoritative_default() {
 }
 
 void test_wifi_client_enabled_setter_updates_enabled_state() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.setWifiClientEnabled(true);
     TEST_ASSERT_TRUE(manager.get().wifiClientEnabled);
@@ -348,7 +351,7 @@ void test_wifi_client_enabled_setter_updates_enabled_state() {
 }
 
 void test_legacy_wifi_icon_backup_maps_to_active_wifi_color() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument legacyDoc;
     legacyDoc["colorWiFiIcon"] = 0xBCDE;
@@ -388,7 +391,7 @@ void test_load_migrates_legacy_one_sided_slot_volume_to_no_change() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
 
     TEST_ASSERT_EQUAL_UINT8(0xFF, manager.get().slot0Volume);
@@ -399,10 +402,10 @@ void test_load_migrates_legacy_one_sided_slot_volume_to_no_change() {
 
 void test_save_load_and_backup_round_trip_current_shape_fields() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager original;
+    SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
     settings.enableWifi = false;
     settings.apSSID = "RoadRig";
@@ -474,7 +477,7 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_TRUE(
         mock_preferences::getString(activeNs.c_str(), "apPassword", "").startsWith(OBFUSCATION_HEX_PREFIX));
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
     const V1Settings& loaded = reloaded.get();
 
@@ -591,23 +594,23 @@ void test_ap_password_restored_from_backup_when_key_present() {
     // SD backup contains a user-set password.  After applyBackupDocument the
     // custom password must be restored.
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     // Build a backup document containing an obfuscated apPassword.
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     source.mutableSettings().apPassword = "RoadRig2026";
     JsonDocument backupDoc;
     BackupPayloadBuilder::buildBackupDocument(
         backupDoc,
         source.get(),
-        v1ProfileManager,
+        profiles,
         BackupPayloadBuilder::BackupTransport::SdBackup,
         1000);
     TEST_ASSERT_TRUE(backupDoc["apPassword"].is<const char*>());
 
     // Apply to a fresh manager with empty NVS — password should be default.
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     TEST_ASSERT_EQUAL_STRING("setupv1simple", target.get().apPassword.c_str());
 
     const SettingsBackupApplyResult result = target.applyBackupDocument(backupDoc, true);
@@ -618,7 +621,7 @@ void test_ap_password_restored_from_backup_when_key_present() {
 void test_ap_password_preserved_when_backup_lacks_key() {
     // When the backup doc has NO apPassword key (e.g. an older backup written
     // before Gap B was fixed), the existing in-memory password must be kept.
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apPassword = "ExistingPass123";
 
     JsonDocument doc;
@@ -633,10 +636,10 @@ void test_ap_password_preserved_when_backup_lacks_key() {
 
 void test_http_backup_omits_all_wifi_credentials() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiClientCredentials("GarageNet", "garage-secret-2026");
 
     JsonDocument backupDoc;
@@ -652,7 +655,7 @@ void test_http_backup_omits_all_wifi_credentials() {
     BackupPayloadBuilder::buildBackupDocument(
         exportDoc,
         manager.get(),
-        v1ProfileManager,
+        profiles,
         BackupPayloadBuilder::BackupTransport::HttpDownload,
         2000);
 
@@ -665,16 +668,16 @@ void test_http_backup_omits_all_wifi_credentials() {
 
 void test_wifi_client_password_restores_from_sd_backup_to_nvs() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     source.setWifiClientCredentials("GarageNet", "garage-secret-2026");
 
     // Simulate clean flash while retaining the SD backup file.
     mock_preferences::reset();
 
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     TEST_ASSERT_TRUE(target.restoreFromSD());
     TEST_ASSERT_TRUE(target.get().wifiClientEnabled);
     TEST_ASSERT_EQUAL_STRING("GarageNet", target.get().wifiClientSSID.c_str());
@@ -685,10 +688,10 @@ void test_wifi_client_password_restores_from_sd_backup_to_nvs() {
 
 void test_restore_preserves_sta_password_when_sanitized_backup_ssid_matches() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiStaSlotCredentials(0, "GarageNet", "garage-secret-2026", "Garage", 0);
 
     // Default HTTP export is sanitized: slots carry no passwordObf.
@@ -696,7 +699,7 @@ void test_restore_preserves_sta_password_when_sanitized_backup_ssid_matches() {
     BackupPayloadBuilder::buildBackupDocument(
         doc,
         manager.get(),
-        v1ProfileManager,
+        profiles,
         BackupPayloadBuilder::BackupTransport::HttpDownload,
         2000);
     TEST_ASSERT_TRUE(doc["wifiStaSlots"][0]["passwordObf"].isNull());
@@ -713,10 +716,10 @@ void test_restore_preserves_sta_password_when_sanitized_backup_ssid_matches() {
 
 void test_restore_clears_sta_password_when_sanitized_backup_ssid_differs() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiStaSlotCredentials(0, "GarageNet", "garage-secret-2026", "Garage", 0);
 
     JsonDocument doc;
@@ -737,10 +740,10 @@ void test_restore_clears_sta_password_when_sanitized_backup_ssid_differs() {
 
 void test_restore_explicit_password_obf_still_overwrites_stored() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiStaSlotCredentials(0, "GarageNet", "old-secret", "Garage", 0);
 
     JsonDocument doc;
@@ -766,7 +769,7 @@ void test_restore_explicit_password_obf_still_overwrites_stored() {
 void test_persist_detects_nvs_entry_exhaustion_mid_write() {
     mock_preferences::set_entry_limit(40);  // far below one full settings namespace
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
     doc["apSSID"] = "QuotaNet";
@@ -778,7 +781,7 @@ void test_persist_detects_nvs_entry_exhaustion_mid_write() {
 }
 
 void test_deferred_restore_reports_failure_when_persist_fails() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
@@ -795,10 +798,10 @@ void test_deferred_restore_reports_failure_when_persist_fails() {
 
 void test_wifi_sta_slot_sd_secret_retains_multiple_passwords() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     source.setWifiStaSlotCredentials(0, "ghost", "ghost-secret", "Garage", 0);
     source.setWifiStaSlotCredentials(1, "ghost-e", "extender-secret", "Extender", 1);
 
@@ -833,7 +836,7 @@ void test_wifi_sta_slot_sd_secret_retains_multiple_passwords() {
     // per-slot passwords.
     mock_preferences::reset();
 
-    SettingsManager restored;
+    SettingsManager restored(storage, profiles);
     TEST_ASSERT_TRUE(restored.restoreFromSD());
     TEST_ASSERT_TRUE(restored.get().wifiClientEnabled);
     TEST_ASSERT_EQUAL_STRING("ghost", restored.get().wifiStaSlots[0].ssid.c_str());
@@ -846,8 +849,8 @@ void test_wifi_sta_slot_sd_secret_retains_multiple_passwords() {
 
 void test_wifi_sta_slot_sd_secret_upgrade_preserves_legacy_top_level_secret() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     JsonDocument legacySecret;
     legacySecret["_type"] = WIFI_CLIENT_SD_SECRET_TYPE;
@@ -860,7 +863,7 @@ void test_wifi_sta_slot_sd_secret_upgrade_preserves_legacy_top_level_secret() {
     serializeJson(legacySecret, legacyFile);
     legacyFile.close();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiStaSlotCredentials(0, "ghost", "ghost-secret", "Garage", 0);
 
     JsonDocument secretDoc;
@@ -891,10 +894,10 @@ void test_wifi_sta_slot_sd_secret_upgrade_preserves_legacy_top_level_secret() {
 
 void test_wifi_sta_slots_restore_without_passwords_clears_stale_secrets() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.setWifiStaSlotCredentials(0, "OldGarage", "old-secret", "Old", 0);
     manager.setWifiStaSlotCredentials(1, "OldPhone", "old-phone-secret", "Phone", 1);
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
@@ -932,7 +935,7 @@ void test_wifi_sta_slots_restore_without_passwords_clears_stale_secrets() {
 }
 
 void test_legacy_station_backup_restores_to_slot0() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["_type"] = "v1simple_backup";
@@ -953,10 +956,10 @@ void test_legacy_station_backup_restores_to_slot0() {
 
 void test_wifi_sta_slots_round_trip_and_primary_alias() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager original;
+    SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
     settings.wifiClientEnabled = true;
     settings.wifiStaSlots[0].ssid = "GarageNet";
@@ -977,7 +980,7 @@ void test_wifi_sta_slots_round_trip_and_primary_alias() {
 
     original.save();
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
     const V1Settings& loaded = reloaded.get();
     TEST_ASSERT_TRUE(loaded.wifiClientEnabled);
@@ -999,7 +1002,7 @@ void test_wifi_sta_slots_round_trip_and_primary_alias() {
 }
 
 void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
-    SettingsManager original;
+    SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
     settings.wifiClientEnabled = false;
     settings.wifiStaSlots[0].ssid = "GarageNet";
@@ -1012,7 +1015,7 @@ void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
 
     original.save();
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
 
     TEST_ASSERT_FALSE(reloaded.get().wifiClientEnabled);
@@ -1021,7 +1024,7 @@ void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
 }
 
 void test_legacy_wifi_client_enabled_missing_still_heals_saved_slots() {
-    SettingsManager original;
+    SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
     settings.wifiClientEnabled = false;
     settings.wifiStaSlots[0].ssid = "LegacyGarage";
@@ -1036,7 +1039,7 @@ void test_legacy_wifi_client_enabled_missing_still_heals_saved_slots() {
     TEST_ASSERT_TRUE(prefs.remove(kNvsWifiClientEnabled));
     prefs.end();
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
 
     TEST_ASSERT_TRUE(reloaded.get().wifiClientEnabled);
@@ -1044,7 +1047,7 @@ void test_legacy_wifi_client_enabled_missing_still_heals_saved_slots() {
 }
 
 void test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slots() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
@@ -1065,7 +1068,7 @@ void test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slot
 }
 
 void test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
@@ -1084,7 +1087,7 @@ void test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots() {
 }
 
 void test_legacy_wifi_client_credentials_migrate_to_slot0() {
-    SettingsManager seed;
+    SettingsManager seed(storage, profiles);
     V1Settings& settings = seed.mutableSettings();
     settings.wifiClientEnabled = true;
     settings.wifiClientSSID = "LegacyNet";
@@ -1106,7 +1109,7 @@ void test_legacy_wifi_client_credentials_migrate_to_slot0() {
     wifiPrefs.remove(kNvsWifiStaSlotPassword[0]);
     wifiPrefs.end();
 
-    SettingsManager migrated;
+    SettingsManager migrated(storage, profiles);
     migrated.load();
 
     TEST_ASSERT_TRUE(migrated.get().wifiClientEnabled);
@@ -1122,10 +1125,10 @@ void test_legacy_wifi_client_credentials_migrate_to_slot0() {
 
 void test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().apPassword = "preserved-pass";
 
     JsonDocument doc;
@@ -1182,7 +1185,7 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
     TEST_ASSERT_EQUAL_INT(V1_MODE_LOGIC, restored.slot0_default.mode);
 
     V1Profile restoredProfile;
-    TEST_ASSERT_TRUE(v1ProfileManager.loadProfile("Road", restoredProfile));
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", restoredProfile));
     TEST_ASSERT_EQUAL_STRING("Restored profile", restoredProfile.description.c_str());
     TEST_ASSERT_EQUAL_UINT8(1, restoredProfile.settings.bytes[0]);
     TEST_ASSERT_EQUAL_UINT8(6, restoredProfile.settings.bytes[5]);
@@ -1190,12 +1193,12 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
 
 void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_sibling() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
-    JsonArray profiles = doc["profiles"].to<JsonArray>();
+    JsonArray profileArray = doc["profiles"].to<JsonArray>();
 
     const char* invalidValues[] = {"\"6\"", "true", "null", "5.5", "-1", "256"};
     for (size_t i = 0; i < sizeof(invalidValues) / sizeof(invalidValues[0]); ++i) {
@@ -1203,10 +1206,10 @@ void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_s
         String profileJson = String("{\"name\":\"Invalid") + String(static_cast<unsigned long>(i)) +
                              "\",\"bytes\":[1,2,3,4,5," + invalidValues[i] + "]}";
         TEST_ASSERT_FALSE(deserializeJson(profileDoc, profileJson));
-        profiles.add(profileDoc.as<JsonObject>());
+        profileArray.add(profileDoc.as<JsonObject>());
     }
 
-    JsonObject validProfile = profiles.add<JsonObject>();
+    JsonObject validProfile = profileArray.add<JsonObject>();
     validProfile["name"] = "Valid";
     validProfile["description"] = "Valid sibling";
     JsonArray validBytes = validProfile["bytes"].to<JsonArray>();
@@ -1215,7 +1218,7 @@ void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_s
         validBytes.add(value);
     }
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     const SettingsBackupApplyResult applyResult = manager.applyBackupDocument(doc, true);
 
     TEST_ASSERT_TRUE(applyResult.success);
@@ -1227,17 +1230,17 @@ void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_s
 
     TEST_ASSERT_TRUE(fs.exists("/v1profiles/Valid.json"));
     V1Profile restoredProfile;
-    TEST_ASSERT_TRUE(v1ProfileManager.loadProfile("Valid", restoredProfile));
+    TEST_ASSERT_TRUE(profiles.loadProfile("Valid", restoredProfile));
     TEST_ASSERT_EQUAL_STRING("Valid sibling", restoredProfile.description.c_str());
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedBytes, restoredProfile.settings.bytes, 6);
 }
 
 void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     V1Settings& settings = manager.mutableSettings();
     settings.apSSID = "PayloadTest";
     settings.brightness = 77;
@@ -1245,19 +1248,19 @@ void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
 
     V1Profile profile("Road");
     profile.description = "Serialized";
-    ProfileSaveResult saveResult = v1ProfileManager.saveProfile(profile);
+    ProfileSaveResult saveResult = profiles.saveProfile(profile);
     TEST_ASSERT_TRUE(saveResult.success);
 
     JsonDocument expectedDoc;
     const BackupPayloadBuilder::BuildResult buildResult =
         BackupPayloadBuilder::buildBackupDocument(expectedDoc,
                                                   settings,
-                                                  v1ProfileManager,
+                                                  profiles,
                                                   BackupPayloadBuilder::BackupTransport::SdBackup,
                                                   4321);
 
     SerializedSettingsBackupPayload payload;
-    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, settings, v1ProfileManager, 4321));
+    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, settings, profiles, 4321));
     TEST_ASSERT_EQUAL_UINT32(4321u, payload.snapshotMs);
     TEST_ASSERT_EQUAL_INT(buildResult.profilesBackedUp, payload.profilesBackedUp);
     TEST_ASSERT_NOT_NULL(payload.data);
@@ -1276,7 +1279,7 @@ void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
 }
 
 void test_device_batch_update_skips_noop_persist_and_saves_once_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DeviceSettingsUpdate emptyUpdate;
     manager.applyDeviceSettingsUpdate(emptyUpdate);
@@ -1299,7 +1302,7 @@ void test_device_batch_update_skips_noop_persist_and_saves_once_on_change() {
 }
 
 void test_proxy_mode_disables_obd_setting() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().proxyBLE = false;
     manager.mutableSettings().obdEnabled = true;
 
@@ -1313,7 +1316,7 @@ void test_proxy_mode_disables_obd_setting() {
 }
 
 void test_obd_mode_disables_proxy_setting() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.mutableSettings().proxyBLE = true;
     manager.mutableSettings().obdEnabled = false;
 
@@ -1327,12 +1330,12 @@ void test_obd_mode_disables_proxy_setting() {
 }
 
 void test_load_heals_legacy_proxy_obd_conflict_to_obd_mode() {
-    SettingsManager original;
+    SettingsManager original(storage, profiles);
     original.mutableSettings().proxyBLE = true;
     original.mutableSettings().obdEnabled = true;
     original.save();
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
 
     TEST_ASSERT_TRUE(reloaded.get().obdEnabled);
@@ -1340,7 +1343,7 @@ void test_load_heals_legacy_proxy_obd_conflict_to_obd_mode() {
 }
 
 void test_backup_restore_heals_legacy_proxy_obd_conflict_to_obd_mode() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
     doc["proxyBLE"] = true;
@@ -1354,7 +1357,7 @@ void test_backup_restore_heals_legacy_proxy_obd_conflict_to_obd_mode() {
 }
 
 void test_audio_shared_fields_update_skips_noop_persist_and_saves_once_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     AudioSettingsUpdate emptyUpdate;
     manager.applyAudioSettingsUpdate(emptyUpdate);
@@ -1377,7 +1380,7 @@ void test_audio_shared_fields_update_skips_noop_persist_and_saves_once_on_change
 }
 
 void test_display_batch_update_skips_noop_persist_and_saves_once_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DisplaySettingsUpdate emptyUpdate;
     manager.applyDisplaySettingsUpdate(emptyUpdate);
@@ -1400,7 +1403,7 @@ void test_display_batch_update_skips_noop_persist_and_saves_once_on_change() {
 }
 
 void test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_writer() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DisplaySettingsUpdate update;
     update.hasBrightness = true;
@@ -1413,7 +1416,7 @@ void test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_write
     TEST_ASSERT_TRUE(manager.deferredBackupPending());
     TEST_ASSERT_EQUAL_UINT8(77, mock_preferences::getUnsigned(activeNs.c_str(), kNvsBrightness, 0));
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
 
     TEST_ASSERT_EQUAL_UINT8(77, reloaded.get().brightness);
@@ -1421,10 +1424,10 @@ void test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_write
 
 void test_touch_setters_persist_nvs_without_taking_blocking_sd_lock() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     manager.setStealthEnabled(true, SettingsPersistMode::ImmediateNvsDeferredBackup);
     manager.setActiveSlot(2, SettingsPersistMode::ImmediateNvsDeferredBackup);
@@ -1438,14 +1441,14 @@ void test_touch_setters_persist_nvs_without_taking_blocking_sd_lock() {
     TEST_ASSERT_EQUAL_UINT64(1u, mock_preferences::getUnsigned(activeNs.c_str(), kNvsStealthEnabled, 0));
     TEST_ASSERT_EQUAL_UINT64(2u, mock_preferences::getUnsigned(activeNs.c_str(), kNvsActiveSlot, 0));
 
-    SettingsManager reloaded;
+    SettingsManager reloaded(storage, profiles);
     reloaded.load();
     TEST_ASSERT_TRUE(reloaded.get().stealthEnabled);
     TEST_ASSERT_EQUAL_INT(2, reloaded.get().activeSlot);
 }
 
 void test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     ObdSettingsUpdate emptyUpdate;
     manager.applyObdSettingsUpdate(emptyUpdate, SettingsPersistMode::Deferred);
@@ -1482,7 +1485,7 @@ void test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change() {
 }
 
 void test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     AutoPushSlotUpdate emptyUpdate;
     manager.applyAutoPushSlotUpdate(emptyUpdate);
@@ -1513,7 +1516,7 @@ void test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change
 }
 
 void test_autopush_state_batch_update_skips_noop_persist_and_saves_once_on_change() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     AutoPushStateUpdate emptyUpdate;
     manager.applyAutoPushStateUpdate(emptyUpdate);
@@ -1545,11 +1548,11 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
     // are recovered when restoreFromSD fails (mutex blocked) but a valid SD
     // backup exists.
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     // Build and write a backup with non-default speed-mute values.
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
     src.speedMuteEnabled = true;
     src.speedMuteThresholdMph = 45;
@@ -1557,7 +1560,7 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
-        payload, source.get(), v1ProfileManager, 5000));
+        payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
@@ -1566,7 +1569,7 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
     StorageManager::resetMockSdLockState();
     StorageManager::mockSdLockState.failNextBlockingLock = true;
 
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     target.checkAndRestoreFromSD();
 
     TEST_ASSERT_EQUAL_UINT8(45, target.get().speedMuteThresholdMph);
@@ -1575,10 +1578,10 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
 
 void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     V1Settings& sourceSettings = source.mutableSettings();
     sourceSettings.apSSID = "SD-Rig";
     sourceSettings.proxyName = "SD-Proxy";
@@ -1588,7 +1591,7 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
-        payload, source.get(), v1ProfileManager, 5000));
+        payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
@@ -1601,10 +1604,10 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     // available yet.  A later shutdown/user-save must not promote factory
     // defaults to authoritative NVS.
     mock_preferences::reset();
-    storageManager.reset();
-    v1ProfileManager = V1ProfileManager();
+    storage.reset();
+    profiles = V1ProfileManager();
 
-    SettingsManager noSdBoot;
+    SettingsManager noSdBoot(storage, profiles);
     noSdBoot.begin();
     noSdBoot.save();
 
@@ -1617,8 +1620,8 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
 
     // If SD appears while restore is still pending, a backup write from the
     // provisional/default NVS must refuse to overwrite the user's SD backup.
-    storageManager.setFilesystem(&fs, true);
-    SettingsManager pendingWriter;
+    storage.setFilesystem(&fs, true);
+    SettingsManager pendingWriter(storage, profiles);
     pendingWriter.load();
     pendingWriter.mutableSettings().apSSID = "Factory-Default";
     pendingWriter.mutableSettings().brightness = 200;
@@ -1631,14 +1634,14 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
 
     // Next boot with SD follows the real order: settings load before storage,
     // then checkAndRestoreFromSD runs after the SD/profile layer is mounted.
-    storageManager.reset();
-    v1ProfileManager = V1ProfileManager();
+    storage.reset();
+    profiles = V1ProfileManager();
 
-    SettingsManager bootWithSd;
+    SettingsManager bootWithSd(storage, profiles);
     bootWithSd.begin();
 
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     TEST_ASSERT_TRUE(bootWithSd.checkAndRestoreFromSD());
 
     const V1Settings& restored = bootWithSd.get();
@@ -1662,17 +1665,17 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
 
 void test_gps_fields_round_trip_through_backup_and_restore() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
     src.gpsEnabled = true;
     src.gpsBaud = 38400;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
-        payload, source.get(), v1ProfileManager, 5000));
+        payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
@@ -1683,7 +1686,7 @@ void test_gps_fields_round_trip_through_backup_and_restore() {
     TEST_ASSERT_EQUAL_HEX16(backupDoc["colorWiFiConnected"].as<uint16_t>(),
                             backupDoc["colorWiFiIcon"].as<uint16_t>());
 
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     TEST_ASSERT_TRUE(target.restoreFromSD());
 
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
@@ -1692,10 +1695,10 @@ void test_gps_fields_round_trip_through_backup_and_restore() {
 
 void test_voice_fields_round_trip_through_sd_backup_and_restore() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
     src.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
     src.voiceDirectionEnabled = false;
@@ -1711,7 +1714,7 @@ void test_voice_fields_round_trip_through_sd_backup_and_restore() {
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
-        payload, source.get(), v1ProfileManager, 5000));
+        payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
@@ -1729,7 +1732,7 @@ void test_voice_fields_round_trip_through_sd_backup_and_restore() {
     TEST_ASSERT_TRUE(backupDoc["secondaryX"].as<bool>());
     TEST_ASSERT_FALSE(backupDoc["speedMuteVoice"].as<bool>());
 
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     TEST_ASSERT_TRUE(target.restoreFromSD());
 
     const V1Settings& restored = target.get();
@@ -1748,24 +1751,24 @@ void test_voice_fields_round_trip_through_sd_backup_and_restore() {
 
 void test_gps_fields_partial_recovery() {
     fs::FS fs(g_tempRoot);
-    storageManager.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
 
-    SettingsManager source;
+    SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
     src.gpsEnabled = true;
     src.gpsBaud = 115200;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
-        payload, source.get(), v1ProfileManager, 5000));
+        payload, source.get(), profiles, 5000));
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
     StorageManager::resetMockSdLockState();
     StorageManager::mockSdLockState.failNextBlockingLock = true;
 
-    SettingsManager target;
+    SettingsManager target(storage, profiles);
     target.checkAndRestoreFromSD();
 
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
@@ -1773,7 +1776,7 @@ void test_gps_fields_partial_recovery() {
 }
 
 void test_gps_device_batch_update_saves_all_live_fields() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DeviceSettingsUpdate update{};
     update.hasGpsEnabled = true;
@@ -1791,7 +1794,7 @@ void test_gps_device_batch_update_saves_all_live_fields() {
 // submitted via the HTTP PUT path must NOT reach the settings store; the current
 // stored color must be retained instead.
 void test_display_update_rejects_zero_color_keeps_current() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     const uint16_t originalBogey = manager.get().colorBogey;
     TEST_ASSERT_NOT_EQUAL(0x0000u, originalBogey);  // default must be non-zero
 
@@ -1804,7 +1807,7 @@ void test_display_update_rejects_zero_color_keeps_current() {
 }
 
 void test_display_update_accepts_nonzero_color() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
 
     DisplaySettingsUpdate update;
     update.hasColorBandKa = true;
@@ -1838,7 +1841,7 @@ void test_v10_six_color_theme_loads_directly() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
 
     for (int i = 0; i < SIGNAL_BAR_COLOR_COUNT; ++i) {
@@ -1865,7 +1868,7 @@ void test_v11_eight_segment_theme_collapses_to_six() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
     const uint16_t expected[6] = {0x1001, 0x1002, 0x1004, 0x1005, 0x1007, 0x1008};
     for (int i = 0; i < 6; ++i) {
@@ -1890,7 +1893,7 @@ void test_v12_direct_colors_win_over_compatibility_shadow() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
 
     TEST_ASSERT_EQUAL_UINT16(0x1111, manager.get().colorBars[0]);
@@ -1912,7 +1915,7 @@ void test_fresh_install_seeds_six_physical_defaults() {
     TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
     meta.end();
 
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     manager.load();
     const uint16_t expected[6] = {0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800};
     for (int i = 0; i < 6; ++i) {
@@ -1921,7 +1924,7 @@ void test_fresh_install_seeds_six_physical_defaults() {
 }
 
 void test_v18_backup_eight_segment_theme_collapses_to_six() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     JsonDocument doc;
     doc["_version"] = 18;
     const uint16_t segments[8] = {0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007, 0x1008};
@@ -1939,7 +1942,7 @@ void test_v18_backup_eight_segment_theme_collapses_to_six() {
 }
 
 void test_v19_backup_direct_colors_win_over_compatibility_shadow() {
-    SettingsManager manager;
+    SettingsManager manager(storage, profiles);
     JsonDocument doc;
     doc["_version"] = 19;
     for (int i = 0; i < 6; ++i) {

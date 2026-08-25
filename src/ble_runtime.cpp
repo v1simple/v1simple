@@ -396,12 +396,6 @@ void V1BLEClient::process() {
         break;
     }
 
-    case BLEState::BACKOFF: {
-        // Legacy state: immediately resume the normal disconnected scan flow.
-        setBLEState(BLEState::DISCONNECTED, "backoff retired");
-        break;
-    }
-
     case BLEState::QUIESCING: {
         processClientQuiesce();
         break;

@@ -12,35 +12,14 @@
 #include "v1_profiles.h"
 #endif
 
-// Maximum bytes to buffer from BLE RX before dropping
+// Maximum bytes in the BLE RX frame-reassembly buffer.
 static constexpr size_t RX_BUFFER_MAX = 1024;
 static constexpr size_t RX_COMPACT_THRESHOLD = RX_BUFFER_MAX / 2;
 
-// RX overflow policy: a chunk is admitted whole or not at all.
-//
-// This buffer reassembles a *framed* byte stream (ESP_PACKET_START .. length ..
-// ESP_PACKET_END) out of BLE notifications: one V1 packet may span several
-// notifications, and one notification may carry several packets. Copying only the
-// head of a chunk and discarding its tail splices unrelated wire bytes together
-// *inside* the buffer. That is worse than losing the chunk: an interior splice can
-// forge a frame that still passes the start/length/end-marker check, so the parser
-// publishes a well-formed alert row built from two unrelated notifications and has
-// no way to detect it. Refusing the chunk outright keeps every buffered byte a
-// contiguous run of the wire stream, and costs at most one notification that the
-// parser resyncs past by scanning to the next ESP_PACKET_START.
-//
-// Which end to drop is set by the other overflow point on this same path: when the
-// notification queue is full, onNotify()'s xQueueSend() with a 0-tick timeout keeps
-// the already-queued head and rejects the incoming packet
-// (test_ble_queue_full_drops_incoming_without_evicting_valid_head pins that
-// deliberately). Evicting the head there would destroy the front of a packet the RX
-// buffer is mid-way through reassembling, so both ends preserve what has already
-// been committed and refuse the newest whole unit instead. This function now
-// follows the same rule at chunk granularity.
-//
-// Refusing input cannot wedge the buffer: process() compacts consumed bytes every
-// cycle and clears the buffer outright when no start marker is present, so space is
-// reclaimed as soon as the parser catches up.
+// The RX buffer reassembles a framed byte stream across BLE notifications. Queue
+// admission is the ownership boundary: after tryOnNotify() returns true, process()
+// must either consume that whole notification or leave it queued. It may never
+// dequeue a notification and then discard it because this staging buffer is full.
 bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,
                            DisplayPreviewModule* previewModule, PowerModule* powerModule, Config cfg) {
     ble_ = bleClient;
@@ -55,7 +34,6 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     }
 
     rxBuffer_.clear();
-    rxSpans_.clear();
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
@@ -85,7 +63,6 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
         backpressureActive_ = false;
         return false;
     }
-    rxSpans_.reserve(config_.queueDepth + 4);
     rxBufferReady_ = true;
     backpressureActive_ = false;
     return true;
@@ -177,7 +154,6 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
 
 void BleQueueModule::clearRxState() {
     rxBuffer_.clear();
-    rxSpans_.clear();
     rxReadPos_ = 0;
 }
 
@@ -194,18 +170,6 @@ void BleQueueModule::compactRxState() {
     memmove(rxBuffer_.data(), rxBuffer_.data() + shift, unread);
     rxBuffer_.resize(unread);
     rxReadPos_ = 0;
-
-    size_t writeIndex = 0;
-    for (const RxSpan& span : rxSpans_) {
-        if (span.end <= shift) {
-            continue;
-        }
-        RxSpan adjusted = span;
-        adjusted.begin = adjusted.begin > shift ? adjusted.begin - shift : 0;
-        adjusted.end -= shift;
-        rxSpans_[writeIndex++] = adjusted;
-    }
-    rxSpans_.resize(writeIndex);
 }
 
 bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet) {
@@ -225,7 +189,6 @@ bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet) {
     const size_t begin = rxBuffer_.size();
     rxBuffer_.resize(begin + packet.length);
     memcpy(rxBuffer_.data() + begin, packet.data, packet.length);
-    rxSpans_.push_back(RxSpan{begin, begin + packet.length});
     return true;
 }
 
@@ -248,13 +211,18 @@ void BleQueueModule::process() {
     const bool sessionOpen = acceptNotifications_.load(std::memory_order_acquire);
     queueDepthBeforeDrain = queueHandle_ ? uxQueueMessagesWaiting(queueHandle_) : 0;
 
-    while (queueHandle_ && xQueueReceive(queueHandle_, &pkt, 0) == pdTRUE) {
+    // Peek before staging so an accepted notification remains owned by the
+    // queue until the complete chunk fits. Parsing below frees buffer space;
+    // a later process() call then consumes the same queue head without loss.
+    while (queueHandle_ && xQueuePeek(queueHandle_, &pkt, 0) == pdTRUE) {
         if (!sessionOpen || pkt.sessionGeneration != activeSessionGeneration) {
+            (void)xQueueReceive(queueHandle_, &pkt, 0);
             continue;
         }
         if (!appendRxPacket(pkt)) {
-            HealthCounters::recordInputDrop();
+            break;
         }
+        (void)xQueueReceive(queueHandle_, &pkt, 0);
         latestPktTs = pkt.tsMs;
     }
 
@@ -343,7 +311,6 @@ void BleQueueModule::process() {
             break;
         }
         if (startPtr != dataBegin) {
-            const size_t discardedPrefix = static_cast<size_t>(startPtr - dataBegin);
             rxReadPos_ = static_cast<size_t>(startPtr - rxBuffer_.data());
             continue;
         }
@@ -404,12 +371,6 @@ void BleQueueModule::process() {
             }
         }
 
-        if (packetId == PACKET_ID_DISPLAY_DATA || packetId == PACKET_ID_ALERT_DATA) {
-            if (parseOk) {
-            } else {
-            }
-        }
-
         rxReadPos_ += packetSize;
         packetsProcessedThisCycle++;
 
@@ -428,10 +389,6 @@ void BleQueueModule::process() {
             hadSuccessfulParse_ = true;
         }
     }
-
-    rxSpans_.erase(
-        std::remove_if(rxSpans_.begin(), rxSpans_.end(), [this](const RxSpan& span) { return span.end <= rxReadPos_; }),
-        rxSpans_.end());
 
     if (rxReadPos_ >= rxBuffer_.size()) {
         clearRxState();

@@ -7,6 +7,7 @@
 #include <array>
 #include <vector>
 #include <algorithm>
+#include <cstdint>
 
 // Use the canonical type definitions — Band, Direction, AlertData, DisplayState.
 // Never redefine these here; the real and mock must always share the same struct layout.
@@ -27,6 +28,8 @@ public:
     bool hasAlertsFlag = false;
     int parseCalls = 0;
     bool parseReturnValue = true;
+    std::vector<std::vector<uint8_t>> parsedPackets;
+    std::vector<uint32_t> parseTimestamps;
 
     void reset() {
         state = DisplayState();
@@ -35,6 +38,8 @@ public:
         hasAlertsFlag = false;
         parseCalls = 0;
         parseReturnValue = true;
+        parsedPackets.clear();
+        parseTimestamps.clear();
         resetAlertAssemblyCalls = 0;
         resetAlertStateCalls = 0;
         resetV1VersionCalls = 0;
@@ -77,10 +82,14 @@ public:
     const std::vector<AlertData>& getAllAlerts() const { return alerts; }
     DisplayState getDisplayState() const { return state; }
 
-    bool parse(const uint8_t* /*data*/, size_t /*length*/) {
+    bool parse(const uint8_t* data, size_t length, uint32_t nowMs) {
         parseCalls++;
+        parsedPackets.emplace_back(data, data + length);
+        parseTimestamps.push_back(nowMs);
         return parseReturnValue;
     }
+
+    bool parse(const uint8_t* data, size_t length) { return parse(data, length, 0); }
 
     // Reset methods
     int resetAlertAssemblyCalls = 0;

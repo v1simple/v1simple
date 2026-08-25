@@ -178,6 +178,16 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue, void* out, TickType_t) {
     return pdTRUE;
 }
 
+inline BaseType_t xQueuePeek(QueueHandle_t queue, void* out, TickType_t) {
+    if (!queue || !out) return pdFALSE;
+    MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    const std::lock_guard<std::mutex> lock(q->mutex);
+    if (q->items.empty()) return pdFALSE;
+    const std::vector<uint8_t>& item = q->items.front();
+    std::memcpy(out, item.data(), std::min<size_t>(q->itemSize, item.size()));
+    return pdTRUE;
+}
+
 inline BaseType_t xQueueReset(QueueHandle_t queue) {
     if (!queue) return pdFALSE;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);

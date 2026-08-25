@@ -49,7 +49,6 @@ enum class BLEState {
     SUBSCRIBING,     // Subscribing to characteristics (multi-step, non-blocking)
     SUBSCRIBE_YIELD, // Yielding between subscribe steps to allow loop() to run
     CONNECTED,       // Successfully connected_ to V1
-    BACKOFF,         // Failed connection, waiting before retry
     QUIESCING        // Disconnect/cancel in progress; client attributes remain owned
 };
 
@@ -74,8 +73,6 @@ inline const char* bleStateToString(BLEState state) {
         return "SUBSCRIBE_YIELD";
     case BLEState::CONNECTED:
         return "CONNECTED";
-    case BLEState::BACKOFF:
-        return "BACKOFF";
     case BLEState::QUIESCING:
         return "QUIESCING";
     default:
@@ -504,8 +501,6 @@ class V1BLEClient {
     static constexpr uint32_t DISCOVERY_TIMEOUT_MS = 5000; // 5s for discovery
     static constexpr uint32_t SUBSCRIBE_TIMEOUT_MS = 3000; // 3s for subscriptions
 
-    // Fresh flash detection - set when firmware version changed
-    bool freshFlashBoot_ = false;
     // Tracks the bond-count snapshot that has already been persisted to SD.
     // 0xFF means unknown/uninitialized.
     uint8_t lastBondBackupCount_ = 0xFF;
@@ -530,6 +525,11 @@ class V1BLEClient {
         REQUEST_VERSION = 10,   // Send version request
         COMPLETE = 11           // All steps done
     };
+    enum class SubscribeStepResult {
+        InProgress,
+        Complete,
+        Failed,
+    };
     enum class ConnectedFollowupStep {
         NONE,
         REQUEST_ALERT_DATA,
@@ -543,7 +543,6 @@ class V1BLEClient {
     SubscribeStep subscribeStep_ = SubscribeStep::GET_SERVICE;
     ConnectedFollowupStep connectedFollowupStep_ = ConnectedFollowupStep::NONE;
     uint32_t subscribeYieldUntilMs_ = 0;                        // When to resume from SUBSCRIBE_YIELD
-    static constexpr uint32_t SUBSCRIBE_STEP_BUDGET_US = 50000; // 50ms per step max
     static constexpr uint32_t SUBSCRIBE_YIELD_MS = 5;           // 5ms yield between steps
     static constexpr uint8_t CONNECT_BURST_STABLE_CONSECUTIVE_LOOPS = 3;
     static constexpr uint32_t CONNECT_BURST_SETTLE_AFTER_FIRST_RX_MS = 1500;
@@ -573,7 +572,7 @@ class V1BLEClient {
     void processSubscribeYield();           // Handle SUBSCRIBE_YIELD state
     void processConnectedFollowup();        // Spread post-connect work across loop turns
     int enqueueCurrentBondBackupSnapshot(); // Non-blocking handoff to Core-0 writer
-    bool executeSubscribeStep();            // Execute one subscribe step, return true if done
+    SubscribeStepResult executeSubscribeStep(); // Execute one subscription step
 
     // Called from connectToServer() after successful sync connect
     bool finishConnection();

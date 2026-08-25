@@ -71,11 +71,6 @@ class BleQueueModule {
         uint32_t sessionGeneration;
     };
 
-    struct RxSpan {
-        size_t begin = 0;
-        size_t end = 0;
-    };
-
     V1BLEClient* ble_ = nullptr;
     PacketParser* parser_ = nullptr;
     V1ProfileManager* profiles_ = nullptr;
@@ -85,7 +80,6 @@ class BleQueueModule {
     std::atomic<bool> acceptNotifications_{false};
     std::atomic<uint32_t> sessionGeneration_{0};
     std::vector<uint8_t> rxBuffer_;
-    std::vector<RxSpan> rxSpans_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;

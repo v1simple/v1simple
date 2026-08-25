@@ -111,7 +111,7 @@ V1BLEClient::V1BLEClient()
       sessionClosedCallback_(nullptr), connectStableCallback_(nullptr)
       // connected_, shouldConnect_ - use default member initializers (atomic)
       ,
-      hasTargetDevice_(false), targetAddress_(), lastScanStart_(0), freshFlashBoot_(false), pScanCallbacks_(nullptr),
+      hasTargetDevice_(false), targetAddress_(), lastScanStart_(0), pScanCallbacks_(nullptr),
       pClientCallbacks_(nullptr), pProxyServerCallbacks_(nullptr), pProxyWriteCallbacks_(nullptr) {
     instancePtr = this;
 }
@@ -159,29 +159,12 @@ void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
     if (oldState == newState)
         return; // No change
 
-    const uint32_t now = static_cast<uint32_t>(millis());
-    const uint32_t stateTime =
-        (oldState != BLEState::DISCONNECTED && stateEnteredMs_ > 0) ? (now - stateEnteredMs_) : 0;
-
     bleState_ = newState;
-    stateEnteredMs_ = now;
+    stateEnteredMs_ = static_cast<uint32_t>(millis());
     if (newState == BLEState::SCAN_STOPPING || oldState == BLEState::SCAN_STOPPING) {
         scanStopResultsCleared_ = false;
     }
-
-    if (newState == BLEState::SCANNING) {
-    }
-    if (oldState == BLEState::SCANNING && newState != BLEState::SCANNING) {
-    }
-
-    if (newState == BLEState::SCANNING) {
-    } else if (newState == BLEState::SCAN_STOPPING && reason && strstr(reason, "V1 found")) {
-    } else if (newState == BLEState::CONNECTING) {
-    } else if (newState == BLEState::CONNECTED) {
-    }
-    if (oldState == BLEState::SCANNING && newState == BLEState::DISCONNECTED && reason &&
-        strstr(reason, "scan ended without finding V1")) {
-    }
+    (void)reason;
 }
 
 // Full cleanup of BLE connection state - call before retry or after failures
@@ -355,7 +338,6 @@ bool V1BLEClient::initBLE(bool enableProxy, const char* proxyName) {
             if (resetResult.backedUpBondCount > 0) {
                 Serial.printf(" backed up %d bond(s)...", resetResult.backedUpBondCount);
             }
-            freshFlashBoot_ = true;
             blePrefs.end();
         }
     }

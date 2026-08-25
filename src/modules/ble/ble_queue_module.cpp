@@ -59,7 +59,6 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
-    lastParsedTsMs_ = 0;
     hadSuccessfulParse_ = false;
     backpressureActive_ = false;
     tooLargeWarningLog_ = BleLogRateLimitState{};
@@ -120,7 +119,6 @@ void BleQueueModule::closeSession() {
     clearRxState();
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
-    lastParsedTsMs_ = 0;
     hadSuccessfulParse_ = false;
     backpressureActive_ = false;
 }
@@ -425,10 +423,9 @@ void BleQueueModule::process() {
                 preview_->cancel();
                 previewActive = false;
             }
-            // Set flag and timestamp for main loop to drive display pipeline
+            // Set flag for main loop to drive display pipeline
             // This decouples BLE processing from slow display updates
             hadSuccessfulParse_ = true;
-            lastParsedTsMs_ = parseTimestampMs;
         }
     }
 

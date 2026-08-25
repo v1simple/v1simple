@@ -127,8 +127,7 @@ void configureLoopDisplayModule() {
     loopDisplayProviders.readDisplayNowMs = [](void*) -> uint32_t { return millis(); };
     loopDisplayProviders.collectParsedSignal = [](void* ctx) -> ParsedFrameSignal {
         BleQueueModule* queue = static_cast<BleQueueModule*>(ctx);
-        return ParsedFrameEventModule::collect(queue->consumeParsedFlag(), queue->getLastParsedTimestamp(),
-                                               systemEventBus);
+        return ParsedFrameEventModule::collect(queue->consumeParsedFlag(), systemEventBus);
     };
     loopDisplayProviders.parsedSignalContext = &bleQueueModule;
     loopDisplayProviders.runParsedFrame =

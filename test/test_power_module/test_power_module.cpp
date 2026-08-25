@@ -108,7 +108,6 @@ ParsedFrameSignal collectParsedSignal(void* ctx) {
     probe->order.push_back('S');
     ParsedFrameSignal signal;
     signal.parsedReady = true;
-    signal.parsedTsMs = 90;
     return signal;
 }
 

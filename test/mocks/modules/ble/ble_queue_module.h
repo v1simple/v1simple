@@ -6,7 +6,6 @@
 class BleQueueModule {
 public:
     unsigned long lastRxMillis = 0;
-    uint32_t lastParsedTimestamp = 0;
     bool backpressured = false;
     bool parsedFlag = false;
     bool sessionOpen = true;
@@ -16,7 +15,6 @@ public:
     
     void reset() {
         lastRxMillis = 0;
-        lastParsedTimestamp = 0;
         backpressured = false;
         parsedFlag = false;
         sessionOpen = true;
@@ -31,14 +29,6 @@ public:
     
     unsigned long getLastRxMillis() const {
         return lastRxMillis;
-    }
-
-    void setLastParsedTimestamp(uint32_t tsMs) {
-        lastParsedTimestamp = tsMs;
-    }
-
-    uint32_t getLastParsedTimestamp() const {
-        return lastParsedTimestamp;
     }
 
     void setBackpressured(bool isBackpressured) {
@@ -65,7 +55,6 @@ public:
         // that reset without counting it as an explicit lifecycle close in
         // tests that assert callback ownership.
         lastRxMillis = 0;
-        lastParsedTimestamp = 0;
         backpressured = false;
         parsedFlag = false;
         sessionOpen = true;
@@ -77,7 +66,6 @@ public:
         sessionOpen = false;
         sessionGeneration = 0;
         lastRxMillis = 0;
-        lastParsedTimestamp = 0;
         parsedFlag = false;
         backpressured = false;
     }

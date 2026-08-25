@@ -32,9 +32,6 @@ class BleQueueModule {
     void end();
     bool isReady() const { return queueHandle_ != nullptr && rxBufferReady_; }
 
-    // Returns timestamp of last successfully parsed packet (for display latency tracking)
-    uint32_t getLastParsedTimestamp() const { return lastParsedTsMs_; }
-
     // Returns true if a packet was successfully parsed since last check (and clears flag)
     bool consumeParsedFlag() {
         bool had = hadSuccessfulParse_;
@@ -93,7 +90,6 @@ class BleQueueModule {
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;
     uint32_t lastNotifyTsMs_ = 0;
-    uint32_t lastParsedTsMs_ = 0;     // Timestamp of last successful parse (for display latency)
     bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
     bool backpressureActive_ = false;
     BleLogRateLimitState tooLargeWarningLog_;

@@ -875,7 +875,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     written += prefs.putUInt(kNvsCycleObdScanWindow, settings_.obdScanWindowMs);
     written += prefs.putUInt(kNvsCycleObdRetryInt, settings_.obdRetryIntervalMs);
     written += prefs.putUInt(kNvsCycleProxyOpenWindow, settings_.proxyOpenWindowMs);
-    written += prefs.putUInt(kNvsCycleWifiOpenTimeout, settings_.wifiOpenTimeoutMs);
     written += prefs.putUInt(kNvsCycleV1SettleQuiet, settings_.v1SettleQuietMs);
     written += prefs.putUInt(kNvsCycleV1SettleFallback, settings_.v1SettleFallbackMs);
     written += prefs.putUInt(kNvsCycleTeardownAckTimeout, settings_.cycleTeardownAckTimeoutMs);

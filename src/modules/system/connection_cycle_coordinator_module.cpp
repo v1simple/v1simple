@@ -4,8 +4,8 @@
 
 namespace {
 
-// If no V1 connects within this window, advance past SCAN_V1 so WiFi
-// (and other downstream phases) can proceed without a V1 present.
+// If no V1 connects within this window, advance past SCAN_V1 so downstream
+// connection work cannot leave the coordinator stuck during a quiet boot.
 constexpr uint32_t kScanV1FallbackMs = 30000;
 // Auto-push begins only after the V1 connection burst settles (up to 2.5 s),
 // so its terminal deadline must remain distinct from the shorter configurable
@@ -94,21 +94,17 @@ void ConnectionCycleCoordinatorModule::reset() {
     lastV1Connected_ = false;
     v1VerifyPushMatched_ = false;
     v1VerifyPushMatchedAtMs_ = 0;
-    manualWifiPreemptRequested_ = false;
     lastTeardownDurationMs_ = 0;
     totalObdRetryAttempts_ = 0;
-    totalWifiManualPhoneKicks_ = 0;
     obdScanWindowMs_ = kConnectionCycleObdScanWindowMsDefault;
     obdRetryIntervalMs_ = kConnectionCycleObdRetryIntervalMsDefault;
     proxyOpenWindowMs_ = kConnectionCycleProxyOpenWindowMsDefault;
-    wifiOpenTimeoutMs_ = kConnectionCycleWifiOpenTimeoutMsDefault;
     v1SettleQuietMs_ = kConnectionCycleV1SettleQuietMsDefault;
     v1SettleFallbackMs_ = kConnectionCycleV1SettleFallbackMsDefault;
     teardownAckTimeoutMs_ = kConnectionCycleTeardownAckTimeoutMsDefault;
 }
 
 void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
-    manualWifiPreemptRequested_ = false;
     if (!stateEnteredMsValid_) {
         stateEnteredMs_ = ctx.nowMs;
         stateEnteredMsValid_ = true;
@@ -199,14 +195,6 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
             if (providers.stopProxyAdvertising) {
                 providers.stopProxyAdvertising(providers.stopProxyAdvertisingContext);
             }
-            transitionTo(CycleState::WIFI_OPEN, ctx.nowMs);
-        }
-        break;
-
-    case CycleState::WIFI_OPEN:
-        if (v1Connected) {
-            transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
-        } else if (ctx.wifiActive || hasElapsed(ctx.nowMs, stateEnteredMs_, wifiOpenTimeoutMs_)) {
             transitionTo(CycleState::STEADY, ctx.nowMs);
         }
         break;
@@ -255,10 +243,6 @@ bool ConnectionCycleCoordinatorModule::proxyKeepConnectionAllowed() const {
     return state_ == CycleState::PROXY_OPEN;
 }
 
-bool ConnectionCycleCoordinatorModule::shouldPreemptProxyForManualWifiStart() const {
-    return manualWifiPreemptRequested_;
-}
-
 ObdBleArbitrationRequest ConnectionCycleCoordinatorModule::arbitrationRequest() const {
     switch (state_) {
     case CycleState::V1_SETTLING:
@@ -291,9 +275,6 @@ void ConnectionCycleCoordinatorModule::updateTimingConfig(const CycleContext& ct
     proxyOpenWindowMs_ = clampConnectionCycleProxyOpenWindowMsValue(ctx.proxyOpenWindowMs == 0
                                                                         ? kConnectionCycleProxyOpenWindowMsDefault
                                                                         : static_cast<int64_t>(ctx.proxyOpenWindowMs));
-    wifiOpenTimeoutMs_ = clampConnectionCycleWifiOpenTimeoutMsValue(ctx.wifiOpenTimeoutMs == 0
-                                                                        ? kConnectionCycleWifiOpenTimeoutMsDefault
-                                                                        : static_cast<int64_t>(ctx.wifiOpenTimeoutMs));
     v1SettleQuietMs_ = clampConnectionCycleV1SettleQuietMsValue(
         ctx.v1SettleQuietMs == 0 ? kConnectionCycleV1SettleQuietMsDefault : static_cast<int64_t>(ctx.v1SettleQuietMs));
     v1SettleFallbackMs_ = clampConnectionCycleV1SettleFallbackMsValue(
@@ -346,7 +327,6 @@ void ConnectionCycleCoordinatorModule::transitionTo(const CycleState newState, c
 void ConnectionCycleCoordinatorModule::enterTeardown(const uint32_t nowMs) {
     v1VerifyPushMatched_ = false;
     v1VerifyPushMatchedAtMs_ = 0;
-    manualWifiPreemptRequested_ = false;
     transitionTo(CycleState::TEARDOWN, nowMs);
     if (providers.stopObdScan) {
         providers.stopObdScan(providers.stopObdScanContext);

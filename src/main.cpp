@@ -86,11 +86,6 @@
 #include "modules/alp/alp_event_latch.h"
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
-#include "modules/wifi/wifi_boot_policy.h"
-#include "modules/wifi/wifi_priority_policy_module.h"
-#include "modules/wifi/wifi_visual_sync_module.h"
-#include "modules/wifi/wifi_process_cadence_module.h"
-#include "modules/wifi/wifi_runtime_module.h"
 
 #include "provider_callback_bindings.h"
 #include <driver/gpio.h>
@@ -230,10 +225,6 @@ LoopPowerTouchModule loopPowerTouchModule;
 LoopRuntimeSnapshotModule loopRuntimeSnapshotModule;
 LoopConnectionEarlyModule loopConnectionEarlyModule;
 ConnectionCycleCoordinatorModule connectionCycleCoordinatorModule;
-WifiPriorityPolicyModule wifiPriorityPolicyModule;
-WifiVisualSyncModule wifiVisualSyncModule;
-WifiProcessCadenceModule wifiProcessCadenceModule;
-WifiRuntimeModule wifiRuntimeModule;
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
@@ -336,7 +327,6 @@ static esp_reset_reason_t initializeResetReasonAndCadenceState(const CheckpointL
     mainRuntimeState.activeScanScreenDwellMs = MIN_SCAN_SCREEN_DWELL_MS;
     Serial.printf("[BootTiming] scan_dwell_target_ms=%lu\n", mainRuntimeState.activeScanScreenDwellMs);
     connectionStateCadenceModule.reset();
-    wifiProcessCadenceModule.reset();
     return resetReason;
 }
 
@@ -523,7 +513,7 @@ static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, cons
 
     logMaintenanceHeapSnapshot("pre_wifi");
     wifiManager.setMaintenanceBootMode(true);
-    configureWifiRuntimeModule();
+    configureMaintenanceWifiServices();
 
     initializeTouchAndDisplayControls();
     logBootStage("maintenance_touch");
@@ -600,7 +590,6 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
     configureAlertDisplayPipeline();
     configureSystemLoopModules();
     configureRuntimeModules();
-    configureWifiRuntimeModule();
     finalizeBootReadyAndBleScan(setupStartMs, logBootStage);
 }
 
@@ -834,7 +823,6 @@ void loop() {
     const LoopIngestPhaseValues loopIngestValues =
         processLoopIngestPhase(now, mainRuntimeState.bootReady, mainRuntimeState.bootReadyDeadlineMs,
                                skipNonCoreThisLoop, overloadThisLoop, powerPresentationOwned);
-    const bool enableWifi = loopIngestValues.enableWifi;
     mainRuntimeState.bootReady = loopIngestValues.bootReady;
     bleBackpressure = loopIngestValues.bleBackpressure;
     const bool skipLateNonCoreThisLoop = loopIngestValues.skipLateNonCoreThisLoop;
@@ -862,12 +850,9 @@ void loop() {
             bleClient.isProxyAdvertising(),
             bleClient.isProxyClientConnected(),
             bleClient.hasProxyClientConnectedThisBoot(),
-            enableWifi,
-            wifiManager.isWifiServiceActive() || wifiManager.isConnected(),
             currentSettings.obdScanWindowMs,
             currentSettings.obdRetryIntervalMs,
             currentSettings.proxyOpenWindowMs,
-            currentSettings.wifiOpenTimeoutMs,
             currentSettings.v1SettleQuietMs,
             currentSettings.v1SettleFallbackMs,
             currentSettings.cycleTeardownAckTimeoutMs,
@@ -952,14 +937,10 @@ void loop() {
 
     // No overload guard: per-element render caches make unchanged-frame draws cheap;
     // fade/debounce/gap-recovery remain microsecond-cheap and must run every frame.
-    processLoopDisplayPreWifiPhase(now, mainRuntimeState.bootSplashHoldActive, overloadLateThisLoop,
-                                   powerPresentationOwned);
+    processLoopDisplayPhase(now, mainRuntimeState.bootSplashHoldActive, overloadLateThisLoop, powerPresentationOwned);
 
-    const LoopWifiPhaseValues loopWifiValues =
-        processLoopWifiPhase(now, skipLateNonCoreThisLoop, bleBackpressure, overloadLateThisLoop,
-                             bleClient.isConnectBurstSettling(),
-                             mainRuntimeState.bootSplashHoldActive || powerPresentationOwned);
-    const LoopRuntimeSnapshotValues& loopRuntimeSnapshotValues = loopWifiValues.loopRuntimeSnapshotValues;
+    const LoopRuntimeSnapshotValues loopRuntimeSnapshotValues =
+        loopRuntimeSnapshotModule.process(LoopRuntimeSnapshotContext{});
 
     const LoopFinalizePhaseValues loopFinalizeValues =
         processLoopFinalizePhase(mainRuntimeState.bootSplashHoldActive,

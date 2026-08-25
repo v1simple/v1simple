@@ -115,7 +115,6 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     doc["obdScanWindowMs"] = s.obdScanWindowMs;
     doc["obdRetryIntervalMs"] = s.obdRetryIntervalMs;
     doc["proxyOpenWindowMs"] = s.proxyOpenWindowMs;
-    doc["wifiOpenTimeoutMs"] = s.wifiOpenTimeoutMs;
     doc["v1SettleQuietMs"] = s.v1SettleQuietMs;
     doc["v1SettleFallbackMs"] = s.v1SettleFallbackMs;
     doc["cycleTeardownAckTimeoutMs"] = s.cycleTeardownAckTimeoutMs;
@@ -255,7 +254,6 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
         {"obdScanWindowMs", &update.hasObdScanWindowMs, &update.obdScanWindowMs},
         {"obdRetryIntervalMs", &update.hasObdRetryIntervalMs, &update.obdRetryIntervalMs},
         {"proxyOpenWindowMs", &update.hasProxyOpenWindowMs, &update.proxyOpenWindowMs},
-        {"wifiOpenTimeoutMs", &update.hasWifiOpenTimeoutMs, &update.wifiOpenTimeoutMs},
         {"v1SettleQuietMs", &update.hasV1SettleQuietMs, &update.v1SettleQuietMs},
         {"v1SettleFallbackMs", &update.hasV1SettleFallbackMs, &update.v1SettleFallbackMs},
         {"cycleTeardownAckTimeoutMs", &update.hasCycleTeardownAckTimeoutMs, &update.cycleTeardownAckTimeoutMs},

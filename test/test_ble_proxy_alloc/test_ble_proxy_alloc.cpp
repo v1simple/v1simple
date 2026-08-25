@@ -566,7 +566,7 @@ void test_proxy_advertising_downshifts_from_fast_to_slow_cadence() {
     mockMillis = 1000;
 
     TEST_ASSERT_FALSE(g_mock_nimble_state.advertising);
-    client.startProxyAdvertising(true);
+    client.startProxyAdvertising();
 
     TEST_ASSERT_TRUE(g_mock_nimble_state.advertising);
     TEST_ASSERT_TRUE(client.proxyAdvertisingFastCadence_);

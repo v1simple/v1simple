@@ -119,30 +119,14 @@ void ObdRuntimeModule::resetForBegin() {
     initIndex_ = 0;
 
 #ifdef UNIT_TEST
-    testStartScanResult_ = true;
-    testConnectResult_ = true;
     testBleConnected_ = false;
-    testDiscoverResult_ = true;
-    testSubscribeResult_ = true;
-    testWriteResult_ = true;
-    testBeginSecurityResult_ = true;
-    testSecurityReady_ = true;
-    testSecurityEncrypted_ = true;
-    testSecurityBonded_ = true;
-    testSecurityAuthenticated_ = true;
-    testRssi_ = 0;
-    testLastBleError_ = 0;
-    testLastSecurityError_ = 0;
     testStartScanCalls_ = 0;
     testConnectCalls_ = 0;
     testDiscoverCalls_ = 0;
     testDisconnectCalls_ = 0;
-    testWriteCalls_ = 0;
-    testBeginSecurityCalls_ = 0;
-    testDeleteBondCalls_ = 0;
-    testRefreshBondBackupCalls_ = 0;
     testLastCommand_[0] = '\0';
     testLastWriteWithResponse_ = true;
+    testDeferNextTransportResult_ = false;
 #endif
 }
 
@@ -661,27 +645,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     }
 }
 
-#ifdef UNIT_TEST
-ObdBleArbitrationRequest ObdRuntimeModule::getBleArbitrationRequest() const {
-    if (manualScanPreemptProxy_) {
-        return ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
-    }
-
-    switch (state_) {
-    case ObdConnectionState::WAIT_BOOT:
-    case ObdConnectionState::CONNECTING:
-    case ObdConnectionState::SECURING:
-    case ObdConnectionState::DISCOVERING:
-    case ObdConnectionState::AT_INIT:
-        return (savedAddress_[0] != '\0' || connectAddress_[0] != '\0')
-                   ? ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD
-                   : ObdBleArbitrationRequest::NONE;
-    default:
-        return ObdBleArbitrationRequest::NONE;
-    }
-}
-#endif
-
 // ======================================================================
 // SNAPSHOT + SPEED QUERY — read-only queries into module state
 // ======================================================================
@@ -853,35 +816,3 @@ void ObdRuntimeModule::forgetDevice() {
     stateEnteredMs_ = 0;
     stateEntryPending_ = false;
 }
-
-// ======================================================================
-// TEST-ONLY HOOKS
-// ======================================================================
-
-#ifdef UNIT_TEST
-void ObdRuntimeModule::injectSpeedForTest(float speedMph, uint32_t timestampMs) {
-    speedMph_ = speedMph;
-    speedSampleTsMs_ = timestampMs;
-    speedValid_ = true;
-    consecutiveErrors_ = 0;
-    backoffCycles_ = 0;
-}
-
-void ObdRuntimeModule::forceStateForTest(ObdConnectionState state, uint32_t enteredMs) {
-    state_ = state;
-    stateEnteredMs_ = enteredMs;
-    stateEntryPending_ = false;
-    clearBleEventQueue();
-    clearBleResponseState();
-    resetCommandState();
-    bleDisconnected_ = false;
-}
-
-void ObdRuntimeModule::transitionToPollingForTest(uint32_t nowMs) {
-    transitionTo(ObdConnectionState::POLLING, nowMs);
-}
-
-ObdCommandKind ObdRuntimeModule::getActiveCommandKindForTest() const {
-    return activeCommand_.active ? activeCommand_.kind : ObdCommandKind::NONE;
-}
-#endif

@@ -11,7 +11,6 @@
     let obdScanWindowMs = $state(15000);
     let obdRetryIntervalMs = $state(120000);
     let proxyOpenWindowMs = $state(60000);
-    let wifiOpenTimeoutMs = $state(30000);
     let v1SettleQuietMs = $state(500);
     let v1SettleFallbackMs = $state(1500);
     let cycleTeardownAckTimeoutMs = $state(100);
@@ -44,8 +43,6 @@
                 obdRetryIntervalMs = data.obdRetryIntervalMs;
             if (typeof data.proxyOpenWindowMs === 'number')
                 proxyOpenWindowMs = data.proxyOpenWindowMs;
-            if (typeof data.wifiOpenTimeoutMs === 'number')
-                wifiOpenTimeoutMs = data.wifiOpenTimeoutMs;
             if (typeof data.v1SettleQuietMs === 'number') v1SettleQuietMs = data.v1SettleQuietMs;
             if (typeof data.v1SettleFallbackMs === 'number')
                 v1SettleFallbackMs = data.v1SettleFallbackMs;
@@ -285,23 +282,6 @@
                                 disabled={saving}
                                 onchange={() =>
                                     handleTimingChange('proxyOpenWindowMs', proxyOpenWindowMs)}
-                            />
-                        </div>
-
-                        <div class="field-control">
-                            <label class="label" for="wifi-open-timeout-ms">
-                                <span class="field-label">WiFi Open Timeout (ms)</span>
-                            </label>
-                            <input
-                                id="wifi-open-timeout-ms"
-                                type="number"
-                                class="input w-full"
-                                bind:value={wifiOpenTimeoutMs}
-                                min="1000"
-                                max="120000"
-                                disabled={saving}
-                                onchange={() =>
-                                    handleTimingChange('wifiOpenTimeoutMs', wifiOpenTimeoutMs)}
                             />
                         </div>
 

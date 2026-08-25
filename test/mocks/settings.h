@@ -145,7 +145,6 @@ struct V1Settings {
     uint32_t obdScanWindowMs = 15000;
     uint32_t obdRetryIntervalMs = 120000;
     uint32_t proxyOpenWindowMs = 60000;
-    uint32_t wifiOpenTimeoutMs = 30000;
     uint32_t v1SettleQuietMs = 500;
     uint32_t v1SettleFallbackMs = 1500;
     uint32_t cycleTeardownAckTimeoutMs = 100;
@@ -176,8 +175,6 @@ struct ObdSettingsUpdate {
     uint32_t obdRetryIntervalMs = 0;
     bool hasProxyOpenWindowMs = false;
     uint32_t proxyOpenWindowMs = 0;
-    bool hasWifiOpenTimeoutMs = false;
-    uint32_t wifiOpenTimeoutMs = 0;
     bool hasV1SettleQuietMs = false;
     uint32_t v1SettleQuietMs = 0;
     bool hasV1SettleFallbackMs = false;
@@ -358,10 +355,6 @@ public:
         }
         if (update.hasProxyOpenWindowMs && settings.proxyOpenWindowMs != update.proxyOpenWindowMs) {
             settings.proxyOpenWindowMs = update.proxyOpenWindowMs;
-            changed = true;
-        }
-        if (update.hasWifiOpenTimeoutMs && settings.wifiOpenTimeoutMs != update.wifiOpenTimeoutMs) {
-            settings.wifiOpenTimeoutMs = update.wifiOpenTimeoutMs;
             changed = true;
         }
         if (update.hasV1SettleQuietMs && settings.v1SettleQuietMs != update.v1SettleQuietMs) {

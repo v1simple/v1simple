@@ -14,15 +14,10 @@
 #include "modules/system/loop_runtime_snapshot_module.h"
 
 struct LoopIngestPhaseValues {
-    bool enableWifi = true;
     bool bootReady = false;
     bool bleBackpressure = false;
     bool skipLateNonCoreThisLoop = false;
     bool overloadLateThisLoop = false;
-};
-
-struct LoopWifiPhaseValues {
-    LoopRuntimeSnapshotValues loopRuntimeSnapshotValues;
 };
 
 struct LoopFinalizePhaseValues {
@@ -38,13 +33,9 @@ LoopIngestPhaseValues processLoopIngestPhase(unsigned long nowMs, bool currentBo
 // Loop ownership contract:
 // - Ingest phase mutates BLE runtime and returns the settings snapshot.
 // - loop() owns the OBD runtime refresh and speed selection update.
-// - Display/Wi-Fi/finalize phases consume snapshots and run only their owned side effects.
-void processLoopDisplayPreWifiPhase(unsigned long nowMs, bool bootSplashHoldActive, bool overloadLateThisLoop,
-                                    bool presentationSuppressed);
-
-LoopWifiPhaseValues processLoopWifiPhase(unsigned long nowMs, bool skipLateNonCoreThisLoop, bool bleBackpressure,
-                                         bool overloadLateThisLoop, bool bleConnectBurstSettling,
-                                         bool bootSplashHoldActive);
+// - Display/finalize phases consume snapshots and run only their owned side effects.
+void processLoopDisplayPhase(unsigned long nowMs, bool bootSplashHoldActive, bool overloadLateThisLoop,
+                             bool presentationSuppressed);
 
 LoopFinalizePhaseValues processLoopFinalizePhase(bool bootSplashHoldActive, bool displayPreviewRunning,
                                                  bool bleBackpressure, bool overloadLateThisLoop,

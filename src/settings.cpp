@@ -406,8 +406,6 @@ void SettingsManager::load() {
         static_cast<int64_t>(preferences_.getUInt(kNvsCycleObdRetryInt, kConnectionCycleObdRetryIntervalMsDefault)));
     settings_.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(
         static_cast<int64_t>(preferences_.getUInt(kNvsCycleProxyOpenWindow, kConnectionCycleProxyOpenWindowMsDefault)));
-    settings_.wifiOpenTimeoutMs = clampConnectionCycleWifiOpenTimeoutMsValue(
-        static_cast<int64_t>(preferences_.getUInt(kNvsCycleWifiOpenTimeout, kConnectionCycleWifiOpenTimeoutMsDefault)));
     settings_.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(
         static_cast<int64_t>(preferences_.getUInt(kNvsCycleV1SettleQuiet, kConnectionCycleV1SettleQuietMsDefault)));
     settings_.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(static_cast<int64_t>(

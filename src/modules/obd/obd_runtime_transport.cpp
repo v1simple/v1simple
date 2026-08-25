@@ -365,7 +365,7 @@ bool ObdRuntimeModule::startBleScan() {
     return bleClient_ ? bleClient_->startScan(this, minRssi_) : false;
 #else
     testStartScanCalls_++;
-    return testStartScanResult_;
+    return true;
 #endif
 }
 
@@ -381,7 +381,7 @@ bool ObdRuntimeModule::connectBle(uint32_t timeoutMs, bool preferCachedAttribute
     (void)timeoutMs;
     (void)preferCachedAttributes;
     testConnectCalls_++;
-    return testConnectResult_;
+    return true;
 #endif
 }
 
@@ -398,8 +398,7 @@ bool ObdRuntimeModule::beginBleSecurity() {
     const bool started = bleClient_->beginSecurity();
     return started;
 #else
-    testBeginSecurityCalls_++;
-    return testBeginSecurityResult_;
+    return true;
 #endif
 }
 
@@ -407,7 +406,7 @@ bool ObdRuntimeModule::isBleSecurityReady() const {
 #ifndef UNIT_TEST
     return bleClient_->isSecurityReady();
 #else
-    return testSecurityReady_;
+    return true;
 #endif
 }
 
@@ -415,7 +414,7 @@ bool ObdRuntimeModule::isBleEncrypted() const {
 #ifndef UNIT_TEST
     return bleClient_->isEncrypted();
 #else
-    return testSecurityEncrypted_;
+    return true;
 #endif
 }
 
@@ -423,7 +422,7 @@ bool ObdRuntimeModule::isBleBonded() const {
 #ifndef UNIT_TEST
     return bleClient_->isBonded();
 #else
-    return testSecurityBonded_;
+    return true;
 #endif
 }
 
@@ -431,7 +430,7 @@ bool ObdRuntimeModule::isBleAuthenticated() const {
 #ifndef UNIT_TEST
     return bleClient_->isAuthenticated();
 #else
-    return testSecurityAuthenticated_;
+    return true;
 #endif
 }
 
@@ -439,7 +438,7 @@ int ObdRuntimeModule::getBleLastError() const {
 #ifndef UNIT_TEST
     return bleClient_->getLastBleError();
 #else
-    return testLastBleError_;
+    return 0;
 #endif
 }
 
@@ -447,7 +446,7 @@ int ObdRuntimeModule::getBleSecurityFailure() const {
 #ifndef UNIT_TEST
     return bleClient_->getLastSecurityError();
 #else
-    return testLastSecurityError_;
+    return 0;
 #endif
 }
 
@@ -457,7 +456,7 @@ bool ObdRuntimeModule::discoverBleServices() {
     return discovered;
 #else
     testDiscoverCalls_++;
-    return testDiscoverResult_;
+    return true;
 #endif
 }
 
@@ -467,7 +466,7 @@ bool ObdRuntimeModule::subscribeBleNotifications() {
     // (proper DI).  This method is only called from the UNIT_TEST fallback
     // path in beginTransportRequest().
 #ifdef UNIT_TEST
-    return testSubscribeResult_;
+    return true;
 #else
     // Should never be reached — production uses the transport queue.
     return false;
@@ -479,10 +478,9 @@ bool ObdRuntimeModule::writeBleCommand(const char* cmd, bool withResponse) {
     const bool wrote = bleClient_->writeCommand(cmd, withResponse);
     return wrote;
 #else
-    testWriteCalls_++;
     copyString(testLastCommand_, sizeof(testLastCommand_), cmd);
     testLastWriteWithResponse_ = withResponse;
-    return testWriteResult_;
+    return true;
 #endif
 }
 
@@ -490,7 +488,6 @@ void ObdRuntimeModule::refreshBleBondBackup() {
 #ifndef UNIT_TEST
     ::refreshBleBondBackup();
 #else
-    testRefreshBondBackupCalls_++;
 #endif
 }
 
@@ -554,9 +551,7 @@ bool ObdRuntimeModule::disconnectBle(bool deleteBond) {
     return queuePendingTransportDisconnect();
 #else
     testDisconnectCalls_++;
-    if (deleteBond) {
-        testDeleteBondCalls_++;
-    }
+    (void)deleteBond;
     testBleConnected_ = false;
     return true;
 #endif
@@ -595,7 +590,7 @@ int8_t ObdRuntimeModule::readBleRssi(uint32_t nowMs) {
     return rssi;
 #else
     (void)nowMs;
-    return testRssi_;
+    return 0;
 #endif
 }
 
@@ -696,10 +691,40 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
         result.success = false;
         break;
     }
+    if (testDeferNextTransportResult_) {
+        testDeferNextTransportResult_ = false;
+        transportRequestActive_ = true;
+        pendingTransportOp_ = op;
+        pendingTransportRequestId_ = result.requestId;
+        pendingTransportIssuedMs_ = nowMs;
+        pendingTransportTimeoutMs_ = timeoutMs;
+        pendingTransportTimedOut_ = false;
+        return true;
+    }
     readyTransportResult_ = result;
     return true;
 #endif
 }
+
+#ifdef UNIT_TEST
+void ObdRuntimeModule::completePendingTransportForTest(bool success, bool timedOut, int bleError,
+                                                       int securityError) {
+    if (!transportRequestActive_) {
+        return;
+    }
+    ObdTransportResult result{};
+    result.ready = true;
+    result.op = pendingTransportOp_;
+    result.requestId = pendingTransportRequestId_;
+    result.issuedMs = pendingTransportIssuedMs_;
+    result.success = success;
+    result.timedOut = timedOut || pendingTransportTimedOut_;
+    result.bleError = bleError;
+    result.securityError = securityError;
+    clearTransportRequest();
+    readyTransportResult_ = result;
+}
+#endif
 
 void ObdRuntimeModule::pumpTransportResults() {
 #ifndef UNIT_TEST

@@ -362,8 +362,7 @@
             "obdScanWindowMs": 15000,
             "proxyOpenWindowMs": 60000,
             "v1SettleFallbackMs": 1500,
-            "v1SettleQuietMs": 500,
-            "wifiOpenTimeoutMs": 30000
+            "v1SettleQuietMs": 500
           },
           "contentType": "application/json",
           "status": 200
@@ -377,8 +376,7 @@
             "obdScanWindowMs": 15000,
             "proxyOpenWindowMs": 60000,
             "v1SettleFallbackMs": 1500,
-            "v1SettleQuietMs": 500,
-            "wifiOpenTimeoutMs": 30000
+            "v1SettleQuietMs": 500
           },
           "contentType": "application/json",
           "status": 200

@@ -277,10 +277,6 @@ class V1BLEClient {
     // Returns number of packets sent
     int processProxyQueue();
 
-    // WiFi priority mode - deprioritize BLE when web UI is active
-    void setWifiPriority(bool enabled); // Enable = suppress BLE activity
-    bool isWifiPriority() const { return wifiPriorityMode_; }
-
     // Boot readiness gate - blocks BLE scan/connect state machine until setup is ready
     void setBootReady(bool ready);
     bool isBootReady() const { return bootReadyFlag_; }
@@ -633,8 +629,6 @@ class V1BLEClient {
     std::unique_ptr<ProxyServerCallbacks> pProxyServerCallbacks_;
     std::unique_ptr<ProxyWriteCallbacks> pProxyWriteCallbacks_;
 
-    // WiFi priority mode flag
-    bool wifiPriorityMode_ = false;
     bool bootReadyFlag_ = false;
 
     // Initialize BLE server for proxy mode
@@ -658,7 +652,7 @@ class V1BLEClient {
     void refreshProxyAdvertisingCadence(uint32_t nowMs);
 
     // Start advertising proxy service
-    void startProxyAdvertising(bool ignoreWifiPriority = false);
+    void startProxyAdvertising();
 
     // Internal callbacks
     static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify);

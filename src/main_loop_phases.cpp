@@ -7,20 +7,16 @@
 #include "modules/system/loop_tail_module.h"
 #include "modules/system/periodic_maintenance_module.h"
 #include "modules/touch/tap_gesture_module.h"
-#include "modules/wifi/wifi_priority_policy_module.h"
-#include "modules/wifi/wifi_runtime_module.h"
 #include "config.h"
 #include "main_globals.h"
-#include "main_loop_settings_prep.h"
 #include "settings.h"
-#include "wifi_manager.h"
 
 LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bool currentBootReady,
                                              const unsigned long bootReadyDeadlineMs, const bool skipNonCoreThisLoop,
                                              const bool overloadThisLoop, const bool presentationSuppressed) {
-    const bool enableWifi = prepareLoopSettingsForIngest(
-        nowMs, presentationSuppressed, [](const unsigned long gestureNowMs) { tapGestureModule.process(gestureNowMs); },
-        []() { return settingsManager.get().enableWifi; });
+    if (!presentationSuppressed) {
+        tapGestureModule.process(nowMs);
+    }
 
     bool bootReady = currentBootReady;
     if (!bootReady && nowMs >= bootReadyDeadlineMs) {
@@ -28,8 +24,6 @@ LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bo
         bleClient.setBootReady(true);
         Serial.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", nowMs);
     }
-    wifiPriorityPolicyModule.apply(nowMs, bleClient, wifiManager);
-
     LoopIngestContext loopIngestCtx;
     loopIngestCtx.nowMs = nowMs;
     loopIngestCtx.bleProcessEnabled = true;
@@ -38,7 +32,6 @@ LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bo
     const LoopIngestResult loopIngestResult = loopIngestModule.process(loopIngestCtx);
 
     LoopIngestPhaseValues values;
-    values.enableWifi = enableWifi;
     values.bootReady = bootReady;
     values.bleBackpressure = loopIngestResult.bleBackpressure;
     values.skipLateNonCoreThisLoop = loopIngestResult.skipLateNonCoreThisLoop;
@@ -46,8 +39,8 @@ LoopIngestPhaseValues processLoopIngestPhase(const unsigned long nowMs, const bo
     return values;
 }
 
-void processLoopDisplayPreWifiPhase(const unsigned long nowMs, const bool bootSplashHoldActive,
-                                    const bool overloadLateThisLoop, const bool presentationSuppressed) {
+void processLoopDisplayPhase(const unsigned long nowMs, const bool bootSplashHoldActive,
+                             const bool overloadLateThisLoop, const bool presentationSuppressed) {
 
     LoopDisplayContext loopDisplayCtx;
     loopDisplayCtx.nowMs = nowMs;
@@ -59,27 +52,6 @@ void processLoopDisplayPreWifiPhase(const unsigned long nowMs, const bool bootSp
     if (!presentationSuppressed) {
         autoPushModule.process();
     }
-}
-
-LoopWifiPhaseValues processLoopWifiPhase(const unsigned long nowMs, const bool skipLateNonCoreThisLoop,
-                                         const bool bleBackpressure, const bool overloadLateThisLoop,
-                                         const bool bleConnectBurstSettling, const bool bootSplashHoldActive) {
-    const LoopRuntimeSnapshotValues loopRuntimeSnapshotValues =
-        loopRuntimeSnapshotModule.process(LoopRuntimeSnapshotContext{});
-
-    WifiRuntimeContext wifiRuntimeCtx;
-    wifiRuntimeCtx.nowMs = nowMs;
-    wifiRuntimeCtx.skipLateNonCoreThisLoop = skipLateNonCoreThisLoop;
-    wifiRuntimeCtx.bleBackpressure = bleBackpressure;
-    wifiRuntimeCtx.overloadLateThisLoop = overloadLateThisLoop;
-    wifiRuntimeCtx.bleConnectBurstSettling = bleConnectBurstSettling;
-    wifiRuntimeCtx.displayPreviewRunning = loopRuntimeSnapshotValues.displayPreviewRunning;
-    wifiRuntimeCtx.bootSplashHoldActive = bootSplashHoldActive;
-    wifiRuntimeModule.process(wifiRuntimeCtx);
-
-    LoopWifiPhaseValues values;
-    values.loopRuntimeSnapshotValues = loopRuntimeSnapshotValues;
-    return values;
 }
 
 LoopFinalizePhaseValues processLoopFinalizePhase(const bool bootSplashHoldActive, const bool displayPreviewRunning,

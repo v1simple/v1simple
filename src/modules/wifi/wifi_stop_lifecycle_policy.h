@@ -65,8 +65,6 @@ constexpr RequestDecision evaluateRequest(const RequestInput& input) {
 struct PhaseInput {
     bool idle = true;
     bool stopHttpServer = false;
-    bool finalize = false;
-    bool boundaryTransitionAllowed = false;
     uint32_t nowMs = 0;
     uint32_t phaseStartMs = 0;
     uint32_t settleMs = 0;
@@ -79,7 +77,7 @@ constexpr bool shouldExecutePhase(const PhaseInput& input) {
     if (!input.stopHttpServer && (input.nowMs - input.phaseStartMs) < input.settleMs) {
         return false;
     }
-    return input.finalize || input.boundaryTransitionAllowed;
+    return true;
 }
 
 } // namespace WifiStopLifecyclePolicy

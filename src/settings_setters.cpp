@@ -433,11 +433,6 @@ bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, Se
             assignIfChanged(settings_.proxyOpenWindowMs,
                             clampConnectionCycleProxyOpenWindowMsValue(static_cast<int64_t>(update.proxyOpenWindowMs)));
     }
-    if (update.hasWifiOpenTimeoutMs) {
-        changed |=
-            assignIfChanged(settings_.wifiOpenTimeoutMs,
-                            clampConnectionCycleWifiOpenTimeoutMsValue(static_cast<int64_t>(update.wifiOpenTimeoutMs)));
-    }
     if (update.hasV1SettleQuietMs) {
         changed |=
             assignIfChanged(settings_.v1SettleQuietMs,

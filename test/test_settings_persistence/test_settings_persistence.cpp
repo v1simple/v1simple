@@ -224,7 +224,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     ASSERT_UINT32_FIELD(obdScanWindowMs);
     ASSERT_UINT32_FIELD(obdRetryIntervalMs);
     ASSERT_UINT32_FIELD(proxyOpenWindowMs);
-    ASSERT_UINT32_FIELD(wifiOpenTimeoutMs);
     ASSERT_UINT32_FIELD(v1SettleQuietMs);
     ASSERT_UINT32_FIELD(v1SettleFallbackMs);
     ASSERT_UINT32_FIELD(cycleTeardownAckTimeoutMs);
@@ -445,7 +444,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     settings.obdScanWindowMs = 18000;
     settings.obdRetryIntervalMs = 90000;
     settings.proxyOpenWindowMs = 45000;
-    settings.wifiOpenTimeoutMs = 42000;
     settings.v1SettleQuietMs = 700;
     settings.v1SettleFallbackMs = 2200;
     settings.cycleTeardownAckTimeoutMs = 150;
@@ -523,7 +521,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_UINT32(18000u, loaded.obdScanWindowMs);
     TEST_ASSERT_EQUAL_UINT32(90000u, loaded.obdRetryIntervalMs);
     TEST_ASSERT_EQUAL_UINT32(45000u, loaded.proxyOpenWindowMs);
-    TEST_ASSERT_EQUAL_UINT32(42000u, loaded.wifiOpenTimeoutMs);
     TEST_ASSERT_EQUAL_UINT32(700u, loaded.v1SettleQuietMs);
     TEST_ASSERT_EQUAL_UINT32(2200u, loaded.v1SettleFallbackMs);
     TEST_ASSERT_EQUAL_UINT32(150u, loaded.cycleTeardownAckTimeoutMs);
@@ -569,7 +566,7 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_INT(18000, backupDoc["obdScanWindowMs"].as<int>());
     TEST_ASSERT_EQUAL_INT(90000, backupDoc["obdRetryIntervalMs"].as<int>());
     TEST_ASSERT_EQUAL_INT(45000, backupDoc["proxyOpenWindowMs"].as<int>());
-    TEST_ASSERT_EQUAL_INT(42000, backupDoc["wifiOpenTimeoutMs"].as<int>());
+    TEST_ASSERT_TRUE(backupDoc["wifiOpenTimeoutMs"].isNull());
     TEST_ASSERT_EQUAL_INT(700, backupDoc["v1SettleQuietMs"].as<int>());
     TEST_ASSERT_EQUAL_INT(2200, backupDoc["v1SettleFallbackMs"].as<int>());
     TEST_ASSERT_EQUAL_INT(150, backupDoc["cycleTeardownAckTimeoutMs"].as<int>());
@@ -1142,6 +1139,8 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
     doc["obdScanWindowMs"] = 20000;
     doc["obdRetryIntervalMs"] = 150000;
     doc["proxyOpenWindowMs"] = 50000;
+    // Legacy backups may still contain the retired normal-boot WiFi dwell.
+    // Restore must accept the document while ignoring the dead key.
     doc["wifiOpenTimeoutMs"] = 28000;
     doc["v1SettleQuietMs"] = 800;
     doc["v1SettleFallbackMs"] = 2500;
@@ -1176,7 +1175,6 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
     TEST_ASSERT_EQUAL_UINT32(20000u, restored.obdScanWindowMs);
     TEST_ASSERT_EQUAL_UINT32(150000u, restored.obdRetryIntervalMs);
     TEST_ASSERT_EQUAL_UINT32(50000u, restored.proxyOpenWindowMs);
-    TEST_ASSERT_EQUAL_UINT32(28000u, restored.wifiOpenTimeoutMs);
     TEST_ASSERT_EQUAL_UINT32(800u, restored.v1SettleQuietMs);
     TEST_ASSERT_EQUAL_UINT32(2500u, restored.v1SettleFallbackMs);
     TEST_ASSERT_EQUAL_UINT32(125u, restored.cycleTeardownAckTimeoutMs);
@@ -1470,15 +1468,12 @@ void test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change() {
     changedUpdate.obdScanWindowMs = 20000;
     changedUpdate.hasObdRetryIntervalMs = true;
     changedUpdate.obdRetryIntervalMs = 150000;
-    changedUpdate.hasWifiOpenTimeoutMs = true;
-    changedUpdate.wifiOpenTimeoutMs = 28000;
     manager.applyObdSettingsUpdate(changedUpdate, SettingsPersistMode::Deferred);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
     TEST_ASSERT_TRUE(manager.deferredPersistPending());
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
     TEST_ASSERT_EQUAL_UINT32(20000u, manager.get().obdScanWindowMs);
     TEST_ASSERT_EQUAL_UINT32(150000u, manager.get().obdRetryIntervalMs);
-    TEST_ASSERT_EQUAL_UINT32(28000u, manager.get().wifiOpenTimeoutMs);
 
     manager.serviceDeferredPersist(manager.deferredPersistNextAttemptAtMs());
     TEST_ASSERT_EQUAL_UINT32(2u, manager.backupRevision());

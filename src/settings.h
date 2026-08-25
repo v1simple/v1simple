@@ -64,10 +64,6 @@ inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsDefault = 60000;
 inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsMin = 1000;
 inline constexpr uint32_t kConnectionCycleProxyOpenWindowMsMax = 300000;
 
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsDefault = 30000;
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsMin = 1000;
-inline constexpr uint32_t kConnectionCycleWifiOpenTimeoutMsMax = 120000;
-
 inline constexpr uint32_t kConnectionCycleV1SettleQuietMsDefault = 500;
 inline constexpr uint32_t kConnectionCycleV1SettleQuietMsMin = 100;
 inline constexpr uint32_t kConnectionCycleV1SettleQuietMsMax = 5000;
@@ -278,8 +274,7 @@ struct V1Settings {
     // Connection cycle coordinator settings
     uint32_t obdScanWindowMs;           // OBD discovery window after V1 settles
     uint32_t obdRetryIntervalMs;        // OBD reconnect interval when proxy is idle
-    uint32_t proxyOpenWindowMs;         // Proxy advertising window before WiFi auto-start
-    uint32_t wifiOpenTimeoutMs;         // WiFi-open dwell before settling without AP activity
+    uint32_t proxyOpenWindowMs;         // Passive proxy advertising window after OBD work
     uint32_t v1SettleQuietMs;           // Quiet time after VerifyPush match before OBD scan
     uint32_t v1SettleFallbackMs;        // Quiet time when auto-push is disabled
     uint32_t cycleTeardownAckTimeoutMs; // Per-step teardown ack timeout
@@ -380,7 +375,6 @@ struct V1Settings {
           obdScanWindowMs(kConnectionCycleObdScanWindowMsDefault),
           obdRetryIntervalMs(kConnectionCycleObdRetryIntervalMsDefault),
           proxyOpenWindowMs(kConnectionCycleProxyOpenWindowMsDefault),
-          wifiOpenTimeoutMs(kConnectionCycleWifiOpenTimeoutMsDefault),
           v1SettleQuietMs(kConnectionCycleV1SettleQuietMsDefault),
           v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
           cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
@@ -697,9 +691,6 @@ struct ObdSettingsUpdate {
 
     bool hasProxyOpenWindowMs = false;
     uint32_t proxyOpenWindowMs = 0;
-
-    bool hasWifiOpenTimeoutMs = false;
-    uint32_t wifiOpenTimeoutMs = 0;
 
     bool hasV1SettleQuietMs = false;
     uint32_t v1SettleQuietMs = 0;

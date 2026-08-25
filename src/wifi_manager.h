@@ -119,8 +119,6 @@ class WiFiManager {
         return WifiApLifecyclePolicy::isSetupModeActive(setupModeState_ == SETUP_MODE_AP_ON, apInterfaceEnabled_);
     }
     bool isStopping() const;
-    bool hasPendingLifecycleWork() const;
-    void setBoundaryTransitionAdmission(bool allow);
 
     // Process web server requests (call in loop)
     void process();
@@ -204,7 +202,7 @@ class WiFiManager {
     void setMaintenanceBootMode(bool enabled) { maintenanceBootMode_ = enabled; }
     bool isMaintenanceBootMode() const { return maintenanceBootMode_; }
 
-    // Web activity tracking (for WiFi priority mode)
+    // Web activity tracking for the maintenance-session idle deadline
     void markUiActivity();                                  // Call on every HTTP request
     bool isUiActive(unsigned long timeoutMs = 30000) const; // True if request within timeout
 
@@ -281,7 +279,6 @@ class WiFiManager {
     bool wifiStopManual_ = false;
     bool wifiStopHadSta_ = false;
     bool wifiStopHadAp_ = false;
-    bool allowBoundaryTransitionWork_ = false;
 
     // WiFi reconnect failure tracking prevents repeated attempts from leaking memory.
     int wifiReconnectFailures_ = 0;
@@ -292,7 +289,7 @@ class WiFiManager {
     static constexpr unsigned long WIFI_RECONNECT_DEFER_NO_V1_MS = 90000; // Protect BLE acquisition on boot
     bool wifiReconnectDeferredLogged_ = false;
 
-    // Web activity tracking for WiFi priority mode
+    // Web activity tracking for maintenance-session idle deadlines
     unsigned long lastUiActivityMs_ = 0;
 
     // Low-DMA protection state (prevents rapid restart loops under heap pressure)

@@ -587,7 +587,7 @@ bool V1BLEClient::forceProxyAdvertising(bool enable) {
         // Explicit debug/test control refreshes fast discovery so transition
         // drive flaps do not inherit a stale boot-time cadence.
         armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_START_WINDOW_MS);
-        startProxyAdvertising(true);
+        startProxyAdvertising();
         return isProxyAdvertising();
     }
 
@@ -595,13 +595,9 @@ bool V1BLEClient::forceProxyAdvertising(bool enable) {
     return true;
 }
 
-void V1BLEClient::startProxyAdvertising(bool ignoreWifiPriority) {
+void V1BLEClient::startProxyAdvertising() {
     if (!proxyServerInitialized_ || !pServer_) {
         Serial.println("Cannot start advertising - proxy server not initialized");
-        return;
-    }
-
-    if (wifiPriorityMode_ && !ignoreWifiPriority) {
         return;
     }
 

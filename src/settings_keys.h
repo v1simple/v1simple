@@ -192,7 +192,6 @@ inline constexpr const char* kNvsObdMinRssi = "obdMinRssi";
 inline constexpr const char* kNvsCycleObdScanWindow = "cycObdWin";
 inline constexpr const char* kNvsCycleObdRetryInt = "cycObdRet";
 inline constexpr const char* kNvsCycleProxyOpenWindow = "cycPrxWin";
-inline constexpr const char* kNvsCycleWifiOpenTimeout = "cycWifiOp";
 inline constexpr const char* kNvsCycleV1SettleQuiet = "cycV1Quiet";
 inline constexpr const char* kNvsCycleV1SettleFallback = "cycV1Fall";
 inline constexpr const char* kNvsCycleTeardownAckTimeout = "cycTdAck";

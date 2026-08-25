@@ -85,10 +85,6 @@ inline uint32_t clampConnectionCycleProxyOpenWindowMsValue(int64_t value) {
     return clampU32(value, kConnectionCycleProxyOpenWindowMsMin, kConnectionCycleProxyOpenWindowMsMax);
 }
 
-inline uint32_t clampConnectionCycleWifiOpenTimeoutMsValue(int64_t value) {
-    return clampU32(value, kConnectionCycleWifiOpenTimeoutMsMin, kConnectionCycleWifiOpenTimeoutMsMax);
-}
-
 inline uint32_t clampConnectionCycleV1SettleQuietMsValue(int64_t value) {
     return clampU32(value, kConnectionCycleV1SettleQuietMsMin, kConnectionCycleV1SettleQuietMsMax);
 }

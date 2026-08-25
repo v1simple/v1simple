@@ -656,9 +656,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     if (doc["proxyOpenWindowMs"].is<int>()) {
         settings_.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(doc["proxyOpenWindowMs"].as<int>());
     }
-    if (doc["wifiOpenTimeoutMs"].is<int>()) {
-        settings_.wifiOpenTimeoutMs = clampConnectionCycleWifiOpenTimeoutMsValue(doc["wifiOpenTimeoutMs"].as<int>());
-    }
     if (doc["v1SettleQuietMs"].is<int>()) {
         settings_.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(doc["v1SettleQuietMs"].as<int>());
     }
@@ -808,7 +805,6 @@ bool backupAppearsInSyncWithNvs(const JsonDocument& doc, const V1Settings& curre
            backupFieldMatchesInt(doc, "obdScanWindowMs", static_cast<int>(current.obdScanWindowMs)) &&
            backupFieldMatchesInt(doc, "obdRetryIntervalMs", static_cast<int>(current.obdRetryIntervalMs)) &&
            backupFieldMatchesInt(doc, "proxyOpenWindowMs", static_cast<int>(current.proxyOpenWindowMs)) &&
-           backupFieldMatchesInt(doc, "wifiOpenTimeoutMs", static_cast<int>(current.wifiOpenTimeoutMs)) &&
            backupFieldMatchesInt(doc, "v1SettleQuietMs", static_cast<int>(current.v1SettleQuietMs)) &&
            backupFieldMatchesInt(doc, "v1SettleFallbackMs", static_cast<int>(current.v1SettleFallbackMs)) &&
            backupFieldMatchesInt(doc, "cycleTeardownAckTimeoutMs", static_cast<int>(current.cycleTeardownAckTimeoutMs));

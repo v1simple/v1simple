@@ -99,7 +99,6 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["obdScanWindowMs"] = settings.obdScanWindowMs;
     doc["obdRetryIntervalMs"] = settings.obdRetryIntervalMs;
     doc["proxyOpenWindowMs"] = settings.proxyOpenWindowMs;
-    doc["wifiOpenTimeoutMs"] = settings.wifiOpenTimeoutMs;
     doc["v1SettleQuietMs"] = settings.v1SettleQuietMs;
     doc["v1SettleFallbackMs"] = settings.v1SettleFallbackMs;
     doc["cycleTeardownAckTimeoutMs"] = settings.cycleTeardownAckTimeoutMs;

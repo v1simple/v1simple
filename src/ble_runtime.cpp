@@ -172,7 +172,7 @@ void V1BLEClient::process() {
         (proxyEnabled_ && proxyServerInitialized_) ? NimBLEDevice::getAdvertising() : nullptr;
     const bool proxyAdvertisingActive = pProxyAdvertising && pProxyAdvertising->isAdvertising();
     const bool proxyAdvertisingAllowed = proxyAdvertisingAllowed_ && isConnected() && proxyEnabled_ &&
-                                         proxyServerInitialized_ && !wifiPriorityMode_ && !suppressPassiveProxy;
+                                         proxyServerInitialized_ && !suppressPassiveProxy;
     const bool proxyKeepConnectionAllowed = proxyKeepConnectionAllowed_ && !preemptProxyForManualScan;
 
     if (!proxyKeepConnectionAllowed && proxyConnected && !proxyDisconnectRequestedByCoordinator_ && pServer_ &&
@@ -233,11 +233,6 @@ void V1BLEClient::process() {
         if (discoveryTaskRunning_.load(std::memory_order_acquire)) {
             beginClientQuiesce("discovery owner still active");
             break;
-        }
-
-        // Skip scanning if WiFi priority mode is active
-        if (wifiPriorityMode_) {
-            return;
         }
 
         // Not connected_ - keep actively scanning for the V1.
@@ -438,60 +433,6 @@ void V1BLEClient::disconnect() {
     beginClientQuiesce("disconnect requested");
 }
 
-// ============================================================================
-// WiFi Priority Mode
-// ============================================================================
-// Deprioritize BLE when web UI is active to maximize responsiveness
-
 void V1BLEClient::setBootReady(bool ready) {
     bootReadyFlag_ = ready;
-}
-
-void V1BLEClient::setWifiPriority(bool enabled) {
-    if (wifiPriorityMode_ == enabled)
-        return; // No change
-
-    wifiPriorityMode_ = enabled;
-
-    // Rate-limit transition logs to avoid serial spam if caller oscillates.
-    static BleLogRateLimitState wifiPriorityLog;
-    const uint32_t nowMs = static_cast<uint32_t>(millis());
-    const bool shouldLog = shouldLogBleConnectionEvent(wifiPriorityLog, nowMs);
-
-    if (enabled) {
-        if (shouldLog)
-            Serial.println("[BLE] WiFi priority ENABLED - suppressing scans/reconnects/proxy");
-
-        // Stop any active scan
-        NimBLEScan* pScan = NimBLEDevice::getScan();
-        if (pScan && pScan->isScanning()) {
-            if (shouldLog)
-                Serial.println("[BLE] Stopping scan for WiFi priority mode");
-            pScan->stop();
-            pScan->clearResults();
-        }
-
-        // Stop proxy advertising if running
-        if (proxyEnabled_ && NimBLEDevice::getAdvertising()->isAdvertising()) {
-            if (shouldLog)
-                Serial.println("[BLE] Stopping proxy advertising for WiFi priority mode");
-            NimBLEDevice::stopAdvertising();
-        }
-
-        // Cancel any pending deferred advertising start
-        proxyAdvertisingStartMs_ = 0;
-
-        // Preserve an existing V1 connection while WiFi has radio priority.
-
-    } else {
-        if (shouldLog)
-            Serial.println("[BLE] WiFi priority DISABLED - resuming normal BLE operation");
-
-        // Resume scanning if disconnected
-        if (!isConnected() && bleState_ == BLEState::DISCONNECTED) {
-            if (shouldLog)
-                Serial.println("[BLE] Resuming scan after WiFi priority mode");
-            startScanning();
-        }
-    }
 }

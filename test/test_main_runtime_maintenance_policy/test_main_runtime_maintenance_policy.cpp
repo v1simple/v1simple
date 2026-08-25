@@ -334,7 +334,7 @@ void test_status_payload_deadline_anchor_contract_holds() {
         loopBody.find("mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;"));
 
     const std::string wiringBody = extractFunctionBody(
-        readFile(projectRoot() + "/src/main_runtime_wiring.cpp"), "void configureWifiRuntimeModule()");
+        readFile(projectRoot() + "/src/main_runtime_wiring.cpp"), "void configureMaintenanceWifiServices()");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, wiringBody.find("obj[\"maintenanceBootUptimeMs\"]"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           wiringBody.find("millis() - mainRuntimeState.maintenanceBootStartedMs"));

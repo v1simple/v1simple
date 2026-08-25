@@ -1,7 +1,7 @@
 #pragma once
 
 void showInitialScanningScreen();
-void configureWifiRuntimeModule();
+void configureMaintenanceWifiServices();
 void configureTouchUiModule();
 void configureAlertDisplayPipeline();
 void configureSystemLoopModules();

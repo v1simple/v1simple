@@ -51,10 +51,6 @@
 #include "modules/voice/voice_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
-#include "modules/wifi/wifi_priority_policy_module.h"
-#include "modules/wifi/wifi_process_cadence_module.h"
-#include "modules/wifi/wifi_runtime_module.h"
-#include "modules/wifi/wifi_visual_sync_module.h"
 
 namespace {
 bool wifiStatusCallbackConfigured = false;
@@ -111,7 +107,7 @@ static WifiOrchestrator& getWifiOrchestrator() {
     return orchestrator;
 }
 
-void configureWifiRuntimeModule() {
+void configureMaintenanceWifiServices() {
     wifiManager.setObdDependencies(&obdRuntimeModule, &speedSourceSelector);
     wifiManager.setGpsRuntime(&gpsRuntimeModule);
     getWifiOrchestrator().ensureCallbacksConfigured();
@@ -162,65 +158,6 @@ void configureWifiRuntimeModule() {
         wifiStatusCallbackConfigured = true;
     }
 
-    WifiRuntimeModule::Providers wifiRuntimeProviders;
-    wifiRuntimeProviders.shouldRunWifiProcessingPolicy = [](void* ctx) {
-        return isWifiProcessingEnabledPolicy(*static_cast<WiFiManager*>(ctx));
-    };
-    wifiRuntimeProviders.wifiPolicyContext = &wifiManager;
-    wifiRuntimeProviders.readWifiLifecyclePending =
-        ProviderCallbackBindings::member<WiFiManager, &WiFiManager::hasPendingLifecycleWork>;
-    wifiRuntimeProviders.wifiLifecycleContext = &wifiManager;
-    wifiRuntimeProviders.processClockUs = [](void*) -> uint32_t { return micros(); };
-    wifiRuntimeProviders.runWifiCadence =
-        ProviderCallbackBindings::member<WifiProcessCadenceModule, &WifiProcessCadenceModule::process>;
-    wifiRuntimeProviders.wifiCadenceContext = &wifiProcessCadenceModule;
-    wifiRuntimeProviders.setWifiTransitionAdmission = [](void* ctx, bool allowTransitionWork) {
-        static_cast<WiFiManager*>(ctx)->setBoundaryTransitionAdmission(allowTransitionWork);
-    };
-    wifiRuntimeProviders.wifiTransitionAdmissionContext = &wifiManager;
-    wifiRuntimeProviders.runWifiManagerProcess = ProviderCallbackBindings::member<WiFiManager, &WiFiManager::process>;
-    wifiRuntimeProviders.wifiManagerProcessContext = &wifiManager;
-    wifiRuntimeProviders.readWifiServiceActive =
-        ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isWifiServiceActive>;
-    wifiRuntimeProviders.wifiServiceContext = &wifiManager;
-    wifiRuntimeProviders.readWifiConnected = ProviderCallbackBindings::member<WiFiManager, &WiFiManager::isConnected>;
-    wifiRuntimeProviders.wifiConnectedContext = &wifiManager;
-    wifiRuntimeProviders.readVisualNowMs = [](void*) -> uint32_t { return millis(); };
-    wifiRuntimeProviders.runWifiVisualSync = [](void* ctx, uint32_t nowMs, bool wifiVisualActiveNow,
-                                                bool displayPreviewRunning, bool bootSplashHoldActive) {
-        static bool prevWifiVisualActive = false;
-        static bool prevStaConnected = false;
-        const bool stateChanged = (wifiVisualActiveNow != prevWifiVisualActive);
-        prevWifiVisualActive = wifiVisualActiveNow;
-
-        // Track STA connection independently so the icon color updates
-        // immediately when STA connects, even if wifiVisualActiveNow
-        // was already true (AP was running).
-        const bool staConnected = wifiManager.isConnected();
-        const bool staChanged = (staConnected != prevStaConnected);
-        prevStaConnected = staConnected;
-
-        static_cast<WifiVisualSyncModule*>(ctx)->process(
-            nowMs, wifiVisualActiveNow, displayPreviewRunning, bootSplashHoldActive,
-            [](void* /*ctx*/) {
-                display.drawWiFiIndicator();
-                const int leftColWidth = 64;
-                const int leftColHeight = 96;
-                display.flushRegion(0, SCREEN_HEIGHT - leftColHeight, leftColWidth, leftColHeight);
-            },
-            nullptr);
-
-        // Force full DISPLAY_FLUSH on next pipeline run when WiFi icon
-        // visibility or color transitions.  The small flushRegion above
-        // handles periodic color refreshes, but the icon's initial
-        // appearance requires a full flush to reliably reach the
-        // AXS15231B panel.
-        if (stateChanged || staChanged) {
-            display.forceNextRedraw();
-        }
-    };
-    wifiRuntimeProviders.wifiVisualSyncContext = &wifiVisualSyncModule;
-    wifiRuntimeModule.begin(wifiRuntimeProviders);
 }
 
 static void configureLoopConnectionEarlyModule() {
@@ -245,8 +182,6 @@ static void configureLoopConnectionEarlyModule() {
 }
 
 void configureTouchUiModule() {
-    getWifiOrchestrator().ensureCallbacksConfigured();
-
     TouchUiModule::Callbacks touchCbs{
         .isWifiSetupActive = [](void* /*ctx*/) { return wifiManager.isWifiServiceActive(); },
         .stopWifiSetup = [](void* /*ctx*/) { wifiManager.stopSetupMode(true); },

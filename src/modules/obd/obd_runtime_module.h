@@ -182,54 +182,16 @@ class ObdRuntimeModule {
     void onBleData(const uint8_t* data, size_t len);
 
 #ifdef UNIT_TEST
-    void injectSpeedForTest(float speedMph, uint32_t timestampMs);
-    void forceStateForTest(ObdConnectionState state, uint32_t enteredMs);
-    void setConsecutiveErrorsForTest(uint32_t errors) { consecutiveErrors_ = errors; }
-    void setBackoffCyclesForTest(uint32_t cycles) { backoffCycles_ = cycles; }
-    void setV1WasConnectedAtEcuIdleForTest(bool v) { v1WasConnectedAtEcuIdle_ = v; }
-    void setConsecutiveSpeedSamplesForTest(uint32_t samples) { consecutiveSpeedSamples_ = samples; }
-    void setLastFailureForTest(ObdFailureReason reason) { lastFailure_ = reason; }
-    ObdCommandKind getActiveCommandKindForTest() const;
     uint32_t getStartScanCallCountForTest() const { return testStartScanCalls_; }
     uint32_t getConnectCallCountForTest() const { return testConnectCalls_; }
     uint32_t getDiscoverCallCountForTest() const { return testDiscoverCalls_; }
     uint32_t getDisconnectCallCountForTest() const { return testDisconnectCalls_; }
-    uint32_t getWriteCallCountForTest() const { return testWriteCalls_; }
-    uint32_t getBeginSecurityCallCountForTest() const { return testBeginSecurityCalls_; }
-    uint32_t getDeleteBondCallCountForTest() const { return testDeleteBondCalls_; }
-    uint32_t getRefreshBondBackupCallCountForTest() const { return testRefreshBondBackupCalls_; }
-    const char* getRepairedBondAddressForTest() const { return repairedBondAddress_; }
-    const char* getConnectAddressForTest() const { return connectAddress_; }
     const char* getLastCommandForTest() const { return testLastCommand_; }
     bool getLastWriteWithResponseForTest() const { return testLastWriteWithResponse_; }
-    void setTestStartScanResult(bool result) { testStartScanResult_ = result; }
-    void setTestConnectResult(bool result) { testConnectResult_ = result; }
     void setTestBleConnected(bool connected) { testBleConnected_ = connected; }
-    void setTestDiscoverResult(bool result) { testDiscoverResult_ = result; }
-    void setTestSubscribeResult(bool result) { testSubscribeResult_ = result; }
-    void setTestWriteResult(bool result) { testWriteResult_ = result; }
-    void setTestRssi(int8_t rssi) { testRssi_ = rssi; }
-    void setTestBeginSecurityResult(bool result) { testBeginSecurityResult_ = result; }
-    void setTestSecurityReady(bool ready) { testSecurityReady_ = ready; }
-    void setTestSecurityEncrypted(bool encrypted) { testSecurityEncrypted_ = encrypted; }
-    void setTestSecurityBonded(bool bonded) { testSecurityBonded_ = bonded; }
-    void setTestSecurityAuthenticated(bool authenticated) { testSecurityAuthenticated_ = authenticated; }
-    void setTestLastBleError(int error) { testLastBleError_ = error; }
-    void setTestLastSecurityError(int error) { testLastSecurityError_ = error; }
-    void stageTransportStateForTest(ObdTransportOp op) {
-        transportRequestActive_ = true;
-        pendingTransportOp_ = op;
-        pendingTransportRequestId_ = 41;
-        readyTransportResult_.ready = true;
-        readyTransportResult_.op = op;
-        readyTransportResult_.requestId = 41;
-    }
-    bool transportRequestActiveForTest() const { return transportRequestActive_; }
-    bool transportResultReadyForTest() const { return readyTransportResult_.ready; }
-    void setTransportDisconnectPendingForTest(bool pending) { transportDisconnectPending_ = pending; }
-    static const char* bleReasonNameForTest(int reason) { return bleReasonName(reason); }
-    void transitionToPollingForTest(uint32_t nowMs);
-    ObdBleArbitrationRequest getBleArbitrationRequest() const;
+    void deferNextTransportResultForTest() { testDeferNextTransportResult_ = true; }
+    void completePendingTransportForTest(bool success, bool timedOut = false, int bleError = 0,
+                                         int securityError = 0);
 #endif
 
   private:
@@ -450,29 +412,13 @@ class ObdRuntimeModule {
     portMUX_TYPE bleEventQueueMux_ = portMUX_INITIALIZER_UNLOCKED;
 
 #ifdef UNIT_TEST
-    bool testStartScanResult_ = true;
-    bool testConnectResult_ = true;
     bool testBleConnected_ = false;
-    bool testDiscoverResult_ = true;
-    bool testSubscribeResult_ = true;
-    bool testWriteResult_ = true;
-    bool testBeginSecurityResult_ = true;
-    bool testSecurityReady_ = true;
-    bool testSecurityEncrypted_ = true;
-    bool testSecurityBonded_ = true;
-    bool testSecurityAuthenticated_ = true;
-    int8_t testRssi_ = 0;
-    int testLastBleError_ = 0;
-    int testLastSecurityError_ = 0;
     uint32_t testStartScanCalls_ = 0;
     uint32_t testConnectCalls_ = 0;
     uint32_t testDiscoverCalls_ = 0;
     uint32_t testDisconnectCalls_ = 0;
-    uint32_t testWriteCalls_ = 0;
-    uint32_t testBeginSecurityCalls_ = 0;
-    uint32_t testDeleteBondCalls_ = 0;
-    uint32_t testRefreshBondBackupCalls_ = 0;
     char testLastCommand_[CMD_BUF_LEN] = {};
     bool testLastWriteWithResponse_ = true;
+    bool testDeferNextTransportResult_ = false;
 #endif
 };

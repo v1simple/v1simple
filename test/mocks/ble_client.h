@@ -46,8 +46,6 @@ public:
     bool requestUserBytesResult = true;
     UserBytesVerificationStatus verificationStatus = UserBytesVerificationStatus::INACTIVE;
     int cancelUserBytesVerificationCalls = 0;
-    int setWifiPriorityCalls = 0;
-    bool lastWifiPriorityValue = false;
     
     void reset() {
         proxyConnected = false;
@@ -86,9 +84,6 @@ public:
         requestUserBytesResult = true;
         verificationStatus = UserBytesVerificationStatus::INACTIVE;
         cancelUserBytesVerificationCalls = 0;
-        wifiPriorityMode = false;
-        setWifiPriorityCalls = 0;
-        lastWifiPriorityValue = false;
     }
     
     // Connection state
@@ -98,13 +93,6 @@ public:
     void setConnected(bool v) { connected = v; }
     uint32_t sessionGeneration() const { return sessionGenerationValue; }
     void setSessionGeneration(uint32_t generation) { sessionGenerationValue = generation; }
-    bool isWifiPriority() const { return wifiPriorityMode; }
-    void setWifiPriority(bool enabled) {
-        wifiPriorityMode = enabled;
-        lastWifiPriorityValue = enabled;
-        setWifiPriorityCalls++;
-    }
-    void setWifiPriorityForTest(bool enabled) { wifiPriorityMode = enabled; }
     bool isConnectBurstSettling() const { return connectBurstSettling; }
     void setConnectBurstSettling(bool v) { connectBurstSettling = v; }
     void setBootReady(bool ready) { bootReadyFlag = ready; }
@@ -203,7 +191,6 @@ public:
 private:
     bool proxyConnected = false;
     bool connected = true;
-    bool wifiPriorityMode = false;
 };
 
 #endif  // BLE_CLIENT_H

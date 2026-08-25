@@ -92,7 +92,6 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
         wifiStopManual_ = false;
         wifiStopHadSta_ = false;
         wifiStopHadAp_ = false;
-        allowBoundaryTransitionWork_ = false;
     };
 
     if (setupModeState_ == SETUP_MODE_AP_ON) {
@@ -299,7 +298,6 @@ void WiFiManager::finalizeStopSetupMode() {
     wifiReconnectDeferredLogged_ = false;
     wasAutoStarted_ = false;
     lowDmaSinceMs_ = 0;
-    allowBoundaryTransitionWork_ = false;
     wifiStopPhase_ = WifiStopPhase::IDLE;
     wifiStopPhaseStartMs_ = 0;
     wifiStopStartMs_ = 0;
@@ -325,8 +323,6 @@ void WiFiManager::processStopSetupModePhase() {
     const WifiStopLifecyclePolicy::PhaseInput phaseInput{
         wifiStopPhase_ == WifiStopPhase::IDLE,
         wifiStopPhase_ == WifiStopPhase::STOP_HTTP_SERVER,
-        wifiStopPhase_ == WifiStopPhase::FINALIZE,
-        allowBoundaryTransitionWork_,
         now,
         wifiStopPhaseStartMs_,
         WIFI_STOP_PHASE_SETTLE_MS,
@@ -426,7 +422,6 @@ bool WiFiManager::stopSetupMode(bool manual, const char* reason) {
 
     setupModeState_ = SETUP_MODE_STOPPING;
     lastUiActivityMs_ = 0;
-    allowBoundaryTransitionWork_ = false;
     wifiConnectStartMs_ = 0;
     wifiConnectPhase_ = WifiConnectPhase::IDLE;
     wifiConnectPhaseStartMs_ = 0;
@@ -768,14 +763,6 @@ bool WiFiManager::isStopping() const {
     return setupModeState_ == SETUP_MODE_STOPPING;
 }
 
-bool WiFiManager::hasPendingLifecycleWork() const {
-    return wifiStopPhase_ != WifiStopPhase::IDLE;
-}
-
-void WiFiManager::setBoundaryTransitionAdmission(const bool allow) {
-    allowBoundaryTransitionWork_ = allow;
-}
-
 // Mutation rate limiting: returns true if the write is allowed, false if rate limited.
 // Read-only status polls call markUiActivity() directly and never enter this window.
 bool WiFiManager::checkRateLimit() {
@@ -796,7 +783,7 @@ bool WiFiManager::checkRateLimit() {
     return true;
 }
 
-// Web activity tracking for WiFi priority mode
+// Web activity tracking for maintenance-session idle deadlines
 void WiFiManager::markUiActivity() {
     lastUiActivityMs_ = millis();
 }

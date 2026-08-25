@@ -356,6 +356,57 @@ void test_session_start_is_latched_once_and_never_moves() {
     TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("mainRuntimeState.maintenanceBootSessionStartedMs ="));
 }
 
+void test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging() {
+    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"), "void loop()");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("BOOT long-press exit -> rebooting normal runtime"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceSession.shouldReboot"));
+    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("exit cancelled because persistence"));
+    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("timeout restart cancelled because persistence"));
+
+    const size_t bootExit = loopBody.find("BOOT long-press exit -> rebooting normal runtime");
+    const size_t bootRestart = loopBody.find("ESP.restart();", bootExit);
+    const size_t timeoutExit = loopBody.find("if (maintenanceSession.shouldReboot)");
+    const size_t timeoutRestart = loopBody.find("ESP.restart();", timeoutExit);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootRestart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, timeoutRestart);
+}
+
+void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
+    const std::string wiring = readFile(projectRoot() + "/src/main_runtime_wiring.cpp");
+    const std::string entryBody = extractFunctionBody(wiring, "static void requestMaintenanceBootRestart()");
+    const size_t request = entryBody.find("requestMaintenanceBoot()");
+    const size_t cleanup = entryBody.find("completeLoggingForControlledRestart()");
+    const size_t restart = entryBody.find("ESP.restart();");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, request);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, cleanup);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restart);
+    TEST_ASSERT_TRUE(request < cleanup);
+    TEST_ASSERT_TRUE(cleanup < restart);
+    TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("restart cancelled"));
+    TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("return;", cleanup));
+}
+
+void test_returned_poweroff_tail_restores_stopped_services() {
+    const std::string helpers = readFile(projectRoot() + "/src/main_setup_helpers.cpp");
+    const std::string prepareBody = extractFunctionBody(helpers, "void prepareForShutdown(");
+    const std::string resumeBody = extractFunctionBody(helpers, "void resumeAfterAbortedShutdown(");
+
+    const size_t loggerCleanup = prepareBody.find("productEventLog.stopAndFlush");
+    const size_t wifiStop = prepareBody.find("wifiManager.stopSetupMode");
+    const size_t bleStop = prepareBody.find("bleClient.disconnect()");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loggerCleanup);
+    TEST_ASSERT_TRUE(loggerCleanup < wifiStop);
+    TEST_ASSERT_TRUE(loggerCleanup < bleStop);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("productEventLog.resumeAfterAbortedShutdown"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeBleBondBackupWriterAfterAbortedShutdown"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeDeferredSettingsBackupWriterAfterAbortedShutdown"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("wifiManager.startSetupMode(false)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("bleClient.startScanning()"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_idle_window_is_still_ten_minutes_and_extension_is_bounded);
@@ -378,5 +429,8 @@ int main() {
     RUN_TEST(test_main_loop_feeds_the_existing_ui_activity_signal);
     RUN_TEST(test_status_payload_deadline_anchor_contract_holds);
     RUN_TEST(test_session_start_is_latched_once_and_never_moves);
+    RUN_TEST(test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging);
+    RUN_TEST(test_maintenance_entry_request_is_never_left_for_a_cancelled_restart);
+    RUN_TEST(test_returned_poweroff_tail_restores_stopped_services);
     return UNITY_END();
 }

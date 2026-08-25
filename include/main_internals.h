@@ -64,9 +64,11 @@ void onV1Connected();
 void initializeStorageAndProfiles();
 
 /// Prepare persistence/runtime services for a power-off sequence before the final hardware tail runs.
-bool prepareForShutdown(void* context);
+/// Best-effort support failures never veto the physical power-off handoff.
+void prepareForShutdown(void* context);
 
-/// Bounded event drain plus lifecycle END for controlled reboot paths.
+/// Bounded event drain plus lifecycle END for controlled reboot paths. Returns
+/// false only while a timed-out writer still owns storage; restart still wins.
 bool completeLoggingForControlledRestart();
 
 /// Restore persistence admission and the unclean marker after the hardware

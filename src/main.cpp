@@ -725,13 +725,13 @@ void loop() {
                    (now - bootButtonPressStartMs) >= MAINTENANCE_EXIT_LONG_PRESS_MS) {
             exitRequestFired = true;
             Serial.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
-            settingsManager.save();
-            if (!completeLoggingForControlledRestart()) {
-                Serial.println("[MaintBoot] ERROR: exit cancelled because persistence did not stop cleanly");
-                exitRequestFired = false;
-                return;
+            const bool persistenceSafe = completeLoggingForControlledRestart();
+            if (persistenceSafe) {
+                settingsManager.save();
+                markCleanShutdown();
+            } else {
+                Serial.println("[MaintBoot] WARN: exit continuing without final persistence writes");
             }
-            markCleanShutdown();
             ESP.restart();
         }
 
@@ -761,12 +761,13 @@ void loop() {
                              maintenanceSession.maxSessionReached ? "max_session" : "idle",
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
-            settingsManager.save();
-            if (!completeLoggingForControlledRestart()) {
-                Serial.println("[MaintBoot] ERROR: timeout restart cancelled because persistence did not stop cleanly");
-                return;
+            const bool persistenceSafe = completeLoggingForControlledRestart();
+            if (persistenceSafe) {
+                settingsManager.save();
+                markCleanShutdown();
+            } else {
+                Serial.println("[MaintBoot] WARN: timeout restart continuing without final persistence writes");
             }
-            markCleanShutdown();
             ESP.restart();
         }
 

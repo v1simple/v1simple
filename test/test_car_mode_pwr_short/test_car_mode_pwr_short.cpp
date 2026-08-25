@@ -50,10 +50,9 @@ void advanceTime(unsigned long deltaMs) {
     setTime(mockMillis + deltaMs);
 }
 
-bool recordShutdownPreparation(void* context) {
+void recordShutdownPreparation(void* context) {
     auto* calls = static_cast<int*>(context);
     ++(*calls);
-    return true;
 }
 
 std::string readProjectFile(const char* relativePath) {

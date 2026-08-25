@@ -85,12 +85,13 @@ static void requestMaintenanceBootRestart() {
         return;
     }
     Serial.println("[MaintBoot] rebooting into maintenance mode");
-    settingsManager.save();
-    if (!completeLoggingForControlledRestart()) {
-        Serial.println("[MaintBoot] ERROR: restart cancelled because persistence did not stop cleanly");
-        return;
+    const bool persistenceSafe = completeLoggingForControlledRestart();
+    if (persistenceSafe) {
+        settingsManager.save();
+        markCleanShutdown();
+    } else {
+        Serial.println("[MaintBoot] WARN: restart continuing without final persistence writes");
     }
-    markCleanShutdown();
     delay(50);
     ESP.restart();
 }

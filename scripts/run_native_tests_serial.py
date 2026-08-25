@@ -85,6 +85,10 @@ def main() -> int:
     available = discover_native_tests(env)
     selected = args.tests or available
 
+    if not selected:
+        print(f"[{env}-serial] no test suites selected; refusing a zero-case pass")
+        return 2
+
     unknown = sorted(set(selected) - set(available))
     if unknown:
         print(f"[{env}-serial] unknown test suite(s):")
@@ -93,6 +97,7 @@ def main() -> int:
         return 2
 
     failures: list[tuple[str, int]] = []
+    executed_cases = 0
 
     for index, test_name in enumerate(selected, start=1):
         build_root = suite_build_root(env, test_name)
@@ -109,9 +114,25 @@ def main() -> int:
             [os.environ.get("PIO_CMD", "pio"), "test", "-e", env, "-f", test_name],
             cwd=ROOT,
             env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
+        print(result.stdout, end="")
         if result.returncode != 0:
             failures.append((test_name, result.returncode))
+            continue
+
+        unity_counts = [
+            int(match.group(1))
+            for match in re.finditer(r"(?m)^=+\s*(\d+) test cases?:", result.stdout)
+        ]
+        suite_cases = sum(unity_counts)
+        if suite_cases == 0:
+            print(f"[{env}-serial] {test_name} reported zero executed Unity cases")
+            failures.append((test_name, 3))
+            continue
+        executed_cases += suite_cases
 
     if failures:
         print(f"[{env}-serial] failed suite(s):")
@@ -119,7 +140,7 @@ def main() -> int:
             print(f"  - {test_name} (exit {returncode})")
         return 1
 
-    print(f"[{env}-serial] all {len(selected)} suite(s) passed")
+    print(f"[{env}-serial] all {len(selected)} suite(s) passed ({executed_cases} executed cases)")
     return 0
 
 

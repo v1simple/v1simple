@@ -135,6 +135,70 @@ void test_first_write_failure_disables_writer_without_retry() {
     log.resetForTest();
 }
 
+void test_stop_before_begin_is_successful_and_idempotent() {
+    ProductEventLog log;
+
+    TEST_ASSERT_TRUE(log.stopAndFlush(10, 0));
+    TEST_ASSERT_TRUE(log.stopAndFlush(11, 0));
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_FALSE(log.accepting());
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::eventShutdownFailures());
+}
+
+void test_storage_and_initialization_failures_are_already_stopped() {
+    fs::FS filesystem(root);
+    StorageManager unavailable;
+    unavailable.reset();
+    ProductEventLog noStorage;
+    TEST_ASSERT_FALSE(noStorage.begin(20, unavailable));
+    TEST_ASSERT_TRUE(noStorage.stopAndFlush(100, 0));
+
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog taskCreateFailure;
+    g_mock_task_create_state.failStandard = true;
+    TEST_ASSERT_FALSE(taskCreateFailure.begin(21, storage));
+    TEST_ASSERT_TRUE(taskCreateFailure.stopAndFlush(101, 0));
+    TEST_ASSERT_TRUE(taskCreateFailure.stopAndFlush(102, 0));
+    TEST_ASSERT_TRUE(taskCreateFailure.writerStopped());
+}
+
+void test_runtime_writer_failure_releases_product_shutdown() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(22, storage));
+    fs::mock_set_fs_write_budget(0);
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(600)));
+
+    log.runWriterForTest();
+
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_FALSE(log.enabled());
+    TEST_ASSERT_TRUE(log.stopAndFlush(700, 0));
+    TEST_ASSERT_TRUE(log.stopAndFlush(701, 0));
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
+    log.resetForTest();
+}
+
+void test_live_writer_timeout_closes_admission_and_later_releases() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(23, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(600)));
+
+    TEST_ASSERT_FALSE(log.stopAndFlush(700, 0));
+    TEST_ASSERT_FALSE(log.accepting());
+    TEST_ASSERT_FALSE(log.enabled());
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(701)));
+
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_TRUE(log.stopAndFlush(702, 0));
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
+    log.resetForTest();
+}
+
 void test_stop_drains_queue_and_confirms_exit_before_storage_handoff() {
     fs::FS filesystem(root);
     StorageManager storage = makeStorage(filesystem);
@@ -143,13 +207,11 @@ void test_stop_drains_queue_and_confirms_exit_before_storage_handoff() {
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(200)));
 
-    TEST_ASSERT_FALSE(log.stopAndFlush(300, 0));
-    TEST_ASSERT_FALSE(log.writerStopped());
-    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
-
+    log.requestStopForTest(300);
     log.runWriterForTest();
     TEST_ASSERT_TRUE(log.writerStopped());
     TEST_ASSERT_TRUE(log.stopAndFlush(301, 0));
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::eventShutdownFailures());
 
     StorageManager::SDLockTimed subsequentStorage(storage.getSDMutex(), 1);
     TEST_ASSERT_TRUE(subsequentStorage);
@@ -162,7 +224,7 @@ void test_stop_drains_queue_and_confirms_exit_before_storage_handoff() {
     log.resetForTest();
 }
 
-void test_shutdown_close_failure_is_reported_and_storage_handoff_stays_blocked() {
+void test_shutdown_close_failure_cannot_hold_product_availability() {
     fs::FS filesystem(root);
     StorageManager storage = makeStorage(filesystem);
     ProductEventLog log;
@@ -170,11 +232,12 @@ void test_shutdown_close_failure_is_reported_and_storage_handoff_stays_blocked()
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
     TEST_ASSERT_TRUE(log.drainOneForTest());
 
-    TEST_ASSERT_FALSE(log.stopAndFlush(200, 0));
+    log.requestStopForTest(200);
     StorageManager::mockSdLockState.failNextBlockingLock = true;
     log.runWriterForTest();
     TEST_ASSERT_TRUE(log.writerStopped());
-    TEST_ASSERT_FALSE(log.stopAndFlush(201, 0));
+    TEST_ASSERT_TRUE(log.stopAndFlush(201, 0));
+    TEST_ASSERT_TRUE(log.stopAndFlush(202, 0));
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
     log.resetForTest();
 }
@@ -185,7 +248,7 @@ void test_aborted_shutdown_restarts_once_and_accepts_new_event() {
     ProductEventLog log;
     TEST_ASSERT_TRUE(log.begin(32, storage));
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
-    TEST_ASSERT_FALSE(log.stopAndFlush(200, 0));
+    log.requestStopForTest(200);
     log.runWriterForTest();
     TEST_ASSERT_TRUE(log.stopAndFlush(201, 0));
 
@@ -196,7 +259,7 @@ void test_aborted_shutdown_restarts_once_and_accepts_new_event() {
     TEST_ASSERT_EQUAL_UINT32(2, g_mock_task_create_state.standardCalls);
 
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(300)));
-    TEST_ASSERT_FALSE(log.stopAndFlush(400, 0));
+    log.requestStopForTest(400);
     log.runWriterForTest();
     TEST_ASSERT_TRUE(log.stopAndFlush(401, 0));
 
@@ -212,7 +275,7 @@ void test_resume_cancels_live_stop_without_duplicate_task() {
     StorageManager storage = makeStorage(filesystem);
     ProductEventLog log;
     TEST_ASSERT_TRUE(log.begin(33, storage));
-    TEST_ASSERT_FALSE(log.stopAndFlush(100, 0));
+    log.requestStopForTest(100);
     TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
     TEST_ASSERT_TRUE(log.accepting());
     TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
@@ -288,9 +351,13 @@ int main() {
     RUN_TEST(test_queue_is_single_static_bounded_and_full_coalesces_gap);
     RUN_TEST(test_event_file_is_lazy_and_uses_exact_combined_schema);
     RUN_TEST(test_first_write_failure_disables_writer_without_retry);
+    RUN_TEST(test_stop_before_begin_is_successful_and_idempotent);
+    RUN_TEST(test_storage_and_initialization_failures_are_already_stopped);
+    RUN_TEST(test_runtime_writer_failure_releases_product_shutdown);
+    RUN_TEST(test_live_writer_timeout_closes_admission_and_later_releases);
     RUN_TEST(test_boot_retention_reserves_one_slot_for_the_lazy_active_file);
     RUN_TEST(test_stop_drains_queue_and_confirms_exit_before_storage_handoff);
-    RUN_TEST(test_shutdown_close_failure_is_reported_and_storage_handoff_stays_blocked);
+    RUN_TEST(test_shutdown_close_failure_cannot_hold_product_availability);
     RUN_TEST(test_aborted_shutdown_restarts_once_and_accepts_new_event);
     RUN_TEST(test_resume_cancels_live_stop_without_duplicate_task);
     RUN_TEST(test_runtime_retention_multirow_immediately_below_limit);

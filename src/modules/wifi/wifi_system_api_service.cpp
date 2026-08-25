@@ -15,13 +15,12 @@ void handleApiRebootNormal(WebServer& server, const RebootRuntime& runtime) {
         return;
     }
 
-    // Preserve the same ordering used by the physical maintenance-exit path:
-    // settings first, then the clean-shutdown marker, then restart. Send the
-    // response before the short drain window so the UI can transition cleanly.
-    runtime.persistSettings(runtime.ctx);
-    if (!runtime.prepareCleanRestart(runtime.ctx)) {
-        server.send(503, "application/json", "{\"success\":false,\"error\":\"persistence_shutdown_failed\"}");
-        return;
+    // Observability cleanup decides only whether another SD write is safe; it
+    // never vetoes the product restart. Send the response before the short
+    // drain window so the UI can transition cleanly.
+    const bool persistenceSafe = runtime.prepareCleanRestart(runtime.ctx);
+    if (persistenceSafe) {
+        runtime.persistSettings(runtime.ctx);
     }
     server.send(202, "application/json", "{\"success\":true,\"rebooting\":true,\"target\":\"normal\"}");
     if (runtime.delayBeforeRestart) {

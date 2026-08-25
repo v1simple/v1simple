@@ -324,13 +324,12 @@ bool WiFiManager::setupWebServer() {
             return;
         WifiSystemApiService::RebootRuntime runtime;
         runtime.maintenanceBootActive = mainRuntimeState.maintenanceBootActive;
-        runtime.persistSettings = [](void*) { settingsManager.save(); };
         runtime.prepareCleanRestart = [](void*) {
-            if (!completeLoggingForControlledRestart()) {
-                return false;
-            }
+            return completeLoggingForControlledRestart();
+        };
+        runtime.persistSettings = [](void*) {
+            settingsManager.save();
             ::markCleanShutdown();
-            return true;
         };
         runtime.delayBeforeRestart = [](uint32_t delayMs, void*) { delay(delayMs); };
         runtime.restart = [](void*) { ESP.restart(); };

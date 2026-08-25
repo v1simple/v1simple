@@ -73,6 +73,7 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     enabled_.store(false, std::memory_order_release);
     accepting_.store(false, std::memory_order_release);
     writerState_.store(WriterState::STOPPED, std::memory_order_release);
+    writerOwnershipAcquired_.store(false, std::memory_order_release);
     writerExitClean_.store(false, std::memory_order_release);
     stopFailureRecorded_.store(false, std::memory_order_release);
     retentionExhausted_.store(false, std::memory_order_release);
@@ -115,10 +116,12 @@ bool ProductEventLog::startWriterTask() {
         return false;
     }
     writerExitClean_.store(false, std::memory_order_release);
+    writerOwnershipAcquired_.store(true, std::memory_order_release);
     const BaseType_t created = xTaskCreatePinnedToCore(&ProductEventLog::writerTaskEntry, "ProductEvents",
                                                        kWriterStackBytes, this, 1, &writerTask_, 0);
     if (created != pdPASS) {
         writerTask_ = nullptr;
+        writerOwnershipAcquired_.store(false, std::memory_order_release);
         writerState_.store(WriterState::FAILED, std::memory_order_release);
         enabled_.store(false, std::memory_order_release);
         accepting_.store(false, std::memory_order_release);
@@ -169,11 +172,29 @@ bool ProductEventLog::stopAndFlush(uint32_t nowMs, uint32_t timeoutMs) {
     }
 
     state = writerState_.load(std::memory_order_acquire);
+    const bool writerReleased = state == WriterState::STOPPED || state == WriterState::FAILED;
     const bool clean = state == WriterState::STOPPED && writerExitClean_.load(std::memory_order_acquire);
-    if (!clean) {
-        recordStopFailure();
+    if (writerReleased) {
+        // STOPPED with writerExitClean_ == false is the initial/never-started
+        // state. FAILED also has no live task: task creation either never
+        // succeeded, or writerLoop published FAILED only after relinquishing
+        // task ownership. Neither state may veto product availability.
+        if (!clean && writerOwnershipAcquired_.load(std::memory_order_acquire)) {
+            recordStopFailure();
+        }
+        return true;
     }
-    return clean;
+
+    // The graceful drain consumed its entire budget. Close admission for good
+    // and ask the writer loop to take its shortest safe exit rather than
+    // leaving it draining indefinitely. The caller can now skip competing SD
+    // work and continue the product operation.
+    disableWriter();
+    if (writerTask_) {
+        xTaskNotifyGive(writerTask_);
+    }
+    recordStopFailure();
+    return false;
 }
 
 bool ProductEventLog::resumeAfterAbortedShutdown(uint32_t timeoutMs) {
@@ -454,7 +475,7 @@ void ProductEventLog::recordStopFailure() {
     if (!stopFailureRecorded_.exchange(true, std::memory_order_acq_rel)) {
         HealthCounters::recordEventShutdownFailure();
 #ifndef UNIT_TEST
-        Serial.println("[ProductEvents] ERROR: writer did not terminate cleanly; storage handoff blocked");
+        Serial.println("[ProductEvents] WARN: writer did not terminate cleanly; event logging disabled");
 #endif
     }
 }

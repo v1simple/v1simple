@@ -37,9 +37,8 @@ struct PowerTouchProbe {
     int touchCalls = 0;
 };
 
-bool failShutdownPreparation(void* ctx) {
+void recordShutdownPreparation(void* ctx) {
     ++*static_cast<int*>(ctx);
-    return false;
 }
 
 void recordShutdownAbort(void* ctx) {
@@ -194,6 +193,8 @@ void test_usb_transition_releases_warning_and_requests_one_authoritative_restore
 }
 
 void test_critical_shutdown_abort_releases_warning_for_authoritative_recovery() {
+    int abortCalls = 0;
+    power.setShutdownAbortCallback(recordShutdownAbort, &abortCalls);
     battery.setCritical(true);
     battery.powerOffResult = false;
     power.process(100);
@@ -203,6 +204,7 @@ void test_critical_shutdown_abort_releases_warning_for_authoritative_recovery() 
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+    TEST_ASSERT_EQUAL(1, abortCalls);
     TEST_ASSERT_FALSE(power.ownsDisplayPresentation());
     TEST_ASSERT_TRUE(power.consumeDisplayRestoreRequest());
     TEST_ASSERT_TRUE(power.consumeDisplayBrightnessRestoreRequest());
@@ -293,19 +295,18 @@ void test_auto_power_abort_retries_only_after_a_full_interval() {
     TEST_ASSERT_EQUAL_UINT32(121000, power.autoPowerOffTimerStartForTest());
 }
 
-void test_failed_persistence_preparation_blocks_poweroff_and_runs_abort_recovery() {
+void test_shutdown_preparation_cannot_veto_physical_poweroff() {
     int preparationCalls = 0;
     int abortCalls = 0;
-    power.setShutdownPreparationCallback(failShutdownPreparation, &preparationCalls);
+    power.setShutdownPreparationCallback(recordShutdownPreparation, &preparationCalls);
     power.setShutdownAbortCallback(recordShutdownAbort, &abortCalls);
 
     power.performShutdown();
 
     TEST_ASSERT_EQUAL(1, preparationCalls);
-    TEST_ASSERT_EQUAL(1, abortCalls);
-    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
-    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
-    TEST_ASSERT_TRUE(power.consumeDisplayRestoreRequest());
+    TEST_ASSERT_EQUAL(0, abortCalls);
+    TEST_ASSERT_EQUAL(1, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
 }
 
 void test_power_touch_phase_suppresses_touch_after_warning_acquires_owner() {
@@ -393,7 +394,7 @@ int main() {
     RUN_TEST(test_critical_shutdown_does_not_accept_pre_warning_read);
     RUN_TEST(test_critical_shutdown_does_not_treat_trigger_sample_as_confirmation);
     RUN_TEST(test_auto_power_abort_retries_only_after_a_full_interval);
-    RUN_TEST(test_failed_persistence_preparation_blocks_poweroff_and_runs_abort_recovery);
+    RUN_TEST(test_shutdown_preparation_cannot_veto_physical_poweroff);
     RUN_TEST(test_power_touch_phase_suppresses_touch_after_warning_acquires_owner);
     RUN_TEST(test_connection_early_keeps_runtime_live_but_suppresses_presentations);
     RUN_TEST(test_display_phase_consumes_event_but_suppresses_pipeline_and_blink);

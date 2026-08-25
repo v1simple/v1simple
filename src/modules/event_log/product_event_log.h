@@ -29,7 +29,10 @@ class ProductEventLog {
 
     // Emit any active END records, stop producer admission, and wait only up
     // to timeoutMs for the one writer to drain, flush, close, and relinquish
-    // filesystem ownership. False means storage teardown/restart is unsafe.
+    // filesystem ownership. A logger that never acquired writer ownership is
+    // already stopped. False means a live writer still owns storage after the
+    // deadline; admission is nevertheless closed so product shutdown/restart
+    // can proceed without further event-log writes.
     bool stopAndFlush(uint32_t nowMs, uint32_t timeoutMs);
 
     // Cancel an in-flight stop or restart the one writer after a confirmed
@@ -46,12 +49,22 @@ class ProductEventLog {
     bool drainOneForTest();
     bool takeGapForTest(ProductEvent& event) { return takeGap(event); }
     void runWriterForTest() { writerLoop(); }
+    void requestStopForTest(uint32_t nowMs) {
+        if (accepting_.load(std::memory_order_acquire)) {
+            builder_.closeActive(nowMs);
+        }
+        accepting_.store(false, std::memory_order_release);
+        WriterState state = WriterState::RUNNING;
+        (void)writerState_.compare_exchange_strong(state, WriterState::STOP_REQUESTED,
+                                                   std::memory_order_acq_rel);
+    }
     size_t retainedBytesForTest() const { return retainedBytes_; }
     size_t activeBytesForTest() const { return activeBytes_; }
     void resetForTest() {
         accepting_.store(false, std::memory_order_relaxed);
         enabled_.store(false, std::memory_order_relaxed);
         writerState_.store(WriterState::STOPPED, std::memory_order_relaxed);
+        writerOwnershipAcquired_.store(false, std::memory_order_relaxed);
         if (eventFile_) {
             eventFile_.close();
         }
@@ -96,6 +109,7 @@ class ProductEventLog {
     std::atomic<bool> enabled_{false};
     std::atomic<bool> accepting_{false};
     std::atomic<WriterState> writerState_{WriterState::STOPPED};
+    std::atomic<bool> writerOwnershipAcquired_{false};
     std::atomic<bool> writerExitClean_{false};
     std::atomic<bool> stopFailureRecorded_{false};
     std::atomic<bool> retentionExhausted_{false};

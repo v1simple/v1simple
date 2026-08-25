@@ -81,57 +81,30 @@ V1ConnectedAutoPushSelection resolveV1ConnectedAutoPushSelection(const V1Setting
 
 } // namespace
 
-bool prepareForShutdown(void* /*context*/) {
+void prepareForShutdown(void* /*context*/) {
     feedLoopTaskWatchdogDuringShutdown();
 
-    if (wifiManager.isWifiServiceActive()) {
-        Serial.println("[Battery] Stopping WiFi before shutdown flush...");
-        wifiManager.stopSetupMode(true, "poweroff");
-        delay(100);
-        feedLoopTaskWatchdogDuringShutdown();
+    const bool eventWriterReleased = productEventLog.stopAndFlush(millis(), 750);
+    if (!eventWriterReleased) {
+        Serial.println("[Battery] WARN: product-event cleanup timed out; skipping competing SD writes");
     }
+    feedLoopTaskWatchdogDuringShutdown();
 
     // ── BLE teardown ─────────────────────────────────────────────────
-    // Disconnect all BLE peripherals BEFORE power-off so remote devices
-    // (V1, OBDLink, ALP) see a proper GAP disconnect and release their
-    // connection slots.  Without this, the next boot starts a fresh
-    // NimBLE stack while the remote side still holds a stale link,
-    // blocking reconnection until the remote's supervision timeout fires
-    // (which may never happen on some devices).
-    //
-    // NimBLEDevice::deinit() is banned (see ble_internals.h) — disconnect
-    // only; the stack is destroyed moments later by power-off anyway.
-    Serial.println("[Battery] Disconnecting BLE peripherals before shutdown...");
-    bleClient.disconnect();
-    if (!obdRuntimeModule.disconnectForShutdown(100)) {
-        Serial.println("[Battery] WARN: OBD transport disconnect did not acknowledge before shutdown");
-    }
-    // Stop any active scan so the controller isn't mid-operation at power-off.
-    NimBLEScan* pScan = NimBLEDevice::getScan();
-    if (pScan && pScan->isScanning()) {
-        pScan->stop();
-    }
-    delay(50); // Brief settle for disconnect packets to transmit
-    feedLoopTaskWatchdogDuringShutdown();
-
-    if (!productEventLog.stopAndFlush(millis(), 750)) {
-        Serial.println("[Battery] ERROR: product-event writer still owns storage; shutdown cancelled");
-        return false;
-    }
-    feedLoopTaskWatchdogDuringShutdown();
-
     // Drain the best-effort bond snapshot before the final synchronous
     // settings write takes exclusive ownership of SD.
     shutdownBleBondBackupWriter(1500);
     feedLoopTaskWatchdogDuringShutdown();
 
-    Serial.println("[Battery] Saving settings...");
-    settingsManager.save();
-    feedLoopTaskWatchdogDuringShutdown();
+    if (eventWriterReleased) {
+        Serial.println("[Battery] Saving settings...");
+        settingsManager.save();
+        feedLoopTaskWatchdogDuringShutdown();
 
-    Serial.println("[Battery] Forcing final SD settings backup...");
-    settingsManager.backupToSD();
-    feedLoopTaskWatchdogDuringShutdown();
+        Serial.println("[Battery] Forcing final SD settings backup...");
+        settingsManager.backupToSD();
+        feedLoopTaskWatchdogDuringShutdown();
+    }
 
     // Stop the deferred-backup writer task now that the final synchronous
     // backup has landed. Without this signal, the writer keeps polling and
@@ -139,23 +112,48 @@ bool prepareForShutdown(void* /*context*/) {
     shutdownDeferredSettingsBackupWriter(1500);
     feedLoopTaskWatchdogDuringShutdown();
 
-    healthJournal.end(millis());
-    feedLoopTaskWatchdogDuringShutdown();
+    if (eventWriterReleased) {
+        healthJournal.end(millis());
+        feedLoopTaskWatchdogDuringShutdown();
+    }
+
+    // Radios are torn down only after every fallible storage operation. A
+    // returned hardware tail restores maintenance WiFi below; normal BLE and
+    // OBD reconnect through their existing runtime state machines.
+    if (wifiManager.isWifiServiceActive()) {
+        Serial.println("[Battery] Stopping WiFi after shutdown flush...");
+        wifiManager.stopSetupMode(true, "poweroff");
+        delay(100);
+        feedLoopTaskWatchdogDuringShutdown();
+    }
+
+    // Maintenance boot intentionally never initializes BLE.
+    if (!mainRuntimeState.maintenanceBootActive) {
+        Serial.println("[Battery] Disconnecting BLE peripherals before shutdown...");
+        bleClient.disconnect();
+        if (!obdRuntimeModule.disconnectForShutdown(100)) {
+            Serial.println("[Battery] WARN: OBD transport disconnect did not acknowledge before shutdown");
+        }
+        NimBLEScan* pScan = NimBLEDevice::getScan();
+        if (pScan && pScan->isScanning()) {
+            pScan->stop();
+        }
+        delay(50);
+        feedLoopTaskWatchdogDuringShutdown();
+    }
 
     // Mark this shutdown as clean LAST.  If anything below fails or the
     // user yanks power mid-teardown we want the next boot to still see
     // "unclean" and record the integrity event.
-    Serial.println("[Battery] Writing clean-shutdown marker...");
-    markCleanShutdown();
-    return true;
+    if (eventWriterReleased) {
+        Serial.println("[Battery] Writing clean-shutdown marker...");
+        markCleanShutdown();
+    }
 }
 
 bool completeLoggingForControlledRestart() {
     if (!productEventLog.stopAndFlush(millis(), 750)) {
-        Serial.println("[ProductEvents] ERROR: controlled restart cancelled because writer did not stop");
-        if (!productEventLog.resumeAfterAbortedShutdown(750)) {
-            Serial.println("[ProductEvents] ERROR: writer admission could not be restored after cancelled restart");
-        }
+        Serial.println("[ProductEvents] WARN: cleanup timed out; restart continuing without competing SD writes");
         return false;
     }
     healthJournal.end(millis());
@@ -169,7 +167,7 @@ void resumeAfterAbortedShutdown(void* /*context*/) {
     // recovery is still running, the next boot must classify this run as unclean.
     markUncleanShutdown();
 
-    if (!productEventLog.resumeAfterAbortedShutdown(750)) {
+    if (productEventLog.enabled() && !productEventLog.resumeAfterAbortedShutdown(750)) {
         Serial.println("[ProductEvents] ERROR: writer admission could not be restored after shutdown abort");
     }
 
@@ -177,6 +175,15 @@ void resumeAfterAbortedShutdown(void* /*context*/) {
     // either reused its live task or restarted exactly one confirmed exit.
     resumeBleBondBackupWriterAfterAbortedShutdown();
     resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
+
+    if (mainRuntimeState.maintenanceBootActive && !wifiManager.isWifiServiceActive()) {
+        const bool restored = wifiManager.startSetupMode(false);
+        Serial.printf("[Battery] Maintenance WiFi restore ok=%s\n", restored ? "true" : "false");
+    } else if (!mainRuntimeState.maintenanceBootActive) {
+        // disconnect() quiesces asynchronously. This starts immediately when
+        // quiescence is complete; otherwise normal process() resumes scanning.
+        bleClient.startScanning();
+    }
 }
 
 void onV1ConnectImmediate() {
@@ -315,12 +322,13 @@ void configureUiTouchInteractionModules(QuietCoordinatorModule& quietCoordinator
                                    [](void*) {
                                        if (requestMaintenanceBoot()) {
                                            Serial.println("[MaintBoot] touch long-press requested maintenance reboot");
-                                           settingsManager.save();
-                                           if (!completeLoggingForControlledRestart()) {
-                                               Serial.println("[MaintBoot] ERROR: touch restart cancelled because persistence did not stop cleanly");
-                                               return;
+                                           const bool persistenceSafe = completeLoggingForControlledRestart();
+                                           if (persistenceSafe) {
+                                               settingsManager.save();
+                                               markCleanShutdown();
+                                           } else {
+                                               Serial.println("[MaintBoot] WARN: touch restart continuing without final persistence writes");
                                            }
-                                           markCleanShutdown();
                                            delay(50);
                                            ESP.restart();
                                        } else {

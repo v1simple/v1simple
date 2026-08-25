@@ -18,6 +18,7 @@
 #include "maintenance_runtime.h"
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
+#include "runtime_coordinator.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
@@ -211,19 +212,12 @@ void setup() {
     const esp_reset_reason_t resetReason = initializeResetReason(setupStartMs);
     initializeSharedHardware(resetReason, maintenanceBoot, setupStartMs, stageStartedMs);
 
-    if (maintenanceBoot) {
-        maintenanceRuntime.start(setupStartMs, resetReason);
-    } else {
-        driveRuntime.start(setupStartMs, stageStartedMs, resetReason);
-    }
+    MainRuntimeCoordinator::start(maintenanceBoot, setupStartMs, stageStartedMs, resetReason,
+                                  driveRuntime, maintenanceRuntime);
     registerMainLoopTaskWatchdog();
 }
 
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
-    if (maintenanceRuntime.active()) {
-        maintenanceRuntime.tick(millis());
-        return;
-    }
-    driveRuntime.tick();
+    MainRuntimeCoordinator::tick(driveRuntime, maintenanceRuntime, []() { return millis(); });
 }

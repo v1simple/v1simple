@@ -111,7 +111,7 @@ V1BLEClient::V1BLEClient()
       sessionClosedCallback_(nullptr), connectStableCallback_(nullptr)
       // connected_, shouldConnect_ - use default member initializers (atomic)
       ,
-      hasTargetDevice_(false), targetAddress_(), lastScanStart_(0), pScanCallbacks_(nullptr),
+      targetAddress_(), lastScanStart_(0), pScanCallbacks_(nullptr),
       pClientCallbacks_(nullptr), pProxyServerCallbacks_(nullptr), pProxyWriteCallbacks_(nullptr) {
     instancePtr = this;
 }
@@ -154,7 +154,7 @@ const char* V1BLEClient::getSubscribeStepName() const {
 // BLE State Machine
 // ============================================================================
 
-void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
+void V1BLEClient::setBLEState(BLEState newState) {
     BLEState oldState = bleState_;
     if (oldState == newState)
         return; // No change
@@ -164,7 +164,6 @@ void V1BLEClient::setBLEState(BLEState newState, const char* reason) {
     if (newState == BLEState::SCAN_STOPPING || oldState == BLEState::SCAN_STOPPING) {
         scanStopResultsCleared_ = false;
     }
-    (void)reason;
 }
 
 // Full cleanup of BLE connection state - call before retry or after failures
@@ -189,8 +188,6 @@ void V1BLEClient::cleanupConnection() {
         SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: disconnect cleanup
         if (lock.locked()) {
             shouldConnect_ = false;
-            hasTargetDevice_ = false;
-            targetDevice_ = NimBLEAdvertisedDevice();
         }
     }
 
@@ -208,7 +205,7 @@ void V1BLEClient::cleanupConnection() {
 // disconnect callbacks have released the shared NimBLE client.
 void V1BLEClient::hardResetBLEClient() {
     Serial.println("[BLE] Hard reset...");
-    beginClientQuiesce("hard reset requested", true);
+    beginClientQuiesce(true);
 }
 
 // Reapply reusable-client configuration after quiescence. NimBLE has a fixed
@@ -408,7 +405,7 @@ bool V1BLEClient::begin(bool enableProxy, const char* proxyName) {
     bool started = pScan->start(SCAN_DURATION, false, false); // duration, isContinuous, restart
 
     if (started) {
-        setBLEState(BLEState::SCANNING, "begin()");
+        setBLEState(BLEState::SCANNING);
     }
 
     return started;

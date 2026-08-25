@@ -1,10 +1,143 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
+
+#include "../../src/runtime_coordinator.h"
 
 namespace {
+
+enum class Call {
+    BEGIN,
+    CONNECTION_RUNTIME,
+    ACCEPT_CONNECTION,
+    SHOW_SCAN,
+    MARK_SCAN,
+    CONNECTION_PRESENTATION,
+    POWER,
+    TOUCH,
+    POWER_PRESENTATION,
+    TAP,
+    READY_GATE,
+    BLE_RUNTIME,
+    BLE_QUEUE,
+    CONNECTION_CYCLE,
+    OBD,
+    PARSING,
+    OBSERVE_ALP,
+    ALP_STATE,
+    GPS,
+    SPEED,
+    ALERT,
+    DISPLAY_EDGE,
+    DISPLAY_PRESENTATION,
+    CONNECTION_DISPATCH,
+    PERSISTENCE,
+    FINISH,
+};
+
+struct FakeConnectionSnapshot {
+    bool connected = true;
+    bool backpressured = false;
+    bool overloaded = false;
+    bool requestShowInitialScanning = true;
+};
+
+struct FakeDisplayEdges {
+    bool parsed = true;
+};
+
+struct FakeDriveRuntime {
+    bool activeValue = true;
+    bool presentationOwned = false;
+    bool acquirePresentationDuringPower = false;
+    bool inSettings = false;
+    bool settingsPreempted = false;
+    bool queueBackpressured = false;
+    FakeConnectionSnapshot connection;
+    std::vector<Call> calls;
+
+    bool active() const { return activeValue; }
+
+    DriveLoopTiming beginDriveLoop() {
+        calls.push_back(Call::BEGIN);
+        return {1000, 25};
+    }
+
+    FakeConnectionSnapshot processConnectionRuntime(uint32_t) {
+        calls.push_back(Call::CONNECTION_RUNTIME);
+        return connection;
+    }
+
+    void acceptConnectionSnapshot(const FakeConnectionSnapshot&) { calls.push_back(Call::ACCEPT_CONNECTION); }
+    void showInitialScanningScreen() { calls.push_back(Call::SHOW_SCAN); }
+    void markInitialScanningScreenHandled() { calls.push_back(Call::MARK_SCAN); }
+    bool powerOwnsPresentation() const { return presentationOwned; }
+    void presentConnectionState(uint32_t, const FakeConnectionSnapshot&) {
+        calls.push_back(Call::CONNECTION_PRESENTATION);
+    }
+
+    void processPower(uint32_t) {
+        calls.push_back(Call::POWER);
+        if (acquirePresentationDuringPower) {
+            presentationOwned = true;
+        }
+    }
+
+    bool processTouch(uint32_t) {
+        calls.push_back(Call::TOUCH);
+        return inSettings;
+    }
+
+    void servicePowerDisplayOwnership(uint32_t) { calls.push_back(Call::POWER_PRESENTATION); }
+    bool preemptSettingsForLiveAlert() const { return settingsPreempted; }
+    void processTapGesture(uint32_t) { calls.push_back(Call::TAP); }
+    void openBootReadyGate(uint32_t) { calls.push_back(Call::READY_GATE); }
+    void processBleRuntime() { calls.push_back(Call::BLE_RUNTIME); }
+    void processBleQueue() { calls.push_back(Call::BLE_QUEUE); }
+    bool bleQueueBackpressured() const { return queueBackpressured; }
+    void processConnectionCycle(uint32_t, bool) { calls.push_back(Call::CONNECTION_CYCLE); }
+    void processObd(uint32_t, bool) { calls.push_back(Call::OBD); }
+    void processAlp(uint32_t) { calls.push_back(Call::PARSING); }
+    void observeAlpProductState(uint32_t) { calls.push_back(Call::OBSERVE_ALP); }
+    void processAlpPresentationAndPower(uint32_t) { calls.push_back(Call::ALP_STATE); }
+    void processGps(uint32_t) { calls.push_back(Call::GPS); }
+    void processSpeed(uint32_t) { calls.push_back(Call::SPEED); }
+    void processSpeedAlert(uint32_t) { calls.push_back(Call::ALERT); }
+
+    FakeDisplayEdges consumeDisplayEdges() {
+        calls.push_back(Call::DISPLAY_EDGE);
+        return {};
+    }
+
+    void presentDisplay(const FakeDisplayEdges&, bool) { calls.push_back(Call::DISPLAY_PRESENTATION); }
+
+    DriveLoopDispatch processConnectionDispatch(bool) {
+        calls.push_back(Call::CONNECTION_DISPATCH);
+        return {30, true};
+    }
+
+    void processPeriodicMaintenance(uint32_t, bool, bool, bool, bool) {
+        calls.push_back(Call::PERSISTENCE);
+    }
+
+    void finishDriveLoop(bool, uint32_t, bool) { calls.push_back(Call::FINISH); }
+};
+
+bool called(const FakeDriveRuntime& runtime, Call call) {
+    return std::find(runtime.calls.begin(), runtime.calls.end(), call) != runtime.calls.end();
+}
+
+void assertCalls(const FakeDriveRuntime& runtime, const std::vector<Call>& expected) {
+    TEST_ASSERT_EQUAL_UINT(expected.size(), runtime.calls.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(expected[i]), static_cast<int>(runtime.calls[i]));
+    }
+}
+
 std::string projectRoot() {
 #ifdef PROJECT_DIR
     return PROJECT_DIR;
@@ -20,80 +153,113 @@ std::string readFile(const std::string& path) {
     return text.str();
 }
 
-std::string extractFunctionBody(const std::string& source, const std::string& signature) {
-    const size_t signatureAt = source.find(signature);
-    if (signatureAt == std::string::npos) {
-        return {};
-    }
-    const size_t bodyAt = source.find('{', signatureAt);
-    int depth = 0;
-    for (size_t i = bodyAt; i < source.size(); ++i) {
-        if (source[i] == '{') {
-            ++depth;
-        } else if (source[i] == '}' && --depth == 0) {
-            return source.substr(bodyAt, i - bodyAt + 1);
-        }
-    }
-    return {};
-}
-
-void assertOrdered(const std::string& source, const char* first, const char* second) {
-    const size_t firstAt = source.find(first);
-    const size_t secondAt = source.find(second);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, firstAt);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, secondAt);
-    TEST_ASSERT_TRUE(firstAt < secondAt);
-}
 } // namespace
 
 void setUp() {}
 void tearDown() {}
 
-void test_drive_tick_preserves_ingest_sensor_display_finalize_order() {
-    const std::string source = readFile(projectRoot() + "/src/drive_runtime.cpp");
-    const std::string tick = extractFunctionBody(source, "void DriveRuntime::tick()");
+void test_drive_coordinator_executes_production_phase_order() {
+    FakeDriveRuntime runtime;
 
-    assertOrdered(tick, "connectionRuntime_.process", "power_.process");
-    assertOrdered(tick, "power_.process", "ble_.process");
-    assertOrdered(tick, "ble_.process", "processConnectionCycle");
-    assertOrdered(tick, "processConnectionCycle", "processObd");
-    assertOrdered(tick, "processObd(nowMs, bleConnectedNow);", "const AlpStatus alpStatus");
-    assertOrdered(tick, "const AlpStatus alpStatus", "gps_.update");
-    assertOrdered(tick, "gps_.update", "speed_.update");
-    assertOrdered(tick, "speed_.update", "processDisplay");
-    assertOrdered(tick, "processDisplay", "connectionDispatch_.process");
-    assertOrdered(tick, "connectionDispatch_.process", "processPeriodicMaintenance(dispatchNowMs");
-    assertOrdered(tick, "processPeriodicMaintenance(dispatchNowMs",
-                  "state_.lastLoopUs = finishLoop(bleBackpressure");
+    DriveLoopCoordinator::tick(runtime);
+
+    assertCalls(runtime,
+                {Call::BEGIN,
+                 Call::CONNECTION_RUNTIME,
+                 Call::ACCEPT_CONNECTION,
+                 Call::SHOW_SCAN,
+                 Call::MARK_SCAN,
+                 Call::CONNECTION_PRESENTATION,
+                 Call::POWER,
+                 Call::TOUCH,
+                 Call::POWER_PRESENTATION,
+                 Call::TAP,
+                 Call::READY_GATE,
+                 Call::BLE_RUNTIME,
+                 Call::BLE_QUEUE,
+                 Call::CONNECTION_CYCLE,
+                 Call::OBD,
+                 Call::PARSING,
+                 Call::OBSERVE_ALP,
+                 Call::ALP_STATE,
+                 Call::GPS,
+                 Call::SPEED,
+                 Call::ALERT,
+                 Call::DISPLAY_EDGE,
+                 Call::DISPLAY_PRESENTATION,
+                 Call::CONNECTION_DISPATCH,
+                 Call::PERSISTENCE,
+                 Call::FINISH});
+}
+
+void test_power_owner_suppresses_touch_and_presentations_but_keeps_runtime_live() {
+    FakeDriveRuntime runtime;
+    runtime.presentationOwned = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_FALSE(called(runtime, Call::SHOW_SCAN));
+    TEST_ASSERT_FALSE(called(runtime, Call::CONNECTION_PRESENTATION));
+    TEST_ASSERT_FALSE(called(runtime, Call::TOUCH));
+    TEST_ASSERT_FALSE(called(runtime, Call::TAP));
+    TEST_ASSERT_FALSE(called(runtime, Call::DISPLAY_PRESENTATION));
+    TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_RUNTIME));
+    TEST_ASSERT_TRUE(called(runtime, Call::BLE_RUNTIME));
+    TEST_ASSERT_TRUE(called(runtime, Call::BLE_QUEUE));
+    TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_CYCLE));
+    TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_DISPATCH));
+    TEST_ASSERT_TRUE(called(runtime, Call::DISPLAY_EDGE));
+    TEST_ASSERT_TRUE(called(runtime, Call::PERSISTENCE));
+}
+
+void test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_display() {
+    FakeDriveRuntime runtime;
+    runtime.acquirePresentationDuringPower = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_TRUE(called(runtime, Call::POWER));
+    TEST_ASSERT_FALSE(called(runtime, Call::TOUCH));
+    TEST_ASSERT_FALSE(called(runtime, Call::TAP));
+    TEST_ASSERT_TRUE(called(runtime, Call::DISPLAY_EDGE));
+    TEST_ASSERT_FALSE(called(runtime, Call::DISPLAY_PRESENTATION));
+    TEST_ASSERT_TRUE(called(runtime, Call::BLE_RUNTIME));
+    TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_DISPATCH));
+}
+
+void test_inactive_drive_runtime_executes_no_phase() {
+    FakeDriveRuntime runtime;
+    runtime.activeValue = false;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_TRUE(runtime.calls.empty());
 }
 
 void test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph() {
     const std::string header = readFile(projectRoot() + "/src/drive_runtime.h");
-    const std::string source = readFile(projectRoot() + "/src/drive_runtime.cpp");
     const std::string main = readFile(projectRoot() + "/src/main.cpp");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("class DriveRuntime final"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("void tick();"));
     TEST_ASSERT_EQUAL(std::string::npos, header.find("struct Providers"));
-    TEST_ASSERT_EQUAL(std::string::npos, source.find("ProviderCallbackBindings"));
     TEST_ASSERT_EQUAL(std::string::npos, main.find("#include \"main_globals.h\""));
     TEST_ASSERT_EQUAL(std::string::npos, main.find("LoopIngestModule"));
     TEST_ASSERT_EQUAL(std::string::npos, main.find("LoopTailModule"));
 }
 
-void test_drive_runtime_has_no_maintenance_wifi_dependency_or_start_path() {
+void test_drive_runtime_composition_has_no_maintenance_wifi_dependency() {
     const std::string header = readFile(projectRoot() + "/src/drive_runtime.h");
-    const std::string source = readFile(projectRoot() + "/src/drive_runtime.cpp");
 
     TEST_ASSERT_EQUAL(std::string::npos, header.find("WiFiManager"));
-    TEST_ASSERT_EQUAL(std::string::npos, source.find("startSetupMode("));
-    TEST_ASSERT_EQUAL(std::string::npos, source.find("wifiManager"));
 }
 
 int main() {
     UNITY_BEGIN();
-    RUN_TEST(test_drive_tick_preserves_ingest_sensor_display_finalize_order);
+    RUN_TEST(test_drive_coordinator_executes_production_phase_order);
+    RUN_TEST(test_power_owner_suppresses_touch_and_presentations_but_keeps_runtime_live);
+    RUN_TEST(test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_display);
+    RUN_TEST(test_inactive_drive_runtime_executes_no_phase);
     RUN_TEST(test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph);
-    RUN_TEST(test_drive_runtime_has_no_maintenance_wifi_dependency_or_start_path);
+    RUN_TEST(test_drive_runtime_composition_has_no_maintenance_wifi_dependency);
     return UNITY_END();
 }

@@ -209,7 +209,7 @@ bool V1BLEClient::connectToServer() {
     if (pScan && pScan->isScanning()) {
         pScan->stop();
         scanStopRequestedMs_ = static_cast<uint32_t>(millis());
-        setBLEState(BLEState::SCAN_STOPPING, "connectToServer guard");
+        setBLEState(BLEState::SCAN_STOPPING);
         return false;
     }
 
@@ -232,7 +232,7 @@ bool V1BLEClient::connectToServer() {
     connectAttemptNumber_ = 0; // Reset for new connection sequence
     asyncConnectPending_ = false;
     asyncConnectSuccess_ = false;
-    setBLEState(BLEState::CONNECTING, "connectToServer");
+    setBLEState(BLEState::CONNECTING);
     return true;
 }
 
@@ -261,7 +261,7 @@ bool V1BLEClient::startAsyncConnect() {
             Serial.println("[BLE] ERROR: Failed to create client");
             connectInProgress_ = false;
             connectStartMs_ = 0;
-            setBLEState(BLEState::DISCONNECTED, "client creation failed");
+            setBLEState(BLEState::DISCONNECTED);
             return false;
         }
         // Callbacks share the client's lifetime.
@@ -290,7 +290,7 @@ bool V1BLEClient::startAsyncConnect() {
         nextConnectAllowedMs_ = 0;
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        beginClientQuiesce("waiting stale disconnect");
+        beginClientQuiesce();
         return false;
     }
 
@@ -327,12 +327,12 @@ bool V1BLEClient::startAsyncConnect() {
         nextConnectAllowedMs_ = 0;
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        setBLEState(BLEState::DISCONNECTED, "connect initiation failed");
+        setBLEState(BLEState::DISCONNECTED);
         return false;
     }
 
     // Async connect initiated - transition to CONNECTING_WAIT
-    setBLEState(BLEState::CONNECTING_WAIT, "async connect initiated");
+    setBLEState(BLEState::CONNECTING_WAIT);
     return true;
 }
 
@@ -342,7 +342,7 @@ bool V1BLEClient::finishConnection() {
     const uint32_t currentGeneration = sessionGeneration_.load(std::memory_order_acquire);
     if (!acceptClientCallbacks_.load(std::memory_order_acquire) ||
         !sessionPublicationGate_.accepts(currentGeneration) || discoveryTaskRunning_.load(std::memory_order_acquire)) {
-        beginClientQuiesce("late connect completion");
+        beginClientQuiesce();
         return false;
     }
 
@@ -358,7 +358,7 @@ bool V1BLEClient::finishConnection() {
     discoveryTaskDone_.store(false, std::memory_order_relaxed);
     discoveryTaskResult_.store(false, std::memory_order_relaxed);
     discoveryCompletedGeneration_.store(0, std::memory_order_relaxed);
-    setBLEState(BLEState::DISCOVERING, "ready for discovery");
+    setBLEState(BLEState::DISCOVERING);
     return true;
 }
 
@@ -387,7 +387,7 @@ void V1BLEClient::processConnectingWait() {
             nextConnectAllowedMs_ = 0;
             connectInProgress_ = false;
             connectStartMs_ = 0;
-            beginClientQuiesce("connect timeout");
+            beginClientQuiesce();
         }
         return; // Still waiting
     }
@@ -405,13 +405,13 @@ void V1BLEClient::processConnectingWait() {
             nextConnectAllowedMs_ = 0;
             connectInProgress_ = false;
             connectStartMs_ = 0;
-            setBLEState(BLEState::DISCONNECTED, "EBUSY retry");
+            setBLEState(BLEState::DISCONNECTED);
             return;
         }
 
         // Retry on the next loop iteration to keep each process() slice bounded.
         nextConnectAllowedMs_ = static_cast<uint32_t>(millis()) + 20;
-        setBLEState(BLEState::CONNECTING, "async connect retry");
+        setBLEState(BLEState::CONNECTING);
         return;
     }
 
@@ -426,10 +426,10 @@ void V1BLEClient::processConnectingWait() {
     nextConnectAllowedMs_ = 0;
     connectInProgress_ = false;
     connectStartMs_ = 0;
-    setBLEState(BLEState::DISCONNECTED, "all connect attempts failed");
+    setBLEState(BLEState::DISCONNECTED);
 }
 
-void V1BLEClient::beginClientQuiesce(const char* reason, bool requestHardReset) {
+void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
     hardResetPending_ = hardResetPending_ || requestHardReset;
 
     if (bleState_ != BLEState::QUIESCING) {
@@ -456,7 +456,7 @@ void V1BLEClient::beginClientQuiesce(const char* reason, bool requestHardReset) 
             outgoingHandle = pClient_->getConnHandle();
         }
         quiescingConnectionHandle_.store(outgoingHandle, std::memory_order_release);
-        setBLEState(BLEState::QUIESCING, reason);
+        setBLEState(BLEState::QUIESCING);
 
         NimBLEScan* scan = NimBLEDevice::getScan();
         if (scan && scan->isScanning()) {
@@ -569,7 +569,7 @@ void V1BLEClient::processClientQuiesce() {
     }
 
     nextConnectAllowedMs_ = 0;
-    setBLEState(BLEState::DISCONNECTED, "client quiesced");
+    setBLEState(BLEState::DISCONNECTED);
 }
 
 // --- discovery ---
@@ -608,7 +608,7 @@ void V1BLEClient::processDiscovering() {
         }
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        beginClientQuiesce("discovery timeout");
+        beginClientQuiesce();
         return;
     }
 
@@ -642,7 +642,7 @@ void V1BLEClient::processDiscovering() {
             nextConnectAllowedMs_ = 0;
             connectInProgress_ = false;
             connectStartMs_ = 0;
-            beginClientQuiesce("discovery task create failed");
+            beginClientQuiesce();
         }
         return; // Yield to loop while task runs
     }
@@ -651,7 +651,7 @@ void V1BLEClient::processDiscovering() {
     const uint32_t completedGeneration = discoveryCompletedGeneration_.load(std::memory_order_acquire);
     if (completedGeneration != activeDiscoveryGeneration_ ||
         completedGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
-        beginClientQuiesce("stale discovery completion");
+        beginClientQuiesce();
         return;
     }
 
@@ -662,13 +662,13 @@ void V1BLEClient::processDiscovering() {
         }
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        beginClientQuiesce("discovery failed");
+        beginClientQuiesce();
         return;
     }
 
     // Transition to subscribe phase (uses step machine to break up CCCD writes)
     subscribeStep_ = SubscribeStep::GET_SERVICE;
-    setBLEState(BLEState::SUBSCRIBING, "discovery complete");
+    setBLEState(BLEState::SUBSCRIBING);
 }
 
 // --- helpers ---

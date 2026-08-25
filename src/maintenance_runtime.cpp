@@ -221,7 +221,7 @@ void MaintenanceRuntime::start(uint32_t setupStartMs, esp_reset_reason_t resetRe
     logBootStage("maintenance_touch");
 
     const uint32_t wifiStartMs = millis();
-    const bool wifiStarted = wifi_.startSetupMode(false);
+    const bool wifiStarted = MaintenanceWifiCoordinator::start(*this);
     Serial.printf("[MaintBoot] wifi_start ok=%s elapsedMs=%lu\n", wifiStarted ? "true" : "false",
                   static_cast<unsigned long>(millis() - wifiStartMs));
     logHeapSnapshot(wifiStarted ? "post_wifi" : "wifi_start_failed");
@@ -280,6 +280,37 @@ void MaintenanceRuntime::restartNormal(const char* reason) {
     ESP.restart();
 }
 
+bool MaintenanceRuntime::startMaintenanceWifi() {
+    return wifi_.startSetupMode(false);
+}
+
+void MaintenanceRuntime::processMaintenanceWifi() {
+    wifi_.process();
+}
+
+WifiMaintenanceRecoveryResult MaintenanceRuntime::evaluateMaintenanceWifiRecovery(uint32_t nowMs) {
+    WifiMaintenanceRecoveryInput recoveryInput;
+    recoveryInput.maintenanceBootActive = true;
+    recoveryInput.wifiServiceReachable = wifi_.isWifiServiceReachable();
+    recoveryInput.nowMs = nowMs;
+    return wifiRecovery_.evaluate(recoveryInput);
+}
+
+void MaintenanceRuntime::restartMaintenanceWifi(uint32_t attemptNumber) {
+    Serial.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
+                  static_cast<unsigned long>(attemptNumber));
+    const bool restarted = wifi_.startSetupMode(false);
+    Serial.printf("[MaintBoot] wifi_restart ok=%s\n", restarted ? "true" : "false");
+}
+
+bool MaintenanceRuntime::maintenanceWifiActive() const {
+    return wifi_.isWifiServiceActive();
+}
+
+void MaintenanceRuntime::stopMaintenanceWifi(const char* reason) {
+    wifi_.stopSetupMode(true, reason);
+}
+
 void MaintenanceRuntime::tick(uint32_t nowMs) {
     if (!active_) {
         return;
@@ -289,21 +320,7 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     power_.process(nowMs);
     servicePowerDisplayOwnership(nowMs);
     const bool powerPresentationOwned = power_.ownsDisplayPresentation();
-    if (!powerPresentationOwned) {
-        wifi_.process();
-
-        WifiMaintenanceRecoveryInput recoveryInput;
-        recoveryInput.maintenanceBootActive = true;
-        recoveryInput.wifiServiceReachable = wifi_.isWifiServiceReachable();
-        recoveryInput.nowMs = nowMs;
-        const WifiMaintenanceRecoveryResult recovery = wifiRecovery_.evaluate(recoveryInput);
-        if (recovery.attemptRestart) {
-            Serial.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
-                          static_cast<unsigned long>(recovery.attemptNumber));
-            const bool restarted = wifi_.startSetupMode(false);
-            Serial.printf("[MaintBoot] wifi_restart ok=%s\n", restarted ? "true" : "false");
-        }
-    }
+    MaintenanceWifiCoordinator::service(*this, nowMs, powerPresentationOwned);
 
     settings_.serviceDeferredPersist(nowMs);
     settings_.serviceDeferredBackup(nowMs);
@@ -374,31 +391,40 @@ void MaintenanceRuntime::stop() {
     if (!active_) {
         return;
     }
-    if (wifi_.isWifiServiceActive()) {
-        wifi_.stopSetupMode(true, "maintenance_stop");
-    }
+    MaintenanceWifiCoordinator::stop(*this, "maintenance_stop");
     active_ = false;
     state_.maintenanceBootActive = false;
     wifi_.setMaintenanceBootMode(false);
 }
 
+bool MaintenanceRuntime::preparePersistenceForShutdownPhase() {
+    return preparePersistenceForShutdown(events_, health_, settings_);
+}
+
+void MaintenanceRuntime::stopMaintenanceWifiForShutdown() {
+    Serial.println("[Battery] Stopping WiFi after shutdown flush...");
+    wifi_.stopSetupMode(true, "poweroff");
+    delay(100);
+}
+
+void MaintenanceRuntime::writeCleanShutdownMarker() {
+    Serial.println("[Battery] Writing clean-shutdown marker...");
+    markCleanShutdown();
+}
+
+void MaintenanceRuntime::resumePersistenceAfterAbortedShutdownPhase() {
+    resumePersistenceAfterAbortedShutdown(events_);
+}
+
+void MaintenanceRuntime::resumeMaintenanceWifiAfterAbortedShutdown() {
+    const bool restored = wifi_.startSetupMode(false);
+    Serial.printf("[Battery] Maintenance WiFi restore ok=%s\n", restored ? "true" : "false");
+}
+
 void MaintenanceRuntime::prepareForShutdown() {
-    const bool persistenceSafe = preparePersistenceForShutdown(events_, health_, settings_);
-    if (wifi_.isWifiServiceActive()) {
-        Serial.println("[Battery] Stopping WiFi after shutdown flush...");
-        wifi_.stopSetupMode(true, "poweroff");
-        delay(100);
-    }
-    if (persistenceSafe) {
-        Serial.println("[Battery] Writing clean-shutdown marker...");
-        markCleanShutdown();
-    }
+    RuntimeServiceLifecycleCoordinator::prepareMaintenance(*this);
 }
 
 void MaintenanceRuntime::resumeAfterAbortedShutdown() {
-    resumePersistenceAfterAbortedShutdown(events_);
-    if (!wifi_.isWifiServiceActive()) {
-        const bool restored = wifi_.startSetupMode(false);
-        Serial.printf("[Battery] Maintenance WiFi restore ok=%s\n", restored ? "true" : "false");
-    }
+    RuntimeServiceLifecycleCoordinator::resumeMaintenance(*this);
 }

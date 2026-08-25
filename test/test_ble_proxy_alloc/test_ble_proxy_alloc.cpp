@@ -90,7 +90,6 @@ V1BLEClient::V1BLEClient()
     , dataCallback_(nullptr)
     , connectImmediateCallback_(nullptr)
     , connectStableCallback_(nullptr)
-    , hasTargetDevice_(false)
     , targetAddress_()
     , lastScanStart_(0)
     , pScanCallbacks_(nullptr)
@@ -104,7 +103,7 @@ V1BLEClient::~V1BLEClient() {
     releaseProxyQueues();
 }
 
-void V1BLEClient::setBLEState(BLEState newState, const char*) {
+void V1BLEClient::setBLEState(BLEState newState) {
     bleState_ = newState;
     stateEnteredMs_ = static_cast<uint32_t>(millis());
     scanStopResultsCleared_ = false;
@@ -117,7 +116,7 @@ void V1BLEClient::disconnect() {
 void V1BLEClient::hardResetBLEClient() {
     connectInProgress_ = false;
     connectStartMs_ = 0;
-    setBLEState(BLEState::DISCONNECTED, "hard reset test stub");
+    setBLEState(BLEState::DISCONNECTED);
 }
 
 void V1BLEClient::cleanupConnection() {}

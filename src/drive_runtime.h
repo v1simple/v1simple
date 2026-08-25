@@ -28,12 +28,14 @@
 #include "modules/speed/speed_source_selector.h"
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/system/connection_cycle_coordinator_module.h"
+#include "modules/system/parsed_frame_event_module.h"
 #include "modules/system/system_event_bus.h"
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/touch/touch_ui_module.h"
 #include "modules/voice/voice_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
 #include "packet_parser.h"
+#include "runtime_coordinator.h"
 #include "touch_handler.h"
 
 class BatteryManager;
@@ -76,6 +78,14 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     MainRuntimeState& state() { return state_; }
 
   private:
+    friend class DriveLoopCoordinator;
+    friend class RuntimeServiceLifecycleCoordinator;
+
+    struct DisplayEdges {
+        uint32_t nowMs = 0;
+        ParsedFrameSignal parsed;
+    };
+
     static DriveRuntime* callbackOwner_;
     static void onV1Data(const uint8_t* data, size_t length, uint16_t charUuid, uint32_t sessionGeneration,
                          uint32_t callbackMillis);
@@ -93,14 +103,44 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void initializeRuntimeModules();
     void finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs);
     void requestMaintenanceBootRestart();
+    DriveLoopTiming beginDriveLoop();
+    ConnectionRuntimeSnapshot processConnectionRuntime(uint32_t nowMs);
+    void acceptConnectionSnapshot(const ConnectionRuntimeSnapshot& connection);
+    void markInitialScanningScreenHandled();
+    bool powerOwnsPresentation() const;
+    void presentConnectionState(uint32_t nowMs, const ConnectionRuntimeSnapshot& connection);
+    void processPower(uint32_t nowMs);
+    bool processTouch(uint32_t nowMs);
     void servicePowerDisplayOwnership(uint32_t nowMs);
+    bool preemptSettingsForLiveAlert();
+    void processTapGesture(uint32_t nowMs);
+    void openBootReadyGate(uint32_t nowMs);
+    void processBleRuntime();
+    void processBleQueue();
+    bool bleQueueBackpressured() const;
     void observeAlpProductState(uint32_t nowMs);
     void processConnectionCycle(uint32_t nowMs, bool bleConnectedNow);
     void processObd(uint32_t nowMs, bool bleConnectedNow);
-    void processDisplay(uint32_t nowMs, bool overloadThisLoop, bool presentationSuppressed);
+    void processAlp(uint32_t nowMs);
+    void processAlpPresentationAndPower(uint32_t nowMs);
+    void processGps(uint32_t nowMs);
+    void processSpeed(uint32_t nowMs);
+    void processSpeedAlert(uint32_t nowMs);
+    DisplayEdges consumeDisplayEdges();
+    void presentDisplay(const DisplayEdges& edges, bool overloadThisLoop);
+    DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                     bool loopOverloaded, bool forceTailBleDrainPending = false);
     uint32_t finishLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain = false);
+    void finishDriveLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain);
+    bool preparePersistenceForShutdownPhase();
+    void disconnectDriveBleForShutdown();
+    void disconnectDriveObdForShutdown();
+    void stopDriveBleScanForShutdown();
+    void settleDriveShutdownTransport();
+    void writeCleanShutdownMarker();
+    void resumePersistenceAfterAbortedShutdownPhase();
+    void resumeDriveBleAfterAbortedShutdown();
     void prepareForShutdown() override;
     void resumeAfterAbortedShutdown() override;
     void stopObdScan() override { obd_.stopActiveScan(); }

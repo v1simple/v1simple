@@ -459,10 +459,7 @@ class V1BLEClient {
 
     char pendingScanTargetAddress_[18] = {0}; // "AA:BB:CC:DD:EE:FF" + null
     uint8_t pendingScanTargetAddressType_ = BLE_ADDR_PUBLIC;
-    bool hasTargetDevice_ = false;
-    NimBLEAdvertisedDevice targetDevice_;
     NimBLEAddress targetAddress_;
-    uint8_t targetAddressType_ = BLE_ADDR_PUBLIC; // Saved from advertisement
     uint32_t lastScanStart_;
 
     // BLE State Machine - centralized connection state
@@ -562,7 +559,7 @@ class V1BLEClient {
     bool startAsyncConnect();     // Initiate async connect
     void processConnectingWait(); // Handle CONNECTING_WAIT state
     void processDiscovering();    // Handle DISCOVERING state
-    void beginClientQuiesce(const char* reason, bool requestHardReset = false);
+    void beginClientQuiesce(bool requestHardReset = false);
     void processClientQuiesce();
     void processSubscribing();              // Handle SUBSCRIBING state (step machine)
     void processSubscribeYield();           // Handle SUBSCRIBE_YIELD state
@@ -582,7 +579,7 @@ class V1BLEClient {
     void logConnParams(const char* tag);
 
     // State transition helper
-    void setBLEState(BLEState newState, const char* reason);
+    void setBLEState(BLEState newState);
 
     // Defer settings writes from BLE scan callback
     void deferLastV1Address(const char* addr, const char* advertisedName = nullptr);

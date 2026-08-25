@@ -5,8 +5,81 @@
 #include <string>
 
 #include "../../src/modules/wifi/wifi_stop_lifecycle_policy.h"
+#include "../../src/runtime_coordinator.h"
 
 namespace {
+
+struct FakeRecoveryResult {
+    bool attemptRestart = false;
+    uint32_t attemptNumber = 0;
+};
+
+struct FakeDriveRuntime {
+    int startCalls = 0;
+    int tickCalls = 0;
+
+    void start(uint32_t, uint32_t, int) { ++startCalls; }
+    void tick() { ++tickCalls; }
+};
+
+struct FakeMaintenanceRuntime {
+    bool activeValue = false;
+    bool presentationSuppressed = false;
+    bool wifiActive = false;
+    FakeRecoveryResult recovery;
+    int startCalls = 0;
+    int tickCalls = 0;
+    int wifiStartCalls = 0;
+    int wifiProcessCalls = 0;
+    int recoveryCalls = 0;
+    int wifiRestartCalls = 0;
+    int wifiStopCalls = 0;
+    uint32_t restartAttemptNumber = 0;
+
+    void start(uint32_t, int) {
+        ++startCalls;
+        activeValue = true;
+        MaintenanceWifiCoordinator::start(*this);
+    }
+
+    bool active() const { return activeValue; }
+
+    void tick(uint32_t nowMs) {
+        ++tickCalls;
+        MaintenanceWifiCoordinator::service(*this, nowMs, presentationSuppressed);
+    }
+
+    void stop() {
+        MaintenanceWifiCoordinator::stop(*this, "maintenance_stop");
+        activeValue = false;
+    }
+
+    bool startMaintenanceWifi() {
+        ++wifiStartCalls;
+        wifiActive = true;
+        return true;
+    }
+
+    void processMaintenanceWifi() { ++wifiProcessCalls; }
+
+    FakeRecoveryResult evaluateMaintenanceWifiRecovery(uint32_t) {
+        ++recoveryCalls;
+        return recovery;
+    }
+
+    void restartMaintenanceWifi(uint32_t attemptNumber) {
+        ++wifiRestartCalls;
+        restartAttemptNumber = attemptNumber;
+        wifiActive = true;
+    }
+
+    bool maintenanceWifiActive() const { return wifiActive; }
+
+    void stopMaintenanceWifi(const char*) {
+        ++wifiStopCalls;
+        wifiActive = false;
+    }
+};
 
 std::string readFile(const std::string& path) {
     std::ifstream input(path);
@@ -54,33 +127,69 @@ size_t countOccurrences(const std::string& source, const std::string& needle) {
 void setUp() {}
 void tearDown() {}
 
-void test_normal_driving_boot_has_no_wifi_start_or_runtime_process_path() {
-    const std::string mainSource = readFile(projectRoot() + "/src/main.cpp");
-    const std::string driveSource = readFile(projectRoot() + "/src/drive_runtime.cpp");
-    const std::string normalSetup = extractFunctionBody(driveSource, "void DriveRuntime::start(");
-    const std::string driveLoop = extractFunctionBody(driveSource, "void DriveRuntime::tick()");
-    const std::string loopBody = extractFunctionBody(mainSource, "void loop()");
+void test_normal_boot_executes_drive_only_and_never_touches_wifi_runtime() {
+    FakeDriveRuntime drive;
+    FakeMaintenanceRuntime maintenance;
+    int clockReads = 0;
 
-    TEST_ASSERT_FALSE(normalSetup.empty());
-    TEST_ASSERT_EQUAL(std::string::npos, normalSetup.find("wifiManager.process()"));
-    TEST_ASSERT_EQUAL(std::string::npos, normalSetup.find("startSetupMode("));
-    TEST_ASSERT_EQUAL(std::string::npos, driveLoop.find("wifi_.process()"));
-    TEST_ASSERT_EQUAL(std::string::npos, driveLoop.find("startSetupMode("));
-    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("wifiManager.process()"));
-    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("startSetupMode("));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceRuntime.tick(millis())"));
+    MainRuntimeCoordinator::start(false, 10, 11, 1, drive, maintenance);
+    MainRuntimeCoordinator::tick(drive, maintenance, [&clockReads]() {
+        ++clockReads;
+        return 20U;
+    });
+
+    TEST_ASSERT_EQUAL(1, drive.startCalls);
+    TEST_ASSERT_EQUAL(1, drive.tickCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.startCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.tickCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.wifiStartCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.wifiProcessCalls);
+    TEST_ASSERT_EQUAL(0, clockReads);
 }
 
-void test_maintenance_boot_starts_and_processes_wifi_service() {
-    const std::string source = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
-    const std::string maintenanceSetup = extractFunctionBody(source, "void MaintenanceRuntime::start(");
-    const std::string maintenanceLoop = extractFunctionBody(source, "void MaintenanceRuntime::tick(");
+void test_maintenance_boot_starts_services_and_stops_wifi() {
+    FakeDriveRuntime drive;
+    FakeMaintenanceRuntime maintenance;
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceSetup.find("configureWebApi();"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceSetup.find("wifi_.startSetupMode(false)"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceLoop.find("wifi_.process()"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceLoop.find("wifi_.isWifiServiceReachable()"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, maintenanceLoop.find("wifi_.startSetupMode(false)"));
+    MainRuntimeCoordinator::start(true, 10, 11, 1, drive, maintenance);
+    MainRuntimeCoordinator::tick(drive, maintenance, []() { return 25U; });
+    maintenance.stop();
+
+    TEST_ASSERT_EQUAL(0, drive.startCalls);
+    TEST_ASSERT_EQUAL(0, drive.tickCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.startCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.tickCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.wifiStartCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.wifiProcessCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.recoveryCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.wifiStopCalls);
+    TEST_ASSERT_FALSE(maintenance.wifiActive);
+    TEST_ASSERT_FALSE(maintenance.active());
+}
+
+void test_maintenance_wifi_recovery_restarts_an_unreachable_service() {
+    FakeMaintenanceRuntime maintenance;
+    maintenance.activeValue = true;
+    maintenance.recovery.attemptRestart = true;
+    maintenance.recovery.attemptNumber = 3;
+
+    MaintenanceWifiCoordinator::service(maintenance, 500, false);
+
+    TEST_ASSERT_EQUAL(1, maintenance.wifiProcessCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.recoveryCalls);
+    TEST_ASSERT_EQUAL(1, maintenance.wifiRestartCalls);
+    TEST_ASSERT_EQUAL_UINT32(3, maintenance.restartAttemptNumber);
+}
+
+void test_power_presentation_suppresses_maintenance_wifi_service() {
+    FakeMaintenanceRuntime maintenance;
+    maintenance.activeValue = true;
+
+    MaintenanceWifiCoordinator::service(maintenance, 500, true);
+
+    TEST_ASSERT_EQUAL(0, maintenance.wifiProcessCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.recoveryCalls);
+    TEST_ASSERT_EQUAL(0, maintenance.wifiRestartCalls);
 }
 
 void test_maintenance_service_wires_routes_settings_and_runtime_status_once() {
@@ -96,14 +205,12 @@ void test_maintenance_service_wires_routes_settings_and_runtime_status_once() {
 
 void test_maintenance_runtime_uses_typed_constructor_dependencies_without_provider_table() {
     const std::string header = readFile(projectRoot() + "/src/maintenance_runtime.h");
-    const std::string mainSource = readFile(projectRoot() + "/src/main.cpp");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("MaintenanceRuntime(WiFiManager& wifi"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("SettingsManager& settings"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("V1ProfileManager& profiles"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("StorageManager& storage"));
     TEST_ASSERT_EQUAL(std::string::npos, header.find("struct Providers"));
-    TEST_ASSERT_EQUAL(std::string::npos, mainSource.find("startSetupMode("));
 }
 
 void test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission() {
@@ -127,8 +234,10 @@ void test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission() 
 
 int main() {
     UNITY_BEGIN();
-    RUN_TEST(test_normal_driving_boot_has_no_wifi_start_or_runtime_process_path);
-    RUN_TEST(test_maintenance_boot_starts_and_processes_wifi_service);
+    RUN_TEST(test_normal_boot_executes_drive_only_and_never_touches_wifi_runtime);
+    RUN_TEST(test_maintenance_boot_starts_services_and_stops_wifi);
+    RUN_TEST(test_maintenance_wifi_recovery_restarts_an_unreachable_service);
+    RUN_TEST(test_power_presentation_suppresses_maintenance_wifi_service);
     RUN_TEST(test_maintenance_service_wires_routes_settings_and_runtime_status_once);
     RUN_TEST(test_maintenance_runtime_uses_typed_constructor_dependencies_without_provider_table);
     RUN_TEST(test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission);

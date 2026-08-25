@@ -34,7 +34,6 @@ struct SubscriptionFixture {
         client.connectInProgress_ = true;
         client.connectStartMs_ = 10;
         client.shouldConnect_ = true;
-        client.hasTargetDevice_ = true;
         client.bleState_ = BLEState::SUBSCRIBING;
     }
 
@@ -52,7 +51,6 @@ void assertImmediateFailure(SubscriptionFixture& fixture) {
     TEST_ASSERT_FALSE(fixture.client.connectInProgress_);
     TEST_ASSERT_EQUAL_UINT32(0, fixture.client.connectStartMs_);
     TEST_ASSERT_FALSE(fixture.client.shouldConnect_.load(std::memory_order_relaxed));
-    TEST_ASSERT_FALSE(fixture.client.hasTargetDevice_);
 }
 
 } // namespace
@@ -60,12 +58,12 @@ void assertImmediateFailure(SubscriptionFixture& fixture) {
 V1BLEClient::V1BLEClient() {}
 V1BLEClient::~V1BLEClient() {}
 
-void V1BLEClient::setBLEState(BLEState newState, const char*) {
+void V1BLEClient::setBLEState(BLEState newState) {
     bleState_ = newState;
     stateEnteredMs_ = static_cast<uint32_t>(millis());
 }
 
-void V1BLEClient::beginClientQuiesce(const char*, bool) {
+void V1BLEClient::beginClientQuiesce(bool) {
     quiesceCalls++;
     bleState_ = BLEState::QUIESCING;
 }

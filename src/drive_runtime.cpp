@@ -337,6 +337,51 @@ void DriveRuntime::resetConnectionCadence() {
     connectionCadence_.reset();
 }
 
+DriveLoopTiming DriveRuntime::beginDriveLoop() {
+    DriveLoopTiming timing;
+    timing.loopStartUs = micros();
+    audio_process_amp_timeout();
+    timing.nowMs = millis();
+    return timing;
+}
+
+ConnectionRuntimeSnapshot DriveRuntime::processConnectionRuntime(uint32_t nowMs) {
+    return connectionRuntime_.process(nowMs, micros(), state_.lastLoopUs, state_.bootSplashHoldActive,
+                                      state_.bootSplashHoldUntilMs, state_.initialScanningScreenShown);
+}
+
+void DriveRuntime::acceptConnectionSnapshot(const ConnectionRuntimeSnapshot& connection) {
+    state_.bootSplashHoldActive = connection.bootSplashHoldActive;
+    state_.initialScanningScreenShown = connection.initialScanningScreenShown;
+}
+
+void DriveRuntime::markInitialScanningScreenHandled() {
+    state_.initialScanningScreenShown = true;
+}
+
+bool DriveRuntime::powerOwnsPresentation() const {
+    return power_.ownsDisplayPresentation();
+}
+
+void DriveRuntime::presentConnectionState(uint32_t nowMs, const ConnectionRuntimeSnapshot& connection) {
+    DisplayOrchestrationEarlyContext earlyContext;
+    earlyContext.nowMs = nowMs;
+    earlyContext.bootSplashHoldActive = state_.bootSplashHoldActive;
+    earlyContext.overloadThisLoop = connection.overloaded;
+    earlyContext.bleContext = {connection.connected, ble_.isProxyClientConnected(), ble_.getConnectionRssi(),
+                               ble_.getProxyClientRssi()};
+    earlyContext.bleReceiving = connection.receiving;
+    displayOrchestration_.processEarly(earlyContext);
+}
+
+void DriveRuntime::processPower(uint32_t nowMs) {
+    power_.process(nowMs);
+}
+
+bool DriveRuntime::processTouch(uint32_t nowMs) {
+    return touchUi_.process(nowMs, digitalRead(BOOT_BUTTON_GPIO) == LOW);
+}
+
 void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
     if (power_.ownsDisplayPresentation()) {
         if (preview_.isRunning()) {
@@ -366,6 +411,37 @@ void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
         Serial.printf("[Power] Restored display brightness=%u after shutdown abort\n",
                       static_cast<unsigned>(savedBrightness));
     }
+}
+
+bool DriveRuntime::preemptSettingsForLiveAlert() {
+    AlertData v1Priority;
+    const bool v1LiveAlert = parser_.hasAlerts() && parser_.getRenderablePriorityAlert(v1Priority);
+    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
+    return (v1LiveAlert || alpLiveAlert) && touchUi_.preemptForLiveAlert();
+}
+
+void DriveRuntime::processTapGesture(uint32_t nowMs) {
+    tapGesture_.process(nowMs);
+}
+
+void DriveRuntime::openBootReadyGate(uint32_t nowMs) {
+    if (!state_.bootReady && nowMs >= state_.bootReadyDeadlineMs) {
+        state_.bootReady = true;
+        ble_.setBootReady(true);
+        Serial.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", static_cast<unsigned long>(nowMs));
+    }
+}
+
+void DriveRuntime::processBleRuntime() {
+    ble_.process();
+}
+
+void DriveRuntime::processBleQueue() {
+    bleQueue_.process();
+}
+
+bool DriveRuntime::bleQueueBackpressured() const {
+    return bleQueue_.isBackpressured();
 }
 
 void DriveRuntime::observeAlpProductState(uint32_t nowMs) {
@@ -447,36 +523,88 @@ void DriveRuntime::processObd(uint32_t nowMs, bool bleConnectedNow) {
     }
 }
 
-void DriveRuntime::processDisplay(uint32_t nowMs, bool overloadThisLoop, bool presentationSuppressed) {
-    const uint32_t displayNowMs = millis();
-    const ParsedFrameSignal parsedSignal =
-        ParsedFrameEventModule::collect(bleQueue_.consumeParsedFlag(), systemEvents_);
-    if (presentationSuppressed) {
-        return;
-    }
+void DriveRuntime::processAlp(uint32_t nowMs) {
+    alp_.process(nowMs);
+}
 
+void DriveRuntime::processAlpPresentationAndPower(uint32_t nowMs) {
+    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
+    if (alpLiveAlert && preview_.isRunning()) {
+        preview_.cancel();
+    }
+    const AlpStatus alpStatus = alp_.snapshot();
+    const bool alpSignalActive =
+        alp_.isEnabled() && alpStatus.uartActive && alpStatus.lastHeartbeatMs != 0 &&
+        static_cast<uint32_t>(nowMs - alpStatus.lastHeartbeatMs) <= AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS;
+    if (alpSignalActive != state_.alpSignalActive) {
+        power_.onAlpSignalChange(alpSignalActive);
+        state_.alpSignalActive = alpSignalActive;
+    }
+}
+
+void DriveRuntime::processGps(uint32_t nowMs) {
+    gps_.update(nowMs);
+}
+
+void DriveRuntime::processSpeed(uint32_t nowMs) {
+    speed_.update(nowMs);
+}
+
+void DriveRuntime::processSpeedAlert(uint32_t nowMs) {
+    const V1Settings& settings = settings_.get();
+    speedMute_.syncSettings(settings.speedMuteEnabled, settings.speedMuteThresholdMph,
+                            settings.speedMuteHysteresisMph, settings.speedMuteVolume,
+                            settings.speedMuteVoice);
+    const SpeedSelection speed = speed_.selectedSpeed();
+    speedMute_.update(speed.speedMph, speed.valid, nowMs);
+}
+
+DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
+    DisplayEdges edges;
+    edges.nowMs = millis();
+    edges.parsed = ParsedFrameEventModule::collect(bleQueue_.consumeParsedFlag(), systemEvents_);
+    return edges;
+}
+
+void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
     DisplayOrchestrationParsedContext parsedContext;
-    parsedContext.nowMs = displayNowMs;
-    parsedContext.parsedReady = parsedSignal.parsedReady;
+    parsedContext.nowMs = edges.nowMs;
+    parsedContext.parsedReady = edges.parsed.parsedReady;
     parsedContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     const DisplayOrchestrationParsedResult parsedResult = displayOrchestration_.processParsedFrame(parsedContext);
     bool pipelineRan = false;
     if (parsedResult.runDisplayPipeline) {
-        displayPipeline_.handleParsed(displayNowMs);
+        displayPipeline_.handleParsed(edges.nowMs);
         pipelineRan = true;
     }
 
     DisplayOrchestrationRefreshContext refreshContext;
-    refreshContext.nowMs = displayNowMs;
+    refreshContext.nowMs = edges.nowMs;
     refreshContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     refreshContext.overloadLateThisLoop = overloadThisLoop;
     refreshContext.pipelineRanThisLoop = pipelineRan;
     const DisplayOrchestrationRefreshResult refresh = displayOrchestration_.processLightweightRefresh(refreshContext);
     if (refresh.runBlinkRefresh) {
-        displayPipeline_.refreshBlinkTick(displayNowMs);
+        displayPipeline_.refreshBlinkTick(edges.nowMs);
     }
     autoPush_.process();
-    (void)nowMs;
+}
+
+DriveLoopDispatch DriveRuntime::processConnectionDispatch(bool powerPresentationOwned) {
+    DriveLoopDispatch dispatch;
+    const bool previewOwnsPresentation = preview_.ownsPresentation();
+    dispatch.nowMs = millis();
+    dispatch.bleConnected = ble_.isConnected();
+    ConnectionStateDispatchContext dispatchContext;
+    dispatchContext.nowMs = dispatch.nowMs;
+    dispatchContext.displayUpdateIntervalMs = DISPLAY_UPDATE_MS;
+    dispatchContext.scanScreenDwellMs = state_.activeScanScreenDwellMs;
+    dispatchContext.bleConnectedNow = dispatch.bleConnected;
+    dispatchContext.bootSplashHoldActive = state_.bootSplashHoldActive;
+    dispatchContext.displayPreviewRunning = previewOwnsPresentation || powerPresentationOwned;
+    dispatchContext.maxProcessGapMs = kConnectionStateProcessMaxGapMs;
+    connectionDispatch_.process(dispatchContext);
+    return dispatch;
 }
 
 void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
@@ -518,147 +646,59 @@ uint32_t DriveRuntime::finishLoop(bool bleBackpressure, uint32_t loopStartUs, bo
     return static_cast<uint32_t>(micros() - loopStartUs);
 }
 
-void DriveRuntime::tick() {
-    if (!active_) {
-        return;
-    }
-
-    const uint32_t loopStartUs = micros();
-    audio_process_amp_timeout();
-    uint32_t nowMs = millis();
-
-    const ConnectionRuntimeSnapshot connection =
-        connectionRuntime_.process(nowMs, micros(), state_.lastLoopUs, state_.bootSplashHoldActive,
-                                   state_.bootSplashHoldUntilMs, state_.initialScanningScreenShown);
-    state_.bootSplashHoldActive = connection.bootSplashHoldActive;
-    state_.initialScanningScreenShown = connection.initialScanningScreenShown;
-    if (connection.requestShowInitialScanning) {
-        if (!power_.ownsDisplayPresentation()) {
-            showInitialScanningScreen();
-        }
-        state_.initialScanningScreenShown = true;
-    }
-    if (!power_.ownsDisplayPresentation()) {
-        DisplayOrchestrationEarlyContext earlyContext;
-        earlyContext.nowMs = nowMs;
-        earlyContext.bootSplashHoldActive = state_.bootSplashHoldActive;
-        earlyContext.overloadThisLoop = connection.overloaded;
-        earlyContext.bleContext = {connection.connected, ble_.isProxyClientConnected(), ble_.getConnectionRssi(),
-                                   ble_.getProxyClientRssi()};
-        earlyContext.bleReceiving = connection.receiving;
-        displayOrchestration_.processEarly(earlyContext);
-    }
-
-    bool bleConnectedNow = connection.connected;
-    bool bleBackpressure = connection.backpressured;
-    const bool skipNonCoreThisLoop = connection.skipNonCore;
-    const bool overloadThisLoop = connection.overloaded;
-
-    power_.process(nowMs);
-    const bool inSettings = !power_.ownsDisplayPresentation() &&
-                            touchUi_.process(nowMs, digitalRead(BOOT_BUTTON_GPIO) == LOW);
-    servicePowerDisplayOwnership(nowMs);
-    const bool powerPresentationOwned = power_.ownsDisplayPresentation();
-    bool alpProcessedThisLoop = false;
-    if (inSettings) {
-        alp_.process(nowMs);
-        alpProcessedThisLoop = true;
-        AlertData v1Priority;
-        const bool v1LiveAlert = parser_.hasAlerts() && parser_.getRenderablePriorityAlert(v1Priority);
-        const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
-        const bool preempted = (v1LiveAlert || alpLiveAlert) && touchUi_.preemptForLiveAlert();
-        if (!preempted) {
-            observeAlpProductState(nowMs);
-            processPeriodicMaintenance(nowMs, bleConnectedNow, false, false, true);
-            state_.lastLoopUs = finishLoop(false, loopStartUs, true);
-            return;
-        }
-    }
-
-    if (!powerPresentationOwned) {
-        tapGesture_.process(nowMs);
-    }
-    if (!state_.bootReady && nowMs >= state_.bootReadyDeadlineMs) {
-        state_.bootReady = true;
-        ble_.setBootReady(true);
-        Serial.printf("[Boot] Ready gate opened at %lu ms (timeout)\n", static_cast<unsigned long>(nowMs));
-    }
-    ble_.process();
-    bleQueue_.process();
-    bleBackpressure = bleQueue_.isBackpressured();
-    const bool overloadLateThisLoop = overloadThisLoop || bleBackpressure;
-    const bool skipLateNonCoreThisLoop = skipNonCoreThisLoop || bleBackpressure;
-    (void)skipLateNonCoreThisLoop;
-
-    processConnectionCycle(nowMs, bleConnectedNow);
-    processObd(nowMs, bleConnectedNow);
-
-    if (!alpProcessedThisLoop) {
-        alp_.process(nowMs);
-    }
-    observeAlpProductState(nowMs);
-    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
-    if (alpLiveAlert && preview_.isRunning()) {
-        preview_.cancel();
-    }
-    const AlpStatus alpStatus = alp_.snapshot();
-    const bool alpSignalActive =
-        alp_.isEnabled() && alpStatus.uartActive && alpStatus.lastHeartbeatMs != 0 &&
-        static_cast<uint32_t>(nowMs - alpStatus.lastHeartbeatMs) <= AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS;
-    if (alpSignalActive != state_.alpSignalActive) {
-        power_.onAlpSignalChange(alpSignalActive);
-        state_.alpSignalActive = alpSignalActive;
-    }
-
-    gps_.update(nowMs);
-    speed_.update(nowMs);
-    const V1Settings& settings = settings_.get();
-    speedMute_.syncSettings(settings.speedMuteEnabled, settings.speedMuteThresholdMph,
-                            settings.speedMuteHysteresisMph, settings.speedMuteVolume,
-                            settings.speedMuteVoice);
-    const SpeedSelection speed = speed_.selectedSpeed();
-    speedMute_.update(speed.speedMph, speed.valid, nowMs);
-
-    processDisplay(nowMs, overloadLateThisLoop, powerPresentationOwned);
-
-    const bool previewOwnsPresentation = preview_.ownsPresentation();
-    const uint32_t dispatchNowMs = millis();
-    bleConnectedNow = ble_.isConnected();
-    ConnectionStateDispatchContext dispatchContext;
-    dispatchContext.nowMs = dispatchNowMs;
-    dispatchContext.displayUpdateIntervalMs = DISPLAY_UPDATE_MS;
-    dispatchContext.scanScreenDwellMs = state_.activeScanScreenDwellMs;
-    dispatchContext.bleConnectedNow = bleConnectedNow;
-    dispatchContext.bootSplashHoldActive = state_.bootSplashHoldActive;
-    dispatchContext.displayPreviewRunning = previewOwnsPresentation || powerPresentationOwned;
-    dispatchContext.maxProcessGapMs = kConnectionStateProcessMaxGapMs;
-    connectionDispatch_.process(dispatchContext);
-
-    processPeriodicMaintenance(dispatchNowMs, bleConnectedNow, bleBackpressure, overloadLateThisLoop);
-    state_.lastLoopUs = finishLoop(bleBackpressure, loopStartUs);
+void DriveRuntime::finishDriveLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain) {
+    state_.lastLoopUs = finishLoop(bleBackpressure, loopStartUs, forceBleDrain);
 }
 
-void DriveRuntime::prepareForShutdown() {
-    const bool persistenceSafe = preparePersistenceForShutdown(events_, health_, settings_);
+void DriveRuntime::tick() {
+    DriveLoopCoordinator::tick(*this);
+}
+
+bool DriveRuntime::preparePersistenceForShutdownPhase() {
+    return preparePersistenceForShutdown(events_, health_, settings_);
+}
+
+void DriveRuntime::disconnectDriveBleForShutdown() {
     Serial.println("[Battery] Disconnecting BLE peripherals before shutdown...");
     ble_.disconnect();
+}
+
+void DriveRuntime::disconnectDriveObdForShutdown() {
     if (!obd_.disconnectForShutdown(100)) {
         Serial.println("[Battery] WARN: OBD transport disconnect did not acknowledge before shutdown");
     }
+}
+
+void DriveRuntime::stopDriveBleScanForShutdown() {
     NimBLEScan* scan = NimBLEDevice::getScan();
     if (scan && scan->isScanning()) {
         scan->stop();
     }
+}
+
+void DriveRuntime::settleDriveShutdownTransport() {
     delay(50);
-    if (persistenceSafe) {
-        Serial.println("[Battery] Writing clean-shutdown marker...");
-        markCleanShutdown();
-    }
+}
+
+void DriveRuntime::writeCleanShutdownMarker() {
+    Serial.println("[Battery] Writing clean-shutdown marker...");
+    markCleanShutdown();
+}
+
+void DriveRuntime::resumePersistenceAfterAbortedShutdownPhase() {
+    resumePersistenceAfterAbortedShutdown(events_);
+}
+
+void DriveRuntime::resumeDriveBleAfterAbortedShutdown() {
+    ble_.startScanning();
+}
+
+void DriveRuntime::prepareForShutdown() {
+    RuntimeServiceLifecycleCoordinator::prepareDrive(*this);
 }
 
 void DriveRuntime::resumeAfterAbortedShutdown() {
-    resumePersistenceAfterAbortedShutdown(events_);
-    ble_.startScanning();
+    RuntimeServiceLifecycleCoordinator::resumeDrive(*this);
 }
 
 void DriveRuntime::stop() {

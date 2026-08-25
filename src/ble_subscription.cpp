@@ -22,11 +22,10 @@ void V1BLEClient::processSubscribing() {
         {
             SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: subscribe timeout
             shouldConnect_ = false;
-            hasTargetDevice_ = false;
         }
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        beginClientQuiesce("subscribe timeout");
+        beginClientQuiesce();
         return;
     }
 
@@ -35,11 +34,10 @@ void V1BLEClient::processSubscribing() {
         {
             SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20));
             shouldConnect_ = false;
-            hasTargetDevice_ = false;
         }
         connectInProgress_ = false;
         connectStartMs_ = 0;
-        beginClientQuiesce("subscribe step failed");
+        beginClientQuiesce();
         return;
     }
 
@@ -57,7 +55,7 @@ void V1BLEClient::processSubscribing() {
         };
         if (!sessionStillAccepted()) {
             connected_.store(false, std::memory_order_release);
-            beginClientQuiesce("subscribe completion invalidated");
+            beginClientQuiesce();
             return;
         }
         // Publish before the RMW claim. If callback teardown already closed
@@ -67,7 +65,7 @@ void V1BLEClient::processSubscribing() {
         connected_.store(true, std::memory_order_release);
         if (!sessionPublicationGate_.claim(completedGeneration) || !sessionStillAccepted()) {
             connected_.store(false, std::memory_order_release);
-            beginClientQuiesce("subscribe publication invalidated");
+            beginClientQuiesce();
             return;
         }
         const uint32_t connectedNowMs = static_cast<uint32_t>(millis());
@@ -80,10 +78,10 @@ void V1BLEClient::processSubscribing() {
         connectStartMs_ = 0;
         if (!sessionStillAccepted()) {
             connected_.store(false, std::memory_order_release);
-            beginClientQuiesce("subscribe state invalidated");
+            beginClientQuiesce();
             return;
         }
-        setBLEState(BLEState::CONNECTED, "subscribe complete");
+        setBLEState(BLEState::CONNECTED);
         if (connectImmediateCallback_ && sessionStillAccepted()) {
             connectImmediateCallback_();
         }
@@ -95,13 +93,13 @@ void V1BLEClient::processSubscribing() {
     }
 
     subscribeYieldUntilMs_ = static_cast<uint32_t>(millis()) + SUBSCRIBE_YIELD_MS;
-    setBLEState(BLEState::SUBSCRIBE_YIELD, "yield between steps");
+    setBLEState(BLEState::SUBSCRIBE_YIELD);
 }
 
 void V1BLEClient::processSubscribeYield() {
     const uint32_t nowMs = static_cast<uint32_t>(millis());
     if (static_cast<int32_t>(nowMs - subscribeYieldUntilMs_) >= 0) {
-        setBLEState(BLEState::SUBSCRIBING, "resuming subscribe");
+        setBLEState(BLEState::SUBSCRIBING);
     }
 }
 

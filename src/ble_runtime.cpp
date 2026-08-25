@@ -71,8 +71,7 @@ void V1BLEClient::process() {
             }
             nextConnectAllowedMs_ = 0;
             shouldConnect_ = false;
-            hasTargetDevice_ = false;
-            beginClientQuiesce("deferred onDisconnect");
+            beginClientQuiesce();
         }
     }
     // Defer bond deletion so the BLE callback performs no NVS writes.
@@ -92,7 +91,7 @@ void V1BLEClient::process() {
         if (lock.locked()) {
             pendingScanEndUpdate_ = false;
             if (bleState_ == BLEState::SCANNING && !pendingScanTargetUpdate_.load(std::memory_order_acquire)) {
-                setBLEState(BLEState::DISCONNECTED, "scan ended without finding V1 (deferred)");
+                setBLEState(BLEState::DISCONNECTED);
             }
         }
     }
@@ -116,11 +115,9 @@ void V1BLEClient::process() {
             portEXIT_CRITICAL(&pendingAddrMux);
             if (havePending && bleState_ == BLEState::SCANNING) {
                 targetAddress_ = NimBLEAddress(std::string(addrCopy), addrTypeCopy);
-                targetAddressType_ = addrTypeCopy;
-                hasTargetDevice_ = true;
                 shouldConnect_ = true;
                 scanStopRequestedMs_ = static_cast<uint32_t>(millis());
-                setBLEState(BLEState::SCAN_STOPPING, "V1 found (deferred)");
+                setBLEState(BLEState::SCAN_STOPPING);
             }
         }
     }
@@ -231,7 +228,7 @@ void V1BLEClient::process() {
     switch (bleState_) {
     case BLEState::DISCONNECTED: {
         if (discoveryTaskRunning_.load(std::memory_order_acquire)) {
-            beginClientQuiesce("discovery owner still active");
+            beginClientQuiesce();
             break;
         }
 
@@ -247,7 +244,7 @@ void V1BLEClient::process() {
             }
             bool started = pScan->start(SCAN_DURATION, false, false);
             if (started) {
-                setBLEState(BLEState::SCANNING, "scan started");
+                setBLEState(BLEState::SCANNING);
             }
         }
         break;
@@ -269,11 +266,11 @@ void V1BLEClient::process() {
             if (pScan->isScanning()) {
                 pScan->stop();
                 scanStopRequestedMs_ = now;
-                setBLEState(BLEState::SCAN_STOPPING, "V1 found during scan");
+                setBLEState(BLEState::SCAN_STOPPING);
             } else {
                 // Scan already stopped, proceed directly
                 scanStopRequestedMs_ = now;
-                setBLEState(BLEState::SCAN_STOPPING, "scan already stopped");
+                setBLEState(BLEState::SCAN_STOPPING);
             }
         }
         // Watchdog: if the scan ended but our onScanEnd never advanced the
@@ -281,7 +278,7 @@ void V1BLEClient::process() {
         // recovery instead of wedging in SCANNING forever.
         if (!wantConnect && !pScan->isScanning() &&
             (now - lastScanStart_) > (SCAN_DURATION + 5000u)) { // scan length + settle margin
-            setBLEState(BLEState::DISCONNECTED, "scan watchdog");
+            setBLEState(BLEState::DISCONNECTED);
         }
         break;
     }
@@ -326,7 +323,7 @@ void V1BLEClient::process() {
             if (wantConnect) {
                 connectToServer(); // This will set state to CONNECTING
             } else {
-                setBLEState(BLEState::DISCONNECTED, "no connect pending");
+                setBLEState(BLEState::DISCONNECTED);
             }
         }
         break;
@@ -351,7 +348,7 @@ void V1BLEClient::process() {
             Serial.println("[BLE] Connect initiation stuck for 5s - resetting");
             connectInProgress_ = false;
             connectStartMs_ = 0;
-            beginClientQuiesce("connect initiation timeout");
+            beginClientQuiesce();
         }
         break;
     }
@@ -386,7 +383,7 @@ void V1BLEClient::process() {
         if (!pClient_ || !pClient_->isConnected()) {
             connected_.store(false, std::memory_order_relaxed);
             connectInProgress_ = false;
-            beginClientQuiesce("connection lost");
+            beginClientQuiesce();
         }
         break;
     }
@@ -411,7 +408,7 @@ void V1BLEClient::startScanning() {
             }
             bool started = pScan->start(SCAN_DURATION, false, false);
             if (started) {
-                setBLEState(BLEState::SCANNING, "manual scan start");
+                setBLEState(BLEState::SCANNING);
             }
         }
     }
@@ -430,7 +427,7 @@ NimBLEAddress V1BLEClient::getConnectedAddress() const {
 }
 
 void V1BLEClient::disconnect() {
-    beginClientQuiesce("disconnect requested");
+    beginClientQuiesce();
 }
 
 void V1BLEClient::setBootReady(bool ready) {

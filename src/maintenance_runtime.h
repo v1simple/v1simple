@@ -7,6 +7,7 @@
 #include "modules/power/power_module.h"
 #include "modules/wifi/wifi_maintenance_recovery_module.h"
 #include "modules/wifi/wifi_orchestrator_module.h"
+#include "runtime_coordinator.h"
 
 class AutoPushModule;
 class BatteryManager;
@@ -47,12 +48,26 @@ class MaintenanceRuntime : public PowerLifecycle {
     bool active() const { return active_; }
 
   private:
+    friend class MaintenanceWifiCoordinator;
+    friend class RuntimeServiceLifecycleCoordinator;
+
     static void appendStatus(JsonObject status, void* context);
 
     void configureWebApi();
     void initializeStorageAndProfiles();
     void initializeTouchAndDisplayControls();
     void servicePowerDisplayOwnership(uint32_t nowMs);
+    bool startMaintenanceWifi();
+    void processMaintenanceWifi();
+    WifiMaintenanceRecoveryResult evaluateMaintenanceWifiRecovery(uint32_t nowMs);
+    void restartMaintenanceWifi(uint32_t attemptNumber);
+    bool maintenanceWifiActive() const;
+    void stopMaintenanceWifi(const char* reason);
+    bool preparePersistenceForShutdownPhase();
+    void stopMaintenanceWifiForShutdown();
+    void writeCleanShutdownMarker();
+    void resumePersistenceAfterAbortedShutdownPhase();
+    void resumeMaintenanceWifiAfterAbortedShutdown();
     void logHeapSnapshot(const char* stage) const;
     void restartNormal(const char* reason);
     void prepareForShutdown() override;

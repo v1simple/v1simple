@@ -31,7 +31,6 @@ struct DisplayOrchestrationParsedContext {
 
 struct DisplayOrchestrationParsedResult {
     bool runDisplayPipeline = false;
-    const char* reasonSkipped = nullptr; // set when runDisplayPipeline == false
 };
 
 struct DisplayOrchestrationRefreshContext {
@@ -42,7 +41,6 @@ struct DisplayOrchestrationRefreshContext {
 };
 
 struct DisplayOrchestrationRefreshResult {
-    bool signalPriorityActive = false;
     // When true, LoopDisplayModule should call the blink-refresh provider this
     // loop. Set by processLightweightRefresh when V1 has live blink sources
     // active and no parsed frame ran. Throttled internally to ~80 ms so the

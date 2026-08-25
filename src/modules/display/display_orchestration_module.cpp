@@ -90,13 +90,11 @@ DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedC
 
     if (!ctx.parsedReady) {
         syncQuietPresentation();
-        result.reasonSkipped = "no_parsed_frame";
         return result;
     }
 
     if (ctx.bootSplashHoldActive) {
         syncQuietPresentation();
-        result.reasonSkipped = "boot_splash";
         return result;
     }
 
@@ -106,7 +104,6 @@ DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedC
     syncQuietPresentation();
 
     if (preview_->isRunning()) {
-        result.reasonSkipped = "preview_running";
         return result;
     }
 
@@ -124,11 +121,10 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
         return result;
     }
 
-    // Report whether a renderable priority alert exists.
+    // Determine whether a renderable priority alert exists for blink refresh.
     const bool loopHasAlerts = parser_->hasAlerts();
     AlertData loopPriority;
     const bool loopHasRenderablePriority = loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
-    result.signalPriorityActive = loopHasRenderablePriority;
 
     // Blink-refresh tick.
     // A lightweight owner refresh lets the renderer advance its 96 ms blink

@@ -582,7 +582,6 @@ static void play_pcm_audio(const int16_t* pcm_data, int num_samples, int duratio
     if (result != pdPASS) {
         Serial.println("[AUDIO] ERROR: Failed to create audio task!");
         audio_playing = false;
-    } else {
     }
 }
 

@@ -75,7 +75,6 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
     WifiJson::Document doc;
     doc["gpsEnabled"] = s.gpsEnabled;
     doc["gpsBaud"] = s.gpsBaud;
-    doc["gpsEnablePinActiveHigh"] = s.gpsEnablePinActiveHigh;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
@@ -120,17 +119,6 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     if (update.hasGpsBaud) {
         update.gpsBaud = sanitizeGpsBaudValue(update.gpsBaud);
     }
-    // Deprecated/no-op compatibility field. Old clients may include a boolean
-    // value alongside writable settings, but it does not count as an update and
-    // never reaches persistence or the live UART runtime.
-    bool hasDeprecatedPolarity = false;
-    bool ignoredDeprecatedPolarity = true;
-    if (!readOptionalBool(server, body, "gpsEnablePinActiveHigh", hasDeprecatedPolarity, ignoredDeprecatedPolarity)) {
-        return;
-    }
-    (void)hasDeprecatedPolarity;
-    (void)ignoredDeprecatedPolarity;
-
     const bool hasWritableSetting = update.hasGpsEnabled || update.hasGpsBaud;
     if (!hasWritableSetting) {
         sendRequestError(server, "No writable GPS settings provided");
@@ -158,14 +146,10 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
     if (update.hasGpsBaud) {
         gpsRuntime.setBaud(s.gpsBaud);
     }
-    if (update.hasGpsEnablePinActiveHigh) {
-        gpsRuntime.setEnablePinActiveHigh(s.gpsEnablePinActiveHigh);
-    }
     if (update.hasGpsEnabled) {
         gpsRuntime.setEnabled(s.gpsEnabled);
-    } else if (update.hasGpsBaud || update.hasGpsEnablePinActiveHigh) {
-        // Baud changed: restart UART with new parameters. The polarity flag is
-        // deprecated/no-op but retained here for non-HTTP internal callers.
+    } else if (update.hasGpsBaud) {
+        // Baud changed: restart UART with the new parameter.
         if (gpsRuntime.isEnabled()) {
             gpsRuntime.setEnabled(false);
             gpsRuntime.setEnabled(true);

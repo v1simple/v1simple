@@ -120,6 +120,8 @@ run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version
 run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
 
 section "Build Contracts"
+run_step "Empty control-flow body regression suite" python3 scripts/test_check_no_empty_conditionals.py
+run_step "Empty control-flow body guard" python3 scripts/check_no_empty_conditionals.py
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py

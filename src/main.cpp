@@ -82,7 +82,6 @@
 #include "modules/obd/obd_settings_sync_module.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "modules/gps/gps_runtime_module.h"
-#include "modules/gps/gps_publishers.h"
 #include "modules/alp/alp_event_latch.h"
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
@@ -924,8 +923,8 @@ void loop() {
         }
     }
 
-    speedSourceSelector.update(now);
     gpsRuntimeModule.update(now);
+    speedSourceSelector.update(now);
     {
         const V1Settings& s = settingsManager.get();
         speedMuteModule.syncSettings(s.speedMuteEnabled, s.speedMuteThresholdMph, s.speedMuteHysteresisMph,

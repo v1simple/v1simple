@@ -26,8 +26,8 @@ bool anySignalBarColorSet(const DisplaySettingsUpdate& update) {
 bool updateTouchesRenderedVisuals(const DisplaySettingsUpdate& update) {
     return update.hasColorBogey || update.hasColorFrequency || update.hasColorArrowFront || update.hasColorArrowSide ||
            update.hasColorArrowRear || update.hasColorBandL || update.hasColorBandKa || update.hasColorBandK ||
-           update.hasColorBandX || update.hasColorBandPhoto || update.hasColorWiFiIcon ||
-           update.hasColorWiFiConnected || update.hasColorBleConnected || update.hasColorBleDisconnected ||
+           update.hasColorBandX || update.hasColorBandPhoto || update.hasColorWiFiConnected ||
+           update.hasColorBleConnected || update.hasColorBleDisconnected ||
            anySignalBarColorSet(update) || update.hasColorMuted || update.hasColorPersisted ||
            update.hasColorVolumeMain || update.hasColorVolumeMute || update.hasColorRssiV1 ||
            update.hasColorRssiProxy || update.hasColorObd || update.hasColorAlpConnected || update.hasColorAlpDli ||
@@ -114,13 +114,15 @@ void handleApiSave(WebServer& server, const Runtime& runtime, bool (*checkRateLi
     }
 
     // Color groups
-    if (server.hasArg("wifiIcon")) {
-        update.hasColorWiFiIcon = true;
-        update.colorWiFiIcon = server.arg("wifiIcon").toInt();
-    }
     if (server.hasArg("wifiConnected")) {
         update.hasColorWiFiConnected = true;
         update.colorWiFiConnected = server.arg("wifiConnected").toInt();
+    } else if (server.hasArg("wifiIcon")) {
+        // Compatibility adapter for existing clients: the retired idle-icon
+        // key updates the one active WiFi indicator colour only when the
+        // authoritative key is absent.
+        update.hasColorWiFiConnected = true;
+        update.colorWiFiConnected = server.arg("wifiIcon").toInt();
     }
     if (server.hasArg("bleConnected")) {
         update.hasColorBleConnected = true;
@@ -361,7 +363,8 @@ void handleApiGet(WebServer& server, const Runtime& runtime) {
     doc["bandK"] = s.colorBandK;
     doc["bandX"] = s.colorBandX;
     doc["bandPhoto"] = s.colorBandPhoto;
-    doc["wifiIcon"] = s.colorWiFiIcon;
+    // Compatibility response alias for existing clients.
+    doc["wifiIcon"] = s.colorWiFiConnected;
     doc["wifiConnected"] = s.colorWiFiConnected;
     doc["bleConnected"] = s.colorBleConnected;
     doc["bleDisconnected"] = s.colorBleDisconnected;

@@ -81,14 +81,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             // setVolume() can fail silently due to 5ms BLE pacing gate.
             return action;
         }
-        if (originalVolume_ != 0xFF) {
-            if (ctx.currentVolume == originalVolume_) {
-                Serial.printf("[VolumeFade] Restore confirmed: current=%d == original=%d\n", ctx.currentVolume,
-                              originalVolume_);
-            } else if (!fadeActive_ && !restoreInFlight) {
-                // No fade was active and no restore was pending; treat this as external/manual
-                // ownership and drop our baseline instead of forcing a stale restore.
-            }
+        if (originalVolume_ != 0xFF && ctx.currentVolume == originalVolume_) {
+            Serial.printf("[VolumeFade] Restore confirmed: current=%d == original=%d\n", ctx.currentVolume,
+                          originalVolume_);
         }
         resetSessionState();
         return action;
@@ -123,9 +118,6 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             }
             // Keep state — retry until V1 confirms volume restored.
             return action;
-        }
-        if (originalVolume_ == 0xFF) {
-        } else {
         }
         resetSessionState();
         return action;
@@ -162,7 +154,6 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             pendingRestoreVolume_ = originalVolume_;
             pendingRestoreMuteVolume_ = originalMuteVolume_;
             pendingRestoreSetMs_ = ctx.now;
-        } else {
         }
         alertStartMs_ = now;
         fadeActive_ = false;

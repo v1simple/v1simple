@@ -390,7 +390,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     // ============================================================================
     if (doc["brightness"].is<int>())
         settings_.brightness = clampU8(doc["brightness"].as<int>(), 1, 255);
-    restoreBool("turnOffDisplay", settings_.turnOffDisplay);
 
     // ============================================================================
     // All Colors (sanitized identically to the NVS-load path in settings.cpp)
@@ -415,10 +414,14 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         settings_.colorBandX = sanitizeRgb565Color(doc["colorBandX"], 0x07E0);
     if (doc["colorBandPhoto"].is<int>())
         settings_.colorBandPhoto = sanitizeRgb565Color(doc["colorBandPhoto"], 0x780F);
-    if (doc["colorWiFiIcon"].is<int>())
-        settings_.colorWiFiIcon = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07FF);
-    if (doc["colorWiFiConnected"].is<int>())
+    if (doc["colorWiFiConnected"].is<int>()) {
         settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiConnected"], 0x07E0);
+    } else if (doc["colorWiFiIcon"].is<int>()) {
+        // Compatibility adapter for backups written before the unused idle
+        // WiFi colour was removed. The active WiFi colour receives it only
+        // when no authoritative colorWiFiConnected value is present.
+        settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07E0);
+    }
     if (doc["colorBleConnected"].is<int>())
         settings_.colorBleConnected = sanitizeRgb565Color(doc["colorBleConnected"], 0x07E0);
     if (doc["colorBleDisconnected"].is<int>())
@@ -681,9 +684,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     if (doc["gpsBaud"].is<uint32_t>() || doc["gpsBaud"].is<int>()) {
         settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(doc["gpsBaud"].as<int>()));
     }
-    // Retired compatibility field: GPS EN is not driven on supported hardware.
-    settings_.gpsEnablePinActiveHigh = true;
-
     if (settings_.proxyBLE && settings_.obdEnabled) {
         // Legacy backups can contain both from the pre-mode era. OBD required
         // a deliberate user opt-in while proxy historically defaulted on, so

@@ -18,8 +18,6 @@ inline constexpr const char* kNvsBackupCompletedRevision = "backupDoneRev";
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsEnableWifi = "enableWifi";
-// kNvsWifiMode was removed: wifiMode is derived from wifiClientEnabled on
-// every load() — storing it separately is redundant and misleading.
 inline constexpr const char* kNvsApSsid = "apSSID";
 inline constexpr const char* kNvsApPassword = "apPassword";
 inline constexpr const char* kNvsWifiClientEnabled = "wifiClientEn";
@@ -40,7 +38,6 @@ inline constexpr const char* kNvsProxyBle = "proxyBLE";
 inline constexpr const char* kNvsProxyName = "proxyName";
 
 // ── Display ───────────────────────────────────────────────────────────────
-inline constexpr const char* kNvsDisplayOff = "displayOff";
 inline constexpr const char* kNvsBrightness = "brightness";
 
 // ── Alert colors ──────────────────────────────────────────────────────────
@@ -58,7 +55,6 @@ inline constexpr const char* kNvsColorBandX = "colorBandX";
 inline constexpr const char* kNvsColorBandPhoto = "colorBandP";
 
 // ── Status icon colors ────────────────────────────────────────────────────
-inline constexpr const char* kNvsColorWifi = "colorWiFi";
 inline constexpr const char* kNvsColorWifiConnected = "colorWiFiC";
 inline constexpr const char* kNvsColorBleConnected = "colorBleC";
 inline constexpr const char* kNvsColorBleDisconnected = "colorBleD";
@@ -207,7 +203,6 @@ inline constexpr const char* kNvsMaintenanceBootReq = "maintBoot";
 // ── GPS ───────────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsGpsEnabled = "gpsEnabled";
 inline constexpr const char* kNvsGpsBaud = "gpsBaud";
-inline constexpr const char* kNvsGpsEnablePolarity = "gpsEnHi";
 // ── Separate namespaces ───────────────────────────────────────────────────
 // Namespace: v1wificlient (WIFI_CLIENT_NS)
 inline constexpr const char* kSettingsWifiClientNamespace = "v1wificlient";

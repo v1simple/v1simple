@@ -17,20 +17,13 @@ struct GpsRuntimeStatus {
     bool hasFix = false;
     bool stableHasFix = false;
 
-    // --- Position / motion ---
+    // --- Motion / fix quality ---
     float speedMph = 0.0f;
     uint8_t satellites = 0;
     uint8_t stableSatellites = 0;
     float hdop = NAN;
-    bool locationValid = false;
-    float latitudeDeg = NAN;
-    float longitudeDeg = NAN;
-    bool courseValid = false;
-    float courseDeg = NAN;
 
     // --- Timing / age ---
-    uint32_t courseSampleTsMs = 0;
-    uint32_t courseAgeMs = UINT32_MAX;
     uint32_t sampleTsMs = 0;
     uint32_t sampleAgeMs = UINT32_MAX;
     uint32_t fixAgeMs = UINT32_MAX;

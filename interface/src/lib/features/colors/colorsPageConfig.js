@@ -106,13 +106,6 @@ export const STATUS_FIELD_ROWS = [
             label: 'WiFi Connected',
             pickerLabel: 'WiFi Connected',
             preview: '📶'
-        },
-        {
-            key: 'wifiIcon',
-            id: 'wifiIcon-color',
-            label: 'WiFi (No Client)',
-            pickerLabel: 'WiFi (No Client)',
-            preview: '📶'
         }
     ],
     [

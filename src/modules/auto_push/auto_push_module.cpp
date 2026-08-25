@@ -96,7 +96,7 @@ void AutoPushModule::armState(int slotIndex, const AutoPushSlot& slot, bool prof
 AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, const AutoPushSlot& slot,
                                                               bool profileLoaded, const V1Profile& profile,
                                                               bool isPushNow, bool activateSlot,
-                                                              bool countAutoPushStart, bool updateProfileIndicator) {
+                                                              bool updateProfileIndicator) {
     if (!settings_ || !profiles_ || !bleClient_ || !display_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
@@ -117,8 +117,6 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
     if (activateSlot) {
         settings_->setActiveSlot(clampedIndex);
     }
-    if (countAutoPushStart) {
-    }
 
     armState(clampedIndex, slot, profileLoaded, profile, isPushNow, updateProfileIndicator);
     return QueueResult::QUEUED;
@@ -132,7 +130,7 @@ AutoPushModule::QueueResult AutoPushModule::queueSlotPush(int slotIndex, bool ac
 
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
     const AutoPushSlot slot = settings_->getSlot(clampedIndex);
-    return queuePreparedSlot(clampedIndex, slot, false, V1Profile{}, false, activateSlot, true, updateProfileIndicator);
+    return queuePreparedSlot(clampedIndex, slot, false, V1Profile{}, false, activateSlot, updateProfileIndicator);
 }
 
 AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& request) {
@@ -164,7 +162,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
         return QueueResult::PROFILE_LOAD_FAILED;
     }
 
-    return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, false, true);
+    return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, true);
 }
 
 void AutoPushModule::applySlotMuteToZero(V1UserSettings& userSettings, bool slotMuteToZero) {
@@ -187,15 +185,10 @@ void AutoPushModule::finishOperation() {
         status_.profileApplied || status_.displayApplied || status_.modeApplied || status_.volumeApplied;
     if (!status_.anyFailed) {
         status_.result = Result::SUCCEEDED;
-        if (!state_.isPushNow) {
-        }
     } else if (anyApplied) {
         status_.result = Result::PARTIAL;
     } else {
         status_.result = Result::FAILED;
-    }
-
-    if (state_.isPushNow && status_.result != Result::SUCCEEDED) {
     }
     state_ = State{};
 }
@@ -212,8 +205,6 @@ void AutoPushModule::retryOrFailProfile(uint32_t nowMs, FailureReason reason) {
     }
     if (state_.profileWriteRetries < kMaxProfileWriteRetries) {
         state_.profileWriteRetries++;
-        if (state_.isPushNow) {
-        }
         state_.step = Step::Profile;
         state_.nextStepAtMs = nowMs + 30;
         return;
@@ -229,8 +220,6 @@ void AutoPushModule::process() {
     }
 
     if (!bleClient_ || !bleClient_->isConnected()) {
-        if (!state_.isPushNow) {
-        }
         if (bleClient_) {
             bleClient_->cancelUserBytesVerification();
         }
@@ -276,12 +265,7 @@ void AutoPushModule::process() {
                     state_.profileLoaded = true;
                     status_.profileLoaded = true;
                 } else {
-                    if (!state_.isPushNow) {
-                    }
                     markFailure(FailureReason::PROFILE_LOAD_FAILED);
-                }
-            } else {
-                if (!state_.isPushNow) {
                 }
             }
         }
@@ -297,8 +281,6 @@ void AutoPushModule::process() {
                 state_.step = Step::ProfileReadback;
                 state_.nextStepAtMs = now + 30;
                 return;
-            }
-            if (!state_.isPushNow) {
             }
             retryOrFailProfile(now, FailureReason::PROFILE_WRITE_FAILED);
             return;

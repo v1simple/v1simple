@@ -58,8 +58,6 @@ class AlpRuntimeModule;
 
 // GPS subsystem (defined in src/modules/gps)
 class GpsRuntimeModule;
-class GpsTimePublisher;
-class GpsGeoPublisher;
 
 #ifndef UNIT_TEST
 class DisplayPipelineModule;
@@ -110,8 +108,6 @@ extern SpeedSourceSelector speedSourceSelector;
 extern AlpRuntimeModule alpRuntimeModule;
 extern AlpEventLatch alpEventLatch;
 extern GpsRuntimeModule gpsRuntimeModule;
-extern GpsTimePublisher gpsTimePublisher;
-extern GpsGeoPublisher gpsGeoPublisher;
 extern SpeedMuteModule speedMuteModule;
 
 #ifndef UNIT_TEST

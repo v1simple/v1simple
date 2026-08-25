@@ -83,12 +83,10 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 if (hasRestorableWifiStaSlots(bestBackupDoc) &&
                     restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, false)) {
                     settings_.wifiClientEnabled = true;
-                    settings_.wifiMode = V1_WIFI_APSTA;
                 } else if (backupSsid.length() > 0) {
                     settings_.wifiClientEnabled = true;
                     settings_.wifiClientSSID = backupSsid;
                     settings_.ensureWifiStaSlotForLegacyAlias();
-                    settings_.wifiMode = V1_WIFI_APSTA;
                 } else if (backupWifiClientEnabled) {
                     settings_.wifiClientEnabled = backupWifiClientEnabled;
                     settings_.refreshWifiClientAliasFromSlots();
@@ -215,7 +213,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 if (bestBackupDoc["gpsBaud"].is<int>()) {
                     settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(bestBackupDoc["gpsBaud"].as<int>()));
                 }
-                settings_.gpsEnablePinActiveHigh = true;
                 if (settings_.proxyBLE && settings_.obdEnabled) {
                     Serial.println("[Settings] HEAL: recovered proxyBLE+obdEnabled — keeping OBD, disabling proxy");
                     settings_.proxyBLE = false;
@@ -231,7 +228,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.wifiClientEnabled = true;
                     settings_.wifiClientSSID = secretPresence.ssid;
                     settings_.ensureWifiStaSlotForLegacyAlias();
-                    settings_.wifiMode = V1_WIFI_APSTA;
                     Serial.println("[Settings] HEAL: recovered WiFi SSID from wifi_secret");
                     partialRecovered = true;
                 }
@@ -258,7 +254,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
         if (wifiKeysMissing && !missingCurrentSsid) {
             // SSID is already present in memory; rewrite namespace to restore missing keys.
             settings_.wifiClientEnabled = true;
-            settings_.wifiMode = V1_WIFI_APSTA;
             Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");
             save();
         } else if (missingCurrentSsid) {
@@ -301,7 +296,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
                     settings_.wifiClientSSID = recoveredSsid;
                     settings_.ensureWifiStaSlotForLegacyAlias();
                 }
-                settings_.wifiMode = V1_WIFI_APSTA;
                 Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (keysMissing=%s)\n", recoveredFrom,
                               wifiKeysMissing ? "yes" : "no");
                 if (backupHasSsid) {
@@ -312,7 +306,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
             } else if (settings_.wifiClientEnabled) {
                 // SSID missing in all recovery sources — disable to avoid inconsistent state.
                 settings_.wifiClientEnabled = false;
-                settings_.wifiMode = V1_WIFI_AP;
                 Serial.println("[Settings] HEAL: wifiClientEnabled=true but no SSID anywhere — disabling");
                 save();
             } else if (wifiKeysMissing) {

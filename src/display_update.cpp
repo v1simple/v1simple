@@ -19,6 +19,7 @@
 #include "display_palette.h"
 #include "display_text.h"
 #include "display_flush.h"
+#include "display_flush_policy.h"
 #include "display_vol_warn.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "settings.h"
@@ -619,14 +620,6 @@ void V1Display::update(const DisplayState& state) {
     arrowVisibilityForceFullFlush_ = false;
     arrowPaintedThisFrame_ = false;
 
-    // Mode transition → full redraw via element cache invalidation
-    if (needsFullRedraw) {
-        if (currentScreen_ == ScreenMode::Live) {
-        } else if (currentScreen_ == ScreenMode::Persisted) {
-        }
-    }
-
-
     // In resting mode, never show muted visual — apps commonly set volume to 0
     // when idle, adjusting on new alerts.
     //
@@ -742,12 +735,6 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     arrowPaintedThisFrame_ = false;
 
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Persisted || dirty_.resetTracking;
-
-    if (needsFullRedraw) {
-        if (currentScreen_ == ScreenMode::Live) {
-        }
-    }
-
 
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
@@ -962,26 +949,28 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
         !needsFullRedraw && !smallWindowForceFullFlush &&
         shouldUseMultiRectDispatch(drawnRegion_, kPartialFlushAreaCap, arrowPaintedThisFrame_, multiRectDispatch);
 
-    if (needsFullRedraw) {
-        DISPLAY_FLUSH();
-    } else if (drawnRegion_.empty()) {
-    } else if (smallWindowForceFullFlush) {
-        // Bypass partial flush only when this blink-bearing or arrow
-        // visibility-changing frame painted pixels. Cache-hit blink packets
-        // above still skip. Direction-set changes repaint active/resting arrow
-        // states; if the previous frame was a blink-off PALETTE_BG phase, a
-        // missed small-window partial flush leaves the resting glyph blank.
-        DISPLAY_FLUSH();
-    } else if (useMultiRectDispatch) {
-        for (uint8_t i = 0; i < multiRectDispatch.count; ++i) {
-            const DrawnRegion::Rect& rect = multiRectDispatch.rects[i];
-            flushRegion(rect.x, rect.y, rect.w, rect.h);
+    const bool nothingToFlush = displayFrameHasNothingToFlush(needsFullRedraw, drawnRegion_.empty());
+    if (!nothingToFlush) {
+        if (needsFullRedraw) {
+            DISPLAY_FLUSH();
+        } else if (smallWindowForceFullFlush) {
+            // Bypass partial flush only when this blink-bearing or arrow
+            // visibility-changing frame painted pixels. Cache-hit blink packets
+            // above still skip. Direction-set changes repaint active/resting arrow
+            // states; if the previous frame was a blink-off PALETTE_BG phase, a
+            // missed small-window partial flush leaves the resting glyph blank.
+            DISPLAY_FLUSH();
+        } else if (useMultiRectDispatch) {
+            for (uint8_t i = 0; i < multiRectDispatch.count; ++i) {
+                const DrawnRegion::Rect& rect = multiRectDispatch.rects[i];
+                flushRegion(rect.x, rect.y, rect.w, rect.h);
+            }
+        } else if (estimatedFlushRegionUs(static_cast<uint32_t>(drawnRegion_.w()),
+                                          static_cast<uint32_t>(drawnRegion_.h())) >= kFullFlushUs) {
+            DISPLAY_FLUSH();
+        } else {
+            flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
         }
-    } else if (estimatedFlushRegionUs(static_cast<uint32_t>(drawnRegion_.w()),
-                                      static_cast<uint32_t>(drawnRegion_.h())) >= kFullFlushUs) {
-        DISPLAY_FLUSH();
-    } else {
-        flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
     }
 
     // Consume the live-frame region after dispatch. This prevents the next

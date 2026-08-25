@@ -3,7 +3,6 @@
  */
 
 #include "packet_parser.h"
-#include "band_utils.h"
 #include <algorithm>
 
 namespace {
@@ -14,10 +13,6 @@ uint16_t combineMSBLSB(uint8_t msb, uint8_t lsb) {
 // Freshness guards prevent old partial rows from being reused as "complete" data.
 static constexpr uint32_t kAlertRowFreshnessMs = 1500;
 static constexpr uint32_t kAlertAssemblyTimeoutMs = 1800;
-
-const char* bandToString(Band band) {
-    return bandName(band);
-}
 
 } // namespace
 
@@ -202,15 +197,11 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     uint8_t alertIndex = (payload[0] >> 4) & 0x0F;
     uint8_t receivedAlertCount = payload[0] & 0x0F;
     if (receivedAlertCount == 0) {
-        const bool hadPublishedAlerts = alertCount_ > 0;
-        const bool arrowsChanged = displayState_.arrows != DIR_NONE;
         // The empty alert publication owns this arrow clear too. Apply it
         // before advancing the revision observed by downstream consumers.
         displayState_.arrows = DIR_NONE;
         resetAlertStateAt(nowMs);
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
-        if (!hadPublishedAlerts && arrowsChanged) {
-        }
         // Preserve muted; its authoritative state comes from
         // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
         // Clearing it here races the display packet path and causes
@@ -279,9 +270,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
     }
 
-    const bool replacingRow = alertChunkPresent_[rawSlot] && (alertChunkCountTag_[rawSlot] == receivedAlertCount);
-    if (replacingRow) {
-    }
     alertChunkPresent_[rawSlot] = true;
     alertChunkCountTag_[rawSlot] = receivedAlertCount;
     alertChunkRxMs_[rawSlot] = nowMs;
@@ -331,8 +319,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         OneBased = 1,
     };
     AlertIndexMode decodeMode = completeZeroBased ? AlertIndexMode::ZeroBased : AlertIndexMode::OneBased;
-    if (completeZeroBased && completeOneBased) {
-    }
 
     std::array<AlertData, MAX_ALERTS> nextAlerts{};
     size_t nextAlertCount = 0;
@@ -358,10 +344,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         const bool isKu = (rawBandBits == 0x10);
 
         Band band = decodeBand(bandArrow);
-        if (isKu) {
-        }
-        if (band == BAND_NONE) {
-        }
         Direction dir = decodeDirection(bandArrow);
         bool isPriority = (aux0 & 0x80) != 0; // (aux0 & 128) != 0
         // Match official Android/iOS library behavior:
@@ -423,42 +405,18 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
                 break;
             }
         }
-        if (priorityFromRowFlag >= 0 && !isUsableAlert(priorityFromRowFlag)) {
-        }
-
-        enum class PrioritySource : uint8_t { RowFlag = 2, FirstUsable = 3, FirstEntry = 4 };
-
-        int priorityIdx = -1;
-        PrioritySource source = PrioritySource::FirstEntry;
-        if (isUsableAlert(priorityFromRowFlag)) {
-            priorityIdx = priorityFromRowFlag;
-            source = PrioritySource::RowFlag;
-        }
-        if (priorityIdx < 0) {
+        int priorityIdx = priorityFromRowFlag;
+        if (!isUsableAlert(priorityIdx)) {
+            priorityIdx = -1;
             for (size_t i = 0; i < alertCount_; ++i) {
                 if (isUsableAlert(static_cast<int>(i))) {
                     priorityIdx = static_cast<int>(i);
-                    source = PrioritySource::FirstUsable;
                     break;
                 }
             }
         }
         if (priorityIdx < 0) {
             priorityIdx = 0;
-            source = PrioritySource::FirstEntry;
-        }
-
-        switch (source) {
-        case PrioritySource::RowFlag:
-            break;
-        case PrioritySource::FirstUsable:
-            break;
-        case PrioritySource::FirstEntry:
-        default:
-            break;
-        }
-
-        if (!isUsableAlert(priorityIdx)) {
         }
 
         displayState_.v1PriorityIndex = priorityIdx;
@@ -473,9 +431,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // while a Ku alert is active.  Cleared above on count=0 alert tables.
     displayState_.hasKuAlert = anyKu;
 
-
-    if (receivedAlertCount == 3) {
-    }
 
     notifyAlertTableObserver(nowMs);
 

@@ -41,7 +41,6 @@ extern const char* OBFUSCATION_HEX_PREFIX;
 
 // ── Static helpers promoted to internal-linkage-free functions ──────────────
 
-WiFiModeSetting clampWifiModeValue(int raw);
 VoiceAlertMode clampVoiceAlertModeValue(int raw);
 String sanitizeApPasswordValue(const String& raw);
 String sanitizeLastV1AddressValue(const String& raw);

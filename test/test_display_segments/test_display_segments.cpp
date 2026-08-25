@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <initializer_list>
 
+#include "../../include/display_flush_policy.h"
 #include "../../include/display_segments.h"
 
 using namespace DisplaySegments;
@@ -49,6 +50,13 @@ void test_segMetrics_scale_0_clamps_segLen_to_2() {
 void test_segMetrics_scale_0_clamps_segThick_to_1() {
     auto m = segMetrics(0.0f);
     TEST_ASSERT_EQUAL_INT(1, m.segThick);
+}
+
+void test_flush_policy_skips_only_unchanged_empty_frames() {
+    TEST_ASSERT_TRUE(displayFrameHasNothingToFlush(false, true));
+    TEST_ASSERT_FALSE(displayFrameHasNothingToFlush(true, true));
+    TEST_ASSERT_FALSE(displayFrameHasNothingToFlush(false, false));
+    TEST_ASSERT_FALSE(displayFrameHasNothingToFlush(true, false));
 }
 
 // ============================================================================
@@ -160,6 +168,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_segMetrics_dot_equals_segThick);
     RUN_TEST(test_segMetrics_scale_0_clamps_segLen_to_2);
     RUN_TEST(test_segMetrics_scale_0_clamps_segThick_to_1);
+    RUN_TEST(test_flush_policy_skips_only_unchanged_empty_frames);
 
     RUN_TEST(test_digit_2_has_correct_segments);
     RUN_TEST(test_digit_4_has_no_top_or_bottom_or_e_segs);

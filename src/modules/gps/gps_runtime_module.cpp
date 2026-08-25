@@ -1,5 +1,4 @@
 #include "gps_runtime_module.h"
-#include "gps_publishers.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -15,40 +14,15 @@ bool elapsedExceeded(uint32_t nowMs, uint32_t startMs, uint32_t thresholdMs) {
     return static_cast<uint32_t>(nowMs - startMs) > thresholdMs;
 }
 
-bool isLeapYear(int year) {
-    return ((year % 4) == 0 && (year % 100) != 0) || ((year % 400) == 0);
-}
-
-int daysInMonth(int year, int month) {
-    static constexpr int kDaysPerMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-
-    if (month < 1 || month > 12) {
-        return 0;
-    }
-    if (month == 2 && isLeapYear(year)) {
-        return 29;
-    }
-    return kDaysPerMonth[month - 1];
-}
 } // namespace
 
-void GpsRuntimeModule::begin(bool enabled, bool enablePinActiveHigh, uint32_t baud, GpsTimePublisher* timePub,
-                             GpsGeoPublisher* geoPub) {
-    (void)enablePinActiveHigh;
-    timePub_ = timePub;
-    geoPub_ = geoPub;
-    enablePinActiveHigh_ = true;
+void GpsRuntimeModule::begin(bool enabled, uint32_t baud) {
     baud_ = (baud == 9600 || baud == 38400 || baud == 115200) ? baud : GPS_BAUD;
     setEnabled(enabled);
 }
 
 void GpsRuntimeModule::setBaud(uint32_t baud) {
     baud_ = (baud == 9600 || baud == 38400 || baud == 115200) ? baud : GPS_BAUD;
-}
-
-void GpsRuntimeModule::setEnablePinActiveHigh(bool activeHigh) {
-    (void)activeHigh;
-    enablePinActiveHigh_ = true;
 }
 
 void GpsRuntimeModule::setEnabled(bool enabled) {
@@ -63,7 +37,7 @@ void GpsRuntimeModule::setEnabled(bool enabled) {
         if (parserActive_) {
             Serial1.end();
         }
-        // EN not driven — module stays powered via internal pull-up (GPS_EN_PIN = -1)
+        // EN is not driven; the module stays powered via its internal pull-up.
     } else {
         // EN not driven — module defaults ON via internal pull-up
         Serial1.setRxBufferSize(
@@ -88,12 +62,6 @@ void GpsRuntimeModule::resetRuntimeState() {
     speedMph_ = 0.0f;
     satellites_ = 0;
     hdop_ = NAN;
-    locationValid_ = false;
-    latitudeDeg_ = NAN;
-    longitudeDeg_ = NAN;
-    courseValid_ = false;
-    courseDeg_ = NAN;
-    courseSampleTsMs_ = 0;
     sampleTsMs_ = 0;
     moduleDetected_ = false;
     detectionTimedOut_ = false;
@@ -112,13 +80,10 @@ void GpsRuntimeModule::resetRuntimeState() {
     checksumFailures_ = 0;
     sentencesUnknown_ = 0;
     bufferOverruns_ = 0;
-    lastGpsTimeUpdateMs_ = 0;
-    lastNoFixPublishMs_ = 0;
     stableSatellites_ = 0;
     sentenceActive_ = false;
     sentenceLen_ = 0;
     sentenceBuf_[0] = '\0';
-    // Publishers are not reset on state change — they keep the last valid snapshot.
 }
 
 void GpsRuntimeModule::invalidateSpeedSample() {
@@ -142,16 +107,9 @@ void GpsRuntimeModule::updateDetectionTimeout(uint32_t nowMs) {
     ggaFix_ = false;
     satellites_ = 0;
     hdop_ = NAN;
-    locationValid_ = false;
-    latitudeDeg_ = NAN;
-    longitudeDeg_ = NAN;
-    courseValid_ = false;
-    courseDeg_ = NAN;
-    courseSampleTsMs_ = 0;
     lastFixTsMs_ = 0;
     invalidateSpeedSample();
     updateStableFixState(nowMs);
-    publishObservation(nowMs);
 
 #if !defined(UNIT_TEST)
     Serial1.end();
@@ -172,16 +130,9 @@ void GpsRuntimeModule::updateFixStaleness(uint32_t nowMs) {
     ggaFix_ = false;
     satellites_ = 0;
     hdop_ = NAN;
-    locationValid_ = false;
-    latitudeDeg_ = NAN;
-    longitudeDeg_ = NAN;
-    courseValid_ = false;
-    courseDeg_ = NAN;
-    courseSampleTsMs_ = 0;
     lastFixTsMs_ = 0;
     invalidateSpeedSample();
     updateStableFixState(nowMs);
-    publishObservation(nowMs);
 }
 
 void GpsRuntimeModule::updateStableFixState(uint32_t nowMs) {
@@ -362,15 +313,13 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
     satellites_ = static_cast<uint8_t>(std::min<uint32_t>(satelliteCount, 99));
     const bool ggaFix = (fixQuality > 0) && (satellites_ > 0);
 
-    float parsedLatitude = NAN;
-    float parsedLongitude = NAN;
     if (ggaFix) {
         if (!fields[2] || fields[2][0] == '\0' || !fields[3] || fields[3][0] == '\0' || !fields[4] ||
             fields[4][0] == '\0' || !fields[5] || fields[5][0] == '\0') {
             return false;
         }
-        if (!parseNmeaCoordinate(fields[2], fields[3], true, parsedLatitude) ||
-            !parseNmeaCoordinate(fields[4], fields[5], false, parsedLongitude)) {
+        if (!validateNmeaCoordinate(fields[2], fields[3], true) ||
+            !validateNmeaCoordinate(fields[4], fields[5], false)) {
             return false;
         }
     }
@@ -385,18 +334,6 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
 
     ggaFix_ = ggaFix;
     hasFix_ = ggaFix_ || rmcFix_;
-    if (ggaFix_) {
-        locationValid_ = true;
-        latitudeDeg_ = parsedLatitude;
-        longitudeDeg_ = parsedLongitude;
-    } else if (!rmcFix_) {
-        locationValid_ = false;
-        latitudeDeg_ = NAN;
-        longitudeDeg_ = NAN;
-        courseValid_ = false;
-        courseDeg_ = NAN;
-        courseSampleTsMs_ = 0;
-    }
     if (hasFix_) {
         lastFixTsMs_ = (nowMs == 0) ? millis() : nowMs;
     } else {
@@ -405,7 +342,6 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
 
     const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
     updateStableFixState(tsMs);
-    publishObservation(tsMs);
 
     return true;
 }
@@ -419,18 +355,11 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
     if (status != 'A' && status != 'a') {
         rmcFix_ = false;
         hasFix_ = ggaFix_;
-        courseValid_ = false;
-        courseDeg_ = NAN;
-        courseSampleTsMs_ = 0;
         if (!hasFix_) {
             invalidateSpeedSample();
-            locationValid_ = false;
-            latitudeDeg_ = NAN;
-            longitudeDeg_ = NAN;
         }
         const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
         updateStableFixState(tsMs);
-        publishObservation(tsMs);
         return true;
     }
 
@@ -439,10 +368,8 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
         return false;
     }
 
-    float parsedLatitude = NAN;
-    float parsedLongitude = NAN;
-    if (!parseNmeaCoordinate(fields[3], fields[4], true, parsedLatitude) ||
-        !parseNmeaCoordinate(fields[5], fields[6], false, parsedLongitude)) {
+    if (!validateNmeaCoordinate(fields[3], fields[4], true) ||
+        !validateNmeaCoordinate(fields[5], fields[6], false)) {
         return false;
     }
 
@@ -458,165 +385,30 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
         return false;
     }
 
-    bool parsedCourseValid = false;
-    float parsedCourseDeg = NAN;
-    if (fieldCount > 8 && fields[8] && fields[8][0] != '\0') {
-        if (parseFloatStrict(fields[8], parsedCourseDeg) && std::isfinite(parsedCourseDeg) && parsedCourseDeg >= 0.0f &&
-            parsedCourseDeg <= 360.0f) {
-            if (parsedCourseDeg >= 360.0f) {
-                parsedCourseDeg = 0.0f;
-            }
-            parsedCourseValid = true;
-        }
-    }
-
     rmcFix_ = true;
     hasFix_ = true;
     sampleValid_ = true;
     speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
     sampleTsMs_ = (nowMs == 0) ? millis() : nowMs;
     lastFixTsMs_ = sampleTsMs_;
-    locationValid_ = true;
-    latitudeDeg_ = parsedLatitude;
-    longitudeDeg_ = parsedLongitude;
-    courseValid_ = parsedCourseValid;
-    courseDeg_ = parsedCourseValid ? parsedCourseDeg : NAN;
-    courseSampleTsMs_ = parsedCourseValid ? sampleTsMs_ : 0;
     hardwareSamples_++;
     updateStableFixState(sampleTsMs_);
-    publishObservation(sampleTsMs_);
-
-    // Inject GPS UTC time into system clock (rate-limited).
-    if (fieldCount > 9 && fields[1] && fields[1][0] != '\0' && fields[9] && fields[9][0] != '\0') {
-        tryUpdateGpsTime(fields[1], fields[9], (nowMs == 0) ? millis() : nowMs);
-    }
 
     return true;
 }
 
-bool GpsRuntimeModule::parseRmcDateTime(const char* timeField, const char* dateField, int64_t& epochMsOut) {
-    if (!timeField || !dateField) {
-        return false;
-    }
-
-    // Time field: hhmmss or hhmmss.ss (fractional optional).
-    const size_t timeLen = std::strlen(timeField);
-    if (timeLen < 6) {
-        return false;
-    }
-    for (size_t i = 0; i < 6; ++i) {
-        if (timeField[i] < '0' || timeField[i] > '9') {
-            return false;
-        }
-    }
-    const int hh = (timeField[0] - '0') * 10 + (timeField[1] - '0');
-    const int mi = (timeField[2] - '0') * 10 + (timeField[3] - '0');
-    const int ss = (timeField[4] - '0') * 10 + (timeField[5] - '0');
-    if (hh > 23 || mi > 59 || ss > 60) {
-        return false;
-    }
-
-    int fracMs = 0;
-    if (timeLen > 6 && timeField[6] == '.') {
-        int digits = 0;
-        int frac = 0;
-        for (size_t i = 7; i < timeLen && digits < 3; ++i) {
-            if (timeField[i] < '0' || timeField[i] > '9') {
-                break;
-            }
-            frac = frac * 10 + (timeField[i] - '0');
-            digits++;
-        }
-        while (digits < 3) {
-            frac *= 10;
-            digits++;
-        }
-        fracMs = frac;
-    }
-
-    // Date field: ddmmyy (exactly 6 digits).
-    const size_t dateLen = std::strlen(dateField);
-    if (dateLen != 6) {
-        return false;
-    }
-    for (size_t i = 0; i < 6; ++i) {
-        if (dateField[i] < '0' || dateField[i] > '9') {
-            return false;
-        }
-    }
-    const int dd = (dateField[0] - '0') * 10 + (dateField[1] - '0');
-    const int mo = (dateField[2] - '0') * 10 + (dateField[3] - '0');
-    const int yy = (dateField[4] - '0') * 10 + (dateField[5] - '0');
-    if (dd < 1 || dd > 31 || mo < 1 || mo > 12) {
-        return false;
-    }
-    const int year = 2000 + yy;
-    if (dd > daysInMonth(year, mo)) {
-        return false;
-    }
-
-    // Civil days from epoch (Howard Hinnant algorithm).
-    int y = year;
-    int m = mo;
-    y -= (m <= 2) ? 1 : 0;
-    const int era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + dd - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const int64_t days = static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
-
-    const int64_t epochMs = (days * 86400LL + hh * 3600LL + mi * 60LL + ss) * 1000LL + fracMs;
-
-    // Sanity: must be after ~2023-11 and before 2100.
-    if (epochMs < 1700000000000LL || epochMs > 4102444800000LL) {
-        return false;
-    }
-
-    epochMsOut = epochMs;
-    return true;
-}
-
-void GpsRuntimeModule::tryUpdateGpsTime(const char* timeField, const char* dateField, uint32_t nowMs) {
-    if (lastGpsTimeUpdateMs_ != 0 &&
-        static_cast<uint32_t>(nowMs - lastGpsTimeUpdateMs_) < GPS_TIME_UPDATE_INTERVAL_MS) {
-        return;
-    }
-
-    int64_t epochMs = 0;
-    if (!parseRmcDateTime(timeField, dateField, epochMs)) {
-        return;
-    }
-
-    if (timePub_) {
-        GpsTimeSnapshot snap;
-        snap.valid = true;
-        snap.capturedMs = nowMs;
-        snap.utcEpochMs = static_cast<uint64_t>(epochMs);
-        snap.source = 1; // RMC
-        timePub_->publish(snap);
-    }
-
-    lastGpsTimeUpdateMs_ = nowMs;
-}
-
-bool GpsRuntimeModule::parseNmeaCoordinate(const char* coordText, const char* hemisphereText, bool isLatitude,
-                                           float& outDegrees) {
+bool GpsRuntimeModule::validateNmeaCoordinate(const char* coordText, const char* hemisphereText, bool isLatitude) {
     if (!coordText || coordText[0] == '\0' || !hemisphereText || hemisphereText[0] == '\0') {
         return false;
     }
 
     const char hemi = hemisphereText[0];
-    bool negative = false;
     if (isLatitude) {
-        if (hemi == 'S' || hemi == 's') {
-            negative = true;
-        } else if (hemi != 'N' && hemi != 'n') {
+        if (hemi != 'N' && hemi != 'n' && hemi != 'S' && hemi != 's') {
             return false;
         }
     } else {
-        if (hemi == 'W' || hemi == 'w') {
-            negative = true;
-        } else if (hemi != 'E' && hemi != 'e') {
+        if (hemi != 'E' && hemi != 'e' && hemi != 'W' && hemi != 'w') {
             return false;
         }
     }
@@ -636,18 +428,13 @@ bool GpsRuntimeModule::parseNmeaCoordinate(const char* coordText, const char* he
         return false;
     }
 
-    double decimalDegrees = degreesPart + (minutesPart / 60.0);
+    const double decimalDegrees = degreesPart + (minutesPart / 60.0);
     const double maxDegrees = isLatitude ? 90.0 : 180.0;
     if (decimalDegrees > maxDegrees) {
         return false;
     }
 
-    if (negative) {
-        decimalDegrees = -decimalDegrees;
-    }
-
-    outDegrees = static_cast<float>(decimalDegrees);
-    return std::isfinite(outDegrees);
+    return true;
 }
 
 bool GpsRuntimeModule::parseFloatStrict(const char* text, float& out) {
@@ -740,7 +527,7 @@ bool GpsRuntimeModule::sentenceTypeEquals(const char* type, const char* suffix) 
 }
 
 void GpsRuntimeModule::setScaffoldSample(float speedMph, bool hasFix, uint8_t satellites, float hdop,
-                                         uint32_t timestampMs, float latitudeDeg, float longitudeDeg, float courseDeg) {
+                                         uint32_t timestampMs) {
     if (!enabled_) {
         return;
     }
@@ -755,31 +542,12 @@ void GpsRuntimeModule::setScaffoldSample(float speedMph, bool hasFix, uint8_t sa
     speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
     satellites_ = satellites;
     hdop_ = std::isfinite(hdop) ? std::max(0.0f, hdop) : NAN;
-    if (hasFix && std::isfinite(latitudeDeg) && std::isfinite(longitudeDeg) && latitudeDeg >= -90.0f &&
-        latitudeDeg <= 90.0f && longitudeDeg >= -180.0f && longitudeDeg <= 180.0f) {
-        locationValid_ = true;
-        latitudeDeg_ = latitudeDeg;
-        longitudeDeg_ = longitudeDeg;
-    } else {
-        locationValid_ = false;
-        latitudeDeg_ = NAN;
-        longitudeDeg_ = NAN;
-    }
-    if (hasFix && std::isfinite(courseDeg) && courseDeg >= 0.0f && courseDeg <= 360.0f) {
-        courseValid_ = true;
-        courseDeg_ = (courseDeg >= 360.0f) ? 0.0f : courseDeg;
-    } else {
-        courseValid_ = false;
-        courseDeg_ = NAN;
-    }
     sampleTsMs_ = (timestampMs == 0) ? millis() : timestampMs;
     if (hasFix_) {
         lastFixTsMs_ = sampleTsMs_;
     }
-    courseSampleTsMs_ = courseValid_ ? sampleTsMs_ : 0;
     injectedSamples_++;
     updateStableFixState(sampleTsMs_);
-    publishObservation(sampleTsMs_);
 }
 
 #ifdef UNIT_TEST
@@ -791,15 +559,8 @@ void GpsRuntimeModule::clearSample() {
     ggaFix_ = false;
     satellites_ = 0;
     hdop_ = NAN;
-    locationValid_ = false;
-    latitudeDeg_ = NAN;
-    longitudeDeg_ = NAN;
-    courseValid_ = false;
-    courseDeg_ = NAN;
-    courseSampleTsMs_ = 0;
     lastFixTsMs_ = 0;
     updateStableFixState(nowMs);
-    publishObservation(nowMs);
 }
 #endif // UNIT_TEST
 
@@ -825,12 +586,6 @@ GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t nowMs) const {
     status.satellites = satellites_;
     status.stableSatellites = status.stableHasFix ? stableSatellites_ : 0;
     status.hdop = hdop_;
-    status.locationValid = locationValid_;
-    status.latitudeDeg = latitudeDeg_;
-    status.longitudeDeg = longitudeDeg_;
-    status.courseValid = courseValid_;
-    status.courseDeg = courseDeg_;
-    status.courseSampleTsMs = courseSampleTsMs_;
     status.sampleTsMs = sampleTsMs_;
     status.injectedSamples = injectedSamples_;
     status.moduleDetected = moduleDetected_;
@@ -864,47 +619,7 @@ GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t nowMs) const {
     } else {
         status.stableFixAgeMs = UINT32_MAX;
     }
-    if (courseValid_ && courseSampleTsMs_ != 0) {
-        status.courseAgeMs = static_cast<uint32_t>(nowMs - courseSampleTsMs_);
-    } else {
-        status.courseAgeMs = UINT32_MAX;
-    }
-
     return status;
-}
-
-void GpsRuntimeModule::publishObservation(uint32_t timestampMs) {
-    if (!geoPub_) {
-        return;
-    }
-
-    const uint32_t tsMs = (timestampMs == 0) ? millis() : timestampMs;
-
-    // Throttle no-fix geo publishes to reduce churn.
-    if (!hasFix_) {
-        if (lastNoFixPublishMs_ != 0 && (tsMs - lastNoFixPublishMs_) < NO_FIX_PUBLISH_INTERVAL_MS) {
-            return;
-        }
-        lastNoFixPublishMs_ = tsMs;
-    } else {
-        lastNoFixPublishMs_ = 0;
-    }
-
-    GpsGeoSnapshot geo;
-    geo.valid = true;
-    geo.capturedMs = tsMs;
-    geo.hasFix = hasFix_;
-    geo.satellites = satellites_;
-    geo.hdop = hdop_;
-    geo.speedValid = sampleValid_ && hasFix_;
-    geo.speedMph = geo.speedValid ? speedMph_ : 0.0f;
-    geo.courseValid = courseValid_;
-    geo.courseDeg = courseValid_ ? courseDeg_ : NAN;
-    if (locationValid_ && hasFix_) {
-        geo.latitudeDeg = latitudeDeg_;
-        geo.longitudeDeg = longitudeDeg_;
-    }
-    geoPub_->publish(geo);
 }
 
 #ifdef UNIT_TEST

@@ -203,13 +203,6 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
 
     AlertData priority{};
     const bool hasRenderablePriority = hasAlerts && parser_->getRenderablePriorityAlert(priority);
-    if (hasRenderablePriority) {
-        const AlertData rawPriority = parser_->getPriorityAlert();
-        const bool rawRenderable = rawPriority.isValid && rawPriority.band != BAND_NONE &&
-                                   ((rawPriority.band == BAND_LASER) || (rawPriority.frequency != 0));
-        if (!rawRenderable) {
-        }
-    }
 
     if (settingsRef.activeSlot != lastPersistenceSlot_) {
         lastPersistenceSlot_ = settingsRef.activeSlot;

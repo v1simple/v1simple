@@ -13,7 +13,6 @@
 #include <unity.h>
 
 #include "../../src/modules/alp/alp_runtime_module.h"
-#include "../../src/modules/gps/gps_publishers.cpp"
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 #include "../../src/modules/system/system_event_bus.h"
 

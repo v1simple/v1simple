@@ -19,7 +19,6 @@
 #include "display_mode.h"
 #include "packet_parser.h"
 #include "modules/gps/gps_runtime_module.h"
-#include "modules/gps/gps_publishers.h"
 #include "settings.h"
 #include "settings_internals.h"
 #include "settings_runtime_sync.h"
@@ -279,8 +278,7 @@ void initializeStorageAndProfiles() {
     }
 
     const V1Settings& gpsSettings = settingsManager.get();
-    gpsRuntimeModule.begin(gpsSettings.gpsEnabled, gpsSettings.gpsEnablePinActiveHigh, gpsSettings.gpsBaud,
-                           &gpsTimePublisher, &gpsGeoPublisher);
+    gpsRuntimeModule.begin(gpsSettings.gpsEnabled, gpsSettings.gpsBaud);
     if (gpsSettings.gpsEnabled) {
         Serial.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
                       static_cast<unsigned long>(gpsSettings.gpsBaud), 1, 5);

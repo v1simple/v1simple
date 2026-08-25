@@ -114,7 +114,6 @@ struct V1Settings {
     uint16_t slot1Color = 0xFFE0;
     uint16_t slot2Color = 0x07E0;
     // WiFi icon colors
-    uint16_t colorWiFiIcon      = 0x07FF;  // Cyan
     uint16_t colorWiFiConnected = 0x07E0;  // Green
     bool hideWifiIcon = false;
 

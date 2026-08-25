@@ -65,6 +65,7 @@ describe('colors utilities', () => {
         expect(defaults.volumeMute).toBe(0x7bef);
         expect(defaults.alpAlert).toBe(0xf800);
         expect(defaults.brightness).toBe(200);
+        expect(defaults.wifiIcon).toBeUndefined();
     });
 
     it('reads the six physical segment colors in meter order', () => {

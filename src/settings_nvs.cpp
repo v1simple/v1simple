@@ -744,8 +744,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     }
     written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
     written += prefs.putBool(kNvsEnableWifi, settings_.enableWifi);
-    // wifiMode is not persisted: it is always derived from wifiClientEnabled
-    // in load() (and applyBackupDocument).  Writing it was a no-op read-back.
     written += prefs.putString(kNvsApSsid, settings_.apSSID);
     // Obfuscate passwords before storing
     written += prefs.putString(kNvsApPassword, encodeObfuscatedForStorage(settings_.apPassword));
@@ -760,7 +758,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     }
     written += prefs.putBool(kNvsProxyBle, settings_.proxyBLE);
     written += prefs.putString(kNvsProxyName, settings_.proxyName);
-    written += prefs.putBool(kNvsDisplayOff, settings_.turnOffDisplay);
     written += prefs.putUChar(kNvsBrightness, settings_.brightness);
     written += prefs.putUShort(kNvsColorBogey, settings_.colorBogey);
     written += prefs.putUShort(kNvsColorFreq, settings_.colorFrequency);
@@ -772,7 +769,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     written += prefs.putUShort(kNvsColorBandK, settings_.colorBandK);
     written += prefs.putUShort(kNvsColorBandX, settings_.colorBandX);
     written += prefs.putUShort(kNvsColorBandPhoto, settings_.colorBandPhoto);
-    written += prefs.putUShort(kNvsColorWifi, settings_.colorWiFiIcon);
     written += prefs.putUShort(kNvsColorWifiConnected, settings_.colorWiFiConnected);
     written += prefs.putUShort(kNvsColorBleConnected, settings_.colorBleConnected);
     written += prefs.putUShort(kNvsColorBleDisconnected, settings_.colorBleDisconnected);
@@ -887,7 +883,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     // GPS settings
     written += prefs.putBool(kNvsGpsEnabled, settings_.gpsEnabled);
     written += prefs.putUInt(kNvsGpsBaud, settings_.gpsBaud);
-    written += prefs.putBool(kNvsGpsEnablePolarity, settings_.gpsEnablePinActiveHigh);
 
     // NVS validity marker - used to detect if NVS was wiped.
     // Written LAST so its presence proves the entire write completed.
@@ -1036,7 +1031,6 @@ String SettingsManager::getWifiClientPassword() {
 
 void SettingsManager::setWifiClientEnabled(bool enabled) {
     settings_.wifiClientEnabled = enabled;
-    settings_.wifiMode = enabled ? V1_WIFI_APSTA : V1_WIFI_AP;
     save();
 }
 
@@ -1059,7 +1053,6 @@ void SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     }
     settings_.wifiClientEnabled = settings_.hasConfiguredWifiStaSlot();
     settings_.refreshWifiClientAliasFromSlots();
-    settings_.wifiMode = settings_.wifiClientEnabled ? V1_WIFI_APSTA : V1_WIFI_AP;
 
     const String sanitizedPassword = sanitizeWifiClientPasswordValue(password);
     const String encodedPassword = encodeObfuscatedForStorage(sanitizedPassword);
@@ -1144,7 +1137,6 @@ void SettingsManager::clearWifiStaSlot(size_t index) {
     settings_.wifiStaSlots[index] = WifiStaSlot();
     settings_.wifiClientEnabled = settings_.hasConfiguredWifiStaSlot();
     settings_.refreshWifiClientAliasFromSlots();
-    settings_.wifiMode = settings_.wifiClientEnabled ? V1_WIFI_APSTA : V1_WIFI_AP;
 
     const char* passwordKey = wifiStaSlotPasswordKey(index);
     Preferences prefs;
@@ -1171,7 +1163,6 @@ void SettingsManager::clearWifiClientCredentials() {
     }
     settings_.wifiClientSSID = "";
     settings_.wifiClientEnabled = false;
-    settings_.wifiMode = V1_WIFI_AP;
 
     // Clear the passwords from secure namespace
     Preferences prefs;

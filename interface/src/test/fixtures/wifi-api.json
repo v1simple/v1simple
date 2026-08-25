@@ -194,7 +194,7 @@
             "volumeMain": 63488,
             "volumeMute": 31727,
             "wifiConnected": 2016,
-            "wifiIcon": 2047
+            "wifiIcon": 2016
           },
           "contentType": "application/json",
           "status": 200
@@ -301,7 +301,6 @@
         {
           "body": {
             "gpsBaud": 9600,
-            "gpsEnablePinActiveHigh": true,
             "gpsEnabled": true
           },
           "contentType": "application/json",

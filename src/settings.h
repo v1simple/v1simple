@@ -33,13 +33,6 @@
 // Forward declaration
 class V1ProfileManager;
 
-// WiFi mode options (prefixed to avoid conflicts with ESP SDK)
-enum WiFiModeSetting {
-    V1_WIFI_OFF = 0,  // WiFi disabled
-    V1_WIFI_AP = 2,   // Create access point
-    V1_WIFI_APSTA = 3 // Both modes
-};
-
 // V1 operating modes (from ESP library)
 enum V1Mode {
     V1_MODE_UNKNOWN = 0x00,
@@ -113,7 +106,6 @@ enum VoiceAlertMode {
 struct V1Settings {
     // WiFi settings
     bool enableWifi;
-    WiFiModeSetting wifiMode; // V1_WIFI_AP (default) or V1_WIFI_APSTA (with client)
     String apSSID;            // AP mode SSID (device hotspot name)
     String apPassword;        // AP mode password
 
@@ -128,7 +120,6 @@ struct V1Settings {
     String proxyName; // BLE device name when proxying
 
     // Display settings
-    bool turnOffDisplay;
     uint8_t brightness;
 
     // Custom display colors (RGB565 format)
@@ -142,7 +133,6 @@ struct V1Settings {
     uint16_t colorBandK;           // K band color
     uint16_t colorBandX;           // X band color
     uint16_t colorBandPhoto;       // Photo radar color (when V1 sends 'P')
-    uint16_t colorWiFiIcon;        // WiFi indicator icon color (no client)
     uint16_t colorWiFiConnected;   // WiFi icon when client connected
     uint16_t colorBleConnected;    // Bluetooth icon when client connected
     uint16_t colorBleDisconnected; // Bluetooth icon when no client
@@ -296,15 +286,14 @@ struct V1Settings {
     // GPS (optional hardware — Adafruit Ultimate GPS v3 / MTK3339)
     bool gpsEnabled;             // Enable GPS runtime module
     uint32_t gpsBaud;            // UART baud rate (9600 / 38400 / 115200)
-    bool gpsEnablePinActiveHigh; // Deprecated compatibility key; GPS EN is not driven
 
     // Default constructor with sensible defaults
     V1Settings()
-        : enableWifi(true), wifiMode(V1_WIFI_AP), apSSID("V1-Simple"), apPassword("setupv1simple"),
+        : enableWifi(true), apSSID("V1-Simple"), apPassword("setupv1simple"),
           wifiClientEnabled(false),                                   // WiFi client disabled by default
           wifiClientSSID(""),                                         // No saved network
           proxyBLE(true), proxyName("V1-Proxy"),                      // Must match NVS load() default
-          turnOffDisplay(false), brightness(200), colorBogey(0xF800), // Red (same as KA)
+          brightness(200), colorBogey(0xF800), // Red (same as KA)
           colorFrequency(0xF800),                                     // Red (same as KA)
           colorArrowFront(0xF800),                                    // Red (front)
           colorArrowSide(0xF800),                                     // Red (side)
@@ -314,7 +303,6 @@ struct V1Settings {
           colorBandK(0x001F),                                         // Blue
           colorBandX(0x07E0),                                         // Green
           colorBandPhoto(0x780F),                                     // Purple (photo radar)
-          colorWiFiIcon(0x07FF),                                      // Cyan (WiFi icon, no client)
           colorWiFiConnected(0x07E0),                                 // Green (WiFi client connected)
           colorBleConnected(0x07E0),                                  // Green (BLE connected)
           colorBleDisconnected(0x001F),                               // Blue (BLE disconnected)
@@ -381,9 +369,8 @@ struct V1Settings {
           alpEnabled(false),             // ALP disabled by default
           alpAlertPersistSec(0),         // ALP display persist off by default
           alpDisableV1LaserOnPush(true), // When ALP is enabled, let ALP own laser alerting
-          gpsEnabled(false),             // GPS disabled by default until module is installed
-          gpsBaud(9600),                // Default UART baud for MTK3339
-          gpsEnablePinActiveHigh(true) {} // Deprecated compatibility key; normalized true
+          gpsEnabled(false), // GPS disabled by default until module is installed
+          gpsBaud(9600) {}   // Default UART baud for MTK3339
 
     int primaryWifiStaSlotIndex() const {
         int best = -1;
@@ -424,7 +411,6 @@ struct V1Settings {
         } else {
             wifiClientSSID = "";
         }
-        wifiMode = wifiClientEnabled ? V1_WIFI_APSTA : V1_WIFI_AP;
     }
 
     void ensureWifiStaSlotForLegacyAlias() {
@@ -539,9 +525,6 @@ struct DeviceSettingsUpdate {
     bool hasGpsBaud = false;
     uint32_t gpsBaud = 9600;
 
-    bool hasGpsEnablePinActiveHigh = false;
-    bool gpsEnablePinActiveHigh = true; // Deprecated compatibility key; false is ignored
-
 };
 
 struct AudioSettingsUpdate {
@@ -624,8 +607,6 @@ struct DisplaySettingsUpdate {
     uint16_t colorBandX = 0;
     bool hasColorBandPhoto = false;
     uint16_t colorBandPhoto = 0;
-    bool hasColorWiFiIcon = false;
-    uint16_t colorWiFiIcon = 0;
     bool hasColorWiFiConnected = false;
     uint16_t colorWiFiConnected = 0;
     bool hasColorBleConnected = false;

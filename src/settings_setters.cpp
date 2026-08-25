@@ -189,10 +189,6 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     if (update.hasGpsBaud) {
         changed |= assignIfChanged(settings_.gpsBaud, sanitizeGpsBaudValue(update.gpsBaud));
     }
-    if (update.hasGpsEnablePinActiveHigh) {
-        changed |= assignIfChanged(settings_.gpsEnablePinActiveHigh, true);
-    }
-
     if (changed) {
         persistSettingsByMode(*this, persistMode);
     }
@@ -295,8 +291,6 @@ void SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& up
         APPLY_COLOR(colorBandX, update.colorBandX);
     if (update.hasColorBandPhoto)
         APPLY_COLOR(colorBandPhoto, update.colorBandPhoto);
-    if (update.hasColorWiFiIcon)
-        APPLY_COLOR(colorWiFiIcon, update.colorWiFiIcon);
     if (update.hasColorWiFiConnected)
         APPLY_COLOR(colorWiFiConnected, update.colorWiFiConnected);
     if (update.hasColorBleConnected)
@@ -373,7 +367,6 @@ void SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     settings_.colorBandK = 0x001F;
     settings_.colorBandX = 0x07E0;
     settings_.colorBandPhoto = 0x780F;
-    settings_.colorWiFiIcon = 0x07FF;
     settings_.colorWiFiConnected = 0x07E0;
     settings_.colorBleConnected = 0x07E0;
     settings_.colorBleDisconnected = 0x001F;

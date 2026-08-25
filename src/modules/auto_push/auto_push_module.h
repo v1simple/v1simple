@@ -118,8 +118,7 @@ class AutoPushModule {
 
     void applySlotMuteToZero(V1UserSettings& settings, bool slotMuteToZero);
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile,
-                                  bool isPushNow, bool activateSlot, bool countAutoPushStart,
-                                  bool updateProfileIndicator);
+                                  bool isPushNow, bool activateSlot, bool updateProfileIndicator);
     void armState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile, bool isPushNow,
                   bool updateProfileIndicator);
     void markFailure(FailureReason reason);

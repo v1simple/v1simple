@@ -214,9 +214,6 @@ class AlpRuntimeModule {
     // and LID I2S speaker crosstalk both produce UART noise).
     static constexpr uint32_t NOISE_CHECKSUM_THRESHOLD = 8;
 
-    // RESYNC log throttle: only log every Nth bad checksum outside NOISE_WINDOW
-    static constexpr uint32_t RESYNC_LOG_INTERVAL = 16;
-
     // Warm-Up sessions are identified by an early F0/A8 preamble, a trigger
     // before the first heartbeat, or heartbeat mode 0x02. Gun identification
     // clears the flag because Warm-Up bursts do not identify a gun.
@@ -472,7 +469,7 @@ class AlpRuntimeModule {
 
     // Current display-event snapshot.
     AlpLaserEvent currentEvent_{};
-    bool updateCurrentEvent(uint32_t nowMs);
+    void updateCurrentEvent(uint32_t nowMs);
 
     // ── Event bus publishing ──────────────────────────────────────────
     void publishDisplayEdge();
@@ -483,10 +480,10 @@ class AlpRuntimeModule {
     void parseRingBuffer(uint32_t nowMs);
     bool tryParseFrame(uint32_t nowMs);
     void handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs);
-    void handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint8_t b2, uint32_t nowMs);
+    void handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t nowMs);
     void handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, uint32_t nowMs);
-    void handleRegisterFrame(uint8_t b0, uint8_t b1, uint8_t b2, uint32_t nowMs);
-    void handleDiscoveryFrame(uint8_t b1, uint8_t b2, uint32_t nowMs);
+    void handleRegisterFrame(uint8_t b2, uint32_t nowMs);
+    void handleDiscoveryFrame(uint32_t nowMs);
     void consumeBytes(size_t count);
     void handleNoiseWindowTimeout(uint32_t nowMs);
     void handleTeardownTimeout(uint32_t nowMs);

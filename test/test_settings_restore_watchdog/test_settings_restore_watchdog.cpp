@@ -95,7 +95,6 @@ void addProfile(JsonDocument& doc, const char* name) {
 void addManyScalarFields(JsonDocument& doc) {
     doc["apSSID"] = "RestoredSSID";
     doc["brightness"] = 77;
-    doc["turnOffDisplay"] = true;
     doc["colorBogey"] = 0x1234;
     doc["colorFrequency"] = 0x2345;
     doc["colorArrowFront"] = 0x3456;

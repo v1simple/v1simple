@@ -111,11 +111,7 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     // GPS settings
     doc["gpsEnabled"] = settings.gpsEnabled;
     doc["gpsBaud"] = settings.gpsBaud;
-    // Retired compatibility field: GPS EN is not driven on supported hardware.
-    doc["gpsEnablePinActiveHigh"] = true;
-
     doc["brightness"] = settings.brightness;
-    doc["turnOffDisplay"] = settings.turnOffDisplay;
 
     doc["colorBogey"] = settings.colorBogey;
     doc["colorFrequency"] = settings.colorFrequency;
@@ -127,7 +123,9 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["colorBandK"] = settings.colorBandK;
     doc["colorBandX"] = settings.colorBandX;
     doc["colorBandPhoto"] = settings.colorBandPhoto;
-    doc["colorWiFiIcon"] = settings.colorWiFiIcon;
+    // Compatibility alias for older backup readers; both keys represent the
+    // one active WiFi indicator colour.
+    doc["colorWiFiIcon"] = settings.colorWiFiConnected;
     doc["colorWiFiConnected"] = settings.colorWiFiConnected;
     doc["colorBleConnected"] = settings.colorBleConnected;
     doc["colorBleDisconnected"] = settings.colorBleDisconnected;

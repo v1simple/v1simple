@@ -150,12 +150,8 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     size_t payloadLen = (length > 6) ? length - 6 : 0; // drop start/dest/src/id/len/end
 
     switch (packetId) {
-    case PACKET_ID_DISPLAY_DATA: {
-        const bool parsed = parseDisplayData(payload, payloadLen);
-        if (parsed) {
-        }
-        return parsed;
-    }
+    case PACKET_ID_DISPLAY_DATA:
+        return parseDisplayData(payload, payloadLen);
     case PACKET_ID_ALERT_DATA: {
         const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
         return parseAlertData(payload, payloadLen, alertNowMs);

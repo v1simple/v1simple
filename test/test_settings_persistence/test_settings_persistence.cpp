@@ -104,7 +104,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.field.c_str(), actual.field.c_str(), #field)
 
     ASSERT_BOOL_FIELD(enableWifi);
-    ASSERT_INT_FIELD(wifiMode);
     ASSERT_STRING_FIELD(apSSID);
     ASSERT_STRING_FIELD(apPassword);
     ASSERT_BOOL_FIELD(wifiClientEnabled);
@@ -121,7 +120,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     ASSERT_STRING_FIELD(wifiClientSSID);
     ASSERT_BOOL_FIELD(proxyBLE);
     ASSERT_STRING_FIELD(proxyName);
-    ASSERT_BOOL_FIELD(turnOffDisplay);
     ASSERT_UINT8_FIELD(brightness);
     ASSERT_UINT16_FIELD(colorBogey);
     ASSERT_UINT16_FIELD(colorFrequency);
@@ -133,7 +131,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     ASSERT_UINT16_FIELD(colorBandK);
     ASSERT_UINT16_FIELD(colorBandX);
     ASSERT_UINT16_FIELD(colorBandPhoto);
-    ASSERT_UINT16_FIELD(colorWiFiIcon);
     ASSERT_UINT16_FIELD(colorWiFiConnected);
     ASSERT_UINT16_FIELD(colorBleConnected);
     ASSERT_UINT16_FIELD(colorBleDisconnected);
@@ -232,7 +229,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
     ASSERT_BOOL_FIELD(alpDisableV1LaserOnPush);
     ASSERT_BOOL_FIELD(gpsEnabled);
     ASSERT_UINT32_FIELD(gpsBaud);
-    ASSERT_BOOL_FIELD(gpsEnablePinActiveHigh);
 
 #undef ASSERT_BOOL_FIELD
 #undef ASSERT_INT_FIELD
@@ -341,16 +337,29 @@ void test_absent_auto_push_key_uses_authoritative_default() {
     TEST_ASSERT_TRUE(diag.healthy);
 }
 
-void test_wifi_client_enabled_setter_updates_production_mode() {
+void test_wifi_client_enabled_setter_updates_enabled_state() {
     SettingsManager manager;
 
     manager.setWifiClientEnabled(true);
     TEST_ASSERT_TRUE(manager.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_APSTA, manager.get().wifiMode);
 
     manager.setWifiClientEnabled(false);
     TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_AP, manager.get().wifiMode);
+}
+
+void test_legacy_wifi_icon_backup_maps_to_active_wifi_color() {
+    SettingsManager manager;
+
+    JsonDocument legacyDoc;
+    legacyDoc["colorWiFiIcon"] = 0xBCDE;
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(legacyDoc, false).success);
+    TEST_ASSERT_EQUAL_HEX16(0xBCDE, manager.get().colorWiFiConnected);
+
+    JsonDocument authoritativeDoc;
+    authoritativeDoc["colorWiFiIcon"] = 0x1111;
+    authoritativeDoc["colorWiFiConnected"] = 0x2222;
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(authoritativeDoc, false).success);
+    TEST_ASSERT_EQUAL_HEX16(0x2222, manager.get().colorWiFiConnected);
 }
 
 void test_password_obfuscation_round_trip_uses_production_encoding() {
@@ -396,14 +405,12 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     SettingsManager original;
     V1Settings& settings = original.mutableSettings();
     settings.enableWifi = false;
-    settings.wifiMode = V1_WIFI_APSTA;
     settings.apSSID = "RoadRig";
     settings.apPassword = "unit-test-pass";
     settings.wifiClientEnabled = true;
     settings.wifiClientSSID = "GarageNet";
     settings.proxyBLE = false;
     settings.proxyName = "Proxy-Rig";
-    settings.turnOffDisplay = true;
     settings.brightness = 123;
     settings.colorBogey = 0x1234;
     settings.colorObd = 0x6789;
@@ -472,7 +479,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     const V1Settings& loaded = reloaded.get();
 
     TEST_ASSERT_FALSE(loaded.enableWifi);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_APSTA, loaded.wifiMode);
     TEST_ASSERT_EQUAL_STRING("RoadRig", loaded.apSSID.c_str());
     TEST_ASSERT_EQUAL_STRING("unit-test-pass", loaded.apPassword.c_str());
     TEST_ASSERT_TRUE(loaded.wifiClientEnabled);
@@ -482,7 +488,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_UINT8(0, loaded.wifiStaSlots[0].priority);
     TEST_ASSERT_FALSE(loaded.proxyBLE);
     TEST_ASSERT_EQUAL_STRING("Proxy-Rig", loaded.proxyName.c_str());
-    TEST_ASSERT_TRUE(loaded.turnOffDisplay);
     TEST_ASSERT_EQUAL_UINT8(123, loaded.brightness);
     TEST_ASSERT_EQUAL_HEX16(0x1234, loaded.colorBogey);
     TEST_ASSERT_EQUAL_HEX16(0x6789, loaded.colorObd);
@@ -1003,7 +1008,6 @@ void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
     settings.refreshWifiClientAliasFromSlots();
 
     TEST_ASSERT_FALSE(settings.wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_AP, settings.wifiMode);
     TEST_ASSERT_EQUAL_STRING("GarageNet", settings.wifiClientSSID.c_str());
 
     original.save();
@@ -1012,7 +1016,6 @@ void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
     reloaded.load();
 
     TEST_ASSERT_FALSE(reloaded.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_AP, reloaded.get().wifiMode);
     TEST_ASSERT_EQUAL_STRING("GarageNet", reloaded.get().wifiClientSSID.c_str());
     TEST_ASSERT_EQUAL_STRING("GarageNet", reloaded.get().wifiStaSlots[0].ssid.c_str());
 }
@@ -1037,7 +1040,6 @@ void test_legacy_wifi_client_enabled_missing_still_heals_saved_slots() {
     reloaded.load();
 
     TEST_ASSERT_TRUE(reloaded.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_APSTA, reloaded.get().wifiMode);
     TEST_ASSERT_EQUAL_STRING("LegacyGarage", reloaded.get().wifiClientSSID.c_str());
 }
 
@@ -1058,7 +1060,6 @@ void test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slot
 
     TEST_ASSERT_TRUE(result.success);
     TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_AP, manager.get().wifiMode);
     TEST_ASSERT_EQUAL_STRING("GarageNet", manager.get().wifiClientSSID.c_str());
     TEST_ASSERT_EQUAL_STRING("GarageNet", manager.get().wifiStaSlots[0].ssid.c_str());
 }
@@ -1079,7 +1080,6 @@ void test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots() {
 
     TEST_ASSERT_TRUE(result.success);
     TEST_ASSERT_TRUE(manager.get().wifiClientEnabled);
-    TEST_ASSERT_EQUAL_INT(V1_WIFI_APSTA, manager.get().wifiMode);
     TEST_ASSERT_EQUAL_STRING("LegacyGarage", manager.get().wifiClientSSID.c_str());
 }
 
@@ -1660,16 +1660,15 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     TEST_ASSERT_EQUAL_STRING("SD-Rig", refreshedBackup["apSSID"].as<const char*>());
 }
 
-void test_gps_fields_round_trip_through_backup_and_restore_normalizes_deprecated_polarity() {
+void test_gps_fields_round_trip_through_backup_and_restore() {
     fs::FS fs(g_tempRoot);
     storageManager.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(v1ProfileManager.begin(&fs));
 
     SettingsManager source;
     V1Settings& src = source.mutableSettings();
-    src.gpsEnabled             = true;
-    src.gpsBaud                = 38400;
-    src.gpsEnablePinActiveHigh = false;
+    src.gpsEnabled = true;
+    src.gpsBaud = 38400;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
@@ -1677,12 +1676,18 @@ void test_gps_fields_round_trip_through_backup_and_restore_normalizes_deprecated
     TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
     releaseSerializedSettingsBackupPayload(payload);
 
+    JsonDocument backupDoc;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
+    TEST_ASSERT_TRUE(backupDoc["turnOffDisplay"].isNull());
+    TEST_ASSERT_TRUE(backupDoc["gpsEnablePinActiveHigh"].isNull());
+    TEST_ASSERT_EQUAL_HEX16(backupDoc["colorWiFiConnected"].as<uint16_t>(),
+                            backupDoc["colorWiFiIcon"].as<uint16_t>());
+
     SettingsManager target;
     TEST_ASSERT_TRUE(target.restoreFromSD());
 
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(38400u, target.get().gpsBaud);
-    TEST_ASSERT_TRUE(target.get().gpsEnablePinActiveHigh);
 }
 
 void test_voice_fields_round_trip_through_sd_backup_and_restore() {
@@ -1748,9 +1753,8 @@ void test_gps_fields_partial_recovery() {
 
     SettingsManager source;
     V1Settings& src = source.mutableSettings();
-    src.gpsEnabled             = true;
-    src.gpsBaud                = 115200;
-    src.gpsEnablePinActiveHigh = true;
+    src.gpsEnabled = true;
+    src.gpsBaud = 115200;
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
@@ -1766,21 +1770,20 @@ void test_gps_fields_partial_recovery() {
 
     TEST_ASSERT_TRUE(target.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(115200u, target.get().gpsBaud);
-    TEST_ASSERT_TRUE(target.get().gpsEnablePinActiveHigh);
 }
 
-void test_gps_device_batch_update_saves_all_live_fields_and_ignores_deprecated_polarity() {
+void test_gps_device_batch_update_saves_all_live_fields() {
     SettingsManager manager;
 
     DeviceSettingsUpdate update{};
-    update.hasGpsEnabled             = true;  update.gpsEnabled             = true;
-    update.hasGpsBaud                = true;  update.gpsBaud                = 38400;
-    update.hasGpsEnablePinActiveHigh = true;  update.gpsEnablePinActiveHigh = false;
+    update.hasGpsEnabled = true;
+    update.gpsEnabled = true;
+    update.hasGpsBaud = true;
+    update.gpsBaud = 38400;
     manager.applyDeviceSettingsUpdate(update, SettingsPersistMode::Deferred);
 
     TEST_ASSERT_TRUE(manager.get().gpsEnabled);
     TEST_ASSERT_EQUAL_UINT32(38400u, manager.get().gpsBaud);
-    TEST_ASSERT_TRUE(manager.get().gpsEnablePinActiveHigh);
 }
 
 // M-04: applyDisplaySettingsUpdate must sanitize incoming color values the same
@@ -1959,7 +1962,8 @@ int main() {
     RUN_TEST(test_empty_wifi_slot_backup_is_not_an_automatic_recovery_source);
     RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);
-    RUN_TEST(test_wifi_client_enabled_setter_updates_production_mode);
+    RUN_TEST(test_wifi_client_enabled_setter_updates_enabled_state);
+    RUN_TEST(test_legacy_wifi_icon_backup_maps_to_active_wifi_color);
     RUN_TEST(test_password_obfuscation_round_trip_uses_production_encoding);
     RUN_TEST(test_load_migrates_legacy_one_sided_slot_volume_to_no_change);
     RUN_TEST(test_save_load_and_backup_round_trip_current_shape_fields);
@@ -2000,9 +2004,9 @@ int main() {
     RUN_TEST(test_partial_recovery_restores_both_speed_mute_fields);
     RUN_TEST(test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot);
     RUN_TEST(test_voice_fields_round_trip_through_sd_backup_and_restore);
-    RUN_TEST(test_gps_fields_round_trip_through_backup_and_restore_normalizes_deprecated_polarity);
+    RUN_TEST(test_gps_fields_round_trip_through_backup_and_restore);
     RUN_TEST(test_gps_fields_partial_recovery);
-    RUN_TEST(test_gps_device_batch_update_saves_all_live_fields_and_ignores_deprecated_polarity);
+    RUN_TEST(test_gps_device_batch_update_saves_all_live_fields);
     RUN_TEST(test_display_update_rejects_zero_color_keeps_current);
     RUN_TEST(test_display_update_accepts_nonzero_color);
     RUN_TEST(test_v10_six_color_theme_loads_directly);

@@ -82,8 +82,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     drawBatteryIndicator();
 
     lastState_ = DisplayState();
-    if (currentScreen_ != ScreenMode::Maintenance) {
-    }
     currentScreen_ = ScreenMode::Maintenance;
     lastRestingProfileSlot_ = -1;
 
@@ -283,8 +281,6 @@ void V1Display::showScanning() {
 
     DISPLAY_FLUSH();
 
-    if (currentScreen_ != ScreenMode::Scanning) {
-    }
     currentScreen_ = ScreenMode::Scanning;
     lastRestingProfileSlot_ = -1;
 }

@@ -31,14 +31,6 @@ const char* const SETTINGS_BACKUP_CANDIDATES[] = {SETTINGS_BACKUP_PATH, SETTINGS
 const size_t SETTINGS_BACKUP_CANDIDATES_COUNT =
     sizeof(SETTINGS_BACKUP_CANDIDATES) / sizeof(SETTINGS_BACKUP_CANDIDATES[0]);
 
-WiFiModeSetting clampWifiModeValue(int raw) {
-    if (raw == static_cast<int>(V1_WIFI_AP))
-        return V1_WIFI_AP;
-    if (raw == static_cast<int>(V1_WIFI_APSTA))
-        return V1_WIFI_APSTA;
-    return V1_WIFI_OFF;
-}
-
 VoiceAlertMode clampVoiceAlertModeValue(int raw) {
     int clamped =
         std::max(static_cast<int>(VOICE_MODE_DISABLED), std::min(raw, static_cast<int>(VOICE_MODE_BAND_FREQ)));
@@ -255,7 +247,6 @@ void SettingsManager::load() {
 
     settings_.proxyBLE = preferences_.getBool(kNvsProxyBle, true);
     settings_.proxyName = sanitizeProxyNameValue(preferences_.getString(kNvsProxyName, "V1-Proxy"));
-    settings_.turnOffDisplay = preferences_.getBool(kNvsDisplayOff, false);
     settings_.brightness =
         std::max<uint8_t>(1, preferences_.getUChar(kNvsBrightness, 200)); // Min 1 to avoid blank screen
     settings_.colorBogey = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBogey, 0xF800), 0xF800);
@@ -269,7 +260,6 @@ void SettingsManager::load() {
     settings_.colorBandX = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandX, 0x07E0), 0x07E0);
     settings_.colorBandPhoto =
         sanitizeRgb565Color(preferences_.getUShort(kNvsColorBandPhoto, 0x780F), 0x780F); // Purple (photo radar)
-    settings_.colorWiFiIcon = sanitizeRgb565Color(preferences_.getUShort(kNvsColorWifi, 0x07FF), 0x07FF);
     settings_.colorWiFiConnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorWifiConnected, 0x07E0), 0x07E0);
     settings_.colorBleConnected = sanitizeRgb565Color(preferences_.getUShort(kNvsColorBleConnected, 0x07E0), 0x07E0);
     settings_.colorBleDisconnected =
@@ -437,10 +427,6 @@ void SettingsManager::load() {
         const uint32_t baud = preferences_.getUInt(kNvsGpsBaud, 9600);
         settings_.gpsBaud = (baud == 9600 || baud == 38400 || baud == 115200) ? baud : 9600;
     }
-    // Retired compatibility key: GPS EN is not driven on supported hardware.
-    // Normalize stale active-low NVS values so old backups/API writes cannot
-    // leave diagnostics or future backups reporting a dead polarity state.
-    settings_.gpsEnablePinActiveHigh = true;
     backupDueRevision_ = preferences_.getUInt(kNvsBackupDueRevision, 0);
     preferences_.end();
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);

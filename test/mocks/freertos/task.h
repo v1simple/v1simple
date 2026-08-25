@@ -17,6 +17,7 @@ inline BaseType_t xTaskCreatePinnedToCore(void (*)(void*),
     g_mock_task_create_state.lastPriority = priority;
     g_mock_task_create_state.lastCore = core;
     g_mock_task_create_state.lastCaps = 0;
+    g_mock_task_create_state.lastTaskHandleOutput = taskHandle;
     if (g_mock_task_create_state.failStandard) {
         return pdFALSE;
     }
@@ -55,7 +56,22 @@ inline void vTaskDeleteWithCaps(void*) {
 
 inline UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t) { return 1024; }
 inline uint32_t ulTaskNotifyTake(BaseType_t, TickType_t) { return 0; }
-inline void xTaskNotifyGive(TaskHandle_t) {}
+
+struct MockTaskNotifyState {
+    uint32_t giveCalls = 0;
+    TaskHandle_t lastHandle = nullptr;
+};
+
+inline MockTaskNotifyState g_mock_task_notify_state{};
+
+inline void mock_reset_task_notify_state() {
+    g_mock_task_notify_state = MockTaskNotifyState{};
+}
+
+inline void xTaskNotifyGive(TaskHandle_t handle) {
+    g_mock_task_notify_state.giveCalls++;
+    g_mock_task_notify_state.lastHandle = handle;
+}
 inline void taskYIELD() {}
 
 inline TaskHandle_t xTaskCreateStaticPinnedToCore(

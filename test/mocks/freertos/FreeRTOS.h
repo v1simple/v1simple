@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include "../mock_heap_caps_state.h"
 
 // Semaphore/Mutex types
@@ -106,6 +107,7 @@ struct MockQueueState {
     uint32_t capacity = 0;
     uint32_t itemSize = 0;
     std::deque<std::vector<uint8_t>> items;
+    std::mutex mutex;
 };
 
 struct MockQueueCreateState {
@@ -158,6 +160,7 @@ inline QueueHandle_t xQueueCreateStatic(uint32_t length,
 inline BaseType_t xQueueSend(QueueHandle_t queue, const void* item, TickType_t) {
     if (!queue || !item) return pdFALSE;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    const std::lock_guard<std::mutex> lock(q->mutex);
     if (q->items.size() >= q->capacity) return pdFALSE;
     const uint8_t* bytes = static_cast<const uint8_t*>(item);
     q->items.emplace_back(bytes, bytes + q->itemSize);
@@ -167,6 +170,7 @@ inline BaseType_t xQueueSend(QueueHandle_t queue, const void* item, TickType_t) 
 inline BaseType_t xQueueReceive(QueueHandle_t queue, void* out, TickType_t) {
     if (!queue || !out) return pdFALSE;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    const std::lock_guard<std::mutex> lock(q->mutex);
     if (q->items.empty()) return pdFALSE;
     std::vector<uint8_t> item = std::move(q->items.front());
     q->items.pop_front();
@@ -177,6 +181,7 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue, void* out, TickType_t) {
 inline BaseType_t xQueueReset(QueueHandle_t queue) {
     if (!queue) return pdFALSE;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    const std::lock_guard<std::mutex> lock(q->mutex);
     q->items.clear();
     return pdTRUE;
 }
@@ -184,6 +189,7 @@ inline BaseType_t xQueueReset(QueueHandle_t queue) {
 inline UBaseType_t uxQueueMessagesWaiting(QueueHandle_t queue) {
     if (!queue) return 0;
     MockQueueState* q = reinterpret_cast<MockQueueState*>(queue);
+    const std::lock_guard<std::mutex> lock(q->mutex);
     return static_cast<UBaseType_t>(q->items.size());
 }
 
@@ -199,6 +205,7 @@ struct MockTaskCreateState {
     UBaseType_t lastPriority = 0;
     BaseType_t lastCore = 0;
     uint32_t lastCaps = 0;
+    TaskHandle_t* lastTaskHandleOutput = nullptr;
     bool failStandard = false;
     bool failCaps = false;
 };

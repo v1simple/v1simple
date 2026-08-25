@@ -1,8 +1,10 @@
 #include <unity.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "../mocks/storage_manager.h"
 #include "../../src/modules/event_log/product_event_csv.cpp"
@@ -73,10 +75,27 @@ void setUp() {
     HealthCounters::reset();
     mock_reset_queue_create_state();
     mock_reset_task_create_state();
+    mock_reset_task_delete_state();
+    mock_reset_task_notify_state();
     StorageManager::resetMockSdLockState();
     fs::mock_reset_fs_write_budget();
 }
 void tearDown() {}
+
+void test_start_creates_one_self_owned_writer() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+
+    TEST_ASSERT_TRUE(log.begin(9, storage));
+    TEST_ASSERT_FALSE(log.writerStopped());
+    TEST_ASSERT_TRUE(log.enabled());
+    TEST_ASSERT_TRUE(log.accepting());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
+    TEST_ASSERT_NULL(g_mock_task_create_state.lastTaskHandleOutput);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
+    log.resetForTest();
+}
 
 void test_queue_is_single_static_bounded_and_full_coalesces_gap() {
     fs::FS filesystem(root);
@@ -190,12 +209,44 @@ void test_live_writer_timeout_closes_admission_and_later_releases() {
     TEST_ASSERT_FALSE(log.stopAndFlush(700, 0));
     TEST_ASSERT_FALSE(log.accepting());
     TEST_ASSERT_FALSE(log.enabled());
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
     TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(701)));
 
     log.runWriterForTest();
     TEST_ASSERT_TRUE(log.writerStopped());
     TEST_ASSERT_TRUE(log.stopAndFlush(702, 0));
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
+    log.resetForTest();
+}
+
+void test_concurrent_stop_flush_publishes_file_before_confirmation() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(24, storage));
+    const AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 8, 0, 34700);
+    log.observeV1Table(&alert, 1, 0, 600);
+
+    std::atomic<bool> writerStarted{false};
+    std::thread writer([&]() {
+        writerStarted.store(true, std::memory_order_release);
+        log.runWriterTaskForTest();
+    });
+    while (!writerStarted.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    const bool stopped = log.stopAndFlush(700, 1000);
+    writer.join();
+
+    TEST_ASSERT_TRUE(stopped);
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_delete_state.standardCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
+    std::ifstream input(root / "events" / "events_24.csv", std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("600,V1,BEGIN"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("700,V1,END"));
     log.resetForTest();
 }
 
@@ -279,8 +330,29 @@ void test_resume_cancels_live_stop_without_duplicate_task() {
     TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
     TEST_ASSERT_TRUE(log.accepting());
     TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
     TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
     TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
+    log.resetForTest();
+}
+
+void test_shutdown_paths_never_notify_a_surrendered_writer() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(34, storage));
+
+    log.requestStopForTest(100);
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_TRUE(log.stopAndFlush(101, 0));
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_FALSE(log.stopAndFlush(102, 0));
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_task_notify_state.giveCalls);
+
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.writerStopped());
     log.resetForTest();
 }
 
@@ -348,6 +420,7 @@ void test_boot_retention_reserves_one_slot_for_the_lazy_active_file() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_start_creates_one_self_owned_writer);
     RUN_TEST(test_queue_is_single_static_bounded_and_full_coalesces_gap);
     RUN_TEST(test_event_file_is_lazy_and_uses_exact_combined_schema);
     RUN_TEST(test_first_write_failure_disables_writer_without_retry);
@@ -355,11 +428,13 @@ int main() {
     RUN_TEST(test_storage_and_initialization_failures_are_already_stopped);
     RUN_TEST(test_runtime_writer_failure_releases_product_shutdown);
     RUN_TEST(test_live_writer_timeout_closes_admission_and_later_releases);
+    RUN_TEST(test_concurrent_stop_flush_publishes_file_before_confirmation);
     RUN_TEST(test_boot_retention_reserves_one_slot_for_the_lazy_active_file);
     RUN_TEST(test_stop_drains_queue_and_confirms_exit_before_storage_handoff);
     RUN_TEST(test_shutdown_close_failure_cannot_hold_product_availability);
     RUN_TEST(test_aborted_shutdown_restarts_once_and_accepts_new_event);
     RUN_TEST(test_resume_cancels_live_stop_without_duplicate_task);
+    RUN_TEST(test_shutdown_paths_never_notify_a_surrendered_writer);
     RUN_TEST(test_runtime_retention_multirow_immediately_below_limit);
     RUN_TEST(test_runtime_retention_multirow_exactly_at_limit);
     RUN_TEST(test_runtime_retention_multirow_above_limit_preserves_rows);

@@ -49,6 +49,7 @@ class ProductEventLog {
     bool drainOneForTest();
     bool takeGapForTest(ProductEvent& event) { return takeGap(event); }
     void runWriterForTest() { writerLoop(); }
+    void runWriterTaskForTest() { writerTaskEntry(this); }
     void requestStopForTest(uint32_t nowMs) {
         if (accepting_.load(std::memory_order_acquire)) {
             builder_.closeActive(nowMs);
@@ -104,10 +105,11 @@ class ProductEventLog {
     StaticQueue_t queueControl_{};
     alignas(ProductEvent) uint8_t queueStorage_[kQueueStorageBytes] = {};
     QueueHandle_t queue_ = nullptr;
-    TaskHandle_t writerTask_ = nullptr;
 
     std::atomic<bool> enabled_{false};
     std::atomic<bool> accepting_{false};
+    // The task self-owns its FreeRTOS handle and deletion. Other contexts
+    // coordinate only through this release/acquire lifecycle state.
     std::atomic<WriterState> writerState_{WriterState::STOPPED};
     std::atomic<bool> writerOwnershipAcquired_{false};
     std::atomic<bool> writerExitClean_{false};

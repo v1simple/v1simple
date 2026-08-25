@@ -118,9 +118,8 @@ bool ProductEventLog::startWriterTask() {
     writerExitClean_.store(false, std::memory_order_release);
     writerOwnershipAcquired_.store(true, std::memory_order_release);
     const BaseType_t created = xTaskCreatePinnedToCore(&ProductEventLog::writerTaskEntry, "ProductEvents",
-                                                       kWriterStackBytes, this, 1, &writerTask_, 0);
+                                                       kWriterStackBytes, this, 1, nullptr, 0);
     if (created != pdPASS) {
-        writerTask_ = nullptr;
         writerOwnershipAcquired_.store(false, std::memory_order_release);
         writerState_.store(WriterState::FAILED, std::memory_order_release);
         enabled_.store(false, std::memory_order_release);
@@ -158,9 +157,6 @@ bool ProductEventLog::stopAndFlush(uint32_t nowMs, uint32_t timeoutMs) {
     if (state == WriterState::RUNNING) {
         (void)writerState_.compare_exchange_strong(state, WriterState::STOP_REQUESTED, std::memory_order_acq_rel);
     }
-    if (writerTask_) {
-        xTaskNotifyGive(writerTask_);
-    }
 
     const uint32_t started = millis();
     while (static_cast<uint32_t>(millis() - started) < timeoutMs) {
@@ -190,9 +186,6 @@ bool ProductEventLog::stopAndFlush(uint32_t nowMs, uint32_t timeoutMs) {
     // leaving it draining indefinitely. The caller can now skip competing SD
     // work and continue the product operation.
     disableWriter();
-    if (writerTask_) {
-        xTaskNotifyGive(writerTask_);
-    }
     recordStopFailure();
     return false;
 }
@@ -214,9 +207,6 @@ bool ProductEventLog::resumeAfterAbortedShutdown(uint32_t timeoutMs) {
             if (writerState_.compare_exchange_strong(state, WriterState::RUNNING, std::memory_order_acq_rel)) {
                 stopFailureRecorded_.store(false, std::memory_order_release);
                 accepting_.store(true, std::memory_order_release);
-                if (writerTask_) {
-                    xTaskNotifyGive(writerTask_);
-                }
                 return true;
             }
             continue;
@@ -335,7 +325,9 @@ void ProductEventLog::writerLoop() {
     }
     accepting_.store(false, std::memory_order_release);
     writerExitClean_.store(cleanExit, std::memory_order_release);
-    writerTask_ = nullptr;
+    // This release is the sole stopped publication. All file flush/close and
+    // final lifecycle data above happen-before observers' acquire loads. The
+    // task owns only its own deletion; no other context retains its handle.
     writerState_.store(failed ? WriterState::FAILED : WriterState::STOPPED, std::memory_order_release);
 }
 

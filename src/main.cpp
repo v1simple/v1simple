@@ -21,9 +21,9 @@
  */
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
+#include "maintenance_runtime.h"
 #include "main_internals.h"
 #include "main_runtime_state.h"
 #include "main_loop_phases.h"
@@ -49,8 +49,6 @@
 #include "modules/auto_push/auto_push_module.h"
 #include "modules/touch/touch_ui_module.h"
 #include "modules/touch/tap_gesture_module.h"
-#include "modules/wifi/wifi_orchestrator_module.h"
-#include "modules/wifi/wifi_maintenance_recovery_module.h"
 #include "modules/power/power_module.h"
 #include "modules/ble/ble_queue_module.h"
 #include "modules/ble/connection_state_module.h"
@@ -179,6 +177,14 @@ class MainLoopWatchdogFeedOnExit {
     }
 };
 
+class NormalPowerLifecycle final : public PowerLifecycle {
+  public:
+    void prepareForShutdown() override { ::prepareForShutdown(nullptr); }
+    void resumeAfterAbortedShutdown() override { ::resumeAfterAbortedShutdown(nullptr); }
+};
+
+NormalPowerLifecycle normalPowerLifecycle;
+
 // Display preview driver (color demos)
 DisplayPreviewModule displayPreviewModule;
 ConnectionStateCadenceModule connectionStateCadenceModule;
@@ -224,6 +230,11 @@ LoopPowerTouchModule loopPowerTouchModule;
 LoopRuntimeSnapshotModule loopRuntimeSnapshotModule;
 LoopConnectionEarlyModule loopConnectionEarlyModule;
 ConnectionCycleCoordinatorModule connectionCycleCoordinatorModule;
+
+MaintenanceRuntime maintenanceRuntime(wifiManager, settingsManager, v1ProfileManager, v1DeviceStore, storageManager,
+                                      display, displayPreviewModule, powerModule, touchHandler, bleClient, parser,
+                                      autoPushModule, obdRuntimeModule, speedSourceSelector, gpsRuntimeModule,
+                                      quietCoordinatorModule, healthJournal, mainRuntimeState);
 
 // Callback for BLE data reception - just queues data, doesn't process
 // This runs in BLE task context, so we avoid SPI operations here
@@ -402,8 +413,6 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     // Initialize settings before showing any screens.
     settingsManager.begin();
     powerModule.begin(&batteryManager, &display, &settingsManager);
-    powerModule.setShutdownPreparationCallback(prepareForShutdown, nullptr);
-    powerModule.setShutdownAbortCallback(resumeAfterAbortedShutdown, nullptr);
     powerModule.logStartupStatus();
     logBootStage("settings");
 
@@ -433,8 +442,6 @@ static void initializePreflightDisplayAndBootUi(esp_reset_reason_t resetReason, 
     // Initialize display preview driver.
     displayPreviewModule.begin(&display);
 }
-
-static constexpr unsigned long MAINTENANCE_EXIT_LONG_PRESS_MS = 4000UL;
 
 static void servicePowerDisplayOwnership(unsigned long nowMs) {
     if (powerModule.ownsDisplayPresentation()) {
@@ -469,14 +476,6 @@ static void servicePowerDisplayOwnership(unsigned long nowMs) {
     (void)displayPreviewModule.consumeEnded();
     display.forceNextRedraw();
 
-    if (mainRuntimeState.maintenanceBootActive) {
-        const bool stationMode = wifiManager.isConnected();
-        const String ip = stationMode ? wifiManager.getIPAddress() : wifiManager.getAPIPAddress();
-        display.showMaintenanceMode(ip.c_str(), stationMode);
-        finishRestore();
-        return;
-    }
-
     if (touchUiModule.restorePresentationIfOwned()) {
         finishRestore();
         return;
@@ -491,54 +490,9 @@ static void servicePowerDisplayOwnership(unsigned long nowMs) {
     finishRestore();
 }
 
-static void logMaintenanceHeapSnapshot(const char* stage) {
-    const uint32_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t freeDma = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    const uint32_t largestDma =
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    Serial.printf("[MaintBoot] heap stage=%s freeInternal=%lu largestInternal=%lu freeDma=%lu largestDma=%lu\n",
-                     stage, static_cast<unsigned long>(freeInternal), static_cast<unsigned long>(largestInternal),
-                     static_cast<unsigned long>(freeDma), static_cast<unsigned long>(largestDma));
-}
-
-template <typename StageLogger>
-static void initializeMaintenanceBootFlow(const unsigned long setupStartMs, const uint32_t bootId,
-                                          const esp_reset_reason_t resetReason, const StageLogger& logBootStage) {
-    Serial.printf("[MaintBoot] active bootId=%lu reset=%s timeoutMs=%lu maxSessionMs=%lu\n",
-                     static_cast<unsigned long>(bootId), resetReasonToString(resetReason),
-                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootTimeoutMs),
-                     static_cast<unsigned long>(MainRuntimePolicy::MaintenanceBootMaxSessionMs));
-
-    logMaintenanceHeapSnapshot("pre_wifi");
-    wifiManager.setMaintenanceBootMode(true);
-    configureMaintenanceWifiServices();
-
-    initializeTouchAndDisplayControls();
-    logBootStage("maintenance_touch");
-
-    const unsigned long wifiStartMs = millis();
-    const bool wifiStarted = wifiManager.startSetupMode(false);
-    Serial.printf("[MaintBoot] wifi_start ok=%s elapsedMs=%lu\n", wifiStarted ? "true" : "false",
-                     static_cast<unsigned long>(millis() - wifiStartMs));
-    logMaintenanceHeapSnapshot(wifiStarted ? "post_wifi" : "wifi_start_failed");
-    logBootStage("maintenance_wifi");
-
-    mainRuntimeState.bootReady = true;
-    healthJournal.ready(millis());
-    // Session start is immutable (it anchors the absolute cap); the deadline
-    // anchor starts equal to it and is republished every loop by the policy.
-    const unsigned long maintenanceSessionStartMs = millis();
-    mainRuntimeState.maintenanceBootSessionStartedMs =
-        (maintenanceSessionStartMs == 0) ? 1UL : maintenanceSessionStartMs;
-    mainRuntimeState.maintenanceLastUiActivityMs = 0;
-    mainRuntimeState.maintenanceBootStartedMs = mainRuntimeState.maintenanceBootSessionStartedMs;
-    Serial.printf("[MaintBoot] setup total: %lu ms\n", millis() - setupStartMs);
-}
-
 template <typename CheckpointLogger, typename StageLogger>
-static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool maintenanceBoot,
-                                         const unsigned long setupStartMs, const CheckpointLogger& logBootCheckpoint,
+static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, const unsigned long setupStartMs,
+                                         const CheckpointLogger& logBootCheckpoint,
                                          const StageLogger& logBootStage) {
     // ── Storage / SD mount ────────────────────────────────────────────
     initializeStorageAndProfiles();
@@ -561,20 +515,11 @@ static void initializeStorageToReadyFlow(esp_reset_reason_t resetReason, bool ma
     HealthCounters::reset();
     (void)healthJournal.begin(storageManager, bootId, getRuntimeImageId(), resetReasonToString(resetReason),
                               prevShutdownClean, preservedPanicEvidencePresent(resetReason));
-    if (!maintenanceBoot) {
-        (void)productEventLog.begin(bootId, storageManager);
-    }
+    (void)productEventLog.begin(bootId, storageManager);
 
     logBootStage("storage");
 
-    if (maintenanceBoot) {
-        // Bind the consumed one-shot request to this boot's reset identity
-        // before any maintenance-mode service emits runtime diagnostics.
-        logBootIdentity(bootId, resetReason);
-        Serial.println("[MaintBoot] request consumed; entering maintenance boot");
-        initializeMaintenanceBootFlow(setupStartMs, bootId, resetReason, logBootStage);
-        return;
-    }
+    powerModule.setLifecycle(normalPowerLifecycle);
 
     initializeBlePreInitAndScan(logBootCheckpoint, logBootStage);
 
@@ -616,152 +561,18 @@ void setup() {
 
     initializePreflightDisplayAndBootUi(resetReason, maintenanceBoot, logBootCheckpoint, logBootStage);
 
-    initializeStorageToReadyFlow(resetReason, maintenanceBoot, setupStartMs, logBootCheckpoint, logBootStage);
+    if (maintenanceBoot) {
+        maintenanceRuntime.start(setupStartMs, resetReason);
+    } else {
+        initializeStorageToReadyFlow(resetReason, setupStartMs, logBootCheckpoint, logBootStage);
+    }
     registerMainLoopTaskWatchdog();
 }
 
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
-    if (mainRuntimeState.maintenanceBootActive) {
-        audio_process_amp_timeout();
-        const unsigned long now = millis();
-
-        powerModule.process(now);
-        servicePowerDisplayOwnership(now);
-        const bool powerPresentationOwned = powerModule.ownsDisplayPresentation();
-        if (!powerPresentationOwned) {
-            wifiManager.process();
-        }
-
-        // The maintenance session exists to serve the web UI, so it must not
-        // sit WiFi-dead for its bounded lifetime: the AP can fail to start at
-        // maintenance entry, and the emergency low-SRAM stop can take the
-        // service down mid-session. Neither has any other recovery until the
-        // maintenance timeout reboots. Ask the recovery policy whether a
-        // restart attempt is due and log every outcome so sessions are
-        // diagnosable from the serial log.
-        static WifiMaintenanceRecoveryModule wifiMaintenanceRecoveryModule;
-        if (!powerPresentationOwned) {
-            WifiMaintenanceRecoveryInput wifiRecoveryInput;
-            wifiRecoveryInput.maintenanceBootActive = true;
-            wifiRecoveryInput.wifiServiceReachable = wifiManager.isWifiServiceReachable();
-            wifiRecoveryInput.nowMs = now;
-            const WifiMaintenanceRecoveryResult wifiRecovery =
-                wifiMaintenanceRecoveryModule.evaluate(wifiRecoveryInput);
-            if (wifiRecovery.attemptRestart) {
-                Serial.printf("[MaintBoot] wifi service down - restart attempt %lu\n",
-                                 static_cast<unsigned long>(wifiRecovery.attemptNumber));
-                const bool wifiRestarted = wifiManager.startSetupMode(false);
-                Serial.printf("[MaintBoot] wifi_restart ok=%s\n", wifiRestarted ? "true" : "false");
-            }
-        }
-
-        settingsManager.serviceDeferredPersist(static_cast<uint32_t>(now));
-        settingsManager.serviceDeferredBackup(static_cast<uint32_t>(now));
-
-        // Keep the maintenance screen's shown address current: the STA/DHCP IP
-        // once we've joined a configured network, otherwise the setup AP's
-        // default IP. Redraw only when it actually changes (a handful of times
-        // per session) so we don't reflush the panel every loop.
-        static String maintenanceShownIp;
-        static bool maintenanceShownStation = false;
-        const bool maintenanceStaConnected = wifiManager.isConnected();
-        String maintenanceIp = maintenanceStaConnected ? wifiManager.getIPAddress() : wifiManager.getAPIPAddress();
-        const bool maintenancePreviewRunning = displayPreviewModule.isRunning();
-        if (!powerPresentationOwned && !maintenancePreviewRunning &&
-            (maintenanceIp != maintenanceShownIp || maintenanceStaConnected != maintenanceShownStation)) {
-            display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
-        }
-        maintenanceShownIp = maintenanceIp;
-        maintenanceShownStation = maintenanceStaConnected;
-
-        // Normal runtime advances previews through DisplayOrchestrationModule,
-        // which is intentionally not initialized in maintenance boot. Service
-        // the shared preview module here so Colors/visual API previews actually
-        // render, then return ownership to the maintenance screen on expiry or
-        // cancellation.
-        if (!powerPresentationOwned && maintenancePreviewRunning) {
-            displayPreviewModule.update();
-        }
-        if (!powerPresentationOwned && displayPreviewModule.consumeEnded()) {
-            display.showMaintenanceMode(maintenanceIp.c_str(), maintenanceStaConnected);
-        }
-
-        static unsigned long bootButtonPressStartMs = 0;
-        static bool exitRequestFired = false;
-        static bool idleHeapLogged = false;
-        // Anchored on the immutable session start, not the deadline anchor:
-        // the deadline anchor slides with UI activity, so it would delay or
-        // suppress this one-shot diagnostic on a session that is being used.
-        if (!idleHeapLogged && mainRuntimeState.maintenanceBootSessionStartedMs != 0 &&
-            static_cast<uint32_t>(now - mainRuntimeState.maintenanceBootSessionStartedMs) >= 5000UL) {
-            idleHeapLogged = true;
-            logMaintenanceHeapSnapshot("idle_5s");
-        }
-
-        const bool bootPressed = digitalRead(BOOT_BUTTON_GPIO) == LOW;
-        if (powerPresentationOwned) {
-            bootButtonPressStartMs = 0;
-            exitRequestFired = false;
-        } else if (bootPressed && bootButtonPressStartMs == 0) {
-            bootButtonPressStartMs = now == 0 ? 1 : now;
-            exitRequestFired = false;
-        } else if (!bootPressed) {
-            bootButtonPressStartMs = 0;
-            exitRequestFired = false;
-        } else if (!exitRequestFired && bootButtonPressStartMs != 0 &&
-                   (now - bootButtonPressStartMs) >= MAINTENANCE_EXIT_LONG_PRESS_MS) {
-            exitRequestFired = true;
-            Serial.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
-            const bool persistenceSafe = completeLoggingForControlledRestart();
-            if (persistenceSafe) {
-                settingsManager.save();
-                markCleanShutdown();
-            } else {
-                Serial.println("[MaintBoot] WARN: exit continuing without final persistence writes");
-            }
-            ESP.restart();
-        }
-
-        // Delegate maintenance-session deadlines to the host-tested policy.
-        // WiFiManager publishes recent activity as a predicate, so the loop
-        // records the observation time before evaluating the policy.
-        if (wifiManager.isUiActive(MainRuntimePolicy::MaintenanceUiActivityProbeMs)) {
-            mainRuntimeState.maintenanceLastUiActivityMs = (now == 0) ? 1UL : now;
-        }
-
-        MainRuntimePolicy::MaintenanceSessionInput maintenanceSessionInput;
-        maintenanceSessionInput.nowMs = static_cast<uint32_t>(now);
-        maintenanceSessionInput.sessionStartedMs =
-            static_cast<uint32_t>(mainRuntimeState.maintenanceBootSessionStartedMs);
-        maintenanceSessionInput.lastUiActivityMs = static_cast<uint32_t>(mainRuntimeState.maintenanceLastUiActivityMs);
-        maintenanceSessionInput.sessionActive = mainRuntimeState.maintenanceBootSessionStartedMs != 0;
-        const MainRuntimePolicy::MaintenanceSessionDecision maintenanceSession =
-            MainRuntimePolicy::evaluateMaintenanceSession(maintenanceSessionInput);
-
-        // Republish the deadline anchor so /api/status keeps reporting a
-        // countdown that agrees with the device. See the contract note on
-        // MaintenanceSessionDecision::deadlineAnchorMs.
-        mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;
-
-        if (maintenanceSession.shouldReboot) {
-            Serial.printf("[MaintBoot] timeout reason=%s sessionMs=%lu idleMs=%lu -> rebooting normal runtime\n",
-                             maintenanceSession.maxSessionReached ? "max_session" : "idle",
-                             static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
-                             static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
-            const bool persistenceSafe = completeLoggingForControlledRestart();
-            if (persistenceSafe) {
-                settingsManager.save();
-                markCleanShutdown();
-            } else {
-                Serial.println("[MaintBoot] WARN: timeout restart continuing without final persistence writes");
-            }
-            ESP.restart();
-        }
-
-        // Keep lower-priority FreeRTOS work moving
-        // while maintenance Wi-Fi serving owns the short-circuit loop path.
-        vTaskDelay(pdMS_TO_TICKS(1));
+    if (maintenanceRuntime.active()) {
+        maintenanceRuntime.tick(millis());
         return;
     }
 

@@ -9,8 +9,8 @@ void PowerModule::performShutdown() {
     Serial.println("[Power] Shutdown request ignored (CAR_MODE_PWR_SHORT)");
     return;
 #else
-    if (shutdownPreparationCallback_) {
-        shutdownPreparationCallback_(shutdownPreparationContext_);
+    if (lifecycle_) {
+        lifecycle_->prepareForShutdown();
     }
 
     if (display_) {
@@ -33,8 +33,8 @@ void PowerModule::performShutdown() {
         const bool shutdownCompleted = battery_->powerOff();
         if (!shutdownCompleted) {
             Serial.println("[Power] ERROR: shutdown hardware tail returned; device remains awake");
-            if (shutdownAbortCallback_) {
-                shutdownAbortCallback_(shutdownAbortContext_);
+            if (lifecycle_) {
+                lifecycle_->resumeAfterAbortedShutdown();
             }
             if (display_) {
                 // BatteryManager deliberately returns with the inverted
@@ -100,16 +100,6 @@ void PowerModule::releaseCriticalBatteryPresentation() {
     criticalBatteryPresentationActive_ = false;
     criticalBatteryTime_ = 0;
     requestDisplayRestore();
-}
-
-void PowerModule::setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context) {
-    shutdownPreparationCallback_ = callback;
-    shutdownPreparationContext_ = context;
-}
-
-void PowerModule::setShutdownAbortCallback(ShutdownAbortCallback callback, void* context) {
-    shutdownAbortCallback_ = callback;
-    shutdownAbortContext_ = context;
 }
 
 void PowerModule::logStartupStatus() {

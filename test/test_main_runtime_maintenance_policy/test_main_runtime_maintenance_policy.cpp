@@ -5,8 +5,8 @@
 //   1. MainRuntimePolicy::evaluateMaintenanceSession — the pure deadline /
 //      extension decision, exercised directly. src/main.cpp cannot be compiled
 //      natively, so the policy is the executable layer.
-//   2. The wiring in src/main.cpp and the /api/status emit in
-//      src/main_runtime_wiring.cpp — asserted by source inspection, matching
+//   2. The lifecycle and /api/status emit in src/maintenance_runtime.cpp —
+//      asserted by source inspection, matching
 //      the same explicit owner-call pattern used by the runtime. This is
 //      this protects the deadline-anchor and status-payload wiring.
 
@@ -293,14 +293,15 @@ void test_inactive_session_is_inert() {
     TEST_ASSERT_FALSE(MainRuntimePolicy::evaluateMaintenanceSession(startedButFlagged).shouldReboot);
 }
 
-// ─── Wiring contracts (src/main.cpp cannot be compiled natively) ──────
+// ─── Wiring contracts (maintenance_runtime.cpp cannot be compiled natively) ──
 
 void test_main_loop_delegates_the_deadline_to_the_policy() {
-    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"), "void loop()");
+    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
+                                                     "void MaintenanceRuntime::tick(");
 
     // Reject the former elapsed-since-start comparison.
     TEST_ASSERT_EQUAL(std::string::npos,
-                      loopBody.find("(now - mainRuntimeState.maintenanceBootStartedMs) >= "
+                      loopBody.find("(nowMs - state_.maintenanceBootStartedMs) >= "
                                     "MainRuntimePolicy::MaintenanceBootTimeoutMs"));
     // Stronger and wrap-proof: the loop must not do deadline arithmetic at
     // all. The timeout constant belongs to the policy and to boot logging.
@@ -308,68 +309,64 @@ void test_main_loop_delegates_the_deadline_to_the_policy() {
     TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("MainRuntimePolicy::MaintenanceBootMaxSessionMs"));
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          loopBody.find("MainRuntimePolicy::evaluateMaintenanceSession(maintenanceSessionInput)"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceSession.shouldReboot"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("markCleanShutdown();"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("ESP.restart();"));
+                          loopBody.find("MainRuntimePolicy::evaluateMaintenanceSession(sessionInput)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("session.shouldReboot"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("restartNormal(\"timeout\")"));
 }
 
 void test_main_loop_feeds_the_existing_ui_activity_signal() {
-    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"), "void loop()");
+    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
+                                                     "void MaintenanceRuntime::tick(");
 
     // Reuse WiFiManager's activity signal rather than creating a parallel source.
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
-        loopBody.find("wifiManager.isUiActive(MainRuntimePolicy::MaintenanceUiActivityProbeMs)"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("mainRuntimeState.maintenanceLastUiActivityMs ="));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceSessionInput.lastUiActivityMs ="));
+        loopBody.find("wifi_.isUiActive(MainRuntimePolicy::MaintenanceUiActivityProbeMs)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("state_.maintenanceLastUiActivityMs ="));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("sessionInput.lastUiActivityMs ="));
 }
 
 void test_status_payload_deadline_anchor_contract_holds() {
     // Both halves of the contract that keeps the web UI countdown equal to the
     // device's real remaining time without changing the /api/status shape.
-    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"), "void loop()");
+    const std::string source = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
+    const std::string loopBody = extractFunctionBody(source, "void MaintenanceRuntime::tick(");
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
-        loopBody.find("mainRuntimeState.maintenanceBootStartedMs = maintenanceSession.deadlineAnchorMs;"));
+        loopBody.find("state_.maintenanceBootStartedMs = session.deadlineAnchorMs;"));
 
-    const std::string wiringBody = extractFunctionBody(
-        readFile(projectRoot() + "/src/main_runtime_wiring.cpp"), "void configureMaintenanceWifiServices()");
+    const std::string wiringBody = extractFunctionBody(source, "void MaintenanceRuntime::appendStatus(");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, wiringBody.find("obj[\"maintenanceBootUptimeMs\"]"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          wiringBody.find("millis() - mainRuntimeState.maintenanceBootStartedMs"));
+                          wiringBody.find("millis() - self.state_.maintenanceBootStartedMs"));
     TEST_ASSERT_NOT_EQUAL(
         std::string::npos,
         wiringBody.find("obj[\"maintenanceBootTimeoutMs\"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;"));
 }
 
 void test_session_start_is_latched_once_and_never_moves() {
-    const std::string source = readFile(projectRoot() + "/src/main.cpp");
-    const std::string initBody = extractFunctionBody(source, "static void initializeMaintenanceBootFlow(");
-    const std::string loopBody = extractFunctionBody(source, "void loop()");
+    const std::string source = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
+    const std::string initBody = extractFunctionBody(source, "void MaintenanceRuntime::start(");
+    const std::string loopBody = extractFunctionBody(source, "void MaintenanceRuntime::tick(");
 
     // Match the assignment independently of its following expression.
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          initBody.find("mainRuntimeState.maintenanceBootSessionStartedMs ="));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, initBody.find("mainRuntimeState.maintenanceLastUiActivityMs = 0;"));
+                          initBody.find("state_.maintenanceBootSessionStartedMs ="));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, initBody.find("state_.maintenanceLastUiActivityMs = 0;"));
     // The cap is only a terminal escape if the loop never rewrites the start.
-    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("mainRuntimeState.maintenanceBootSessionStartedMs ="));
+    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("state_.maintenanceBootSessionStartedMs ="));
 }
 
 void test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging() {
-    const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"), "void loop()");
+    const std::string source = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
+    const std::string loopBody = extractFunctionBody(source, "void MaintenanceRuntime::tick(");
+    const std::string restartBody = extractFunctionBody(source, "void MaintenanceRuntime::restartNormal(");
 
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("BOOT long-press exit -> rebooting normal runtime"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("maintenanceSession.shouldReboot"));
-    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("exit cancelled because persistence"));
-    TEST_ASSERT_EQUAL(std::string::npos, loopBody.find("timeout restart cancelled because persistence"));
-
-    const size_t bootExit = loopBody.find("BOOT long-press exit -> rebooting normal runtime");
-    const size_t bootRestart = loopBody.find("ESP.restart();", bootExit);
-    const size_t timeoutExit = loopBody.find("if (maintenanceSession.shouldReboot)");
-    const size_t timeoutRestart = loopBody.find("ESP.restart();", timeoutExit);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, bootRestart);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, timeoutRestart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("restartNormal(\"BOOT long-press exit\")"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, loopBody.find("if (session.shouldReboot)"));
+    TEST_ASSERT_EQUAL(std::string::npos, restartBody.find("restart cancelled"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("completeLoggingForControlledRestart()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("ESP.restart();"));
 }
 
 void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
@@ -390,21 +387,27 @@ void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
 
 void test_returned_poweroff_tail_restores_stopped_services() {
     const std::string helpers = readFile(projectRoot() + "/src/main_setup_helpers.cpp");
+    const std::string maintenance = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
     const std::string prepareBody = extractFunctionBody(helpers, "void prepareForShutdown(");
     const std::string resumeBody = extractFunctionBody(helpers, "void resumeAfterAbortedShutdown(");
+    const std::string maintenancePrepare =
+        extractFunctionBody(maintenance, "void MaintenanceRuntime::prepareForShutdown(");
+    const std::string maintenanceResume =
+        extractFunctionBody(maintenance, "void MaintenanceRuntime::resumeAfterAbortedShutdown(");
 
     const size_t loggerCleanup = prepareBody.find("productEventLog.stopAndFlush");
-    const size_t wifiStop = prepareBody.find("wifiManager.stopSetupMode");
     const size_t bleStop = prepareBody.find("bleClient.disconnect()");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, loggerCleanup);
-    TEST_ASSERT_TRUE(loggerCleanup < wifiStop);
     TEST_ASSERT_TRUE(loggerCleanup < bleStop);
+    TEST_ASSERT_TRUE(maintenancePrepare.find("::prepareForShutdown(nullptr)") <
+                     maintenancePrepare.find("wifi_.stopSetupMode"));
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("productEventLog.resumeAfterAbortedShutdown"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeBleBondBackupWriterAfterAbortedShutdown"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("resumeDeferredSettingsBackupWriterAfterAbortedShutdown"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("wifiManager.startSetupMode(false)"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, resumeBody.find("bleClient.startScanning()"));
+    TEST_ASSERT_TRUE(maintenanceResume.find("::resumeAfterAbortedShutdown(nullptr)") <
+                     maintenanceResume.find("wifi_.startSetupMode(false)"));
 }
 
 int main() {

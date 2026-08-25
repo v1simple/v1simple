@@ -116,17 +116,9 @@ void prepareForShutdown(void* /*context*/) {
         feedLoopTaskWatchdogDuringShutdown();
     }
 
-    // Radios are torn down only after every fallible storage operation. A
-    // returned hardware tail restores maintenance WiFi below; normal BLE and
-    // OBD reconnect through their existing runtime state machines.
-    if (wifiManager.isWifiServiceActive()) {
-        Serial.println("[Battery] Stopping WiFi after shutdown flush...");
-        wifiManager.stopSetupMode(true, "poweroff");
-        delay(100);
-        feedLoopTaskWatchdogDuringShutdown();
-    }
-
-    // Maintenance boot intentionally never initializes BLE.
+    // MaintenanceRuntime owns WiFi teardown. Normal runtime owns BLE/OBD.
+    // Each runtime restores only the services that it constructed if the
+    // hardware shutdown tail returns.
     if (!mainRuntimeState.maintenanceBootActive) {
         Serial.println("[Battery] Disconnecting BLE peripherals before shutdown...");
         bleClient.disconnect();
@@ -175,10 +167,7 @@ void resumeAfterAbortedShutdown(void* /*context*/) {
     resumeBleBondBackupWriterAfterAbortedShutdown();
     resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
 
-    if (mainRuntimeState.maintenanceBootActive && !wifiManager.isWifiServiceActive()) {
-        const bool restored = wifiManager.startSetupMode(false);
-        Serial.printf("[Battery] Maintenance WiFi restore ok=%s\n", restored ? "true" : "false");
-    } else if (!mainRuntimeState.maintenanceBootActive) {
+    if (!mainRuntimeState.maintenanceBootActive) {
         // disconnect() quiesces asynchronously. This starts immediately when
         // quiescence is complete; otherwise normal process() resumes scanning.
         bleClient.startScanning();

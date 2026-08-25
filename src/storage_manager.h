@@ -58,15 +58,14 @@ class StorageManager {
     // - Fragmentation can cause failures even with "enough" total free
     //
     // WHO PAYS FOR THIS. Split boot means WiFi runs only in maintenance boot:
-    // startSetupMode() has exactly two call sites, main.cpp:499 inside
-    // initializeMaintenanceBootFlow() and main.cpp:641 inside the maintenance
-    // loop branch, and wifiManager.process() has one, main.cpp:620 in that same
-    // branch. Commit bd2435c removed the last normal-runtime autostart path.
+    // MaintenanceRuntime owns every startSetupMode() and process() call, and
+    // normal boot cannot reach that runtime. Commit bd2435c removed the last
+    // normal-runtime autostart path.
     //
     // So only five lock sites in the tree can ever evaluate this gate with the
     // radio up:
     //
-    //   settings_backup.cpp:850      serviceDeferredBackup  <- main.cpp:647
+    //   settings_backup.cpp:850      serviceDeferredBackup  <- MaintenanceRuntime::tick
     //   settings_nvs.cpp:332/385/433/471   wifi client secrets <- wifi_client.cpp
     //
     // Those five opt in with checkDmaHeap=true. Every other site runs where

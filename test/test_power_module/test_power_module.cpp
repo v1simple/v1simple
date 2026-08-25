@@ -37,13 +37,21 @@ struct PowerTouchProbe {
     int touchCalls = 0;
 };
 
-void recordShutdownPreparation(void* ctx) {
-    ++*static_cast<int*>(ctx);
-}
+struct ProbePowerLifecycle final : PowerLifecycle {
+    int* preparationCalls = nullptr;
+    int* abortCalls = nullptr;
 
-void recordShutdownAbort(void* ctx) {
-    ++*static_cast<int*>(ctx);
-}
+    void prepareForShutdown() override {
+        if (preparationCalls) {
+            ++*preparationCalls;
+        }
+    }
+    void resumeAfterAbortedShutdown() override {
+        if (abortCalls) {
+            ++*abortCalls;
+        }
+    }
+};
 
 void acquirePresentation(void* ctx, uint32_t) {
     auto* probe = static_cast<PowerTouchProbe*>(ctx);
@@ -193,7 +201,9 @@ void test_usb_transition_releases_warning_and_requests_one_authoritative_restore
 
 void test_critical_shutdown_abort_releases_warning_for_authoritative_recovery() {
     int abortCalls = 0;
-    power.setShutdownAbortCallback(recordShutdownAbort, &abortCalls);
+    ProbePowerLifecycle lifecycle;
+    lifecycle.abortCalls = &abortCalls;
+    power.setLifecycle(lifecycle);
     battery.setCritical(true);
     battery.powerOffResult = false;
     power.process(100);
@@ -297,8 +307,10 @@ void test_auto_power_abort_retries_only_after_a_full_interval() {
 void test_shutdown_preparation_cannot_veto_physical_poweroff() {
     int preparationCalls = 0;
     int abortCalls = 0;
-    power.setShutdownPreparationCallback(recordShutdownPreparation, &preparationCalls);
-    power.setShutdownAbortCallback(recordShutdownAbort, &abortCalls);
+    ProbePowerLifecycle lifecycle;
+    lifecycle.preparationCalls = &preparationCalls;
+    lifecycle.abortCalls = &abortCalls;
+    power.setLifecycle(lifecycle);
 
     power.performShutdown();
 

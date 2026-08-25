@@ -1,7 +1,6 @@
 #include "main_runtime_wiring.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <algorithm>
 
 #include "battery_manager.h"
@@ -50,11 +49,8 @@
 #include "modules/touch/touch_ui_module.h"
 #include "modules/voice/voice_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
-#include "modules/wifi/wifi_orchestrator_module.h"
 
 namespace {
-bool wifiStatusCallbackConfigured = false;
-
 bool restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {
     auto* pipeline = static_cast<DisplayPipelineModule*>(context);
     if (!pipeline) {
@@ -100,64 +96,6 @@ void showInitialScanningScreen() {
     display.drawProfileIndicator(settingsManager.get().activeSlot);
     mainRuntimeState.initialScanningScreenShown = true;
     connectionStateCadenceModule.onScanningScreenShown(millis());
-}
-
-static WifiOrchestrator& getWifiOrchestrator() {
-    static WifiOrchestrator orchestrator(wifiManager, bleClient, parser, storageManager, autoPushModule);
-    return orchestrator;
-}
-
-void configureMaintenanceWifiServices() {
-    wifiManager.setObdDependencies(&obdRuntimeModule, &speedSourceSelector);
-    wifiManager.setGpsRuntime(&gpsRuntimeModule);
-    getWifiOrchestrator().ensureCallbacksConfigured();
-    if (!wifiStatusCallbackConfigured) {
-        wifiManager.appendStatusCallback(
-            [](JsonObject obj, void* /*ctx*/) {
-                obj["maintenanceBoot"] = mainRuntimeState.maintenanceBootActive;
-                obj["maintenanceBootUptimeMs"] =
-                    mainRuntimeState.maintenanceBootActive && mainRuntimeState.maintenanceBootStartedMs != 0
-                        ? static_cast<uint32_t>(millis() - mainRuntimeState.maintenanceBootStartedMs)
-                        : 0;
-                obj["maintenanceBootTimeoutMs"] = MainRuntimePolicy::MaintenanceBootTimeoutMs;
-                const QuietCommittedState quietCommitted = quietCoordinatorModule.getCommittedState();
-                const QuietDesiredState& quietDesired = quietCoordinatorModule.getDesiredState();
-                const QuietPresentationState& quietPresentation = quietCoordinatorModule.getPresentationState();
-
-                JsonObject quietObj = obj["quiet"].to<JsonObject>();
-
-                JsonObject desiredObj = quietObj["desired"].to<JsonObject>();
-                desiredObj["muteOwner"] = quietOwnerName(quietDesired.muteOwner);
-                desiredObj["muteOwnerRaw"] = static_cast<uint8_t>(quietDesired.muteOwner);
-                desiredObj["mutePending"] = quietDesired.mutePending;
-                desiredObj["mute"] = quietDesired.mute;
-                desiredObj["volumeOwner"] = quietOwnerName(quietDesired.volumeOwner);
-                desiredObj["volumeOwnerRaw"] = static_cast<uint8_t>(quietDesired.volumeOwner);
-                desiredObj["volumePending"] = quietDesired.volumePending;
-                desiredObj["volume"] = quietDesired.volume;
-                desiredObj["muteVolume"] = quietDesired.muteVolume;
-
-                JsonObject committedObj = quietObj["committed"].to<JsonObject>();
-                committedObj["connected"] = quietCommitted.connected;
-                committedObj["hasDisplayState"] = quietCommitted.hasDisplayState;
-                committedObj["muted"] = quietCommitted.muted;
-                committedObj["mainVolume"] = quietCommitted.mainVolume;
-                committedObj["muteVolume"] = quietCommitted.muteVolume;
-
-                JsonObject presentationObj = quietObj["presentation"].to<JsonObject>();
-                presentationObj["activeMuteOwner"] = quietOwnerName(quietPresentation.activeMuteOwner);
-                presentationObj["activeMuteOwnerRaw"] = static_cast<uint8_t>(quietPresentation.activeMuteOwner);
-                presentationObj["activeVolumeOwner"] = quietOwnerName(quietPresentation.activeVolumeOwner);
-                presentationObj["activeVolumeOwnerRaw"] = static_cast<uint8_t>(quietPresentation.activeVolumeOwner);
-                presentationObj["speedVolZeroActive"] = quietPresentation.speedVolZeroActive;
-                presentationObj["voiceSuppressed"] = quietPresentation.voiceSuppressed;
-                presentationObj["voiceAllowVolZeroBypass"] = quietPresentation.voiceAllowVolZeroBypass;
-                presentationObj["effectiveMuted"] = quietPresentation.effectiveMuted;
-            },
-            nullptr);
-        wifiStatusCallbackConfigured = true;
-    }
-
 }
 
 static void configureLoopConnectionEarlyModule() {

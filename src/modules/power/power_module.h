@@ -6,15 +6,17 @@
 #include "display.h"
 #include "settings.h"
 
+class PowerLifecycle {
+  public:
+    virtual ~PowerLifecycle() = default;
+    virtual void prepareForShutdown() = 0;
+    virtual void resumeAfterAbortedShutdown() = 0;
+};
+
 class PowerModule {
   public:
-    using ShutdownPreparationCallback = void (*)(void*);
-    using ShutdownAbortCallback = void (*)(void*);
-
     void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings);
-
-    void setShutdownPreparationCallback(ShutdownPreparationCallback callback, void* context);
-    void setShutdownAbortCallback(ShutdownAbortCallback callback, void* context);
+    void setLifecycle(PowerLifecycle& lifecycle) { lifecycle_ = &lifecycle; }
 
     // Perform a graceful shutdown. Ignored before side effects in car builds.
     void performShutdown();
@@ -68,10 +70,7 @@ class PowerModule {
     BatteryManager* battery_ = nullptr;
     V1Display* display_ = nullptr;
     SettingsManager* settings_ = nullptr;
-    ShutdownPreparationCallback shutdownPreparationCallback_ = nullptr;
-    void* shutdownPreparationContext_ = nullptr;
-    ShutdownAbortCallback shutdownAbortCallback_ = nullptr;
-    void* shutdownAbortContext_ = nullptr;
+    PowerLifecycle* lifecycle_ = nullptr;
 #ifdef UNIT_TEST
     ShutdownHandoffObserver shutdownHandoffObserverForTest_ = nullptr;
     void* shutdownHandoffObserverContextForTest_ = nullptr;

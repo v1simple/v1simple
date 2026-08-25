@@ -50,10 +50,11 @@ void advanceTime(unsigned long deltaMs) {
     setTime(mockMillis + deltaMs);
 }
 
-void recordShutdownPreparation(void* context) {
-    auto* calls = static_cast<int*>(context);
-    ++(*calls);
-}
+struct ProbePowerLifecycle final : PowerLifecycle {
+    int preparationCalls = 0;
+    void prepareForShutdown() override { ++preparationCalls; }
+    void resumeAfterAbortedShutdown() override {}
+};
 
 std::string readProjectFile(const char* relativePath) {
     const std::filesystem::path path = std::filesystem::path(PROJECT_DIR) / relativePath;
@@ -140,12 +141,12 @@ void test_car_mode_critical_battery_never_triggers_shutdown() {
 // ─── All shutdown requests are disabled ────────────────────────────────────
 
 void test_car_mode_shutdown_request_is_ignored_before_side_effects() {
-    int shutdownPreparationCalls = 0;
-    module.setShutdownPreparationCallback(recordShutdownPreparation, &shutdownPreparationCalls);
+    ProbePowerLifecycle lifecycle;
+    module.setLifecycle(lifecycle);
 
     module.performShutdownRequestForTest();
 
-    TEST_ASSERT_EQUAL(0, shutdownPreparationCalls);
+    TEST_ASSERT_EQUAL(0, lifecycle.preparationCalls);
     TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
     TEST_ASSERT_EQUAL(0, display.clearCalls);
     TEST_ASSERT_FALSE(battery.powerOffCalled);

@@ -780,53 +780,8 @@ class SettingsManager {
     uint32_t backupRevision() const { return backupRevisionCounter_; }
     uint32_t backupDueRevision() const { return backupDueRevision_; }
 
-    // Update settings (calls save automatically)
-    void setWiFiEnabled(bool enabled);
-    void setAPCredentials(const String& ssid, const String& password);
-    void setProxyBLE(bool enabled);
-    void setProxyName(const String& name);
-    void setAutoPowerOffMinutes(uint8_t minutes);
-    void setApTimeoutMinutes(uint8_t minutes);
     uint8_t getApTimeoutMinutes() const { return settings_.apTimeoutMinutes; }
-    void setBrightness(uint8_t brightness);
-    void setDisplayOff(bool off);
-    void setAutoPushEnabled(bool enabled);
     void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void setSlot(int slotNum, const String& profileName, V1Mode mode);
-    void setSlotName(int slotNum, const String& name);
-    void setSlotColor(int slotNum, uint16_t color);
-    void setSlotVolumes(int slotNum, uint8_t volume, uint8_t muteVolume);
-    void setDisplayColors(uint16_t bogey, uint16_t freq, uint16_t arrowFront, uint16_t arrowSide, uint16_t arrowRear,
-                          uint16_t bandL, uint16_t bandKa, uint16_t bandK, uint16_t bandX, bool deferSave = false);
-    void setWiFiIconColors(uint16_t icon, uint16_t connected);
-    void setBleIconColors(uint16_t connected, uint16_t disconnected);
-    void setSignalBarColors(uint16_t bar1, uint16_t bar2, uint16_t bar3, uint16_t bar4, uint16_t bar5, uint16_t bar6);
-    void setMutedColor(uint16_t color);
-    void setBandPhotoColor(uint16_t color);
-    void setPersistedColor(uint16_t color);
-    void setVolumeMainColor(uint16_t color);
-    void setVolumeMuteColor(uint16_t color);
-    void setRssiV1Color(uint16_t color);
-    void setRssiProxyColor(uint16_t color);
-    void setFreqUseBandColor(bool use);
-    void setHideWifiIcon(bool hide);
-    void setHideProfileIndicator(bool hide);
-    void setHideBatteryIcon(bool hide);
-    void setShowBatteryPercent(bool show);
-    void setHideBleIcon(bool hide);
-    void setHideVolumeIndicator(bool hide);
-    void setHideRssiIndicator(bool hide);
-    void setVoiceAlertMode(VoiceAlertMode mode);
-    void setVoiceDirectionEnabled(bool enabled);
-    void setAnnounceBogeyCount(bool enabled);
-    void setMuteVoiceIfVolZero(bool mute);
-    void setAnnounceSecondaryAlerts(bool enabled);
-    void setSecondaryLaser(bool enabled);
-    void setSecondaryKa(bool enabled);
-    void setSecondaryK(bool enabled);
-    void setSecondaryX(bool enabled);
-    void setAlertVolumeFade(bool enabled, uint8_t delaySec, uint8_t volume);
-    void setSpeedMute(bool enabled, uint8_t thresholdMph, uint8_t hysteresisMph);
     void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setLastV1Address(const String& addr);
     // One-key NVS safety net used only when filesystem-backed V1DeviceStore is
@@ -835,8 +790,6 @@ class SettingsManager {
     void requestLastV1AddressFallbackPersist(const String& addr);
     bool clearLastV1AddressFallback();
 
-    // Get active slot configuration
-    const AutoPushSlot& getActiveSlot() const;
     const AutoPushSlot& getSlot(int slotNum) const;
 
     // Get slot volume settings (returns 0xFF for "no change")
@@ -848,10 +801,6 @@ class SettingsManager {
     bool getSlotMuteToZero(int slotNum) const;
     uint8_t getSlotAlertPersistSec(int slotNum) const;
     bool getSlotPriorityArrowOnly(int slotNum) const;
-    void setSlotDarkMode(int slotNum, bool darkMode);
-    void setSlotMuteToZero(int slotNum, bool mz);
-    void setSlotAlertPersistSec(int slotNum, uint8_t seconds);
-    void setSlotPriorityArrowOnly(int slotNum, bool prioArrow);
 
     // ALP display persistence — global (not per-slot) because ALP is a peer
     // source, independent of V1 auto-push profiles. Clamped 0..5 like V1.

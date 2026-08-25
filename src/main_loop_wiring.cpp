@@ -31,9 +31,6 @@
 
 void configureLoopRuntimeSnapshotModule() {
     LoopRuntimeSnapshotModule::Providers loopRuntimeSnapshotProviders;
-    loopRuntimeSnapshotProviders.readBleConnected =
-        ProviderCallbackBindings::member<V1BLEClient, &V1BLEClient::isConnected>;
-    loopRuntimeSnapshotProviders.bleConnectedContext = &bleClient;
     // Keep connection-state display transitions gated through the ended-but-
     // not-yet-restored interval as well as while preview frames are active.
     loopRuntimeSnapshotProviders.readDisplayPreviewRunning =

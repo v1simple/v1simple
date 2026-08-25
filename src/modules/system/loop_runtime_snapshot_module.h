@@ -3,7 +3,6 @@
 #include <stdint.h>
 
 struct LoopRuntimeSnapshotValues {
-    bool bleConnected = false;
     bool displayPreviewRunning = false;
 };
 
@@ -13,9 +12,6 @@ struct LoopRuntimeSnapshotContext {};
 class LoopRuntimeSnapshotModule {
   public:
     struct Providers {
-        bool (*readBleConnected)(void* ctx) = nullptr;
-        void* bleConnectedContext = nullptr;
-
         bool (*readDisplayPreviewRunning)(void* ctx) = nullptr;
         void* displayPreviewContext = nullptr;
     };

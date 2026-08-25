@@ -8,10 +8,6 @@ LoopRuntimeSnapshotValues LoopRuntimeSnapshotModule::process(const LoopRuntimeSn
     (void)ctx;
     LoopRuntimeSnapshotValues values;
 
-    if (providers.readBleConnected) {
-        values.bleConnected = providers.readBleConnected(providers.bleConnectedContext);
-    }
-
     if (providers.readDisplayPreviewRunning) {
         values.displayPreviewRunning = providers.readDisplayPreviewRunning(providers.displayPreviewContext);
     }

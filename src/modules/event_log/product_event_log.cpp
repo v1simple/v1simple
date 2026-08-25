@@ -65,10 +65,17 @@ size_t oldestIndex(const RetainedEventFile* files, size_t count) {
 } // namespace
 
 bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
+    const WriterState initialState = writerState_.load(std::memory_order_acquire);
+    if (initialState == WriterState::RUNNING || initialState == WriterState::STOP_REQUESTED ||
+        initialState == WriterState::CLOSING) {
+        return false;
+    }
     enabled_.store(false, std::memory_order_release);
     accepting_.store(false, std::memory_order_release);
-    shutdownRequested_.store(false, std::memory_order_release);
-    taskRunning_.store(false, std::memory_order_release);
+    writerState_.store(WriterState::STOPPED, std::memory_order_release);
+    writerExitClean_.store(false, std::memory_order_release);
+    stopFailureRecorded_.store(false, std::memory_order_release);
+    retentionExhausted_.store(false, std::memory_order_release);
     pendingGapCount_.store(0, std::memory_order_relaxed);
     pendingGapFirstMs_.store(0, std::memory_order_relaxed);
     pendingGapLastMs_.store(0, std::memory_order_relaxed);
@@ -76,6 +83,9 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     bootId_ = bootId;
     eventFile_ = File();
     dirty_ = false;
+    fileCreated_ = false;
+    retainedBytes_ = 0;
+    activeBytes_ = 0;
     lastFlushMs_ = 0;
     gapSequence_ = 0;
 
@@ -96,11 +106,20 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     builder_.begin(&ProductEventLog::emitFromBuilder, this);
     enabled_.store(true, std::memory_order_release);
     accepting_.store(true, std::memory_order_release);
-    taskRunning_.store(true, std::memory_order_release);
+    return startWriterTask();
+}
+
+bool ProductEventLog::startWriterTask() {
+    WriterState expected = WriterState::STOPPED;
+    if (!writerState_.compare_exchange_strong(expected, WriterState::RUNNING, std::memory_order_acq_rel)) {
+        return false;
+    }
+    writerExitClean_.store(false, std::memory_order_release);
     const BaseType_t created = xTaskCreatePinnedToCore(&ProductEventLog::writerTaskEntry, "ProductEvents",
                                                        kWriterStackBytes, this, 1, &writerTask_, 0);
     if (created != pdPASS) {
-        taskRunning_.store(false, std::memory_order_release);
+        writerTask_ = nullptr;
+        writerState_.store(WriterState::FAILED, std::memory_order_release);
         enabled_.store(false, std::memory_order_release);
         accepting_.store(false, std::memory_order_release);
         return false;
@@ -126,23 +145,79 @@ void ProductEventLog::observeAlp(const AlpProductObservation& observation, uint3
     }
 }
 
-void ProductEventLog::stopAndFlush(uint32_t nowMs, uint32_t timeoutMs) {
-    if (!accepting_.load(std::memory_order_acquire) && !taskRunning_.load(std::memory_order_acquire)) {
-        return;
-    }
+bool ProductEventLog::stopAndFlush(uint32_t nowMs, uint32_t timeoutMs) {
     if (accepting_.load(std::memory_order_acquire)) {
         builder_.closeActive(nowMs);
     }
     accepting_.store(false, std::memory_order_release);
-    shutdownRequested_.store(true, std::memory_order_release);
+
+    WriterState state = writerState_.load(std::memory_order_acquire);
+    if (state == WriterState::RUNNING) {
+        (void)writerState_.compare_exchange_strong(state, WriterState::STOP_REQUESTED, std::memory_order_acq_rel);
+    }
     if (writerTask_) {
         xTaskNotifyGive(writerTask_);
     }
 
     const uint32_t started = millis();
-    while (taskRunning_.load(std::memory_order_acquire) && static_cast<uint32_t>(millis() - started) < timeoutMs) {
+    while (static_cast<uint32_t>(millis() - started) < timeoutMs) {
+        state = writerState_.load(std::memory_order_acquire);
+        if (state == WriterState::STOPPED || state == WriterState::FAILED) {
+            break;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    state = writerState_.load(std::memory_order_acquire);
+    const bool clean = state == WriterState::STOPPED && writerExitClean_.load(std::memory_order_acquire);
+    if (!clean) {
+        recordStopFailure();
+    }
+    return clean;
+}
+
+bool ProductEventLog::resumeAfterAbortedShutdown(uint32_t timeoutMs) {
+    if (!enabled_.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    const uint32_t started = millis();
+    for (;;) {
+        WriterState state = writerState_.load(std::memory_order_acquire);
+        if (state == WriterState::RUNNING) {
+            stopFailureRecorded_.store(false, std::memory_order_release);
+            accepting_.store(true, std::memory_order_release);
+            return true;
+        }
+        if (state == WriterState::STOP_REQUESTED) {
+            if (writerState_.compare_exchange_strong(state, WriterState::RUNNING, std::memory_order_acq_rel)) {
+                stopFailureRecorded_.store(false, std::memory_order_release);
+                accepting_.store(true, std::memory_order_release);
+                if (writerTask_) {
+                    xTaskNotifyGive(writerTask_);
+                }
+                return true;
+            }
+            continue;
+        }
+        if (state == WriterState::STOPPED) {
+            if (!startWriterTask()) {
+                return false;
+            }
+            stopFailureRecorded_.store(false, std::memory_order_release);
+            accepting_.store(true, std::memory_order_release);
+            return true;
+        }
+        if (state == WriterState::FAILED || static_cast<uint32_t>(millis() - started) >= timeoutMs) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+bool ProductEventLog::writerStopped() const {
+    const WriterState state = writerState_.load(std::memory_order_acquire);
+    return state == WriterState::STOPPED || state == WriterState::FAILED;
 }
 
 bool ProductEventLog::emitFromBuilder(const ProductEvent& event, void* context) {
@@ -196,7 +271,9 @@ void ProductEventLog::writerLoop() {
         if (xQueueReceive(queue_, &event, kWriterPollTicks) == pdTRUE) {
             if (!writeEvent(event)) {
                 disableWriter();
-                HealthCounters::recordEventDrop(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+                if (!retentionExhausted_.load(std::memory_order_acquire)) {
+                    HealthCounters::recordEventDrop(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+                }
                 xQueueReset(queue_);
                 failed = true;
                 break;
@@ -209,26 +286,36 @@ void ProductEventLog::writerLoop() {
             break;
         }
 
-        if (shutdownRequested_.load(std::memory_order_acquire) && uxQueueMessagesWaiting(queue_) == 0) {
-            break;
+        if (writerState_.load(std::memory_order_acquire) == WriterState::STOP_REQUESTED &&
+            uxQueueMessagesWaiting(queue_) == 0) {
+            WriterState expected = WriterState::STOP_REQUESTED;
+            if (writerState_.compare_exchange_strong(expected, WriterState::CLOSING, std::memory_order_acq_rel)) {
+                break;
+            }
         }
         taskYIELD();
     }
 
+    if (failed) {
+        writerState_.store(WriterState::CLOSING, std::memory_order_release);
+    }
+    bool cleanExit = !failed;
     if (eventFile_) {
-        if (!failed) {
-            (void)flushIfDue(true);
+        if (!failed && !flushIfDue(true)) {
+            cleanExit = false;
         }
         StorageManager::SDLockTimed lock(storage_->getSDMutex(), kWriterLockTimeoutMs);
         if (lock) {
             eventFile_.close();
+            dirty_ = false;
+        } else {
+            cleanExit = false;
         }
     }
-    if (shutdownRequested_.load(std::memory_order_acquire)) {
-        accepting_.store(false, std::memory_order_release);
-    }
-    taskRunning_.store(false, std::memory_order_release);
+    accepting_.store(false, std::memory_order_release);
+    writerExitClean_.store(cleanExit, std::memory_order_release);
     writerTask_ = nullptr;
+    writerState_.store(failed ? WriterState::FAILED : WriterState::STOPPED, std::memory_order_release);
 }
 
 bool ProductEventLog::writeEvent(const ProductEvent& event) {
@@ -237,11 +324,27 @@ bool ProductEventLog::writeEvent(const ProductEvent& event) {
     }
     StorageManager::SDLockTimed lock(storage_->getSDMutex(), kWriterLockTimeoutMs);
     if (!lock || !ensureFileOpenLocked()) {
+        if (retentionExhausted_.load(std::memory_order_acquire)) {
+            recordRetentionExhaustion(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+        }
         return false;
     }
 
     ProductEvent gap{};
-    if (takeGap(gap) && !writeRowsLocked(gap)) {
+    const bool hasGap = takeGap(gap);
+    size_t eventBytes = 0;
+    size_t gapBytes = 0;
+    if (!serializedEventBytes(event, eventBytes) || (hasGap && !serializedEventBytes(gap, gapBytes))) {
+        return false;
+    }
+    if (retainedBytes_ > kMaxTotalBytes || activeBytes_ > kMaxTotalBytes - retainedBytes_ ||
+        gapBytes > kMaxTotalBytes - retainedBytes_ - activeBytes_ ||
+        eventBytes > kMaxTotalBytes - retainedBytes_ - activeBytes_ - gapBytes) {
+        recordRetentionExhaustion(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+        return false;
+    }
+
+    if (hasGap && !writeRowsLocked(gap)) {
         return false;
     }
     if (!writeRowsLocked(event)) {
@@ -258,12 +361,31 @@ bool ProductEventLog::writeEvent(const ProductEvent& event) {
     return true;
 }
 
+bool ProductEventLog::serializedEventBytes(const ProductEvent& event, size_t& bytes) const {
+    bytes = 0;
+    char row[256];
+    const size_t count = productEventRowCount(event);
+    for (size_t item = 0; item < count; ++item) {
+        const size_t length = serializeProductEventRow(event, item, row, sizeof(row));
+        if (length == 0 || length > SIZE_MAX - bytes) {
+            return false;
+        }
+        bytes += length;
+    }
+    return true;
+}
+
 bool ProductEventLog::writeRowsLocked(const ProductEvent& event) {
     char row[256];
     const size_t count = productEventRowCount(event);
     for (size_t item = 0; item < count; ++item) {
         const size_t length = serializeProductEventRow(event, item, row, sizeof(row));
-        if (length == 0 || eventFile_.write(reinterpret_cast<const uint8_t*>(row), length) != length) {
+        if (length == 0) {
+            return false;
+        }
+        const size_t written = eventFile_.write(reinterpret_cast<const uint8_t*>(row), length);
+        activeBytes_ += written;
+        if (written != length) {
             return false;
         }
     }
@@ -276,20 +398,31 @@ bool ProductEventLog::ensureFileOpenLocked() {
     }
     fs::FS& fs = *storage_->getFilesystem();
     if (fs.exists(eventPath_)) {
-        return false;
+        if (!fileCreated_) {
+            return false;
+        }
+        eventFile_ = fs.open(eventPath_, FILE_APPEND);
+        return static_cast<bool>(eventFile_);
     }
     if (!fs.exists("/events") && !fs.mkdir("/events")) {
+        return false;
+    }
+    const size_t headerLength = sizeof(kProductEventSchemaHeader) - 1;
+    if (retainedBytes_ > kMaxTotalBytes || headerLength > kMaxTotalBytes - retainedBytes_) {
+        recordRetentionExhaustion(0);
         return false;
     }
     eventFile_ = fs.open(eventPath_, FILE_WRITE);
     if (!eventFile_) {
         return false;
     }
-    const size_t headerLength = sizeof(kProductEventSchemaHeader) - 1;
-    if (eventFile_.write(reinterpret_cast<const uint8_t*>(kProductEventSchemaHeader), headerLength) != headerLength) {
+    const size_t written = eventFile_.write(reinterpret_cast<const uint8_t*>(kProductEventSchemaHeader), headerLength);
+    activeBytes_ = written;
+    if (written != headerLength) {
         eventFile_.close();
         return false;
     }
+    fileCreated_ = true;
     dirty_ = true;
     lastFlushMs_ = millis();
     return true;
@@ -314,6 +447,29 @@ bool ProductEventLog::flushIfDue(bool force) {
 
 void ProductEventLog::disableWriter() {
     enabled_.store(false, std::memory_order_release);
+    accepting_.store(false, std::memory_order_release);
+}
+
+void ProductEventLog::recordStopFailure() {
+    if (!stopFailureRecorded_.exchange(true, std::memory_order_acq_rel)) {
+        HealthCounters::recordEventShutdownFailure();
+#ifndef UNIT_TEST
+        Serial.println("[ProductEvents] ERROR: writer did not terminate cleanly; storage handoff blocked");
+#endif
+    }
+}
+
+void ProductEventLog::recordRetentionExhaustion(uint32_t dropped) {
+    if (!retentionExhausted_.exchange(true, std::memory_order_acq_rel)) {
+        HealthCounters::recordEventRetentionExhaustion();
+#ifndef UNIT_TEST
+        Serial.println("[ProductEvents] retention budget exhausted; admission closed");
+#endif
+    }
+    if (dropped > 0) {
+        HealthCounters::recordEventDrop(dropped);
+    }
+    disableWriter();
 }
 
 bool ProductEventLog::pruneRetention() {
@@ -382,6 +538,7 @@ bool ProductEventLog::pruneRetention() {
         retained[oldest] = retained[retainedCount - 1];
         --retainedCount;
     }
+    retainedBytes_ = totalBytes;
     return true;
 }
 
@@ -394,7 +551,9 @@ bool ProductEventLog::drainOneForTest() {
     const bool ok = writeEvent(event);
     if (!ok) {
         disableWriter();
-        HealthCounters::recordEventDrop(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+        if (!retentionExhausted_.load(std::memory_order_acquire)) {
+            HealthCounters::recordEventDrop(1 + static_cast<uint32_t>(uxQueueMessagesWaiting(queue_)));
+        }
         xQueueReset(queue_);
     }
     return ok;

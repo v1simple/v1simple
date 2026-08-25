@@ -28,21 +28,30 @@ class ProductEventLog {
     void observeAlp(const AlpProductObservation& observation, uint32_t nowMs);
 
     // Emit any active END records, stop producer admission, and wait only up
-    // to timeoutMs for the one writer to drain and flush.
-    void stopAndFlush(uint32_t nowMs, uint32_t timeoutMs);
+    // to timeoutMs for the one writer to drain, flush, close, and relinquish
+    // filesystem ownership. False means storage teardown/restart is unsafe.
+    bool stopAndFlush(uint32_t nowMs, uint32_t timeoutMs);
+
+    // Cancel an in-flight stop or restart the one writer after a confirmed
+    // exit. Used only when a power-off sequence aborts and runtime continues.
+    bool resumeAfterAbortedShutdown(uint32_t timeoutMs);
 
     bool enabled() const { return enabled_.load(std::memory_order_acquire); }
     bool accepting() const { return accepting_.load(std::memory_order_acquire); }
+    bool writerStopped() const;
 
 #ifdef UNIT_TEST
     bool enqueueForTest(const ProductEvent& event) { return enqueue(event); }
     size_t queuedForTest() const { return queue_ ? uxQueueMessagesWaiting(queue_) : 0; }
     bool drainOneForTest();
     bool takeGapForTest(ProductEvent& event) { return takeGap(event); }
+    void runWriterForTest() { writerLoop(); }
+    size_t retainedBytesForTest() const { return retainedBytes_; }
+    size_t activeBytesForTest() const { return activeBytes_; }
     void resetForTest() {
         accepting_.store(false, std::memory_order_relaxed);
         enabled_.store(false, std::memory_order_relaxed);
-        taskRunning_.store(false, std::memory_order_relaxed);
+        writerState_.store(WriterState::STOPPED, std::memory_order_relaxed);
         if (eventFile_) {
             eventFile_.close();
         }
@@ -54,18 +63,24 @@ class ProductEventLog {
 #endif
 
   private:
+    enum class WriterState : uint8_t { STOPPED = 0, RUNNING, STOP_REQUESTED, CLOSING, FAILED };
+
     static bool emitFromBuilder(const ProductEvent& event, void* context);
     static void writerTaskEntry(void* context);
 
+    bool startWriterTask();
     bool enqueue(const ProductEvent& event);
     void writerLoop();
     bool writeEvent(const ProductEvent& event);
+    bool serializedEventBytes(const ProductEvent& event, size_t& bytes) const;
     bool writeRowsLocked(const ProductEvent& event);
     bool ensureFileOpenLocked();
     bool flushIfDue(bool force);
     bool takeGap(ProductEvent& event);
     void noteDrop(uint32_t nowMs);
     void disableWriter();
+    void recordStopFailure();
+    void recordRetentionExhaustion(uint32_t dropped);
     bool pruneRetention();
 
     StorageManager* storage_ = nullptr;
@@ -80,14 +95,19 @@ class ProductEventLog {
 
     std::atomic<bool> enabled_{false};
     std::atomic<bool> accepting_{false};
-    std::atomic<bool> shutdownRequested_{false};
-    std::atomic<bool> taskRunning_{false};
+    std::atomic<WriterState> writerState_{WriterState::STOPPED};
+    std::atomic<bool> writerExitClean_{false};
+    std::atomic<bool> stopFailureRecorded_{false};
+    std::atomic<bool> retentionExhausted_{false};
     std::atomic<uint32_t> pendingGapCount_{0};
     std::atomic<uint32_t> pendingGapFirstMs_{0};
     std::atomic<uint32_t> pendingGapLastMs_{0};
 
     File eventFile_;
     bool dirty_ = false;
+    bool fileCreated_ = false;
+    size_t retainedBytes_ = 0;
+    size_t activeBytes_ = 0;
     uint32_t lastFlushMs_ = 0;
     uint32_t gapSequence_ = 0;
 };

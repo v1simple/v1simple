@@ -81,7 +81,7 @@ V1ConnectedAutoPushSelection resolveV1ConnectedAutoPushSelection(const V1Setting
 
 } // namespace
 
-void prepareForShutdown(void* /*context*/) {
+bool prepareForShutdown(void* /*context*/) {
     feedLoopTaskWatchdogDuringShutdown();
 
     if (wifiManager.isWifiServiceActive()) {
@@ -114,7 +114,10 @@ void prepareForShutdown(void* /*context*/) {
     delay(50); // Brief settle for disconnect packets to transmit
     feedLoopTaskWatchdogDuringShutdown();
 
-    productEventLog.stopAndFlush(millis(), 750);
+    if (!productEventLog.stopAndFlush(millis(), 750)) {
+        Serial.println("[Battery] ERROR: product-event writer still owns storage; shutdown cancelled");
+        return false;
+    }
     feedLoopTaskWatchdogDuringShutdown();
 
     // Drain the best-effort bond snapshot before the final synchronous
@@ -144,11 +147,19 @@ void prepareForShutdown(void* /*context*/) {
     // "unclean" and record the integrity event.
     Serial.println("[Battery] Writing clean-shutdown marker...");
     markCleanShutdown();
+    return true;
 }
 
-void completeLoggingForControlledRestart() {
-    productEventLog.stopAndFlush(millis(), 750);
+bool completeLoggingForControlledRestart() {
+    if (!productEventLog.stopAndFlush(millis(), 750)) {
+        Serial.println("[ProductEvents] ERROR: controlled restart cancelled because writer did not stop");
+        if (!productEventLog.resumeAfterAbortedShutdown(750)) {
+            Serial.println("[ProductEvents] ERROR: writer admission could not be restored after cancelled restart");
+        }
+        return false;
+    }
     healthJournal.end(millis());
+    return true;
 }
 
 void resumeAfterAbortedShutdown(void* /*context*/) {
@@ -158,8 +169,12 @@ void resumeAfterAbortedShutdown(void* /*context*/) {
     // recovery is still running, the next boot must classify this run as unclean.
     markUncleanShutdown();
 
-    // Only reopen admission. Existing tasks/queues may still be draining after
-    // a bounded shutdown timeout; normal work will reuse or lazily respawn them.
+    if (!productEventLog.resumeAfterAbortedShutdown(750)) {
+        Serial.println("[ProductEvents] ERROR: writer admission could not be restored after shutdown abort");
+    }
+
+    // Reopen the older persistence writers after the product-event owner has
+    // either reused its live task or restarted exactly one confirmed exit.
     resumeBleBondBackupWriterAfterAbortedShutdown();
     resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
 }
@@ -301,7 +316,10 @@ void configureUiTouchInteractionModules(QuietCoordinatorModule& quietCoordinator
                                        if (requestMaintenanceBoot()) {
                                            Serial.println("[MaintBoot] touch long-press requested maintenance reboot");
                                            settingsManager.save();
-                                           completeLoggingForControlledRestart();
+                                           if (!completeLoggingForControlledRestart()) {
+                                               Serial.println("[MaintBoot] ERROR: touch restart cancelled because persistence did not stop cleanly");
+                                               return;
+                                           }
                                            markCleanShutdown();
                                            delay(50);
                                            ESP.restart();

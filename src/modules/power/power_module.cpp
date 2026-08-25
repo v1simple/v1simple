@@ -10,7 +10,15 @@ void PowerModule::performShutdown() {
     return;
 #else
     if (shutdownPreparationCallback_) {
-        shutdownPreparationCallback_(shutdownPreparationContext_);
+        if (!shutdownPreparationCallback_(shutdownPreparationContext_)) {
+            Serial.println("[Power] ERROR: shutdown preparation failed; power-off blocked");
+            if (shutdownAbortCallback_) {
+                shutdownAbortCallback_(shutdownAbortContext_);
+            }
+            releaseCriticalBatteryPresentation();
+            requestDisplayRestore();
+            return;
+        }
     }
 
     if (display_) {

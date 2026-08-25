@@ -89,10 +89,103 @@ void test_meaningful_link_loss_and_restoration_are_session_scoped() {
                             static_cast<uint8_t>(captured[2].kind));
 }
 
+void test_v1_reconnect_after_disconnected_end_does_not_restore_closed_encounter() {
+    ProductEventBuilder builder;
+    builder.begin(captureEvent, nullptr);
+    AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 8, 0, 34700);
+
+    builder.observeV1Table(&alert, 1, 0, 10);
+    builder.observeV1Link(false, 20);
+    builder.observeV1Table(&alert, 0, 0, 30);
+    builder.observeV1Link(true, 40);
+
+    TEST_ASSERT_EQUAL_UINT32(3, captured.size());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::BEGIN), static_cast<uint8_t>(captured[0].kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::LINK_LOST),
+                            static_cast<uint8_t>(captured[1].kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::END), static_cast<uint8_t>(captured[2].kind));
+}
+
+void test_v1_new_encounter_after_disconnected_end_has_fresh_link_latch_and_sequence() {
+    ProductEventBuilder builder;
+    builder.begin(captureEvent, nullptr);
+    AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 8, 0, 34700);
+
+    builder.observeV1Table(&alert, 1, 0, 10);
+    builder.observeV1Link(false, 20);
+    builder.observeV1Table(&alert, 0, 0, 30);
+    builder.observeV1Table(&alert, 1, 0, 40);
+    builder.observeV1Link(false, 50);
+
+    TEST_ASSERT_EQUAL_UINT32(5, captured.size());
+    TEST_ASSERT_EQUAL_UINT32(1, captured[2].id);
+    TEST_ASSERT_EQUAL_UINT32(3, captured[2].sequence);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::BEGIN), static_cast<uint8_t>(captured[3].kind));
+    TEST_ASSERT_EQUAL_UINT32(2, captured[3].id);
+    TEST_ASSERT_EQUAL_UINT32(1, captured[3].sequence);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::LINK_LOST),
+                            static_cast<uint8_t>(captured[4].kind));
+    TEST_ASSERT_EQUAL_UINT32(2, captured[4].sequence);
+}
+
+void test_alp_loss_end_idle_reconnect_and_new_encounter_are_scoped() {
+    ProductEventBuilder builder;
+    builder.begin(captureEvent, nullptr);
+    AlpProductObservation observation{};
+    observation.connected = true;
+    observation.active = true;
+    observation.state = ProductAlpState::TARGETED;
+
+    builder.observeAlp(observation, 10);
+    observation.connected = false;
+    builder.observeAlp(observation, 20);
+    observation.active = false;
+    builder.observeAlp(observation, 30);
+    observation.connected = true;
+    builder.observeAlp(observation, 40);
+    observation.active = true;
+    builder.observeAlp(observation, 50);
+
+    TEST_ASSERT_EQUAL_UINT32(4, captured.size());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::LINK_LOST),
+                            static_cast<uint8_t>(captured[1].kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::END), static_cast<uint8_t>(captured[2].kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::BEGIN), static_cast<uint8_t>(captured[3].kind));
+    TEST_ASSERT_EQUAL_UINT32(2, captured[3].id);
+    TEST_ASSERT_EQUAL_UINT32(1, captured[3].sequence);
+}
+
+void test_alp_ordinary_loss_and_restoration_stay_in_active_encounter() {
+    ProductEventBuilder builder;
+    builder.begin(captureEvent, nullptr);
+    AlpProductObservation observation{};
+    observation.connected = true;
+    observation.active = true;
+    observation.state = ProductAlpState::TARGETED;
+
+    builder.observeAlp(observation, 10);
+    observation.connected = false;
+    builder.observeAlp(observation, 20);
+    observation.connected = true;
+    builder.observeAlp(observation, 30);
+
+    TEST_ASSERT_EQUAL_UINT32(3, captured.size());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::LINK_LOST),
+                            static_cast<uint8_t>(captured[1].kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ProductEventKind::LINK_RESTORED),
+                            static_cast<uint8_t>(captured[2].kind));
+    TEST_ASSERT_EQUAL_UINT32(1, captured[2].id);
+    TEST_ASSERT_EQUAL_UINT32(3, captured[2].sequence);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_v1_begin_change_end_and_dedup_use_full_normalized_table);
     RUN_TEST(test_alp_sparse_events_deduplicate_equivalent_detection_and_state);
     RUN_TEST(test_meaningful_link_loss_and_restoration_are_session_scoped);
+    RUN_TEST(test_v1_reconnect_after_disconnected_end_does_not_restore_closed_encounter);
+    RUN_TEST(test_v1_new_encounter_after_disconnected_end_has_fresh_link_latch_and_sequence);
+    RUN_TEST(test_alp_loss_end_idle_reconnect_and_new_encounter_are_scoped);
+    RUN_TEST(test_alp_ordinary_loss_and_restoration_stay_in_active_encounter);
     return UNITY_END();
 }

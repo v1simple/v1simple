@@ -11,6 +11,8 @@ class HealthCounters {
     static void reset() {
         inputDrops_.store(0, std::memory_order_relaxed);
         eventDrops_.store(0, std::memory_order_relaxed);
+        eventShutdownFailures_.store(0, std::memory_order_relaxed);
+        eventRetentionExhaustions_.store(0, std::memory_order_relaxed);
     }
 
     static void recordInputDrop(uint32_t count = 1) {
@@ -21,12 +23,26 @@ class HealthCounters {
         eventDrops_.fetch_add(count, std::memory_order_relaxed);
     }
 
+    static void recordEventShutdownFailure() {
+        eventShutdownFailures_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static void recordEventRetentionExhaustion() {
+        eventRetentionExhaustions_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     static uint32_t inputDrops() { return inputDrops_.load(std::memory_order_relaxed); }
     static uint32_t eventDrops() { return eventDrops_.load(std::memory_order_relaxed); }
+    static uint32_t eventShutdownFailures() { return eventShutdownFailures_.load(std::memory_order_relaxed); }
+    static uint32_t eventRetentionExhaustions() {
+        return eventRetentionExhaustions_.load(std::memory_order_relaxed);
+    }
 
   private:
     static inline std::atomic<uint32_t> inputDrops_{0};
     static inline std::atomic<uint32_t> eventDrops_{0};
+    static inline std::atomic<uint32_t> eventShutdownFailures_{0};
+    static inline std::atomic<uint32_t> eventRetentionExhaustions_{0};
 };
 
 class HealthJournal {

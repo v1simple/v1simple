@@ -32,6 +32,38 @@ ProductEvent endEvent(uint32_t ms) {
     return event;
 }
 
+ProductEvent multiRowEvent(uint32_t ms) {
+    ProductEvent event{};
+    event.ms = ms;
+    event.source = ProductEventSource::V1;
+    event.kind = ProductEventKind::BEGIN;
+    event.id = 1;
+    event.sequence = 1;
+    event.data.v1.count = 2;
+    event.data.v1.alerts[0] = ProductV1Alert{34700, 2, 1, 8, 0, 1};
+    event.data.v1.alerts[1] = ProductV1Alert{24150, 1, 2, 0, 4, 0};
+    return event;
+}
+
+size_t serializedBytes(const ProductEvent& event) {
+    size_t bytes = 0;
+    char row[256];
+    for (size_t item = 0; item < productEventRowCount(event); ++item) {
+        bytes += serializeProductEventRow(event, item, row, sizeof(row));
+    }
+    return bytes;
+}
+
+void writeSizedPriorFile(size_t size) {
+    const std::filesystem::path events = root / "events";
+    std::filesystem::create_directories(events);
+    std::ofstream output(events / "events_1.csv", std::ios::binary);
+    if (size > 0) {
+        output.seekp(static_cast<std::streamoff>(size - 1));
+        output.put('x');
+    }
+}
+
 } // namespace
 
 void setUp() {
@@ -96,11 +128,135 @@ void test_first_write_failure_disables_writer_without_retry() {
     TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(600)));
     TEST_ASSERT_FALSE(log.drainOneForTest());
     TEST_ASSERT_FALSE(log.enabled());
+    TEST_ASSERT_FALSE(log.accepting());
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventDrops());
     TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(700)));
     TEST_ASSERT_EQUAL_UINT32(2, HealthCounters::eventDrops());
     log.resetForTest();
 }
+
+void test_stop_drains_queue_and_confirms_exit_before_storage_handoff() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(30, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(200)));
+
+    TEST_ASSERT_FALSE(log.stopAndFlush(300, 0));
+    TEST_ASSERT_FALSE(log.writerStopped());
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
+
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_TRUE(log.stopAndFlush(301, 0));
+
+    StorageManager::SDLockTimed subsequentStorage(storage.getSDMutex(), 1);
+    TEST_ASSERT_TRUE(subsequentStorage);
+    const std::string contents = [&]() {
+        std::ifstream input(root / "events" / "events_30.csv", std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("100,V1,END"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("200,V1,END"));
+    log.resetForTest();
+}
+
+void test_shutdown_close_failure_is_reported_and_storage_handoff_stays_blocked() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(31, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+
+    TEST_ASSERT_FALSE(log.stopAndFlush(200, 0));
+    StorageManager::mockSdLockState.failNextBlockingLock = true;
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.writerStopped());
+    TEST_ASSERT_FALSE(log.stopAndFlush(201, 0));
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventShutdownFailures());
+    log.resetForTest();
+}
+
+void test_aborted_shutdown_restarts_once_and_accepts_new_event() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(32, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
+    TEST_ASSERT_FALSE(log.stopAndFlush(200, 0));
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.stopAndFlush(201, 0));
+
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_TRUE(log.accepting());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_task_create_state.standardCalls);
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_task_create_state.standardCalls);
+
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(300)));
+    TEST_ASSERT_FALSE(log.stopAndFlush(400, 0));
+    log.runWriterForTest();
+    TEST_ASSERT_TRUE(log.stopAndFlush(401, 0));
+
+    std::ifstream input(root / "events" / "events_32.csv", std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("100,V1,END"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, contents.find("300,V1,END"));
+    log.resetForTest();
+}
+
+void test_resume_cancels_live_stop_without_duplicate_task() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(33, storage));
+    TEST_ASSERT_FALSE(log.stopAndFlush(100, 0));
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_TRUE(log.accepting());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_task_create_state.standardCalls);
+    log.resetForTest();
+}
+
+void runRetentionBoundary(int32_t finalDelta, bool expectWrite) {
+    const ProductEvent event = multiRowEvent(500);
+    const size_t headerBytes = sizeof(kProductEventSchemaHeader) - 1;
+    const size_t eventBytes = serializedBytes(event);
+    const int64_t priorBytes = static_cast<int64_t>(ProductEventLog::kMaxTotalBytes - headerBytes - eventBytes) +
+                               static_cast<int64_t>(finalDelta);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, priorBytes);
+    writeSizedPriorFile(static_cast<size_t>(priorBytes));
+
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(40, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(event));
+    TEST_ASSERT_EQUAL(expectWrite, log.drainOneForTest());
+
+    const std::filesystem::path active = root / "events" / "events_40.csv";
+    if (expectWrite) {
+        TEST_ASSERT_TRUE(log.accepting());
+        TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::eventRetentionExhaustions());
+    } else {
+        TEST_ASSERT_FALSE(log.accepting());
+        TEST_ASSERT_FALSE(log.enabled());
+        TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventRetentionExhaustions());
+        TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventDrops());
+    }
+    log.resetForTest();
+    TEST_ASSERT_EQUAL_UINT64(expectWrite ? headerBytes + eventBytes : headerBytes,
+                             std::filesystem::file_size(active));
+}
+
+void test_runtime_retention_multirow_immediately_below_limit() { runRetentionBoundary(-1, true); }
+
+void test_runtime_retention_multirow_exactly_at_limit() { runRetentionBoundary(0, true); }
+
+void test_runtime_retention_multirow_above_limit_preserves_rows() { runRetentionBoundary(1, false); }
 
 void test_boot_retention_reserves_one_slot_for_the_lazy_active_file() {
     const std::filesystem::path events = root / "events";
@@ -133,5 +289,12 @@ int main() {
     RUN_TEST(test_event_file_is_lazy_and_uses_exact_combined_schema);
     RUN_TEST(test_first_write_failure_disables_writer_without_retry);
     RUN_TEST(test_boot_retention_reserves_one_slot_for_the_lazy_active_file);
+    RUN_TEST(test_stop_drains_queue_and_confirms_exit_before_storage_handoff);
+    RUN_TEST(test_shutdown_close_failure_is_reported_and_storage_handoff_stays_blocked);
+    RUN_TEST(test_aborted_shutdown_restarts_once_and_accepts_new_event);
+    RUN_TEST(test_resume_cancels_live_stop_without_duplicate_task);
+    RUN_TEST(test_runtime_retention_multirow_immediately_below_limit);
+    RUN_TEST(test_runtime_retention_multirow_exactly_at_limit);
+    RUN_TEST(test_runtime_retention_multirow_above_limit_preserves_rows);
     return UNITY_END();
 }

@@ -37,6 +37,15 @@ struct PowerTouchProbe {
     int touchCalls = 0;
 };
 
+bool failShutdownPreparation(void* ctx) {
+    ++*static_cast<int*>(ctx);
+    return false;
+}
+
+void recordShutdownAbort(void* ctx) {
+    ++*static_cast<int*>(ctx);
+}
+
 void acquirePresentation(void* ctx, uint32_t) {
     auto* probe = static_cast<PowerTouchProbe*>(ctx);
     ++probe->powerCalls;
@@ -284,6 +293,21 @@ void test_auto_power_abort_retries_only_after_a_full_interval() {
     TEST_ASSERT_EQUAL_UINT32(121000, power.autoPowerOffTimerStartForTest());
 }
 
+void test_failed_persistence_preparation_blocks_poweroff_and_runs_abort_recovery() {
+    int preparationCalls = 0;
+    int abortCalls = 0;
+    power.setShutdownPreparationCallback(failShutdownPreparation, &preparationCalls);
+    power.setShutdownAbortCallback(recordShutdownAbort, &abortCalls);
+
+    power.performShutdown();
+
+    TEST_ASSERT_EQUAL(1, preparationCalls);
+    TEST_ASSERT_EQUAL(1, abortCalls);
+    TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
+    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
+    TEST_ASSERT_TRUE(power.consumeDisplayRestoreRequest());
+}
+
 void test_power_touch_phase_suppresses_touch_after_warning_acquires_owner() {
     PowerTouchProbe probe;
     LoopPowerTouchModule module;
@@ -369,6 +393,7 @@ int main() {
     RUN_TEST(test_critical_shutdown_does_not_accept_pre_warning_read);
     RUN_TEST(test_critical_shutdown_does_not_treat_trigger_sample_as_confirmation);
     RUN_TEST(test_auto_power_abort_retries_only_after_a_full_interval);
+    RUN_TEST(test_failed_persistence_preparation_blocks_poweroff_and_runs_abort_recovery);
     RUN_TEST(test_power_touch_phase_suppresses_touch_after_warning_acquires_owner);
     RUN_TEST(test_connection_early_keeps_runtime_live_but_suppresses_presentations);
     RUN_TEST(test_display_phase_consumes_event_but_suppresses_pipeline_and_blink);

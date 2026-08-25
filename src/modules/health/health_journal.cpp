@@ -118,12 +118,16 @@ void HealthJournal::end(uint32_t nowMs) {
     if (!enabled_ || endWritten_) {
         return;
     }
-    char line[192];
+    char line[256];
     const int length =
-        std::snprintf(line, sizeof(line), "END,boot=%lu,ms=%lu,result=CLEAN,input_drop=%lu,event_drop=%lu\n",
+        std::snprintf(line, sizeof(line),
+                      "END,boot=%lu,ms=%lu,result=CLEAN,input_drop=%lu,event_drop=%lu,"
+                      "event_shutdown_fail=%lu,event_retention_full=%lu\n",
                       static_cast<unsigned long>(bootId_), static_cast<unsigned long>(nowMs),
                       static_cast<unsigned long>(HealthCounters::inputDrops()),
-                      static_cast<unsigned long>(HealthCounters::eventDrops()));
+                      static_cast<unsigned long>(HealthCounters::eventDrops()),
+                      static_cast<unsigned long>(HealthCounters::eventShutdownFailures()),
+                      static_cast<unsigned long>(HealthCounters::eventRetentionExhaustions()));
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
         !appendLine(line, static_cast<size_t>(length))) {
         disable();

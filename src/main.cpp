@@ -726,7 +726,11 @@ void loop() {
             exitRequestFired = true;
             Serial.println("[MaintBoot] BOOT long-press exit -> rebooting normal runtime");
             settingsManager.save();
-            completeLoggingForControlledRestart();
+            if (!completeLoggingForControlledRestart()) {
+                Serial.println("[MaintBoot] ERROR: exit cancelled because persistence did not stop cleanly");
+                exitRequestFired = false;
+                return;
+            }
             markCleanShutdown();
             ESP.restart();
         }
@@ -758,7 +762,10 @@ void loop() {
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceStartMs),
                              static_cast<unsigned long>(maintenanceSession.elapsedSinceActivityMs));
             settingsManager.save();
-            completeLoggingForControlledRestart();
+            if (!completeLoggingForControlledRestart()) {
+                Serial.println("[MaintBoot] ERROR: timeout restart cancelled because persistence did not stop cleanly");
+                return;
+            }
             markCleanShutdown();
             ESP.restart();
         }

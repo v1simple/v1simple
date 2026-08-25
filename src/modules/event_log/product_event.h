@@ -138,6 +138,7 @@ class ProductEventBuilder {
             }
             v1Snapshot_ = ProductV1Snapshot{};
             v1Active_ = false;
+            v1LinkLost_ = false;
             return;
         }
 
@@ -145,6 +146,7 @@ class ProductEventBuilder {
             if (!nextEncounter(v1Id_, v1Sequence_, v1Disabled_)) {
                 return;
             }
+            v1LinkLost_ = false;
             ProductEvent event = makeEvent(ProductEventSource::V1, ProductEventKind::BEGIN, nowMs, v1Id_, v1Sequence_);
             event.data.v1 = next;
             emit(event);
@@ -176,7 +178,7 @@ class ProductEventBuilder {
                 emit(event);
                 v1LinkLost_ = true;
             }
-        } else if (connected && v1LinkLost_) {
+        } else if (connected && v1Active_ && v1LinkLost_) {
             ProductEvent event = makeEvent(ProductEventSource::V1, ProductEventKind::LINK_RESTORED, nowMs, v1Id_,
                                            nextSequence(v1Sequence_, v1Disabled_));
             if (!v1Disabled_) {
@@ -195,7 +197,7 @@ class ProductEventBuilder {
             if (!observation.connected && alpConnected_ && alpActive_ && !alpLinkLost_) {
                 emitAlp(ProductEventKind::LINK_LOST, observation, nowMs);
                 alpLinkLost_ = true;
-            } else if (observation.connected && !alpConnected_ && alpLinkLost_) {
+            } else if (observation.connected && !alpConnected_ && alpActive_ && alpLinkLost_) {
                 emitAlp(ProductEventKind::LINK_RESTORED, observation, nowMs);
                 alpLinkLost_ = false;
             }
@@ -208,6 +210,7 @@ class ProductEventBuilder {
                 emitAlp(ProductEventKind::END, observation, nowMs);
             }
             alpActive_ = false;
+            alpLinkLost_ = false;
             alpLastState_ = ProductAlpState::UNKNOWN;
             alpLastDirection_ = 0;
             alpLastGun_ = 0;
@@ -220,6 +223,7 @@ class ProductEventBuilder {
             if (!nextEncounter(alpId_, alpSequence_, alpDisabled_)) {
                 return;
             }
+            alpLinkLost_ = false;
             alpLastState_ = observation.state;
             alpLastDirection_ = observation.direction;
             alpLastGun_ = 0;
@@ -268,6 +272,7 @@ class ProductEventBuilder {
             }
         }
         v1Active_ = false;
+        v1LinkLost_ = false;
 
         if (alpActive_ && !alpDisabled_) {
             AlpProductObservation observation{};
@@ -276,6 +281,7 @@ class ProductEventBuilder {
             emitAlp(ProductEventKind::END, observation, nowMs);
         }
         alpActive_ = false;
+        alpLinkLost_ = false;
     }
 
   private:

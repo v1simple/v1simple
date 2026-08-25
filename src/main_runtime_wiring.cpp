@@ -86,7 +86,10 @@ static void requestMaintenanceBootRestart() {
     }
     Serial.println("[MaintBoot] rebooting into maintenance mode");
     settingsManager.save();
-    completeLoggingForControlledRestart();
+    if (!completeLoggingForControlledRestart()) {
+        Serial.println("[MaintBoot] ERROR: restart cancelled because persistence did not stop cleanly");
+        return;
+    }
     markCleanShutdown();
     delay(50);
     ESP.restart();

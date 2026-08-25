@@ -10,7 +10,7 @@ void handleApiRebootNormal(WebServer& server, const RebootRuntime& runtime) {
         server.send(409, "application/json", "{\"success\":false,\"error\":\"maintenance_mode_required\"}");
         return;
     }
-    if (!runtime.persistSettings || !runtime.markCleanShutdown || !runtime.restart) {
+    if (!runtime.persistSettings || !runtime.prepareCleanRestart || !runtime.restart) {
         server.send(503, "application/json", "{\"success\":false,\"error\":\"reboot_runtime_unavailable\"}");
         return;
     }
@@ -19,7 +19,10 @@ void handleApiRebootNormal(WebServer& server, const RebootRuntime& runtime) {
     // settings first, then the clean-shutdown marker, then restart. Send the
     // response before the short drain window so the UI can transition cleanly.
     runtime.persistSettings(runtime.ctx);
-    runtime.markCleanShutdown(runtime.ctx);
+    if (!runtime.prepareCleanRestart(runtime.ctx)) {
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"persistence_shutdown_failed\"}");
+        return;
+    }
     server.send(202, "application/json", "{\"success\":true,\"rebooting\":true,\"target\":\"normal\"}");
     if (runtime.delayBeforeRestart) {
         runtime.delayBeforeRestart(100, runtime.ctx);

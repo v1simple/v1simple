@@ -43,7 +43,8 @@ void test_boot_ready_end_schema_and_drop_aggregates() {
     TEST_ASSERT_EQUAL_STRING("# health_schema=1\n"
                              "BOOT,boot=42,image=image-abc,reset=POWERON,previous=CLEAN,panic=NONE\n"
                              "READY,boot=42,ms=1234\n"
-                             "END,boot=42,ms=5678,result=CLEAN,input_drop=2,event_drop=3\n",
+                             "END,boot=42,ms=5678,result=CLEAN,input_drop=2,event_drop=3,"
+                             "event_shutdown_fail=0,event_retention_full=0\n",
                              readFile("health.log").c_str());
 }
 

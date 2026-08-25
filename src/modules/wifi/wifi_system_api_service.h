@@ -7,7 +7,7 @@ namespace WifiSystemApiService {
 struct RebootRuntime {
     bool maintenanceBootActive = false;
     void (*persistSettings)(void* ctx) = nullptr;
-    void (*markCleanShutdown)(void* ctx) = nullptr;
+    bool (*prepareCleanRestart)(void* ctx) = nullptr;
     void (*delayBeforeRestart)(uint32_t delayMs, void* ctx) = nullptr;
     void (*restart)(void* ctx) = nullptr;
     void (*markUiActivity)(void* ctx) = nullptr;

@@ -122,6 +122,7 @@ run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pi
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
+run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
 
 section "Privacy"
 # The guards run first, then the tests that prove the guards still work. A

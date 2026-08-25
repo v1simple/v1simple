@@ -8,7 +8,7 @@
 
 class PowerModule {
   public:
-    using ShutdownPreparationCallback = void (*)(void*);
+    using ShutdownPreparationCallback = bool (*)(void*);
     using ShutdownAbortCallback = void (*)(void*);
 
     void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings);

@@ -328,9 +328,6 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
     packet[11] = calcV1Checksum(packet, 11);
     packet[12] = ESP_PACKET_END;
 
-    Serial.printf("Writing V1 user bytes for v%lu: %02X %02X %02X %02X %02X %02X\n",
-                  static_cast<unsigned long>(firmwareVersion), preparedBytes[0], preparedBytes[1], preparedBytes[2],
-                  preparedBytes[3], preparedBytes[4], preparedBytes[5]);
     return sendCommand(packet, sizeof(packet));
 }
 

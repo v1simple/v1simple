@@ -84,6 +84,7 @@ void initializeEarlyBootDiagnostics() {
     waveshare_349::hardware().prepareEarlyCandidates();
 
     Serial.begin(115200);
+    Serial.setTxTimeoutMs(0);
     delay(30);
     logPanicBreadcrumbs();
     nvsHealthCheck();

@@ -304,6 +304,235 @@ bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& setti
     return true;
 }
 
+namespace {
+
+void restoreBackupBool(const JsonDocument& doc, const char* key, bool& target) {
+    bool parsed = false;
+    if (parseBoolVariant(doc[key], parsed)) target = parsed;
+}
+
+struct BackupColorField {
+    const char* key;
+    uint16_t V1Settings::*target;
+    uint16_t fallback;
+    bool critical;
+};
+
+void applyBackupSignalBarColors(const JsonDocument& doc, V1Settings& settings) {
+    const int backupVersion = backupDocumentVersion(doc);
+    bool haveDirect = false;
+    for (int i = 0; i < 6; ++i) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "colorBar%d", i + 1);
+        haveDirect = haveDirect || doc[key].is<int>();
+    }
+    bool haveSegments = false;
+    for (int i = 0; i < 8; ++i) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "colorBarS%d", i + 1);
+        haveSegments = haveSegments || doc[key].is<int>();
+    }
+    static constexpr uint16_t defaults[6] = {0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800};
+    if ((backupVersion >= 19 || !haveSegments) && haveDirect) {
+        for (int i = 0; i < 6; ++i) {
+            char key[16];
+            std::snprintf(key, sizeof(key), "colorBar%d", i + 1);
+            if (doc[key].is<int>()) settings.colorBars[i] = sanitizeRgb565Color(doc[key], defaults[i]);
+        }
+    } else if (haveSegments) {
+        uint16_t segments[8];
+        DisplayVisualContract::expandSixBarColorsToEight(settings.colorBars, segments);
+        for (int i = 0; i < 8; ++i) {
+            char key[16];
+            std::snprintf(key, sizeof(key), "colorBarS%d", i + 1);
+            if (doc[key].is<int>()) segments[i] = sanitizeRgb565Color(doc[key], segments[i]);
+        }
+        DisplayVisualContract::collapseEightBarColorsToSix(segments, settings.colorBars);
+    }
+}
+
+} // namespace
+
+void applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, StorageManager& storage,
+                              BackupRestoreScope scope, bool clearSdSecret) {
+    if (doc["apPassword"].is<const char*>()) {
+        const String decoded = decodeObfuscatedFromStorage(doc["apPassword"].as<String>());
+        if (decoded.length() >= MIN_AP_PASSWORD_LEN) settings.apPassword = sanitizeApPasswordValue(decoded);
+    }
+    if (doc["apSSID"].is<const char*>()) settings.apSSID = sanitizeApSsidValue(doc["apSSID"].as<String>());
+    bool clientEnabled = false;
+    const bool enabledExplicit = parseBoolVariant(doc["wifiClientEnabled"], clientEnabled);
+    if (enabledExplicit) settings.wifiClientEnabled = clientEnabled;
+    const bool restoredSlots = restoreWifiStaSlotsFromBackupDoc(doc, settings, storage, clearSdSecret);
+    const String legacySsid = legacyWifiClientSsidFromBackupDoc(doc);
+    if (!restoredSlots && legacySsid.length() > 0) {
+        clearWifiStaSlotPasswordsForRestore(storage, clearSdSecret);
+        for (WifiStaSlot& slot : settings.wifiStaSlots) slot = WifiStaSlot();
+        settings.wifiStaSlots[0].ssid = legacySsid;
+        settings.wifiStaSlots[0].label = "Saved";
+        settings.wifiStaSlots[0].priority = 0;
+    }
+    if (!settings.wifiClientEnabled && settings.hasConfiguredWifiStaSlot() && !enabledExplicit)
+        settings.wifiClientEnabled = true;
+    settings.refreshWifiClientAliasFromSlots();
+    restoreWifiClientPasswordObfFromBackupDoc(doc, settings.wifiClientSSID);
+    restoreLegacyStationPasswordFromBackupDoc(doc, settings.wifiClientSSID);
+
+    if (scope == BackupRestoreScope::Full) {
+        restoreBackupBool(doc, "proxyBLE", settings.proxyBLE);
+        if (doc["proxyName"].is<const char*>()) settings.proxyName = sanitizeProxyNameValue(doc["proxyName"].as<String>());
+        if (doc["lastV1Address"].is<const char*>()) settings.lastV1Address = sanitizeLastV1AddressValue(doc["lastV1Address"].as<String>());
+        if (doc["autoPowerOffMinutes"].is<int>()) settings.autoPowerOffMinutes = clampU8(doc["autoPowerOffMinutes"], 0, 60);
+        if (doc["apTimeoutMinutes"].is<int>()) settings.apTimeoutMinutes = clampApTimeoutValue(doc["apTimeoutMinutes"]);
+    }
+}
+
+void applyBackupDisplayFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
+    if (doc["brightness"].is<int>()) settings.brightness = clampU8(doc["brightness"], 1, 255);
+    static constexpr BackupColorField colors[] = {
+        {"colorBogey", &V1Settings::colorBogey, 0xF800, true},
+        {"colorFrequency", &V1Settings::colorFrequency, 0xF800, true},
+        {"colorArrowFront", &V1Settings::colorArrowFront, 0xF800, true},
+        {"colorArrowSide", &V1Settings::colorArrowSide, 0xF800, true},
+        {"colorArrowRear", &V1Settings::colorArrowRear, 0xF800, true},
+        {"colorBandL", &V1Settings::colorBandL, 0x001F, true},
+        {"colorBandKa", &V1Settings::colorBandKa, 0xF800, true},
+        {"colorBandK", &V1Settings::colorBandK, 0x001F, true},
+        {"colorBandX", &V1Settings::colorBandX, 0x07E0, true},
+        {"colorBandPhoto", &V1Settings::colorBandPhoto, 0x780F, true},
+        {"colorWiFiConnected", &V1Settings::colorWiFiConnected, 0x07E0, false},
+        {"colorBleConnected", &V1Settings::colorBleConnected, 0x07E0, false},
+        {"colorBleDisconnected", &V1Settings::colorBleDisconnected, 0x001F, false},
+        {"colorMuted", &V1Settings::colorMuted, 0x3186, false},
+        {"colorPersisted", &V1Settings::colorPersisted, 0x18C3, false},
+        {"colorVolumeMain", &V1Settings::colorVolumeMain, 0xF800, false},
+        {"colorVolumeMute", &V1Settings::colorVolumeMute, 0x7BEF, false},
+        {"colorRssiV1", &V1Settings::colorRssiV1, 0x07E0, false},
+        {"colorRssiProxy", &V1Settings::colorRssiProxy, 0x001F, false},
+        {"colorObd", &V1Settings::colorObd, 0x001F, true},
+        {"colorAlpConnected", &V1Settings::colorAlpConnected, 0x07E0, true},
+        {"colorAlpDli", &V1Settings::colorAlpDli, 0xFD20, true},
+        {"colorAlpLidActive", &V1Settings::colorAlpLidActive, 0x001F, true},
+        {"colorAlpAlert", &V1Settings::colorAlpAlert, 0xF800, true},
+    };
+    for (const BackupColorField& field : colors) {
+        if ((field.critical || scope == BackupRestoreScope::Full) && doc[field.key].is<int>())
+            settings.*(field.target) = sanitizeRgb565Color(doc[field.key], field.fallback);
+    }
+    if (scope == BackupRestoreScope::Full && !doc["colorWiFiConnected"].is<int>() && doc["colorWiFiIcon"].is<int>())
+        settings.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07E0);
+    if (scope == BackupRestoreScope::Full) {
+        applyBackupSignalBarColors(doc, settings);
+        restoreBackupBool(doc, "freqUseBandColor", settings.freqUseBandColor);
+    }
+    static constexpr const char* uiFlags[] = {"hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon",
+                                               "showBatteryPercent", "hideBleIcon", "hideVolumeIndicator",
+                                               "hideRssiIndicator"};
+    bool* uiTargets[] = {&settings.hideWifiIcon, &settings.hideProfileIndicator, &settings.hideBatteryIcon,
+                         &settings.showBatteryPercent, &settings.hideBleIcon, &settings.hideVolumeIndicator,
+                         &settings.hideRssiIndicator};
+    for (size_t i = 0; i < sizeof(uiFlags) / sizeof(uiFlags[0]); ++i)
+        restoreBackupBool(doc, uiFlags[i], *uiTargets[i]);
+}
+
+void applyBackupAudioFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
+    if (scope == BackupRestoreScope::Full) {
+        if (doc["voiceAlertMode"].is<int>()) settings.voiceAlertMode = clampVoiceAlertModeValue(doc["voiceAlertMode"]);
+        restoreBackupBool(doc, "voiceDirectionEnabled", settings.voiceDirectionEnabled);
+        restoreBackupBool(doc, "announceBogeyCount", settings.announceBogeyCount);
+        restoreBackupBool(doc, "muteVoiceIfVolZero", settings.muteVoiceIfVolZero);
+        if (doc["voiceVolume"].is<int>()) settings.voiceVolume = clampU8(doc["voiceVolume"], 0, 100);
+        restoreBackupBool(doc, "announceSecondaryAlerts", settings.announceSecondaryAlerts);
+        restoreBackupBool(doc, "secondaryLaser", settings.secondaryLaser);
+        restoreBackupBool(doc, "secondaryKa", settings.secondaryKa);
+        restoreBackupBool(doc, "secondaryK", settings.secondaryK);
+        restoreBackupBool(doc, "secondaryX", settings.secondaryX);
+        restoreBackupBool(doc, "alertVolumeFadeEnabled", settings.alertVolumeFadeEnabled);
+        if (doc["alertVolumeFadeDelaySec"].is<int>()) settings.alertVolumeFadeDelaySec = clampU8(doc["alertVolumeFadeDelaySec"], 1, 10);
+        if (doc["alertVolumeFadeVolume"].is<int>()) settings.alertVolumeFadeVolume = clampU8(doc["alertVolumeFadeVolume"], 1, 9);
+        restoreBackupBool(doc, "speedMuteVoice", settings.speedMuteVoice);
+    }
+    restoreBackupBool(doc, "speedMuteEnabled", settings.speedMuteEnabled);
+    if (doc["speedMuteThresholdMph"].is<int>()) settings.speedMuteThresholdMph = clampU8(doc["speedMuteThresholdMph"], 5, 60);
+    if (doc["speedMuteHysteresisMph"].is<int>()) settings.speedMuteHysteresisMph = clampU8(doc["speedMuteHysteresisMph"], 1, 10);
+    if (doc["speedMuteVolume"].is<int>()) {
+        const int raw = doc["speedMuteVolume"].as<int>();
+        settings.speedMuteVolume = (raw >= 0 && raw <= 9) ? static_cast<uint8_t>(raw) : 0;
+    }
+    restoreBackupBool(doc, "stealthEnabled", settings.stealthEnabled);
+}
+
+void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
+    restoreBackupBool(doc, "autoPushEnabled", settings.autoPushEnabled);
+    if (doc["activeSlot"].is<int>()) settings.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
+    AutoPushSlot* slots[] = {&settings.slot0_default, &settings.slot1_highway, &settings.slot2_comfort};
+    for (int i = 0; i < 3; ++i) {
+        char profileKey[24], modeKey[16];
+        std::snprintf(profileKey, sizeof(profileKey), "slot%dProfileName", i);
+        std::snprintf(modeKey, sizeof(modeKey), "slot%dMode", i);
+        if (doc[profileKey].is<const char*>()) slots[i]->profileName = sanitizeProfileNameValue(doc[profileKey].as<String>());
+        if (doc[modeKey].is<int>()) slots[i]->mode = normalizeV1ModeValue(doc[modeKey]);
+    }
+    if (scope != BackupRestoreScope::Full) return;
+    String* names[] = {&settings.slot0Name, &settings.slot1Name, &settings.slot2Name};
+    uint16_t* colors[] = {&settings.slot0Color, &settings.slot1Color, &settings.slot2Color};
+    uint8_t* volumes[] = {&settings.slot0Volume, &settings.slot1Volume, &settings.slot2Volume};
+    uint8_t* muteVolumes[] = {&settings.slot0MuteVolume, &settings.slot1MuteVolume, &settings.slot2MuteVolume};
+    bool* darkModes[] = {&settings.slot0DarkMode, &settings.slot1DarkMode, &settings.slot2DarkMode};
+    bool* muteToZero[] = {&settings.slot0MuteToZero, &settings.slot1MuteToZero, &settings.slot2MuteToZero};
+    uint8_t* persists[] = {&settings.slot0AlertPersist, &settings.slot1AlertPersist, &settings.slot2AlertPersist};
+    bool* priorityArrows[] = {&settings.slot0PriorityArrow, &settings.slot1PriorityArrow, &settings.slot2PriorityArrow};
+    static constexpr uint16_t colorDefaults[] = {0x400A, 0x07E0, 0x8410};
+    for (int i = 0; i < 3; ++i) {
+        char key[24];
+        std::snprintf(key, sizeof(key), "slot%dName", i); if (doc[key].is<const char*>()) *names[i] = sanitizeSlotNameValue(doc[key].as<String>());
+        std::snprintf(key, sizeof(key), "slot%dColor", i); if (doc[key].is<int>()) *colors[i] = sanitizeRgb565Color(doc[key], colorDefaults[i]);
+        std::snprintf(key, sizeof(key), "slot%dVolume", i); if (doc[key].is<int>()) *volumes[i] = clampSlotVolumeValue(doc[key]);
+        std::snprintf(key, sizeof(key), "slot%dMuteVolume", i); if (doc[key].is<int>()) *muteVolumes[i] = clampSlotVolumeValue(doc[key]);
+        std::snprintf(key, sizeof(key), "slot%dDarkMode", i); restoreBackupBool(doc, key, *darkModes[i]);
+        std::snprintf(key, sizeof(key), "slot%dMuteToZero", i); restoreBackupBool(doc, key, *muteToZero[i]);
+        std::snprintf(key, sizeof(key), "slot%dAlertPersist", i); if (doc[key].is<int>()) *persists[i] = clampU8(doc[key], 0, 5);
+        std::snprintf(key, sizeof(key), "slot%dPriorityArrow", i); restoreBackupBool(doc, key, *priorityArrows[i]);
+        sanitizeSlotVolumePair(*volumes[i], *muteVolumes[i]);
+    }
+}
+
+void applyBackupObdFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
+    restoreBackupBool(doc, "obdEnabled", settings.obdEnabled);
+    if (doc["obdSavedName"].is<const char*>()) settings.obdSavedName = sanitizeObdSavedNameValue(doc["obdSavedName"].as<String>());
+    if (scope != BackupRestoreScope::Full) return;
+    if (doc["obdSavedAddress"].is<const char*>()) {
+        const String address = doc["obdSavedAddress"].as<String>();
+        settings.obdSavedAddress = isValidBleAddress(address) ? address : "";
+        if (settings.obdSavedAddress.length() == 0 && address.length() > 0)
+            Serial.println("[Settings] WARN: Invalid OBD saved address in backup — skipping");
+    }
+    if (doc["obdSavedAddrType"].is<int>()) settings.obdSavedAddrType = clampU8(doc["obdSavedAddrType"], 0, 1);
+    if (doc["obdMinRssi"].is<int>()) settings.obdMinRssi = static_cast<int8_t>(std::max(-90, std::min(doc["obdMinRssi"].as<int>(), -40)));
+    if (doc["obdScanWindowMs"].is<int>()) settings.obdScanWindowMs = clampConnectionCycleObdScanWindowMsValue(doc["obdScanWindowMs"]);
+    if (doc["obdRetryIntervalMs"].is<int>()) settings.obdRetryIntervalMs = clampConnectionCycleObdRetryIntervalMsValue(doc["obdRetryIntervalMs"]);
+    if (doc["proxyOpenWindowMs"].is<int>()) settings.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(doc["proxyOpenWindowMs"]);
+    if (doc["v1SettleQuietMs"].is<int>()) settings.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(doc["v1SettleQuietMs"]);
+    if (doc["v1SettleFallbackMs"].is<int>()) settings.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(doc["v1SettleFallbackMs"]);
+    if (doc["cycleTeardownAckTimeoutMs"].is<int>()) settings.cycleTeardownAckTimeoutMs = clampConnectionCycleTeardownAckTimeoutMsValue(doc["cycleTeardownAckTimeoutMs"]);
+}
+
+void applyBackupAlpAndGpsFields(const JsonDocument& doc, V1Settings& settings) {
+    restoreBackupBool(doc, "alpEnabled", settings.alpEnabled);
+    if (doc["alpAlertPersistSec"].is<int>()) settings.alpAlertPersistSec = clampU8(doc["alpAlertPersistSec"], 0, 5);
+    restoreBackupBool(doc, "alpDisableV1LaserOnPush", settings.alpDisableV1LaserOnPush);
+    restoreBackupBool(doc, "gpsEnabled", settings.gpsEnabled);
+    if (doc["gpsBaud"].is<uint32_t>() || doc["gpsBaud"].is<int>())
+        settings.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(doc["gpsBaud"].as<int>()));
+}
+
+void healBackupRestoreConflicts(V1Settings& settings, const char* context) {
+    if (settings.proxyBLE && settings.obdEnabled) {
+        Serial.printf("[Settings] HEAL: %s proxyBLE+obdEnabled — keeping OBD, disabling proxy\n", context);
+        settings.proxyBLE = false;
+    }
+}
+
 // Profile entries processed between watchdog feeds inside the profile restore
 // loop.  Every entry costs a filesystem write, so feeding per batch bounds the
 // gap between feeds without putting a feed on the per-field path.
@@ -319,381 +548,15 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         }
     };
 
-    auto restoreBool = [&](const char* key, bool& target) {
-        bool parsed = false;
-        if (parseBoolVariant(doc[key], parsed)) {
-            target = parsed;
-        }
-    };
-
-    // ============================================================================
-    // WiFi/Network Settings
-    // ============================================================================
-    // AP password: restore from backup if the key is present (clean-flash path).
-    // If the backup is older and lacks the key, leave whatever load() produced —
-    // that preserves the existing NVS password on in-place restores.
-    if (doc["apPassword"].is<const char*>()) {
-        String decoded = decodeObfuscatedFromStorage(doc["apPassword"].as<String>());
-        if (decoded.length() >= MIN_AP_PASSWORD_LEN) {
-            settings_.apPassword = sanitizeApPasswordValue(decoded);
-        }
-        // else: decoded value is too short / corrupt — keep existing
-    }
-    if (doc["apSSID"].is<const char*>())
-        settings_.apSSID = sanitizeApSsidValue(doc["apSSID"].as<String>());
-    bool parsedWifiClientEnabled = false;
-    const bool wifiClientEnabledExplicit = parseBoolVariant(doc["wifiClientEnabled"], parsedWifiClientEnabled);
-    if (wifiClientEnabledExplicit) {
-        settings_.wifiClientEnabled = parsedWifiClientEnabled;
-    }
-    const bool restoredWifiStaSlots =
-        restoreWifiStaSlotsFromBackupDoc(doc, settings_, *storage_, deferBackupRewrite);
-    const String legacyWifiClientSsid = legacyWifiClientSsidFromBackupDoc(doc);
-    if (!restoredWifiStaSlots && legacyWifiClientSsid.length() > 0) {
-        clearWifiStaSlotPasswordsForRestore(*storage_, deferBackupRewrite);
-        for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-            settings_.wifiStaSlots[i] = WifiStaSlot();
-        }
-        settings_.wifiStaSlots[0].ssid = legacyWifiClientSsid;
-        if (settings_.wifiStaSlots[0].ssid.length() > 0) {
-            settings_.wifiStaSlots[0].label = "Saved";
-        }
-        settings_.wifiStaSlots[0].priority = 0;
-        settings_.refreshWifiClientAliasFromSlots();
-    }
-    if (!settings_.wifiClientEnabled && settings_.hasConfiguredWifiStaSlot() && !wifiClientEnabledExplicit) {
-        settings_.wifiClientEnabled = true;
-    }
-    settings_.refreshWifiClientAliasFromSlots();
-    restoreWifiClientPasswordObfFromBackupDoc(doc, settings_.wifiClientSSID);
-    restoreLegacyStationPasswordFromBackupDoc(doc, settings_.wifiClientSSID);
-
-    // Phase 1 done: the WiFi credential block above is the only field-restore
-    // work that touches NVS and the SD secret file.
+    applyBackupNetworkFields(doc, settings_, *storage_, BackupRestoreScope::Full, deferBackupRewrite);
     feedWatchdog();
 
-    restoreBool("proxyBLE", settings_.proxyBLE);
-    if (doc["proxyName"].is<const char*>()) {
-        settings_.proxyName = sanitizeProxyNameValue(doc["proxyName"].as<String>());
-    }
-    if (doc["lastV1Address"].is<const char*>()) {
-        settings_.lastV1Address = sanitizeLastV1AddressValue(doc["lastV1Address"].as<String>());
-    }
-    if (doc["autoPowerOffMinutes"].is<int>()) {
-        settings_.autoPowerOffMinutes = clampU8(doc["autoPowerOffMinutes"].as<int>(), 0, 60);
-    }
-    if (doc["apTimeoutMinutes"].is<int>()) {
-        settings_.apTimeoutMinutes = clampApTimeoutValue(doc["apTimeoutMinutes"].as<int>());
-    }
-
-    // ============================================================================
-    // Display Settings
-    // ============================================================================
-    if (doc["brightness"].is<int>())
-        settings_.brightness = clampU8(doc["brightness"].as<int>(), 1, 255);
-
-    // ============================================================================
-    // All Colors (sanitized identically to the NVS-load path in settings.cpp)
-    // ============================================================================
-    if (doc["colorBogey"].is<int>())
-        settings_.colorBogey = sanitizeRgb565Color(doc["colorBogey"], 0xF800);
-    if (doc["colorFrequency"].is<int>())
-        settings_.colorFrequency = sanitizeRgb565Color(doc["colorFrequency"], 0xF800);
-    if (doc["colorArrowFront"].is<int>())
-        settings_.colorArrowFront = sanitizeRgb565Color(doc["colorArrowFront"], 0xF800);
-    if (doc["colorArrowSide"].is<int>())
-        settings_.colorArrowSide = sanitizeRgb565Color(doc["colorArrowSide"], 0xF800);
-    if (doc["colorArrowRear"].is<int>())
-        settings_.colorArrowRear = sanitizeRgb565Color(doc["colorArrowRear"], 0xF800);
-    if (doc["colorBandL"].is<int>())
-        settings_.colorBandL = sanitizeRgb565Color(doc["colorBandL"], 0x001F);
-    if (doc["colorBandKa"].is<int>())
-        settings_.colorBandKa = sanitizeRgb565Color(doc["colorBandKa"], 0xF800);
-    if (doc["colorBandK"].is<int>())
-        settings_.colorBandK = sanitizeRgb565Color(doc["colorBandK"], 0x001F);
-    if (doc["colorBandX"].is<int>())
-        settings_.colorBandX = sanitizeRgb565Color(doc["colorBandX"], 0x07E0);
-    if (doc["colorBandPhoto"].is<int>())
-        settings_.colorBandPhoto = sanitizeRgb565Color(doc["colorBandPhoto"], 0x780F);
-    if (doc["colorWiFiConnected"].is<int>()) {
-        settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiConnected"], 0x07E0);
-    } else if (doc["colorWiFiIcon"].is<int>()) {
-        // Compatibility adapter for backups written before the unused idle
-        // WiFi colour was removed. The active WiFi colour receives it only
-        // when no authoritative colorWiFiConnected value is present.
-        settings_.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07E0);
-    }
-    if (doc["colorBleConnected"].is<int>())
-        settings_.colorBleConnected = sanitizeRgb565Color(doc["colorBleConnected"], 0x07E0);
-    if (doc["colorBleDisconnected"].is<int>())
-        settings_.colorBleDisconnected = sanitizeRgb565Color(doc["colorBleDisconnected"], 0x001F);
-    // v19 six-segment colours are authoritative. v18's eight-segment values
-    // collapse onto the restored physical layout; older six-value backups load
-    // directly. Partial documents retain the current values for missing keys.
-    {
-        const int backupVersion = backupDocumentVersion(doc);
-        bool haveDirect = false;
-        for (int barIndex = 0; barIndex < 6; ++barIndex) {
-            char key[16];
-            std::snprintf(key, sizeof(key), "colorBar%d", barIndex + 1);
-            if (doc[key].is<int>()) {
-                haveDirect = true;
-                break;
-            }
-        }
-        bool haveSegments = false;
-        for (int barIndex = 0; barIndex < 8; ++barIndex) {
-            char key[16];
-            std::snprintf(key, sizeof(key), "colorBarS%d", barIndex + 1);
-            if (doc[key].is<int>()) {
-                haveSegments = true;
-                break;
-            }
-        }
-        if (backupVersion >= 19 && haveDirect) {
-            static constexpr uint16_t kDirectDefaults[6] = {
-                0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800,
-            };
-            for (int barIndex = 0; barIndex < 6; ++barIndex) {
-                char key[16];
-                std::snprintf(key, sizeof(key), "colorBar%d", barIndex + 1);
-                if (doc[key].is<int>()) {
-                    settings_.colorBars[barIndex] = sanitizeRgb565Color(doc[key], kDirectDefaults[barIndex]);
-                }
-            }
-        } else if (haveSegments) {
-            uint16_t segments[8];
-            DisplayVisualContract::expandSixBarColorsToEight(settings_.colorBars, segments);
-            for (int barIndex = 0; barIndex < 8; ++barIndex) {
-                char key[16];
-                std::snprintf(key, sizeof(key), "colorBarS%d", barIndex + 1);
-                if (doc[key].is<int>()) {
-                    segments[barIndex] = sanitizeRgb565Color(doc[key], segments[barIndex]);
-                }
-            }
-            DisplayVisualContract::collapseEightBarColorsToSix(segments, settings_.colorBars);
-        } else if (haveDirect) {
-            static constexpr uint16_t kDirectDefaults[6] = {
-                0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800,
-            };
-            for (int barIndex = 0; barIndex < 6; ++barIndex) {
-                char key[16];
-                std::snprintf(key, sizeof(key), "colorBar%d", barIndex + 1);
-                if (doc[key].is<int>()) {
-                    settings_.colorBars[barIndex] = sanitizeRgb565Color(doc[key], kDirectDefaults[barIndex]);
-                }
-            }
-        }
-    }
-    if (doc["colorMuted"].is<int>())
-        settings_.colorMuted = sanitizeRgb565Color(doc["colorMuted"], 0x3186);
-    if (doc["colorPersisted"].is<int>())
-        settings_.colorPersisted = sanitizeRgb565Color(doc["colorPersisted"], 0x18C3);
-    if (doc["colorVolumeMain"].is<int>())
-        settings_.colorVolumeMain = sanitizeRgb565Color(doc["colorVolumeMain"], 0xF800);
-    if (doc["colorVolumeMute"].is<int>())
-        settings_.colorVolumeMute = sanitizeRgb565Color(doc["colorVolumeMute"], 0x7BEF);
-    if (doc["colorRssiV1"].is<int>())
-        settings_.colorRssiV1 = sanitizeRgb565Color(doc["colorRssiV1"], 0x07E0);
-    if (doc["colorRssiProxy"].is<int>())
-        settings_.colorRssiProxy = sanitizeRgb565Color(doc["colorRssiProxy"], 0x001F);
-    if (doc["colorObd"].is<int>())
-        settings_.colorObd = sanitizeRgb565Color(doc["colorObd"], 0x001F);
-    if (doc["colorAlpConnected"].is<int>())
-        settings_.colorAlpConnected = sanitizeRgb565Color(doc["colorAlpConnected"], 0x07E0);
-    if (doc["colorAlpDli"].is<int>())
-        settings_.colorAlpDli = sanitizeRgb565Color(doc["colorAlpDli"], 0xFD20);
-    if (doc["colorAlpLidActive"].is<int>())
-        settings_.colorAlpLidActive = sanitizeRgb565Color(doc["colorAlpLidActive"], 0x001F);
-    if (doc["colorAlpAlert"].is<int>())
-        settings_.colorAlpAlert = sanitizeRgb565Color(doc["colorAlpAlert"], 0xF800);
-    restoreBool("freqUseBandColor", settings_.freqUseBandColor);
-
-    // ============================================================================
-    // UI Toggles
-    // ============================================================================
-    restoreBool("hideWifiIcon", settings_.hideWifiIcon);
-    restoreBool("hideProfileIndicator", settings_.hideProfileIndicator);
-    restoreBool("hideBatteryIcon", settings_.hideBatteryIcon);
-    restoreBool("showBatteryPercent", settings_.showBatteryPercent);
-    restoreBool("hideBleIcon", settings_.hideBleIcon);
-    restoreBool("hideVolumeIndicator", settings_.hideVolumeIndicator);
-    restoreBool("hideRssiIndicator", settings_.hideRssiIndicator);
-
-    // ============================================================================
-    // Voice Settings
-    // ============================================================================
-    if (doc["voiceAlertMode"].is<int>()) {
-        settings_.voiceAlertMode = clampVoiceAlertModeValue(doc["voiceAlertMode"].as<int>());
-    }
-    restoreBool("voiceDirectionEnabled", settings_.voiceDirectionEnabled);
-    restoreBool("announceBogeyCount", settings_.announceBogeyCount);
-    restoreBool("muteVoiceIfVolZero", settings_.muteVoiceIfVolZero);
-    if (doc["voiceVolume"].is<int>()) {
-        settings_.voiceVolume = clampU8(doc["voiceVolume"].as<int>(), 0, 100);
-    }
-    restoreBool("announceSecondaryAlerts", settings_.announceSecondaryAlerts);
-    restoreBool("secondaryLaser", settings_.secondaryLaser);
-    restoreBool("secondaryKa", settings_.secondaryKa);
-    restoreBool("secondaryK", settings_.secondaryK);
-    restoreBool("secondaryX", settings_.secondaryX);
-
-    restoreBool("alertVolumeFadeEnabled", settings_.alertVolumeFadeEnabled);
-    if (doc["alertVolumeFadeDelaySec"].is<int>()) {
-        settings_.alertVolumeFadeDelaySec = clampU8(doc["alertVolumeFadeDelaySec"].as<int>(), 1, 10);
-    }
-    if (doc["alertVolumeFadeVolume"].is<int>()) {
-        settings_.alertVolumeFadeVolume = clampU8(doc["alertVolumeFadeVolume"].as<int>(), 1, 9);
-    }
-    restoreBool("speedMuteEnabled", settings_.speedMuteEnabled);
-    if (doc["speedMuteThresholdMph"].is<int>()) {
-        settings_.speedMuteThresholdMph = clampU8(doc["speedMuteThresholdMph"].as<int>(), 5, 60);
-    }
-    if (doc["speedMuteHysteresisMph"].is<int>()) {
-        settings_.speedMuteHysteresisMph = clampU8(doc["speedMuteHysteresisMph"].as<int>(), 1, 10);
-    }
-    if (doc["speedMuteVolume"].is<int>()) {
-        int raw = doc["speedMuteVolume"].as<int>();
-        if (raw == 255) {
-            settings_.speedMuteVolume = 0;
-        } else {
-            settings_.speedMuteVolume = (raw >= 0 && raw <= 9) ? static_cast<uint8_t>(raw) : 0;
-        }
-    }
-    restoreBool("speedMuteVoice", settings_.speedMuteVoice);
-    restoreBool("stealthEnabled", settings_.stealthEnabled);
-
-    // ============================================================================
-    // Auto-Push Settings
-    // ============================================================================
-    restoreBool("autoPushEnabled", settings_.autoPushEnabled);
-    if (doc["activeSlot"].is<int>())
-        settings_.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
-
-    if (doc["slot0Name"].is<const char*>())
-        settings_.slot0Name = sanitizeSlotNameValue(doc["slot0Name"].as<String>());
-    if (doc["slot0Color"].is<int>())
-        settings_.slot0Color = sanitizeRgb565Color(doc["slot0Color"], 0x400A);
-    if (doc["slot0Volume"].is<int>())
-        settings_.slot0Volume = clampSlotVolumeValue(doc["slot0Volume"].as<int>());
-    if (doc["slot0MuteVolume"].is<int>())
-        settings_.slot0MuteVolume = clampSlotVolumeValue(doc["slot0MuteVolume"].as<int>());
-    restoreBool("slot0DarkMode", settings_.slot0DarkMode);
-    restoreBool("slot0MuteToZero", settings_.slot0MuteToZero);
-    if (doc["slot0AlertPersist"].is<int>())
-        settings_.slot0AlertPersist = clampU8(doc["slot0AlertPersist"].as<int>(), 0, 5);
-    restoreBool("slot0PriorityArrow", settings_.slot0PriorityArrow);
-    if (doc["slot0ProfileName"].is<const char*>())
-        settings_.slot0_default.profileName = sanitizeProfileNameValue(doc["slot0ProfileName"].as<String>());
-    if (doc["slot0Mode"].is<int>())
-        settings_.slot0_default.mode = normalizeV1ModeValue(doc["slot0Mode"].as<int>());
-
-    if (doc["slot1Name"].is<const char*>())
-        settings_.slot1Name = sanitizeSlotNameValue(doc["slot1Name"].as<String>());
-    if (doc["slot1Color"].is<int>())
-        settings_.slot1Color = sanitizeRgb565Color(doc["slot1Color"], 0x07E0);
-    if (doc["slot1Volume"].is<int>())
-        settings_.slot1Volume = clampSlotVolumeValue(doc["slot1Volume"].as<int>());
-    if (doc["slot1MuteVolume"].is<int>())
-        settings_.slot1MuteVolume = clampSlotVolumeValue(doc["slot1MuteVolume"].as<int>());
-    restoreBool("slot1DarkMode", settings_.slot1DarkMode);
-    restoreBool("slot1MuteToZero", settings_.slot1MuteToZero);
-    if (doc["slot1AlertPersist"].is<int>())
-        settings_.slot1AlertPersist = clampU8(doc["slot1AlertPersist"].as<int>(), 0, 5);
-    restoreBool("slot1PriorityArrow", settings_.slot1PriorityArrow);
-    if (doc["slot1ProfileName"].is<const char*>())
-        settings_.slot1_highway.profileName = sanitizeProfileNameValue(doc["slot1ProfileName"].as<String>());
-    if (doc["slot1Mode"].is<int>())
-        settings_.slot1_highway.mode = normalizeV1ModeValue(doc["slot1Mode"].as<int>());
-
-    if (doc["slot2Name"].is<const char*>())
-        settings_.slot2Name = sanitizeSlotNameValue(doc["slot2Name"].as<String>());
-    if (doc["slot2Color"].is<int>())
-        settings_.slot2Color = sanitizeRgb565Color(doc["slot2Color"], 0x8410);
-    if (doc["slot2Volume"].is<int>())
-        settings_.slot2Volume = clampSlotVolumeValue(doc["slot2Volume"].as<int>());
-    if (doc["slot2MuteVolume"].is<int>())
-        settings_.slot2MuteVolume = clampSlotVolumeValue(doc["slot2MuteVolume"].as<int>());
-    sanitizeSlotVolumePair(settings_.slot0Volume, settings_.slot0MuteVolume);
-    sanitizeSlotVolumePair(settings_.slot1Volume, settings_.slot1MuteVolume);
-    sanitizeSlotVolumePair(settings_.slot2Volume, settings_.slot2MuteVolume);
-    restoreBool("slot2DarkMode", settings_.slot2DarkMode);
-    restoreBool("slot2MuteToZero", settings_.slot2MuteToZero);
-    if (doc["slot2AlertPersist"].is<int>())
-        settings_.slot2AlertPersist = clampU8(doc["slot2AlertPersist"].as<int>(), 0, 5);
-    restoreBool("slot2PriorityArrow", settings_.slot2PriorityArrow);
-    if (doc["slot2ProfileName"].is<const char*>())
-        settings_.slot2_comfort.profileName = sanitizeProfileNameValue(doc["slot2ProfileName"].as<String>());
-    if (doc["slot2Mode"].is<int>())
-        settings_.slot2_comfort.mode = normalizeV1ModeValue(doc["slot2Mode"].as<int>());
-
-    // ============================================================================
-    // OBD Settings
-    // ============================================================================
-    restoreBool("obdEnabled", settings_.obdEnabled);
-    if (doc["obdSavedAddress"].is<const char*>()) {
-        String addr = doc["obdSavedAddress"].as<String>();
-        if (isValidBleAddress(addr)) {
-            settings_.obdSavedAddress = addr;
-        } else {
-            Serial.println("[Settings] WARN: Invalid OBD saved address in backup — skipping");
-            settings_.obdSavedAddress = "";
-        }
-    }
-    if (doc["obdSavedName"].is<const char*>())
-        settings_.obdSavedName = sanitizeObdSavedNameValue(doc["obdSavedName"].as<String>());
-    if (doc["obdSavedAddrType"].is<int>()) {
-        settings_.obdSavedAddrType = static_cast<uint8_t>(std::max(0, std::min(doc["obdSavedAddrType"].as<int>(), 1)));
-    }
-    if (doc["obdMinRssi"].is<int>()) {
-        const int rssi = doc["obdMinRssi"].as<int>();
-        // Clamp matches the live /api/obd/config handler (-90..-40) so a
-        // restored value can always be produced by the API as well.
-        settings_.obdMinRssi = static_cast<int8_t>(std::max(-90, std::min(rssi, -40)));
-    }
-    if (doc["obdScanWindowMs"].is<int>()) {
-        settings_.obdScanWindowMs = clampConnectionCycleObdScanWindowMsValue(doc["obdScanWindowMs"].as<int>());
-    }
-    if (doc["obdRetryIntervalMs"].is<int>()) {
-        settings_.obdRetryIntervalMs = clampConnectionCycleObdRetryIntervalMsValue(doc["obdRetryIntervalMs"].as<int>());
-    }
-    if (doc["proxyOpenWindowMs"].is<int>()) {
-        settings_.proxyOpenWindowMs = clampConnectionCycleProxyOpenWindowMsValue(doc["proxyOpenWindowMs"].as<int>());
-    }
-    if (doc["v1SettleQuietMs"].is<int>()) {
-        settings_.v1SettleQuietMs = clampConnectionCycleV1SettleQuietMsValue(doc["v1SettleQuietMs"].as<int>());
-    }
-    if (doc["v1SettleFallbackMs"].is<int>()) {
-        settings_.v1SettleFallbackMs = clampConnectionCycleV1SettleFallbackMsValue(doc["v1SettleFallbackMs"].as<int>());
-    }
-    if (doc["cycleTeardownAckTimeoutMs"].is<int>()) {
-        settings_.cycleTeardownAckTimeoutMs =
-            clampConnectionCycleTeardownAckTimeoutMsValue(doc["cycleTeardownAckTimeoutMs"].as<int>());
-    }
-
-    // ALP Settings
-    // ============================================================================
-    restoreBool("alpEnabled", settings_.alpEnabled);
-    if (doc["alpAlertPersistSec"].is<int>()) {
-        settings_.alpAlertPersistSec = clampU8(doc["alpAlertPersistSec"].as<int>(), 0, 5);
-    }
-    restoreBool("alpDisableV1LaserOnPush", settings_.alpDisableV1LaserOnPush);
-
-    // GPS Settings
-    // ============================================================================
-    restoreBool("gpsEnabled", settings_.gpsEnabled);
-    if (doc["gpsBaud"].is<uint32_t>() || doc["gpsBaud"].is<int>()) {
-        settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(doc["gpsBaud"].as<int>()));
-    }
-    if (settings_.proxyBLE && settings_.obdEnabled) {
-        // Legacy backups can contain both from the pre-mode era. OBD required
-        // a deliberate user opt-in while proxy historically defaulted on, so
-        // keep OBD and disable proxy when restoring ambiguous state.
-        Serial.println("[Settings] HEAL: restored proxyBLE+obdEnabled — keeping OBD, disabling proxy");
-        settings_.proxyBLE = false;
-    }
-
-    // Phase 2 done: every scalar/field restore has been applied in RAM.
+    applyBackupDisplayFields(doc, settings_, BackupRestoreScope::Full);
+    applyBackupAudioFields(doc, settings_, BackupRestoreScope::Full);
+    applyBackupProfileSlotFields(doc, settings_, BackupRestoreScope::Full);
+    applyBackupObdFields(doc, settings_, BackupRestoreScope::Full);
+    applyBackupAlpAndGpsFields(doc, settings_);
+    healBackupRestoreConflicts(settings_, "restored");
     feedWatchdog();
 
     int profilesRestored = 0;

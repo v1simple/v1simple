@@ -24,6 +24,137 @@
 
 // --- Secondary alert cards ---
 
+namespace {
+
+constexpr uint32_t kAlertIdentityToleranceMhz = 2;
+constexpr uint32_t kSlotContinuityJitterMhz = 5;
+
+bool alertsIdentityMatch(const AlertData& a, const AlertData& b) {
+    if (a.band != b.band) return false;
+    if (a.band == BAND_LASER) return true;
+    const uint32_t diff = (a.frequency > b.frequency) ? (a.frequency - b.frequency) : (b.frequency - a.frequency);
+    return diff <= kAlertIdentityToleranceMhz;
+}
+
+bool alertsContinuityMatch(const AlertData& a, const AlertData& b) {
+    if (a.band != b.band) return false;
+    if (a.band == BAND_LASER) return true;
+    const uint32_t diff = (a.frequency > b.frequency) ? (a.frequency - b.frequency) : (b.frequency - a.frequency);
+    return diff <= kSlotContinuityJitterMhz;
+}
+
+bool alertMatchesPriority(const AlertData& alert, const AlertData& priority) {
+    return priority.isValid && priority.band != BAND_NONE && alertsIdentityMatch(alert, priority);
+}
+
+struct SecondaryCardFrameEntry {
+    int slot = 0;
+    bool isGraced = false;
+    uint8_t bars = 0;
+};
+
+struct SecondaryCardFrame {
+    SecondaryCardFrameEntry cards[2]{};
+    int count = 0;
+};
+
+void resetCardTemporalState(CardsRenderCache& cache) {
+    for (CardSlot& slot : cache.slots) slot = CardSlot();
+    cache.lastPriority = AlertData();
+}
+
+SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const AlertData* alerts, int alertCount,
+                                            const AlertData& priority, unsigned long now, unsigned long gracePeriodMs,
+                                            bool expireForVisualPreview) {
+    if (cache.lastPriority.isValid && cache.lastPriority.band != BAND_NONE) {
+        const bool priorityChanged = !alertsIdentityMatch(cache.lastPriority, priority);
+        bool oldPriorityGone = true;
+        for (int i = 0; alerts && i < alertCount; ++i) {
+            if (alertsIdentityMatch(cache.lastPriority, alerts[i])) {
+                oldPriorityGone = false;
+                break;
+            }
+        }
+        const bool sameBogeyJitter = priority.isValid && priority.band != BAND_NONE &&
+                                     priority.band == cache.lastPriority.band && priority.band != BAND_LASER &&
+                                     alertsContinuityMatch(priority, cache.lastPriority);
+        if (priorityChanged && oldPriorityGone && !sameBogeyJitter && cache.lastPriority.band != BAND_LASER) {
+            bool found = false;
+            for (const CardSlot& slot : cache.slots) {
+                if (slot.lastSeen > 0 && alertsContinuityMatch(slot.alert, cache.lastPriority)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                for (CardSlot& slot : cache.slots) {
+                    if (slot.lastSeen == 0) {
+                        slot.alert = cache.lastPriority;
+                        slot.lastSeen = now;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    cache.lastPriority = priority;
+
+    for (CardSlot& slot : cache.slots) {
+        if (slot.lastSeen == 0) continue;
+        bool stillExists = false;
+        for (int i = 0; alerts && i < alertCount; ++i) {
+            if (alertsContinuityMatch(slot.alert, alerts[i])) {
+                stillExists = true;
+                slot.alert = alerts[i];
+                slot.lastSeen = now;
+                break;
+            }
+        }
+        if (!stillExists && (expireForVisualPreview || (now - slot.lastSeen) > gracePeriodMs)) {
+            slot = CardSlot();
+        }
+    }
+
+    for (int i = 0; alerts && i < alertCount; ++i) {
+        if (!alerts[i].isValid || alerts[i].band == BAND_NONE || alertMatchesPriority(alerts[i], priority)) continue;
+        bool found = false;
+        for (const CardSlot& slot : cache.slots) {
+            if (slot.lastSeen > 0 && alertsContinuityMatch(slot.alert, alerts[i])) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (CardSlot& slot : cache.slots) {
+                if (slot.lastSeen == 0) {
+                    slot.alert = alerts[i];
+                    slot.lastSeen = now;
+                    break;
+                }
+            }
+        }
+    }
+
+    SecondaryCardFrame frame;
+    for (int c = 0; c < 2 && frame.count < 2; ++c) {
+        if (cache.slots[c].lastSeen == 0 || alertMatchesPriority(cache.slots[c].alert, priority)) continue;
+        SecondaryCardFrameEntry& entry = frame.cards[frame.count++];
+        entry.slot = c;
+        entry.bars = DisplayVisualContract::alertMeterBars(cache.slots[c].alert);
+        bool isLive = false;
+        for (int i = 0; alerts && i < alertCount; ++i) {
+            if (alertsIdentityMatch(cache.slots[c].alert, alerts[i])) {
+                isLive = true;
+                break;
+            }
+        }
+        entry.isGraced = !isLive;
+    }
+    return frame;
+}
+
+} // namespace
+
 void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
                                         bool muted) {
 #if defined(DISPLAY_WAVESHARE_349)
@@ -60,16 +191,13 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
     // Track profile changes - clear cards when profile rotates
     if (settings.activeSlot != elementCaches_.cards.lastProfileSlot) {
         elementCaches_.cards.lastProfileSlot = settings.activeSlot;
-        // Clear all card state on profile change
+        resetCardTemporalState(elementCaches_.cards);
         for (int c = 0; c < 2; c++) {
-            elementCaches_.cards.slots[c].alert = AlertData();
-            elementCaches_.cards.slots[c].lastSeen = 0;
             elementCaches_.cards.lastDrawnPositions[c].band = BAND_NONE;
             elementCaches_.cards.lastDrawnPositions[c].frequency = 0;
             elementCaches_.cards.lastDrawnPositions[c].bars = 0;
         }
         elementCaches_.cards.lastDrawnCount = 0;
-        elementCaches_.cards.lastPriority = AlertData();
     }
 
     // If called with nullptr alerts and count 0, clear V1 card state
@@ -82,12 +210,10 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             }
         }
 
+        resetCardTemporalState(elementCaches_.cards);
         for (int c = 0; c < 2; c++) {
-            elementCaches_.cards.slots[c].alert = AlertData();
-            elementCaches_.cards.slots[c].lastSeen = 0;
             elementCaches_.cards.lastDrawnPositions[c] = CardDrawnPosition();
         }
-        elementCaches_.cards.lastPriority = AlertData();
 
         // Clear the card area only when a previous frame actually drew cards.
         // Resting/persisted updates call this path every idle frame; treating
@@ -108,208 +234,10 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         return;
     }
 
-    // Helper: check if two alerts match (same band + frequency within tolerance)
-    // V1 frequency can jitter by a few MHz between frames. Use a tight ±2 MHz
-    // tolerance here so distinct nearby bogeys (e.g. two Ka sources 3-4 MHz apart)
-    // don't collapse into one slot. The redraw-hysteresis path below uses a looser
-    // ±5 MHz window to avoid flicker on jitter within the same bogey.
-    auto alertsMatch = [](const AlertData& a, const AlertData& b) -> bool {
-        if (a.band != b.band)
-            return false;
-        if (a.band == BAND_LASER)
-            return true;
-        // Use a small tolerance to handle V1 jitter without merging distinct nearby bogeys
-        const uint32_t ALERT_IDENTITY_TOLERANCE_MHZ = 2;
-        uint32_t diff = (a.frequency > b.frequency) ? (a.frequency - b.frequency) : (b.frequency - a.frequency);
-        return diff <= ALERT_IDENTITY_TOLERANCE_MHZ;
-    };
-
-    // Looser same-bogey continuity match: NEW identities are admitted with the
-    // tight ±2 MHz window above so distinct nearby bogeys stay separate, but a
-    // bogey that already owns a slot is refreshed/deduped with the same ±5 MHz
-    // jitter window the priority handoff guard uses. Without this, a >±2 MHz
-    // jitter frame fails the tight match, grace-persists the stale copy, and
-    // admits a duplicate card for one physical bogey (which can also evict a
-    // genuine third bogey's card).
-    auto alertsMatchLoose = [](const AlertData& a, const AlertData& b) -> bool {
-        if (a.band != b.band)
-            return false;
-        if (a.band == BAND_LASER)
-            return true;
-        const uint32_t SLOT_CONTINUITY_JITTER_MHZ = 5;
-        uint32_t diff = (a.frequency > b.frequency) ? (a.frequency - b.frequency) : (b.frequency - a.frequency);
-        return diff <= SLOT_CONTINUITY_JITTER_MHZ;
-    };
-
-    // Helper: check if alert matches priority (returns false if priority is invalid)
-    auto isSameAsPriority = [&priority, &alertsMatch](const AlertData& a) -> bool {
-        if (!priority.isValid || priority.band == BAND_NONE)
-            return false;
-        return alertsMatch(a, priority);
-    };
-
-    // Persist the previous priority as a card when a new radar priority takes over and the
-    // old signal has disappeared. Laser must remain live-owned by its current source, so a
-    // cleared laser priority never grace-persists as a secondary card.
-    if (elementCaches_.cards.lastPriority.isValid && elementCaches_.cards.lastPriority.band != BAND_NONE) {
-        bool priorityChanged = !alertsMatch(elementCaches_.cards.lastPriority, priority);
-        bool oldPriorityGone = true;
-
-        // Check if old priority is still in current alerts
-        if (alerts != nullptr) {
-            for (int i = 0; i < alertCount; i++) {
-                if (alertsMatch(elementCaches_.cards.lastPriority, alerts[i])) {
-                    oldPriorityGone = false;
-                    break;
-                }
-            }
-        }
-
-        // A "priority change" within the same band and ±5 MHz hysteresis
-        // represents frequency jitter on one bogey, not a handoff. Without
-        // this guard, a >±2 MHz jitter frame fails alertsMatch, looks like a
-        // departed old priority, and admits a ghost copy that reappears after
-        // every grace expiry.
-        const uint32_t PRIORITY_JITTER_GUARD_MHZ = 5;
-        bool sameBogeyJitter = false;
-        if (priority.isValid && priority.band != BAND_NONE && priority.band == elementCaches_.cards.lastPriority.band &&
-            priority.band != BAND_LASER) {
-            uint32_t priDiff = (priority.frequency > elementCaches_.cards.lastPriority.frequency)
-                                   ? (priority.frequency - elementCaches_.cards.lastPriority.frequency)
-                                   : (elementCaches_.cards.lastPriority.frequency - priority.frequency);
-            sameBogeyJitter = priDiff <= PRIORITY_JITTER_GUARD_MHZ;
-        }
-
-        // If old priority is gone (not just demoted), add it as persisted card
-        if (priorityChanged && oldPriorityGone && !sameBogeyJitter &&
-            elementCaches_.cards.lastPriority.band != BAND_LASER) {
-            // Check if already tracked
-            bool found = false;
-            for (int c = 0; c < 2; c++) {
-                if (elementCaches_.cards.slots[c].lastSeen > 0 &&
-                    alertsMatchLoose(elementCaches_.cards.slots[c].alert, elementCaches_.cards.lastPriority)) {
-                    found = true;
-                    break;
-                }
-            }
-
-            // Add to empty slot if not already tracked
-            if (!found) {
-                for (int c = 0; c < 2; c++) {
-                    if (elementCaches_.cards.slots[c].lastSeen == 0) {
-                        elementCaches_.cards.slots[c].alert = elementCaches_.cards.lastPriority;
-                        elementCaches_.cards.slots[c].lastSeen = now;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // Update last priority tracking
-    elementCaches_.cards.lastPriority = priority;
-
-    // Refresh existing slots: match by (band, frequency) and update timestamp if the alert
-    // is still live. Slots that miss a match past gracePeriodMs expire.
-    for (int c = 0; c < 2; c++) {
-        if (elementCaches_.cards.slots[c].lastSeen == 0)
-            continue;
-
-        bool stillExists = false;
-        if (alerts != nullptr) {
-            for (int i = 0; i < alertCount; i++) {
-                if (alertsMatchLoose(elementCaches_.cards.slots[c].alert, alerts[i])) {
-                    stillExists = true;
-                    elementCaches_.cards.slots[c].alert = alerts[i]; // Update with latest data
-                    elementCaches_.cards.slots[c].lastSeen = now;
-                    break;
-                }
-            }
-        }
-
-        // Expire if past grace period
-        if (!stillExists) {
-            // Pinned/timed visual-verification steps describe the exact cards
-            // for that authored frame.  Runtime alert persistence is useful in
-            // normal driving, but would make a dirty transition depend on the
-            // active profile's grace setting and HTTP timing.
-            const bool expireForVisualPreview = previewIndicatorOverridesActive_;
-            unsigned long age = now - elementCaches_.cards.slots[c].lastSeen;
-            if (expireForVisualPreview || age > gracePeriodMs) {
-                elementCaches_.cards.slots[c].alert = AlertData();
-                elementCaches_.cards.slots[c].lastSeen = 0;
-            }
-        }
-    }
-
-    // Admit new non-priority alerts into empty slots. The priority alert lives in the main
-    // display and never claims a card slot.
-    if (alerts != nullptr) {
-        for (int i = 0; i < alertCount; i++) {
-            if (!alerts[i].isValid || alerts[i].band == BAND_NONE)
-                continue;
-            if (isSameAsPriority(alerts[i]))
-                continue; // Skip priority - don't waste a card slot
-
-            // Check if already tracked (loose: a jitter twin of a tracked
-            // bogey must refresh that slot, not claim a second card)
-            bool found = false;
-            for (int c = 0; c < 2; c++) {
-                if (elementCaches_.cards.slots[c].lastSeen > 0 &&
-                    alertsMatchLoose(elementCaches_.cards.slots[c].alert, alerts[i])) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found) {
-                // Find empty slot
-                for (int c = 0; c < 2; c++) {
-                    if (elementCaches_.cards.slots[c].lastSeen == 0) {
-                        elementCaches_.cards.slots[c].alert = alerts[i];
-                        elementCaches_.cards.slots[c].lastSeen = now;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // For debug logging if needed
-    [[maybe_unused]] bool doDebug = false;
-
-    // Shared with the preview so the two cannot disagree.
-    auto getAlertBars = [](const AlertData& a) -> uint8_t { return DisplayVisualContract::alertMeterBars(a); };
-
-    // Build list of cards to draw this frame (V1 alerts only)
-    struct CardToDraw {
-        int slot; // V1 card slot index
-        bool isGraced;
-        uint8_t bars; // Signal strength for V1 cards
-    } cardsToDraw[2];
-    int cardsToDrawCount = 0;
-
-    // Add V1 secondary alerts
-    for (int c = 0; c < 2 && cardsToDrawCount < 2; c++) {
-        if (elementCaches_.cards.slots[c].lastSeen == 0)
-            continue;
-        if (isSameAsPriority(elementCaches_.cards.slots[c].alert))
-            continue;
-        cardsToDraw[cardsToDrawCount].slot = c;
-        cardsToDraw[cardsToDrawCount].bars = getAlertBars(elementCaches_.cards.slots[c].alert);
-        // Check if live or graced
-        bool isLive = false;
-        if (alerts != nullptr) {
-            for (int i = 0; i < alertCount; i++) {
-                if (alertsMatch(elementCaches_.cards.slots[c].alert, alerts[i])) {
-                    isLive = true;
-                    break;
-                }
-            }
-        }
-        cardsToDraw[cardsToDrawCount].isGraced = !isLive;
-        cardsToDrawCount++;
-    }
+    const SecondaryCardFrame frame = evolveSecondaryCardState(elementCaches_.cards, alerts, alertCount, priority, now,
+                                                               gracePeriodMs, previewIndicatorOverridesActive_);
+    const SecondaryCardFrameEntry* cardsToDraw = frame.cards;
+    const int cardsToDrawCount = frame.count;
 
     // ============================================================================
     // INCREMENTAL UPDATE LOGIC

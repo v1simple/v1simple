@@ -13,6 +13,15 @@
 #include "ble_internals.h"
 
 void V1BLEClient::process(SettingsManager& settings) {
+    applyDeferredRuntimeEvents(settings);
+    drainCommandAndFollowupWork();
+
+    const uint32_t now = static_cast<uint32_t>(millis());
+    arbitrateProxyRuntime(now);
+    dispatchConnectionState(now);
+}
+
+void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
     // Runtime proxy disable is non-blocking. Finish deferred queue teardown as
     // soon as both short-lived callback locks are available.
     if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
@@ -147,6 +156,9 @@ void V1BLEClient::process(SettingsManager& settings) {
             adoptV1AdvertisedNameForProxy(nameCopy);
         }
     }
+}
+
+void V1BLEClient::drainCommandAndFollowupWork() {
     // Process phone->V1 commands (up to queue size per loop to drain any backlog)
     // Each call processes one command to minimize mutex hold time during BLE writes
     for (int i = 0; i < MAX_PHONE_CMDS_PER_LOOP; i++) {
@@ -157,8 +169,9 @@ void V1BLEClient::process(SettingsManager& settings) {
     if (connectedFollowupStep_ != ConnectedFollowupStep::NONE && isConnected()) {
         processConnectedFollowup();
     }
+}
 
-    const uint32_t now = static_cast<uint32_t>(millis());
+void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
     const bool holdProxyForAutoObd = obdBleArbitrationRequest_ == ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
     const bool preemptProxyForManualScan =
         obdBleArbitrationRequest_ == ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN;
@@ -214,7 +227,9 @@ void V1BLEClient::process(SettingsManager& settings) {
             }
         }
     }
+}
 
+void V1BLEClient::dispatchConnectionState(uint32_t now) {
     NimBLEScan* pScan = NimBLEDevice::getScan();
 
     // Boot readiness gate: keep state machine idle until setup opens the gate.

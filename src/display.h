@@ -214,6 +214,20 @@ class V1Display {
 
     void drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, bool isPhotoRadar = false);
     void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar = false); // 7-segment style
+    struct FrequencyPresentation {
+        char text[16] = "";
+        uint16_t color = 0;
+        Band band = BAND_NONE;
+        bool muted = false;
+        bool photoRadar = false;
+        bool hasFrequency = false;
+        bool alpOverride = false;
+        bool useOfr = false;
+    };
+    FrequencyPresentation resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
+                                                       bool isPhotoRadar);
+    void renderFrequencyPresentation(const FrequencyPresentation& presentation);
+    void renderFrequencyFallback(const FrequencyPresentation& presentation);
     void prewarmFrequencyDigitAtlas();
     void prewarmFrequencyRasterCache();
     void drawVolumeZeroWarning(); // Flash "VOL 0" warning when volume=0 and no app connected

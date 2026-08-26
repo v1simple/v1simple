@@ -32,6 +32,121 @@ bool shouldSkipProfileReferenceValidation(size_t availableProfileCount, bool has
 
 // --- Member methods: SD restore and validation ---
 
+void SettingsManager::recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
+                                                                     const JsonDocument& backupDoc) {
+    if (!storage_->isReady() || !storage_->isSDCard()) return;
+
+    bool recovered = false;
+    if (hasSdBackup) {
+        Serial.println("[Settings] Attempting partial recovery from SD backup");
+        applyBackupNetworkFields(backupDoc, settings_, *storage_, BackupRestoreScope::CriticalRecovery, false);
+        applyBackupDisplayFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
+        applyBackupAudioFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
+        applyBackupProfileSlotFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
+        applyBackupObdFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
+        applyBackupAlpAndGpsFields(backupDoc, settings_);
+        healBackupRestoreConflicts(settings_, "recovered");
+        Serial.println("[Settings] Partial recovery from SD backup applied");
+        recovered = true;
+    }
+
+    if (settings_.wifiClientSSID.length() == 0) {
+        const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
+        if (secret.valid && secret.ssid.length() > 0) {
+            settings_.wifiClientEnabled = true;
+            settings_.wifiClientSSID = secret.ssid;
+            settings_.ensureWifiStaSlotForLegacyAlias();
+            Serial.println("[Settings] HEAL: recovered WiFi SSID from wifi_secret");
+            recovered = true;
+        }
+    }
+
+    if (recovered) {
+        save();
+        backupToSD();
+    }
+}
+
+void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc) {
+    const WifiClientKeyPresence keyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
+    const bool legacySsidKeyRequired = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
+    const bool keysMissing = !keyPresence.enabledKeyPresent || (legacySsidKeyRequired && !keyPresence.ssidKeyPresent);
+    const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
+
+    if (keysMissing && !missingCurrentSsid) {
+        settings_.wifiClientEnabled = true;
+        Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");
+        save();
+        return;
+    }
+    if (!missingCurrentSsid) return;
+
+    bool backupClientEnabled = false;
+    const bool backupEnabledKnown = hasSdBackup && parseBoolVariant(backupDoc["wifiClientEnabled"], backupClientEnabled);
+    const String backupSsid = hasSdBackup ? legacyWifiClientSsidFromBackupDoc(backupDoc) : "";
+    const bool backupHasSsid = backupSsid.length() > 0;
+    const bool backupHasSlots = hasSdBackup && hasRestorableWifiStaSlots(backupDoc);
+    const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
+    const bool secretHasSsid = secret.valid && secret.ssid.length() > 0;
+
+    String recoveredSsid;
+    const char* recoveredFrom = "none";
+    bool recoveredFromSlots = false;
+    if (backupHasSlots && restoreWifiStaSlotsFromBackupDoc(backupDoc, settings_, *storage_, false)) {
+        recoveredSsid = settings_.wifiClientSSID;
+        recoveredFrom = "settings_backup_slots";
+        recoveredFromSlots = true;
+    } else if (backupHasSsid) {
+        recoveredSsid = backupSsid;
+        recoveredFrom = "settings_backup";
+    } else if (secretHasSsid) {
+        recoveredSsid = secret.ssid;
+        recoveredFrom = "wifi_secret";
+    }
+
+    const bool shouldRecover = recoveredSsid.length() > 0 &&
+                               (settings_.wifiClientEnabled || keysMissing ||
+                                (backupEnabledKnown && backupClientEnabled) || secretHasSsid);
+    if (shouldRecover) {
+        settings_.wifiClientEnabled = true;
+        if (!recoveredFromSlots) {
+            settings_.wifiClientSSID = recoveredSsid;
+            settings_.ensureWifiStaSlotForLegacyAlias();
+        }
+        Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (keysMissing=%s)\n", recoveredFrom,
+                      keysMissing ? "yes" : "no");
+        if (backupHasSsid) {
+            restoreWifiClientPasswordObfFromBackupDoc(backupDoc, settings_.wifiClientSSID);
+            restoreLegacyStationPasswordFromBackupDoc(backupDoc, settings_.wifiClientSSID);
+        }
+        save();
+    } else if (settings_.wifiClientEnabled) {
+        settings_.wifiClientEnabled = false;
+        Serial.println("[Settings] HEAL: wifiClientEnabled=true but no SSID anywhere — disabling");
+        save();
+    } else if (keysMissing) {
+        Serial.println("[Settings] WARN: WiFi client keys missing and no SSID recovery source found");
+    }
+}
+
+void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPath,
+                                          const JsonDocument& backupDoc) {
+    if (!hasSdBackup) {
+        Serial.println("[Settings] No valid SD backup found; creating backup from current settings_");
+        backupToSD();
+        return;
+    }
+    const int version = backupDocumentVersion(backupDoc);
+    const bool missingCoreFields = backupDoc["brightness"].isNull();
+    const bool outOfSync = !backupAppearsInSyncWithNvs(backupDoc, settings_);
+    if (version < SD_BACKUP_VERSION || missingCoreFields || outOfSync) {
+        Serial.printf("[Settings] Refreshing SD backup schema (path=%s version=%d)\n",
+                      backupPath ? backupPath : "(unknown)", version);
+        if (outOfSync) Serial.println("[Settings] SD backup differs from healthy NVS; refreshing backup content");
+        backupToSD();
+    }
+}
+
 bool SettingsManager::checkAndRestoreFromSD() {
     // Check if NVS was erased (appears default) and backup exists on SD
     // This can be called after storage is mounted to retry the restore
@@ -56,184 +171,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
         }
         Serial.println("[Settings] Restore requested but no valid SD backup was applied");
 
-        // Full restore failed (no backup file, or SD not mounted yet).
-        // Attempt partial recovery from whatever sources are available so the
-        // device boots with WiFi, profiles, and other critical settings intact
-        // instead of falling back to factory defaults permanently.
-        if (storage_->isReady() && storage_->isSDCard()) {
-            bool partialRecovered = false;
-
-            // Recover as many settings as possible from the best backup document.
-            // This covers the case where loadBestBackupDocument succeeded above
-            // but restoreFromSD failed for a different reason (e.g. mutex).
-            if (hasSdBackup) {
-                Serial.println("[Settings] Attempting partial recovery from SD backup");
-                // Recover WiFi settings
-                const char* backupApSSID = bestBackupDoc["apSSID"] | "";
-                if (backupApSSID[0] != '\0') {
-                    settings_.apSSID = sanitizeApSsidValue(String(backupApSSID));
-                }
-                bool backupWifiClientEnabled = false;
-                parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
-                const String backupSsid = legacyWifiClientSsidFromBackupDoc(bestBackupDoc);
-                if (hasRestorableWifiStaSlots(bestBackupDoc) &&
-                    restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, *storage_, false)) {
-                    settings_.wifiClientEnabled = true;
-                } else if (backupSsid.length() > 0) {
-                    settings_.wifiClientEnabled = true;
-                    settings_.wifiClientSSID = backupSsid;
-                    settings_.ensureWifiStaSlotForLegacyAlias();
-                } else if (backupWifiClientEnabled) {
-                    settings_.wifiClientEnabled = backupWifiClientEnabled;
-                    settings_.refreshWifiClientAliasFromSlots();
-                }
-                // Recover profile slot bindings
-                if (bestBackupDoc["slot0ProfileName"].is<const char*>()) {
-                    settings_.slot0_default.profileName = bestBackupDoc["slot0ProfileName"].as<String>();
-                }
-                if (bestBackupDoc["slot1ProfileName"].is<const char*>()) {
-                    settings_.slot1_highway.profileName = bestBackupDoc["slot1ProfileName"].as<String>();
-                }
-                if (bestBackupDoc["slot2ProfileName"].is<const char*>()) {
-                    settings_.slot2_comfort.profileName = bestBackupDoc["slot2ProfileName"].as<String>();
-                }
-                if (bestBackupDoc["slot0Mode"].is<int>()) {
-                    settings_.slot0_default.mode = normalizeV1ModeValue(bestBackupDoc["slot0Mode"].as<int>());
-                }
-                if (bestBackupDoc["slot1Mode"].is<int>()) {
-                    settings_.slot1_highway.mode = normalizeV1ModeValue(bestBackupDoc["slot1Mode"].as<int>());
-                }
-                if (bestBackupDoc["slot2Mode"].is<int>()) {
-                    settings_.slot2_comfort.mode = normalizeV1ModeValue(bestBackupDoc["slot2Mode"].as<int>());
-                }
-                bool backupAutoPush = false;
-                if (parseBoolVariant(bestBackupDoc["autoPushEnabled"], backupAutoPush)) {
-                    settings_.autoPushEnabled = backupAutoPush;
-                }
-                if (bestBackupDoc["activeSlot"].is<int>()) {
-                    settings_.activeSlot = bestBackupDoc["activeSlot"].as<int>();
-                }
-                if (bestBackupDoc["brightness"].is<int>()) {
-                    settings_.brightness = clampU8(bestBackupDoc["brightness"].as<int>(), 1, 255);
-                }
-                // Recover apPassword (obfuscated — same decode path as applyBackupDocument)
-                if (bestBackupDoc["apPassword"].is<const char*>()) {
-                    String decoded = decodeObfuscatedFromStorage(bestBackupDoc["apPassword"].as<String>());
-                    if (decoded.length() >= MIN_AP_PASSWORD_LEN) {
-                        settings_.apPassword = sanitizeApPasswordValue(decoded);
-                    }
-                }
-                restoreWifiClientPasswordObfFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
-                restoreLegacyStationPasswordFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
-                // Recover UI hide-flags
-                bool boolVal = false;
-                if (parseBoolVariant(bestBackupDoc["hideWifiIcon"], boolVal))
-                    settings_.hideWifiIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideProfileIndicator"], boolVal))
-                    settings_.hideProfileIndicator = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideBatteryIcon"], boolVal))
-                    settings_.hideBatteryIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["showBatteryPercent"], boolVal))
-                    settings_.showBatteryPercent = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideBleIcon"], boolVal))
-                    settings_.hideBleIcon = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideVolumeIndicator"], boolVal))
-                    settings_.hideVolumeIndicator = boolVal;
-                if (parseBoolVariant(bestBackupDoc["hideRssiIndicator"], boolVal))
-                    settings_.hideRssiIndicator = boolVal;
-                // Recover colors
-                if (bestBackupDoc["colorBogey"].is<int>())
-                    settings_.colorBogey = sanitizeRgb565Color(bestBackupDoc["colorBogey"], 0xF800);
-                if (bestBackupDoc["colorFrequency"].is<int>())
-                    settings_.colorFrequency = sanitizeRgb565Color(bestBackupDoc["colorFrequency"], 0xF800);
-                if (bestBackupDoc["colorArrowFront"].is<int>())
-                    settings_.colorArrowFront = sanitizeRgb565Color(bestBackupDoc["colorArrowFront"], 0xF800);
-                if (bestBackupDoc["colorArrowSide"].is<int>())
-                    settings_.colorArrowSide = sanitizeRgb565Color(bestBackupDoc["colorArrowSide"], 0xF800);
-                if (bestBackupDoc["colorArrowRear"].is<int>())
-                    settings_.colorArrowRear = sanitizeRgb565Color(bestBackupDoc["colorArrowRear"], 0xF800);
-                if (bestBackupDoc["colorBandL"].is<int>())
-                    settings_.colorBandL = sanitizeRgb565Color(bestBackupDoc["colorBandL"], 0x001F);
-                if (bestBackupDoc["colorBandKa"].is<int>())
-                    settings_.colorBandKa = sanitizeRgb565Color(bestBackupDoc["colorBandKa"], 0xF800);
-                if (bestBackupDoc["colorBandK"].is<int>())
-                    settings_.colorBandK = sanitizeRgb565Color(bestBackupDoc["colorBandK"], 0x001F);
-                if (bestBackupDoc["colorBandX"].is<int>())
-                    settings_.colorBandX = sanitizeRgb565Color(bestBackupDoc["colorBandX"], 0x07E0);
-                if (bestBackupDoc["colorBandPhoto"].is<int>())
-                    settings_.colorBandPhoto = sanitizeRgb565Color(bestBackupDoc["colorBandPhoto"], 0x780F);
-                if (bestBackupDoc["colorAlpConnected"].is<int>())
-                    settings_.colorAlpConnected = sanitizeRgb565Color(bestBackupDoc["colorAlpConnected"], 0x07E0);
-                if (bestBackupDoc["colorAlpDli"].is<int>())
-                    settings_.colorAlpDli = sanitizeRgb565Color(bestBackupDoc["colorAlpDli"], 0xFD20);
-                if (bestBackupDoc["colorAlpLidActive"].is<int>())
-                    settings_.colorAlpLidActive = sanitizeRgb565Color(bestBackupDoc["colorAlpLidActive"], 0x001F);
-                if (bestBackupDoc["colorAlpAlert"].is<int>())
-                    settings_.colorAlpAlert = sanitizeRgb565Color(bestBackupDoc["colorAlpAlert"], 0xF800);
-                if (bestBackupDoc["colorObd"].is<int>())
-                    settings_.colorObd = sanitizeRgb565Color(bestBackupDoc["colorObd"], 0x001F);
-                // Recover speed-mute settings
-                if (parseBoolVariant(bestBackupDoc["speedMuteEnabled"], boolVal))
-                    settings_.speedMuteEnabled = boolVal;
-                if (bestBackupDoc["speedMuteThresholdMph"].is<int>()) {
-                    settings_.speedMuteThresholdMph = clampU8(bestBackupDoc["speedMuteThresholdMph"].as<int>(), 5, 60);
-                }
-                if (bestBackupDoc["speedMuteHysteresisMph"].is<int>()) {
-                    settings_.speedMuteHysteresisMph =
-                        clampU8(bestBackupDoc["speedMuteHysteresisMph"].as<int>(), 1, 10);
-                }
-                if (bestBackupDoc["speedMuteVolume"].is<int>()) {
-                    const int raw = bestBackupDoc["speedMuteVolume"].as<int>();
-                    settings_.speedMuteVolume = (raw >= 0 && raw <= 9) ? static_cast<uint8_t>(raw) : 0;
-                }
-                if (parseBoolVariant(bestBackupDoc["stealthEnabled"], boolVal))
-                    settings_.stealthEnabled = boolVal;
-                // Recover OBD settings
-                if (parseBoolVariant(bestBackupDoc["obdEnabled"], boolVal))
-                    settings_.obdEnabled = boolVal;
-                if (bestBackupDoc["obdSavedName"].is<const char*>()) {
-                    settings_.obdSavedName = sanitizeObdSavedNameValue(bestBackupDoc["obdSavedName"].as<String>());
-                }
-                // Recover ALP settings
-                if (parseBoolVariant(bestBackupDoc["alpEnabled"], boolVal))
-                    settings_.alpEnabled = boolVal;
-                if (bestBackupDoc["alpAlertPersistSec"].is<int>()) {
-                    settings_.alpAlertPersistSec = clampU8(bestBackupDoc["alpAlertPersistSec"].as<int>(), 0, 5);
-                }
-                if (parseBoolVariant(bestBackupDoc["alpDisableV1LaserOnPush"], boolVal)) {
-                    settings_.alpDisableV1LaserOnPush = boolVal;
-                }
-                // Recover GPS settings
-                if (parseBoolVariant(bestBackupDoc["gpsEnabled"], boolVal))
-                    settings_.gpsEnabled = boolVal;
-                if (bestBackupDoc["gpsBaud"].is<int>()) {
-                    settings_.gpsBaud = sanitizeGpsBaudValue(static_cast<uint32_t>(bestBackupDoc["gpsBaud"].as<int>()));
-                }
-                if (settings_.proxyBLE && settings_.obdEnabled) {
-                    Serial.println("[Settings] HEAL: recovered proxyBLE+obdEnabled — keeping OBD, disabling proxy");
-                    settings_.proxyBLE = false;
-                }
-                Serial.println("[Settings] Partial recovery from SD backup applied");
-                partialRecovered = true;
-            }
-
-            // WiFi secret file fallback (covers case where no backup exists at all)
-            if (settings_.wifiClientSSID.length() == 0) {
-                const WifiClientSecretPresence secretPresence = readWifiClientSecretPresence(fs);
-                if (secretPresence.valid && secretPresence.ssid.length() > 0) {
-                    settings_.wifiClientEnabled = true;
-                    settings_.wifiClientSSID = secretPresence.ssid;
-                    settings_.ensureWifiStaSlotForLegacyAlias();
-                    Serial.println("[Settings] HEAL: recovered WiFi SSID from wifi_secret");
-                    partialRecovered = true;
-                }
-            }
-
-            if (partialRecovered) {
-                save();
-                backupToSD();
-            }
-        }
+        recoverCriticalSettingsAfterFullRestoreFailure(fs, hasSdBackup, bestBackupDoc);
     } else if (hasSdBackup) {
         // Keep user/NVS state authoritative unless corruption is detected.
         // Slot/profile healing is handled separately by validateProfileReferences().
@@ -241,93 +179,10 @@ bool SettingsManager::checkAndRestoreFromSD() {
     }
 
     if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
-        const WifiClientKeyPresence wifiKeyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
-        const bool legacySsidKeyRequired = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
-        const bool wifiKeysMissing =
-            !wifiKeyPresence.enabledKeyPresent || (legacySsidKeyRequired && !wifiKeyPresence.ssidKeyPresent);
-        const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
-
-        if (wifiKeysMissing && !missingCurrentSsid) {
-            // SSID is already present in memory; rewrite namespace to restore missing keys.
-            settings_.wifiClientEnabled = true;
-            Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");
-            save();
-        } else if (missingCurrentSsid) {
-            bool backupWifiClientEnabled = false;
-            const bool backupEnabledKnown =
-                hasSdBackup && parseBoolVariant(bestBackupDoc["wifiClientEnabled"], backupWifiClientEnabled);
-            const String backupSsid = hasSdBackup ? legacyWifiClientSsidFromBackupDoc(bestBackupDoc) : "";
-            const bool backupHasSsid = backupSsid.length() > 0;
-            const bool backupHasStaSlots = hasSdBackup && hasRestorableWifiStaSlots(bestBackupDoc);
-
-            const WifiClientSecretPresence secretPresence = readWifiClientSecretPresence(fs);
-            const bool secretHasSsid = secretPresence.valid && secretPresence.ssid.length() > 0;
-
-            String recoveredSsid = "";
-            const char* recoveredFrom = "none";
-            bool recoveredFromSlots = false;
-            if (backupHasStaSlots && restoreWifiStaSlotsFromBackupDoc(bestBackupDoc, settings_, *storage_, false)) {
-                recoveredSsid = settings_.wifiClientSSID;
-                recoveredFrom = "settings_backup_slots";
-                recoveredFromSlots = true;
-            } else if (backupHasSsid) {
-                recoveredSsid = backupSsid;
-                recoveredFrom = "settings_backup";
-            } else if (secretHasSsid) {
-                recoveredSsid = secretPresence.ssid;
-                recoveredFrom = "wifi_secret";
-            }
-
-            // Targeted WiFi credential recovery:
-            // - legacy case: wifiClientEnabled=true but SSID missing
-            // - partial-key case: WiFi client keys missing from NVS
-            // - backup-missing case: recover SSID from SD WiFi secret metadata
-            const bool shouldRecoverWifiClient =
-                recoveredSsid.length() > 0 && (settings_.wifiClientEnabled || wifiKeysMissing ||
-                                               (backupEnabledKnown && backupWifiClientEnabled) || secretHasSsid);
-
-            if (shouldRecoverWifiClient) {
-                settings_.wifiClientEnabled = true;
-                if (!recoveredFromSlots) {
-                    settings_.wifiClientSSID = recoveredSsid;
-                    settings_.ensureWifiStaSlotForLegacyAlias();
-                }
-                Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (keysMissing=%s)\n", recoveredFrom,
-                              wifiKeysMissing ? "yes" : "no");
-                if (backupHasSsid) {
-                    restoreWifiClientPasswordObfFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
-                    restoreLegacyStationPasswordFromBackupDoc(bestBackupDoc, settings_.wifiClientSSID);
-                }
-                save();
-            } else if (settings_.wifiClientEnabled) {
-                // SSID missing in all recovery sources — disable to avoid inconsistent state.
-                settings_.wifiClientEnabled = false;
-                Serial.println("[Settings] HEAL: wifiClientEnabled=true but no SSID anywhere — disabling");
-                save();
-            } else if (wifiKeysMissing) {
-                Serial.println("[Settings] WARN: WiFi client keys missing and no SSID recovery source found");
-            }
-        }
+        healWifiClientSettings(fs, hasSdBackup, bestBackupDoc);
     }
-
-    // Keep SD backup schema fresh so newly added settings survive the next reflash.
     if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
-        if (!hasSdBackup) {
-            Serial.println("[Settings] No valid SD backup found; creating backup from current settings_");
-            backupToSD();
-        } else {
-            const int backupVersion = backupDocumentVersion(bestBackupDoc);
-            const bool missingCoreFields = bestBackupDoc["brightness"].isNull();
-            const bool backupOutOfSync = !backupAppearsInSyncWithNvs(bestBackupDoc, settings_);
-            if (backupVersion < SD_BACKUP_VERSION || missingCoreFields || backupOutOfSync) {
-                Serial.printf("[Settings] Refreshing SD backup schema (path=%s version=%d)\n",
-                              bestBackupPath ? bestBackupPath : "(unknown)", backupVersion);
-                if (backupOutOfSync) {
-                    Serial.println("[Settings] SD backup differs from healthy NVS; refreshing backup content");
-                }
-                backupToSD();
-            }
-        }
+        synchronizeSdBackup(hasSdBackup, bestBackupPath, bestBackupDoc);
     }
     cleanupNamespacesIfNeeded(hasSdBackup);
     return false;

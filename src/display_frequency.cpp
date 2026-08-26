@@ -104,34 +104,39 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const cha
 
 // --- Segment7 frequency display. Uses Segment7 TTF font if available, falls back to software renderer. ---
 
-void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar) {
+V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
+                                                                        bool isPhotoRadar) {
     const V1Settings& s = settings_.get();
-
-    const bool usingOfr = fontMgr_.segment7Ready;
+    FrequencyPresentation presentation;
+    presentation.band = band;
+    presentation.muted = muted;
+    presentation.photoRadar = isPhotoRadar;
+    presentation.useOfr = fontMgr_.segment7Ready;
     const bool hasFreq = freqMHz > 0;
+    presentation.hasFrequency = hasFreq;
 
-    char textBuf[16];
     bool isAlpOverride = false;
     if (alpFreqOverride_ && alpFreqText_[0] != '\0') {
         // ALP gun abbreviation overrides frequency text
-        strncpy(textBuf, alpFreqText_, sizeof(textBuf));
-        textBuf[sizeof(textBuf) - 1] = '\0';
+        strncpy(presentation.text, alpFreqText_, sizeof(presentation.text));
+        presentation.text[sizeof(presentation.text) - 1] = '\0';
         isAlpOverride = true;
     } else if (band == BAND_LASER) {
-        snprintf(textBuf, sizeof(textBuf), "LASER");
+        snprintf(presentation.text, sizeof(presentation.text), "LASER");
     } else if (hasFreq) {
         float freqGhz = freqMHz / 1000.0f;
-        snprintf(textBuf, sizeof(textBuf), "%05.3f", freqGhz);
+        snprintf(presentation.text, sizeof(presentation.text), "%05.3f", freqGhz);
     } else {
-        snprintf(textBuf, sizeof(textBuf), "--.---");
+        snprintf(presentation.text, sizeof(presentation.text), "--.---");
     }
+    presentation.alpOverride = isAlpOverride;
 
     uint16_t freqColor;
     if (isAlpOverride) {
         // LID active (above LID speed limit) uses colorAlpLidActive; otherwise
         // DLI active uses colorAlpDli. Naming matches AL Priority manual.
         freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : (alpLidActive_ ? s.colorAlpLidActive : s.colorAlpDli);
-    } else if (usingOfr) {
+    } else if (presentation.useOfr) {
         if (band == BAND_LASER) {
             freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
         } else if (muted) {
@@ -159,6 +164,23 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
             freqColor = s.colorFrequency;
         }
     }
+    presentation.color = freqColor;
+    return presentation;
+}
+
+void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar) {
+    renderFrequencyPresentation(resolveFrequencyPresentation(freqMHz, band, muted, isPhotoRadar));
+}
+
+void V1Display::renderFrequencyPresentation(const FrequencyPresentation& presentation) {
+    const bool usingOfr = presentation.useOfr;
+    const bool hasFreq = presentation.hasFrequency;
+    const bool isAlpOverride = presentation.alpOverride;
+    const bool muted = presentation.muted;
+    const bool isPhotoRadar = presentation.photoRadar;
+    const Band band = presentation.band;
+    const uint16_t freqColor = presentation.color;
+    const char* textBuf = presentation.text;
 
     bool textChanged = (strcmp(elementCaches_.frequency.lastText, textBuf) != 0);
     bool changed = !elementCaches_.frequency.valid || (elementCaches_.frequency.lastUsedOfr != usingOfr) ||
@@ -303,31 +325,7 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
         elementCaches_.frequency.lastDrawX = x + glyphXMin;
         elementCaches_.frequency.lastDrawWidth = glyphXMax - glyphXMin;
     } else {
-        // Fallback to software 7-segment renderer
-        const float scale = DisplayLayout::FREQUENCY_FALLBACK_SCALE;
-        SegMetrics m = segMetrics(scale);
-        const int y = DisplayLayout::frequencyFallbackY(m.digitH);
-
-        int width = measureSevenSegmentText(textBuf, scale);
-
-        const int leftMargin = DisplayLayout::FREQUENCY_FALLBACK_LEFT_MARGIN;
-        const int maxWidth = DisplayLayout::frequencyFallbackMaxWidth();
-        int x = leftMargin + (maxWidth - width) / 2;
-        if (x < leftMargin)
-            x = leftMargin;
-
-        if (isAlpOverride || band == BAND_LASER) {
-            // Alpha text — use 14-segment renderer
-            drawnRegion_.add(static_cast<int16_t>(x - 4), static_cast<int16_t>(y - 4), static_cast<int16_t>(width + 8),
-                             static_cast<int16_t>(m.digitH + 8), DisplayDirtyRegionSource::Frequency);
-            FILL_RECT(x - 4, y - 4, width + 8, m.digitH + 8, PALETTE_BG);
-            draw14SegmentText(textBuf, x, y, scale, freqColor, PALETTE_BG);
-        } else {
-            drawnRegion_.add(static_cast<int16_t>(x - 2), static_cast<int16_t>(y), static_cast<int16_t>(width + 4),
-                             static_cast<int16_t>(m.digitH + 4), DisplayDirtyRegionSource::Frequency);
-            FILL_RECT(x - 2, y, width + 4, m.digitH + 4, PALETTE_BG);
-            drawSevenSegmentText(textBuf, x, y, scale, freqColor, PALETTE_BG);
-        }
+        renderFrequencyFallback(presentation);
     }
 
     strncpy(elementCaches_.frequency.lastText, textBuf, sizeof(elementCaches_.frequency.lastText));
@@ -335,6 +333,29 @@ void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, b
     elementCaches_.frequency.lastColor = freqColor;
     elementCaches_.frequency.lastUsedOfr = usingOfr;
     elementCaches_.frequency.valid = true;
+}
+
+void V1Display::renderFrequencyFallback(const FrequencyPresentation& presentation) {
+    const float scale = DisplayLayout::FREQUENCY_FALLBACK_SCALE;
+    const SegMetrics metrics = segMetrics(scale);
+    const int y = DisplayLayout::frequencyFallbackY(metrics.digitH);
+    const int width = measureSevenSegmentText(presentation.text, scale);
+    const int leftMargin = DisplayLayout::FREQUENCY_FALLBACK_LEFT_MARGIN;
+    const int maxWidth = DisplayLayout::frequencyFallbackMaxWidth();
+    int x = leftMargin + (maxWidth - width) / 2;
+    if (x < leftMargin) x = leftMargin;
+
+    if (presentation.alpOverride || presentation.band == BAND_LASER) {
+        drawnRegion_.add(static_cast<int16_t>(x - 4), static_cast<int16_t>(y - 4), static_cast<int16_t>(width + 8),
+                         static_cast<int16_t>(metrics.digitH + 8), DisplayDirtyRegionSource::Frequency);
+        FILL_RECT(x - 4, y - 4, width + 8, metrics.digitH + 8, PALETTE_BG);
+        draw14SegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
+    } else {
+        drawnRegion_.add(static_cast<int16_t>(x - 2), static_cast<int16_t>(y), static_cast<int16_t>(width + 4),
+                         static_cast<int16_t>(metrics.digitH + 4), DisplayDirtyRegionSource::Frequency);
+        FILL_RECT(x - 2, y, width + 4, metrics.digitH + 4, PALETTE_BG);
+        drawSevenSegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
+    }
 }
 
 void V1Display::prewarmFrequencyDigitAtlas() {

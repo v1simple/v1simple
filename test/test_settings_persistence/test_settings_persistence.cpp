@@ -1600,6 +1600,32 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
     TEST_ASSERT_EQUAL_UINT8(7, target.get().speedMuteHysteresisMph);
 }
 
+void test_partial_recovery_uses_authoritative_profile_and_active_slot_sanitizers() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+
+    SettingsManager source(storage, profiles);
+    V1Settings& src = source.mutableSettings();
+    src.activeSlot = 99;
+    src.slot0_default.profileName = "A-profile-name-that-is-deliberately-longer-than-the-storage-contract-allows";
+
+    SerializedSettingsBackupPayload payload;
+    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, source.get(), profiles, 5000));
+    TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
+    releaseSerializedSettingsBackupPayload(payload);
+
+    StorageManager::resetMockSdLockState();
+    StorageManager::mockSdLockState.failNextBlockingLock = true;
+
+    SettingsManager target(storage, profiles);
+    target.checkAndRestoreFromSD();
+
+    TEST_ASSERT_EQUAL_INT(2, target.get().activeSlot);
+    TEST_ASSERT_EQUAL_STRING(sanitizeProfileNameValue(src.slot0_default.profileName).c_str(),
+                             target.get().slot0_default.profileName.c_str());
+}
+
 void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -2030,6 +2056,7 @@ int main() {
     RUN_TEST(test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_autopush_state_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_partial_recovery_restores_both_speed_mute_fields);
+    RUN_TEST(test_partial_recovery_uses_authoritative_profile_and_active_slot_sanitizers);
     RUN_TEST(test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot);
     RUN_TEST(test_voice_fields_round_trip_through_sd_backup_and_restore);
     RUN_TEST(test_gps_fields_round_trip_through_backup_and_restore);

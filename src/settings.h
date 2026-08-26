@@ -866,6 +866,10 @@ class SettingsManager {
     bool lastV1AddressFallbackPending_ = false;
     uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
+    void recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
+                                                        const JsonDocument& backupDoc);
+    void healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc);
+    void synchronizeSdBackup(bool hasSdBackup, const char* backupPath, const JsonDocument& backupDoc);
     void noteNvsCommitWithoutBackupIntent();
     bool persistSettingsWithBackupIntent();
     static uint32_t readBackupRevisionCompleted();

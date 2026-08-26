@@ -275,6 +275,11 @@ class ObdRuntimeModule {
     void updateSecuring(uint32_t nowMs);
     void updateAtInit(uint32_t nowMs);
     void updatePolling(uint32_t nowMs);
+    bool reconcileProxyOwnership(uint32_t nowMs, bool proxyClientConnected);
+    void updateConnecting(uint32_t nowMs, bool justEntered);
+    void updateDiscovering(uint32_t nowMs);
+    void updateDisconnected(uint32_t nowMs, bool justEntered, bool bleScanIdle, bool v1ConnectInProgress,
+                            bool obdScanAllowed, bool obdRetryAllowed);
 
     bool isSpeedFresh(uint32_t nowMs) const;
     bool speedDue(uint32_t nowMs) const;

@@ -566,6 +566,10 @@ class V1BLEClient {
     void processSubscribing();              // Handle SUBSCRIBING state (step machine)
     void processSubscribeYield();           // Handle SUBSCRIBE_YIELD state
     void processConnectedFollowup();        // Spread post-connect work across loop turns
+    void applyDeferredRuntimeEvents(SettingsManager& settings);
+    void drainCommandAndFollowupWork();
+    void arbitrateProxyRuntime(uint32_t now);
+    void dispatchConnectionState(uint32_t now);
     int enqueueCurrentBondBackupSnapshot(); // Non-blocking handoff to Core-0 writer
     SubscribeStepResult executeSubscribeStep(); // Execute one subscription step
 

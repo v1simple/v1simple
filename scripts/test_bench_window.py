@@ -22,11 +22,15 @@ from run_window import (  # noqa: E402
     BENCH_TIMELINE_NAME,
     REPLAY_STIMULUS_NAME,
     BenchTimeline,
+    RuntimeIdentityFailure,
+    RuntimeIdentityTracker,
     V1Emulator,
     V1RadioLease,
     establish_serial_boundary,
     file_artifact,
+    parse_runtime_boot_identity,
     publish_replay_stimulus_evidence,
+    qualify_runtime_identity,
     resolve_runner_log_paths,
 )
 
@@ -214,6 +218,112 @@ def test_runner_source_is_external_only_and_serial_is_read_only() -> None:
     assert_true('"evidence_contract": "external_only"' in source, "contract is not explicit")
 
 
+GIT_SHA = "2f32ddab989792917b5b3df9206d9751ebfd8289"
+RUNTIME_IDENTITY = {
+    "boot_id": 42,
+    "git_sha": "2f32dda",
+    "image_id": "04904e028",
+}
+
+
+def build_upload_artifact(image_id: str, *, upload_performed: bool) -> dict[str, Any]:
+    elf_sha = image_id + ("0" * (64 - len(image_id)))
+    return {
+        "upload_performed": upload_performed,
+        "expected_runtime_image_id": image_id,
+        "expected_runtime_image_id_basis": run_window_module.RUNTIME_IMAGE_ID_BASIS,
+        "files": [{"name": "firmware.elf", "sha256": elf_sha}],
+        "missing": [],
+    }
+
+
+def assert_identity_failure(call: Any, expected: str) -> RuntimeIdentityFailure:
+    try:
+        call()
+    except RuntimeIdentityFailure as exc:
+        assert_true(expected in str(exc), str(exc))
+        return exc
+    raise AssertionError(f"runtime identity failure was not raised: {expected}")
+
+
+def test_upload_exact_match_is_qualified() -> None:
+    result = qualify_runtime_identity(
+        dict(RUNTIME_IDENTITY),
+        intended_git_sha=GIT_SHA,
+        build_upload=build_upload_artifact("04904e028", upload_performed=True),
+        upload=True,
+    )
+    assert_true(result["status"] == "qualified", str(result))
+    assert_true(result["git_match"] is True, str(result))
+    assert_true(result["image_match"] is True, str(result))
+    assert_true(result["artifact_linked"] is True, str(result))
+
+
+def test_upload_git_mismatch_fails() -> None:
+    identity = {**RUNTIME_IDENTITY, "git_sha": "38e02a8"}
+    exc = assert_identity_failure(
+        lambda: qualify_runtime_identity(
+            identity,
+            intended_git_sha=GIT_SHA,
+            build_upload=build_upload_artifact("04904e028", upload_performed=True),
+            upload=True,
+        ),
+        "does not match intended source commit",
+    )
+    assert_true(exc.qualification["git_match"] is False, str(exc.qualification))
+
+
+def test_upload_image_mismatch_fails() -> None:
+    exc = assert_identity_failure(
+        lambda: qualify_runtime_identity(
+            dict(RUNTIME_IDENTITY),
+            intended_git_sha=GIT_SHA,
+            build_upload=build_upload_artifact("111111111", upload_performed=True),
+            upload=True,
+        ),
+        "does not match uploaded firmware image",
+    )
+    assert_true(exc.qualification["git_match"] is True, str(exc.qualification))
+    assert_true(exc.qualification["image_match"] is False, str(exc.qualification))
+
+
+def test_no_flash_git_match_with_linked_resident_artifact_is_qualified() -> None:
+    result = qualify_runtime_identity(
+        dict(RUNTIME_IDENTITY),
+        intended_git_sha=GIT_SHA,
+        build_upload=build_upload_artifact("04904e028", upload_performed=False),
+        upload=False,
+    )
+    assert_true(result["status"] == "qualified", str(result))
+    assert_true(result["mode"] == "no_flash", str(result))
+    assert_true(result["artifact_linked"] is True, str(result))
+
+
+def test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only() -> None:
+    result = qualify_runtime_identity(
+        dict(RUNTIME_IDENTITY),
+        intended_git_sha=GIT_SHA,
+        build_upload=build_upload_artifact("111111111", upload_performed=False),
+        upload=False,
+    )
+    assert_true(result["status"] == "collection_only", str(result))
+    assert_true(result["artifact_linked"] is False, str(result))
+    assert_true("resident runtime image" in result["reason"], str(result))
+
+
+def test_no_flash_git_mismatch_fails() -> None:
+    identity = {**RUNTIME_IDENTITY, "git_sha": "38e02a8"}
+    assert_identity_failure(
+        lambda: qualify_runtime_identity(
+            identity,
+            intended_git_sha=GIT_SHA,
+            build_upload=build_upload_artifact("04904e028", upload_performed=False),
+            upload=False,
+        ),
+        "does not match intended source commit",
+    )
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -235,15 +345,22 @@ class FakeSerialObserver:
         self.clock = clock
         self.lines = lines
         self.read_count = 0
-        self.boot_marker_count = 0
+        self.identity_tracker = RuntimeIdentityTracker()
         self.timeline = FakeTimeline()
+
+    @property
+    def boot_marker_count(self) -> int:
+        return self.identity_tracker.boot_marker_count
+
+    @property
+    def runtime_identity(self) -> dict[str, Any] | None:
+        return self.identity_tracker.identity
 
     def read_line(self, timeout_s: float) -> str:
         self.clock.now += timeout_s
         self.read_count += 1
         line = self.lines.get(self.read_count, "")
-        if line.startswith(run_window_module.BOOT_PREFIX):
-            self.boot_marker_count += 1
+        self.identity_tracker.observe(line)
         return line
 
 
@@ -253,7 +370,7 @@ def test_serial_boundary_waits_for_attach_time_boot_past_initial_observation() -
         clock,
         {
             8: "ESP-ROM:esp32s3-20210327",
-            10: "BOOT bootId=4 uptimeMs=2053 reset=USB",
+            10: "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028 wifiMaster=on",
         },
     )
     result = establish_serial_boundary(
@@ -269,15 +386,34 @@ def test_serial_boundary_waits_for_attach_time_boot_past_initial_observation() -
     )
 
 
-def test_serial_boundary_admits_an_already_running_quiet_board() -> None:
+def test_missing_and_malformed_boot_identity_fail() -> None:
     clock = FakeClock()
     observer = FakeSerialObserver(clock, {})
-    result = establish_serial_boundary(
-        observer, 5.0, monotonic=clock.monotonic  # type: ignore[arg-type]
+    assert_identity_failure(
+        lambda: establish_serial_boundary(
+            observer, 2.0, monotonic=clock.monotonic  # type: ignore[arg-type]
+        ),
+        "runtime BOOT identity was not observed",
     )
-    assert_true(result["mode"] == "already_running", str(result))
-    assert_true(result["boot_markers_observed"] == 0, str(result))
-    assert_true(clock.now == 2.0, f"unexpected observation duration: {clock.now}")
+    assert_identity_failure(
+        lambda: parse_runtime_boot_identity(
+            "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=bad"
+        ),
+        "malformed runtime BOOT identity",
+    )
+
+
+def test_conflicting_boot_identities_fail() -> None:
+    tracker = RuntimeIdentityTracker()
+    tracker.observe(
+        "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028 wifiMaster=on"
+    )
+    assert_identity_failure(
+        lambda: tracker.observe(
+            "BOOT bootId=5 uptimeMs=2040 reset=SW git=2f32dda image=111111111 wifiMaster=on"
+        ),
+        "runtime BOOT identity changed",
+    )
 
 
 def test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity() -> None:
@@ -288,7 +424,7 @@ def test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
             observer, 3.0, monotonic=clock.monotonic  # type: ignore[arg-type]
         )
     except RuntimeError as exc:
-        assert_true("did not reach boot identity" in str(exc), str(exc))
+        assert_true("runtime BOOT identity was not observed" in str(exc), str(exc))
     else:
         raise AssertionError("incomplete startup was admitted to the evidence window")
 
@@ -301,8 +437,15 @@ def main() -> int:
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
+    test_upload_exact_match_is_qualified()
+    test_upload_git_mismatch_fails()
+    test_upload_image_mismatch_fails()
+    test_no_flash_git_match_with_linked_resident_artifact_is_qualified()
+    test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only()
+    test_no_flash_git_mismatch_fails()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
-    test_serial_boundary_admits_an_already_running_quiet_board()
+    test_missing_and_malformed_boot_identity_fail()
+    test_conflicting_boot_identities_fail()
     test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
     print("bench window tests passed")
     return 0

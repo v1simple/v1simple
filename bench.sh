@@ -15,6 +15,8 @@ RUN_ALL=0
 RUN_REPLAY=0
 CAMERA_REQUESTED=0
 FLASH=1
+COLLECTION_ONLY=0
+COLLECTION_ONLY_REASON=""
 
 usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
@@ -204,6 +206,7 @@ result = str(payload.get("result") or "COLLECTION_FAILED")
 kind = str(payload.get("failure_kind") or "none")
 message = str(
     payload.get("error")
+    or payload.get("qualification_reason")
     or "leg did not produce a readable result"
 )
 message = re.sub(r"^FAIL \([^)]*\):\s*", "", message)
@@ -229,6 +232,18 @@ if isinstance(duration, (int, float)) and isinstance(serial_lines, int):
     print(
         f"[bench] {suite} external window: {duration:g}s"
         f" | serial lines observed {serial_lines}"
+    )
+
+identity = payload.get("runtime_identity") or {}
+qualification = payload.get("runtime_qualification") or {}
+runtime_git = identity.get("git_sha")
+runtime_image = identity.get("image_id")
+mode = qualification.get("mode")
+status = qualification.get("status")
+if all(isinstance(value, str) and value for value in (runtime_git, runtime_image, mode, status)):
+    print(
+        f"[bench] {suite} runtime: git {runtime_git} | image {runtime_image}"
+        f" | {mode} {status}"
     )
 
 camera = payload.get("camera")
@@ -307,6 +322,14 @@ for suite in "${SUITES[@]}"; do
     fi
     continue
   fi
+  if [[ "$result" == "COLLECTION_ONLY" && "$runner_status" -eq 1 ]]; then
+    if ! print_window_summary "$step_dir/window_result.json" "$suite"; then
+      printf '%s: external evidence summary unavailable\n' "$suite" >> "$RUN_LOG"
+    fi
+    COLLECTION_ONLY=1
+    COLLECTION_ONLY_REASON="$reason"
+    continue
+  fi
 
   classification="collection"
   if [[ "$failure_kind" == camera_* ]]; then
@@ -320,6 +343,9 @@ for suite in "${SUITES[@]}"; do
   finish "FAIL ($classification): $suite: $reason" 2
 done
 
+if [[ "$COLLECTION_ONLY" -eq 1 ]]; then
+  finish "COLLECTION-ONLY (unqualified: $COLLECTION_ONLY_REASON)" 1
+fi
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 0 ]]; then
   finish 'PASS-PARTIAL (skipped: camera unplugged)' 1
 fi

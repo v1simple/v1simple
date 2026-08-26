@@ -433,6 +433,7 @@ def make_live_args() -> SimpleNamespace:
         camera=True,
         duration_seconds=1,
         baud=115200,
+        git_sha="2f32ddab989792917b5b3df9206d9751ebfd8289",
         ready_timeout_seconds=1,
         completion_grace_seconds=1,
         scenario="",
@@ -464,9 +465,14 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
             events["serial"] += 1
-            self.boot_marker_count = 0
+            self.boot_marker_count = 1
             self.line_count = 0
             self.timeline = _args[-1]
+            self.runtime_identity = {
+                "boot_id": 42,
+                "git_sha": "2f32dda",
+                "image_id": "04904e028",
+            }
 
         def read_line(self, _timeout: float) -> str:
             return ""
@@ -487,6 +493,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         "CameraCapture": run_window_module.CameraCapture,
         "V1Emulator": run_window_module.V1Emulator,
         "BenchSerial": run_window_module.BenchSerial,
+        "retain_build_upload_artifacts": run_window_module.retain_build_upload_artifacts,
         "wait_for_port": run_window_module.wait_for_port,
         "V1RadioLease": run_window_module.V1RadioLease,
     }
@@ -502,6 +509,15 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     )
     run_window_module.V1Emulator = FakeEmulator  # type: ignore[assignment]
     run_window_module.BenchSerial = FakeSerial  # type: ignore[assignment]
+    run_window_module.retain_build_upload_artifacts = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: {
+            "upload_performed": False,
+            "expected_runtime_image_id": "04904e028",
+            "expected_runtime_image_id_basis": run_window_module.RUNTIME_IMAGE_ID_BASIS,
+            "files": [{"name": "firmware.elf", "sha256": "04904e028" + ("0" * 55)}],
+            "missing": [],
+        }
+    )
     run_window_module.wait_for_port = lambda *_args: "fixture-port"  # type: ignore[assignment]
     run_window_module.V1RadioLease = FakeLease  # type: ignore[assignment]
     try:

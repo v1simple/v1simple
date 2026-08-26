@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import signal
 import stat
 import subprocess
@@ -52,8 +53,10 @@ REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
 RUNTIME_IMAGE_ID_HEX_LENGTH = 9
 RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
 RUN_PROGRESS_INTERVAL_S = 15
-BOOT_PREFIX = "BOOT bootId="
-SERIAL_BOUNDARY_OBSERVE_SECONDS = 2.0
+BOOT_RECORD_PREFIX = "BOOT "
+GIT_IDENTITY_RE = re.compile(r"[0-9a-f]{7,40}")
+RUNTIME_IMAGE_ID_RE = re.compile(r"[0-9a-f]{9}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 BOOT_START_PREFIXES = (
     "ESP-ROM:",
     "Build:Mar ",
@@ -91,6 +94,19 @@ class CameraEvidenceFailure(RuntimeError):
     def __init__(self, message: str, camera: CameraCapture):
         super().__init__(message)
         self.camera = camera
+
+
+class RuntimeIdentityFailure(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        identity: dict[str, Any] | None = None,
+        qualification: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.identity = identity or {}
+        self.qualification = qualification or {}
 
 
 def _lease_owner(path: Path) -> Path:
@@ -333,8 +349,170 @@ def retain_build_upload_artifacts(
     return {**file_artifact(path), **payload}
 
 
+def parse_runtime_boot_identity(line: str) -> dict[str, Any] | None:
+    if not line.startswith(BOOT_RECORD_PREFIX):
+        return None
+
+    fields: dict[str, str] = {}
+    for token in line.split()[1:]:
+        if token.count("=") != 1:
+            raise RuntimeIdentityFailure("malformed runtime BOOT identity")
+        key, value = token.split("=", 1)
+        if not key or not value or key in fields:
+            raise RuntimeIdentityFailure("malformed runtime BOOT identity")
+        fields[key] = value
+
+    missing = [name for name in ("bootId", "git", "image") if name not in fields]
+    if missing:
+        raise RuntimeIdentityFailure(
+            "malformed runtime BOOT identity: missing " + ", ".join(missing)
+        )
+    try:
+        boot_id = int(fields["bootId"], 10)
+    except ValueError as exc:
+        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid bootId") from exc
+    if not (1 <= boot_id <= 0xFFFFFFFF) or str(boot_id) != fields["bootId"]:
+        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid bootId")
+    if GIT_IDENTITY_RE.fullmatch(fields["git"]) is None:
+        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid git")
+    if RUNTIME_IMAGE_ID_RE.fullmatch(fields["image"]) is None:
+        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid image")
+    return {
+        "boot_id": boot_id,
+        "git_sha": fields["git"],
+        "image_id": fields["image"],
+    }
+
+
+class RuntimeIdentityTracker:
+    def __init__(self) -> None:
+        self.identity: dict[str, Any] | None = None
+        self.boot_marker_count = 0
+
+    def observe(self, line: str) -> None:
+        if not line.startswith(BOOT_RECORD_PREFIX):
+            return
+        self.boot_marker_count += 1
+        identity = parse_runtime_boot_identity(line)
+        assert identity is not None
+        if self.identity is not None and identity != self.identity:
+            raise RuntimeIdentityFailure(
+                "runtime BOOT identity changed during collection",
+                identity=identity,
+            )
+        self.identity = identity
+
+
+def _retained_elf_image_id(build_upload: dict[str, Any]) -> tuple[str, str]:
+    if build_upload.get("expected_runtime_image_id_basis") != RUNTIME_IMAGE_ID_BASIS:
+        return "", "retained firmware ELF identity basis is missing or inconsistent"
+    files = build_upload.get("files")
+    if not isinstance(files, list):
+        return "", "retained firmware ELF artifact list is missing"
+    elf_files = [
+        item
+        for item in files
+        if isinstance(item, dict) and item.get("name") == "firmware.elf"
+    ]
+    if len(elf_files) != 1:
+        return "", "retained firmware ELF artifact is missing or duplicated"
+    elf_sha = elf_files[0].get("sha256")
+    if not isinstance(elf_sha, str) or SHA256_RE.fullmatch(elf_sha) is None:
+        return "", "retained firmware ELF hash is missing or malformed"
+    image_id = elf_sha[:RUNTIME_IMAGE_ID_HEX_LENGTH]
+    if build_upload.get("expected_runtime_image_id") != image_id:
+        return "", "retained firmware ELF identity is inconsistent with its manifest"
+    return image_id, ""
+
+
+def qualify_runtime_identity(
+    identity: dict[str, Any],
+    *,
+    intended_git_sha: str,
+    build_upload: dict[str, Any],
+    upload: bool,
+) -> dict[str, Any]:
+    mode = "upload" if upload else "no_flash"
+    qualification: dict[str, Any] = {
+        "status": "unqualified",
+        "mode": mode,
+        "git_match": False,
+        "artifact_linked": False,
+    }
+    observed_git = str(identity.get("git_sha") or "")
+    if GIT_IDENTITY_RE.fullmatch(intended_git_sha) is None:
+        raise RuntimeIdentityFailure(
+            "intended source git identity is missing or malformed",
+            identity=identity,
+            qualification=qualification,
+        )
+    if GIT_IDENTITY_RE.fullmatch(observed_git) is None or not intended_git_sha.startswith(
+        observed_git
+    ):
+        raise RuntimeIdentityFailure(
+            f"runtime git {observed_git or '<missing>'} does not match intended source commit {intended_git_sha}",
+            identity=identity,
+            qualification=qualification,
+        )
+    qualification["git_match"] = True
+
+    if bool(build_upload.get("upload_performed")) != upload:
+        raise RuntimeIdentityFailure(
+            f"{mode} artifact manifest does not match the collection mode",
+            identity=identity,
+            qualification=qualification,
+        )
+    artifact_image_id, artifact_problem = _retained_elf_image_id(build_upload)
+    observed_image_id = str(identity.get("image_id") or "")
+    image_match = bool(artifact_image_id and observed_image_id == artifact_image_id)
+    qualification.update(
+        {
+            "artifact_image_id": artifact_image_id,
+            "image_match": image_match,
+        }
+    )
+
+    if upload:
+        if artifact_problem:
+            raise RuntimeIdentityFailure(
+                artifact_problem,
+                identity=identity,
+                qualification=qualification,
+            )
+        if not image_match:
+            raise RuntimeIdentityFailure(
+                f"runtime image {observed_image_id or '<missing>'} does not match uploaded firmware image {artifact_image_id}",
+                identity=identity,
+                qualification=qualification,
+            )
+        qualification.update(
+            {
+                "status": "qualified",
+                "artifact_linked": True,
+                "artifact": BUILD_UPLOAD_ARTIFACTS_NAME,
+            }
+        )
+        return qualification
+
+    if image_match:
+        qualification.update(
+            {
+                "status": "qualified",
+                "artifact_linked": True,
+                "artifact": BUILD_UPLOAD_ARTIFACTS_NAME,
+            }
+        )
+        return qualification
+
+    reason = artifact_problem or (
+        f"resident runtime image {observed_image_id or '<missing>'} is not linked to the retained firmware ELF"
+    )
+    qualification.update({"status": "collection_only", "reason": reason})
+    return qualification
+
+
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
-    payload.setdefault("schema_version", 4)
+    payload.setdefault("schema_version", 5)
     payload.setdefault("timestamp_utc", utc_now())
     safe = sanitize_artifact_value(payload, run_dir=out_dir)
     (out_dir / "window_result.json").write_text(
@@ -449,8 +627,16 @@ class BenchSerial:
         self.ser.open()
         self.ser.reset_input_buffer()
         self.timeline = timeline
-        self.boot_marker_count = 0
+        self.identity_tracker = RuntimeIdentityTracker()
         self.line_count = 0
+
+    @property
+    def boot_marker_count(self) -> int:
+        return self.identity_tracker.boot_marker_count
+
+    @property
+    def runtime_identity(self) -> dict[str, Any] | None:
+        return self.identity_tracker.identity
 
     def read_line(self, timeout_s: float = 0.25) -> str:
         self.ser.timeout = timeout_s
@@ -462,9 +648,8 @@ class BenchSerial:
         self.log.write(safe + "\n")
         self.log.flush()
         self.line_count += 1
-        if text.startswith(BOOT_PREFIX):
-            self.boot_marker_count += 1
         self.timeline.record("serial_receive", line=safe)
+        self.identity_tracker.observe(text)
         return text
 
     def close(self) -> None:
@@ -486,29 +671,22 @@ def establish_serial_boundary(
         raise ValueError("serial readiness timeout must be positive")
 
     started = monotonic()
-    observe_deadline = started + min(
-        SERIAL_BOUNDARY_OBSERVE_SECONDS, ready_timeout_s
-    )
     readiness_deadline = started + ready_timeout_s
     initial_boot_markers = observer.boot_marker_count
     startup_detected = False
 
     while True:
-        if observer.boot_marker_count != initial_boot_markers:
-            mode = "startup_completed"
+        if observer.runtime_identity is not None:
+            mode = "startup_completed" if startup_detected else "identity_observed"
             break
 
         now = monotonic()
-        deadline = readiness_deadline if startup_detected else observe_deadline
-        if now >= deadline:
-            if startup_detected:
-                raise RuntimeError(
-                    "board startup did not reach boot identity before the external evidence window"
-                )
-            mode = "already_running"
-            break
+        if now >= readiness_deadline:
+            raise RuntimeIdentityFailure(
+                "runtime BOOT identity was not observed before the external evidence window"
+            )
 
-        line = observer.read_line(min(0.25, deadline - now))
+        line = observer.read_line(min(0.25, readiness_deadline - now))
         if line.startswith(BOOT_START_PREFIXES):
             startup_detected = True
 
@@ -516,6 +694,7 @@ def establish_serial_boundary(
         "mode": mode,
         "startup_detected": startup_detected,
         "boot_markers_observed": observer.boot_marker_count - initial_boot_markers,
+        "runtime_identity": observer.runtime_identity,
         "duration_seconds": max(0.0, monotonic() - started),
     }
     observer.timeline.record("serial_boundary_established", **result)
@@ -787,6 +966,13 @@ def collect_live(
 
             observer = BenchSerial(port, args.baud, out_dir / "bench_serial.log", timeline)
             establish_serial_boundary(observer, args.ready_timeout_seconds)
+            assert observer.runtime_identity is not None
+            runtime_qualification = qualify_runtime_identity(
+                observer.runtime_identity,
+                intended_git_sha=args.git_sha,
+                build_upload=artifacts["build_upload"],
+                upload=args.upload,
+            )
             initial_boot_markers = observer.boot_marker_count
 
             emulator.start()
@@ -824,6 +1010,7 @@ def collect_live(
                 ),
                 "serial_session_continuous": True,
                 "process_session_continuous": True,
+                "runtime_identity_continuous": True,
             }
             timeline.record("external_window_completed", **completion)
         finally:
@@ -875,6 +1062,8 @@ def collect_live(
             "completion": completion,
             "emulator": emulator_result,
             "camera": camera_result,
+            "runtime_identity": observer.runtime_identity,
+            "runtime_qualification": runtime_qualification,
         }
 
 
@@ -926,10 +1115,16 @@ def main() -> int:
 
     try:
         result = collect_live(args, out_dir, artifacts)
+        qualification = result["runtime_qualification"]
+        verdict = (
+            "PASS"
+            if qualification.get("status") == "qualified"
+            else "COLLECTION_ONLY"
+        )
         write_window_result(
             out_dir,
             {
-                "result": "PASS",
+                "result": verdict,
                 "evidence_contract": "external_only",
                 "suite": args.suite,
                 "duration_seconds": args.duration_seconds,
@@ -941,10 +1136,31 @@ def main() -> int:
                 "completion": result["completion"],
                 "emulator": result["emulator"],
                 "camera": result["camera"],
+                "runtime_identity": result["runtime_identity"],
+                "runtime_qualification": qualification,
                 "artifacts": artifacts,
+                **(
+                    {"qualification_reason": qualification.get("reason", "unqualified")}
+                    if verdict == "COLLECTION_ONLY"
+                    else {}
+                ),
             },
         )
+        if verdict == "COLLECTION_ONLY":
+            print(
+                f"[bench] collection_only: {qualification.get('reason', 'unqualified')}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
         return 0
+    except RuntimeIdentityFailure as exc:
+        return fail(
+            str(exc),
+            failure_kind="runtime_identity",
+            runtime_identity=exc.identity,
+            runtime_qualification=exc.qualification,
+        )
     except CameraPreflightFailure as exc:
         return fail(
             str(exc),

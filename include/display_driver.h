@@ -47,13 +47,6 @@
 #ifndef LCD_DATA3
 #define LCD_DATA3 14
 #endif
-#ifndef LCD_RST
-#define LCD_RST 21
-#endif
-#ifndef LCD_BL
-#define LCD_BL 8
-#endif
-
 // TFT_eSPI compatibility defines for Arduino_GFX
 // Text datum (alignment) constants
 #define TL_DATUM 0 // Top Left

@@ -14,6 +14,7 @@
 #include "battery_manager.h"
 #include "wifi_manager.h"
 #include "storage_manager.h"
+#include "waveshare_349_hardware.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <algorithm>
@@ -96,10 +97,6 @@ using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 // Drawing primitives, coordinate transforms, dimColor — see include/display_draw.h
 #include "display_draw.h"
 
-// Platform-specific state kept in display.cpp
-// TFT_BL alias for backlight pin
-#define TFT_BL LCD_BL
-
 // Global display instance reference — defined here, declared extern in display_palette.h
 V1Display* g_displayInstance = nullptr;
 
@@ -150,20 +147,20 @@ bool V1Display::begin() {
     gfxPanel_.reset();
     bus_.reset();
 
-    // Arduino_GFX initialization for Waveshare 3.49"
-    // Waveshare 3.49" has INVERTED backlight PWM: 0 = full brightness, 255 = off
-    pinMode(LCD_BL, OUTPUT);
-    analogWrite(LCD_BL, 255); // Start with backlight off (inverted: 255=off)
+    auto& boardHardware = waveshare_349::hardware();
+    if (!boardHardware.ready()) {
+        Serial.println("[Display] ERROR: Waveshare hardware revision is unknown; staying dark");
+        boardHardware.forceBacklightOff();
+        return false;
+    }
+    boardHardware.forceBacklightOff();
 
-    // Manual RST toggle with Waveshare timing BEFORE creating bus
-    // This is critical - Waveshare examples do: HIGH(30ms) -> LOW(250ms) -> HIGH(30ms)
-    pinMode(LCD_RST, OUTPUT);
-    digitalWrite(LCD_RST, HIGH);
-    delay(30);
-    digitalWrite(LCD_RST, LOW);
-    delay(250);
-    digitalWrite(LCD_RST, HIGH);
-    delay(30);
+    // Preserve the qualified V1 timing while routing V2 reset through EXIO5.
+    if (!boardHardware.resetPanel()) {
+        Serial.println("[Display] ERROR: panel reset sequence failed");
+        boardHardware.forceBacklightOff();
+        return false;
+    }
 
     // Create QSPI bus
     bus_.reset(new (std::nothrow) Arduino_ESP32QSPI(LCD_CS,    // CS
@@ -233,8 +230,7 @@ bool V1Display::begin() {
     tft_->fillScreen(COLOR_BLACK);
     DISPLAY_FLUSH();
 
-    // Turn on backlight (inverted: 0 = full brightness)
-    analogWrite(LCD_BL, 0); // Full brightness (inverted: 0=on)
+    boardHardware.setBrightness(255);
     delay(30);
 
     delay(10); // Give hardware time to settle
@@ -284,11 +280,7 @@ bool V1Display::begin() {
 }
 
 void V1Display::setBrightness(uint8_t level) {
-// PWM brightness control for Arduino_GFX
-// Waveshare 3.49" has INVERTED backlight: 0=full on, 255=off
-#ifdef LCD_BL
-    analogWrite(LCD_BL, 255 - level); // Invert the level
-#endif
+    waveshare_349::hardware().setBrightness(level);
 }
 
 void V1Display::clear() {

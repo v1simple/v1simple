@@ -336,9 +336,8 @@ void V1Display::showBootSplash() {
     DISPLAY_FLUSH();
     const unsigned long flushMs = millis() - flushStartMs;
 
-    // Turn on backlight now that splash is drawn
-    // Waveshare 3.49" has INVERTED backlight: 0=full on, 255=off
-    analogWrite(LCD_BL, 0); // Full brightness (inverted)
+    // Turn on backlight now that splash is drawn.
+    setBrightness(255);
     Serial.println("Backlight ON (post-splash, inverted)");
     Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n", millis() - splashStartMs, logoMs, flushMs);
 }

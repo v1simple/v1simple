@@ -8,6 +8,7 @@
 #include "audio_i2c_utils.h"
 #include "display_driver.h"
 #include "poweroff_policy.h"
+#include "waveshare_349_hardware.h"
 #include <Wire.h>
 #include <esp_adc/adc_oneshot.h>
 #include <esp_adc/adc_cali.h>
@@ -112,10 +113,7 @@ bool wakeMaskIsInactive(uint64_t wakeMask) {
 }
 
 void releaseBacklightSleepHoldAfterAbort() {
-    gpio_deep_sleep_hold_dis();
-    gpio_hold_dis(static_cast<gpio_num_t>(LCD_BL));
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
+    waveshare_349::hardware().releaseBacklightSleepHold();
 }
 
 } // namespace
@@ -151,6 +149,9 @@ bool BatteryManager::begin() {
             BATTERY_LOGLN("[Battery] Power latch engaged - device will stay on after button release");
         } else {
             Serial.println("[Battery] WARN: Power latch verification failed!");
+        }
+        if (!waveshare_349::hardware().detectAndConfigure()) {
+            Serial.println("[Battery] WARN: display hardware revision unresolved; display will remain dark");
         }
     }
 
@@ -288,10 +289,11 @@ bool BatteryManager::initTCA9554() {
     tca9554Wire.write(TCA9554_OUTPUT_PORT);
     tca9554Wire.endTransmission(false);
     tca9554Wire.requestFrom((uint8_t)TCA9554_I2C_ADDR, (uint8_t)1);
-    uint8_t current = 0;
-    if (tca9554Wire.available() >= 1) {
-        current = tca9554Wire.read();
+    if (tca9554Wire.available() < 1) {
+        Serial.println("[Battery] TCA9554 output read failed during initialization");
+        return false;
     }
+    uint8_t current = tca9554Wire.read();
     current |= (1 << TCA9554_PWR_LATCH_PIN); // Ensure latch pin HIGH
     tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
     tca9554Wire.write(TCA9554_OUTPUT_PORT);
@@ -303,10 +305,26 @@ bool BatteryManager::initTCA9554() {
         return false;
     }
 
-    // Configure pin 6 as output (remains HIGH)
+    // Configure pin 6 as output (remains HIGH) without changing ownership of
+    // unrelated expander pins. Keep P5 as an input until revision detection
+    // decides whether it is V1 TE or V2 reset.
     tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
     tca9554Wire.write(TCA9554_CONFIG_PORT);
-    tca9554Wire.write(0xBF); // All inputs except pin 6 (bit 6 = 0 = output)
+    if (tca9554Wire.endTransmission(false) != 0) {
+        Serial.println("[Battery] TCA9554 config read start failed");
+        return false;
+    }
+    tca9554Wire.requestFrom((uint8_t)TCA9554_I2C_ADDR, (uint8_t)1);
+    if (tca9554Wire.available() < 1) {
+        Serial.println("[Battery] TCA9554 config read failed during initialization");
+        return false;
+    }
+    uint8_t config = tca9554Wire.read();
+    config &= static_cast<uint8_t>(~(1u << TCA9554_PWR_LATCH_PIN));
+    config |= static_cast<uint8_t>(1u << waveshare_349::Hardware::kExioResetOrTe);
+    tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
+    tca9554Wire.write(TCA9554_CONFIG_PORT);
+    tca9554Wire.write(config);
     error = tca9554Wire.endTransmission();
 
     if (error != 0) {
@@ -579,13 +597,11 @@ bool BatteryManager::latchPowerOn() {
 static void blankPanelBacklightForSleepOrPowerOff() {
     Serial.println("[Battery] Fading backlight...");
     for (int i = 0; i <= 255; i += 5) {
-        analogWrite(LCD_BL, i); // Inverted: 255 = off
+        waveshare_349::hardware().setBrightness(static_cast<uint8_t>(255 - i));
         delay(10);
     }
 
-    analogWrite(LCD_BL, 255); // Backlight off (inverted)
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH); // Force off (inverted backlight)
+    waveshare_349::hardware().forceBacklightOff();
     delay(50);
 }
 
@@ -615,8 +631,7 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, uint64_t pullupMask, cons
     }
 
     Serial.flush();
-    gpio_hold_en(static_cast<gpio_num_t>(LCD_BL));
-    gpio_deep_sleep_hold_en();
+    waveshare_349::hardware().holdBacklightForDeepSleep();
 
     if (!wakeMaskIsInactive(wakeMask)) {
         Serial.println("[Battery] ERROR: selected deep-sleep wake input is already asserted");

@@ -7,7 +7,6 @@
 #include "main_internals.h"
 
 #include <Arduino.h>
-#include <driver/gpio.h>
 #include <esp_task_wdt.h>
 
 #include "ble_bond_backup_writer.h"
@@ -18,6 +17,7 @@
 #include "modules/health/health_journal.h"
 #include "settings.h"
 #include "settings_internals.h"
+#include "waveshare_349_hardware.h"
 
 namespace {
 void feedLoopTaskWatchdogDuringShutdown() {
@@ -83,11 +83,7 @@ void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason, const Sett
 
 void initializeEarlyBootDiagnostics() {
     delay(50);
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
-    gpio_deep_sleep_hold_dis();
-    gpio_hold_dis(static_cast<gpio_num_t>(LCD_BL));
-    digitalWrite(LCD_BL, HIGH);
+    waveshare_349::hardware().prepareEarlyCandidates();
 
     Serial.begin(115200);
     delay(30);

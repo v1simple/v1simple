@@ -745,7 +745,6 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
         written += prefs.putBool(kNvsRestorePending, true);
     }
     written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
-    written += prefs.putBool(kNvsEnableWifi, settings_.enableWifi);
     written += prefs.putString(kNvsApSsid, settings_.apSSID);
     // Obfuscate passwords before storing
     written += prefs.putString(kNvsApPassword, encodeObfuscatedForStorage(settings_.apPassword));

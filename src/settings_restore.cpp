@@ -69,10 +69,6 @@ bool SettingsManager::checkAndRestoreFromSD() {
             if (hasSdBackup) {
                 Serial.println("[Settings] Attempting partial recovery from SD backup");
                 // Recover WiFi settings
-                bool backupEnableWifi = true;
-                if (parseBoolVariant(bestBackupDoc["enableWifi"], backupEnableWifi)) {
-                    settings_.enableWifi = backupEnableWifi;
-                }
                 const char* backupApSSID = bestBackupDoc["apSSID"] | "";
                 if (backupApSSID[0] != '\0') {
                     settings_.apSSID = sanitizeApSsidValue(String(backupApSSID));

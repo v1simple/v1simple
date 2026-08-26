@@ -65,7 +65,7 @@ bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal&
 void resumePersistenceAfterAbortedShutdown(ProductEventLog& events);
 
 /// Emit the privacy-safe identity line shared by normal and maintenance boots.
-void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason, const SettingsManager& settings);
+void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason);
 
 /// Early setup diagnostics: serial settle, GPIO hold release, panic/NVS checks.
 void initializeEarlyBootDiagnostics();

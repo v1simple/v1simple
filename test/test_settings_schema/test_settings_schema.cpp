@@ -8,7 +8,6 @@ void tearDown(void) {}
 void test_v1_settings_defaults_cover_current_runtime_shape() {
 	V1Settings settings;
 
-	TEST_ASSERT_TRUE(settings.enableWifi);
 	TEST_ASSERT_EQUAL_STRING("V1-Simple", settings.apSSID.c_str());
 	TEST_ASSERT_TRUE(settings.proxyBLE);
 	TEST_ASSERT_EQUAL_UINT8(200, settings.brightness);

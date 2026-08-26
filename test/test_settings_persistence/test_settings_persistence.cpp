@@ -106,7 +106,6 @@ void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
 #define ASSERT_STRING_FIELD(field)                                                                                     \
     TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.field.c_str(), actual.field.c_str(), #field)
 
-    ASSERT_BOOL_FIELD(enableWifi);
     ASSERT_STRING_FIELD(apSSID);
     ASSERT_STRING_FIELD(apPassword);
     ASSERT_BOOL_FIELD(wifiClientEnabled);
@@ -407,7 +406,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
 
     SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
-    settings.enableWifi = false;
     settings.apSSID = "RoadRig";
     settings.apPassword = "unit-test-pass";
     settings.wifiClientEnabled = true;
@@ -468,6 +466,7 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     const String activeNs = activeNamespaceOrEmpty();
     TEST_ASSERT_TRUE(activeNs.length() > 0);
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeNs.c_str(), "apSSID"));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(activeNs.c_str(), "enableWifi"));
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeNs.c_str(), "volFadeEn"));
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeNs.c_str(), "obdMinRssi"));
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeNs.c_str(), "obdName"));
@@ -481,7 +480,6 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     reloaded.load();
     const V1Settings& loaded = reloaded.get();
 
-    TEST_ASSERT_FALSE(loaded.enableWifi);
     TEST_ASSERT_EQUAL_STRING("RoadRig", loaded.apSSID.c_str());
     TEST_ASSERT_EQUAL_STRING("unit-test-pass", loaded.apPassword.c_str());
     TEST_ASSERT_TRUE(loaded.wifiClientEnabled);
@@ -540,7 +538,7 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
     TEST_ASSERT_EQUAL_STRING("v1simple_sd_backup", backupDoc["_type"].as<const char*>());
     TEST_ASSERT_EQUAL_UINT32(1000u, backupDoc["_timestamp"].as<uint32_t>());
-    TEST_ASSERT_FALSE(backupDoc["enableWifi"].as<bool>());
+    TEST_ASSERT_TRUE(backupDoc["enableWifi"].isNull());
     TEST_ASSERT_EQUAL_STRING("RoadRig", backupDoc["apSSID"].as<const char*>());
     TEST_ASSERT_TRUE(backupDoc["wifiClientEnabled"].as<bool>());
     TEST_ASSERT_EQUAL_STRING("GarageNet", backupDoc["wifiClientSSID"].as<const char*>());
@@ -587,6 +585,32 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_TRUE(backupDoc["apPassword"].is<const char*>());
     TEST_ASSERT_TRUE(
         String(backupDoc["apPassword"].as<const char*>()).startsWith(OBFUSCATION_HEX_PREFIX));
+}
+
+void test_legacy_wifi_master_backup_field_is_ignored_and_not_reexported() {
+    SettingsManager manager(storage, profiles);
+
+    JsonDocument legacyDoc;
+    legacyDoc["_type"] = "v1simple_backup";
+    legacyDoc["enableWifi"] = false;
+    legacyDoc["apSSID"] = "LegacyRig";
+
+    const SettingsBackupApplyResult result = manager.applyBackupDocument(legacyDoc, false);
+    TEST_ASSERT_TRUE(result.success);
+    TEST_ASSERT_EQUAL_STRING("LegacyRig", manager.get().apSSID.c_str());
+
+    const String activeNs = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(activeNs.length() > 0);
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(activeNs.c_str(), "enableWifi"));
+
+    JsonDocument currentDoc;
+    BackupPayloadBuilder::buildBackupDocument(
+        currentDoc,
+        manager.get(),
+        profiles,
+        BackupPayloadBuilder::BackupTransport::HttpDownload,
+        2000);
+    TEST_ASSERT_TRUE(currentDoc["enableWifi"].isNull());
 }
 
 void test_ap_password_restored_from_backup_when_key_present() {
@@ -1970,6 +1994,7 @@ int main() {
     RUN_TEST(test_password_obfuscation_round_trip_uses_production_encoding);
     RUN_TEST(test_load_migrates_legacy_one_sided_slot_volume_to_no_change);
     RUN_TEST(test_save_load_and_backup_round_trip_current_shape_fields);
+    RUN_TEST(test_legacy_wifi_master_backup_field_is_ignored_and_not_reexported);
     RUN_TEST(test_ap_password_restored_from_backup_when_key_present);
     RUN_TEST(test_ap_password_preserved_when_backup_lacks_key);
     RUN_TEST(test_http_backup_omits_all_wifi_credentials);

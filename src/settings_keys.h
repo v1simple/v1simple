@@ -17,7 +17,6 @@ inline constexpr const char* kNvsBackupDueRevision = "backupDueRev";
 inline constexpr const char* kNvsBackupCompletedRevision = "backupDoneRev";
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
-inline constexpr const char* kNvsEnableWifi = "enableWifi";
 inline constexpr const char* kNvsApSsid = "apSSID";
 inline constexpr const char* kNvsApPassword = "apPassword";
 inline constexpr const char* kNvsWifiClientEnabled = "wifiClientEn";

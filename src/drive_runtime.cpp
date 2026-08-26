@@ -273,11 +273,7 @@ void DriveRuntime::finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs)
     Serial.println("BLE scan active from setup path");
     logBootStage("core_pipeline", setupStartMs, stageStartedMs);
 
-    if (!settings_.get().enableWifi) {
-        Serial.println("[WiFi] Master disabled in settings — startup and loop processing skipped");
-    } else {
-        Serial.println("Setup complete - BLE scanning, WiFi off; BOOT long-press requests maintenance reboot");
-    }
+    Serial.println("Setup complete - BLE scanning, WiFi off; BOOT long-press requests maintenance reboot");
     logBootStage("wifi", setupStartMs, stageStartedMs);
     Serial.printf("[Boot] setup total: %lu ms\n", static_cast<unsigned long>(millis() - setupStartMs));
 }
@@ -303,9 +299,8 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
     initializeBle(setupStartMs, stageStartedMs);
     initializeTouchAndUi();
     logBootStage("ui_modules", setupStartMs, stageStartedMs);
-    logBootIdentity(bootId, resetReason, settings_);
-    Serial.println(settings_.get().enableWifi ? "[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance"
-                                              : "[WiFi] Master disabled - startup and loop processing skipped");
+    logBootIdentity(bootId, resetReason);
+    Serial.println("[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance");
 
     Serial.println("Initializing touch handler...");
     if (touch_.begin(17, 18, AXS_TOUCH_ADDR, -1)) {

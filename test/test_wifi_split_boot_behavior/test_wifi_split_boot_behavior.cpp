@@ -147,9 +147,14 @@ void test_normal_boot_executes_drive_only_and_never_touches_wifi_runtime() {
     TEST_ASSERT_EQUAL(0, clockReads);
 }
 
-void test_maintenance_boot_starts_services_and_stops_wifi() {
+void test_maintenance_boot_starts_services_without_wifi_master_setting_dependency() {
     FakeDriveRuntime drive;
     FakeMaintenanceRuntime maintenance;
+
+    const std::string coordinator = readFile(projectRoot() + "/src/runtime_coordinator.h");
+    const std::string runtime = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
+    TEST_ASSERT_EQUAL(std::string::npos, coordinator.find("enableWifi"));
+    TEST_ASSERT_EQUAL(std::string::npos, runtime.find("enableWifi"));
 
     MainRuntimeCoordinator::start(true, 10, 11, 1, drive, maintenance);
     MainRuntimeCoordinator::tick(drive, maintenance, []() { return 25U; });
@@ -235,7 +240,7 @@ void test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission() 
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_normal_boot_executes_drive_only_and_never_touches_wifi_runtime);
-    RUN_TEST(test_maintenance_boot_starts_services_and_stops_wifi);
+    RUN_TEST(test_maintenance_boot_starts_services_without_wifi_master_setting_dependency);
     RUN_TEST(test_maintenance_wifi_recovery_restarts_an_unreachable_service);
     RUN_TEST(test_power_presentation_suppresses_maintenance_wifi_service);
     RUN_TEST(test_maintenance_service_wires_routes_settings_and_runtime_status_once);

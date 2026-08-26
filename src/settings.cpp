@@ -188,8 +188,6 @@ void SettingsManager::load() {
         Serial.println("[Settings] NVS marked restore-pending; SD backup remains authoritative");
     }
 
-    settings_.enableWifi = preferences_.getBool(kNvsEnableWifi, true);
-
     // Handle AP password storage - version 1 was plain text, version 2+ is obfuscated
     String storedApPwd = preferences_.getString(kNvsApPassword, "");
 
@@ -435,8 +433,8 @@ void SettingsManager::load() {
         requestDeferredBackupFromCurrentState();
     }
 
-    Serial.printf("[Settings] OK wifi=%s proxy=%s bright=%d autoPush=%s\n", settings_.enableWifi ? "on" : "off",
-                  settings_.proxyBLE ? "on" : "off", settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
+    Serial.printf("[Settings] OK proxy=%s bright=%d autoPush=%s\n", settings_.proxyBLE ? "on" : "off",
+                  settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
 }
 
 void SettingsManager::save() {

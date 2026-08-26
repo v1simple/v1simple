@@ -106,7 +106,6 @@ enum VoiceAlertMode {
 
 struct V1Settings {
     // WiFi settings
-    bool enableWifi;
     String apSSID;            // AP mode SSID (device hotspot name)
     String apPassword;        // AP mode password
 
@@ -290,7 +289,7 @@ struct V1Settings {
 
     // Default constructor with sensible defaults
     V1Settings()
-        : enableWifi(true), apSSID("V1-Simple"), apPassword("setupv1simple"),
+        : apSSID("V1-Simple"), apPassword("setupv1simple"),
           wifiClientEnabled(false),                                   // WiFi client disabled by default
           wifiClientSSID(""),                                         // No saved network
           proxyBLE(true), proxyName("V1-Proxy"),                      // Must match NVS load() default

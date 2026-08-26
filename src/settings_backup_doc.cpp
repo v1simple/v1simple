@@ -339,7 +339,6 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         }
         // else: decoded value is too short / corrupt — keep existing
     }
-    restoreBool("enableWifi", settings_.enableWifi);
     if (doc["apSSID"].is<const char*>())
         settings_.apSSID = sanitizeApSsidValue(doc["apSSID"].as<String>());
     bool parsedWifiClientEnabled = false;
@@ -790,8 +789,7 @@ bool backupFieldMatchesString(const JsonDocument& doc, const char* key, const St
 
 bool backupAppearsInSyncWithNvs(const JsonDocument& doc, const V1Settings& current) {
     // Core fields that should track one-for-one between healthy NVS and SD backup.
-    return backupFieldMatchesBool(doc, "enableWifi", current.enableWifi) &&
-           backupFieldMatchesBool(doc, "wifiClientEnabled", current.wifiClientEnabled) &&
+    return backupFieldMatchesBool(doc, "wifiClientEnabled", current.wifiClientEnabled) &&
            backupFieldMatchesString(doc, "wifiClientSSID", current.wifiClientSSID) &&
            backupFieldMatchesBool(doc, "proxyBLE", current.proxyBLE) &&
            backupFieldMatchesString(doc, "proxyName", current.proxyName) &&

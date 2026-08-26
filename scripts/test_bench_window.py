@@ -448,7 +448,7 @@ def test_serial_boundary_waits_for_attach_time_boot_past_initial_observation() -
         clock,
         {
             8: "ESP-ROM:esp32s3-20210327",
-            10: "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028 wifiMaster=on",
+            10: "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028",
         },
     )
     result = establish_serial_boundary(
@@ -484,11 +484,11 @@ def test_missing_and_malformed_boot_identity_fail() -> None:
 def test_conflicting_boot_identities_fail() -> None:
     tracker = RuntimeIdentityTracker()
     tracker.observe(
-        "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028 wifiMaster=on"
+        "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028"
     )
     assert_identity_failure(
         lambda: tracker.observe(
-            "BOOT bootId=5 uptimeMs=2040 reset=SW git=2f32dda image=111111111 wifiMaster=on"
+            "BOOT bootId=5 uptimeMs=2040 reset=SW git=2f32dda image=111111111"
         ),
         "runtime BOOT identity changed",
     )

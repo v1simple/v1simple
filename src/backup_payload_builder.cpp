@@ -50,7 +50,6 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["_timestamp"] = snapshotMs;
     doc["timestamp"] = snapshotMs;
 
-    doc["enableWifi"] = settings.enableWifi;
     doc["apSSID"] = settings.apSSID;
     // Credentials are recovery data, not network-downloadable settings.
     // Keep the AP password only in the local SD backup. HTTP downloads omit it,

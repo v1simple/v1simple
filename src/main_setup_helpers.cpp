@@ -73,12 +73,10 @@ void resumePersistenceAfterAbortedShutdown(ProductEventLog& events) {
     resumeDeferredSettingsBackupWriterAfterAbortedShutdown();
 }
 
-void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason, const SettingsManager& settings) {
-    const V1Settings& bootSettings = settings.get();
-    Serial.printf("BOOT bootId=%lu uptimeMs=%lu reset=%s git=%s image=%s wifiMaster=%s\n",
+void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason) {
+    Serial.printf("BOOT bootId=%lu uptimeMs=%lu reset=%s git=%s image=%s\n",
                   static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()),
-                  resetReasonToString(resetReason), getBuildGitSha(), getRuntimeImageId(),
-                  bootSettings.enableWifi ? "on" : "off");
+                  resetReasonToString(resetReason), getBuildGitSha(), getRuntimeImageId());
 }
 
 void initializeEarlyBootDiagnostics() {

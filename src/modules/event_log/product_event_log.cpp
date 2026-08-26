@@ -105,7 +105,12 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     builder_.begin(&ProductEventLog::emitFromBuilder, this);
     enabled_.store(true, std::memory_order_release);
     accepting_.store(true, std::memory_order_release);
-    return startWriterTask();
+    if (!startWriterTask()) {
+        vQueueDelete(queue_);
+        queue_ = nullptr;
+        return false;
+    }
+    return true;
 }
 
 bool ProductEventLog::startWriterTask() {

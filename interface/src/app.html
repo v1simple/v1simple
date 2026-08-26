@@ -1,15 +1,35 @@
 <!doctype html>
-<html lang="en" data-theme="v1dark">
+<html lang="en" data-theme="amethyst" class="dark">
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="theme-color" content="#0f0f1a" />
+        <meta name="theme-color" content="#17151a" />
         <meta name="description" content="V1 Simple embedded configuration UI" />
         <title>V1 Simple</title>
         <link
             rel="icon"
             href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>"
         />
+        <script>
+            (() => {
+                const themes = ['amethyst', 'observiply', 'ocean', 'forest', 'sunset', 'ruby'];
+                const storedTheme = localStorage.getItem('v1simple:theme');
+                const storedMode = localStorage.getItem('v1simple:colorMode');
+                const theme = themes.includes(storedTheme) ? storedTheme : 'amethyst';
+                const mode = storedMode === 'light' || storedMode === 'dark' ? storedMode : 'dark';
+                const root = document.documentElement;
+                root.dataset.theme = theme;
+                root.classList.remove('dark', 'light');
+                root.classList.add(mode);
+                root.style.colorScheme = mode;
+                localStorage.setItem('v1simple:theme', theme);
+                localStorage.setItem('v1simple:colorMode', mode);
+                document.querySelector('meta[name="theme-color"]')?.setAttribute(
+                    'content',
+                    mode === 'dark' ? '#17151a' : '#f8f7f9'
+                );
+            })();
+        </script>
         %sveltekit.head%
     </head>
     <body data-sveltekit-preload-data="hover">

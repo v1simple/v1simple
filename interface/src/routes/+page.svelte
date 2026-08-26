@@ -188,23 +188,94 @@
 </script>
 
 <div class="page-stack">
-    <PageHeader title="Dashboard" subtitle="Live system status and quick health checks." />
+    <PageHeader title="Dashboard" subtitle="Maintenance system status and saved configuration." />
 
-    <div class="surface-hero">
-        <div class="text-center">
-            <div class="mb-2 flex justify-center">
-                <BrandMark />
+    {#if $runtimeStatusLoading}
+        <div class="surface-hero" role="status" aria-live="polite">
+            <div class="state-loading stack">
+                <span class="loading loading-lg loading-spinner"></span>
+                <p class="copy-subtle">Checking maintenance device status…</p>
             </div>
-            <p class="copy-caption mb-1">v{$runtimeStatus.device?.firmware_version || '...'}</p>
-            <p class="copy-subtle">
-                {#if $runtimeStatus.wifi.sta_connected}
-                    {$runtimeStatus.wifi.ssid} • {$runtimeStatus.wifi.sta_ip}
-                {:else}
-                    AP Mode • {$runtimeStatus.wifi.ap_ip}
-                {/if}
-            </p>
         </div>
-    </div>
+    {:else if $runtimeStatusError}
+        <div class="surface-alert alert-error" role="alert">
+            <div>
+                <h2 class="font-bold">Device status unavailable</h2>
+                <p class="copy-caption">
+                    The maintenance shell remains available while the next status poll retries.
+                </p>
+            </div>
+        </div>
+    {:else}
+        <div class="surface-hero">
+            <div class="text-center">
+                <div class="mb-2 flex justify-center"><BrandMark /></div>
+                <p class="copy-caption mb-1">v{$runtimeStatus.device?.firmware_version || 'Unknown'}</p>
+                <p class="copy-subtle">
+                    {$runtimeStatus.device?.hostname || 'Hostname unavailable'}
+                    {#if $runtimeStatus.wifi.sta_connected && $runtimeStatus.wifi.sta_ip}
+                        • STA {$runtimeStatus.wifi.sta_ip}
+                    {:else if $runtimeStatus.wifi.ap_active && $runtimeStatus.wifi.ap_ip}
+                        • AP {$runtimeStatus.wifi.ap_ip}
+                    {/if}
+                </p>
+                {#if !$isMaintenance}
+                    <p class="copy-warning mt-2">
+                        Maintenance status is not confirmed. Runtime-only actions stay unavailable.
+                    </p>
+                {/if}
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="surface-card">
+                <div class="card-body">
+                    <div class="copy-mini-title">WiFi</div>
+                    <div class="status-heading {$runtimeStatus.wifi.sta_connected ? 'status-heading-success' : 'status-heading-info'}">
+                        {$runtimeStatus.wifi.sta_connected
+                            ? 'STA connected'
+                            : $runtimeStatus.wifi.ap_active
+                              ? 'Access point active'
+                              : 'Status unavailable'}
+                    </div>
+                    <div class="copy-caption {getRssiClass($runtimeStatus.wifi.rssi)}">
+                        {#if $runtimeStatus.wifi.sta_connected}
+                            {$runtimeStatus.wifi.ssid || 'STA'}
+                            {#if $runtimeStatus.wifi.rssi}• {$runtimeStatus.wifi.rssi} dBm{/if}
+                        {:else if $runtimeStatus.wifi.ap_active}
+                            {$runtimeStatus.wifi.ssid || 'Maintenance access point'}
+                        {/if}
+                    </div>
+                </div>
+            </div>
+
+            <div class="surface-card">
+                <div class="card-body">
+                    <div class="copy-mini-title">Device</div>
+                    <div class="status-heading">{formatUptime($runtimeStatus.device?.uptime || 0)}</div>
+                    <div class="copy-caption">
+                        {Math.round(($runtimeStatus.device?.heap_free || 0) / 1024)} KB heap free
+                    </div>
+                </div>
+            </div>
+
+            <div class="surface-card">
+                <div class="card-body">
+                    <div class="copy-mini-title">Battery</div>
+                    {#if $runtimeStatus.battery?.has_battery}
+                        <div class="status-heading">{Math.round($runtimeStatus.battery.percentage || 0)}%</div>
+                        <div class="copy-caption">
+                            {$runtimeStatus.battery.on_battery ? 'On battery power' : 'External power'}
+                            {#if $runtimeStatus.battery.voltage_mv}• {$runtimeStatus.battery.voltage_mv} mV{/if}
+                        </div>
+                    {:else}
+                        <div class="status-heading-muted">Not installed</div>
+                        <div class="copy-caption">No battery reported by this hardware.</div>
+                    {/if}
+                </div>
+            </div>
+        </div>
+    {/if}
 
     <div class="surface-card">
         <div class="card-body gap-4">
@@ -380,77 +451,4 @@
         </div>
     </div>
 
-    {#if !$isMaintenance}
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <div class="surface-card">
-                <div class="card-body">
-                    <div class="copy-mini-title">Valentine One</div>
-                    {#if $runtimeStatusLoading}
-                        <span class="loading loading-sm loading-spinner"></span>
-                    {:else}
-                        <div
-                            class="status-heading {$runtimeStatus.v1_connected
-                                ? 'status-heading-success'
-                                : 'status-heading-warning'}"
-                        >
-                            {$runtimeStatus.v1_connected ? 'Connected' : 'Scanning...'}
-                        </div>
-                        <div class="copy-caption">Bluetooth LE</div>
-                    {/if}
-                </div>
-            </div>
-
-            <div class="surface-card">
-                <div class="card-body">
-                    <div class="copy-mini-title">WiFi</div>
-                    {#if $runtimeStatusLoading}
-                        <span class="loading loading-sm loading-spinner"></span>
-                    {:else}
-                        <div
-                            class="status-heading {$runtimeStatus.wifi.sta_connected
-                                ? 'status-heading-success'
-                                : 'status-heading-info'}"
-                        >
-                            {$runtimeStatus.wifi.sta_connected ? 'Online' : 'AP Only'}
-                        </div>
-                        {#if $runtimeStatus.wifi.sta_connected}
-                            <div class="copy-caption {getRssiClass($runtimeStatus.wifi.rssi)}">
-                                {$runtimeStatus.wifi.ssid} • {$runtimeStatus.wifi.rssi} dBm
-                            </div>
-                        {/if}
-                    {/if}
-                </div>
-            </div>
-
-            <div class="surface-card">
-                <div class="card-body">
-                    <div class="copy-mini-title">Uptime</div>
-                    {#if $runtimeStatusLoading}
-                        <span class="loading loading-sm loading-spinner"></span>
-                    {:else}
-                        <div class="status-heading">
-                            {formatUptime($runtimeStatus.device?.uptime || 0)}
-                        </div>
-                        <div class="copy-caption">
-                            {Math.round(($runtimeStatus.device?.heap_free || 0) / 1024)} KB free
-                        </div>
-                    {/if}
-                </div>
-            </div>
-
-            <div class="surface-card">
-                <div class="card-body">
-                    <div class="copy-mini-title">Alerts</div>
-                    {#if $runtimeStatusLoading}
-                        <span class="loading loading-sm loading-spinner"></span>
-                    {:else}
-                        <div class="status-heading-info">Display only</div>
-                        <div class="copy-caption">Live radar/ALP alerts stay on the LCD</div>
-                    {/if}
-                </div>
-            </div>
-        </div>
-    {/if}
-
-    <StatusAlert message={$runtimeStatusError} fallbackType="error" />
 </div>

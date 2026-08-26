@@ -53,10 +53,21 @@ function renderLayout(props = {}) {
     return render(Layout, { children: childSnippet(), ...props });
 }
 
+function installLayoutFetch() {
+    installFetchMock(
+        [{ method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }],
+        jsonResponse({})
+    );
+}
+
 describe('root layout', () => {
     beforeEach(() => {
         installStorage('sessionStorage');
         installStorage('localStorage');
+        document.documentElement.dataset.theme = 'amethyst';
+        document.documentElement.classList.remove('light');
+        document.documentElement.classList.add('dark');
+        document.documentElement.style.colorScheme = 'dark';
         pageStore.setPath('/');
     });
 
@@ -66,7 +77,7 @@ describe('root layout', () => {
         vi.unstubAllGlobals();
     });
 
-    it('renders route content and marks the active nav path', () => {
+    it('renders grouped navigation and marks the active route with aria-current', () => {
         installFetchMock(
             [{ method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }],
             jsonResponse({})
@@ -78,14 +89,106 @@ describe('root layout', () => {
         expect(screen.getByRole('region', { name: /test child/i })).toHaveTextContent(
             'Route content'
         );
+        expect(screen.getAllByText('Detector').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Integrations').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('System').length).toBeGreaterThan(0);
         const colorLinks = screen.getAllByRole('link', { name: 'Colors' });
-        expect(colorLinks.some((link) => link.classList.contains('active'))).toBe(true);
+        expect(colorLinks.every((link) => link.getAttribute('aria-current') === 'page')).toBe(true);
+        expect(screen.getAllByRole('link', { name: 'Profiles' }).every((link) => !link.hasAttribute('aria-current'))).toBe(true);
         expect(screen.queryByRole('link', { name: 'Logs' })).not.toBeInTheDocument();
 
         unmount();
     });
 
-    it('toggles and closes the mobile navigation menu', async () => {
+    it('defaults to the amethyst theme in dark mode', async () => {
+        installLayoutFetch();
+        const { unmount } = renderLayout();
+
+        await waitFor(() => {
+            expect(document.documentElement).toHaveAttribute('data-theme', 'amethyst');
+            expect(document.documentElement).toHaveClass('dark');
+        });
+        expect(document.documentElement).not.toHaveClass('light');
+        expect(localStorage.getItem('v1simple:theme')).toBe('amethyst');
+        expect(localStorage.getItem('v1simple:colorMode')).toBe('dark');
+
+        unmount();
+    });
+
+    it('falls back to amethyst and dark for invalid stored appearance values', async () => {
+        localStorage.setItem('v1simple:theme', 'unknown');
+        localStorage.setItem('v1simple:colorMode', 'sepia');
+        document.documentElement.dataset.theme = 'unknown';
+        document.documentElement.className = 'light';
+        installLayoutFetch();
+
+        const { unmount } = renderLayout();
+
+        await waitFor(() => {
+            expect(document.documentElement).toHaveAttribute('data-theme', 'amethyst');
+            expect(document.documentElement).toHaveClass('dark');
+        });
+        expect(localStorage.getItem('v1simple:theme')).toBe('amethyst');
+        expect(localStorage.getItem('v1simple:colorMode')).toBe('dark');
+
+        unmount();
+    });
+
+    it('selects and persists a color theme through the accessible controls', async () => {
+        installLayoutFetch();
+        const { unmount } = renderLayout();
+
+        await fireEvent.click(screen.getAllByRole('button', { name: 'Use Ocean theme' })[0]);
+
+        expect(document.documentElement).toHaveAttribute('data-theme', 'ocean');
+        expect(localStorage.getItem('v1simple:theme')).toBe('ocean');
+        expect(
+            screen.getAllByRole('button', { name: 'Use Ocean theme' }).every((button) =>
+                button.getAttribute('aria-pressed') === 'true'
+            )
+        ).toBe(true);
+
+        unmount();
+    });
+
+    it('toggles and persists light and dark mode', async () => {
+        installLayoutFetch();
+        const { unmount } = renderLayout();
+
+        await fireEvent.click(screen.getByRole('button', { name: 'Use light mode' }));
+
+        expect(document.documentElement).toHaveClass('light');
+        expect(document.documentElement).not.toHaveClass('dark');
+        expect(document.documentElement.style.colorScheme).toBe('light');
+        expect(localStorage.getItem('v1simple:colorMode')).toBe('light');
+        expect(screen.getByRole('button', { name: 'Use dark mode' })).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('restores the selected theme and mode when the layout reloads', async () => {
+        installLayoutFetch();
+        const first = renderLayout();
+        await fireEvent.click(screen.getAllByRole('button', { name: 'Use Forest theme' })[0]);
+        await fireEvent.click(screen.getByRole('button', { name: 'Use light mode' }));
+        first.unmount();
+
+        document.documentElement.dataset.theme = 'amethyst';
+        document.documentElement.className = 'dark';
+        document.documentElement.style.colorScheme = 'dark';
+
+        const second = renderLayout();
+        await waitFor(() => {
+            expect(document.documentElement).toHaveAttribute('data-theme', 'forest');
+            expect(document.documentElement).toHaveClass('light');
+        });
+        expect(localStorage.getItem('v1simple:theme')).toBe('forest');
+        expect(localStorage.getItem('v1simple:colorMode')).toBe('light');
+
+        second.unmount();
+    });
+
+    it('provides modal mobile navigation with focus, escape, backdrop, and navigation close semantics', async () => {
         installFetchMock(
             [{ method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }],
             jsonResponse({})
@@ -98,14 +201,45 @@ describe('root layout', () => {
 
         const menuButton = screen.getByRole('button', { name: /open navigation menu/i });
         expect(menuButton).toHaveAttribute('aria-expanded', 'false');
+        expect(menuButton).toHaveAttribute('aria-controls', 'mobile-navigation-drawer');
         await fireEvent.click(menuButton);
         expect(menuButton).toHaveAttribute('aria-expanded', 'true');
+        const drawer = screen.getByRole('dialog', { name: 'Main navigation' });
+        expect(drawer).toHaveAttribute('aria-modal', 'true');
+        await waitFor(() => expect(screen.getAllByRole('button', { name: /close navigation menu/i })[1]).toHaveFocus());
+        expect(document.body.style.overflow).toBe('hidden');
 
-        await fireEvent.click(screen.getAllByRole('link', { name: 'Settings' })[0]);
+        await fireEvent.keyDown(drawer, { key: 'Escape' });
         expect(menuButton).toHaveAttribute('aria-expanded', 'false');
+        await waitFor(() => expect(menuButton).toHaveFocus());
+
+        await fireEvent.click(menuButton);
+        await fireEvent.click(screen.getByRole('dialog', { name: 'Main navigation' }).querySelector('a[href="/settings"]'));
+        expect(menuButton).toHaveAttribute('aria-expanded', 'false');
+
+        await fireEvent.click(menuButton);
+        await fireEvent.click(screen.getAllByRole('button', { name: /close navigation menu/i })[0]);
+        expect(menuButton).toHaveAttribute('aria-expanded', 'false');
+        expect(document.body.style.overflow).toBe('');
 
         document.removeEventListener('click', preventAnchorNavigation, { capture: true });
         unmount();
+    });
+
+    it('persists desktop sidebar collapse state across remounts', async () => {
+        installFetchMock(
+            [{ method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }],
+            jsonResponse({})
+        );
+        const first = renderLayout();
+        await fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+        expect(localStorage.getItem('v1simple:sidebarCollapsed')).toBe('1');
+        expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+        first.unmount();
+
+        const second = renderLayout();
+        expect(await screen.findByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+        second.unmount();
     });
 
     it('shows and dismisses the default-password warning', async () => {
@@ -153,8 +287,8 @@ describe('root layout', () => {
         const { unmount } = renderLayout();
 
         const status = await screen.findByRole('status');
-        expect(status).toHaveTextContent('Maintenance mode');
-        expect(status).toHaveTextContent('7m 55s remaining before automatic normal reboot');
+        await waitFor(() => expect(status).toHaveTextContent('Maintenance · 7m 55s'));
+        expect(status).toHaveTextContent('Activity keeps the 10-minute idle window alive automatically');
 
         await fireEvent.click(screen.getByRole('button', { name: 'Exit maintenance' }));
 
@@ -202,13 +336,45 @@ describe('root layout', () => {
         const { unmount } = renderLayout();
 
         const status = await screen.findByRole('status');
-        expect(status).toHaveTextContent('0m 30s remaining');
+        await waitFor(() => expect(status).toHaveTextContent('Maintenance · 0m 30s'));
         await fireEvent.click(screen.getByRole('button', { name: 'Exit maintenance' }));
 
-        expect(
-            await screen.findByText('Could not exit maintenance: restart unavailable')
-        ).toBeInTheDocument();
+        await waitFor(() =>
+            expect(status).toHaveTextContent('Could not exit maintenance: restart unavailable')
+        );
         expect(screen.getByRole('button', { name: 'Exit maintenance' })).toBeEnabled();
+
+        unmount();
+    });
+
+    it('shows maintenance hostname and active AP/STA addresses in the sidebar footer', async () => {
+        installFetchMock(
+            [
+                {
+                    method: 'GET',
+                    match: '/api/status',
+                    respond: jsonResponse({
+                        maintenanceBoot: true,
+                        maintenanceBootUptimeMs: 1000,
+                        maintenanceBootTimeoutMs: 600000,
+                        device: { hostname: 'garage-v1' },
+                        wifi: {
+                            sta_connected: true,
+                            sta_ip: '192.168.1.23',
+                            ap_active: true,
+                            ap_ip: '192.168.35.5'
+                        }
+                    })
+                },
+                { method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }
+            ],
+            jsonResponse({})
+        );
+        const { unmount } = renderLayout();
+
+        await waitFor(() => expect(screen.getAllByText('garage-v1').length).toBeGreaterThan(0));
+        expect(screen.getAllByText('STA 192.168.1.23 · AP 192.168.35.5').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Maintenance session').length).toBeGreaterThan(0);
 
         unmount();
     });

@@ -57,12 +57,13 @@ describe('dashboard route page', () => {
         vi.restoreAllMocks();
     });
 
-    it('loads shared runtime status on mount', async () => {
+    it('loads maintenance-compatible shared runtime status on mount', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
-        await screen.findByText('Connected');
-        await screen.findByText('GarageNet • -54 dBm');
+        await screen.findByText('STA connected');
+        expect(screen.getByText(/GarageNet/)).toHaveTextContent('GarageNet • -54 dBm');
+        expect(screen.getByText(/Maintenance status is not confirmed/)).toBeInTheDocument();
         await waitFor(() => {
             expect(countCalls(fetchMock, '/api/status')).toBeGreaterThanOrEqual(1);
         });
@@ -95,7 +96,8 @@ describe('dashboard route page', () => {
         ]);
         const { unmount } = render(Page);
 
-        await screen.findByText('API error');
+        await screen.findByText('Device status unavailable');
+        expect(screen.getByText(/maintenance shell remains available/i)).toBeInTheDocument();
         expect(countCalls(fetchMock, '/api/status')).toBeGreaterThanOrEqual(1);
 
         unmount();
@@ -116,7 +118,8 @@ describe('dashboard route page', () => {
         );
         const { unmount } = render(Page);
 
-        await screen.findByText('Connection lost');
+        await screen.findByText('Device status unavailable');
+        expect(screen.getByText(/maintenance shell remains available/i)).toBeInTheDocument();
         expect(countCalls(fetchMock, '/api/status')).toBeGreaterThanOrEqual(1);
 
         unmount();
@@ -156,10 +159,42 @@ describe('dashboard route page', () => {
         ]);
         const { unmount } = render(Page);
 
-        await screen.findByText('Live radar/ALP alerts stay on the LCD');
+        await screen.findByText('STA connected');
         expect(screen.queryByText('Ka')).not.toBeInTheDocument();
         expect(screen.queryByText('34700 MHz')).not.toBeInTheDocument();
         expect(screen.queryByText(/Strength:/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/Live radar|Live detector/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/Storage usage|Alert history|Persisted history/i)).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('shows a maintenance-compatible loading state before the first status response', async () => {
+        let resolveStatus;
+        const statusResponse = new Promise((resolve) => {
+            resolveStatus = resolve;
+        });
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/status',
+                respond: () => statusResponse
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        expect(await screen.findByText('Checking maintenance device status…')).toBeInTheDocument();
+        expect(screen.queryByText('Valentine One')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Live radar|Live detector/i)).not.toBeInTheDocument();
+
+        resolveStatus(jsonResponse({
+            wifi: { sta_connected: false, ap_active: true, sta_ip: '', ap_ip: '192.168.35.5', ssid: 'V1-Simple', rssi: 0 },
+            device: { uptime: 42, heap_free: 49152, hostname: 'v1simple', firmware_version: '1.2.3' },
+            battery: { has_battery: false, on_battery: false, percentage: 0, voltage_mv: 0 },
+            maintenanceBoot: true,
+            maintenanceBootUptimeMs: 1000
+        }));
+        expect(await screen.findByText('Access point active')).toBeInTheDocument();
 
         unmount();
     });
@@ -202,6 +237,8 @@ describe('dashboard route page', () => {
         expect(screen.queryByText('Inactive in maintenance mode')).not.toBeInTheDocument();
         expect(screen.queryByText('Maintenance session • 48 KB free')).not.toBeInTheDocument();
         expect(screen.queryByText('2m 5s')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Storage usage|Alert history|Persisted history/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/Live radar|Live detector/i)).not.toBeInTheDocument();
         expect(await screen.findByText('Display only saved')).toBeInTheDocument();
         expect(screen.getByText(/Saved mode applies on next normal boot/)).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /save operating mode/i })).toBeDisabled();

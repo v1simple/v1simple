@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
+import io
 import json
 import os
 import stat
@@ -324,6 +326,82 @@ def test_no_flash_git_mismatch_fails() -> None:
     )
 
 
+def test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        args = SimpleNamespace(
+            board_id="fixture",
+            blink_arrow=False,
+            blink_profile="steady",
+            out_dir=str(out_dir),
+            runner_stdout_log="",
+            runner_stderr_log="",
+            duration_seconds=1,
+            ready_timeout_seconds=1,
+            post_upload_settle_seconds=0,
+            suite="core",
+            scenario="",
+            replay_executable="fixture-replay",
+            git_sha=GIT_SHA,
+            git_ref="main",
+            git_worktree_clean="1",
+        )
+        reason = "resident runtime image 04904e028 is not linked to the retained firmware ELF"
+        collected = {
+            "port": "fixture-port",
+            "completion": {},
+            "emulator": {},
+            "camera": {},
+            "runtime_identity": dict(RUNTIME_IDENTITY),
+            "runtime_qualification": {
+                "status": "collection_only",
+                "mode": "no_flash",
+                "git_match": True,
+                "artifact_linked": False,
+                "image_match": False,
+                "reason": reason,
+            },
+        }
+        originals = {
+            "parse_args": run_window_module.parse_args,
+            "install_signal_handlers": run_window_module.install_signal_handlers,
+            "collect_live": run_window_module.collect_live,
+            "serial": run_window_module.serial,
+        }
+        run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+        run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+        run_window_module.collect_live = (  # type: ignore[assignment]
+            lambda _args, _out_dir, _artifacts: collected
+        )
+        run_window_module.serial = object()  # type: ignore[assignment]
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                status = run_window_module.main()
+        finally:
+            for name, value in originals.items():
+                setattr(run_window_module, name, value)
+
+        payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        assert_true(status == 1, f"collection-only exit changed: {status}")
+        assert_true(payload["result"] == "COLLECTION_ONLY", str(payload))
+        assert_true(payload["qualification_reason"] == reason, str(payload))
+        assert_true(payload["runtime_qualification"] == collected["runtime_qualification"], str(payload))
+        assert_true("collection_only" in stderr.getvalue(), stderr.getvalue())
+
+
+def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
+    source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    start = source.index('if [[ "$COLLECTION_ONLY" -eq 1 ]]; then')
+    end = source.index("\nfi", start) + len("\nfi")
+    branch = source[start:end]
+    assert_true(
+        'finish "COLLECTION-ONLY (unqualified: $COLLECTION_ONLY_REASON)" 1' in branch,
+        branch,
+    )
+    assert_true("PASS" not in branch, branch)
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -443,6 +521,8 @@ def main() -> int:
     test_no_flash_git_match_with_linked_resident_artifact_is_qualified()
     test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only()
     test_no_flash_git_mismatch_fails()
+    test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash()
+    test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
     test_missing_and_malformed_boot_identity_fail()
     test_conflicting_boot_identities_fail()

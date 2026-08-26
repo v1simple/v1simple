@@ -139,7 +139,7 @@ jobs:
 
       - name: Install release toolchain
         run: |
-          pip install "platformio>=6.1.19,<7" esptool "Pillow>=10.4,<13"
+          pip install "platformio>=6.1.19,<7" esptool "Pillow>=10.4,<13" "littlefs-python==0.18.0"
           cd interface && npm ci
 
       - name: Validate release artifact contract

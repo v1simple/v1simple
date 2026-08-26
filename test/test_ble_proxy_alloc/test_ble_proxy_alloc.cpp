@@ -484,7 +484,7 @@ void test_phone_command_overflow_drops_oldest_and_keeps_newest() {
     TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PHONE_CMD_QUEUE_SIZE, client.phone2v1QueueCount_);
 
     while (client.processPhoneCommandQueue() == 1) {
-        // EMPTY_BODY_OK: processing the next queued command is the loop condition.
+        // Processing the next queued command is the loop condition.
     }
 
     TEST_ASSERT_EQUAL_UINT32(V1BLEClient::PHONE_CMD_QUEUE_SIZE, g_sentCommandHistory.size());

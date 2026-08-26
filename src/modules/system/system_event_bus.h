@@ -40,7 +40,7 @@ class SystemEventBus {
     void lock() const {
 #ifdef UNIT_TEST
         while (lockFlag_.test_and_set(std::memory_order_acquire)) {
-            // EMPTY_BODY_OK: test builds intentionally spin until the lock is acquired.
+            // Test builds intentionally spin until the lock is acquired.
         }
 #else
         portENTER_CRITICAL(&lockMux_);

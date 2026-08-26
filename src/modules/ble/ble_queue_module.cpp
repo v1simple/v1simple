@@ -91,7 +91,7 @@ void BleQueueModule::closeSession() {
 
     BLEDataPacket discarded;
     while (queueHandle_ && xQueueReceive(queueHandle_, &discarded, 0) == pdTRUE) {
-        // EMPTY_BODY_OK: receiving each queued item is the complete drain operation.
+        // Receiving each queued item is the complete drain operation.
     }
 
     clearRxState();

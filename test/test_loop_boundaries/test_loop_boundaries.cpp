@@ -20,6 +20,7 @@ enum class Call {
     POWER,
     TOUCH,
     POWER_PRESENTATION,
+    SETTINGS_PREEMPT,
     TAP,
     READY_GATE,
     BLE_RUNTIME,
@@ -50,15 +51,32 @@ struct FakeDisplayEdges {
     bool parsed = true;
 };
 
+struct MaintenanceCall {
+    uint32_t nowMs = 0;
+    bool bleConnected = false;
+    bool bleBackpressured = false;
+    bool overloaded = false;
+    bool forceTailBleDrainPending = false;
+};
+
+struct FinishCall {
+    bool bleBackpressured = false;
+    uint32_t loopStartUs = 0;
+    bool forceBleDrain = false;
+};
+
 struct FakeDriveRuntime {
     bool activeValue = true;
     bool presentationOwned = false;
     bool acquirePresentationDuringPower = false;
     bool inSettings = false;
+    bool liveAlertPreemptsSettings = false;
     bool settingsPreempted = false;
     bool queueBackpressured = false;
     FakeConnectionSnapshot connection;
     std::vector<Call> calls;
+    std::vector<MaintenanceCall> maintenanceCalls;
+    std::vector<FinishCall> finishCalls;
 
     bool active() const { return activeValue; }
 
@@ -93,7 +111,11 @@ struct FakeDriveRuntime {
     }
 
     void servicePowerDisplayOwnership(uint32_t) { calls.push_back(Call::POWER_PRESENTATION); }
-    bool preemptSettingsForLiveAlert() const { return settingsPreempted; }
+    bool preemptSettingsForLiveAlert() {
+        calls.push_back(Call::SETTINGS_PREEMPT);
+        settingsPreempted = liveAlertPreemptsSettings;
+        return settingsPreempted;
+    }
     void processTapGesture(uint32_t) { calls.push_back(Call::TAP); }
     void openBootReadyGate(uint32_t) { calls.push_back(Call::READY_GATE); }
     void processBleRuntime() { calls.push_back(Call::BLE_RUNTIME); }
@@ -120,11 +142,17 @@ struct FakeDriveRuntime {
         return {30, true};
     }
 
-    void processPeriodicMaintenance(uint32_t, bool, bool, bool, bool) {
+    void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressured, bool overloaded,
+                                    bool forceTailBleDrainPending) {
         calls.push_back(Call::PERSISTENCE);
+        maintenanceCalls.push_back(
+            {nowMs, bleConnected, bleBackpressured, overloaded, forceTailBleDrainPending});
     }
 
-    void finishDriveLoop(bool, uint32_t, bool) { calls.push_back(Call::FINISH); }
+    void finishDriveLoop(bool bleBackpressured, uint32_t loopStartUs, bool forceBleDrain) {
+        calls.push_back(Call::FINISH);
+        finishCalls.push_back({bleBackpressured, loopStartUs, forceBleDrain});
+    }
 };
 
 bool called(const FakeDriveRuntime& runtime, Call call) {
@@ -227,6 +255,90 @@ void test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_dis
     TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_DISPATCH));
 }
 
+void test_settings_remains_open_after_alp_processing_without_live_alert() {
+    FakeDriveRuntime runtime;
+    runtime.inSettings = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    assertCalls(runtime,
+                {Call::BEGIN,
+                 Call::CONNECTION_RUNTIME,
+                 Call::ACCEPT_CONNECTION,
+                 Call::SHOW_SCAN,
+                 Call::MARK_SCAN,
+                 Call::CONNECTION_PRESENTATION,
+                 Call::POWER,
+                 Call::TOUCH,
+                 Call::POWER_PRESENTATION,
+                 Call::PARSING,
+                 Call::SETTINGS_PREEMPT,
+                 Call::OBSERVE_ALP,
+                 Call::PERSISTENCE,
+                 Call::FINISH});
+    TEST_ASSERT_EQUAL(1, std::count(runtime.calls.begin(), runtime.calls.end(), Call::PARSING));
+    TEST_ASSERT_FALSE(runtime.settingsPreempted);
+    TEST_ASSERT_EQUAL_UINT(1, runtime.maintenanceCalls.size());
+    TEST_ASSERT_EQUAL_UINT32(25, runtime.maintenanceCalls[0].nowMs);
+    TEST_ASSERT_TRUE(runtime.maintenanceCalls[0].bleConnected);
+    TEST_ASSERT_FALSE(runtime.maintenanceCalls[0].bleBackpressured);
+    TEST_ASSERT_FALSE(runtime.maintenanceCalls[0].overloaded);
+    TEST_ASSERT_TRUE(runtime.maintenanceCalls[0].forceTailBleDrainPending);
+    TEST_ASSERT_EQUAL_UINT(1, runtime.finishCalls.size());
+    TEST_ASSERT_FALSE(runtime.finishCalls[0].bleBackpressured);
+    TEST_ASSERT_EQUAL_UINT32(1000, runtime.finishCalls[0].loopStartUs);
+    TEST_ASSERT_TRUE(runtime.finishCalls[0].forceBleDrain);
+}
+
+void test_live_alert_preempts_settings_after_single_alp_processing_pass() {
+    FakeDriveRuntime runtime;
+    runtime.inSettings = true;
+    runtime.liveAlertPreemptsSettings = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    assertCalls(runtime,
+                {Call::BEGIN,
+                 Call::CONNECTION_RUNTIME,
+                 Call::ACCEPT_CONNECTION,
+                 Call::SHOW_SCAN,
+                 Call::MARK_SCAN,
+                 Call::CONNECTION_PRESENTATION,
+                 Call::POWER,
+                 Call::TOUCH,
+                 Call::POWER_PRESENTATION,
+                 Call::PARSING,
+                 Call::SETTINGS_PREEMPT,
+                 Call::TAP,
+                 Call::READY_GATE,
+                 Call::BLE_RUNTIME,
+                 Call::BLE_QUEUE,
+                 Call::CONNECTION_CYCLE,
+                 Call::OBD,
+                 Call::OBSERVE_ALP,
+                 Call::ALP_STATE,
+                 Call::GPS,
+                 Call::SPEED,
+                 Call::ALERT,
+                 Call::DISPLAY_EDGE,
+                 Call::DISPLAY_PRESENTATION,
+                 Call::CONNECTION_DISPATCH,
+                 Call::PERSISTENCE,
+                 Call::FINISH});
+    TEST_ASSERT_EQUAL(1, std::count(runtime.calls.begin(), runtime.calls.end(), Call::PARSING));
+    TEST_ASSERT_TRUE(runtime.settingsPreempted);
+    TEST_ASSERT_EQUAL_UINT(1, runtime.maintenanceCalls.size());
+    TEST_ASSERT_EQUAL_UINT32(30, runtime.maintenanceCalls[0].nowMs);
+    TEST_ASSERT_TRUE(runtime.maintenanceCalls[0].bleConnected);
+    TEST_ASSERT_FALSE(runtime.maintenanceCalls[0].bleBackpressured);
+    TEST_ASSERT_FALSE(runtime.maintenanceCalls[0].overloaded);
+    TEST_ASSERT_FALSE(runtime.maintenanceCalls[0].forceTailBleDrainPending);
+    TEST_ASSERT_EQUAL_UINT(1, runtime.finishCalls.size());
+    TEST_ASSERT_FALSE(runtime.finishCalls[0].bleBackpressured);
+    TEST_ASSERT_EQUAL_UINT32(1000, runtime.finishCalls[0].loopStartUs);
+    TEST_ASSERT_FALSE(runtime.finishCalls[0].forceBleDrain);
+}
+
 void test_inactive_drive_runtime_executes_no_phase() {
     FakeDriveRuntime runtime;
     runtime.activeValue = false;
@@ -258,6 +370,8 @@ int main() {
     RUN_TEST(test_drive_coordinator_executes_production_phase_order);
     RUN_TEST(test_power_owner_suppresses_touch_and_presentations_but_keeps_runtime_live);
     RUN_TEST(test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_display);
+    RUN_TEST(test_settings_remains_open_after_alp_processing_without_live_alert);
+    RUN_TEST(test_live_alert_preempts_settings_after_single_alp_processing_pass);
     RUN_TEST(test_inactive_drive_runtime_executes_no_phase);
     RUN_TEST(test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph);
     RUN_TEST(test_drive_runtime_composition_has_no_maintenance_wifi_dependency);

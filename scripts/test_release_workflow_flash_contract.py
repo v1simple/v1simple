@@ -53,6 +53,21 @@ class ReleaseArtifactContractTests(unittest.TestCase):
 
         self.assertTrue(any(required in error for error in errors), errors)
 
+    def test_rejects_missing_public_release_tagger_identity(self) -> None:
+        release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
+        required = "GIT_COMMITTER_NAME: v1simple"
+        self.assertIn(required, release_text)
+        release_text = release_text.replace(required, "REMOVED_TAGGER_NAME: v1simple", 1)
+
+        with tempfile.TemporaryDirectory(prefix="release_tagger_identity_") as temporary:
+            candidate = Path(temporary) / "release.yml"
+            candidate.write_text(release_text, encoding="utf-8")
+            errors: list[str] = []
+            with mock.patch.object(contract, "RELEASE_YML", candidate):
+                contract.check_version_and_publication(errors)
+
+        self.assertTrue(any(required in error for error in errors), errors)
+
     def test_rejects_packaging_before_production_build(self) -> None:
         release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
         build = "./scripts/build_production_artifacts.sh"

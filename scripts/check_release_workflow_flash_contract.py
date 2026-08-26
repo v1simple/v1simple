@@ -159,6 +159,8 @@ def check_version_and_publication(errors: list[str]) -> None:
         'if [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]; then',
         'if [ "$EXISTING_SHA" != "$RELEASE_SHA" ]; then',
         "it will not be moved",
+        "GIT_COMMITTER_EMAIL: noreply@example.invalid",
+        "GIT_COMMITTER_NAME: v1simple",
         "Release-Run-ID: $RELEASE_RUN_ID",
         "push --atomic origin",
     ):

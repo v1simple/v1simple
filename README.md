@@ -9,22 +9,23 @@ Configuration runs in a separate maintenance-mode WiFi interface.
 
 ## Hardware and safety
 
-- Waveshare ESP32-S3-Touch-LCD-3.49, **board revision V1**
+- Waveshare ESP32-S3-Touch-LCD-3.49, board revision V1 or V2
 - Valentine One Gen 2 with BLE enabled
 
 ### Board revision — read before ordering
 
-This firmware is built and bench-verified against the **V1** revision only. It
-has not been run on V2 hardware.
-
 Waveshare discontinued the V1 board and switched shipments to V2 after
-2026-06-08, so a board bought new today is likely V2. V2 swaps the IO for
-`LCD_BL`/`EXIO_INT` and for `LCD_TE`/`LCD_RESET`. This firmware hardcodes
-`LCD_BL=8` and `LCD_RST=21` in `platformio.ini`.
+2026-06-08, so a board bought new today is likely V2. The firmware supports both
+revisions with automatic detection and routing at boot:
 
-**Symptom on V2: the screen never lights up.** The board is not damaged and the
-flash succeeded — the firmware boots, connects to the detector, and renders into
-its canvas, but drives the backlight on the wrong pin. Not a dead unit.
+| Board | Backlight | Panel reset |
+|---|---|---|
+| V1 | GPIO8 | GPIO21 |
+| V2 | GPIO42 | EXIO5 |
+
+Detection samples GPIO21 and EXIO5 as complementary reset/TE candidates before
+enabling the display outputs. If the revision cannot be identified safely, the
+firmware leaves the swapped candidates passive and the screen dark.
 
 Identify the revision before flashing:
 
@@ -37,10 +38,6 @@ The revision numbering is confusing: silkscreen `Rev1.1` is the *newer* V2
 board. Waveshare documents this on
 <https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.49> only; the older
 `waveshare.com/wiki` page for the same product does not mention it.
-
-V2 support is not yet implemented. The web installer publishes a single merged
-image for all users, so revision handling cannot be a build-time option and is
-an open design question.
 
 ### Safety
 

@@ -45,24 +45,6 @@ void Hardware::prepareEarlyCandidates() {
     gpio_hold_dis(static_cast<gpio_num_t>(kV1BacklightGpio));
     gpio_hold_dis(static_cast<gpio_num_t>(kV2BacklightGpio));
     leaveSwappedCandidatesAsInputs();
-
-    LevelSamples gpio21;
-    for (uint16_t i = 0; i < kEarlyDetectionSamples; ++i) {
-        addGpioSample(gpio21, digitalRead(kGpioResetOrTe));
-        delayMicroseconds(100);
-    }
-
-    if (gpio21.stableHigh(kEarlyDetectionSamples)) {
-        provisionalRevision_ = Revision::V1;
-        pinMode(kV1BacklightGpio, OUTPUT);
-        digitalWrite(kV1BacklightGpio, HIGH);
-    } else if (gpio21.lowDominant(kEarlyDetectionSamples)) {
-        provisionalRevision_ = Revision::V2;
-        pinMode(kV2BacklightGpio, OUTPUT);
-        digitalWrite(kV2BacklightGpio, HIGH);
-    } else {
-        provisionalRevision_ = Revision::Unknown;
-    }
 }
 
 bool Hardware::setExpanderOutput(uint8_t pin, bool high, bool makeOutput) {
@@ -136,9 +118,6 @@ bool Hardware::detectAndConfigure() {
     }
 
     revision_ = classifyRevision(evidence_, kDetectionSamples);
-    if (provisionalRevision_ != Revision::Unknown && revision_ != provisionalRevision_) {
-        revision_ = Revision::Unknown;
-    }
 
     if (!configureDetectedRevision()) {
         revision_ = Revision::Unknown;
@@ -146,11 +125,10 @@ bool Hardware::detectAndConfigure() {
         leaveSwappedCandidatesAsInputs();
     }
 
-    Serial.printf("[HW] Waveshare349 revision=%s provisional=%s gpio21(low=%u high=%u fail=%u) "
+    Serial.printf("[HW] Waveshare349 revision=%s gpio21(low=%u high=%u fail=%u) "
                   "exio5(low=%u high=%u fail=%u) backlightGpio=%d detectMs=%lu\n",
-                  revisionName(revision_), revisionName(provisionalRevision_), evidence_.gpio21.low,
-                  evidence_.gpio21.high, evidence_.gpio21.readFailures, evidence_.exio5.low, evidence_.exio5.high,
-                  evidence_.exio5.readFailures, backlightGpio(),
+                  revisionName(revision_), evidence_.gpio21.low, evidence_.gpio21.high, evidence_.gpio21.readFailures,
+                  evidence_.exio5.low, evidence_.exio5.high, evidence_.exio5.readFailures, backlightGpio(),
                   static_cast<unsigned long>(millis() - startedAtMs));
     return ready();
 }

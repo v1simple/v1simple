@@ -104,6 +104,20 @@ void test_revision_routes_only_the_matching_backlight_and_reset() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ResetRoute::None), static_cast<int>(unknown.resetRoute));
 }
 
+void test_unresolved_evidence_never_selects_a_candidate_route() {
+    const RevisionEvidence unresolved[] = {
+        {stableLow(), stableLow()},
+        {stableHigh(), stableHigh()},
+        {stableLow(kMinimumSamples - 1), stableHigh(kMinimumSamples - 1)},
+    };
+
+    for (const auto& evidence : unresolved) {
+        const auto route = routingFor(classifyRevision(evidence, kMinimumSamples));
+        TEST_ASSERT_EQUAL_INT(-1, route.backlightGpio);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ResetRoute::None), static_cast<int>(route.resetRoute));
+    }
+}
+
 void test_expander_updates_preserve_power_latch_and_audio_bits() {
     constexpr uint8_t p6 = 1u << 6;
     constexpr uint8_t p7 = 1u << 7;
@@ -129,6 +143,7 @@ int main(int, char**) {
     RUN_TEST(test_missing_or_failed_reads_are_unknown);
     RUN_TEST(test_too_few_samples_are_unknown);
     RUN_TEST(test_revision_routes_only_the_matching_backlight_and_reset);
+    RUN_TEST(test_unresolved_evidence_never_selects_a_candidate_route);
     RUN_TEST(test_expander_updates_preserve_power_latch_and_audio_bits);
     return UNITY_END();
 }

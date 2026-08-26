@@ -14,9 +14,8 @@ class Hardware {
     static constexpr uint8_t kExioBacklightEnable = 1;
     static constexpr uint8_t kExioResetOrTe = 5;
 
-    // Called before serial or any other board setup. All swapped candidates are
-    // first released to inputs; a stable GPIO21 idle level may then darken only
-    // the corresponding probable PWM pin while the expander comes online.
+    // Called before serial or any other board setup. All swapped candidates
+    // remain electrically passive until complementary detection completes.
     void prepareEarlyCandidates();
 
     // Called after the shared TCA9554 bus and power latch are initialized.
@@ -35,9 +34,6 @@ class Hardware {
     void releaseBacklightSleepHold();
 
   private:
-    // The early GPIO-only sample window must be longer than the observed V2 TE
-    // HIGH pulse so that it can never look like V1's continuously HIGH reset.
-    static constexpr uint16_t kEarlyDetectionSamples = 128;
     // Sixteen samples span multiple observed TE periods on V2 while avoiding a
     // multi-second boot penalty from this board's relatively slow input-port
     // reads.
@@ -48,7 +44,6 @@ class Hardware {
     bool setExpanderPinLevel(uint8_t pin, bool high);
     bool configureDetectedRevision();
 
-    Revision provisionalRevision_ = Revision::Unknown;
     Revision revision_ = Revision::Unknown;
     RevisionEvidence evidence_{};
     bool expanderReady_ = false;

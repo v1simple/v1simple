@@ -359,6 +359,12 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
     const BackupPayloadBuilder::BuildResult buildResult = BackupPayloadBuilder::buildBackupDocument(
         doc, settings_, profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, snapshotMs);
 
+    if (buildResult.profileStatus != ProfileStorageStatus::Success) {
+        Serial.printf("[Settings] Profile snapshot unavailable status=%d; retrying backup later\n",
+                      static_cast<int>(buildResult.profileStatus));
+        return false;
+    }
+
     const size_t required = measureJson(doc) + 1u;
     const size_t capacity = roundUpSettingsBackupPayloadCapacity(required);
     char* data = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
@@ -387,6 +393,7 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
     payload.capacity = capacity;
     payload.length = length;
     payload.inPsram = inPsram;
+    payload.protectExistingBackupFromUnsafeProfileSnapshot = !buildResult.safeToCommit;
     payload.snapshotMs = snapshotMs;
     payload.profilesBackedUp = buildResult.profilesBackedUp;
     return true;
@@ -401,6 +408,7 @@ void releaseSerializedSettingsBackupPayload(SerializedSettingsBackupPayload& pay
     payload.length = 0;
     payload.inPsram = false;
     payload.protectExistingBackupFromProvisionalNvs = false;
+    payload.protectExistingBackupFromUnsafeProfileSnapshot = false;
     payload.snapshotMs = 0;
     payload.backupRevision = 0;
     payload.markCompleted = nullptr;
@@ -421,26 +429,24 @@ bool SettingsManager::backupToSD() {
         return false; // SD not available, skip silently
     }
 
-    // Acquire SD mutex to protect file I/O.
-    //
-    // Kept explicit even though false is now the default, because this site is
-    // one of the few that IS reachable with the radio up (save() at main.cpp:703
-    // and :734, and the route provider at wifi_runtimes.cpp:506) and opts out on
-    // purpose. That is a different fact from the sites that are ungated merely
-    // because WiFi cannot be running when they execute.
-    //
-    // WiFi's SRAM buffers reduce DMA heap below the guard thresholds, which made
-    // every web-UI save silently skip the SD backup. The write is small (one JSON
-    // file) and infrequent, so bypassing is safe.
-    StorageManager::SDLockBlocking sdLock(storage_->getSDMutex(), /*checkDmaHeap=*/false);
-    if (!sdLock) {
-        Serial.println("[Settings] Failed to acquire SD mutex for backup");
-        return false;
-    }
-
     fs::FS* fs = storage_->getFilesystem();
     if (!fs)
         return false;
+
+    const uint32_t snapshotRevision = backupDueRevision_;
+    SerializedSettingsBackupPayload payload;
+    // V1ProfileManager owns the complete, bounded profile snapshot transaction.
+    // Do not hold the SD mutex here or its snapshot lock would nest.
+    if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, millis())) {
+        return false;
+    }
+
+    StorageManager::SDLockTimed sdLock(storage_->getSDMutex(), 250, /*checkDmaHeap=*/false);
+    if (!sdLock) {
+        releaseSerializedSettingsBackupPayload(payload);
+        Serial.println("[Settings] Profile backup commit busy; retry required");
+        return false;
+    }
 
     if (restorePending_) {
         JsonDocument existingBackup;
@@ -448,14 +454,20 @@ bool SettingsManager::backupToSD() {
         if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
             Serial.printf("[Settings] Restore pending; refusing to overwrite SD backup %s from provisional NVS\n",
                           existingBackupPath ? existingBackupPath : "(unknown)");
+            releaseSerializedSettingsBackupPayload(payload);
             return false;
         }
     }
 
-    const uint32_t snapshotRevision = backupDueRevision_;
-    SerializedSettingsBackupPayload payload;
-    if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, millis())) {
-        return false;
+    if (payload.protectExistingBackupFromUnsafeProfileSnapshot) {
+        JsonDocument existingBackup;
+        const char* existingBackupPath = nullptr;
+        if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
+            Serial.printf("[Settings] Refusing to rotate valid backup %s with unsafe zero-profile snapshot\n",
+                          existingBackupPath ? existingBackupPath : "(unknown)");
+            releaseSerializedSettingsBackupPayload(payload);
+            return false;
+        }
     }
 
     const bool ok = writeBackupAtomically(fs, payload);
@@ -577,6 +589,16 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
                 "[Settings] Restore pending; skipping deferred overwrite of SD backup %s from provisional NVS\n",
                 existingBackupPath ? existingBackupPath : "(unknown)");
             return true;
+        }
+    }
+
+    if (payload.protectExistingBackupFromUnsafeProfileSnapshot) {
+        JsonDocument existingBackup;
+        const char* existingBackupPath = nullptr;
+        if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
+            Serial.printf("[Settings] Unsafe profile snapshot; preserving existing SD backup %s and retrying\n",
+                          existingBackupPath ? existingBackupPath : "(unknown)");
+            return false;
         }
     }
 
@@ -857,18 +879,10 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
         return;
     }
 
-    {
-        // checkDmaHeap=true: reachable from the maintenance loop (main.cpp:647)
-        // with the AP up. One of seven sites in the tree where the DMA gate can
-        // actually fire -- see the WHO PAYS FOR THIS note in storage_manager.h.
-        StorageManager::SDTryLock sdLock(storage_->getSDMutex(), /*checkDmaHeap=*/true);
-        if (!sdLock) {
-            scheduleDeferredBackupRetry(nowMs);
-            return;
-        }
-    }
-
     SerializedSettingsBackupPayload payload;
+    // The profile manager performs the zero-wait SD admission and holds the
+    // mutex through the complete catalog snapshot. Busy/unreadable snapshots
+    // fail closed here and are retried without rotating recovery data.
     if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, nowMs)) {
         scheduleDeferredBackupRetry(nowMs);
         return;

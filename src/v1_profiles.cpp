@@ -3,6 +3,7 @@
  */
 
 #include "v1_profiles.h"
+#include "storage_manager.h"
 #include "v1_settings_json.h"
 #include <ArduinoJson.h>
 #include <vector>
@@ -14,7 +15,124 @@ uint32_t V1ProfileManager::calculateCRC32(const uint8_t* data, size_t length) {
     return computeCrc32(data, length);
 }
 
-V1ProfileManager::V1ProfileManager() : fs_(nullptr), ready_(false), profileDir_("/v1profiles"), currentValid_(false) {}
+namespace {
+
+class ProfileStorageGuard {
+  public:
+    ProfileStorageGuard(const V1ProfileManager&, StorageManager* storage, bool usingSd, uint32_t timeoutMs)
+        : mutex_(usingSd && storage ? storage->getSDMutex() : nullptr), acquired_(mutex_ == nullptr) {
+        if (mutex_) {
+            acquired_ = xSemaphoreTake(mutex_, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        }
+    }
+    ~ProfileStorageGuard() {
+        if (acquired_ && mutex_) {
+            xSemaphoreGive(mutex_);
+        }
+    }
+    bool acquired() const { return acquired_; }
+
+  private:
+    SemaphoreHandle_t mutex_;
+    bool acquired_;
+};
+
+ProfileOperationResult profileResult(ProfileStorageStatus status, const String& error = "") {
+    ProfileOperationResult result;
+    result.status = status;
+    result.error = error;
+    return result;
+}
+
+struct ProfileSyncState {
+    uint32_t version = 0;
+    bool deleted = false;
+};
+
+String syncMetaPath(const String& profilePath) {
+    return profilePath + ".meta";
+}
+
+ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
+    ProfileSyncState state;
+    const String metaPath = syncMetaPath(profilePath);
+    if (filesystem.exists(metaPath)) {
+        File file = filesystem.open(metaPath, FILE_READ);
+        JsonDocument doc;
+        if (file && !deserializeJson(doc, file)) {
+            state.version = doc["version"] | 0u;
+            state.deleted = doc["deleted"] | false;
+        }
+        if (file) file.close();
+    }
+    if (state.version == 0 && filesystem.exists(profilePath)) {
+        state.version = 1; // backward-compatible baseline for pre-metadata files
+        state.deleted = false;
+    }
+    return state;
+}
+
+bool writeSyncState(fs::FS& filesystem, const String& profilePath, const ProfileSyncState& state) {
+    JsonDocument doc;
+    doc["version"] = state.version;
+    doc["deleted"] = state.deleted;
+    const String metaPath = syncMetaPath(profilePath);
+    const String tmpPath = metaPath + ".tmp";
+    File file = filesystem.open(tmpPath, FILE_WRITE);
+    if (!file) return false;
+    const size_t written = serializeJson(doc, file);
+    file.flush();
+    file.close();
+    if (written == 0 || !StorageManager::promoteTempFileWithRollback(filesystem, tmpPath.c_str(), metaPath.c_str())) {
+        filesystem.remove(tmpPath);
+        return false;
+    }
+    return true;
+}
+
+bool copyProfileFile(fs::FS& source, fs::FS& target, const String& profilePath) {
+    File in = source.open(profilePath, FILE_READ);
+    if (!in || in.size() == 0 || in.size() > 4096) {
+        if (in) in.close();
+        return false;
+    }
+    const String tmpPath = profilePath + ".tmpsync";
+    File out = target.open(tmpPath, FILE_WRITE);
+    if (!out) {
+        in.close();
+        return false;
+    }
+    bool ok = true;
+    uint8_t buffer[256];
+    while (in.available()) {
+        const size_t count = in.read(buffer, sizeof(buffer));
+        if (count == 0 || out.write(buffer, count) != count) {
+            ok = false;
+            break;
+        }
+    }
+    out.flush();
+    out.close();
+    in.close();
+    if (!ok || !StorageManager::promoteTempFileWithRollback(target, tmpPath.c_str(), profilePath.c_str())) {
+        target.remove(tmpPath);
+        return false;
+    }
+    return true;
+}
+
+void addUniqueName(std::vector<String>& names, const String& candidate) {
+    for (const String& existing : names) {
+        if (existing == candidate) return;
+    }
+    names.push_back(candidate);
+}
+
+} // namespace
+
+V1ProfileManager::V1ProfileManager()
+    : fs_(nullptr), secondaryFs_(nullptr), storage_(nullptr), usingSd_(false), ready_(false),
+      profileDir_("/v1profiles"), currentValid_(false) {}
 
 void V1ProfileManager::bumpCatalogRevision() {
     if (catalogRevisionCounter_ == UINT32_MAX) {
@@ -32,7 +150,7 @@ static String basenameFromPath(const String& path) {
     return path;
 }
 
-void V1ProfileManager::recoverInterruptedSaves() {
+void V1ProfileManager::recoverInterruptedSavesUnlocked() {
     // Scan for .tmp and .bak files that indicate interrupted saves
     // .tmp = incomplete new save (delete it)
     // .bak without corresponding .json = interrupted rename (restore it)
@@ -96,6 +214,12 @@ void V1ProfileManager::recoverInterruptedSaves() {
     }
 }
 
+bool V1ProfileManager::begin(StorageManager& storage) {
+    storage_ = &storage;
+    usingSd_ = storage.isSDCard();
+    return begin(storage.getFilesystem(), storage.getLittleFS());
+}
+
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     if (!filesystem) {
         Serial.println("[V1Profiles] No filesystem provided");
@@ -104,6 +228,14 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     fs_ = filesystem;
+    secondaryFs_ = importFilesystem != filesystem ? importFilesystem : nullptr;
+
+    ProfileStorageGuard guard(*this, storage_, usingSd_, 500);
+    if (!guard.acquired()) {
+        lastError_ = "Profile storage busy during initialization";
+        Serial.println("[V1Profiles] BUSY: initialization could not acquire SD mutex");
+        return false;
+    }
 
     // Create profiles directory if it doesn't exist
     if (!fs_->exists(profileDir_)) {
@@ -115,7 +247,7 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     if (importFilesystem && importFilesystem != fs_) {
-        size_t migrated = migrateProfilesFrom(importFilesystem);
+        size_t migrated = reconcileProfilesFrom(importFilesystem);
         if (migrated > 0) {
             Serial.printf("[V1Profiles] Migrated %u profile(s) from secondary filesystem\n",
                           static_cast<unsigned>(migrated));
@@ -123,14 +255,14 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     // Run startup integrity check - recover any interrupted saves
-    recoverInterruptedSaves();
+    recoverInterruptedSavesUnlocked();
 
     ready_ = true;
     Serial.println("[V1Profiles] Initialized");
     return true;
 }
 
-size_t V1ProfileManager::migrateProfilesFrom(fs::FS* sourceFs) {
+size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
     if (!sourceFs || !fs_ || sourceFs == fs_) {
         return 0;
     }
@@ -138,100 +270,106 @@ size_t V1ProfileManager::migrateProfilesFrom(fs::FS* sourceFs) {
         return 0;
     }
 
-    File dir = sourceFs->open(profileDir_);
-    if (!dir || !dir.isDirectory()) {
-        if (dir) {
-            dir.close();
-        }
-        return 0;
-    }
+    if (!fs_->exists(profileDir_)) fs_->mkdir(profileDir_);
 
-    size_t migrated = 0;
-    File entry;
-    while ((entry = dir.openNextFile())) {
-        if (entry.isDirectory()) {
+    std::vector<String> names;
+    auto collect = [&](fs::FS& filesystem) {
+        File dir = filesystem.open(profileDir_);
+        if (!dir || !dir.isDirectory()) {
+            if (dir) dir.close();
+            return;
+        }
+        File entry;
+        while ((entry = dir.openNextFile())) {
+            String filename = basenameFromPath(entry.name());
             entry.close();
-            continue;
-        }
-
-        String sourceName = basenameFromPath(entry.name());
-        if (!sourceName.endsWith(".json") || sourceName.startsWith("_") || sourceName.startsWith(".")) {
-            entry.close();
-            continue;
-        }
-
-        String targetPath = profileDir_ + "/" + sourceName;
-        if (fs_->exists(targetPath)) {
-            entry.close();
-            continue;
-        }
-
-        String tmpPath = targetPath + ".tmpimport";
-        File out = fs_->open(tmpPath, FILE_WRITE);
-        if (!out) {
-            Serial.println("[V1Profiles] Migration skipped (write open failed)");
-            entry.close();
-            continue;
-        }
-
-        bool ok = true;
-        uint8_t buffer[256];
-        while (entry.available()) {
-            size_t read = entry.read(buffer, sizeof(buffer));
-            if (read == 0) {
-                break;
+            String candidate;
+            if (filename.endsWith(".json.meta")) {
+                candidate = filename.substring(0, filename.length() - 10);
+            } else if (filename.endsWith(".json")) {
+                candidate = filename.substring(0, filename.length() - 5);
+            } else {
+                continue;
             }
-            if (out.write(buffer, read) != read) {
-                ok = false;
-                break;
+            String canonical;
+            if (canonicalizeProfileName(candidate, canonical) == ProfileNameStatus::Valid && canonical == candidate) {
+                addUniqueName(names, canonical);
             }
         }
-        out.flush();
-        out.close();
-        entry.close();
+        dir.close();
+    };
+    collect(*sourceFs);
+    collect(*fs_);
 
-        if (!ok) {
-            fs_->remove(tmpPath);
-            Serial.println("[V1Profiles] Migration skipped (copy failed)");
-            continue;
-        }
-        if (!fs_->rename(tmpPath, targetPath)) {
-            fs_->remove(tmpPath);
-            Serial.println("[V1Profiles] Migration skipped (rename failed)");
-            continue;
-        }
+    size_t reconciled = 0;
+    for (const String& name : names) {
+        const String path = profilePath(name);
+        ProfileSyncState sourceState = readSyncState(*sourceFs, path);
+        ProfileSyncState targetState = readSyncState(*fs_, path);
 
-        migrated++;
-        Serial.println("[V1Profiles] Migrated profile file");
+        bool sourceWins = sourceState.version > targetState.version;
+        if (sourceState.version == targetState.version && sourceState.deleted != targetState.deleted) {
+            sourceWins = sourceState.deleted; // equal-generation deletion always wins
+        }
+        fs::FS* winner = sourceWins ? sourceFs : fs_;
+        fs::FS* loser = sourceWins ? fs_ : sourceFs;
+        ProfileSyncState winningState = sourceWins ? sourceState : targetState;
+        ProfileSyncState losingState = sourceWins ? targetState : sourceState;
+        if (winningState.version == 0) continue;
+
+        const bool stateDiffers = winningState.version != losingState.version ||
+                                  winningState.deleted != losingState.deleted ||
+                                  (!winningState.deleted && !loser->exists(path)) ||
+                                  (winningState.deleted && loser->exists(path));
+        if (stateDiffers) {
+            bool applied = true;
+            if (winningState.deleted) {
+                if (loser->exists(path)) applied = loser->remove(path);
+            } else {
+                applied = winner->exists(path) && copyProfileFile(*winner, *loser, path);
+            }
+            if (!applied || !writeSyncState(*loser, path, winningState)) {
+                Serial.printf("[V1Profiles] RECONCILE failed name='%s' path='%s'\n", name.c_str(), path.c_str());
+                continue;
+            }
+            reconciled++;
+        }
+        if (winningState.deleted && winner->exists(path)) {
+            winner->remove(path);
+        }
+        // Materialize metadata for legacy winners so later edits/deletions have
+        // an explicit ordering basis on both filesystems.
+        writeSyncState(*winner, path, winningState);
+        writeSyncState(*loser, path, winningState);
     }
-    dir.close();
-    return migrated;
+    return reconciled;
 }
 
 String V1ProfileManager::profilePath(const String& name) const {
-    // Sanitize name for filesystem
-    String safeName = name;
-    safeName.replace("/", "_");
-    safeName.replace("\\", "_");
-    safeName.replace("..", "_");
-    return profileDir_ + "/" + safeName + ".json";
+    return profileDir_ + "/" + name + ".json";
 }
 
-std::vector<String> V1ProfileManager::listProfiles() const {
-    std::vector<String> profiles;
-
+ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
+    ProfileListResult result;
     if (!ready_ || !fs_) {
-        return profiles;
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Profile filesystem not ready";
+        return result;
     }
 
     File dir = fs_->open(profileDir_);
     if (!dir || !dir.isDirectory()) {
-        return profiles;
+        if (dir) dir.close();
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Failed to enumerate profile directory";
+        return result;
     }
 
+    std::vector<String> collisionKeys;
     File entry;
     while ((entry = dir.openNextFile())) {
         String name = entry.name();
+        entry.close();
         if (name.endsWith(".json")) {
             // Remove .json extension and path
             int lastSlash = name.lastIndexOf('/');
@@ -241,42 +379,90 @@ std::vector<String> V1ProfileManager::listProfiles() const {
             name = name.substring(0, name.length() - 5); // Remove .json
 
             // Filter out system files that aren't user profiles
-            if (name.startsWith("_") || name.startsWith(".")) {
+            String canonical;
+            if (canonicalizeProfileName(name, canonical) != ProfileNameStatus::Valid || canonical != name) {
                 continue;
             }
-
-            profiles.push_back(name);
+            if (readSyncState(*fs_, profilePath(canonical)).deleted) {
+                continue;
+            }
+            const String collisionKey = profileCanonicalCollisionKey(canonical);
+            bool collision = false;
+            for (const String& existingKey : collisionKeys) {
+                if (existingKey == collisionKey) {
+                    collision = true;
+                    break;
+                }
+            }
+            if (collision) {
+                dir.close();
+                result.status = ProfileStorageStatus::Corrupt;
+                result.error = "Canonical profile-name collision in catalog";
+                return result;
+            }
+            collisionKeys.push_back(collisionKey);
+            result.profiles.push_back(canonical);
         }
-        entry.close();
     }
     dir.close();
-
-    return profiles;
+    result.status = ProfileStorageStatus::Success;
+    result.genuinelyEmpty = result.profiles.empty();
+    return result;
 }
 
-bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const {
+ProfileListResult V1ProfileManager::listProfilesResult(uint32_t timeoutMs) const {
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
+    if (!guard.acquired()) {
+        ProfileListResult result;
+        result.status = ProfileStorageStatus::Busy;
+        result.error = "Profile storage busy";
+        return result;
+    }
+    return listProfilesUnlocked();
+}
+
+std::vector<String> V1ProfileManager::listProfiles() const {
+    return listProfilesResult().profiles;
+}
+
+ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name, V1Profile& profile,
+                                                              bool allowTransactionRecovery) const {
     if (!ready_ || !fs_) {
-        return false;
+        return profileResult(ProfileStorageStatus::IoError, "Profile filesystem not ready");
     }
 
     String path = profilePath(name);
     String bakPath = path + ".bak";
 
-    File file = fs_->open(path, FILE_READ);
+    // A committed tombstone is authoritative even if stale bytes remain after
+    // an interrupted delete. This prevents later enumeration or reconciliation
+    // from resurrecting a profile whose deletion was already recorded.
+    if (readSyncState(*fs_, path).deleted) {
+        Serial.printf("[V1Profiles] NOT_FOUND name='%s' path='%s' tombstoned=true\n", name.c_str(), path.c_str());
+        return profileResult(ProfileStorageStatus::NotFound, "Profile not found");
+    }
+
+    const bool mainExists = fs_->exists(path);
+    File file = mainExists ? fs_->open(path, FILE_READ) : File();
     if (!file) {
         // Try to recover from backup file
-        if (fs_->exists(bakPath)) {
-            Serial.println("[V1Profiles] Main file missing, attempting recovery from backup");
+        if (allowTransactionRecovery && fs_->exists(bakPath)) {
+            Serial.printf("[V1Profiles] RECOVERY name='%s' path='%s' restoring transaction backup\n", name.c_str(),
+                          path.c_str());
             // Rename backup to main file
             if (fs_->rename(bakPath, path)) {
-                Serial.println("[V1Profiles] Restored profile from backup!");
+                Serial.printf("[V1Profiles] RECOVERY name='%s' path='%s' restored\n", name.c_str(), path.c_str());
                 file = fs_->open(path, FILE_READ);
             }
         }
 
         if (!file) {
-            Serial.println("[V1Profiles] Profile not found (no backup available)");
-            return false;
+            const ProfileStorageStatus status = mainExists ? ProfileStorageStatus::IoError : ProfileStorageStatus::NotFound;
+            lastError_ = status == ProfileStorageStatus::NotFound ? "Profile not found" : "Profile open failed";
+            Serial.printf("[V1Profiles] %s name='%s' path='%s'\n",
+                          status == ProfileStorageStatus::NotFound ? "NOT_FOUND" : "IO_ERROR", name.c_str(),
+                          path.c_str());
+            return profileResult(status, lastError_);
         }
     }
 
@@ -284,7 +470,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
     if (file.size() > 4096) {
         Serial.printf("[V1Profiles] Profile too large (%u bytes), aborting\n", (unsigned)file.size());
         file.close();
-        return false;
+        return profileResult(ProfileStorageStatus::Corrupt, "Profile file exceeds size limit");
     }
 
     // Read file content for CRC validation with RAII-managed storage
@@ -298,7 +484,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
             Serial.printf("[V1Profiles] %s (%u/%u bytes)\n", lastError_.c_str(), static_cast<unsigned>(bytesRead),
                           static_cast<unsigned>(fileSize));
             file.close();
-            return false;
+            return profileResult(ProfileStorageStatus::IoError, lastError_);
         }
     }
     file.close();
@@ -309,7 +495,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
     if (err) {
         lastError_ = String("JSON parse error: ") + err.c_str();
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
-        return false;
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
 
     const JsonVariantConst rawBytes = doc["bytes"];
@@ -319,7 +505,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
         if (!V1SettingsJson::parseRawBytes(rawBytes, rawSettingsBytes)) {
             lastError_ = "Invalid settings bytes";
             Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
-            return false;
+            return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
     }
 
@@ -334,7 +520,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
                 lastError_ = "CRC mismatch - profile file corrupted";
                 Serial.printf("[V1Profiles] %s (stored: %08lX, computed: %08lX)\n", lastError_.c_str(),
                               static_cast<unsigned long>(storedCrc), static_cast<unsigned long>(computedCrc));
-                return false;
+                return profileResult(ProfileStorageStatus::Corrupt, lastError_);
             }
             Serial.println("[V1Profiles] CRC32 validated OK");
         }
@@ -402,34 +588,73 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
             s.setMrct(doc["mrct"]);
     }
 
-    Serial.println("[V1Profiles] Loaded profile");
-    return true;
+    Serial.printf("[V1Profiles] LOAD success name='%s' path='%s'\n", name.c_str(), path.c_str());
+    return profileResult(ProfileStorageStatus::Success);
 }
 
-ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
+ProfileOperationResult V1ProfileManager::loadProfileResult(const String& rawName, V1Profile& profile,
+                                                           uint32_t timeoutMs) const {
+    String canonical;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(rawName, canonical);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        return profileResult(ProfileStorageStatus::InvalidName, profileNameStatusMessage(nameStatus));
+    }
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
+    if (!guard.acquired()) {
+        lastError_ = "Profile storage busy";
+        Serial.printf("[V1Profiles] BUSY name='%s' path='%s'\n", canonical.c_str(), profilePath(canonical).c_str());
+        return profileResult(ProfileStorageStatus::Busy, lastError_);
+    }
+    return loadProfileUnlocked(canonical, profile);
+}
+
+bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const {
+    return loadProfileResult(name, profile).success();
+}
+
+ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile, const String& canonicalName) {
     if (!ready_ || !fs_) {
         lastError_ = "Filesystem not ready";
         Serial.printf("[V1Profiles] Save failed: %s\n", lastError_.c_str());
-        return ProfileSaveResult(false, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    String path = profilePath(profile.name);
+    const ProfileListResult catalog = listProfilesUnlocked();
+    if (!catalog.success()) {
+        return ProfileSaveResult(catalog.status, catalog.error);
+    }
+    const String newKey = profileCanonicalCollisionKey(canonicalName);
+    for (const String& existing : catalog.profiles) {
+        if (existing != canonicalName && profileCanonicalCollisionKey(existing) == newKey) {
+            lastError_ = "Profile name collides with existing canonical name";
+            Serial.printf("[V1Profiles] INVALID_NAME name='%s' path='%s' reason=collision\n", canonicalName.c_str(),
+                          profilePath(canonicalName).c_str());
+            return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+        }
+    }
+
+    String path = profilePath(canonicalName);
     String tmpPath = path + ".tmp";
     String bakPath = path + ".bak";
+    const ProfileSyncState activeState = readSyncState(*fs_, path);
+    const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};
+    ProfileSyncState committedState;
+    committedState.version = std::max(activeState.version, secondaryState.version) + 1u;
+    committedState.deleted = false;
 
     // Step 1: Write to temporary file (don't truncate original yet)
     File file = fs_->open(tmpPath, FILE_WRITE);
     if (!file) {
         lastError_ = "Failed to create temp file";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
-        return ProfileSaveResult(false, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
     JsonDocument doc;
     const V1UserSettings& s = profile.settings;
 
     // Store metadata
-    doc["name"] = profile.name;
+    doc["name"] = canonicalName;
     doc["description"] = profile.description;
     doc["displayOn"] = profile.displayOn;
     doc["mainVolume"] = profile.mainVolume;
@@ -489,14 +714,14 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
         lastError_ = "Serialization failed - no data written";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
         fs_->remove(tmpPath);
-        return ProfileSaveResult(false, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
     if (written != expectedPrettyBytes) {
         lastError_ = "Partial write detected: expected " + String(static_cast<unsigned long>(expectedPrettyBytes)) +
                      " bytes, wrote " + String(static_cast<unsigned long>(written));
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
         fs_->remove(tmpPath);
-        return ProfileSaveResult(false, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
     {
         File verify = fs_->open(tmpPath, FILE_READ);
@@ -504,7 +729,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
             lastError_ = "Failed to re-open temp file for verification";
             Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
             fs_->remove(tmpPath);
-            return ProfileSaveResult(false, lastError_);
+            return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
         size_t fileSize = verify.size();
         verify.close();
@@ -512,7 +737,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
             lastError_ = "Partial write detected: expected " + String(written) + " bytes, got " + String(fileSize);
             Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
             fs_->remove(tmpPath);
-            return ProfileSaveResult(false, lastError_);
+            return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
     }
 
@@ -543,47 +768,149 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
             }
         }
         fs_->remove(tmpPath);
-        return ProfileSaveResult(false, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    // Step 6: Remove backup after successful save (optional - keep for extra safety)
+    // Step 6: prove the promoted final file is readable and its CRC is valid.
+    V1Profile verified;
+    // Do not let ordinary interrupted-transaction recovery consume the backup
+    // while validating a just-promoted candidate. The save transaction owns
+    // rollback until final-file verification completes.
+    const ProfileOperationResult verifyResult = loadProfileUnlocked(canonicalName, verified, false);
+    if (!verifyResult.success() || memcmp(verified.settings.bytes, profile.settings.bytes, 6) != 0) {
+        lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
+        fs_->remove(path);
+        if (fs_->exists(bakPath)) {
+            fs_->rename(bakPath, path);
+        }
+        Serial.printf("[V1Profiles] VERIFY_FAILED name='%s' path='%s' reason='%s'\n", canonicalName.c_str(),
+                      path.c_str(), lastError_.c_str());
+        return ProfileSaveResult(verifyResult.success() ? ProfileStorageStatus::Corrupt : verifyResult.status,
+                                 lastError_);
+    }
 
-    Serial.printf("[V1Profiles] Saved profile (%u bytes, CRC: %08lX)\n", written, static_cast<unsigned long>(crc));
+    if (!writeSyncState(*fs_, path, committedState)) {
+        lastError_ = "Failed to persist profile reconciliation metadata";
+        fs_->remove(path);
+        if (fs_->exists(bakPath)) fs_->rename(bakPath, path);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+
+    if (fs_->exists(bakPath)) {
+        fs_->remove(bakPath);
+    }
+
+    if (secondaryFs_) {
+        if (!secondaryFs_->exists(profileDir_)) secondaryFs_->mkdir(profileDir_);
+        if (!copyProfileFile(*fs_, *secondaryFs_, path) || !writeSyncState(*secondaryFs_, path, committedState)) {
+            Serial.printf("[V1Profiles] WARN: secondary mirror deferred name='%s' path='%s'\n", canonicalName.c_str(),
+                          path.c_str());
+        }
+    }
+
+    Serial.printf("[V1Profiles] SAVE success name='%s' path='%s' bytes=%u crc=%08lX\n", canonicalName.c_str(),
+                  path.c_str(), written, static_cast<unsigned long>(crc));
     bumpCatalogRevision();
-    return ProfileSaveResult(true);
+    return ProfileSaveResult(ProfileStorageStatus::Success);
 }
 
-bool V1ProfileManager::deleteProfile(const String& name) {
+ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
+    String canonical;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(profile.name, canonical);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        lastError_ = profileNameStatusMessage(nameStatus);
+        Serial.printf("[V1Profiles] INVALID_NAME requested='%s' reason='%s'\n", profile.name.c_str(), lastError_.c_str());
+        return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+    }
+    ProfileStorageGuard guard(*this, storage_, usingSd_, 250);
+    if (!guard.acquired()) {
+        lastError_ = "Profile storage busy";
+        Serial.printf("[V1Profiles] BUSY name='%s' path='%s'\n", canonical.c_str(), profilePath(canonical).c_str());
+        return ProfileSaveResult(ProfileStorageStatus::Busy, lastError_);
+    }
+    V1Profile canonicalProfile = profile;
+    canonicalProfile.name = canonical;
+    return saveProfileUnlocked(canonicalProfile, canonical);
+}
+
+ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& name) {
     if (!ready_ || !fs_) {
-        return false;
+        return profileResult(ProfileStorageStatus::IoError, "Profile filesystem not ready");
     }
 
     String path = profilePath(name);
     String bakPath = path + ".bak";
-    bool removedAny = false;
+    const ProfileSyncState activeState = readSyncState(*fs_, path);
+    const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};
+    ProfileSyncState tombstone;
+    tombstone.version = std::max(activeState.version, secondaryState.version) + 1u;
+    tombstone.deleted = true;
+    const bool activeExists = fs_->exists(path);
+    const bool activeBakExists = fs_->exists(bakPath);
+    const bool secondaryExists = secondaryFs_ && secondaryFs_->exists(path);
+    const String secondaryBak = path + ".bak";
+    const bool secondaryBakExists = secondaryFs_ && secondaryFs_->exists(secondaryBak);
+    const bool removedAny = activeExists || activeBakExists || secondaryExists || secondaryBakExists;
+
+    if (!removedAny) {
+        return profileResult(ProfileStorageStatus::NotFound, "Profile not found");
+    }
+
+    // Persist deletion intent before removing data. If power is lost after this
+    // point, list/load treat any leftover bytes as deleted and reconciliation
+    // propagates the higher-generation tombstone.
+    if (!writeSyncState(*fs_, path, tombstone) ||
+        (secondaryFs_ && !writeSyncState(*secondaryFs_, path, tombstone))) {
+        return profileResult(ProfileStorageStatus::IoError, "Failed to persist profile deletion metadata");
+    }
+
     bool ok = true;
 
-    if (fs_->exists(path)) {
+    if (activeExists) {
         if (!fs_->remove(path)) {
             ok = false;
-        } else {
-            removedAny = true;
         }
     }
 
-    if (fs_->exists(bakPath)) {
+    if (activeBakExists) {
         if (!fs_->remove(bakPath)) {
             ok = false;
-        } else {
-            removedAny = true;
         }
+    }
+
+    if (secondaryFs_) {
+        if (secondaryExists) {
+            ok = secondaryFs_->remove(path) && ok;
+        }
+        if (secondaryBakExists) ok = secondaryFs_->remove(secondaryBak) && ok;
     }
 
     if (ok && removedAny) {
-        Serial.println("[V1Profiles] Deleted profile");
+        Serial.printf("[V1Profiles] DELETE success name='%s' path='%s'\n", name.c_str(), path.c_str());
         bumpCatalogRevision();
     }
-    return ok && removedAny;
+    if (!ok) {
+        return profileResult(ProfileStorageStatus::IoError, "Failed to remove profile file");
+    }
+    return profileResult(ProfileStorageStatus::Success);
+}
+
+ProfileOperationResult V1ProfileManager::deleteProfileResult(const String& rawName, uint32_t timeoutMs) {
+    String canonical;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(rawName, canonical);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        return profileResult(ProfileStorageStatus::InvalidName, profileNameStatusMessage(nameStatus));
+    }
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
+    if (!guard.acquired()) {
+        Serial.printf("[V1Profiles] BUSY name='%s' path='%s'\n", canonical.c_str(), profilePath(canonical).c_str());
+        return profileResult(ProfileStorageStatus::Busy, "Profile storage busy");
+    }
+    return deleteProfileUnlocked(canonical);
+}
+
+bool V1ProfileManager::deleteProfile(const String& name) {
+    return deleteProfileResult(name).success();
 }
 
 bool V1ProfileManager::renameProfile(const String& oldName, const String& newName) {
@@ -592,24 +919,32 @@ bool V1ProfileManager::renameProfile(const String& oldName, const String& newNam
         return false;
     }
 
-    const String oldPath = profilePath(oldName);
-    const String newPath = profilePath(newName);
+    String canonicalOld;
+    String canonicalNew;
+    const ProfileNameStatus oldStatus = canonicalizeProfileName(oldName, canonicalOld);
+    const ProfileNameStatus newStatus = canonicalizeProfileName(newName, canonicalNew);
+    if (oldStatus != ProfileNameStatus::Valid || newStatus != ProfileNameStatus::Valid) {
+        lastError_ = profileNameStatusMessage(oldStatus != ProfileNameStatus::Valid ? oldStatus : newStatus);
+        return false;
+    }
+
+    ProfileStorageGuard guard(*this, storage_, usingSd_, 250);
+    if (!guard.acquired()) {
+        lastError_ = "Profile storage busy";
+        return false;
+    }
+
+    const String oldPath = profilePath(canonicalOld);
+    const String newPath = profilePath(canonicalNew);
 
     // Guard: exact no-op rename should not touch disk or revision state.
-    if (oldName == newName) {
+    if (canonicalOld == canonicalNew) {
         return true;
     }
 
     V1Profile profile;
-    if (!loadProfile(oldName, profile)) {
+    if (!loadProfileUnlocked(canonicalOld, profile).success()) {
         return false;
-    }
-
-    // Sanitized path collision: update metadata in place without delete/recreate.
-    if (oldPath == newPath) {
-        profile.name = newName;
-        ProfileSaveResult result = saveProfile(profile);
-        return result.success;
     }
 
     // Guard: refuse to overwrite a different existing profile.
@@ -619,16 +954,40 @@ bool V1ProfileManager::renameProfile(const String& oldName, const String& newNam
         return false;
     }
 
-    profile.name = newName;
-    ProfileSaveResult result = saveProfile(profile);
+    profile.name = canonicalNew;
+    ProfileSaveResult result = saveProfileUnlocked(profile, canonicalNew);
     if (!result.success) {
         return false;
     }
 
-    if (!deleteProfile(oldName)) {
+    if (!deleteProfileUnlocked(canonicalOld).success()) {
         Serial.println("[V1Profiles] Warning: rename saved new but failed to delete old");
+        return false;
     }
     return true;
+}
+
+ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>& profiles, uint32_t timeoutMs) const {
+    profiles.clear();
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
+    if (!guard.acquired()) {
+        return profileResult(ProfileStorageStatus::Busy, "Profile storage busy");
+    }
+    const ProfileListResult catalog = listProfilesUnlocked();
+    if (!catalog.success()) {
+        return profileResult(catalog.status, catalog.error);
+    }
+    profiles.reserve(catalog.profiles.size());
+    for (const String& name : catalog.profiles) {
+        V1Profile profile;
+        const ProfileOperationResult loaded = loadProfileUnlocked(name, profile);
+        if (!loaded.success()) {
+            profiles.clear();
+            return loaded;
+        }
+        profiles.push_back(profile);
+    }
+    return profileResult(ProfileStorageStatus::Success);
 }
 
 void V1ProfileManager::setCurrentSettings(const uint8_t* bytes) {

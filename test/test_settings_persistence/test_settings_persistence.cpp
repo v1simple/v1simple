@@ -2009,6 +2009,66 @@ void test_v19_backup_direct_colors_win_over_compatibility_shadow() {
     }
 }
 
+void test_profile_delete_reconciliation_clears_all_slots_and_survives_reload() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    profiles = V1ProfileManager();
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    manager.mutableSettings().slot1_highway.profileName = "Road";
+    manager.mutableSettings().slot2_comfort.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    bool changed = false;
+    TEST_ASSERT_TRUE(manager.clearProfileReferencesPersisted("Road", changed));
+    TEST_ASSERT_TRUE(changed);
+    TEST_ASSERT_EQUAL_STRING("", manager.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", manager.get().slot1_highway.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", manager.get().slot2_comfort.profileName.c_str());
+
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_STRING("", reloaded.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", reloaded.get().slot1_highway.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", reloaded.get().slot2_comfort.profileName.c_str());
+}
+
+void verify_healthy_nvs_recovers_referenced_profile(bool usePreviousBackup) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    profiles = V1ProfileManager();
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(40 + i);
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(source.save());
+    if (usePreviousBackup) {
+        if (fs.exists(SETTINGS_BACKUP_PREV_PATH)) fs.remove(SETTINGS_BACKUP_PREV_PATH);
+        TEST_ASSERT_TRUE(fs.rename(SETTINGS_BACKUP_PATH, SETTINGS_BACKUP_PREV_PATH));
+    }
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+
+    SettingsManager healthyBoot(storage, profiles);
+    healthyBoot.load();
+    TEST_ASSERT_FALSE(healthyBoot.checkAndRestoreFromSD());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+}
+
+void test_healthy_nvs_recovers_referenced_profile_from_primary_backup() {
+    verify_healthy_nvs_recovers_referenced_profile(false);
+}
+
+void test_healthy_nvs_recovers_referenced_profile_from_previous_backup() {
+    verify_healthy_nvs_recovers_referenced_profile(true);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
@@ -2070,5 +2130,8 @@ int main() {
     RUN_TEST(test_fresh_install_seeds_six_physical_defaults);
     RUN_TEST(test_v18_backup_eight_segment_theme_collapses_to_six);
     RUN_TEST(test_v19_backup_direct_colors_win_over_compatibility_shadow);
+    RUN_TEST(test_profile_delete_reconciliation_clears_all_slots_and_survives_reload);
+    RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_primary_backup);
+    RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_previous_backup);
     return UNITY_END();
 }

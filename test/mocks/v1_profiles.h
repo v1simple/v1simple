@@ -19,12 +19,20 @@ struct V1Profile {
     uint8_t mutedVolume = 0xFF;
 };
 
+enum class ProfileStorageStatus : uint8_t { Success = 0, NotFound, Busy, IoError, Corrupt, InvalidName };
+
+struct ProfileOperationResult {
+    ProfileStorageStatus status = ProfileStorageStatus::IoError;
+    bool success() const { return status == ProfileStorageStatus::Success; }
+};
+
 class V1ProfileManager {
 public:
     int setCurrentSettingsCalls = 0;
     mutable int loadProfileCalls = 0;
     uint8_t lastSettings[6] = {};
-    bool loadProfileResult = false;
+    bool loadProfileSuccess = false;
+    ProfileStorageStatus nextLoadStatus = ProfileStorageStatus::NotFound;
     String loadableProfileName;
     V1Profile loadableProfile;
     mutable String lastLoadProfileName;
@@ -33,7 +41,8 @@ public:
         setCurrentSettingsCalls = 0;
         loadProfileCalls = 0;
         std::memset(lastSettings, 0, sizeof(lastSettings));
-        loadProfileResult = false;
+        loadProfileSuccess = false;
+        nextLoadStatus = ProfileStorageStatus::NotFound;
         loadableProfileName = "";
         loadableProfile = V1Profile{};
         lastLoadProfileName = "";
@@ -49,7 +58,7 @@ public:
     bool loadProfile(const String& name, V1Profile& profile) const {
         loadProfileCalls++;
         lastLoadProfileName = name;
-        if (!loadProfileResult) {
+        if (!loadProfileSuccess) {
             return false;
         }
         if (loadableProfileName.length() > 0 && loadableProfileName != name) {
@@ -57,6 +66,16 @@ public:
         }
         profile = loadableProfile;
         return true;
+    }
+
+    ProfileOperationResult loadProfileResult(const String& name, V1Profile& profile, uint32_t = 0) const {
+        if (nextLoadStatus == ProfileStorageStatus::Busy) {
+            loadProfileCalls++;
+            lastLoadProfileName = name;
+            return ProfileOperationResult{ProfileStorageStatus::Busy};
+        }
+        const bool ok = loadProfile(name, profile);
+        return ProfileOperationResult{ok ? ProfileStorageStatus::Success : nextLoadStatus};
     }
 };
 

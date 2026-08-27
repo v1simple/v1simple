@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <algorithm>
 #include "settings.h" // V1Mode enum
+#include "profile_name.h"
 
 // ── Length limits ────────────────────────────────────────────────────────────
 
@@ -21,7 +22,6 @@ inline constexpr size_t MAX_AP_PASSWORD_LEN = 63;
 inline constexpr size_t MIN_AP_PASSWORD_LEN = 8;
 inline constexpr size_t MAX_PROXY_NAME_LEN = 32;
 inline constexpr size_t MAX_SLOT_NAME_LEN = 20;
-inline constexpr size_t MAX_PROFILE_NAME_LEN = 64;
 inline constexpr size_t MAX_PROFILE_DESCRIPTION_LEN = 160;
 
 // ── Numeric clamps ──────────────────────────────────────────────────────────
@@ -163,7 +163,8 @@ inline String sanitizeSlotNameValue(const String& raw) {
 }
 
 inline String sanitizeProfileNameValue(const String& raw) {
-    return clampStringLength(raw, MAX_PROFILE_NAME_LEN);
+    String canonical;
+    return canonicalizeProfileName(raw, canonical) == ProfileNameStatus::Valid ? canonical : String("");
 }
 
 inline String sanitizeProfileDescriptionValue(const String& raw) {

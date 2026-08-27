@@ -224,14 +224,19 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     JsonArray profilesArr = doc["profiles"].to<JsonArray>();
     BuildResult result;
     if (profileManager.isReady()) {
-        std::vector<String> profileNames = profileManager.listProfiles();
-        for (const String& name : profileNames) {
-            V1Profile profile;
-            if (!profileManager.loadProfile(name, profile)) {
-                continue;
-            }
+        std::vector<V1Profile> profileSnapshot;
+        const ProfileOperationResult snapshotResult = profileManager.snapshotProfiles(profileSnapshot);
+        result.profileStatus = snapshotResult.status;
+        result.profileCatalogGenuinelyEmpty = snapshotResult.success() && profileSnapshot.empty();
+        for (const V1Profile& profile : profileSnapshot) {
             appendProfile(profilesArr, profile);
             result.profilesBackedUp++;
+        }
+        const bool hasConfiguredReferences = settings.slot0_default.profileName.length() > 0 ||
+                                             settings.slot1_highway.profileName.length() > 0 ||
+                                             settings.slot2_comfort.profileName.length() > 0;
+        if (!snapshotResult.success() || (hasConfiguredReferences && result.profilesBackedUp == 0)) {
+            result.safeToCommit = false;
         }
     }
 

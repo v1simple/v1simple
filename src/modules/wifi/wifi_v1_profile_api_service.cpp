@@ -4,12 +4,24 @@
 
 #include "wifi_api_response.h"
 #include "wifi_json_document.h"
+#include "profile_name.h"
 
 namespace WifiV1ProfileApiService {
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
     std::vector<String> profileNames;
-    if (runtime.listProfileNames) {
+    if (runtime.listProfileNamesResult) {
+        const CatalogStatus status =
+            runtime.listProfileNamesResult(profileNames, runtime.listProfileNamesResultCtx);
+        if (status != CatalogStatus::Success) {
+            const int httpStatus = status == CatalogStatus::Busy ? 409 : 500;
+            const char* error = status == CatalogStatus::Busy ? "Profile storage busy; retry" :
+                                status == CatalogStatus::Corrupt ? "Profile catalog corrupt" :
+                                "Profile catalog unavailable";
+            server.send(httpStatus, "application/json", String("{\"error\":\"") + error + "\"}");
+            return;
+        }
+    } else if (runtime.listProfileNames) {
         profileNames = runtime.listProfileNames(runtime.listProfileNamesCtx);
     }
     Serial.printf("[V1Profiles] Listing %d profiles\n", profileNames.size());
@@ -36,8 +48,28 @@ void handleApiProfileGet(WebServer& server, const Runtime& runtime) {
         return;
     }
 
-    String name = server.arg("name");
+    String name;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(server.arg("name"), name);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        server.send(400, "application/json", String("{\"error\":\"") + profileNameStatusMessage(nameStatus) +
+                                                 "\"}");
+        return;
+    }
     String profileJson;
+    if (runtime.loadProfileJsonResult) {
+        const CatalogStatus status =
+            runtime.loadProfileJsonResult(name, profileJson, runtime.loadProfileJsonResultCtx);
+        if (status == CatalogStatus::Success) {
+            server.send(200, "application/json", profileJson);
+            return;
+        }
+        const int httpStatus = status == CatalogStatus::NotFound ? 404 : status == CatalogStatus::Busy ? 409 : 500;
+        const char* error = status == CatalogStatus::NotFound ? "Profile not found" :
+                            status == CatalogStatus::Busy ? "Profile storage busy; retry" :
+                            status == CatalogStatus::Corrupt ? "Profile is corrupt" : "Profile read failed";
+        server.send(httpStatus, "application/json", String("{\"error\":\"") + error + "\"}");
+        return;
+    }
     if (!runtime.loadProfileJson || !runtime.loadProfileJson(name, profileJson, runtime.loadProfileJsonCtx)) {
         server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
         return;
@@ -77,9 +109,12 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         return;
     }
 
-    String name = doc["name"] | "";
-    if (name.isEmpty()) {
-        server.send(400, "application/json", "{\"error\":\"Missing profile name\"}");
+    String requestedName = doc["name"] | "";
+    String name;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(requestedName, name);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        server.send(400, "application/json", String("{\"error\":\"") + profileNameStatusMessage(nameStatus) +
+                                                 "\"}");
         return;
     }
 
@@ -123,7 +158,7 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         // and the UI's res.json() cannot throw on a malformed body.
         WifiJson::Document errorDoc;
         WifiApiResponse::setErrorAndMessage(errorDoc, saveError.c_str());
-        WifiApiResponse::sendJsonDocument(server, 500, errorDoc);
+        WifiApiResponse::sendJsonDocument(server, saveError.indexOf("busy") >= 0 ? 409 : 500, errorDoc);
     }
 }
 
@@ -152,24 +187,44 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
         return;
     }
 
-    String name = doc["name"] | "";
-    if (name.isEmpty()) {
-        server.send(400, "application/json", "{\"error\":\"Missing profile name\"}");
+    String requestedName = doc["name"] | "";
+    String name;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(requestedName, name);
+    if (nameStatus != ProfileNameStatus::Valid) {
+        server.send(400, "application/json", String("{\"error\":\"") + profileNameStatusMessage(nameStatus) +
+                                                 "\"}");
         return;
     }
 
-    if (!runtime.deleteProfile) {
+    if (!runtime.deleteProfileResult && !runtime.deleteProfile) {
         server.send(500, "application/json", "{\"error\":\"Profile persistence unavailable\"}");
         return;
     }
 
-    if (runtime.deleteProfile(name, runtime.deleteProfileCtx)) {
+    CatalogStatus deleteStatus = CatalogStatus::IoError;
+    if (runtime.deleteProfileResult) {
+        deleteStatus = runtime.deleteProfileResult(name, runtime.deleteProfileResultCtx);
+    } else if (runtime.deleteProfile(name, runtime.deleteProfileCtx)) {
+        deleteStatus = CatalogStatus::Success;
+    } else {
+        deleteStatus = CatalogStatus::NotFound;
+    }
+
+    if (deleteStatus == CatalogStatus::Success) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
         }
         server.send(200, "application/json", "{\"success\":true}");
-    } else {
+    } else if (deleteStatus == CatalogStatus::NotFound) {
         server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
+    } else if (deleteStatus == CatalogStatus::Busy) {
+        server.send(409, "application/json", "{\"error\":\"Profile storage busy; retry\"}");
+    } else if (deleteStatus == CatalogStatus::InvalidName) {
+        server.send(400, "application/json", "{\"error\":\"Invalid profile name\"}");
+    } else if (deleteStatus == CatalogStatus::Corrupt) {
+        server.send(500, "application/json", "{\"error\":\"Profile is corrupt\"}");
+    } else {
+        server.send(500, "application/json", "{\"error\":\"Profile deletion failed\"}");
     }
 }
 

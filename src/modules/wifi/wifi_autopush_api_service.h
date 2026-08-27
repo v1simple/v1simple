@@ -7,6 +7,15 @@
 
 namespace WifiAutoPushApiService {
 
+enum class ProfileAssignmentStatus : uint8_t {
+    Success = 0,
+    NotFound,
+    Busy,
+    IoError,
+    Corrupt,
+    InvalidName,
+};
+
 struct SlotConfig {
     String name;
     String profile;
@@ -93,6 +102,8 @@ struct Runtime {
     void* setActiveSlotCtx = nullptr;
     void (*setAutoPushEnabled)(bool enabled, void* ctx) = nullptr;
     void* setAutoPushEnabledCtx = nullptr;
+    ProfileAssignmentStatus (*validateProfileAssignment)(const String& canonicalProfile, void* ctx) = nullptr;
+    void* validateProfileAssignmentCtx = nullptr;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);

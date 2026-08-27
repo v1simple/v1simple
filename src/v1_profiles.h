@@ -11,6 +11,9 @@
 #include <FS.h>
 #include <vector>
 #include <ArduinoJson.h>
+#include "profile_name.h"
+
+class StorageManager;
 
 // V1 Gen2 User Settings (6 bytes). Accessor behavior is pinned by
 // test_protocol_spec_conformance and test_v1_profiles.
@@ -243,30 +246,61 @@ struct V1Profile {
         : name(n), description(""), settings(s), displayOn(true), mainVolume(0xFF), mutedVolume(0xFF) {}
 };
 
+enum class ProfileStorageStatus : uint8_t {
+    Success = 0,
+    NotFound,
+    Busy,
+    IoError,
+    Corrupt,
+    InvalidName,
+};
+
+struct ProfileOperationResult {
+    ProfileStorageStatus status = ProfileStorageStatus::IoError;
+    String error;
+
+    bool success() const { return status == ProfileStorageStatus::Success; }
+};
+
+struct ProfileListResult : ProfileOperationResult {
+    std::vector<String> profiles;
+    bool genuinelyEmpty = false;
+};
+
 // Save result with detailed error info
 struct ProfileSaveResult {
     bool success;
+    ProfileStorageStatus status;
     String error; // Empty if success, detailed message if failed
 
-    ProfileSaveResult() : success(false), error("") {}
-    ProfileSaveResult(bool ok) : success(ok), error("") {}
-    ProfileSaveResult(bool ok, const String& err) : success(ok), error(err) {}
+    ProfileSaveResult() : success(false), status(ProfileStorageStatus::IoError), error("") {}
+    ProfileSaveResult(bool ok)
+        : success(ok), status(ok ? ProfileStorageStatus::Success : ProfileStorageStatus::IoError), error("") {}
+    ProfileSaveResult(ProfileStorageStatus resultStatus, const String& err = "")
+        : success(resultStatus == ProfileStorageStatus::Success), status(resultStatus), error(err) {}
+    ProfileSaveResult(bool ok, const String& err)
+        : success(ok), status(ok ? ProfileStorageStatus::Success : ProfileStorageStatus::IoError), error(err) {}
 };
 
 class V1ProfileManager {
   public:
     V1ProfileManager();
 
-    // Initialize with filesystem
+    // Initialize with the owning storage boundary. The fs overload remains for native tests.
+    bool begin(StorageManager& storage);
     bool begin(fs::FS* filesystem, fs::FS* importFilesystem = nullptr);
     bool isReady() const { return ready_; }
 
     // Profile CRUD
     std::vector<String> listProfiles() const;
+    ProfileListResult listProfilesResult(uint32_t timeoutMs = 0) const;
     bool loadProfile(const String& name, V1Profile& profile) const;
+    ProfileOperationResult loadProfileResult(const String& name, V1Profile& profile, uint32_t timeoutMs = 0) const;
     ProfileSaveResult saveProfile(const V1Profile& profile);
     bool deleteProfile(const String& name);
+    ProfileOperationResult deleteProfileResult(const String& name, uint32_t timeoutMs = 250);
     bool renameProfile(const String& oldName, const String& newName);
+    ProfileOperationResult snapshotProfiles(std::vector<V1Profile>& profiles, uint32_t timeoutMs = 0) const;
     uint32_t catalogRevision() const { return catalogRevisionCounter_; }
 
     // Get last error message
@@ -285,6 +319,9 @@ class V1ProfileManager {
 
   private:
     fs::FS* fs_;
+    fs::FS* secondaryFs_;
+    StorageManager* storage_;
+    bool usingSd_;
     bool ready_;
     String profileDir_;
     mutable String lastError_; // Last error message for detailed reporting
@@ -293,13 +330,18 @@ class V1ProfileManager {
     V1UserSettings currentSettings_;
     bool currentValid_;
 
-    String profilePath(const String& name) const;
+    String profilePath(const String& canonicalName) const;
     static uint32_t calculateCRC32(const uint8_t* data, size_t length);
     void bumpCatalogRevision();
 
     // Startup recovery for interrupted saves
-    void recoverInterruptedSaves();
-    size_t migrateProfilesFrom(fs::FS* sourceFs);
+    ProfileOperationResult loadProfileUnlocked(const String& canonicalName, V1Profile& profile,
+                                               bool allowTransactionRecovery = true) const;
+    ProfileListResult listProfilesUnlocked() const;
+    ProfileSaveResult saveProfileUnlocked(const V1Profile& profile, const String& canonicalName);
+    ProfileOperationResult deleteProfileUnlocked(const String& canonicalName);
+    void recoverInterruptedSavesUnlocked();
+    size_t reconcileProfilesFrom(fs::FS* sourceFs);
 };
 
 #endif // V1_PROFILES_H

@@ -15,6 +15,9 @@ enum class BackupTransport : uint8_t {
 
 struct BuildResult {
     int profilesBackedUp = 0;
+    ProfileStorageStatus profileStatus = ProfileStorageStatus::Success;
+    bool profileCatalogGenuinelyEmpty = false;
+    bool safeToCommit = true;
 };
 
 const char* backupTypeForTransport(BackupTransport transport);

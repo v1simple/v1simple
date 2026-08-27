@@ -158,7 +158,11 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
     }
 
     V1Profile profile;
-    if (!profiles_->loadProfile(slot.profileName, profile)) {
+    const ProfileOperationResult loaded = profiles_->loadProfileResult(slot.profileName, profile, 0);
+    if (loaded.status == ProfileStorageStatus::Busy) {
+        return QueueResult::PROFILE_BUSY;
+    }
+    if (!loaded.success()) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
 
@@ -260,12 +264,21 @@ void AutoPushModule::process() {
         if (!state_.profileLoaded) {
             if (slot.profileName.length() > 0) {
                 V1Profile profile;
-                if (profiles_ && profiles_->loadProfile(slot.profileName, profile)) {
+                const ProfileOperationResult loaded = profiles_
+                                                          ? profiles_->loadProfileResult(slot.profileName, profile, 0)
+                                                          : ProfileOperationResult{};
+                if (loaded.success()) {
                     state_.profile = profile;
                     state_.profileLoaded = true;
                     status_.profileLoaded = true;
+                    state_.commandRetries = 0;
+                } else if (loaded.status == ProfileStorageStatus::Busy && state_.commandRetries < 5) {
+                    state_.commandRetries++;
+                    state_.nextStepAtMs = now + 30;
+                    return;
                 } else {
-                    markFailure(FailureReason::PROFILE_LOAD_FAILED);
+                    markFailure(loaded.status == ProfileStorageStatus::Busy ? FailureReason::PROFILE_BUSY
+                                                                           : FailureReason::PROFILE_LOAD_FAILED);
                 }
             }
         }
@@ -436,6 +449,9 @@ String AutoPushModule::getStatusJson() const {
         break;
     case FailureReason::DISCONNECTED:
         reasonName = "disconnected";
+        break;
+    case FailureReason::PROFILE_BUSY:
+        reasonName = "profile_busy";
         break;
     case FailureReason::PROFILE_LOAD_FAILED:
         reasonName = "profile_load_failed";

@@ -62,7 +62,7 @@ void DriveRuntime::initializeStorageAndProfiles() {
     Serial.println("[Setup] Mounting storage...");
     if (storage_.begin()) {
         Serial.printf("[Setup] Storage ready: %s\n", storage_.statusText().c_str());
-        profiles_.begin(storage_.getFilesystem(), storage_.getLittleFS());
+        profiles_.begin(storage_);
         devices_.begin(storage_.getFilesystem(), storage_.getLittleFS());
         audio_init_buffers();
         audio_init_sd(storage_);

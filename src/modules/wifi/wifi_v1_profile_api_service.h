@@ -9,6 +9,8 @@
 
 namespace WifiV1ProfileApiService {
 
+enum class CatalogStatus : uint8_t { Success = 0, NotFound, Busy, IoError, Corrupt, InvalidName };
+
 struct ProfileSummary {
     String name;
     String description;
@@ -37,6 +39,12 @@ struct Runtime {
     void* v1ConnectedCtx = nullptr;
     void (*backupToSd)(void* ctx) = nullptr;
     void* backupToSdCtx = nullptr;
+    CatalogStatus (*listProfileNamesResult)(std::vector<String>& names, void* ctx) = nullptr;
+    void* listProfileNamesResultCtx = nullptr;
+    CatalogStatus (*loadProfileJsonResult)(const String& canonicalName, String& json, void* ctx) = nullptr;
+    void* loadProfileJsonResultCtx = nullptr;
+    CatalogStatus (*deleteProfileResult)(const String& canonicalName, void* ctx) = nullptr;
+    void* deleteProfileResultCtx = nullptr;
 };
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime);

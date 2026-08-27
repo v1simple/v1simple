@@ -41,6 +41,8 @@ struct FakeRuntime {
     int saveCalls = 0;
     int backupCalls = 0;
     bool connected = true;
+    WifiV1ProfileApiService::CatalogStatus deleteStatus =
+        WifiV1ProfileApiService::CatalogStatus::Success;
 };
 
 WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
@@ -74,6 +76,10 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.backupToSdCtx = &rt;
     runtime.v1Connected = [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; };
     runtime.v1ConnectedCtx = &rt;
+    runtime.deleteProfileResult = [](const String&, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->deleteStatus;
+    };
+    runtime.deleteProfileResultCtx = &rt;
     return runtime;
 }
 
@@ -92,7 +98,7 @@ bool responseParsesAsJson(const WebServer& server, JsonDocument& out) {
 
 String oversizeBody(size_t totalBytes) {
     std::string filler(totalBytes, 'x');
-    std::string json = "{\"name\":\"";
+    std::string json = "{\"name\":\"Size Boundary\",\"description\":\"";
     json += filler;
     json += "\",\"settings\":{\"byte0\":1}}";
     return String(json.c_str());
@@ -172,6 +178,19 @@ void test_plain_save_error_still_reports_error_field_verbatim() {
     JsonDocument parsed;
     TEST_ASSERT_TRUE(responseParsesAsJson(server, parsed));
     TEST_ASSERT_EQUAL_STRING("disk full", parsed["error"].as<const char*>());
+}
+
+void test_delete_reports_storage_busy_instead_of_not_found() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.deleteStatus = WifiV1ProfileApiService::CatalogStatus::Busy;
+    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+
+    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "storage busy"));
+    TEST_ASSERT_EQUAL_INT(0, rt.backupCalls);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +280,7 @@ int main() {
     RUN_TEST(test_save_error_with_quotes_and_backslashes_stays_valid_json);
     RUN_TEST(test_save_error_with_control_characters_stays_valid_json);
     RUN_TEST(test_plain_save_error_still_reports_error_field_verbatim);
+    RUN_TEST(test_delete_reports_storage_busy_instead_of_not_found);
     RUN_TEST(test_profile_save_rejects_oversize_payload_without_saving);
     RUN_TEST(test_profile_save_accepts_payload_just_under_the_cap);
     RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);

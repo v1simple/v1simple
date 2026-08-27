@@ -22,6 +22,7 @@
                         type="text"
                         placeholder="e.g., Highway, City, Custom"
                         class="input w-full"
+                        maxlength="64"
                         bind:value={saveName}
                     />
                 </div>

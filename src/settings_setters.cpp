@@ -116,6 +116,44 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
     return changed;
 }
 
+AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update) {
+    const V1Settings before = settings_;
+    AutoPushPersistResult result;
+    result.changed = applyAutoPushSlotUpdate(update, SettingsPersistMode::Deferred);
+    if (!result.changed) {
+        result.success = true;
+        return result;
+    }
+    if (saveDeferredBackup()) {
+        result.success = true;
+        return result;
+    }
+    settings_ = before;
+    clearDeferredPersistState();
+    return result;
+}
+
+bool SettingsManager::clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed) {
+    changed = false;
+    const V1Settings before = settings_;
+    for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+        V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(slotIndex);
+        if (slot.config.profileName == canonicalProfileName) {
+            slot.config.profileName = "";
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return true;
+    }
+    if (saveDeferredBackup()) {
+        return true;
+    }
+    settings_ = before;
+    clearDeferredPersistState();
+    return false;
+}
+
 bool SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
 

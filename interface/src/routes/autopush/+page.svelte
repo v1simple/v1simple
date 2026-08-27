@@ -180,6 +180,13 @@
     async function saveSlot(slot) {
         if (busy) return;
         if (editingSlot !== slot || !editingDraft) return;
+        if (editingDraft.profile && !hasProfileOption(editingDraft.profile)) {
+            message = {
+                type: 'error',
+                text: 'Choose an available profile or None before saving this stale reference.'
+            };
+            return;
+        }
         busy = true;
         const s = editingDraft;
         message = { type: 'info', text: 'Saving slot...' };
@@ -309,7 +316,9 @@
                                     <button
                                         class="btn btn-sm btn-success"
                                         onclick={() => saveSlot(i)}
-                                        disabled={busy}
+                                        disabled={busy ||
+                                            (editingDraft.profile &&
+                                                !hasProfileOption(editingDraft.profile))}
                                     >
                                         Save
                                     </button>
@@ -341,7 +350,7 @@
                                         <option value="">-- None --</option>
                                         {#if editingDraft.profile && !hasProfileOption(editingDraft.profile)}
                                             <option value={editingDraft.profile}
-                                                >{editingDraft.profile} (saved)</option
+                                                >{editingDraft.profile} (missing)</option
                                             >
                                         {/if}
                                         {#each profiles as p}
@@ -475,7 +484,11 @@
                             <!-- View Mode -->
                             <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                                 <div class="copy-muted">Profile:</div>
-                                <div class="font-medium">{slot.profile || '—'}</div>
+                                <div class="font-medium">
+                                    {slot.profile || '—'}{slot.profile && !hasProfileOption(slot.profile)
+                                        ? ' (missing)'
+                                        : ''}
+                                </div>
                                 <div class="copy-muted">Mode:</div>
                                 <div class="font-medium">{modeNames[slot.mode] || '—'}</div>
                                 <div class="copy-muted">Volume:</div>

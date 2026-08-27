@@ -24,6 +24,32 @@
     let editDescription = $state('');
     const PROFILE_LOAD_ERROR_TEXT = 'Failed to load profiles';
 
+    function validateProfileName(raw) {
+        const canonical = raw.trim();
+        if (!canonical) return { error: 'Profile name required' };
+        if (canonical.length > 64) return { error: 'Profile name exceeds 64 characters' };
+        if (canonical.startsWith('.') || canonical.startsWith('_')) {
+            return { error: 'Profile name cannot begin with dot or underscore' };
+        }
+        if (canonical.includes('/') || canonical.includes('\\') || canonical.includes('..')) {
+            return { error: 'Profile name cannot contain path characters' };
+        }
+        const hasControlCharacter = [...canonical].some((character) => {
+            const code = character.charCodeAt(0);
+            return code < 32 || code === 127;
+        });
+        if (hasControlCharacter || /[:*?"<>|]/.test(canonical)) {
+            return { error: 'Profile name contains an invalid character' };
+        }
+        const collision = profiles.find(
+            (profile) =>
+                profile.name.toLocaleLowerCase() === canonical.toLocaleLowerCase() &&
+                profile.name !== canonical
+        );
+        if (collision) return { error: 'Profile name collides with an existing profile' };
+        return { canonical };
+    }
+
     function clearMessageText(text) {
         if (message?.text === text) {
             message = null;
@@ -41,19 +67,23 @@
                 const data = await res.json();
                 profiles = data.profiles || [];
                 clearMessageText(PROFILE_LOAD_ERROR_TEXT);
+                return true;
             } else {
                 message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
+                return false;
             }
         } catch (e) {
             message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
+            return false;
         } finally {
             loading = false;
         }
     }
 
     async function saveCurrentProfile() {
-        if (!saveName.trim()) {
-            message = { type: 'error', text: 'Profile name required' };
+        const validatedName = validateProfileName(saveName);
+        if (validatedName.error) {
+            message = { type: 'error', text: validatedName.error };
             return;
         }
 
@@ -67,7 +97,7 @@
 
         try {
             const payload = {
-                name: saveName.trim(),
+                name: validatedName.canonical,
                 description: saveDescription.trim(),
                 settings: toApiSettings(settingsToSave)
             };
@@ -81,9 +111,18 @@
             });
 
             if (res.ok) {
-                message = { type: 'success', text: `Profile "${saveName}" saved` };
+                const canonicalName = validatedName.canonical;
+                const refreshed = await fetchProfiles();
+                if (!refreshed || !profiles.some((profile) => profile.name === canonicalName)) {
+                    message = {
+                        type: 'error',
+                        text: 'Save was not confirmed by the refreshed profile catalog'
+                    };
+                    return;
+                }
+                saveName = canonicalName;
+                message = { type: 'success', text: `Profile "${canonicalName}" saved` };
                 showSaveDialog = false;
-                await fetchProfiles();
             } else {
                 const error = await res.text();
                 message = { type: 'error', text: `Failed to save: ${error}` };
@@ -183,6 +222,14 @@
             });
 
             if (res.ok) {
+                const refreshed = await fetchProfiles();
+                if (!refreshed || !profiles.some((profile) => profile.name === currentProfile.name)) {
+                    message = {
+                        type: 'error',
+                        text: 'Save was not confirmed by the refreshed profile catalog'
+                    };
+                    return;
+                }
                 message = { type: 'success', text: `Profile "${currentProfile.name}" saved` };
                 currentProfile = {
                     ...currentProfile,
@@ -191,7 +238,6 @@
                 };
                 editingSettings = false;
                 editedSettings = null;
-                await fetchProfiles();
             } else {
                 const error = await res.text();
                 message = { type: 'error', text: `Failed to save: ${error}` };

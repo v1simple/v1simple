@@ -16,6 +16,9 @@ namespace {
 struct FakeRuntime {
     WifiAutoPushApiService::SlotUpdateRequest update;
     int updateCalls = 0;
+    WifiAutoPushApiService::ProfileAssignmentStatus profileStatus =
+        WifiAutoPushApiService::ProfileAssignmentStatus::Success;
+    bool persistResult = true;
 };
 
 WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
@@ -36,9 +39,13 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         auto* state = static_cast<FakeRuntime*>(ctx);
         state->update = request;
         state->updateCalls++;
-        return true;
+        return state->persistResult;
     };
     runtime.applySlotUpdateCtx = &fake;
+    runtime.validateProfileAssignment = [](const String&, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->profileStatus;
+    };
+    runtime.validateProfileAssignmentCtx = &fake;
     return runtime;
 }
 
@@ -112,11 +119,54 @@ void test_status_api_preserves_terminal_result() {
     TEST_ASSERT_TRUE(contains(server.lastBody, "profile_verify_mismatch"));
 }
 
+void test_slot_save_rejects_nonexistent_profile_without_mutating_settings() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.profileStatus = WifiAutoPushApiService::ProfileAssignmentStatus::NotFound;
+    setRequiredSlotArgs(server);
+
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "does not exist"));
+}
+
+void test_slot_save_reports_busy_for_temporarily_unreadable_profile() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.profileStatus = WifiAutoPushApiService::ProfileAssignmentStatus::Busy;
+    setRequiredSlotArgs(server);
+
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+}
+
+void test_slot_save_requires_persistence_but_accepts_noop_success() {
+    WebServer server(80);
+    FakeRuntime fake;
+    setRequiredSlotArgs(server);
+    fake.persistResult = false;
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+
+    WebServer noopServer(80);
+    setRequiredSlotArgs(noopServer);
+    fake.persistResult = true; // runtime defines this as durable success, changed or no-op
+    WifiAutoPushApiService::handleApiSlotSave(noopServer, makeRuntime(fake), alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, noopServer.lastStatusCode);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
     RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
     RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);
     RUN_TEST(test_status_api_preserves_terminal_result);
+    RUN_TEST(test_slot_save_rejects_nonexistent_profile_without_mutating_settings);
+    RUN_TEST(test_slot_save_reports_busy_for_temporarily_unreadable_profile);
+    RUN_TEST(test_slot_save_requires_persistence_but_accepts_noop_success);
     return UNITY_END();
 }

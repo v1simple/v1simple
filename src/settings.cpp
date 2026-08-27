@@ -437,9 +437,9 @@ void SettingsManager::load() {
                   settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
 }
 
-void SettingsManager::save() {
+bool SettingsManager::save() {
     if (!persistSettingsWithBackupIntent()) {
-        return;
+        return false;
     }
 
     clearDeferredPersistState();
@@ -450,6 +450,7 @@ void SettingsManager::save() {
     if (!backupToSD()) {
         requestDeferredBackupFromCurrentState();
     }
+    return true;
 }
 
 void SettingsManager::requestDeferredPersist() {

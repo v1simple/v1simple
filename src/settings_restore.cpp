@@ -5,6 +5,7 @@
 #include "settings_internals.h"
 #include <nvs.h>
 #include "settings_backup_doc.h"
+#include "v1_settings_json.h"
 
 namespace {
 
@@ -20,6 +21,43 @@ bool hasRestorableWifiStaSlots(const JsonDocument& doc) {
         if (sanitizeWifiClientSsidValue(slot["ssid"].as<String>()).length() > 0) {
             return true;
         }
+    }
+    return false;
+}
+
+bool restoreProfileEntryFromBackup(const JsonDocument& backup, const String& canonicalName,
+                                   V1ProfileManager& profiles) {
+    if (!backup["profiles"].is<JsonArrayConst>()) {
+        return false;
+    }
+    for (JsonObjectConst entry : backup["profiles"].as<JsonArrayConst>()) {
+        if (!entry["name"].is<const char*>()) {
+            continue;
+        }
+        String entryName;
+        if (canonicalizeProfileName(entry["name"].as<String>(), entryName) != ProfileNameStatus::Valid ||
+            entryName != canonicalName) {
+            continue;
+        }
+        V1Profile profile(entryName);
+        if (!V1SettingsJson::parseRawBytes(entry["bytes"], profile.settings.bytes)) {
+            Serial.printf("[Settings] Backup profile corrupt name='%s'\n", canonicalName.c_str());
+            return false;
+        }
+        profile.description = sanitizeProfileDescriptionValue(entry["description"] | "");
+        bool displayOn = true;
+        if (parseBoolVariant(entry["displayOn"], displayOn)) profile.displayOn = displayOn;
+        if (entry["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(entry["mainVolume"]);
+        if (entry["mutedVolume"].is<int>()) profile.mutedVolume = clampSlotVolumeValue(entry["mutedVolume"]);
+        const ProfileSaveResult saved = profiles.saveProfile(profile);
+        if (saved.success) {
+            Serial.printf("[Settings] Recovered configured profile name='%s' from validated SD backup\n",
+                          canonicalName.c_str());
+            return true;
+        }
+        Serial.printf("[Settings] Failed to persist recovered profile name='%s' status=%d\n", canonicalName.c_str(),
+                      static_cast<int>(saved.status));
+        return false;
     }
     return false;
 }
@@ -154,10 +192,21 @@ bool SettingsManager::checkAndRestoreFromSD() {
     fs::FS* fs = nullptr;
     bool hasSdBackup = false;
     JsonDocument bestBackupDoc;
+    JsonDocument primaryBackupDoc;
+    JsonDocument previousBackupDoc;
+    bool hasPrimaryBackup = false;
+    bool hasPreviousBackup = false;
     const char* bestBackupPath = nullptr;
     if (storage_->isReady() && storage_->isSDCard()) {
         fs = storage_->getFilesystem();
-        hasSdBackup = loadBestBackupDocument(fs, bestBackupDoc, &bestBackupPath, false);
+        StorageManager::SDLockTimed lock(storage_->getSDMutex(), 500);
+        if (lock) {
+            hasSdBackup = loadBestBackupDocument(fs, bestBackupDoc, &bestBackupPath, false);
+            hasPrimaryBackup = parseBackupFile(fs, SETTINGS_BACKUP_PATH, primaryBackupDoc, false);
+            hasPreviousBackup = parseBackupFile(fs, SETTINGS_BACKUP_PREV_PATH, previousBackupDoc, false);
+        } else {
+            Serial.println("[Settings] SD busy while reading recovery backups; preserving profile references");
+        }
     }
 
     if (needsRestore) {
@@ -178,11 +227,37 @@ bool SettingsManager::checkAndRestoreFromSD() {
         Serial.println("[Settings] NVS healthy; skipping automatic SD settings_ restore");
     }
 
+    bool configuredProfilesResolved = true;
+    if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
+        AutoPushSlot* slots[] = {&settings_.slot0_default, &settings_.slot1_highway, &settings_.slot2_comfort};
+        for (AutoPushSlot* slot : slots) {
+            if (!slot || slot->profileName.length() == 0) continue;
+            String canonical;
+            if (canonicalizeProfileName(slot->profileName, canonical) != ProfileNameStatus::Valid) {
+                configuredProfilesResolved = false;
+                continue;
+            }
+            slot->profileName = canonical;
+            V1Profile existing;
+            const ProfileOperationResult loaded = profiles_->loadProfileResult(canonical, existing, 0);
+            if (loaded.status == ProfileStorageStatus::Success) continue;
+            if (loaded.status != ProfileStorageStatus::NotFound) {
+                configuredProfilesResolved = false;
+                continue;
+            }
+            const bool restored = (hasPrimaryBackup && restoreProfileEntryFromBackup(primaryBackupDoc, canonical, *profiles_)) ||
+                                  (hasPreviousBackup && restoreProfileEntryFromBackup(previousBackupDoc, canonical, *profiles_));
+            if (!restored) configuredProfilesResolved = false;
+        }
+    }
+
     if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
         healWifiClientSettings(fs, hasSdBackup, bestBackupDoc);
     }
-    if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
+    if (!needsRestore && configuredProfilesResolved && storage_->isReady() && storage_->isSDCard()) {
         synchronizeSdBackup(hasSdBackup, bestBackupPath, bestBackupDoc);
+    } else if (!needsRestore && !configuredProfilesResolved) {
+        Serial.println("[Settings] Preserving SD backup until configured profile recovery can complete");
     }
     cleanupNamespacesIfNeeded(hasSdBackup);
     return false;
@@ -345,6 +420,9 @@ bool SettingsManager::restoreFromSD() {
                   hasAutoPush ? (backupAutoPush ? "true" : "false") : "missing", backupSlot0Configured ? "yes" : "no",
                   backupSlot0Mode);
 
+    // The validated document is now memory-resident. Release the SD transaction
+    // before profile restore, whose storage boundary acquires the same mutex.
+    sdLock.release();
     const SettingsBackupApplyResult applyResult = applyBackupDocument(doc, false);
     if (!applyResult.success) {
         return false;
@@ -367,9 +445,14 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
     const bool hasConfiguredSlotReferences = settings_.slot0_default.profileName.length() > 0 ||
                                              settings_.slot1_highway.profileName.length() > 0 ||
                                              settings_.slot2_comfort.profileName.length() > 0;
-    const size_t availableProfileCount = profileMgr.listProfiles().size();
-    if (shouldSkipProfileReferenceValidation(availableProfileCount, hasConfiguredSlotReferences)) {
-        Serial.println("[Settings] Profile catalog empty; preserving slot profile references");
+    const ProfileListResult catalog = profileMgr.listProfilesResult(0);
+    if (!catalog.success()) {
+        Serial.printf("[Settings] Profile catalog unavailable status=%d; preserving slot profile references\n",
+                      static_cast<int>(catalog.status));
+        return;
+    }
+    if (shouldSkipProfileReferenceValidation(catalog.profiles.size(), hasConfiguredSlotReferences)) {
+        Serial.println("[Settings] Profile catalog genuinely empty; preserving configured references for recovery");
         return;
     }
 
@@ -380,11 +463,15 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
     auto validateSlot = [&](AutoPushSlot& slot, const char* slotName) {
         if (slot.profileName.length() > 0) {
             V1Profile testProfile;
-            if (!profileMgr.loadProfile(slot.profileName, testProfile)) {
+            const ProfileOperationResult loaded = profileMgr.loadProfileResult(slot.profileName, testProfile, 0);
+            if (loaded.status == ProfileStorageStatus::NotFound) {
                 Serial.printf("[Settings] WARN: Profile reference for %s does not exist - clearing reference\n",
                               slotName);
                 slot.profileName = "";
                 needsSave = true;
+            } else if (!loaded.success()) {
+                Serial.printf("[Settings] Profile reference for %s could not be validated status=%d; preserving\n",
+                              slotName, static_cast<int>(loaded.status));
             } else {
                 Serial.printf("[Settings] Profile reference for %s validated OK\n", slotName);
             }

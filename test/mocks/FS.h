@@ -33,6 +33,7 @@ namespace mock_fs_detail {
 
 inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max();
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
+inline std::string g_fail_next_read_path;
 
 }  // namespace mock_fs_detail
 
@@ -308,6 +309,14 @@ inline void mock_set_fs_write_budget(size_t bytes) {
     mock_fs_detail::g_new_file_write_budget = bytes;
 }
 
+inline void mock_fail_next_read_open(const char* path) {
+    mock_fs_detail::g_fail_next_read_path = path ? path : "";
+}
+
+inline void mock_reset_fs_open_state() {
+    mock_fs_detail::g_fail_next_read_path.clear();
+}
+
 class FS {
 public:
     FS()
@@ -323,6 +332,11 @@ public:
     }
 
     File open(const char* path, const char* mode = FILE_READ, bool /*create*/ = false) {
+        if (path && mode && std::string(mode) == FILE_READ &&
+            mock_fs_detail::g_fail_next_read_path == path) {
+            mock_fs_detail::g_fail_next_read_path.clear();
+            return File();
+        }
         return File::openPath(resolve(path), mode);
     }
 

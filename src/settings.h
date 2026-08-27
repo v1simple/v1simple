@@ -80,6 +80,11 @@ struct AutoPushSlot {
     AutoPushSlot(const String& name, V1Mode m) : profileName(name), mode(m) {}
 };
 
+struct AutoPushPersistResult {
+    bool success = false;
+    bool changed = false;
+};
+
 inline constexpr size_t kWifiStaSlotCount = 4;
 
 // Saved STA network metadata. Passwords intentionally stay outside the main
@@ -789,6 +794,7 @@ class SettingsManager {
                                 SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     bool applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    AutoPushPersistResult applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update);
     bool applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
                                   SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
 
@@ -798,7 +804,11 @@ class SettingsManager {
     // Persist settings atomically to NVS, then synchronously back them up to SD.
     // Reserve this for explicit durability boundaries outside latency-sensitive
     // loop paths.
-    void save();
+    bool save();
+
+    // Clear all references to a profile and persist the reconciliation before
+    // the profile file is deleted. Returns false without changing RAM on NVS failure.
+    bool clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed);
     // Persist settings atomically to NVS, then coalesce a deferred SD backup.
     // Returns false when the NVS persist failed (settings remain RAM-only).
     bool saveDeferredBackup();

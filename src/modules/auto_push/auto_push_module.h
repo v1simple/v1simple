@@ -19,6 +19,7 @@ class AutoPushModule {
         V1_NOT_CONNECTED,
         ALREADY_IN_PROGRESS,
         NO_PROFILE_CONFIGURED,
+        PROFILE_BUSY,
         PROFILE_LOAD_FAILED,
         INVALID_VOLUME_PAIR,
     };
@@ -88,6 +89,7 @@ class AutoPushModule {
     enum class FailureReason : uint8_t {
         NONE = 0,
         DISCONNECTED,
+        PROFILE_BUSY,
         PROFILE_LOAD_FAILED,
         PROFILE_WRITE_FAILED,
         PROFILE_READ_REQUEST_FAILED,

@@ -102,6 +102,7 @@ void resetRuntimeState() {
     mock_reset_queue_create_state();
     mock_reset_task_create_state();
     storage.reset();
+    mock_reset_semaphore_state();
     StorageManager::resetMockSdLockState();
     resetDeferredSettingsBackupStateForTest();
     profiles = V1ProfileManager();
@@ -165,13 +166,13 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
 void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    TEST_ASSERT_TRUE(profiles.begin(storage));
 
     SettingsManager manager(storage, profiles);
     manager.mutableSettings().apSSID = "RetryPath";
     manager.requestDeferredBackupFromCurrentState();
 
-    StorageManager::mockSdLockState.failNextTryLockCount = 1;
+    mock_queue_semaphore_take_result(pdFALSE);
     manager.serviceDeferredBackup(1000);
 
     TEST_ASSERT_TRUE(deferredSettingsBackupPendingForTest());
@@ -179,10 +180,8 @@ void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     TEST_ASSERT_TRUE(manager.deferredBackupRetryScheduled());
     TEST_ASSERT_EQUAL_UINT32(1250u, manager.deferredBackupNextAttemptAtMs());
     TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_EQUAL_UINT32(1u, StorageManager::mockSdLockState.tryAcquireCalls);
 
     manager.serviceDeferredBackup(1200);
-    TEST_ASSERT_EQUAL_UINT32(1u, StorageManager::mockSdLockState.tryAcquireCalls);
     TEST_ASSERT_TRUE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_TRUE(manager.deferredBackupPending());
     TEST_ASSERT_TRUE(manager.deferredBackupRetryScheduled());
@@ -194,7 +193,6 @@ void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     TEST_ASSERT_FALSE(manager.deferredBackupRetryScheduled());
     TEST_ASSERT_EQUAL_UINT32(0u, manager.deferredBackupNextAttemptAtMs());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_EQUAL_UINT32(2u, StorageManager::mockSdLockState.tryAcquireCalls);
 }
 
 void test_repeated_requests_coalesce_to_latest_snapshot() {
@@ -670,6 +668,34 @@ void test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_back
     TEST_ASSERT_EQUAL_INT(200, backupDoc["brightness"].as<int>());
 }
 
+void test_zero_profile_snapshot_with_configured_reference_preserves_good_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().slot0_default.profileName = "Road";
+    SerializedSettingsBackupPayload seed;
+    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(seed, source.get(), profiles, 100));
+    TEST_ASSERT_TRUE(writeBackupAtomically(&fs, seed));
+    releaseSerializedSettingsBackupPayload(seed);
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+
+    source.requestDeferredBackupFromCurrentState();
+    source.serviceDeferredBackup(1000);
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    TEST_ASSERT_TRUE(source.deferredBackupPending());
+
+    JsonDocument preserved;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, preserved));
+    TEST_ASSERT_EQUAL_UINT(1u, preserved["profiles"].as<JsonArrayConst>().size());
+    TEST_ASSERT_EQUAL_STRING("Road", preserved["profiles"][0]["name"].as<const char*>());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer);
@@ -688,5 +714,6 @@ int main() {
     RUN_TEST(test_writer_failure_requeues_backup_request_for_rebuild);
     RUN_TEST(test_restore_pending_deferred_backup_preserves_existing_sd_backup);
     RUN_TEST(test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_backup_exists);
+    RUN_TEST(test_zero_profile_snapshot_with_configured_reference_preserves_good_backup);
     return UNITY_END();
 }

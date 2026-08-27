@@ -65,6 +65,7 @@ struct SerializedSettingsBackupPayload {
     size_t length = 0;
     bool inPsram = false;
     bool protectExistingBackupFromProvisionalNvs = false;
+    bool protectExistingBackupFromUnsafeProfileSnapshot = false;
     uint32_t snapshotMs = 0;
     uint32_t backupRevision = 0;
     MarkCompleted markCompleted = nullptr;

@@ -83,8 +83,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.profileName = request.profile;
             update.hasMode = true;
             update.mode = normalizeV1ModeValue(request.mode);
-            return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+            return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdatePersisted(update).success;
         },
         this,
         [](int slot, const String& name, void* ctx) {
@@ -195,6 +194,27 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.enabled = enabled;
             (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
                 update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+        },
+        this,
+        [](const String& profileName, void* ctx) {
+            V1Profile profile;
+            const ProfileOperationResult result =
+                static_cast<WiFiManager*>(ctx)->profiles_.loadProfileResult(profileName, profile, 0);
+            switch (result.status) {
+            case ProfileStorageStatus::Success:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::Success;
+            case ProfileStorageStatus::NotFound:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::NotFound;
+            case ProfileStorageStatus::Busy:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::Busy;
+            case ProfileStorageStatus::Corrupt:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::Corrupt;
+            case ProfileStorageStatus::InvalidName:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::InvalidName;
+            case ProfileStorageStatus::IoError:
+                return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
+            }
+            return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
         },
         this,
     };
@@ -434,8 +454,8 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        [](const String& name, void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.deleteProfile(name); },
-        this,
+        nullptr,
+        nullptr,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.hasCurrentSettings(); },
         this,
         [](void* ctx) {
@@ -446,6 +466,69 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
         this,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->settings_.requestDeferredBackupFromCurrentState(); },
+        this,
+        [](std::vector<String>& names, void* ctx) {
+            const ProfileListResult result = static_cast<WiFiManager*>(ctx)->profiles_.listProfilesResult(0);
+            names = result.profiles;
+            switch (result.status) {
+            case ProfileStorageStatus::Success:
+                return WifiV1ProfileApiService::CatalogStatus::Success;
+            case ProfileStorageStatus::Busy:
+                return WifiV1ProfileApiService::CatalogStatus::Busy;
+            case ProfileStorageStatus::Corrupt:
+                return WifiV1ProfileApiService::CatalogStatus::Corrupt;
+            default:
+                return WifiV1ProfileApiService::CatalogStatus::IoError;
+            }
+        },
+        this,
+        [](const String& name, String& json, void* ctx) {
+            auto& profileManager = static_cast<WiFiManager*>(ctx)->profiles_;
+            V1Profile profile;
+            const ProfileOperationResult result = profileManager.loadProfileResult(name, profile, 0);
+            if (result.success()) json = profileManager.profileToJson(profile);
+            switch (result.status) {
+            case ProfileStorageStatus::Success:
+                return WifiV1ProfileApiService::CatalogStatus::Success;
+            case ProfileStorageStatus::NotFound:
+                return WifiV1ProfileApiService::CatalogStatus::NotFound;
+            case ProfileStorageStatus::Busy:
+                return WifiV1ProfileApiService::CatalogStatus::Busy;
+            case ProfileStorageStatus::Corrupt:
+                return WifiV1ProfileApiService::CatalogStatus::Corrupt;
+            case ProfileStorageStatus::InvalidName:
+                return WifiV1ProfileApiService::CatalogStatus::InvalidName;
+            case ProfileStorageStatus::IoError:
+                return WifiV1ProfileApiService::CatalogStatus::IoError;
+            }
+            return WifiV1ProfileApiService::CatalogStatus::IoError;
+        },
+        this,
+        [](const String& name, void* ctx) {
+            auto* self = static_cast<WiFiManager*>(ctx);
+            bool referencesChanged = false;
+            if (!self->settings_.clearProfileReferencesPersisted(name, referencesChanged)) {
+                Serial.printf("[V1Profiles] DELETE aborted name='%s': slot reconciliation did not persist\n",
+                              name.c_str());
+                return WifiV1ProfileApiService::CatalogStatus::IoError;
+            }
+            const ProfileOperationResult result = self->profiles_.deleteProfileResult(name, 250);
+            switch (result.status) {
+            case ProfileStorageStatus::Success:
+                return WifiV1ProfileApiService::CatalogStatus::Success;
+            case ProfileStorageStatus::NotFound:
+                return WifiV1ProfileApiService::CatalogStatus::NotFound;
+            case ProfileStorageStatus::Busy:
+                return WifiV1ProfileApiService::CatalogStatus::Busy;
+            case ProfileStorageStatus::Corrupt:
+                return WifiV1ProfileApiService::CatalogStatus::Corrupt;
+            case ProfileStorageStatus::InvalidName:
+                return WifiV1ProfileApiService::CatalogStatus::InvalidName;
+            case ProfileStorageStatus::IoError:
+                return WifiV1ProfileApiService::CatalogStatus::IoError;
+            }
+            return WifiV1ProfileApiService::CatalogStatus::IoError;
+        },
         this,
     };
 }

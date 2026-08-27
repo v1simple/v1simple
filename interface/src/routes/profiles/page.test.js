@@ -40,8 +40,8 @@ describe('profiles route page', () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
-        await screen.findByText('Daily Drive');
-        await fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+        const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
 
         await waitFor(() => {
             expect(
@@ -90,6 +90,11 @@ describe('profiles route page', () => {
 
     it('saves a profile successfully from the save dialog', async () => {
         const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse({ profiles: [{ name: 'Bench Profile' }] })
+            },
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
         ]);
         const { unmount } = render(Page);
@@ -116,7 +121,12 @@ describe('profiles route page', () => {
     it('creates and saves a V1 profile while disconnected', async () => {
         let savedPayload;
         const fetchMock = installDefaultFetch([
-            { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ profiles: [] }) },
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: () =>
+                    jsonResponse({ profiles: savedPayload ? [{ name: savedPayload.name }] : [] })
+            },
             {
                 method: 'POST',
                 match: '/api/v1/profile',
@@ -159,6 +169,26 @@ describe('profiles route page', () => {
         expect(savedPayload.settings.kaSensitivity).toBe(3);
         expect(savedPayload.settings.gatsoRT4).toBe(true);
         expect(savedPayload.settings.photoIntersectionFilter).toBe(true);
+        unmount();
+    });
+
+    it('does not report success until the refreshed catalog contains the saved profile', async () => {
+        installDefaultFetch([
+            { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ profiles: [] }) },
+            { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
+        ]);
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: 'Unconfirmed' }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^Save$/i }));
+
+        await screen.findByText('Save was not confirmed by the refreshed profile catalog');
+        expect(screen.queryByText('Profile "Unconfirmed" saved')).not.toBeInTheDocument();
         unmount();
     });
 
@@ -213,8 +243,8 @@ describe('profiles route page', () => {
         ]);
         const { unmount } = render(Page);
 
-        await screen.findByText('Daily Drive');
-        await fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+        const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^delete$/i }));
 
         await screen.findByText('Failed to delete: Profile not found');
         expect(screen.getByText('Daily Drive')).toBeInTheDocument();

@@ -6,6 +6,7 @@
 
 #include "wifi_api_response.h"
 #include "wifi_json_document.h"
+#include "profile_name.h"
 
 namespace WifiAutoPushApiService {
 
@@ -78,6 +79,32 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
         return;
     }
 
+    if (profile.length() > 0) {
+        String canonicalProfile;
+        const ProfileNameStatus nameStatus = canonicalizeProfileName(profile, canonicalProfile);
+        if (nameStatus != ProfileNameStatus::Valid) {
+            server.send(400, "application/json", String("{\"error\":\"") + profileNameStatusMessage(nameStatus) +
+                                                     "\"}");
+            return;
+        }
+        profile = canonicalProfile;
+        if (runtime.validateProfileAssignment) {
+            const ProfileAssignmentStatus assignment =
+                runtime.validateProfileAssignment(profile, runtime.validateProfileAssignmentCtx);
+            if (assignment != ProfileAssignmentStatus::Success) {
+                const int code = assignment == ProfileAssignmentStatus::Busy ? 409 :
+                                 assignment == ProfileAssignmentStatus::NotFound ? 400 : 500;
+                const char* error = assignment == ProfileAssignmentStatus::Busy ? "Profile storage busy; retry" :
+                                    assignment == ProfileAssignmentStatus::NotFound ? "Profile does not exist" :
+                                    assignment == ProfileAssignmentStatus::Corrupt ? "Profile is corrupt" :
+                                    assignment == ProfileAssignmentStatus::InvalidName ? "Invalid profile name" :
+                                    "Profile could not be read";
+                server.send(code, "application/json", String("{\"error\":\"") + error + "\"}");
+                return;
+            }
+        }
+    }
+
     if (hasVolumeConfigured) {
         if (volumeConfigured && (!server.hasArg("volume") || !server.hasArg("muteVol") || volume < 0 || volume > 9 ||
                                  muteVol < 0 || muteVol > 9)) {
@@ -91,7 +118,7 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
         return;
     }
 
-    bool changed = false;
+    bool persisted = false;
 
     if (runtime.applySlotUpdate) {
         SlotUpdateRequest request;
@@ -117,16 +144,16 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
         request.priorityArrowOnly = server.arg("priorityArrowOnly") == "true";
         request.profile = profile;
         request.mode = mode;
-        changed = runtime.applySlotUpdate(request, runtime.applySlotUpdateCtx);
+        persisted = runtime.applySlotUpdate(request, runtime.applySlotUpdateCtx);
     } else {
         if (name.length() > 0 && runtime.setSlotName) {
             runtime.setSlotName(slot, name, runtime.setSlotNameCtx);
-            changed = true;
+            persisted = true;
         }
 
         if (color >= 0 && runtime.setSlotColor) {
             runtime.setSlotColor(slot, static_cast<uint16_t>(color), runtime.setSlotColorCtx);
-            changed = true;
+            persisted = true;
         }
 
         uint8_t existingVol = runtime.getSlotVolume ? runtime.getSlotVolume(slot, runtime.getSlotVolumeCtx) : 0;
@@ -141,37 +168,42 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
 
         if ((hasVolumeConfigured || volume >= 0 || muteVol >= 0) && runtime.setSlotVolumes) {
             runtime.setSlotVolumes(slot, vol, mute, runtime.setSlotVolumesCtx);
-            changed = true;
+            persisted = true;
         }
 
         if (hasDarkMode && runtime.setSlotDarkMode) {
             runtime.setSlotDarkMode(slot, darkMode, runtime.setSlotDarkModeCtx);
-            changed = true;
+            persisted = true;
         }
         if (hasMuteToZero && runtime.setSlotMuteToZero) {
             runtime.setSlotMuteToZero(slot, muteToZero, runtime.setSlotMuteToZeroCtx);
-            changed = true;
+            persisted = true;
         }
 
         if (hasAlertPersist && alertPersist >= 0 && runtime.setSlotAlertPersistSec) {
             int clamped = std::max(0, std::min(5, alertPersist));
             runtime.setSlotAlertPersistSec(slot, static_cast<uint8_t>(clamped), runtime.setSlotAlertPersistSecCtx);
-            changed = true;
+            persisted = true;
         }
 
         if (server.hasArg("priorityArrowOnly") && runtime.setSlotPriorityArrowOnly) {
             bool prioArrow = server.arg("priorityArrowOnly") == "true";
             runtime.setSlotPriorityArrowOnly(slot, prioArrow, runtime.setSlotPriorityArrowOnlyCtx);
-            changed = true;
+            persisted = true;
         }
 
         if (runtime.setSlotProfileAndMode) {
             runtime.setSlotProfileAndMode(slot, profile, mode, runtime.setSlotProfileAndModeCtx);
-            changed = true;
+            persisted = true;
         }
     }
 
-    if (changed && runtime.getActiveSlot && runtime.drawProfileIndicator &&
+    if (!persisted) {
+        server.send(500, "application/json", "{\"error\":\"Slot persistence failed\"}");
+        return;
+    }
+
+    if (runtime.getActiveSlot && runtime.drawProfileIndicator &&
         slot == runtime.getActiveSlot(runtime.getActiveSlotCtx)) {
         runtime.drawProfileIndicator(slot, runtime.drawProfileIndicatorCtx);
     }

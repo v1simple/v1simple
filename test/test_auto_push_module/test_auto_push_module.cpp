@@ -38,7 +38,7 @@ static void configureProfileSlot(bool configureVolumes = false) {
     settings.slotConfigs[0].mode = V1_MODE_LOGIC;
     settings.slotVolumes[0] = configureVolumes ? 6 : 0xFF;
     settings.slotMuteVolumes[0] = configureVolumes ? 2 : 0xFF;
-    profiles.loadProfileResult = true;
+    profiles.loadProfileSuccess = true;
     profiles.loadableProfileName = "ROAD";
     profiles.loadableProfile.name = "ROAD";
     const uint8_t bytes[6] = {0x01, 0x22, 0x33, 0x44, 0x55, 0x66};
@@ -201,6 +201,21 @@ void test_incomplete_volume_pair_is_rejected_before_queueing() {
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
 
+void test_runtime_profile_busy_retries_without_blocking_or_reporting_not_found() {
+    configureProfileSlot();
+    profiles.nextLoadStatus = ProfileStorageStatus::Busy;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AutoPushModule::QueueResult::QUEUED),
+                          static_cast<int>(module.queueSlotPush(0)));
+    at(100); // WaitReady -> Profile
+    at(100); // busy admission, schedules retry
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("profile_load_failed"));
+
+    profiles.nextLoadStatus = ProfileStorageStatus::Success;
+    at(130);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_matching_readback_is_required_before_success);
@@ -210,5 +225,6 @@ int main() {
     RUN_TEST(test_verification_timeout_retries_then_reports_partial);
     RUN_TEST(test_disconnect_is_terminal_and_never_reports_success);
     RUN_TEST(test_incomplete_volume_pair_is_rejected_before_queueing);
+    RUN_TEST(test_runtime_profile_busy_retries_without_blocking_or_reporting_not_found);
     return UNITY_END();
 }

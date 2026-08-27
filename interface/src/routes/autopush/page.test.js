@@ -200,6 +200,24 @@ describe('autopush route page', () => {
         unmount();
     });
 
+    it('labels a stale profile reference missing and prevents saving it unchanged', async () => {
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse({ profiles: [] })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Road Trip (missing)');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        expect(await screen.findByRole('option', { name: 'Road Trip (missing)' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+
+        unmount();
+    });
+
     it('labels the active slot as the global default and explains device overrides', async () => {
         installDefaultFetch();
         const { unmount } = render(Page);

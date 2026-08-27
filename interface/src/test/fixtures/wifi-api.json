@@ -665,6 +665,16 @@
                 "description": "Daily drive",
                 "displayOn": true,
                 "name": "Daily Drive"
+              },
+              {
+                "description": "Road profile",
+                "displayOn": true,
+                "name": "Road Trip"
+              },
+              {
+                "description": "Quiet profile",
+                "displayOn": true,
+                "name": "Quiet Commute"
               }
             ]
           },

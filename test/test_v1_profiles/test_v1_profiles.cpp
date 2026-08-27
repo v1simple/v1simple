@@ -118,6 +118,8 @@ void setUp() {
     mockMicros = 1000000;
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
+    mock_reset_semaphore_state();
     g_tempRoot = nextTempRoot();
     std::filesystem::remove_all(g_tempRoot);
     std::filesystem::create_directories(g_tempRoot);
@@ -126,6 +128,7 @@ void setUp() {
 void tearDown() {
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
     if (!g_tempRoot.empty()) {
         std::filesystem::remove_all(g_tempRoot);
     }
@@ -189,6 +192,23 @@ void test_save_profile_normal_path_still_succeeds() {
     TEST_ASSERT_EQUAL_STRING("normal", loaded.description.c_str());
     TEST_ASSERT_EQUAL_UINT8(30, loaded.settings.bytes[0]);
     TEST_ASSERT_EQUAL_UINT8(35, loaded.settings.bytes[5]);
+}
+
+void test_save_requires_final_file_reopen_and_crc_validation() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+
+    fs::mock_fail_next_read_open("/v1profiles/Road.json");
+    const ProfileSaveResult result = manager.saveProfile(makeProfile("Road", 40, "replacement"));
+
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(result.status));
+    V1Profile restored;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_STRING("original", restored.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(10, restored.settings.bytes[0]);
 }
 
 void test_load_profile_rejects_invalid_raw_bytes_without_mutating_output() {
@@ -268,25 +288,104 @@ void test_rename_same_name_is_successful_noop() {
     TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(fs, "/v1profiles/City.json").c_str());
 }
 
-void test_rename_sanitized_collision_updates_name_in_place() {
+void test_path_like_name_is_rejected_without_creating_a_profile() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
     TEST_ASSERT_TRUE(manager.begin(&fs));
 
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road/1", 50, "collision")).success);
-    const uint32_t beforeRevision = manager.catalogRevision();
+    const ProfileSaveResult result = manager.saveProfile(makeProfile("Road/1", 50, "invalid"));
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::InvalidName), static_cast<int>(result.status));
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(countFilesInProfileDir(".json")));
+}
 
-    TEST_ASSERT_TRUE(manager.renameProfile("Road/1", "Road_1"));
-    TEST_ASSERT_TRUE(manager.catalogRevision() > beforeRevision);
-    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Road_1.json"));
-    TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(countFilesInProfileDir(".json")));
+void test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisions() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    String longName;
+    for (int i = 0; i < 65; ++i) longName += 'A';
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("   ", 1)).success);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile(".hidden", 1)).success);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("_hidden", 1)).success);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("dir\\name", 1)).success);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile(longName, 1)).success);
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 2)).success);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("road", 3)).success);
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("  Quiet  ", 4)).success);
+    V1Profile quiet;
+    TEST_ASSERT_TRUE(manager.loadProfile("Quiet", quiet));
+    TEST_ASSERT_EQUAL_STRING("Quiet", quiet.name.c_str());
+}
+
+void test_sd_contention_returns_busy_for_every_profile_transaction() {
+    fs::FS fs(g_tempRoot);
+    StorageManager localStorage;
+    localStorage.setFilesystem(&fs, true);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(localStorage));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
 
     V1Profile loaded;
-    TEST_ASSERT_TRUE(manager.loadProfile("Road_1", loaded));
-    TEST_ASSERT_EQUAL_STRING("Road_1", loaded.name.c_str());
-    TEST_ASSERT_EQUAL_STRING("collision", loaded.description.c_str());
-    TEST_ASSERT_EQUAL_UINT8(50, loaded.settings.bytes[0]);
-    TEST_ASSERT_EQUAL_UINT8(55, loaded.settings.bytes[5]);
+    std::vector<V1Profile> snapshot;
+    for (int i = 0; i < 5; ++i) mock_queue_semaphore_take_result(pdFALSE);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy),
+                          static_cast<int>(manager.listProfilesResult().status));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy),
+                          static_cast<int>(manager.loadProfileResult("Road", loaded).status));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy),
+                          static_cast<int>(manager.saveProfile(makeProfile("Other", 20)).status));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy),
+                          static_cast<int>(manager.deleteProfileResult("Road", 0).status));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy),
+                          static_cast<int>(manager.snapshotProfiles(snapshot).status));
+}
+
+void test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    V1ProfileManager fallback;
+    TEST_ASSERT_TRUE(fallback.begin(&little));
+    TEST_ASSERT_TRUE(fallback.saveProfile(makeProfile("Road", 10, "fallback-new")).success);
+
+    StorageManager localStorage;
+    localStorage.setFilesystem(&sd, true);
+    localStorage.setLittleFS(&little);
+    V1ProfileManager onSd;
+    TEST_ASSERT_TRUE(onSd.begin(localStorage));
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(onSd.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("fallback-new", loaded.description.c_str());
+
+    TEST_ASSERT_TRUE(onSd.saveProfile(makeProfile("Road", 30, "sd-newer")).success);
+    V1ProfileManager fallbackAgain;
+    TEST_ASSERT_TRUE(fallbackAgain.begin(&little));
+    TEST_ASSERT_TRUE(fallbackAgain.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("sd-newer", loaded.description.c_str());
+    const std::string stalePayload = readFileToString(little, "/v1profiles/Road.json");
+    TEST_ASSERT_TRUE(fallbackAgain.deleteProfile("Road"));
+
+    // Simulate stale bytes surviving/reappearing after deletion. The durable
+    // tombstone must hide them locally and remove them when SD returns.
+    writeFileFromString(little, "/v1profiles/Road.json", stalePayload.c_str());
+    V1ProfileManager interruptedFallback;
+    TEST_ASSERT_TRUE(interruptedFallback.begin(&little));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(interruptedFallback.loadProfileResult("Road", loaded).status));
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(interruptedFallback.listProfiles().size()));
+
+    V1ProfileManager sdReturns;
+    TEST_ASSERT_TRUE(sdReturns.begin(localStorage));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(sdReturns.loadProfileResult("Road", loaded).status));
+    TEST_ASSERT_FALSE(sd.exists("/v1profiles/Road.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1profiles/Road.json"));
 }
 
 void test_rename_existing_distinct_destination_fails_without_mutation() {
@@ -339,11 +438,15 @@ int main() {
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
+    RUN_TEST(test_save_requires_final_file_reopen_and_crc_validation);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
     RUN_TEST(test_rename_same_name_is_successful_noop);
-    RUN_TEST(test_rename_sanitized_collision_updates_name_in_place);
+    RUN_TEST(test_path_like_name_is_rejected_without_creating_a_profile);
+    RUN_TEST(test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisions);
+    RUN_TEST(test_sd_contention_returns_busy_for_every_profile_transaction);
+    RUN_TEST(test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection);
     RUN_TEST(test_rename_existing_distinct_destination_fails_without_mutation);
     RUN_TEST(test_rename_normal_path_succeeds_and_advances_revision);
     return UNITY_END();

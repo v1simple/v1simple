@@ -71,6 +71,10 @@ String activeNamespaceOrEmpty() {
     return mock_preferences::getString(SETTINGS_NS_META, "active", "");
 }
 
+String stagingNamespaceFor(const String& active) {
+    return active == SETTINGS_NS_A ? String(SETTINGS_NS_B) : String(SETTINGS_NS_A);
+}
+
 bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
     File file = fs.open(path, FILE_READ);
     if (!file) {
@@ -802,6 +806,88 @@ void test_persist_detects_nvs_entry_exhaustion_mid_write() {
     mock_preferences::set_entry_limit(0);
 
     TEST_ASSERT_FALSE(result.success);
+}
+
+void test_failed_field_write_preserves_last_committed_settings() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    manager.mutableSettings().obdSavedName = "";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    const String activeBefore = activeNamespaceOrEmpty();
+    const String staging = stagingNamespaceFor(activeBefore);
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeBefore.c_str(), kNvsObdName));
+    TEST_ASSERT_EQUAL_STRING("", mock_preferences::getString(activeBefore.c_str(), kNvsObdName, "missing").c_str());
+
+    manager.mutableSettings().brightness = 99;
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    const String activeAfter = activeNamespaceOrEmpty();
+    TEST_ASSERT_EQUAL_STRING(activeBefore.c_str(), activeAfter.c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+
+    mock_preferences::set_fail_writes_for_key(kNvsObdName);
+    TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(41, rebooted.get().brightness);
+}
+
+void test_failed_meta_write_preserves_last_committed_settings() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 51;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 52;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    const String activeBefore = activeNamespaceOrEmpty();
+    const String staging = stagingNamespaceFor(activeBefore);
+    manager.mutableSettings().brightness = 93;
+    mock_preferences::set_fail_writes_for_key(kNvsMetaActive);
+    TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    const String activeAfter = activeNamespaceOrEmpty();
+    TEST_ASSERT_EQUAL_STRING(activeBefore.c_str(), activeAfter.c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_TRUE(meta.remove(kNvsMetaActive));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(52, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING(activeBefore.c_str(), activeNamespaceOrEmpty().c_str());
+}
+
+void test_failed_meta_open_preserves_last_committed_settings() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 61;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 62;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    const String activeBefore = activeNamespaceOrEmpty();
+    const String staging = stagingNamespaceFor(activeBefore);
+    manager.mutableSettings().brightness = 94;
+    mock_preferences::set_fail_begin_for_namespace(SETTINGS_NS_META);
+    TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+
+    const String activeAfter = activeNamespaceOrEmpty();
+    TEST_ASSERT_EQUAL_STRING(activeBefore.c_str(), activeAfter.c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(62, rebooted.get().brightness);
 }
 
 void test_deferred_restore_reports_failure_when_persist_fails() {
@@ -2089,6 +2175,9 @@ int main() {
     RUN_TEST(test_restore_clears_sta_password_when_sanitized_backup_ssid_differs);
     RUN_TEST(test_restore_explicit_password_obf_still_overwrites_stored);
     RUN_TEST(test_persist_detects_nvs_entry_exhaustion_mid_write);
+    RUN_TEST(test_failed_field_write_preserves_last_committed_settings);
+    RUN_TEST(test_failed_meta_write_preserves_last_committed_settings);
+    RUN_TEST(test_failed_meta_open_preserves_last_committed_settings);
     RUN_TEST(test_deferred_restore_reports_failure_when_persist_fails);
     RUN_TEST(test_wifi_sta_slot_sd_secret_retains_multiple_passwords);
     RUN_TEST(test_wifi_sta_slot_sd_secret_upgrade_preserves_legacy_top_level_secret);

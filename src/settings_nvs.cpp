@@ -736,29 +736,58 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
         return false;
     }
 
-    // Clear old keys in this namespace to avoid stale data from previous versions
-    prefs.clear();
-    size_t written = 0;
+    // Clear old keys in this namespace to avoid stale data from previous versions.
+    // If clear fails, retaining a previous validity marker could make a partial
+    // rewrite look complete.
+    if (!prefs.clear()) {
+        prefs.end();
+        Serial.printf("[Settings] ERROR: Failed to clear namespace %s\n", ns);
+        return false;
+    }
+
+    struct NvsWriteTracker {
+        size_t bytes = 0;
+        size_t failures = 0;
+
+        NvsWriteTracker& operator+=(size_t result) {
+            bytes += result;
+            if (result == 0) {
+                ++failures;
+            }
+            return *this;
+        }
+
+        void putString(Preferences& target, const char* key, const String& value) {
+            const size_t result = target.putString(key, value);
+            bytes += result;
+            // Preferences::putString legitimately returns zero for an empty
+            // string, so key presence distinguishes success from failure.
+            if (result != value.length() || !target.isKey(key)) {
+                ++failures;
+            }
+        }
+    } written;
+
     // Store settings version for migration handling
     written += prefs.putInt(kNvsSettingsVer, SETTINGS_VERSION);
     if (restorePending_) {
         written += prefs.putBool(kNvsRestorePending, true);
     }
     written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
-    written += prefs.putString(kNvsApSsid, settings_.apSSID);
+    written.putString(prefs, kNvsApSsid, settings_.apSSID);
     // Obfuscate passwords before storing
-    written += prefs.putString(kNvsApPassword, encodeObfuscatedForStorage(settings_.apPassword));
+    written.putString(prefs, kNvsApPassword, encodeObfuscatedForStorage(settings_.apPassword));
     // WiFi client (STA) settings - password stored in separate secure namespace
     written += prefs.putBool(kNvsWifiClientEnabled, settings_.wifiClientEnabled);
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         const WifiStaSlot& slot = settings_.wifiStaSlots[i];
-        written += prefs.putString(kNvsWifiStaSlotSsid[i], slot.ssid);
-        written += prefs.putString(kNvsWifiStaSlotLabel[i], slot.label);
+        written.putString(prefs, kNvsWifiStaSlotSsid[i], slot.ssid);
+        written.putString(prefs, kNvsWifiStaSlotLabel[i], slot.label);
         written += prefs.putUChar(kNvsWifiStaSlotPriority[i], slot.priority);
         written += prefs.putUInt(kNvsWifiStaSlotLastConnected[i], slot.lastConnectedAtSec);
     }
     written += prefs.putBool(kNvsProxyBle, settings_.proxyBLE);
-    written += prefs.putString(kNvsProxyName, settings_.proxyName);
+    written.putString(prefs, kNvsProxyName, settings_.proxyName);
     written += prefs.putUChar(kNvsBrightness, settings_.brightness);
     written += prefs.putUShort(kNvsColorBogey, settings_.colorBogey);
     written += prefs.putUShort(kNvsColorFreq, settings_.colorFrequency);
@@ -829,9 +858,9 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     written += prefs.putBool(kNvsStealthEnabled, settings_.stealthEnabled);
     written += prefs.putBool(kNvsAutoPush, settings_.autoPushEnabled);
     written += prefs.putInt(kNvsActiveSlot, settings_.activeSlot);
-    written += prefs.putString(kNvsSlot0Name, settings_.slot0Name);
-    written += prefs.putString(kNvsSlot1Name, settings_.slot1Name);
-    written += prefs.putString(kNvsSlot2Name, settings_.slot2Name);
+    written.putString(prefs, kNvsSlot0Name, settings_.slot0Name);
+    written.putString(prefs, kNvsSlot1Name, settings_.slot1Name);
+    written.putString(prefs, kNvsSlot2Name, settings_.slot2Name);
     written += prefs.putUShort(kNvsSlot0Color, settings_.slot0Color);
     written += prefs.putUShort(kNvsSlot1Color, settings_.slot1Color);
     written += prefs.putUShort(kNvsSlot2Color, settings_.slot2Color);
@@ -853,20 +882,20 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     written += prefs.putBool(kNvsSlot0PriorityArrow, settings_.slot0PriorityArrow);
     written += prefs.putBool(kNvsSlot1PriorityArrow, settings_.slot1PriorityArrow);
     written += prefs.putBool(kNvsSlot2PriorityArrow, settings_.slot2PriorityArrow);
-    written += prefs.putString(kNvsSlot0Profile, settings_.slot0_default.profileName);
+    written.putString(prefs, kNvsSlot0Profile, settings_.slot0_default.profileName);
     written += prefs.putInt(kNvsSlot0Mode, settings_.slot0_default.mode);
-    written += prefs.putString(kNvsSlot1Profile, settings_.slot1_highway.profileName);
+    written.putString(prefs, kNvsSlot1Profile, settings_.slot1_highway.profileName);
     written += prefs.putInt(kNvsSlot1Mode, settings_.slot1_highway.mode);
-    written += prefs.putString(kNvsSlot2Profile, settings_.slot2_comfort.profileName);
+    written.putString(prefs, kNvsSlot2Profile, settings_.slot2_comfort.profileName);
     written += prefs.putInt(kNvsSlot2Mode, settings_.slot2_comfort.mode);
-    written += prefs.putString(kNvsLastV1Address, settings_.lastV1Address);
+    written.putString(prefs, kNvsLastV1Address, settings_.lastV1Address);
     written += prefs.putUChar(kNvsAutoPowerOff, settings_.autoPowerOffMinutes);
     written += prefs.putUChar(kNvsApTimeout, settings_.apTimeoutMinutes);
 
     // OBD settings
     written += prefs.putBool(kNvsObdEnabled, settings_.obdEnabled);
-    written += prefs.putString(kNvsObdAddress, settings_.obdSavedAddress);
-    written += prefs.putString(kNvsObdName, settings_.obdSavedName);
+    written.putString(prefs, kNvsObdAddress, settings_.obdSavedAddress);
+    written.putString(prefs, kNvsObdName, settings_.obdSavedName);
     written += prefs.putUChar(kNvsObdAddressType, settings_.obdSavedAddrType);
     written += prefs.putChar(kNvsObdMinRssi, settings_.obdMinRssi);
     written += prefs.putUInt(kNvsCycleObdScanWindow, settings_.obdScanWindowMs);
@@ -887,6 +916,11 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
 
     // NVS validity marker - used to detect if NVS was wiped.
     // Written LAST so its presence proves the entire write completed.
+    if (written.failures != 0) {
+        prefs.end();
+        Serial.printf("[Settings] ERROR: %d settings writes failed in %s\n", (int)written.failures, ns);
+        return false;
+    }
     written += prefs.putInt(kNvsValid, SETTINGS_VERSION);
 
     // Verify the marker was actually persisted.  If NVS ran out of
@@ -895,19 +929,33 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns) {
     const int verifyMarker = prefs.getInt(kNvsValid, 0);
     prefs.end();
 
-    if (verifyMarker != SETTINGS_VERSION) {
+    if (written.failures != 0 || verifyMarker != SETTINGS_VERSION) {
         Serial.printf("[Settings] ERROR: nvsValid verify failed in %s (expected %d, got %d) — written=%d\n", ns,
-                      SETTINGS_VERSION, verifyMarker, (int)written);
+                      SETTINGS_VERSION, verifyMarker, (int)written.bytes);
         return false;
     }
 
-    Serial.printf("[Settings] Wrote %d bytes to namespace %s\n", (int)written, ns);
+    Serial.printf("[Settings] Wrote %d bytes to namespace %s\n", (int)written.bytes, ns);
     return true;
 }
 
 bool SettingsManager::persistSettingsAtomically() {
     String activeNs = getActiveNamespace();
     String stagingNs = getStagingNamespace(activeNs);
+
+    const auto invalidateStagingMarker = [&]() {
+        Preferences staging;
+        if (!staging.begin(stagingNs.c_str(), false)) {
+            Serial.printf("[Settings] ERROR: Failed to invalidate staging namespace %s\n", stagingNs.c_str());
+            return;
+        }
+        const bool removed = !staging.isKey(kNvsValid) || staging.remove(kNvsValid);
+        const bool invalidated = !staging.isKey(kNvsValid);
+        staging.end();
+        if (!removed || !invalidated) {
+            Serial.printf("[Settings] ERROR: Staging namespace %s remains valid\n", stagingNs.c_str());
+        }
+    };
 
     if (!writeSettingsToNamespace(stagingNs.c_str())) {
         // First attempt failed - try NVS recovery and retry once
@@ -923,27 +971,19 @@ bool SettingsManager::persistSettingsAtomically() {
     Preferences meta;
     if (!meta.begin(SETTINGS_NS_META, false)) {
         Serial.println("[Settings] ERROR: Failed to open settings_ meta namespace");
-        Serial.printf("[Settings] WARN: Falling back to in-place write on %s\n", activeNs.c_str());
-        if (!writeSettingsToNamespace(activeNs.c_str())) {
-            Serial.println("[Settings] ERROR: In-place fallback write failed");
-            return false;
-        }
-        Serial.printf("[Settings] Fallback write succeeded in %s\n", activeNs.c_str());
-        return true;
+        invalidateStagingMarker();
+        return false;
     }
 
-    bool committed = meta.putString(kNvsMetaActive, stagingNs) > 0;
+    const size_t written = meta.putString(kNvsMetaActive, stagingNs);
+    const bool committed = written == stagingNs.length() && meta.isKey(kNvsMetaActive) &&
+                           meta.getString(kNvsMetaActive, "") == stagingNs;
     meta.end();
 
     if (!committed) {
         Serial.println("[Settings] ERROR: Failed to update active settings_ namespace");
-        Serial.printf("[Settings] WARN: Falling back to in-place write on %s\n", activeNs.c_str());
-        if (!writeSettingsToNamespace(activeNs.c_str())) {
-            Serial.println("[Settings] ERROR: In-place fallback write failed");
-            return false;
-        }
-        Serial.printf("[Settings] Fallback write succeeded in %s\n", activeNs.c_str());
-        return true;
+        invalidateStagingMarker();
+        return false;
     }
 
     Serial.printf("[Settings] Active namespace advanced from %s to %s\n", activeNs.c_str(), stagingNs.c_str());

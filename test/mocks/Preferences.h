@@ -45,6 +45,20 @@ inline bool& failWrites() {
     return g_failWrites;
 }
 
+inline std::string& failWriteKey() {
+    static std::string g_failWriteKey;
+    return g_failWriteKey;
+}
+
+inline std::string& failBeginNamespace() {
+    static std::string g_failBeginNamespace;
+    return g_failBeginNamespace;
+}
+
+inline bool writesFailForKey(const char* key) {
+    return failWrites() || (key && !failWriteKey().empty() && failWriteKey() == key);
+}
+
 // Total-entry quota across all namespaces (0 = unlimited). Models the shared
 // NVS partition filling up: writes of NEW keys fail once the store holds
 // `limit` entries; in-place updates of existing keys still succeed. Lets
@@ -68,6 +82,8 @@ inline std::unordered_map<std::string, size_t>& missingRemoveCounts() {
 inline void reset() {
     store().clear();
     failWrites() = false;
+    failWriteKey().clear();
+    failBeginNamespace().clear();
     entryLimit() = 0;
     missingStringReadCounts().clear();
     missingRemoveCounts().clear();
@@ -75,6 +91,14 @@ inline void reset() {
 
 inline void set_fail_writes(bool enabled) {
     failWrites() = enabled;
+}
+
+inline void set_fail_writes_for_key(const char* key) {
+    failWriteKey() = key ? key : "";
+}
+
+inline void set_fail_begin_for_namespace(const char* name) {
+    failBeginNamespace() = name ? name : "";
 }
 
 inline void set_entry_limit(size_t limit) {
@@ -204,7 +228,9 @@ public:
     Preferences() = default;
 
     bool begin(const char* name, bool readOnly = false, const char* /*partition_label*/ = nullptr) {
-        if (!name || name[0] == '\0') {
+        if (!name || name[0] == '\0' ||
+            (!readOnly && !mock_preferences::failBeginNamespace().empty() &&
+             mock_preferences::failBeginNamespace() == name)) {
             started_ = false;
             namespaceName_.clear();
             return false;
@@ -370,7 +396,7 @@ public:
     }
 
     size_t putString(const char* key, const char* value) {
-        if (!started_ || readOnly_ || !key || !value || mock_preferences::failWrites() ||
+        if (!started_ || readOnly_ || !key || !value || mock_preferences::writesFailForKey(key) ||
             mock_preferences::wouldExceedEntryLimit(namespaceName_, key)) {
             return 0;
         }
@@ -398,7 +424,7 @@ public:
 private:
     template <typename Value>
     size_t storeScalar(const char* key, PreferenceType type, Value value, size_t writtenBytes) {
-        if (!started_ || readOnly_ || !key || mock_preferences::failWrites() ||
+        if (!started_ || readOnly_ || !key || mock_preferences::writesFailForKey(key) ||
             mock_preferences::wouldExceedEntryLimit(namespaceName_, key)) {
             return 0;
         }

@@ -241,6 +241,8 @@ def check_flash_and_package(errors: list[str]) -> None:
 
     for required in (
         "web-installer/index.html",
+        "cp interface/static/branding/v1simple-logo-transparent.png release/pages/v1simple-logo-transparent.png",
+        "sed -i 's#../interface/static/branding/v1simple-logo-transparent.png#v1simple-logo-transparent.png#' release/pages/index.html",
         "python3 scripts/stage_release_licenses.py",
         "--release-dir release",
         "--pages-dir release/pages",

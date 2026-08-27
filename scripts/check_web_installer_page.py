@@ -13,6 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_LICENSE_PATH = "LICENSE"
 NOTICE_PATH = "THIRD_PARTY_NOTICES.md"
+BRANDING_PATHS = (
+    "../interface/static/branding/v1simple-logo-transparent.png",
+    "v1simple-logo-transparent.png",
+)
 LICENSE_PATHS = (
     "licenses/ArduinoJson-LICENSE.txt",
     "licenses/NimBLE-Arduino-LICENSE.txt",
@@ -37,6 +41,7 @@ class InstallerParser(HTMLParser):
         self.install_manifests: list[str] = []
         self.module_scripts: list[str] = []
         self.links: list[str] = []
+        self.images: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {name: value or "" for name, value in attrs}
@@ -46,6 +51,8 @@ class InstallerParser(HTMLParser):
             self.module_scripts.append(attr["src"])
         if tag == "a" and "href" in attr:
             self.links.append(attr["href"])
+        if tag == "img" and "src" in attr:
+            self.images.append(attr["src"])
 
 
 def display_path(path: Path) -> str:
@@ -156,6 +163,16 @@ def main() -> int:
     parser_obj.feed(index.read_text(encoding="utf-8"))
 
     errors: list[str] = []
+    branding_references = [path for path in BRANDING_PATHS if path in parser_obj.images]
+    if len(branding_references) != 1 or len(parser_obj.images) != 1:
+        errors.append("index.html must contain exactly one approved V1-Simple branding image")
+    else:
+        branding_file = site_dir / branding_references[0]
+        if not branding_file.is_file():
+            errors.append(f"installer branding not found: {display_path(branding_file)}")
+        elif branding_file.stat().st_size == 0:
+            errors.append(f"installer branding is empty: {display_path(branding_file)}")
+
     if parser_obj.install_manifests != ["manifest.json"]:
         errors.append(
             "index.html must contain exactly one esp-web-install-button pointing at manifest.json"

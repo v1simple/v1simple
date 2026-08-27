@@ -1,316 +1,828 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark" data-theme="amethyst">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#09070d">
+  <meta name="description" content="Install V1-Simple firmware directly from a supported desktop browser.">
   <title>V1-Simple Installer</title>
   <style>
     :root {
-      --bg: #0a0a0a;
-      --card-bg: #1a1a1a;
-      --accent: #22c55e;
-      --accent-hover: #16a34a;
-      --text: #ffffff;
-      --text-muted: #a1a1aa;
-      --border: #2a2a2a;
+      color-scheme: dark;
+      --wake-absence: #030306;
+      --wake-depth: #09070d;
+      --wake-skin: #151019;
+      --wake-void: #020204;
+      --panel: #151119;
+      --raised: #1d1721;
+      --text: #faf7fb;
+      --muted: #aaa1ae;
+      --muted-soft: #756c79;
+      --primary: #c56cff;
+      --primary-strong: #9e3de2;
+      --primary-soft: rgba(197, 108, 255, 0.13);
+      --secondary: #e85e91;
+      --laser: #55df8c;
+      --ka: #eaa047;
+      --k: #63c7ec;
+      --error: #f36c6c;
+      --border: rgba(203, 145, 224, 0.18);
+      --border-strong: rgba(205, 151, 228, 0.34);
+      --shadow: 0 26px 80px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.035);
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
+    * { box-sizing: border-box; }
+
+    html {
+      min-width: 320px;
+      scroll-behavior: smooth;
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      min-width: 320px;
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      background:
+        repeating-linear-gradient(128deg, transparent 0 92px, rgba(232, 94, 145, 0.045) 93px, transparent 95px),
+        repeating-linear-gradient(63deg, transparent 0 140px, rgba(197, 108, 255, 0.04) 141px, transparent 144px),
+        linear-gradient(104deg, transparent 0 22%, rgba(72, 26, 82, 0.14) 38%, transparent 58%),
+        linear-gradient(252deg, transparent 0 40%, rgba(125, 48, 141, 0.08) 66%, transparent 100%),
+        linear-gradient(180deg, transparent 0 34%, rgba(2, 2, 4, 0.62) 100%),
+        linear-gradient(180deg, var(--wake-skin) 0%, var(--wake-depth) 42%, var(--wake-absence) 100%);
+      background-attachment: fixed;
+      font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: -0.01em;
+      -webkit-font-smoothing: antialiased;
     }
 
-    .container {
-      max-width: 600px;
-      width: 100%;
+    body::before,
+    body::after {
+      position: fixed;
+      z-index: 0;
+      inset: 0;
+      content: "";
+      pointer-events: none;
     }
 
-    .header {
-      text-align: center;
-      margin-bottom: 2rem;
+    body::before {
+      opacity: 0.36;
+      background:
+        linear-gradient(153deg, transparent 0 20%, rgba(232, 94, 145, 0.04) 20.14% 20.36%, transparent 20.66% 100%),
+        repeating-linear-gradient(117deg, transparent 0 115px, rgba(197, 108, 255, 0.018) 116px, transparent 119px),
+        linear-gradient(180deg, transparent 0%, rgba(46, 15, 54, 0.1) 48%, rgba(9, 7, 13, 0.46) 100%),
+        repeating-linear-gradient(180deg, transparent 0 42px, rgba(197, 108, 255, 0.012) 43px, transparent 46px);
+      mix-blend-mode: screen;
     }
 
-    .logo {
-      font-size: 3rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--accent) 0%, #4ade80 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: 0.5rem;
+    body::after {
+      opacity: 0.44;
+      background:
+        linear-gradient(180deg, rgba(2, 2, 4, 0.16) 0%, transparent 20%, transparent 42%, rgba(2, 2, 4, 0.78) 100%),
+        linear-gradient(90deg, rgba(2, 2, 4, 0.58), transparent 18%, transparent 82%, rgba(2, 2, 4, 0.62));
     }
 
-    .tagline {
-      color: var(--text-muted);
-      font-size: 1.1rem;
+    a { color: inherit; }
+    button, summary { font: inherit; }
+
+    :where(a, button, summary, [tabindex]):focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--primary);
     }
 
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 2rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .card h2 {
-      font-size: 1.25rem;
-      margin-bottom: 1rem;
-    }
-
-    .steps {
-      list-style: none;
-      counter-reset: step;
-    }
-
-    .steps li {
-      counter-increment: step;
-      padding: 0.75rem 0;
-      padding-left: 2.5rem;
+    .site-shell {
       position: relative;
-      color: var(--text-muted);
+      z-index: 1;
+    }
+
+    .topbar {
+      display: grid;
+      width: min(1120px, calc(100% - 40px));
+      min-height: 82px;
+      margin: 0 auto;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 28px;
       border-bottom: 1px solid var(--border);
     }
 
-    .steps li:last-child {
-      border-bottom: none;
-    }
-
-    .steps li::before {
-      content: counter(step);
-      position: absolute;
-      left: 0;
-      width: 1.75rem;
-      height: 1.75rem;
-      background: var(--accent);
-      color: var(--bg);
-      border-radius: 50%;
-      display: flex;
+    .wordmark {
+      display: inline-flex;
+      width: fit-content;
       align-items: center;
-      justify-content: center;
-      font-weight: 600;
-      font-size: 0.875rem;
-    }
-
-    .install-section {
-      text-align: center;
-      padding: 2.5rem;
-    }
-
-    esp-web-install-button {
-      display: inline-block;
-    }
-
-    esp-web-install-button button {
-      background: var(--accent);
-      color: var(--bg);
-      border: none;
-      padding: 1rem 2.5rem;
-      font-size: 1.25rem;
-      font-weight: 600;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-    }
-
-    esp-web-install-button button:hover {
-      background: var(--accent-hover);
-      transform: translateY(-1px);
-    }
-
-    esp-web-install-button button:active {
-      transform: translateY(0);
-    }
-
-    .version {
-      margin-top: 1rem;
-      color: var(--text-muted);
-      font-size: 0.875rem;
-    }
-
-    .requirements {
-      background: #1c1c1e;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-top: 1rem;
-    }
-
-    .requirements h3 {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      margin-bottom: 0.5rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .requirements ul {
-      list-style: none;
-      font-size: 0.9rem;
-      color: var(--text-muted);
-    }
-
-    .requirements li {
-      padding: 0.25rem 0;
-    }
-
-    .requirements li::before {
-      content: "•";
-      color: var(--accent);
-      margin-right: 0.5rem;
-    }
-
-    .warning {
-      background: rgba(234, 179, 8, 0.1);
-      border: 1px solid rgba(234, 179, 8, 0.3);
-      border-radius: 8px;
-      padding: 1rem;
-      margin-top: 1rem;
-      font-size: 0.9rem;
-      color: #fbbf24;
-    }
-
-    .footer {
-      margin-top: 2rem;
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 0.875rem;
-    }
-
-    .footer a {
-      color: var(--accent);
+      gap: 10px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 780;
+      letter-spacing: -0.025em;
       text-decoration: none;
     }
 
-    .footer a:hover {
+    .wordmark-mark {
+      display: grid;
+      width: 31px;
+      height: 31px;
+      place-items: center;
+      border: 1px solid rgba(197, 108, 255, 0.46);
+      border-radius: 8px;
+      background: rgba(197, 108, 255, 0.13);
+      color: var(--primary);
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: 0.02em;
+    }
+
+    nav {
+      display: flex;
+      gap: 24px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    nav a { text-decoration: none; }
+    nav a:hover { color: var(--text); }
+
+    .release-pill,
+    .time-pill {
+      justify-self: end;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--muted);
+      font: 650 9px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.04em;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      display: grid;
+      min-height: 610px;
+      grid-template-columns: 1.05fr 0.95fr;
+      align-items: center;
+      gap: 74px;
+      padding: 72px 0 88px;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--primary);
+      font: 800 9px/1.2 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.17em;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(52px, 6.6vw, 82px);
+      font-weight: 710;
+      letter-spacing: -0.065em;
+      line-height: 0.98;
+    }
+
+    .hero-summary {
+      max-width: 590px;
+      margin: 28px 0 27px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.65;
+    }
+
+    .support-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .support-row span {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 6px 9px;
+      background: rgba(255, 255, 255, 0.025);
+      color: #d8d1da;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .support-row .support-new { border-color: rgba(85, 223, 140, 0.26); }
+
+    .support-new b {
+      margin-left: 4px;
+      color: var(--laser);
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .support-row .support-note {
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted-soft);
+    }
+
+    .hero-device {
+      position: relative;
+      display: flex;
+      min-height: 326px;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: radial-gradient(circle at 50% 45%, rgba(197, 108, 255, 0.11), transparent 36%), linear-gradient(155deg, rgba(29, 23, 33, 0.96), rgba(10, 8, 13, 0.92));
+      box-shadow: var(--shadow);
+    }
+
+    .hero-device::before {
+      position: absolute;
+      inset: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.035);
+      border-radius: 14px;
+      content: "";
+    }
+
+    .hero-device img {
+      position: relative;
+      width: min(79%, 350px);
+      height: auto;
+      filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.45));
+    }
+
+    .hero-device p {
+      position: relative;
+      margin: 15px 20px 0;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .signal-line {
+      position: absolute;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--secondary), transparent);
+      opacity: 0.45;
+      transform: rotate(-18deg);
+    }
+
+    .signal-line-one {
+      top: 72px;
+      right: -50px;
+      width: 260px;
+    }
+
+    .signal-line-two {
+      bottom: 72px;
+      left: -60px;
+      width: 310px;
+      transform: rotate(24deg);
+    }
+
+    .installer-layout {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 20px;
+      scroll-margin-top: 24px;
+    }
+
+    .surface-card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: linear-gradient(155deg, rgba(27, 22, 31, 0.96), rgba(14, 11, 17, 0.93));
+      box-shadow: var(--shadow);
+    }
+
+    .preparation-card { padding: clamp(25px, 4vw, 42px); }
+
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .section-heading h2,
+    .install-card h2,
+    .finish-intro h2 {
+      margin: 0;
+      font-size: clamp(26px, 3vw, 35px);
+      letter-spacing: -0.035em;
+      line-height: 1.1;
+    }
+
+    .preparation-list {
+      display: grid;
+      gap: 0;
+      margin: 27px 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .preparation-list li {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 14px;
+      align-items: start;
+      border-top: 1px solid rgba(255, 255, 255, 0.055);
+      padding: 16px 0;
+    }
+
+    .preparation-list li:last-child { border-bottom: 1px solid rgba(255, 255, 255, 0.055); }
+
+    .step-number {
+      color: var(--primary);
+      font: 700 11px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+
+    .preparation-list strong,
+    .preparation-list small { display: block; }
+    .preparation-list strong { font-size: 14px; }
+
+    .preparation-list small {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .bootloader-callout {
+      border: 1px solid rgba(99, 199, 236, 0.22);
+      border-left: 3px solid var(--k);
+      border-radius: 10px;
+      padding: 17px 18px;
+      background: rgba(99, 199, 236, 0.055);
+    }
+
+    .callout-label {
+      color: var(--k);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.15em;
+    }
+
+    .bootloader-callout h3 {
+      margin: 7px 0 5px;
+      font-size: 15px;
+    }
+
+    .bootloader-callout p {
+      margin: 0;
+      color: #aeb8be;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .install-card {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      overflow: hidden;
+      padding: clamp(30px, 5vw, 52px);
+      text-align: center;
+    }
+
+    .install-card::before {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 21%, rgba(197, 108, 255, 0.13), transparent 30%);
+      content: "";
+      pointer-events: none;
+    }
+
+    .install-card > * { position: relative; }
+
+    .install-card > p:not(.eyebrow):not(.install-warning) {
+      max-width: 440px;
+      margin: 15px 0 24px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .install-orbit {
+      position: relative;
+      display: grid;
+      width: 92px;
+      height: 92px;
+      margin-bottom: 27px;
+      place-items: center;
+      border: 1px solid rgba(197, 108, 255, 0.23);
+      border-radius: 50%;
+    }
+
+    .install-orbit::before {
+      position: absolute;
+      inset: 10px;
+      border: 1px dashed rgba(197, 108, 255, 0.2);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .orbit-center {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border: 1px solid rgba(197, 108, 255, 0.45);
+      border-radius: 12px;
+      background: rgba(197, 108, 255, 0.15);
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .orbit-dot {
+      position: absolute;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+
+    .orbit-red { top: 5px; left: 30px; background: var(--error); }
+    .orbit-blue { right: 4px; bottom: 29px; background: var(--k); }
+    .orbit-green { bottom: 7px; left: 25px; background: var(--laser); }
+
+    esp-web-install-button {
+      display: block;
+      width: min(100%, 330px);
+    }
+
+    esp-web-install-button button {
+      display: flex;
+      width: 100%;
+      min-height: 54px;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid rgba(227, 185, 255, 0.34);
+      border-radius: 11px;
+      padding: 0 19px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+      box-shadow: 0 14px 32px rgba(158, 61, 226, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      color: #160b19;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 800;
+      transition: filter 150ms ease, transform 150ms ease;
+    }
+
+    esp-web-install-button button:hover {
+      filter: brightness(1.08);
+      transform: translateY(-2px);
+    }
+
+    esp-web-install-button button:active { transform: translateY(0); }
+    esp-web-install-button button span:first-child { font-size: 14px; }
+    esp-web-install-button button span:last-child { font-size: 20px; }
+
+    .install-meta {
+      display: flex;
+      width: min(100%, 330px);
+      justify-content: space-between;
+      margin-top: 13px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .install-meta span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--laser);
+      box-shadow: 0 0 10px rgba(85, 223, 140, 0.65);
+    }
+
+    .install-card .install-warning {
+      margin: 22px 0 0;
+      color: var(--ka);
+      font-size: 10px;
+    }
+
+    .installer-message {
+      display: block;
+      border: 1px solid rgba(243, 108, 108, 0.28);
+      border-radius: 10px;
+      padding: 14px;
+      background: rgba(243, 108, 108, 0.075);
+      color: var(--error);
+      font-size: 12px;
+      line-height: 1.5;
+      text-align: left;
+    }
+
+    .installer-message small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+    }
+
+    .finish-section {
+      display: grid;
+      grid-template-columns: 0.72fr 1.28fr;
+      gap: 66px;
+      padding: 112px 0 90px;
+      scroll-margin-top: 24px;
+    }
+
+    .finish-intro h2 { max-width: 360px; }
+
+    .finish-intro > p:last-child {
+      max-width: 340px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .finish-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .finish-grid li {
+      min-height: 142px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      background: rgba(22, 17, 25, 0.72);
+    }
+
+    .finish-grid li:last-child {
+      grid-column: 1 / -1;
+      min-height: auto;
+    }
+
+    .finish-index {
+      display: block;
+      margin-bottom: 22px;
+      color: var(--primary);
+      font: 700 9px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+
+    .finish-grid strong { font-size: 14px; }
+
+    .finish-grid p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .trust-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-block: 1px solid var(--border);
+      padding: 24px 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .trust-strip span {
+      padding: 0 24px;
+      text-align: center;
+    }
+
+    .trust-strip span + span { border-left: 1px solid var(--border); }
+    .trust-strip b { color: var(--text); }
+
+    footer {
+      display: flex;
+      width: min(1120px, calc(100% - 40px));
+      min-height: 118px;
+      margin: 0 auto;
+      align-items: center;
+      justify-content: space-between;
+      gap: 30px;
+      color: var(--muted-soft);
+      font-size: 11px;
+    }
+
+    footer > div:first-child {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    footer strong { color: var(--text); font-size: 13px; }
+    .license-details { position: relative; }
+
+    .license-details summary {
+      color: var(--muted);
+      cursor: pointer;
+      text-align: right;
+    }
+
+    .license-details[open] summary {
+      margin-bottom: 9px;
+      color: var(--text);
+    }
+
+    .footer-links {
+      display: flex;
+      max-width: 650px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px 14px;
+      line-height: 1.5;
+    }
+
+    .footer-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .footer-links a:hover {
+      color: var(--text);
       text-decoration: underline;
     }
 
-    @media (max-width: 480px) {
-      body {
-        padding: 1rem;
-      }
+    @media (max-width: 820px) {
+      .topbar { grid-template-columns: 1fr auto; }
+      nav { display: none; }
+      .hero, .installer-layout, .finish-section { grid-template-columns: 1fr; }
+      .hero { gap: 45px; padding-top: 58px; }
+      .hero-device { min-height: 280px; }
+      .install-card { min-height: 520px; }
+      .finish-section { gap: 38px; padding-top: 84px; }
+    }
 
-      .card {
-        padding: 1.5rem;
-      }
+    @media (max-width: 560px) {
+      .topbar, main, footer { width: min(100% - 28px, 1120px); }
+      .release-pill { display: none; }
+      .topbar { grid-template-columns: 1fr; }
+      .hero { min-height: 0; padding: 54px 0; }
+      .hero h1 { font-size: clamp(42px, 13vw, 58px); }
+      .hero-device { min-height: 230px; }
+      .hero-device img { width: 78%; }
+      .section-heading { flex-direction: column; }
+      .time-pill { align-self: flex-start; }
+      .install-card { min-height: 490px; }
+      .finish-grid { grid-template-columns: 1fr; }
+      .finish-grid li:last-child { grid-column: auto; }
+      .trust-strip { grid-template-columns: 1fr; }
+      .trust-strip span { padding: 15px; }
+      .trust-strip span + span { border-top: 1px solid var(--border); border-left: 0; }
+      footer { align-items: flex-start; flex-direction: column; padding: 32px 0; }
+      .license-details summary { text-align: left; }
+      .footer-links { justify-content: flex-start; }
+    }
 
-      .logo {
-        font-size: 2.5rem;
-      }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      esp-web-install-button button { transition: none; }
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header class="header">
-      <h1 class="logo">V1-Simple</h1>
-      <p class="tagline">Display for Valentine One Gen2</p>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="wordmark" href="#top" aria-label="V1-Simple installer home">
+        <span class="wordmark-mark">V1</span>
+        <span>V1Simple</span>
+      </a>
+      <nav aria-label="Page navigation">
+        <a href="#prepare">Prepare</a>
+        <a href="#install">Install</a>
+        <a href="#finish">Finish setup</a>
+      </nav>
+      <span class="release-pill">Release <span data-version>loading...</span></span>
     </header>
 
-    <div class="card">
-      <h2>📋 Web Install Steps</h2>
-      <ol class="steps">
-        <li>Have a <strong>data-capable</strong> USB-C cable ready (not charge-only)</li>
-        <li>Close any serial monitors or other apps that may use the port</li>
-        <li>Put device in <strong>bootloader mode</strong> (instructions below)</li>
-        <li>Click <strong>Install</strong> on this page and select your device</li>
-      </ol>
-
-      <div class="warning" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171; margin-top: 1rem;">
-        <strong>⚠️ IMPORTANT: Bootloader Mode Required</strong>
-        <div style="margin-top: 0.5rem; font-size: 0.9rem; opacity: 0.9;">
-          If you're on battery power and already have Simple installed: hold the power button until the device says "Goodbye", then proceed with the steps below.
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">V1 SIMPLE · RELEASE INSTALLER</p>
+          <h1 id="hero-title">Install V1 Simple.<br>The simple way.</h1>
+          <p class="hero-summary">Flash the latest release directly from your browser, then connect to the maintenance WebUI to configure your display.</p>
+          <div class="support-row" aria-label="Supported desktop browsers">
+            <span>Chrome</span>
+            <span>Edge</span>
+            <span class="support-new">Firefox 151+ <b>new</b></span>
+            <span class="support-note">Desktop · USB-C</span>
+          </div>
         </div>
-      </div>
 
-      <div class="warning" style="background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #60a5fa; margin-top: 0.75rem;">
-        <strong>🔌 Bootloader Mode (USB Plug-In Method)</strong>
-        <div style="margin-top: 0.75rem; font-size: 0.95rem;">
-          1. Press and hold the <strong>Power</strong> button and <strong>GEAR</strong> button at the same time<br>
-          2. While holding them, plug the USB-C cable into the device<br>
-          3. The screen will look "fuzzy" / "pixelated" — <strong>this is normal</strong>
+        <div class="hero-device" aria-label="V1-Simple branding">
+          <div class="signal-line signal-line-one"></div>
+          <div class="signal-line signal-line-two"></div>
+          <img src="../interface/static/branding/v1simple-logo-transparent.png" alt="V1-Simple">
+          <p>Purpose-built display for Valentine One Gen2</p>
         </div>
+      </section>
+
+      <section class="installer-layout" aria-label="Installation workflow">
+        <article class="surface-card preparation-card" id="prepare">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">BEFORE YOU START</p>
+              <h2>Prepare the device</h2>
+            </div>
+            <span class="time-pill">About 5 minutes</span>
+          </div>
+
+          <ol class="preparation-list">
+            <li><span class="step-number">01</span><span><strong>Use a data-capable USB-C cable</strong><small>Charge-only cables cannot flash the device.</small></span></li>
+            <li><span class="step-number">02</span><span><strong>Close apps using the serial port</strong><small>Quit serial monitors and other device tools first.</small></span></li>
+            <li><span class="step-number">03</span><span><strong>Shut down before connecting</strong><small>If Simple is running on battery, hold Power until “Goodbye” appears.</small></span></li>
+          </ol>
+
+          <div class="bootloader-callout">
+            <span class="callout-label">BOOTLOADER MODE</span>
+            <h3>Power + GEAR, then connect USB-C</h3>
+            <p>Keep both buttons held while plugging the cable in. A fuzzy or pixelated screen is expected and means the device is ready to flash.</p>
+          </div>
+        </article>
+
+        <article class="surface-card install-card" id="install">
+          <div class="install-orbit" aria-hidden="true">
+            <span class="orbit-center">V1</span>
+            <span class="orbit-dot orbit-red"></span>
+            <span class="orbit-dot orbit-blue"></span>
+            <span class="orbit-dot orbit-green"></span>
+          </div>
+          <p class="eyebrow">READY TO FLASH</p>
+          <h2>Install the latest release</h2>
+          <p>Your browser will ask you to choose the connected ESP32-S3. The matching firmware image is delivered with this release over HTTPS.</p>
+
+          <esp-web-install-button manifest="manifest.json">
+            <button slot="activate" type="button"><span>Install V1-Simple</span><span aria-hidden="true">→</span></button>
+            <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
+            <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
+          </esp-web-install-button>
+
+          <div class="install-meta">
+            <span><i class="status-dot"></i> Version <span data-version>loading...</span></span>
+            <span>Waveshare 3.49</span>
+          </div>
+          <p class="install-warning">Keep the cable connected until installation completes.</p>
+        </article>
+      </section>
+
+      <section class="finish-section" id="finish" aria-labelledby="finish-title">
+        <div class="finish-intro">
+          <p class="eyebrow">AFTER INSTALLATION</p>
+          <h2 id="finish-title">From flash to configured in five steps.</h2>
+          <p>The device walks you through the rest. No desktop application required.</p>
+        </div>
+        <ol class="finish-grid">
+          <li><span class="finish-index">01</span><strong>Reset</strong><p>Press the RESET button to start V1-Simple.</p></li>
+          <li><span class="finish-index">02</span><strong>Pair</strong><p>When the SCAN animation appears, connect your V1 Gen2.</p></li>
+          <li><span class="finish-index">03</span><strong>Maintain</strong><p>Hold GEAR until the Wi-Fi icon appears.</p></li>
+          <li><span class="finish-index">04</span><strong>Connect</strong><p>Join V1-Simple using password <b>setupv1simple</b>.</p></li>
+          <li><span class="finish-index">05</span><strong>Configure</strong><p>Open <b>http://192.168.35.5</b> to finish setup and change the access-point password.</p></li>
+        </ol>
+      </section>
+
+      <aside class="trust-strip" aria-label="Installer assurances">
+        <span><b>HTTPS</b> secure delivery</span>
+        <span><b>One image</b> matched to the release</span>
+        <span><b>Open source</b> licenses and notices included</span>
+      </aside>
+    </main>
+
+    <footer>
+      <div>
+        <strong>V1Simple</strong>
+        <span>Independent software for Valentine One Gen2.</span>
+        <span>Release assets are generated and published together.</span>
       </div>
-
-      <div class="requirements">
-        <h3>Requirements</h3>
-        <ul>
-          <li>Chrome, Edge, or Opera browser (Firefox not supported)</li>
-          <li>Waveshare ESP32-S3-Touch-LCD-3.49</li>
-          <li>USB-C data cable</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="card install-section">
-      <div class="warning" style="background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #60a5fa; margin-bottom: 1rem;">
-        Release installer. This page is published over HTTPS with its matching release manifest and merged firmware image.
-      </div>
-
-      <esp-web-install-button manifest="manifest.json">
-        <button slot="activate">Install V1-Simple</button>
-        <span slot="unsupported">
-          <p style="color: #ef4444;">Your browser doesn't support Web Serial.</p>
-          <p style="color: var(--text-muted); margin-top: 0.5rem;">Please use Chrome, Edge, or Opera.</p>
-        </span>
-        <span slot="not-allowed">
-          <p style="color: #ef4444;">Serial access not allowed.</p>
-          <p style="color: var(--text-muted); margin-top: 0.5rem;">Make sure this private installer is served from localhost or HTTPS and that you granted permission.</p>
-        </span>
-      </esp-web-install-button>
-      <p class="version">Version: <span id="version">loading...</span></p>
-
-      <div class="warning">
-        ⚠️ Install takes a few minutes. Don't disconnect!
-      </div>
-      <div class="warning" style="background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3); color: #22c55e; margin-top: 0.5rem;">
-        ✅ When complete, <strong>press the RESET button</strong> on your device to boot.
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>🚀 After Installation</h2>
-      <ol class="steps">
-        <li><strong>Press RESET button</strong> on the device to boot the firmware</li>
-        <li>Device will show the "SCAN" animation — <strong>plug in your V1 Gen2</strong> and it will pair automatically</li>
-        <li><strong>Hold the GEAR button</strong> until the WiFi icon appears</li>
-        <li>Connect to WiFi: <strong>V1-Simple</strong> (password: <strong>setupv1simple</strong>)</li>
-        <li>Open <strong>http://192.168.35.5</strong> to configure settings and change the AP password</li>
-      </ol>
-    </div>
-
-    <footer class="footer">
-      <p>Release assets are generated by the GitHub release workflow and published with the installer.</p>
-      <p style="margin-top: 0.5rem;">
-        <a href="LICENSE">V1Simple license</a>
-        · <a href="THIRD_PARTY_NOTICES.md">Third-party notices</a>
-        · <a href="licenses/ArduinoJson-LICENSE.txt">ArduinoJson license</a>
-        · <a href="licenses/NimBLE-Arduino-LICENSE.txt">NimBLE-Arduino license</a>
-        · <a href="licenses/NimBLE-Arduino-NOTICE.txt">NimBLE-Arduino notice</a>
-        · <a href="licenses/Arduino-GFX-LICENSE.txt">Arduino GFX license</a>
-        · <a href="licenses/OpenFontRender-LICENSE.txt">OpenFontRender license</a>
-        · <a href="licenses/FreeType-FTL.txt">FreeType license</a>
-        · <a href="licenses/GNU-FreeFont-COPYING.txt">GNU FreeFont GPLv3</a>
-        · <a href="licenses/GNU-FreeFont-README.txt">GNU FreeFont exception</a>
-        · <a href="licenses/OFL-1.1.txt">V1SevenX font license</a>
-        · <a href="licenses/CC-BY-4.0.txt">Voice license</a>
-        · <a href="licenses/Svelte-LICENSE.md">Svelte license</a>
-        · <a href="licenses/SvelteKit-LICENSE.txt">SvelteKit license</a>
-        · <a href="licenses/daisyUI-LICENSE.txt">daisyUI license</a>
-        · <a href="licenses/Tailwind-CSS-LICENSE.txt">Tailwind CSS license</a>
-      </p>
+      <details class="license-details">
+        <summary>Licenses &amp; notices</summary>
+        <div class="footer-links">
+          <a href="LICENSE">V1Simple license</a>
+          <a href="THIRD_PARTY_NOTICES.md">Third-party notices</a>
+          <a href="licenses/ArduinoJson-LICENSE.txt">ArduinoJson</a>
+          <a href="licenses/NimBLE-Arduino-LICENSE.txt">NimBLE-Arduino</a>
+          <a href="licenses/NimBLE-Arduino-NOTICE.txt">NimBLE notice</a>
+          <a href="licenses/Arduino-GFX-LICENSE.txt">Arduino GFX</a>
+          <a href="licenses/OpenFontRender-LICENSE.txt">OpenFontRender</a>
+          <a href="licenses/FreeType-FTL.txt">FreeType</a>
+          <a href="licenses/GNU-FreeFont-COPYING.txt">GNU FreeFont GPLv3</a>
+          <a href="licenses/GNU-FreeFont-README.txt">GNU FreeFont exception</a>
+          <a href="licenses/OFL-1.1.txt">V1SevenX font</a>
+          <a href="licenses/CC-BY-4.0.txt">Voice assets</a>
+          <a href="licenses/Svelte-LICENSE.md">Svelte</a>
+          <a href="licenses/SvelteKit-LICENSE.txt">SvelteKit</a>
+          <a href="licenses/daisyUI-LICENSE.txt">daisyUI</a>
+          <a href="licenses/Tailwind-CSS-LICENSE.txt">Tailwind CSS</a>
+        </div>
+      </details>
     </footer>
   </div>
 
@@ -321,14 +833,15 @@
     crossorigin="anonymous"
   ></script>
   <script>
-    // Fetch version from manifest
-    fetch('manifest.json')
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('version').textContent = data.version || 'unknown';
+    fetch("manifest.json")
+      .then((response) => response.json())
+      .then((manifest) => {
+        const rawVersion = manifest.version || "unknown";
+        const displayVersion = rawVersion === "unknown" || rawVersion.startsWith("v") ? rawVersion : `v${rawVersion}`;
+        document.querySelectorAll("[data-version]").forEach((element) => { element.textContent = displayVersion; });
       })
       .catch(() => {
-        document.getElementById('version').textContent = 'unknown';
+        document.querySelectorAll("[data-version]").forEach((element) => { element.textContent = "unknown"; });
       });
   </script>
 </body>

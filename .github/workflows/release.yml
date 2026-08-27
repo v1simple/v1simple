@@ -207,6 +207,8 @@ jobs:
         run: |
           mkdir -p release/pages
           cp web-installer/index.html release/pages/index.html
+          cp interface/static/branding/v1simple-logo-transparent.png release/pages/v1simple-logo-transparent.png
+          sed -i 's#../interface/static/branding/v1simple-logo-transparent.png#v1simple-logo-transparent.png#' release/pages/index.html
           cp release/manifest.json release/pages/manifest.json
           cp release/merged-firmware.bin release/pages/merged-firmware.bin
           python3 scripts/stage_release_licenses.py \

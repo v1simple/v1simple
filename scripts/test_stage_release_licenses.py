@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,17 @@ import stage_release_licenses as licenses
 
 
 class ReleaseLicenseStagingTests(unittest.TestCase):
+    def test_every_tracked_license_is_declared_for_staging(self) -> None:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "licenses"],
+            cwd=licenses.ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+
+        self.assertEqual(set(tracked), set(licenses.LICENSE_FILES))
+
     def test_live_sources_are_present_and_pinned_sources_are_exact(self) -> None:
         self.assertEqual(licenses.source_errors(licenses.ROOT), [])
 

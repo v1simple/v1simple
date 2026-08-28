@@ -76,6 +76,9 @@ component-level inventory.
 
 The lockfile resolves these direct build inputs:
 
+- @fontsource-variable/geist 5.3.0 — SIL Open Font License 1.1. The
+  maintenance web bundle embeds its Latin variable WOFF2. See
+  `licenses/Geist-OFL-1.1.txt`.
 - Svelte 5.55.9 — MIT — `licenses/Svelte-LICENSE.md`
 - SvelteKit 2.61.1 — MIT — `licenses/SvelteKit-LICENSE.txt`
 - daisyUI 5.5.20 — MIT — `licenses/daisyUI-LICENSE.txt`

@@ -327,6 +327,7 @@ def check_flash_and_package(errors: list[str]) -> None:
         "\n            release/GNU-FreeFont-COPYING.txt",
         "\n            release/GNU-FreeFont-README.txt",
         "\n            release/OFL-1.1.txt",
+        "\n            release/Geist-OFL-1.1.txt",
         "\n            release/CC-BY-4.0.txt",
         "\n            release/Svelte-LICENSE.md",
         "\n            release/SvelteKit-LICENSE.txt",

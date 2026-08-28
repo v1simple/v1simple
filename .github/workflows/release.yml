@@ -337,6 +337,7 @@ jobs:
             release/GNU-FreeFont-COPYING.txt
             release/GNU-FreeFont-README.txt
             release/OFL-1.1.txt
+            release/Geist-OFL-1.1.txt
             release/CC-BY-4.0.txt
             release/Svelte-LICENSE.md
             release/SvelteKit-LICENSE.txt

@@ -27,6 +27,7 @@ LICENSE_FILES = (
     "licenses/GNU-FreeFont-COPYING.txt",
     "licenses/GNU-FreeFont-README.txt",
     "licenses/OFL-1.1.txt",
+    "licenses/Geist-OFL-1.1.txt",
     "licenses/CC-BY-4.0.txt",
     "licenses/Svelte-LICENSE.md",
     "licenses/SvelteKit-LICENSE.txt",

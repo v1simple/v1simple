@@ -26,8 +26,8 @@ struct Runtime {
     void* loadProfileJsonCtx = nullptr;
     bool (*parseSettingsJson)(const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) = nullptr;
     void* parseSettingsJsonCtx = nullptr;
-    bool (*saveProfile)(const String& name, const String& description, bool displayOn, const uint8_t inBytes[6],
-                        String& error, void* ctx) = nullptr;
+    bool (*saveProfile)(const String& name, const String& description, bool displayOn, uint8_t mainVolume,
+                        uint8_t mutedVolume, const uint8_t inBytes[6], String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     bool (*deleteProfile)(const String& name, void* ctx) = nullptr;
     void* deleteProfileCtx = nullptr;

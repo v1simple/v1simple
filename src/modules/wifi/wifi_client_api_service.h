@@ -55,6 +55,18 @@ struct SavedNetworkUpsertPayload {
     uint8_t priority = 0;
 };
 
+struct SavedNetworkPriorityUpdate {
+    size_t index = 0;
+    uint8_t priority = 0;
+};
+
+enum class PriorityUpdateStatus : uint8_t {
+    Success,
+    Invalid,
+    Conflict,
+    PersistFailed,
+};
+
 struct Runtime {
     bool (*isEnabled)(void* ctx) = nullptr;
     void* isEnabledCtx = nullptr;
@@ -80,11 +92,11 @@ struct Runtime {
 
     void (*disconnectFromNetwork)(void* ctx) = nullptr;
     void* disconnectFromNetworkCtx = nullptr;
-    void (*forgetClient)(void* ctx) = nullptr;
+    bool (*forgetClient)(void* ctx) = nullptr;
     void* forgetClientCtx = nullptr;
     bool (*enableWithSavedNetwork)(void* ctx) = nullptr;
     void* enableWithSavedNetworkCtx = nullptr;
-    void (*disableClient)(void* ctx) = nullptr;
+    bool (*disableClient)(void* ctx) = nullptr;
     void* disableClientCtx = nullptr;
 
     bool maintenanceBootActive = false;
@@ -95,6 +107,9 @@ struct Runtime {
     void* upsertSavedNetworkCtx = nullptr;
     bool (*deleteSavedNetwork)(size_t index, void* ctx) = nullptr;
     void* deleteSavedNetworkCtx = nullptr;
+    PriorityUpdateStatus (*updateSavedNetworkPriorities)(const std::vector<SavedNetworkPriorityUpdate>& updates,
+                                                         void* ctx) = nullptr;
+    void* updateSavedNetworkPrioritiesCtx = nullptr;
     bool (*testSavedNetwork)(size_t index, void* ctx) = nullptr;
     void* testSavedNetworkCtx = nullptr;
 };
@@ -124,6 +139,9 @@ void handleApiNetworksSave(WebServer& server, const Runtime& runtime, bool (*che
 
 void handleApiNetworksDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                              void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+
+void handleApiNetworksPriorities(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                                 void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
 void handleApiNetworksTest(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                            void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);

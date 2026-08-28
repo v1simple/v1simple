@@ -15,28 +15,52 @@ template <typename T> bool assignIfChanged(T& target, const T& value) {
     return true;
 }
 
-void persistSettingsByMode(SettingsManager& manager, SettingsPersistMode persistMode) {
+SettingsPersistResult persistSettingsByMode(SettingsManager& manager, SettingsPersistMode persistMode) {
+    SettingsPersistResult result;
+    result.changed = true;
     if (persistMode == SettingsPersistMode::Deferred) {
         manager.requestDeferredPersist();
-        return;
+        result.success = true;
+        return result;
     }
     if (persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup) {
-        manager.saveDeferredBackup();
-        return;
+        result.success = manager.saveDeferredBackup();
+        result.deferred = result.success && manager.deferredBackupPending();
+        return result;
     }
-    manager.save();
+    result.success = manager.save();
+    result.deferred = result.success && manager.deferredBackupPending();
+    return result;
 }
 
 } // namespace
 
-void SettingsManager::setActiveSlot(int slot, SettingsPersistMode persistMode) {
-    settings_.activeSlot = std::max(0, std::min(2, slot));
-    persistSettingsByMode(*this, persistMode);
+SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& before, bool changed,
+                                                               SettingsPersistMode persistMode) {
+    if (!changed) {
+        SettingsPersistResult result;
+        result.success = true;
+        return result;
+    }
+
+    SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
+    if (!result.success && persistMode != SettingsPersistMode::Deferred) {
+        settings_ = before;
+        clearDeferredPersistState();
+    }
+    return result;
 }
 
-void SettingsManager::setStealthEnabled(bool enabled, SettingsPersistMode persistMode) {
-    settings_.stealthEnabled = enabled;
-    persistSettingsByMode(*this, persistMode);
+SettingsPersistResult SettingsManager::setActiveSlot(int slot, SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
+    const bool changed = assignIfChanged(settings_.activeSlot, std::max(0, std::min(2, slot)));
+    return finishSettingsMutation(before, changed, persistMode);
+}
+
+SettingsPersistResult SettingsManager::setStealthEnabled(bool enabled, SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
+    const bool changed = assignIfChanged(settings_.stealthEnabled, enabled);
+    return finishSettingsMutation(before, changed, persistMode);
 }
 
 const AutoPushSlot& SettingsManager::getSlot(int slotNum) const {
@@ -154,7 +178,9 @@ bool SettingsManager::clearProfileReferencesPersisted(const String& canonicalPro
     return false;
 }
 
-bool SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update, SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
+                                                                SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     bool changed = false;
 
     if (update.hasActiveSlot) {
@@ -165,11 +191,45 @@ bool SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update
         changed |= assignIfChanged(settings_.autoPushEnabled, update.enabled);
     }
 
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
+    return finishSettingsMutation(before, changed, persistMode);
+}
+
+SettingsPersistResult
+SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates) {
+    const V1Settings before = settings_;
+    bool seenSlots[kWifiStaSlotCount] = {};
+    bool seenPriorities[kWifiStaSlotCount] = {};
+    bool changed = false;
+
+    if (updates.empty() || updates.size() > kWifiStaSlotCount) {
+        return SettingsPersistResult{};
+    }
+    for (const WifiStaPriorityUpdate& update : updates) {
+        if (update.index >= kWifiStaSlotCount || update.priority >= kWifiStaSlotCount || seenSlots[update.index] ||
+            seenPriorities[update.priority] || !settings_.wifiStaSlots[update.index].isConfigured()) {
+            settings_ = before;
+            return SettingsPersistResult{};
+        }
+        seenSlots[update.index] = true;
+        seenPriorities[update.priority] = true;
+        changed |= assignIfChanged(settings_.wifiStaSlots[update.index].priority, update.priority);
     }
 
-    return changed;
+    bool finalPriorities[kWifiStaSlotCount] = {};
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        const WifiStaSlot& slot = settings_.wifiStaSlots[index];
+        if (!slot.isConfigured()) {
+            continue;
+        }
+        if (slot.priority >= kWifiStaSlotCount || finalPriorities[slot.priority]) {
+            settings_ = before;
+            return SettingsPersistResult{};
+        }
+        finalPriorities[slot.priority] = true;
+    }
+
+    settings_.refreshWifiClientAliasFromSlots();
+    return finishSettingsMutation(before, changed, SettingsPersistMode::Immediate);
 }
 
 void SettingsManager::setLastV1Address(const String& addr) {
@@ -187,7 +247,9 @@ void SettingsManager::setLastV1Address(const String& addr) {
     }
 }
 
-void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update, SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
+                                                                 SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     bool changed = false;
 
     if (update.hasApCredentials) {
@@ -227,12 +289,12 @@ void SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& upda
     if (update.hasGpsBaud) {
         changed |= assignIfChanged(settings_.gpsBaud, sanitizeGpsBaudValue(update.gpsBaud));
     }
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
-    }
+    return finishSettingsMutation(before, changed, persistMode);
 }
 
-void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update, SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update,
+                                                                SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     bool changed = false;
 
     if (update.hasVoiceAlertMode) {
@@ -295,12 +357,12 @@ void SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update
         changed |= assignIfChanged(settings_.stealthEnabled, update.stealthEnabled);
     }
 
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
-    }
+    return finishSettingsMutation(before, changed, persistMode);
 }
 
-void SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update, SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
+                                                                  SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     bool changed = false;
 
     // Sanitize all incoming color values: reject 0x0000 (display-blackout value) and
@@ -389,12 +451,11 @@ void SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& up
     if (update.hasBrightness)
         changed |= assignIfChanged(settings_.brightness, update.brightness);
 
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
-    }
+    return finishSettingsMutation(before, changed, persistMode);
 }
 
-void SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     settings_.colorBogey = 0xF800;
     settings_.colorFrequency = 0xF800;
     settings_.colorArrowFront = 0xF800;
@@ -427,10 +488,12 @@ void SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     settings_.colorAlpAlert = 0xF800;
     settings_.freqUseBandColor = false;
 
-    persistSettingsByMode(*this, persistMode);
+    return finishSettingsMutation(before, true, persistMode);
 }
 
-bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, SettingsPersistMode persistMode) {
+SettingsPersistResult SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update,
+                                                              SettingsPersistMode persistMode) {
+    const V1Settings before = settings_;
     bool changed = false;
 
     if (update.resetSavedNameOnAddressChange && update.hasSavedAddress &&
@@ -479,7 +542,7 @@ bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, Se
             clampConnectionCycleTeardownAckTimeoutMsValue(static_cast<int64_t>(update.cycleTeardownAckTimeoutMs)));
     }
     if (update.hasSavedAddress) {
-        if (isValidBleAddress(update.savedAddress)) {
+        if (update.savedAddress.length() == 0 || isValidBleAddress(update.savedAddress)) {
             changed |= assignIfChanged(settings_.obdSavedAddress, update.savedAddress);
         } else {
             Serial.println("[Settings] WARN: Rejecting invalid OBD address update");
@@ -492,9 +555,5 @@ bool SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update, Se
         changed |= assignIfChanged(settings_.obdSavedAddrType, update.savedAddrType);
     }
 
-    if (changed) {
-        persistSettingsByMode(*this, persistMode);
-    }
-
-    return changed;
+    return finishSettingsMutation(before, changed, persistMode);
 }

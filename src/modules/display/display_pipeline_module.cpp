@@ -119,6 +119,24 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
     return result;
 }
 
+bool pendingVoiceActionStillCurrent(const VoiceAction& action, const FrameV1Alerts& alerts) {
+    const auto matches = [&](const AlertData& alert) {
+        return alert.band == action.sourceBand && static_cast<uint16_t>(alert.frequency) == action.freq &&
+               alert.direction == action.sourceDirection;
+    };
+
+    if (action.type == VoiceAction::Type::ANNOUNCE_PRIORITY ||
+        action.type == VoiceAction::Type::ANNOUNCE_DIRECTION) {
+        return alerts.hasPriority && matches(alerts.priority);
+    }
+    for (int i = 0; i < alerts.alertCount; ++i) {
+        if (matches(alerts.alerts[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencies) {
@@ -137,6 +155,9 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastPersistenceSlot_ = -1;
     alpAlertPresentation_ = AlpLaserEvent{};
     lastPresentedAlpEventActive_ = false;
+    pendingVoiceAction_ = VoiceAction{};
+    hasPendingVoiceAction_ = false;
+    nextVoiceAttemptMs_ = 0;
 }
 
 void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec) {
@@ -279,6 +300,8 @@ RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
 void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
     if (v1Alerts.alertCount == 0) {
+        hasPendingVoiceAction_ = false;
+        nextVoiceAttemptMs_ = 0;
         voice_->clearAllState();
         return;
     }
@@ -299,35 +322,62 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
                                        v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
     }
 
-    const VoiceAction voiceAction = voice_->process(voiceCtx);
+    if (hasPendingVoiceAction_ && !pendingVoiceActionStillCurrent(pendingVoiceAction_, v1Alerts)) {
+        hasPendingVoiceAction_ = false;
+        nextVoiceAttemptMs_ = 0;
+    }
+    if (static_cast<int32_t>(nowMs - nextVoiceAttemptMs_) < 0) {
+        return;
+    }
+
+    const VoiceAction voiceAction = hasPendingVoiceAction_ ? pendingVoiceAction_ : voice_->prepareAction(voiceCtx);
 
     if (!voiceAction.hasAction()) {
         return;
     }
 
+    AudioPlaybackResult playbackResult = AudioPlaybackResult::Unavailable;
     switch (voiceAction.type) {
     case VoiceAction::Type::ANNOUNCE_PRIORITY:
-        play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir, settingsRef.voiceAlertMode,
-                             settingsRef.voiceDirectionEnabled, voiceAction.bogeyCount);
+        playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
+                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
+                                                  voiceAction.bogeyCount);
         break;
 
     case VoiceAction::Type::ANNOUNCE_DIRECTION:
-        play_direction_only(voiceAction.dir, voiceAction.bogeyCount);
+        playbackResult = try_play_direction_only(voiceAction.dir, voiceAction.bogeyCount);
         break;
 
     case VoiceAction::Type::ANNOUNCE_SECONDARY:
-        play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir, settingsRef.voiceAlertMode,
-                             settingsRef.voiceDirectionEnabled, 1);
+        playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
+                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled, 1);
         break;
 
     case VoiceAction::Type::ANNOUNCE_ESCALATION:
-        play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir, voiceAction.bogeyCount,
-                               voiceAction.aheadCount, voiceAction.behindCount, voiceAction.sideCount);
+        playbackResult = try_play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir,
+                                                    voiceAction.bogeyCount, voiceAction.aheadCount,
+                                                    voiceAction.behindCount, voiceAction.sideCount);
         break;
 
     case VoiceAction::Type::NONE:
     default:
         break;
+    }
+
+    if (playbackResult == AudioPlaybackResult::Accepted) {
+        voice_->commitAction(voiceAction, nowMs);
+        hasPendingVoiceAction_ = false;
+        nextVoiceAttemptMs_ = 0;
+    } else if (playbackResult == AudioPlaybackResult::Busy) {
+        pendingVoiceAction_ = voiceAction;
+        hasPendingVoiceAction_ = true;
+        nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
+    } else {
+        // Missing/disabled audio is terminal for this attempt. Do not commit
+        // dedup state, but also do not let one unavailable clip starve newer
+        // current-frame decisions forever.
+        hasPendingVoiceAction_ = false;
+        nextVoiceAttemptMs_ = nowMs + 1000;
     }
 }
 

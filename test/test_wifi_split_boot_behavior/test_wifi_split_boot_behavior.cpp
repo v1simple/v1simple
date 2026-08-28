@@ -218,6 +218,43 @@ void test_maintenance_runtime_uses_typed_constructor_dependencies_without_provid
     TEST_ASSERT_EQUAL(std::string::npos, header.find("struct Providers"));
 }
 
+void test_maintenance_runtime_start_reaches_saved_network_auto_join() {
+    const std::string runtime = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
+    const std::string lifecycle = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
+    const std::string runtimeStart = extractFunctionBody(runtime, "bool MaintenanceRuntime::startMaintenanceWifi(");
+    const std::string setupStart = extractFunctionBody(lifecycle, "bool WiFiManager::startSetupMode(");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, runtimeStart.find("wifi_.startSetupMode(false)"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupStart.find("selectSavedNetworkStart"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, setupStart.find("beginMaintenanceAutoConnectScan(false)"));
+}
+
+void test_saved_network_test_persists_enable_before_replacing_runtime_activity() {
+    const std::string client = readFile(projectRoot() + "/src/wifi_client.cpp");
+    const std::string body = extractFunctionBody(client, "bool WiFiManager::testSavedNetwork(");
+    const size_t persistAt = body.find("setWifiClientEnabled(true)");
+    const size_t cancelAt = body.find("cancelMaintenanceAutoConnect(\"slot_test\")");
+    const size_t queueAt = body.find("connectToNetwork(");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, persistAt);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, cancelAt);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, queueAt);
+    TEST_ASSERT_TRUE(persistAt < cancelAt);
+    TEST_ASSERT_TRUE(cancelAt < queueAt);
+}
+
+void test_explicit_disconnect_arms_session_suppression_and_enable_test_clear_it() {
+    const std::string client = readFile(projectRoot() + "/src/wifi_client.cpp");
+    const std::string disconnect = extractFunctionBody(client, "void WiFiManager::disconnectFromNetwork(");
+    const std::string test = extractFunctionBody(client, "bool WiFiManager::testSavedNetwork(");
+    const std::string enableScan = extractFunctionBody(client, "bool WiFiManager::beginMaintenanceAutoConnectScan(");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, disconnect.find("maintenanceManualDisconnect_ = true"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, disconnect.find("maintenanceAutoConnectRetryAtMs_ = 0"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, test.find("maintenanceManualDisconnect_ = false"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, enableScan.find("maintenanceManualDisconnect_ = false"));
+}
+
 void test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission() {
     WifiStopLifecyclePolicy::PhaseInput stopHttp;
     stopHttp.idle = false;
@@ -245,6 +282,9 @@ int main() {
     RUN_TEST(test_power_presentation_suppresses_maintenance_wifi_service);
     RUN_TEST(test_maintenance_service_wires_routes_settings_and_runtime_status_once);
     RUN_TEST(test_maintenance_runtime_uses_typed_constructor_dependencies_without_provider_table);
+    RUN_TEST(test_maintenance_runtime_start_reaches_saved_network_auto_join);
+    RUN_TEST(test_saved_network_test_persists_enable_before_replacing_runtime_activity);
+    RUN_TEST(test_explicit_disconnect_arms_session_suppression_and_enable_test_clear_it);
     RUN_TEST(test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission);
     return UNITY_END();
 }

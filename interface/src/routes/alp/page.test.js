@@ -71,7 +71,7 @@ describe('alp route page', () => {
                     ([url, init]) =>
                         url === '/api/device/settings' &&
                         init?.method === 'POST' &&
-                        init?.body instanceof FormData &&
+                        init?.body instanceof URLSearchParams &&
                         init.body.get('alpDisableV1LaserOnPush') === 'false'
                 )
             ).toBe(true);

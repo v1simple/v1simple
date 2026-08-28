@@ -3,6 +3,7 @@
  */
 
 #include "wifi_manager_internals.h"
+#include "modules/wifi/wifi_setup_network_policy.h"
 #include "settings.h"
 #include "modules/wifi/wifi_static_path_guard.h"
 #include "modules/wifi/wifi_auto_timeout_module.h"
@@ -71,7 +72,8 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
     const V1Settings& settings = settings_.get();
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
-    getWifiStartThresholds(shouldUseApSta(settings), minFree, minBlock);
+    getWifiStartThresholds(
+        WifiSetupNetworkPolicy::usesSta(maintenanceBootMode_, shouldUseApSta(settings)), minFree, minBlock);
     return freeNow >= minFree && largestNow >= minBlock;
 }
 
@@ -80,7 +82,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
 
 bool WiFiManager::startSetupMode(const bool autoStarted) {
     const V1Settings& settings = settings_.get();
-    const bool apStaMode = shouldUseApSta(settings);
+    const bool apStaMode = WifiSetupNetworkPolicy::usesSta(maintenanceBootMode_, shouldUseApSta(settings));
     const bool restartingFromStopping = (setupModeState_ == SETUP_MODE_STOPPING);
     const auto cancelDeferredStopForRestart = [this]() {
         setupModeState_ = SETUP_MODE_OFF;
@@ -178,6 +180,9 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     lastTimeoutCheckMs_ = 0;
     lowDmaSinceMs_ = 0;
     lowDmaCooldownUntilMs_ = 0;
+    maintenanceAutoConnectRetryAtMs_ = 0;
+    maintenanceAddressCollisionSlotMask_ = 0;
+    maintenanceManualDisconnect_ = false;
     resetReconnectFailures();
 
     // Check if WiFi client is enabled - use AP+STA mode
@@ -219,15 +224,16 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     apInterfaceEnabled_ = true;
     wasAutoStarted_ = autoStarted;
 
-    // Route saved-network rejoin through the same staged STA connect path used
-    // everywhere else so AP/STA transitions have one owner.
-    if (apStaMode) {
-        if (maintenanceBootMode_) {
-            (void)beginMaintenanceAutoConnectScan(false);
-        } else {
-            Serial.println("[SetupMode] STA connect queued");
-            (void)connectToNetwork(settings.wifiClientSSID, settings_.getWifiClientPassword(), false);
-        }
+    switch (WifiSetupNetworkPolicy::selectSavedNetworkStart(maintenanceBootMode_, apStaMode)) {
+    case WifiSetupNetworkPolicy::SavedNetworkStart::MaintenanceAutoConnect:
+        (void)beginMaintenanceAutoConnectScan(false);
+        break;
+    case WifiSetupNetworkPolicy::SavedNetworkStart::DirectConnect:
+        Serial.println("[SetupMode] STA connect queued");
+        (void)connectToNetwork(settings.wifiClientSSID, settings_.getWifiClientPassword(), false);
+        break;
+    case WifiSetupNetworkPolicy::SavedNetworkStart::None:
+        break;
     }
 
     return true;
@@ -286,6 +292,13 @@ void WiFiManager::finalizeStopSetupMode() {
     pendingConnectPersistCredentials_ = true;
     pendingConnectSlotIndex_ = -1;
     maintenanceAutoConnectStaDropGate_.clear();
+    maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
+    maintenanceAutoConnectScanStartMs_ = 0;
+    maintenanceAutoConnectSlotCount_ = 0;
+    maintenanceAutoConnectSlotCursor_ = 0;
+    maintenanceAutoConnectRetryAtMs_ = 0;
+    maintenanceAddressCollisionSlotMask_ = 0;
+    maintenanceManualDisconnect_ = false;
     lastUiActivityMs_ = 0;
     lastClientSeenMs_ = 0;
     lastAnyClientSeenMs_ = 0;
@@ -553,8 +566,10 @@ void WiFiManager::process() {
                           (unsigned long)(now - lowDmaSinceMs_), (unsigned long)freeInternal,
                           (unsigned long)largestInternal);
 
-            // In AP+STA mode, drop AP first to preserve STA utility under pressure.
-            if (dualRadioMode) {
+            // Outside maintenance, drop AP first to preserve STA utility under pressure.
+            // Maintenance HTTP is AP-only at ingress, so maintenance must stop
+            // and recover the service rather than leave a misleading STA-only listener.
+            if (dualRadioMode && !maintenanceBootMode_) {
                 Serial.println("[WiFi] ACTION: dropping AP due to sustained low SRAM (keeping STA online)");
                 if (!WiFi.enableAP(false)) {
                     Serial.println("[WiFi] WARN: enableAP(false) failed during low-SRAM AP drop; falling back to "
@@ -765,6 +780,11 @@ bool WiFiManager::isStopping() const {
 // Mutation rate limiting: returns true if the write is allowed, false if rate limited.
 // Read-only status polls call markUiActivity() directly and never enter this window.
 bool WiFiManager::checkRateLimit() {
+    if (maintenanceWritePreAdmitted_) {
+        maintenanceWritePreAdmitted_ = false;
+        return true;
+    }
+
     const uint32_t now = millis();
 
     // Admitted and rejected mutations both prove that the UI is active.
@@ -780,6 +800,17 @@ bool WiFiManager::checkRateLimit() {
     }
 
     return true;
+}
+
+bool WiFiManager::admitMaintenanceWriteBeforeBody() {
+    // Reset any token left by a malformed prior request before evaluating this
+    // request. A successful token is consumed by the existing handler-level
+    // check, avoiding a second rate-limit count after buffering.
+    maintenanceWritePreAdmitted_ = false;
+    markUiActivity();
+    const SlidingWindowRateLimitDecision decision = rateLimiter_.evaluate(millis());
+    maintenanceWritePreAdmitted_ = decision.allowed;
+    return decision.allowed;
 }
 
 // Web activity tracking for maintenance-session idle deadlines

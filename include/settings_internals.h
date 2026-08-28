@@ -149,6 +149,6 @@ bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const S
                               const String& encodedPassword);
 String loadWifiClientSecretFromSD(StorageManager& storage, const String& expectedSsid,
                                   size_t expectedSlotIndex = kWifiStaSlotCount);
-void removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, const String& ssid);
-void clearWifiClientSecretFromSD(StorageManager& storage);
+bool removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, const String& ssid);
+bool clearWifiClientSecretFromSD(StorageManager& storage);
 bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex = 0);

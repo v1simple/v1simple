@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 import run_window as run_window_module  # noqa: E402
 from run_window import (  # noqa: E402
     BENCH_TIMELINE_NAME,
+    REPLAY_DELIVERY_NAME,
     REPLAY_STIMULUS_NAME,
     BenchTimeline,
     RuntimeIdentityFailure,
@@ -31,9 +32,12 @@ from run_window import (  # noqa: E402
     establish_serial_boundary,
     file_artifact,
     parse_runtime_boot_identity,
+    notification_delivery_problem,
+    publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
     resolve_runner_log_paths,
+    summarize_notification_delivery,
 )
 
 
@@ -79,6 +83,103 @@ def test_replay_stimulus_is_persisted_as_raw_ndjson_once() -> None:
             pass
         else:
             raise AssertionError("existing raw stimulus evidence was overwritten")
+
+
+def test_replay_delivery_is_persisted_with_explicit_loss_denominators() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        events = [
+            {"state": "notification_requested", "globalTxSequence": 1},
+            {"state": "notification_dropped", "globalTxSequence": 1},
+        ]
+        emulator = {"delivery_events": list(events)}
+        result = publish_replay_delivery_evidence(
+            emulator, out_dir, suite="replay"
+        )
+        assert_true(result is not None and result["event_count"] == 2, str(result))
+        assert_true("delivery_events" not in emulator, "delivery events remained duplicated")
+        decoded = [
+            json.loads(line)
+            for line in (out_dir / REPLAY_DELIVERY_NAME).read_text().splitlines()
+        ]
+        assert_true(decoded == events, f"raw delivery events changed: {decoded}")
+
+
+def test_delivery_summary_counts_attempts_and_vetoes_dropped_or_skipped() -> None:
+    clean = summarize_notification_delivery(
+        [
+            {"state": "notification_requested", "globalTxSequence": 7},
+            {"state": "notification_delayed", "globalTxSequence": 7},
+            {"state": "notification_accepted", "globalTxSequence": 7},
+        ]
+    )
+    assert_true(clean["requested"] == 1, str(clean))
+    assert_true(clean["attempted"] == 2, str(clean))
+    assert_true(clean["delivered"] == 1, str(clean))
+    assert_true(notification_delivery_problem(clean) == "", str(clean))
+
+    for loss_state in ("notification_dropped", "notification_skipped"):
+        lossy = summarize_notification_delivery(
+            [
+                {"state": "notification_requested", "globalTxSequence": 8},
+                {"state": loss_state, "globalTxSequence": 8},
+            ]
+        )
+        problem = notification_delivery_problem(lossy)
+        assert_true(lossy["complete"] is False, str(lossy))
+        assert_true(loss_state.removeprefix("notification_") in problem, problem)
+
+
+def test_delivery_summary_vetoes_malformed_sequence_lifecycles() -> None:
+    malformed_streams = {
+        "duplicate requested": [
+            {"state": "notification_requested", "globalTxSequence": 1},
+            {"state": "notification_requested", "globalTxSequence": 1},
+            {"state": "notification_accepted", "globalTxSequence": 1},
+        ],
+        "orphan terminal": [
+            {"state": "notification_accepted", "globalTxSequence": 2},
+        ],
+        "terminal before request": [
+            {"state": "notification_accepted", "globalTxSequence": 3},
+            {"state": "notification_requested", "globalTxSequence": 3},
+        ],
+        "duplicate terminal": [
+            {"state": "notification_requested", "globalTxSequence": 4},
+            {"state": "notification_accepted", "globalTxSequence": 4},
+            {"state": "notification_accepted", "globalTxSequence": 4},
+        ],
+        "delayed after terminal": [
+            {"state": "notification_requested", "globalTxSequence": 5},
+            {"state": "notification_accepted", "globalTxSequence": 5},
+            {"state": "notification_delayed", "globalTxSequence": 5},
+        ],
+        "missing identity": [
+            {"state": "notification_requested"},
+            {"state": "notification_accepted"},
+        ],
+        "zero identity": [
+            {"state": "notification_requested", "globalTxSequence": 0},
+            {"state": "notification_accepted", "globalTxSequence": 0},
+        ],
+    }
+    for name, events in malformed_streams.items():
+        summary = summarize_notification_delivery(events)
+        problem = notification_delivery_problem(summary)
+        assert_true(summary["complete"] is False, f"{name}: {summary}")
+        assert_true("malformed" in problem, f"{name}: {problem}")
+
+
+def test_delivery_summary_vetoes_empty_instrumentation_stream() -> None:
+    summary = summarize_notification_delivery([])
+    problem = notification_delivery_problem(summary, required=True)
+    assert_true(summary["complete"] is False, str(summary))
+    assert_true(summary["requested"] == 0, str(summary))
+    assert_true("evidence is empty" in problem, problem)
+    assert_true(
+        notification_delivery_problem(summary, required=False) == "",
+        "idle emulator suites unexpectedly require replay delivery evidence",
+    )
 
 
 def test_runner_logs_are_confined_to_the_run_directory() -> None:
@@ -167,6 +268,73 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
         assert_true("--machine-events" in captured, str(captured))
         assert_true("--scenario-evidence" in captured, str(captured))
         assert_true("--owner-pid" in captured, str(captured))
+
+
+def finish_replay_fixture(states: list[str]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        executable = out_dir / "v1replay"
+        _write_executable(executable)
+
+        class FakeProcess:
+            pid = 1234
+
+            def __init__(self) -> None:
+                self.running = True
+
+            def poll(self) -> int | None:
+                return None if self.running else 0
+
+            def send_signal(self, _signal: int) -> None:
+                pass
+
+            def wait(self, timeout: int) -> int:
+                del timeout
+                self.running = False
+                return 0
+
+        emulator = V1Emulator(
+            executable,
+            out_dir,
+            "replay",
+            "scenario",
+            lease_fd=9,
+            scenario="fixture.json",
+            machine_event=lambda _payload: None,
+        )
+        emulator.process = FakeProcess()  # type: ignore[assignment]
+        lines = []
+        for state in states:
+            event: dict[str, Any] = {"state": state, "fixture": True}
+            if state.startswith("notification_"):
+                event["globalTxSequence"] = 1
+            lines.append("V1REPLAY_EVENT " + json.dumps(event))
+        emulator.log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return emulator.finish(window_completed=True)
+
+
+def test_requested_dropped_complete_stopped_is_not_completed() -> None:
+    result = finish_replay_fixture(
+        ["notification_requested", "notification_dropped", "complete", "stopped"]
+    )
+    delivery = result["notification_delivery"]
+    assert_true(result["lifecycle_completed"] is True, str(result))
+    assert_true(result["completed"] is False, str(result))
+    assert_true(delivery["requested"] == 1, str(delivery))
+    assert_true(delivery["delivered"] == 0, str(delivery))
+    assert_true(delivery["dropped"] == 1, str(delivery))
+
+
+def test_requested_accepted_complete_stopped_is_completed() -> None:
+    result = finish_replay_fixture(
+        ["notification_requested", "notification_accepted", "complete", "stopped"]
+    )
+    delivery = result["notification_delivery"]
+    assert_true(result["lifecycle_completed"] is True, str(result))
+    assert_true(result["completed"] is True, str(result))
+    assert_true(delivery["requested"] == 1, str(delivery))
+    assert_true(delivery["attempted"] == 1, str(delivery))
+    assert_true(delivery["delivered"] == 1, str(delivery))
 
 
 def test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent() -> None:
@@ -390,8 +558,200 @@ def test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash(
         assert_true("collection_only" in stderr.getvalue(), stderr.getvalue())
 
 
+def test_dirty_source_vetoes_qualification_before_collection() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        args = SimpleNamespace(
+            board_id="fixture",
+            blink_arrow=False,
+            blink_profile="steady",
+            out_dir=str(out_dir),
+            runner_stdout_log="",
+            runner_stderr_log="",
+            duration_seconds=1,
+            ready_timeout_seconds=1,
+            post_upload_settle_seconds=0,
+            suite="core",
+            scenario="",
+            replay_executable="fixture-replay",
+            git_sha=GIT_SHA,
+            git_ref="main",
+            git_worktree_clean="0",
+        )
+        collected = False
+        originals = {
+            "parse_args": run_window_module.parse_args,
+            "install_signal_handlers": run_window_module.install_signal_handlers,
+            "collect_live": run_window_module.collect_live,
+        }
+
+        def unexpected_collection(*_args: Any) -> dict[str, Any]:
+            nonlocal collected
+            collected = True
+            raise AssertionError("dirty source reached live collection")
+
+        run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+        run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+        run_window_module.collect_live = unexpected_collection  # type: ignore[assignment]
+        try:
+            status = run_window_module.main()
+        finally:
+            for name, value in originals.items():
+                setattr(run_window_module, name, value)
+
+        payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        assert_true(status == 2, f"dirty qualification exit changed: {status}")
+        assert_true(collected is False, "dirty source began live collection")
+        assert_true(payload["result"] == "FAIL", str(payload))
+        assert_true(payload["failure_kind"] == "source_provenance", str(payload))
+        assert_true(payload["runtime_qualification"]["status"] == "unqualified", str(payload))
+
+
+def run_replay_delivery_verdict(
+    delivery: dict[str, Any],
+) -> tuple[int, dict[str, Any]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        args = SimpleNamespace(
+            board_id="fixture",
+            blink_arrow=False,
+            blink_profile="scenario",
+            out_dir=str(out_dir),
+            runner_stdout_log="",
+            runner_stderr_log="",
+            duration_seconds=1,
+            ready_timeout_seconds=1,
+            post_upload_settle_seconds=0,
+            suite="replay",
+            scenario="fixture.json",
+            replay_executable="fixture-replay",
+            git_sha=GIT_SHA,
+            git_ref="main",
+            git_worktree_clean="1",
+        )
+        collected = {
+            "port": "fixture-port",
+            "completion": {},
+            "emulator": {"notification_delivery": delivery},
+            "camera": {},
+            "runtime_identity": dict(RUNTIME_IDENTITY),
+            "runtime_qualification": {"status": "qualified"},
+        }
+        originals = {
+            "parse_args": run_window_module.parse_args,
+            "install_signal_handlers": run_window_module.install_signal_handlers,
+            "collect_live": run_window_module.collect_live,
+            "serial": run_window_module.serial,
+        }
+        run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+        run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+        run_window_module.collect_live = (  # type: ignore[assignment]
+            lambda _args, _out_dir, _artifacts: collected
+        )
+        run_window_module.serial = object()  # type: ignore[assignment]
+        try:
+            status = run_window_module.main()
+        finally:
+            for name, value in originals.items():
+                setattr(run_window_module, name, value)
+
+        payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        return status, payload
+
+
+def test_top_level_pass_is_vetoed_by_delivery_loss_counters() -> None:
+    delivery = summarize_notification_delivery(
+        [
+            {"state": "notification_requested", "globalTxSequence": 1},
+            {"state": "notification_dropped", "globalTxSequence": 1},
+        ]
+    )
+    status, payload = run_replay_delivery_verdict(delivery)
+    assert_true(status == 2, f"delivery-loss exit changed: {status}")
+    assert_true(payload["result"] == "FAIL", str(payload))
+    assert_true(payload["failure_kind"] == "replay_delivery", str(payload))
+    assert_true("dropped=1" in payload["qualification_reason"], str(payload))
+
+
+def test_top_level_pass_is_vetoed_by_malformed_delivery_sequence() -> None:
+    delivery = summarize_notification_delivery(
+        [
+            {"state": "notification_requested", "globalTxSequence": 1},
+            {"state": "notification_accepted", "globalTxSequence": 1},
+            {"state": "notification_accepted", "globalTxSequence": 1},
+        ]
+    )
+    status, payload = run_replay_delivery_verdict(delivery)
+    assert_true(status == 2, f"malformed delivery exit changed: {status}")
+    assert_true(payload["result"] == "FAIL", str(payload))
+    assert_true(payload["failure_kind"] == "replay_delivery", str(payload))
+    assert_true("malformed_sequences=1" in payload["qualification_reason"], str(payload))
+
+
+def test_top_level_pass_is_vetoed_by_empty_delivery_stream() -> None:
+    status, payload = run_replay_delivery_verdict(summarize_notification_delivery([]))
+    assert_true(status == 2, f"empty delivery exit changed: {status}")
+    assert_true(payload["result"] == "FAIL", str(payload))
+    assert_true(payload["failure_kind"] == "replay_delivery", str(payload))
+    assert_true("evidence is empty" in payload["qualification_reason"], str(payload))
+
+
+def test_clean_source_preserves_qualified_pass_behavior() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        args = SimpleNamespace(
+            board_id="fixture",
+            blink_arrow=False,
+            blink_profile="steady",
+            out_dir=str(out_dir),
+            runner_stdout_log="",
+            runner_stderr_log="",
+            duration_seconds=1,
+            ready_timeout_seconds=1,
+            post_upload_settle_seconds=0,
+            suite="core",
+            scenario="",
+            replay_executable="fixture-replay",
+            git_sha=GIT_SHA,
+            git_ref="main",
+            git_worktree_clean="1",
+        )
+        collected = {
+            "port": "fixture-port",
+            "completion": {},
+            "emulator": {},
+            "camera": {},
+            "runtime_identity": dict(RUNTIME_IDENTITY),
+            "runtime_qualification": {"status": "qualified"},
+        }
+        originals = {
+            "parse_args": run_window_module.parse_args,
+            "install_signal_handlers": run_window_module.install_signal_handlers,
+            "collect_live": run_window_module.collect_live,
+            "serial": run_window_module.serial,
+        }
+        run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+        run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+        run_window_module.collect_live = (  # type: ignore[assignment]
+            lambda _args, _out_dir, _artifacts: collected
+        )
+        run_window_module.serial = object()  # type: ignore[assignment]
+        try:
+            status = run_window_module.main()
+        finally:
+            for name, value in originals.items():
+                setattr(run_window_module, name, value)
+
+        payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        assert_true(status == 0, f"clean qualified exit changed: {status}")
+        assert_true(payload["result"] == "PASS", str(payload))
+
+
 def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    dirty_veto = source.index('if [[ "$GIT_WORKTREE_CLEAN" -ne 1 ]]; then')
+    device_detection = source.index('PORT="$(detect_usb_port || true)"')
+    assert_true(dirty_veto < device_detection, "dirty source can still reach a partial PASS")
     start = source.index('if [[ "$COLLECTION_ONLY" -eq 1 ]]; then')
     end = source.index("\nfi", start) + len("\nfi")
     branch = source[start:end]
@@ -510,9 +870,15 @@ def test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
+    test_replay_delivery_is_persisted_with_explicit_loss_denominators()
+    test_delivery_summary_counts_attempts_and_vetoes_dropped_or_skipped()
+    test_delivery_summary_vetoes_malformed_sequence_lifecycles()
+    test_delivery_summary_vetoes_empty_instrumentation_stream()
     test_runner_logs_are_confined_to_the_run_directory()
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
+    test_requested_dropped_complete_stopped_is_not_completed()
+    test_requested_accepted_complete_stopped_is_completed()
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
     test_upload_exact_match_is_qualified()
@@ -522,6 +888,11 @@ def main() -> int:
     test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only()
     test_no_flash_git_mismatch_fails()
     test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash()
+    test_dirty_source_vetoes_qualification_before_collection()
+    test_top_level_pass_is_vetoed_by_delivery_loss_counters()
+    test_top_level_pass_is_vetoed_by_malformed_delivery_sequence()
+    test_top_level_pass_is_vetoed_by_empty_delivery_stream()
+    test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
     test_missing_and_malformed_boot_identity_fail()

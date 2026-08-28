@@ -11,7 +11,7 @@ namespace WifiSettingsApiService {
 
 struct Runtime {
     const V1Settings& (*getSettings)(void* ctx) = nullptr;
-    void (*applySettingsUpdate)(const DeviceSettingsUpdate&, void* ctx) = nullptr;
+    SettingsPersistResult (*applySettingsUpdate)(const DeviceSettingsUpdate&, void* ctx) = nullptr;
     bool (*checkRateLimit)(void* ctx) = nullptr;
     SettingsManager::NvsDiagnostic (*getNvsDiagnostic)(void* ctx) = nullptr;
     void* ctx = nullptr;

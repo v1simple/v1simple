@@ -163,6 +163,7 @@ void SettingsManager::begin() {
     }
 
     load();
+    resolveWifiCredentialTransaction();
 
     // Note: SD card may not be mounted yet during begin().
     // checkAndRestoreFromSD() should be called after storage is ready.
@@ -184,6 +185,10 @@ void SettingsManager::load() {
     // Check settings version for migration
     int storedVersion = preferences_.getInt(kNvsSettingsVer, 1);
     restorePending_ = preferences_.getBool(kNvsRestorePending, false);
+    const int64_t storedRestoreWatermark = preferences_.getLong64(kNvsRestoreCommitWatermark, 0);
+    const int64_t storedDeleteWatermark = preferences_.getLong64(kNvsProfileDeleteCommitWatermark, 0);
+    restoreCommitWatermark_ = storedRestoreWatermark > 0 ? static_cast<uint64_t>(storedRestoreWatermark) : 0;
+    profileDeleteCommitWatermark_ = storedDeleteWatermark > 0 ? static_cast<uint64_t>(storedDeleteWatermark) : 0;
     if (restorePending_) {
         Serial.println("[Settings] NVS marked restore-pending; SD backup remains authoritative");
     }

@@ -233,7 +233,10 @@ void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRa
         ActivationRequest request;
         request.slot = slot;
         request.enable = enable;
-        runtime.applyActivation(request, runtime.applyActivationCtx);
+        if (!runtime.applyActivation(request, runtime.applyActivationCtx)) {
+            server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+            return;
+        }
     } else {
         if (runtime.setActiveSlot) {
             runtime.setActiveSlot(slot, runtime.setActiveSlotCtx);

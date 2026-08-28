@@ -14,6 +14,7 @@ namespace {
 struct FakeRuntime {
     bool enabled = false;
     bool startResult = true;
+    bool commitResult = true;
     int sequence = 0;
     int startOrder = 0;
     int rollbackOrder = 0;
@@ -23,6 +24,10 @@ struct FakeRuntime {
     int commitCalls = 0;
     int logicalState = 0;
     int priorLogicalState = 0;
+    bool scanActive = false;
+    bool staEnabled = false;
+    bool connectPending = false;
+    bool apUsable = true;
 };
 
 bool attemptStart(void* ctx) {
@@ -30,6 +35,10 @@ bool attemptStart(void* ctx) {
     fake->startCalls++;
     fake->startOrder = ++fake->sequence;
     fake->logicalState = 1;
+    fake->scanActive = true;
+    fake->staEnabled = true;
+    fake->connectPending = true;
+    fake->apUsable = true;
     return fake->startResult;
 }
 
@@ -38,13 +47,18 @@ void rollbackFailedStart(void* ctx) {
     fake->rollbackCalls++;
     fake->rollbackOrder = ++fake->sequence;
     fake->logicalState = fake->priorLogicalState;
+    fake->scanActive = false;
+    fake->staEnabled = false;
+    fake->connectPending = false;
+    fake->apUsable = true;
 }
 
-void commitEnabled(void* ctx) {
+bool commitEnabled(void* ctx) {
     auto* fake = static_cast<FakeRuntime*>(ctx);
     fake->commitCalls++;
     fake->commitOrder = ++fake->sequence;
-    fake->enabled = true;
+    fake->enabled = fake->commitResult;
+    return fake->commitResult;
 }
 
 WifiClientEnableTransaction::Runtime makeRuntime(FakeRuntime& fake) {
@@ -126,6 +140,25 @@ void test_success_commits_once_after_start() {
     TEST_ASSERT_EQUAL_INT(2, fake.commitOrder);
 }
 
+void test_failed_persistence_rolls_back_started_lifecycle() {
+    FakeRuntime fake;
+    fake.commitResult = false;
+    fake.logicalState = 3;
+    fake.priorLogicalState = 3;
+
+    TEST_ASSERT_FALSE(WifiClientEnableTransaction::execute(makeRuntime(fake)));
+    TEST_ASSERT_FALSE(fake.enabled);
+    TEST_ASSERT_EQUAL_INT(1, fake.startCalls);
+    TEST_ASSERT_EQUAL_INT(1, fake.commitCalls);
+    TEST_ASSERT_EQUAL_INT(1, fake.rollbackCalls);
+    TEST_ASSERT_EQUAL_INT(3, fake.logicalState);
+    TEST_ASSERT_EQUAL_INT(3, fake.rollbackOrder);
+    TEST_ASSERT_FALSE(fake.scanActive);
+    TEST_ASSERT_FALSE(fake.staEnabled);
+    TEST_ASSERT_FALSE(fake.connectPending);
+    TEST_ASSERT_TRUE(fake.apUsable);
+}
+
 void test_missing_commit_callback_fails_before_start_side_effects() {
     FakeRuntime fake;
     auto runtime = makeRuntime(fake);
@@ -171,6 +204,7 @@ int main() {
     RUN_TEST(test_persisted_but_not_admitted_retries_without_recommit);
     RUN_TEST(test_persisted_and_admitted_is_idempotent);
     RUN_TEST(test_success_commits_once_after_start);
+    RUN_TEST(test_failed_persistence_rolls_back_started_lifecycle);
     RUN_TEST(test_missing_commit_callback_fails_before_start_side_effects);
     RUN_TEST(test_missing_start_callback_fails_without_commit);
     RUN_TEST(test_missing_rollback_callback_fails_before_start_side_effects);

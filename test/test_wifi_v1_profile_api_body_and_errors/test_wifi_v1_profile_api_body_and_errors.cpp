@@ -41,6 +41,13 @@ struct FakeRuntime {
     int saveCalls = 0;
     int backupCalls = 0;
     bool connected = true;
+    String savedDescription;
+    bool savedDisplayOn = true;
+    uint8_t savedMainVolume = 0xFF;
+    uint8_t savedMutedVolume = 0xFF;
+    WifiV1ProfileApiService::CatalogStatus loadStatus =
+        WifiV1ProfileApiService::CatalogStatus::NotFound;
+    String existingProfileJson;
     WifiV1ProfileApiService::CatalogStatus deleteStatus =
         WifiV1ProfileApiService::CatalogStatus::Success;
 };
@@ -58,13 +65,19 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     };
     runtime.parseSettingsJsonCtx = &rt;
     runtime.saveProfile = [](const String& /*name*/,
-                             const String& /*description*/,
-                             bool /*displayOn*/,
+                             const String& description,
+                             bool displayOn,
+                             uint8_t mainVolume,
+                             uint8_t mutedVolume,
                              const uint8_t /*inBytes*/[6],
                              String& error,
                              void* ctx) {
         auto* rtp = static_cast<FakeRuntime*>(ctx);
         rtp->saveCalls++;
+        rtp->savedDescription = description;
+        rtp->savedDisplayOn = displayOn;
+        rtp->savedMainVolume = mainVolume;
+        rtp->savedMutedVolume = mutedVolume;
         if (!rtp->saveOk) {
             error = rtp->saveError;
             return false;
@@ -72,6 +85,12 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
         return true;
     };
     runtime.saveProfileCtx = &rt;
+    runtime.loadProfileJsonResult = [](const String&, String& json, void* ctx) {
+        auto* rtp = static_cast<FakeRuntime*>(ctx);
+        json = rtp->existingProfileJson;
+        return rtp->loadStatus;
+    };
+    runtime.loadProfileJsonResultCtx = &rt;
     runtime.backupToSd = [](void* ctx) { static_cast<FakeRuntime*>(ctx)->backupCalls++; };
     runtime.backupToSdCtx = &rt;
     runtime.v1Connected = [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; };
@@ -193,6 +212,19 @@ void test_delete_reports_storage_busy_instead_of_not_found() {
     TEST_ASSERT_EQUAL_INT(0, rt.backupCalls);
 }
 
+void test_delete_persistence_failure_is_not_reported_as_success() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.deleteStatus = WifiV1ProfileApiService::CatalogStatus::IoError;
+    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+
+    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "Profile deletion failed"));
+    TEST_ASSERT_EQUAL_INT(0, rt.backupCalls);
+}
+
 // ---------------------------------------------------------------------------
 // Oversize-payload caps
 // ---------------------------------------------------------------------------
@@ -220,6 +252,52 @@ void test_profile_save_accepts_payload_just_under_the_cap() {
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
+}
+
+void test_profile_save_preserves_omitted_existing_metadata() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.loadStatus = WifiV1ProfileApiService::CatalogStatus::Success;
+    rt.existingProfileJson =
+        "{\"name\":\"RoadTrip\",\"description\":\"Existing\",\"displayOn\":false,"
+        "\"mainVolume\":7,\"mutedVolume\":2,\"settings\":{}}";
+    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"byte0\":3}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
+    TEST_ASSERT_EQUAL_STRING("Existing", rt.savedDescription.c_str());
+    TEST_ASSERT_FALSE(rt.savedDisplayOn);
+    TEST_ASSERT_EQUAL_UINT8(7, rt.savedMainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, rt.savedMutedVolume);
+}
+
+void test_profile_save_accepts_explicit_metadata_without_resetting_it() {
+    WebServer server(80);
+    FakeRuntime rt;
+    server.setArg("plain",
+                  "{\"name\":\"RoadTrip\",\"description\":\"Edited\",\"displayOn\":false,"
+                  "\"mainVolume\":8,\"mutedVolume\":3,\"settings\":{\"byte0\":3}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("Edited", rt.savedDescription.c_str());
+    TEST_ASSERT_FALSE(rt.savedDisplayOn);
+    TEST_ASSERT_EQUAL_UINT8(8, rt.savedMainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, rt.savedMutedVolume);
+}
+
+void test_profile_save_rejects_invalid_volume_metadata() {
+    WebServer server(80);
+    FakeRuntime rt;
+    server.setArg("plain", "{\"name\":\"RoadTrip\",\"mainVolume\":10,\"settings\":{\"byte0\":3}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,21 +336,21 @@ void test_post_handlers_bind_the_request_body_exactly_once_per_handler() {
     }
 }
 
-void test_body_cap_comments_do_not_claim_the_transport_risk_is_closed() {
-    const char* sources[] = {
-        "src/modules/wifi/wifi_v1_profile_api_service.cpp",
-        "src/modules/wifi/backup_api_service.cpp",
-    };
+void test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser() {
+    const std::string serverSource =
+        readProjectFile("src/modules/wifi/wifi_maintenance_web_server.h");
+    const std::string policySource =
+        readProjectFile("src/modules/wifi/wifi_maintenance_http_preflight.h");
+    TEST_ASSERT_FALSE(serverSource.empty());
+    TEST_ASSERT_FALSE(policySource.empty());
 
-    for (const char* relativePath : sources) {
-        const std::string source = readProjectFile(relativePath);
-        TEST_ASSERT_FALSE_MESSAGE(source.empty(), relativePath);
-        // The cap is an application-level limit; it does not bound what the
-        // transport already allocated.
-        TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos,
-                                      source.find("does not bound the transport allocation"),
-                                      relativePath);
-    }
+    const size_t inspectCall = serverSource.find("inspectCurrentRequest()");
+    const size_t frameworkParse = serverSource.find("_parseRequest(_currentClient)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, inspectCall);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, frameworkParse);
+    TEST_ASSERT_TRUE(inspectCall < frameworkParse);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("RejectMultipart"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("kMaxBodyBytes"));
 }
 
 int main() {
@@ -281,9 +359,13 @@ int main() {
     RUN_TEST(test_save_error_with_control_characters_stays_valid_json);
     RUN_TEST(test_plain_save_error_still_reports_error_field_verbatim);
     RUN_TEST(test_delete_reports_storage_busy_instead_of_not_found);
+    RUN_TEST(test_delete_persistence_failure_is_not_reported_as_success);
     RUN_TEST(test_profile_save_rejects_oversize_payload_without_saving);
     RUN_TEST(test_profile_save_accepts_payload_just_under_the_cap);
+    RUN_TEST(test_profile_save_preserves_omitted_existing_metadata);
+    RUN_TEST(test_profile_save_accepts_explicit_metadata_without_resetting_it);
+    RUN_TEST(test_profile_save_rejects_invalid_volume_metadata);
     RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);
-    RUN_TEST(test_body_cap_comments_do_not_claim_the_transport_risk_is_closed);
+    RUN_TEST(test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser);
     return UNITY_END();
 }

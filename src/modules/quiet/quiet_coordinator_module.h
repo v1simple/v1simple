@@ -6,6 +6,7 @@
 class V1BLEClient;
 class PacketParser;
 struct VoiceContext;
+enum class SendResult;
 
 enum class QuietOwner : uint8_t {
     None = 0,
@@ -60,7 +61,9 @@ class QuietCoordinatorModule {
     void begin(V1BLEClient* bleClient, PacketParser* parser);
 
     bool sendMute(QuietOwner owner, bool muted);
+    SendResult sendMuteResult(QuietOwner owner, bool muted);
     bool sendVolume(QuietOwner owner, uint8_t volume, uint8_t muteVolume);
+    SendResult sendVolumeResult(QuietOwner owner, uint8_t volume, uint8_t muteVolume);
     // Apply an AutoPush baseline pair without lifting an active speed-volume override.
     bool sendAutoPushVolume(uint8_t volume, uint8_t muteVolume);
 
@@ -101,6 +104,14 @@ class QuietCoordinatorModule {
     uint32_t pendingSpeedVolRestoreSetMs_ = 0;
     uint32_t pendingSpeedVolRestoreLastRetryMs_ = 0;
     uint32_t speedVolLastRetryMs_ = 0;
+    bool pendingFadeAction_ = false;
+    bool pendingFadeRestore_ = false;
+    uint8_t pendingFadeVolume_ = 0;
+    uint8_t pendingFadeMuteVolume_ = 0;
+    uint16_t pendingFadeFrequency_ = 0;
+    bool pendingFadeLaser_ = false;
+    uint32_t pendingFadeLastAttemptMs_ = 0;
+    static constexpr uint32_t FADE_RETRY_INTERVAL_MS = 25;
     static constexpr uint32_t SPEED_VOL_RETRY_INTERVAL_MS = 75;
     static constexpr uint32_t SPEED_VOL_RESTORE_TIMEOUT_MS = 2000;
 };

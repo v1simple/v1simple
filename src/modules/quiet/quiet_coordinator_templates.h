@@ -105,17 +105,57 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         fadeCtx.priorityIsLaser = hasRenderablePriority && priority.band == BAND_LASER;
     }
 
+    if (pendingFadeAction_) {
+        const bool staleFadeDown = !pendingFadeRestore_ &&
+                                   (!fadeCtx.hasAlert || fadeCtx.alertMuted || fadeCtx.alertSuppressed ||
+                                    fadeCtx.currentFrequency != pendingFadeFrequency_ ||
+                                    fadeCtx.priorityIsLaser != pendingFadeLaser_);
+        if (staleFadeDown) {
+            pendingFadeAction_ = false;
+        } else {
+            if (static_cast<uint32_t>(nowMs - pendingFadeLastAttemptMs_) < FADE_RETRY_INTERVAL_MS) {
+                return true;
+            }
+            pendingFadeLastAttemptMs_ = nowMs;
+            const SendResult retry =
+                sendVolumeResult(QuietOwner::VolumeFade, pendingFadeVolume_, pendingFadeMuteVolume_);
+            if (retry == SendResult::NOT_YET) {
+                return true;
+            }
+            pendingFadeAction_ = false;
+            return retry == SendResult::SENT;
+        }
+    }
+
     const VolumeFadeAction fadeAction = volumeFade->process(fadeCtx);
     if (!fadeAction.hasAction()) {
         return false;
     }
 
     if (fadeAction.type == VolumeFadeAction::Type::FADE_DOWN) {
-        sendVolume(QuietOwner::VolumeFade, fadeAction.targetVolume, fadeAction.targetMuteVolume);
+        const SendResult result =
+            sendVolumeResult(QuietOwner::VolumeFade, fadeAction.targetVolume, fadeAction.targetMuteVolume);
+        if (result == SendResult::NOT_YET) {
+            pendingFadeAction_ = true;
+            pendingFadeRestore_ = false;
+            pendingFadeVolume_ = fadeAction.targetVolume;
+            pendingFadeMuteVolume_ = fadeAction.targetMuteVolume;
+            pendingFadeFrequency_ = fadeCtx.currentFrequency;
+            pendingFadeLaser_ = fadeCtx.priorityIsLaser;
+            pendingFadeLastAttemptMs_ = nowMs;
+        }
         return true;
     }
     if (fadeAction.type == VolumeFadeAction::Type::RESTORE) {
-        sendVolume(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
+        const SendResult result =
+            sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
+        if (result == SendResult::NOT_YET) {
+            pendingFadeAction_ = true;
+            pendingFadeRestore_ = true;
+            pendingFadeVolume_ = fadeAction.restoreVolume;
+            pendingFadeMuteVolume_ = fadeAction.restoreMuteVolume;
+            pendingFadeLastAttemptMs_ = nowMs;
+        }
         return true;
     }
     return false;

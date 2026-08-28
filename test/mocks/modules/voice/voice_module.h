@@ -33,6 +33,9 @@ struct VoiceAction {
     uint8_t aheadCount = 0;
     uint8_t behindCount = 0;
     uint8_t sideCount = 0;
+    Band sourceBand = BAND_NONE;
+    Direction sourceDirection = DIR_NONE;
+    uint8_t sourceAlertCount = 0;
 
     bool hasAction() const { return type != Type::NONE; }
 };
@@ -64,4 +67,6 @@ public:
         lastContext = ctx;
         return nextAction;
     }
+    VoiceAction prepareAction(const VoiceContext& ctx) { return process(ctx); }
+    void commitAction(const VoiceAction&, unsigned long) {}
 };

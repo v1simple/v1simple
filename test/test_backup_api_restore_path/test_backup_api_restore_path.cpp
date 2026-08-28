@@ -23,6 +23,10 @@ bool isRecognizedBackupType(const char* type) {
             std::strcmp(type, "v1simple_sd_backup") == 0);
 }
 
+uint32_t computeBackupCrc32(const JsonDocument&) {
+    return 0x12345678u;
+}
+
 }  // namespace BackupPayloadBuilder
 
 namespace BackupApiService {
@@ -35,6 +39,7 @@ bool sendCachedBackupSnapshot(WebServer& server,
                               void* /*buildCtx*/,
                               uint32_t (*/*millisFn*/)(void* ctx),
                               void* /*millisCtx*/) {
+    server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
     server.send(200, "application/json", "{\"cached\":true}");
     return true;
 }
@@ -69,6 +74,7 @@ BackupApiService::BackupRuntime makeRuntime(FakeRuntime& runtime) {
         fakeRuntime->buildDocumentCalls++;
         doc["_type"] = "v1simple_backup";
         doc["timestamp"] = snapshotMs;
+        return BackupApiService::BackupSnapshotBuildResult{true};
     };
     apiRuntime.applyBackup = [](const JsonDocument& doc,
                                 bool fullRestore,
@@ -262,6 +268,19 @@ void test_restore_invalid_backup_type_returns_400_without_apply_or_sync() {
     TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
 }
 
+void test_restore_crc_mismatch_returns_400_without_delegating_apply() {
+    WebServer server(80);
+    FakeRuntime runtime;
+    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"_crc32\":1,\"brightness\":77}");
+
+    BackupApiService::handleApiRestore(server, makeRuntime(runtime), nullptr, nullptr, nullptr, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "checksum mismatch"));
+    TEST_ASSERT_EQUAL_INT(0, runtime.applyBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
+}
+
 void test_restore_apply_failure_returns_500_and_skips_sync() {
     WebServer server(80);
     FakeRuntime runtime;
@@ -338,6 +357,7 @@ int main() {
     RUN_TEST(test_restore_body_exactly_at_cap_still_applies);
     RUN_TEST(test_restore_invalid_json_returns_400_without_apply_or_sync);
     RUN_TEST(test_restore_invalid_backup_type_returns_400_without_apply_or_sync);
+    RUN_TEST(test_restore_crc_mismatch_returns_400_without_delegating_apply);
     RUN_TEST(test_restore_apply_failure_returns_500_and_skips_sync);
     RUN_TEST(test_restore_success_syncs_runtime_and_reports_profiles_restored);
     RUN_TEST(test_restore_success_uses_wifi_json_allocator);

@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <cstring>
 
+enum class SendResult { SENT, NOT_YET, FAILED };
+
 /**
  * Mock V1BLEClient - tracks method calls for verification
  */
@@ -41,8 +43,10 @@ public:
     int setDisplayOnFailuresRemaining = 0;
     bool setModeResult = true;
     int setModeFailuresRemaining = 0;
-    bool setVolumeResult = true;
+    bool setVolumeSuccess = true;
     int setVolumeFailuresRemaining = 0;
+    SendResult nextMuteSendResult = SendResult::SENT;
+    SendResult nextVolumeSendResult = SendResult::SENT;
     bool requestUserBytesResult = true;
     UserBytesVerificationStatus verificationStatus = UserBytesVerificationStatus::INACTIVE;
     int cancelUserBytesVerificationCalls = 0;
@@ -79,8 +83,10 @@ public:
         setDisplayOnFailuresRemaining = 0;
         setModeResult = true;
         setModeFailuresRemaining = 0;
-        setVolumeResult = true;
+        setVolumeSuccess = true;
         setVolumeFailuresRemaining = 0;
+        nextMuteSendResult = SendResult::SENT;
+        nextVolumeSendResult = SendResult::SENT;
         requestUserBytesResult = true;
         verificationStatus = UserBytesVerificationStatus::INACTIVE;
         cancelUserBytesVerificationCalls = 0;
@@ -103,22 +109,31 @@ public:
     void setProxyRssi(int rssi) { proxyRssi = rssi; }
     
     // BLE commands (tracked)
-    bool setMute(bool mute) { 
+    SendResult setMuteResult(bool mute) {
         setMuteCalls++; 
         lastMuteValue = mute;
-        return true; 
+        const SendResult result = nextMuteSendResult;
+        nextMuteSendResult = SendResult::SENT;
+        return result;
     }
+    bool setMute(bool mute) { return setMuteResult(mute) == SendResult::SENT; }
     
-    bool setVolume(uint8_t vol, uint8_t muteVol) { 
+    SendResult setVolumeResult(uint8_t vol, uint8_t muteVol) {
         setVolumeCalls++;
         lastVolume = vol;
         lastMuteVolume = muteVol;
+        if (nextVolumeSendResult != SendResult::SENT) {
+            const SendResult result = nextVolumeSendResult;
+            nextVolumeSendResult = SendResult::SENT;
+            return result;
+        }
         if (setVolumeFailuresRemaining > 0) {
             setVolumeFailuresRemaining--;
-            return false;
+            return SendResult::FAILED;
         }
-        return setVolumeResult; 
+        return setVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
     }
+    bool setVolume(uint8_t vol, uint8_t muteVol) { return setVolumeResult(vol, muteVol) == SendResult::SENT; }
 
     bool writeUserBytes(const uint8_t* bytes) {
         writeUserBytesCalls++;

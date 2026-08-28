@@ -129,6 +129,11 @@ function installDefaultFetch(
                 method: 'POST',
                 match: (url) => url === '/api/wifi/networks',
                 respond: jsonResponse({ success: true, index: 0 })
+            },
+            {
+                method: 'POST',
+                match: (url) => url === '/api/wifi/networks/priorities',
+                respond: jsonResponse({ success: true })
             }
         ],
         rejectUnexpectedRequest
@@ -452,23 +457,91 @@ describe('settings route page', () => {
     });
 
     it('reorders saved network priority with move controls', async () => {
-        const fetchMock = installDefaultFetch();
+        let networkReads = 0;
+        const reorderedSlots = [
+            { ...defaultSlots[0], priority: 1 },
+            { ...defaultSlots[1], priority: 0 },
+            ...defaultSlots.slice(2)
+        ];
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/networks',
+                respond: () =>
+                    jsonResponse({ slots: networkReads++ === 0 ? defaultSlots : reorderedSlots })
+            }
+        ]);
         const { unmount } = render(Page);
 
         await screen.findByText('Phone');
         await fireEvent.click(screen.getByRole('button', { name: /move phonehotspot up/i }));
 
         await screen.findByText('WiFi network priority updated');
-        const bodies = jsonBodies(fetchMock, '/api/wifi/networks');
-        expect(bodies).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({ index: 1, ssid: 'PhoneHotspot', priority: 0 }),
-                expect.objectContaining({ index: 0, ssid: 'HomeWifi', priority: 1 })
-            ])
-        );
+        expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([
+            {
+                updates: [
+                    { index: 1, priority: 0 },
+                    { index: 0, priority: 1 }
+                ]
+            }
+        ]);
+        const phone = screen.getByText('Phone');
+        const garage = screen.getByText('Garage');
+        expect(
+            phone.compareDocumentPosition(garage) & Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy();
 
         unmount();
     });
+
+    for (const [label, response] of [
+        ['400 response', () => jsonResponse({ error: 'invalid update' }, 400)],
+        ['500 response', () => jsonResponse({ error: 'persistence failed' }, 500)],
+        ['network failure', () => Promise.reject(new Error('connection lost'))]
+    ]) {
+        it(`restores authoritative WiFi priority after ${label}`, async () => {
+            let networkReads = 0;
+            const fetchMock = installDefaultFetch([
+                {
+                    method: 'GET',
+                    match: '/api/wifi/networks',
+                    respond: () => {
+                        networkReads += 1;
+                        return jsonResponse({ slots: defaultSlots });
+                    }
+                },
+                {
+                    method: 'POST',
+                    match: '/api/wifi/networks/priorities',
+                    respond: response
+                }
+            ]);
+            const { unmount } = render(Page);
+
+            await screen.findByText('Phone');
+            await fireEvent.click(screen.getByRole('button', { name: /move phonehotspot up/i }));
+
+            await screen.findByText('Failed to reorder WiFi networks');
+            await waitFor(() => expect(networkReads).toBeGreaterThanOrEqual(2));
+            expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([
+                {
+                    updates: [
+                        { index: 1, priority: 0 },
+                        { index: 0, priority: 1 }
+                    ]
+                }
+            ]);
+            const garage = screen.getByText('Garage');
+            const phone = screen.getByText('Phone');
+            expect(
+                garage.compareDocumentPosition(phone) & Node.DOCUMENT_POSITION_FOLLOWING
+            ).toBeTruthy();
+            expect((document.body.textContent.match(/Priority 1/g) || []).length).toBe(1);
+            expect((document.body.textContent.match(/Priority 2/g) || []).length).toBe(1);
+
+            unmount();
+        });
+    }
 
     it('pins the currently connected network with RSSI', async () => {
         installDefaultFetch([], {

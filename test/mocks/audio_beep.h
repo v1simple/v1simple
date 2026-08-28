@@ -14,6 +14,7 @@ enum class AlertDirection : uint8_t {
     BEHIND = 1,
     SIDE = 2
 };
+enum class AudioPlaybackResult : uint8_t { Accepted, Busy, Unavailable };
 
 void audio_set_volume(uint8_t volumePercent);
 void play_test_voice();
@@ -21,9 +22,14 @@ void play_vol0_beep();
 void play_alert_voice(AlertBand band, AlertDirection direction);
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                           VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
+AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
 void play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                             uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
+AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 void play_band_only(AlertBand band);
 class StorageManager;
 void audio_init_sd(StorageManager&);

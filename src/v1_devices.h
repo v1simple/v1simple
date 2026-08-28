@@ -37,7 +37,7 @@ class V1DeviceStore {
     bool setDeviceName(const String& address, const String& name);
     bool setDeviceDefaultProfile(const String& address, uint8_t defaultProfile);
     bool removeDevice(const String& address);
-    bool hasPendingSave() const { return dirty_; }
+    bool hasPendingSave() const { return dirty_ || mirrorDirty_; }
     bool flushPendingSave();
 
     uint8_t getDeviceDefaultProfile(const String& address) const;
@@ -47,14 +47,29 @@ class V1DeviceStore {
     static constexpr size_t MAX_NAME_LEN = 32;
     static constexpr size_t MAX_STORE_BYTES = 4096;
 
+    enum class StoreReadStatus : uint8_t { Missing = 0, Valid, Invalid };
+
+    struct StoreSnapshot {
+        StoreReadStatus status = StoreReadStatus::Missing;
+        uint32_t generation = 0;
+        uint32_t contentCrc = 0;
+        bool legacy = false;
+        bool needsRewrite = false;
+        std::vector<V1DeviceRecord> devices;
+    };
+
     fs::FS* fs_ = nullptr;
+    fs::FS* secondaryFs_ = nullptr;
     bool ready_ = false;
+    uint32_t generation_ = 0;
     std::vector<V1DeviceRecord> devices_;
 
     bool loadFromStore();
-    bool saveToStore() const;
+    bool saveToStore();
+    StoreSnapshot readStore(fs::FS& filesystem) const;
+    bool writeStore(fs::FS& filesystem, uint32_t generation) const;
+    bool reconcileStores();
 
-    bool migrateStoreFrom(fs::FS* sourceFs);
     bool migrateLegacyFiles(fs::FS* sourceFs);
 
     static String sanitizeName(const String& raw);
@@ -66,4 +81,5 @@ class V1DeviceStore {
     void sortAndTrim();
 
     bool dirty_ = false;
+    bool mirrorDirty_ = false;
 };

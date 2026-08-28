@@ -413,6 +413,7 @@ void test_atomic_write_serialized_payload_succeeds() {
     settings.apSSID = "V1-Test";
     settings.brightness = 128;
     V1ProfileManager profileManager;
+    TEST_ASSERT_TRUE(profileManager.begin(&fs));
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, settings, profileManager, 1000));

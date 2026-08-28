@@ -69,7 +69,7 @@ void AutoPushModule::armState(int slotIndex, const AutoPushSlot& slot, bool prof
     state_.profile = profileLoaded ? profile : V1Profile{};
     state_.profileLoaded = profileLoaded;
     state_.step = Step::WaitReady;
-    state_.nextStepAtMs = millis() + 100;
+    state_.nextStepAtMs = static_cast<uint32_t>(millis()) + 100u;
     state_.isPushNow = isPushNow;
     state_.displayOn = !settings_->getSlotDarkMode(slotIndex);
     state_.muteToZero = settings_->getSlotMuteToZero(slotIndex);
@@ -232,8 +232,8 @@ void AutoPushModule::process() {
         return;
     }
 
-    const unsigned long now = millis();
-    if (now < state_.nextStepAtMs) {
+    const uint32_t now = static_cast<uint32_t>(millis());
+    if (!deadlineReached(now, state_.nextStepAtMs)) {
         return;
     }
 
@@ -325,7 +325,7 @@ void AutoPushModule::process() {
             retryOrFailProfile(now, FailureReason::PROFILE_VERIFY_MISMATCH);
             return;
         }
-        if (static_cast<int32_t>(now - state_.verifyDeadlineMs) >= 0) {
+        if (deadlineReached(now, state_.verifyDeadlineMs)) {
             retryOrFailProfile(now, FailureReason::PROFILE_VERIFY_TIMEOUT);
             return;
         }

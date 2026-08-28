@@ -9,12 +9,29 @@
 // ── Validation / versioning ────────────────────────────────────────────────
 inline constexpr const char* kNvsValid = "nvsValid";
 inline constexpr const char* kNvsSettingsVer = "settingsVer";
+// Monotonic A/B copy generation. settingsGen is part of the staged payload;
+// commitGen is the final authority and is written only after that payload is complete.
+inline constexpr const char* kNvsSettingsGeneration = "settingsGen";
+inline constexpr const char* kNvsCommittedGeneration = "commitGen";
 // Set when NVS was detected empty/partial before an SD backup could be
 // consulted.  While present, SD backup restore remains authoritative even if
 // later boot/shutdown paths persist factory defaults into NVS.
 inline constexpr const char* kNvsRestorePending = "restorePend";
 inline constexpr const char* kNvsBackupDueRevision = "backupDueRev";
 inline constexpr const char* kNvsBackupCompletedRevision = "backupDoneRev";
+// A filesystem restore journal uses this token to distinguish the old selected
+// settings copy from the copy that committed all restored settings. The token
+// is transaction metadata only; normal settings saves clear it.
+// Legacy transient restore token (v12 development builds). New code never
+// writes it; keep the spelling only so a namespace rewrite removes it safely.
+inline constexpr const char* kNvsRestoreTransactionId = "restoreTxn";
+inline constexpr const char* kNvsRestoreTransactionSequence = "restoreSeq";
+// Durable transaction authority. These positive signed-64 values are copied
+// into every complete A/B settings payload and are never cleared by ordinary
+// settings saves.
+inline constexpr const char* kNvsRestoreCommitWatermark = "restoreMark";
+inline constexpr const char* kNvsProfileDeleteTransactionSequence = "deleteSeq";
+inline constexpr const char* kNvsProfileDeleteCommitWatermark = "deleteMark";
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsApSsid = "apSSID";
@@ -209,6 +226,17 @@ inline constexpr const char* kSettingsWifiClientNamespace = "v1wificlient";
 inline constexpr const char* kNvsWifiPassword = "password";
 inline constexpr const char* kNvsWifiStaSlotPassword[kNvsWifiStaSlotCount] = {"sta0Pass", "sta1Pass", "sta2Pass",
                                                                               "sta3Pass"};
+// In-progress cross-namespace WiFi credential transaction. txnReady is
+// written last and removed first; boot recovery uses the selected A/B SSID to
+// reapply the matching old/new password and SD recovery secret.
+inline constexpr const char* kNvsWifiTxnReady = "txnReady";
+inline constexpr const char* kNvsWifiTxnSlot = "txnSlot";
+inline constexpr const char* kNvsWifiTxnOldSsid = "txnOldSsid";
+inline constexpr const char* kNvsWifiTxnOldPass = "txnOldPass";
+inline constexpr const char* kNvsWifiTxnNewSsid = "txnNewSsid";
+inline constexpr const char* kNvsWifiTxnNewPass = "txnNewPass";
+inline constexpr const char* kNvsWifiTxnMode = "txnMode";
+inline constexpr const char* kNvsWifiTxnData = "txnData";
 // Namespace: v1settingsMeta (SETTINGS_NS_META)
 inline constexpr const char* kNvsMetaActive = "active";
 // Namespace: v1runtime. This single-key store preserves the last confirmed V1

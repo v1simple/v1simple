@@ -31,9 +31,9 @@ SIBLING_NAMES = ("v1simple", "v1simple-internal")
 # message prints the digest to paste in.
 CANONICAL = {
     "scripts/check_public_snapshot_privacy.py":
-        "ebcf26a55e6c54b31b84b8368df15542d1f8b88ecf79d282f31065e926e50054",
+        "3cdb62486014f0ab00d2934dc0e212429781a5f5c72011a4711229e4ac162d53",
     "scripts/test_check_public_snapshot_privacy.py":
-        "34c53dea9d2e90bd5f1c7ee54954f551cb38726897c55f9ffe5802f4042e5bac",
+        "6a76d924de6b683b001e0c9a2c32761b0b16f39164c70a1abe123bc67206310c",
 }
 
 

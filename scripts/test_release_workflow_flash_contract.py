@@ -3,19 +3,45 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import check_release_workflow_flash_contract as contract
+import write_release_manifests as manifests
 
 
 class ReleaseArtifactContractTests(unittest.TestCase):
+    @staticmethod
+    def write_valid_release_images(release_dir: Path) -> dict[str, manifests.Partition]:
+        partitions = manifests.read_partitions(contract.PARTITIONS)
+        components = {
+            manifests.BOOTLOADER_IMAGE: (0, b"bootloader"),
+            manifests.PARTITION_TABLE_IMAGE: (
+                manifests.PARTITION_TABLE_OFFSET,
+                b"partition-table",
+            ),
+            manifests.APP_IMAGE: (partitions["app"].offset, b"firmware"),
+            "littlefs.bin": (partitions["storage"].offset, b"littlefs"),
+        }
+        merged_size = max(offset + len(payload) for offset, payload in components.values())
+        merged = bytearray(b"\xff" * merged_size)
+        for name, (offset, payload) in components.items():
+            (release_dir / name).write_bytes(payload)
+            merged[offset : offset + len(payload)] = payload
+        (release_dir / manifests.FRESH_IMAGE).write_bytes(merged)
+        (release_dir / manifests.UPDATE_IMAGE).write_bytes(
+            (release_dir / manifests.APP_IMAGE).read_bytes()
+        )
+        return partitions
+
     def test_live_release_artifact_contract_passes(self) -> None:
         errors: list[str] = []
         contract.check_production_build(errors)
         contract.check_version_and_publication(errors)
+        contract.check_toolchain_provenance(errors)
         contract.check_flash_and_package(errors)
         self.assertEqual(errors, [])
 
@@ -158,6 +184,117 @@ class ReleaseArtifactContractTests(unittest.TestCase):
             contract.workflow_image_offset("littlefs.bin"),
             contract.partition_offset("storage"),
         )
+
+    def test_ci_and_release_use_exact_same_image_tool_versions(self) -> None:
+        errors: list[str] = []
+        contract.check_toolchain_provenance(errors)
+        self.assertEqual(errors, [])
+
+    def test_rejects_release_platformio_version_range(self) -> None:
+        release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
+        release_text = release_text.replace(
+            '"platformio==6.1.19"',
+            '"platformio>=6.1.19,<7"',
+            1,
+        )
+        with tempfile.TemporaryDirectory(prefix="release_tool_range_") as temporary:
+            candidate = Path(temporary) / "release.yml"
+            candidate.write_text(release_text, encoding="utf-8")
+            errors: list[str] = []
+            with mock.patch.object(contract, "RELEASE_YML", candidate):
+                contract.check_toolchain_provenance(errors)
+        self.assertTrue(any("exact platformio pin" in error for error in errors), errors)
+
+    def test_rejects_release_esptool_version_range(self) -> None:
+        release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
+        release_text = release_text.replace(
+            '"esptool==5.3.0"',
+            '"esptool>=5.3.0"',
+            1,
+        )
+        with tempfile.TemporaryDirectory(prefix="release_esptool_range_") as temporary:
+            candidate = Path(temporary) / "release.yml"
+            candidate.write_text(release_text, encoding="utf-8")
+            errors: list[str] = []
+            with mock.patch.object(contract, "RELEASE_YML", candidate):
+                contract.check_toolchain_provenance(errors)
+        self.assertTrue(any("exact esptool pin" in error for error in errors), errors)
+
+    def test_rejects_merge_without_immediate_exact_esptool_check(self) -> None:
+        release_text = contract.RELEASE_YML.read_text(encoding="utf-8")
+        merge_step = release_text.index("- name: Merge firmware for ESP Web Tools")
+        required = "python3 scripts/check_esptool_version.py --python python3"
+        check_index = release_text.index(required, merge_step)
+        release_text = release_text[:check_index] + release_text[check_index + len(required) :]
+        with tempfile.TemporaryDirectory(prefix="release_merge_tool_check_") as temporary:
+            candidate = Path(temporary) / "release.yml"
+            candidate.write_text(release_text, encoding="utf-8")
+            errors: list[str] = []
+            with mock.patch.object(contract, "RELEASE_YML", candidate):
+                contract.check_toolchain_provenance(errors)
+        self.assertTrue(any("merge step" in error for error in errors), errors)
+
+    def test_generated_update_manifest_is_app_only_and_fresh_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_manifests_") as temporary:
+            release_dir = Path(temporary)
+            partitions = self.write_valid_release_images(release_dir)
+
+            manifests.write_manifests(release_dir, "v2.0.3", contract.PARTITIONS)
+
+            update = json.loads(
+                (release_dir / manifests.UPDATE_MANIFEST).read_text(encoding="utf-8")
+            )
+            fresh = json.loads(
+                (release_dir / manifests.FRESH_MANIFEST).read_text(encoding="utf-8")
+            )
+            self.assertEqual(update["version"], "v2.0.3")
+            self.assertEqual(fresh["version"], "v2.0.3")
+            self.assertEqual(
+                update["builds"][0]["parts"],
+                [{"path": manifests.UPDATE_IMAGE, "offset": partitions["app"].offset}],
+            )
+            self.assertEqual(
+                fresh["builds"][0]["parts"],
+                [{"path": manifests.FRESH_IMAGE, "offset": 0}],
+            )
+
+            update_start = update["builds"][0]["parts"][0]["offset"]
+            update_end = update_start + (release_dir / manifests.UPDATE_IMAGE).stat().st_size
+            self.assertGreaterEqual(update_start, 0x9000)
+            self.assertFalse(
+                manifests.overlaps(update_start, update_end, partitions["nvs"])
+            )
+            self.assertFalse(
+                manifests.overlaps(update_start, update_end, partitions["storage"])
+            )
+
+    def test_rejects_update_image_that_reaches_littlefs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_update_overlap_") as temporary:
+            release_dir = Path(temporary)
+            partitions = self.write_valid_release_images(release_dir)
+            with (release_dir / manifests.UPDATE_IMAGE).open("wb") as handle:
+                handle.truncate(partitions["app"].size + 1)
+            with self.assertRaisesRegex(ValueError, "exceeds app partition"):
+                manifests.write_manifests(release_dir, "v2.0.3", contract.PARTITIONS)
+
+    def test_rejects_update_image_that_is_not_the_production_app(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_update_identity_") as temporary:
+            release_dir = Path(temporary)
+            self.write_valid_release_images(release_dir)
+            (release_dir / manifests.UPDATE_IMAGE).write_bytes(b"different firmware")
+            with self.assertRaisesRegex(ValueError, "exact production firmware.bin"):
+                manifests.write_manifests(release_dir, "v2.0.3", contract.PARTITIONS)
+
+    def test_rejects_fresh_image_missing_a_component(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_fresh_component_") as temporary:
+            release_dir = Path(temporary)
+            partitions = self.write_valid_release_images(release_dir)
+            merged = bytearray((release_dir / manifests.FRESH_IMAGE).read_bytes())
+            storage = partitions["storage"]
+            merged[storage.offset : storage.offset + 8] = b"\xff" * 8
+            (release_dir / manifests.FRESH_IMAGE).write_bytes(merged)
+            with self.assertRaisesRegex(ValueError, "littlefs.bin"):
+                manifests.write_manifests(release_dir, "v2.0.3", contract.PARTITIONS)
 
 
 if __name__ == "__main__":

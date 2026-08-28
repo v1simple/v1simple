@@ -10,6 +10,12 @@ enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3 };
 // Direction types for voice alerts
 enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2 };
 
+enum class AudioPlaybackResult : uint8_t {
+    Accepted,
+    Busy,
+    Unavailable,
+};
+
 // Set audio volume (0-100%)
 void audio_set_volume(uint8_t volumePercent);
 
@@ -34,16 +40,21 @@ void play_alert_voice(AlertBand band, AlertDirection direction);
 // Returns immediately if already playing, audio disabled, or SD not available
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
                           bool includeDirection, uint8_t bogeyCount = 1);
+AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
 
 // Play direction-only announcement (used when same alert changes direction)
 // Says "ahead", "behind", or "side", optionally with bogey count if > 1
 void play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
 
 // Play threat escalation announcement with full context:
 // "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
 // Used when a secondary alert ramps up from weak (≤2 bars) to strong (≥4 bars)
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
                             uint8_t behind, uint8_t side);
+AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 
 // Play band-only announcement (e.g., "Ka", "K", "X", "Laser")
 void play_band_only(AlertBand band);

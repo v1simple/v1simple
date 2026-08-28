@@ -257,7 +257,12 @@ void handleApiSave(WebServer& server, const Runtime& runtime, bool (*checkRateLi
         nextBrightness = static_cast<uint8_t>(brightness);
     }
     const bool visualRedrawNeeded = updateTouchesRenderedVisuals(update);
-    runtime.applySettingsUpdate(update, runtime.applySettingsUpdateCtx);
+    const SettingsPersistResult result =
+        runtime.applySettingsUpdate(update, runtime.applySettingsUpdateCtx);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     if (hasBrightness && runtime.setDisplayBrightness) {
         runtime.setDisplayBrightness(nextBrightness, runtime.setDisplayBrightnessCtx);
@@ -286,7 +291,11 @@ void handleApiReset(WebServer& server, const Runtime& runtime, bool (*checkRateL
         return;
     }
 
-    runtime.resetDisplaySettings(runtime.resetDisplaySettingsCtx);
+    const SettingsPersistResult result = runtime.resetDisplaySettings(runtime.resetDisplaySettingsCtx);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
     if (runtime.forceDisplayRedraw) {
         runtime.forceDisplayRedraw(runtime.forceDisplayRedrawCtx);
     }

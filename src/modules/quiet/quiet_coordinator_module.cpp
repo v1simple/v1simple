@@ -46,6 +46,13 @@ void QuietCoordinatorModule::reset() {
     pendingSpeedVolRestoreSetMs_ = 0;
     pendingSpeedVolRestoreLastRetryMs_ = 0;
     speedVolLastRetryMs_ = 0;
+    pendingFadeAction_ = false;
+    pendingFadeRestore_ = false;
+    pendingFadeVolume_ = 0;
+    pendingFadeMuteVolume_ = 0;
+    pendingFadeFrequency_ = 0;
+    pendingFadeLaser_ = false;
+    pendingFadeLastAttemptMs_ = 0;
 
     syncCommittedState();
 }
@@ -87,6 +94,10 @@ QuietCommittedState QuietCoordinatorModule::getCommittedState() {
 }
 
 bool QuietCoordinatorModule::sendMute(QuietOwner owner, bool muted) {
+    return sendMuteResult(owner, muted) == SendResult::SENT;
+}
+
+SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner owner, bool muted) {
     syncCommittedState();
 
     desired_.muteOwner = owner;
@@ -94,17 +105,21 @@ bool QuietCoordinatorModule::sendMute(QuietOwner owner, bool muted) {
     desired_.mutePending = committed_.hasDisplayState ? (committed_.muted != muted) : true;
 
     if (!ble_) {
-        return false;
+        return SendResult::FAILED;
     }
 
-    const bool sent = ble_->setMute(muted);
-    if (sent) {
+    const SendResult result = ble_->setMuteResult(muted);
+    if (result == SendResult::SENT) {
         presentation_.activeMuteOwner = muted ? owner : QuietOwner::None;
     }
-    return sent;
+    return result;
 }
 
 bool QuietCoordinatorModule::sendVolume(QuietOwner owner, uint8_t volume, uint8_t muteVolume) {
+    return sendVolumeResult(owner, volume, muteVolume) == SendResult::SENT;
+}
+
+SendResult QuietCoordinatorModule::sendVolumeResult(QuietOwner owner, uint8_t volume, uint8_t muteVolume) {
     syncCommittedState();
 
     desired_.volumeOwner = owner;
@@ -114,14 +129,14 @@ bool QuietCoordinatorModule::sendVolume(QuietOwner owner, uint8_t volume, uint8_
         committed_.hasDisplayState ? (committed_.mainVolume != volume || committed_.muteVolume != muteVolume) : true;
 
     if (!ble_) {
-        return false;
+        return SendResult::FAILED;
     }
 
-    const bool sent = ble_->setVolume(volume, muteVolume);
-    if (sent) {
+    const SendResult result = ble_->setVolumeResult(volume, muteVolume);
+    if (result == SendResult::SENT) {
         presentation_.activeVolumeOwner = owner;
     }
-    return sent;
+    return result;
 }
 
 bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolume) {

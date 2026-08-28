@@ -16,7 +16,7 @@
 
 // Firmware Version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "2.0.2"
+#define FIRMWARE_VERSION "2.0.3"
 #endif
 
 // BLE Configuration

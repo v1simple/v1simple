@@ -254,9 +254,10 @@ void test_feed_count_grows_with_profile_count_in_batches() {
     }
 }
 
-// Skipped/invalid profile entries still cost a loop iteration, so they must
-// still count toward the feed batch.
-void test_invalid_profile_entries_still_count_toward_feed_batches() {
+// Complete-document validation happens before mutation or phase work. Invalid
+// profiles therefore reject the transaction without pretending that skipped
+// entries were processed.
+void test_invalid_profile_entries_reject_before_phase_feeds() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
@@ -275,9 +276,9 @@ void test_invalid_profile_entries_still_count_toward_feed_batches() {
     const SettingsBackupApplyResult result =
         manager.applyBackupDocument(doc, true, makeWatchdog(recorder));
 
-    TEST_ASSERT_TRUE(result.success);
+    TEST_ASSERT_FALSE(result.success);
     TEST_ASSERT_EQUAL_INT(0, result.profilesRestored);
-    TEST_ASSERT_EQUAL_UINT32(6u, static_cast<uint32_t>(recorder.count()));
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(recorder.count()));
 }
 
 // The boot-time SD restore path calls applyBackupDocument() without a watchdog.
@@ -337,7 +338,7 @@ int main() {
     RUN_TEST(test_field_only_restore_feeds_once_per_phase_and_not_per_field);
     RUN_TEST(test_profile_restore_feeds_inside_loop_every_batch);
     RUN_TEST(test_feed_count_grows_with_profile_count_in_batches);
-    RUN_TEST(test_invalid_profile_entries_still_count_toward_feed_batches);
+    RUN_TEST(test_invalid_profile_entries_reject_before_phase_feeds);
     RUN_TEST(test_absent_watchdog_is_a_no_op_and_restore_still_succeeds);
     RUN_TEST(test_pre_persist_feed_runs_before_the_nvs_rewrite);
     return UNITY_END();

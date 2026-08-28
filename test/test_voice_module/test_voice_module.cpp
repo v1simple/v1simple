@@ -474,6 +474,90 @@ void test_process_announces_normal_k_when_phototype_zero() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::K), static_cast<int>(action.band));
 }
 
+void test_prepare_priority_does_not_commit_until_playback_accepts() {
+    AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
+    VoiceContext ctx;
+    ctx.priority = &alert;
+    ctx.alerts = &alert;
+    ctx.alertCount = 1;
+    ctx.mainVolume = 5;
+    ctx.now = 10000;
+
+    const VoiceAction first = voiceModule.prepareAction(ctx);
+    const VoiceAction busyRetry = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY), static_cast<int>(first.type));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(first.type), static_cast<int>(busyRetry.type));
+    TEST_ASSERT_EQUAL_UINT16(first.freq, busyRetry.freq);
+
+    voiceModule.commitAction(first, ctx.now);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
+                          static_cast<int>(voiceModule.prepareAction(ctx).type));
+}
+
+void test_prepare_direction_and_secondary_remain_retryable_until_commit() {
+    settings.settings.announceSecondaryAlerts = true;
+    settings.settings.secondaryK = true;
+    AlertData alerts[2] = {
+        AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700),
+        AlertData::create(BAND_K, DIR_FRONT, 2, 0, 24120),
+    };
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 2;
+    ctx.mainVolume = 5;
+    ctx.now = 10000;
+    voiceModule.process(ctx); // accepted priority baseline
+
+    ctx.now = 13000;
+    const VoiceAction secondary = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_SECONDARY),
+                          static_cast<int>(secondary.type));
+    TEST_ASSERT_EQUAL_UINT16(secondary.freq, voiceModule.prepareAction(ctx).freq);
+    voiceModule.commitAction(secondary, ctx.now);
+
+    alerts[0].direction = DIR_REAR;
+    ctx.now = 16000;
+    const VoiceAction direction = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_DIRECTION),
+                          static_cast<int>(direction.type));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_DIRECTION),
+                          static_cast<int>(voiceModule.prepareAction(ctx).type));
+    voiceModule.commitAction(direction, ctx.now);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
+                          static_cast<int>(voiceModule.prepareAction(ctx).type));
+}
+
+void test_prepare_escalation_is_not_marked_announced_before_commit() {
+    settings.settings.announceSecondaryAlerts = true;
+    settings.settings.secondaryK = true;
+    AlertData alerts[2] = {
+        AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700),
+        AlertData::create(BAND_K, DIR_REAR, 2, 0, 24120),
+    };
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 2;
+    ctx.mainVolume = 5;
+    ctx.now = 1000;
+    voiceModule.process(ctx);
+    ctx.now = 4000;
+    voiceModule.process(ctx); // accepted secondary announcement
+
+    voiceModule.testUpdateAlertHistory(BAND_K, 24120, 2, 4100);
+    voiceModule.testUpdateAlertHistory(BAND_K, 24120, 5, 4200);
+    alerts[1].rearStrength = 5;
+    ctx.now = 4800;
+    const VoiceAction escalation = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_ESCALATION),
+                          static_cast<int>(escalation.type));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_ESCALATION),
+                          static_cast<int>(voiceModule.prepareAction(ctx).type));
+    voiceModule.commitAction(escalation, ctx.now);
+    TEST_ASSERT_FALSE(voiceModule.prepareAction(ctx).type == VoiceAction::Type::ANNOUNCE_ESCALATION);
+}
+
 // ---------------------------------------------------------------------------
 // Announced-alert set — FIFO window, not a saturating set
 // ---------------------------------------------------------------------------
@@ -598,6 +682,9 @@ int main() {
     // Photo-radar voice suppression
     RUN_TEST(test_process_suppresses_voice_for_priority_photo_radar);
     RUN_TEST(test_process_announces_normal_k_when_phototype_zero);
+    RUN_TEST(test_prepare_priority_does_not_commit_until_playback_accepts);
+    RUN_TEST(test_prepare_direction_and_secondary_remain_retryable_until_commit);
+    RUN_TEST(test_prepare_escalation_is_not_marked_announced_before_commit);
 
     return UNITY_END();
 }

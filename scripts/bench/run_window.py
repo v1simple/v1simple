@@ -48,8 +48,18 @@ BUILD_UPLOAD_FILES = (
 BUILD_UPLOAD_ARTIFACTS_NAME = "build_upload_artifacts.json"
 BENCH_TIMELINE_NAME = "bench_timeline.ndjson"
 REPLAY_STIMULUS_NAME = "replay_stimulus.ndjson"
+REPLAY_DELIVERY_NAME = "replay_delivery.ndjson"
 REPLAY_SCENARIO_EVIDENCE_NAME = "replay_scenario.json"
 REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
+REPLAY_DELIVERY_EVENT_STATES = frozenset(
+    {
+        "notification_requested",
+        "notification_accepted",
+        "notification_delayed",
+        "notification_dropped",
+        "notification_skipped",
+    }
+)
 RUNTIME_IMAGE_ID_HEX_LENGTH = 9
 RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
 RUN_PROGRESS_INTERVAL_S = 15
@@ -558,6 +568,198 @@ def publish_replay_stimulus_evidence(
     return {**file_artifact(path), "event_count": len(events), "status": "captured"}
 
 
+def publish_replay_delivery_evidence(
+    emulator_result: dict[str, Any], out_dir: Path, *, suite: str
+) -> dict[str, Any] | None:
+    if suite != "replay":
+        return None
+    events = emulator_result.pop("delivery_events", [])
+    if not isinstance(events, list):
+        raise RuntimeError("replay notification delivery event stream is invalid")
+    payload = b"".join(
+        (
+            json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            + "\n"
+        ).encode("utf-8")
+        for event in events
+    )
+    path = out_dir / REPLAY_DELIVERY_NAME
+    with path.open("xb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {**file_artifact(path), "event_count": len(events), "status": "captured"}
+
+
+def summarize_notification_delivery(events: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        state: sum(1 for event in events if event.get("state") == state)
+        for state in REPLAY_DELIVERY_EVENT_STATES
+    }
+    requested = counts["notification_requested"]
+    accepted = counts["notification_accepted"]
+    delayed = counts["notification_delayed"]
+    dropped = counts["notification_dropped"]
+    skipped = counts["notification_skipped"]
+    terminal_outcomes = accepted + dropped + skipped
+    terminal_states = {
+        "notification_accepted",
+        "notification_dropped",
+        "notification_skipped",
+    }
+    sequences: dict[int, dict[str, int | str | bool]] = {}
+    invalid_identity_events = 0
+    malformed_event_count = 0
+    for event in events:
+        sequence = event.get("globalTxSequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
+            invalid_identity_events += 1
+            continue
+
+        track = sequences.setdefault(
+            sequence,
+            {
+                "requested": 0,
+                "terminal": 0,
+                "phase": "new",
+                "malformed": False,
+            },
+        )
+        state = event.get("state")
+        if state == "notification_requested":
+            track["requested"] = int(track["requested"]) + 1
+            if track["phase"] != "new":
+                track["malformed"] = True
+                malformed_event_count += 1
+            else:
+                track["phase"] = "requested"
+        elif state == "notification_delayed":
+            if track["phase"] != "requested":
+                track["malformed"] = True
+                malformed_event_count += 1
+        elif state in terminal_states:
+            track["terminal"] = int(track["terminal"]) + 1
+            if track["phase"] != "requested":
+                track["malformed"] = True
+                malformed_event_count += 1
+            else:
+                track["phase"] = "terminal"
+
+    unresolved = sum(
+        1
+        for track in sequences.values()
+        if int(track["requested"]) > 0 and int(track["terminal"]) == 0
+    )
+    for track in sequences.values():
+        if int(track["requested"]) != 1 or int(track["terminal"]) != 1:
+            track["malformed"] = True
+    malformed_sequences = sum(
+        1 for track in sequences.values() if bool(track["malformed"])
+    )
+    completed_sequences = sum(
+        1 for track in sequences.values() if not bool(track["malformed"])
+    )
+    loss_events = dropped + skipped
+    return {
+        "events": sum(counts.values()),
+        "requested": requested,
+        # An accepted or delayed CoreBluetooth updateValue call is one host-stack attempt.
+        "attempted": accepted + delayed,
+        "delivered": accepted,
+        "delivered_meaning": "accepted_by_CoreBluetooth_not_DUT_receipt",
+        "delayed_attempts": delayed,
+        "dropped": dropped,
+        "skipped": skipped,
+        "terminal_outcomes": terminal_outcomes,
+        "unresolved": unresolved,
+        "identified_sequences": len(sequences),
+        "completed_sequences": completed_sequences,
+        "malformed_sequences": malformed_sequences,
+        "malformed_events": malformed_event_count,
+        "invalid_identity_events": invalid_identity_events,
+        "loss_events": loss_events,
+        "complete": (
+            requested > 0
+            and completed_sequences > 0
+            and loss_events == 0
+            and unresolved == 0
+            and malformed_sequences == 0
+            and invalid_identity_events == 0
+        ),
+    }
+
+
+def notification_delivery_problem(
+    summary: object, *, required: bool = False
+) -> str:
+    if not isinstance(summary, dict):
+        return "notification delivery summary is missing" if required else ""
+    fields = (
+        "events",
+        "requested",
+        "attempted",
+        "delivered",
+        "delayed_attempts",
+        "dropped",
+        "skipped",
+        "terminal_outcomes",
+        "unresolved",
+        "identified_sequences",
+        "completed_sequences",
+        "malformed_sequences",
+        "malformed_events",
+        "invalid_identity_events",
+    )
+    if any(not isinstance(summary.get(field), int) or summary[field] < 0 for field in fields):
+        return "notification delivery summary has invalid counters"
+    dropped = summary["dropped"]
+    skipped = summary["skipped"]
+    unresolved = summary["unresolved"]
+    malformed_sequences = summary["malformed_sequences"]
+    malformed_events = summary["malformed_events"]
+    invalid_identity_events = summary["invalid_identity_events"]
+    loss_events = summary.get("loss_events")
+    if loss_events != dropped + skipped:
+        return "notification delivery loss counter is inconsistent"
+    if summary["terminal_outcomes"] != summary["delivered"] + dropped + skipped:
+        return "notification delivery terminal counter is inconsistent"
+    if summary["attempted"] != summary["delivered"] + summary["delayed_attempts"]:
+        return "notification delivery attempt counter is inconsistent"
+    if summary["events"] != (
+        summary["requested"]
+        + summary["delayed_attempts"]
+        + summary["terminal_outcomes"]
+    ):
+        return "notification delivery event counter is inconsistent"
+    if summary["completed_sequences"] + malformed_sequences != summary["identified_sequences"]:
+        return "notification delivery sequence counters are inconsistent"
+    if malformed_sequences or malformed_events or invalid_identity_events:
+        return (
+            "notification delivery sequence lifecycle was malformed: "
+            f"identified={summary['identified_sequences']} "
+            f"completed={summary['completed_sequences']} "
+            f"malformed_sequences={malformed_sequences} "
+            f"malformed_events={malformed_events} "
+            f"invalid_identity_events={invalid_identity_events}"
+        )
+    if summary["requested"] == 0:
+        return (
+            "notification delivery evidence is empty: requested=0"
+            if required
+            else ""
+        )
+    if dropped or skipped or unresolved:
+        return (
+            "notification delivery was incomplete: "
+            f"requested={summary['requested']} attempted={summary['attempted']} "
+            f"delivered={summary['delivered']} dropped={dropped} "
+            f"skipped={skipped} unresolved={unresolved}"
+        )
+    if summary.get("complete") is not True:
+        return "notification delivery summary is not complete"
+    return ""
+
+
 def install_signal_handlers() -> None:
     handled = False
 
@@ -833,7 +1035,7 @@ class V1Emulator:
         replay_complete = self.mode != "bench" or "complete" in states
         stopped = bool(states and states[-1] == "stopped")
         returncode = self.process.poll() if self.process is not None else None
-        completed = bool(
+        lifecycle_completed = bool(
             window_completed
             and process_was_running
             and replay_complete
@@ -843,6 +1045,13 @@ class V1Emulator:
         stimulus_events = [
             event for event in events if event.get("state") == REPLAY_STIMULUS_EVENT_STATE
         ]
+        delivery_events = [
+            event for event in events if event.get("state") in REPLAY_DELIVERY_EVENT_STATES
+        ]
+        notification_delivery = summarize_notification_delivery(delivery_events)
+        completed = lifecycle_completed and (
+            self.mode != "bench" or notification_delivery["complete"]
+        )
         raw = self.log_path.read_text(encoding="utf-8", errors="replace")
         safe = sanitize_artifact_value(raw, run_dir=self.log_path.parent)
         if safe != raw:
@@ -850,6 +1059,7 @@ class V1Emulator:
         return {
             "started": self.process is not None,
             "completed": completed,
+            "lifecycle_completed": lifecycle_completed,
             "mode": self.mode,
             "blink_profile": self.blink_profile,
             "managed_stop": process_was_running,
@@ -858,6 +1068,8 @@ class V1Emulator:
             "log": self.log_path.name,
             "scenario_evidence": self.scenario_path.name if self.scenario_path else "",
             "stimulus_events": stimulus_events,
+            "delivery_events": delivery_events,
+            "notification_delivery": notification_delivery,
         }
 
 
@@ -903,6 +1115,7 @@ def collect_live(
         out_dir / "window_result.json",
         out_dir / "v1replay.log",
         out_dir / REPLAY_STIMULUS_NAME,
+        out_dir / REPLAY_DELIVERY_NAME,
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
     ]
     if args.camera:
@@ -1039,6 +1252,20 @@ def collect_live(
             replay_path = out_dir / "v1replay.log"
             if replay_path.is_file():
                 artifacts["v1replay"] = file_artifact(replay_path)
+            if emulator_result:
+                try:
+                    stimulus = publish_replay_stimulus_evidence(
+                        emulator_result, out_dir, suite=args.suite
+                    )
+                    if stimulus is not None:
+                        artifacts["replay_stimulus"] = stimulus
+                    delivery = publish_replay_delivery_evidence(
+                        emulator_result, out_dir, suite=args.suite
+                    )
+                    if delivery is not None:
+                        artifacts["replay_delivery"] = delivery
+                except Exception as exc:  # noqa: BLE001
+                    cleanup_errors.append(exc)
             if cleanup_errors:
                 detail = "; ".join(str(error) for error in cleanup_errors)
                 if primary_error is not None:
@@ -1046,17 +1273,12 @@ def collect_live(
                 else:
                     raise RuntimeError(f"cleanup failure: {detail}") from cleanup_errors[0]
 
-        if not emulator_result.get("completed"):
+        if not emulator_result.get("lifecycle_completed"):
             raise RuntimeError("managed V1 input did not cover the complete external window")
         if camera is not None and camera_result.get("result") != "CAPTURED":
             raise CameraEvidenceFailure(
                 "camera leg did not retain complete raw evidence", camera
             )
-        stimulus = publish_replay_stimulus_evidence(
-            emulator_result, out_dir, suite=args.suite
-        )
-        if stimulus is not None:
-            artifacts["replay_stimulus"] = stimulus
         return {
             "port": port,
             "completion": completion,
@@ -1108,6 +1330,17 @@ def main() -> int:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:
         return fail("--scenario is valid only for replay")
+    if args.git_worktree_clean != "1":
+        return fail(
+            "source worktree is dirty; qualification requires an exact clean source state",
+            result="FAIL",
+            failure_kind="source_provenance",
+            git_worktree_clean=False,
+            runtime_qualification={
+                "status": "unqualified",
+                "reason": "source_worktree_dirty",
+            },
+        )
     if not args.replay_executable:
         return fail("managed v1replay is required for live collection")
     if serial is None:
@@ -1116,11 +1349,19 @@ def main() -> int:
     try:
         result = collect_live(args, out_dir, artifacts)
         qualification = result["runtime_qualification"]
-        verdict = (
-            "PASS"
-            if qualification.get("status") == "qualified"
-            else "COLLECTION_ONLY"
+        delivery_summary = result["emulator"].get("notification_delivery")
+        delivery_problem = notification_delivery_problem(
+            delivery_summary,
+            required=args.suite == "replay",
         )
+        if delivery_problem:
+            verdict = "FAIL"
+        else:
+            verdict = (
+                "PASS"
+                if qualification.get("status") == "qualified"
+                else "COLLECTION_ONLY"
+            )
         write_window_result(
             out_dir,
             {
@@ -1140,6 +1381,14 @@ def main() -> int:
                 "runtime_qualification": qualification,
                 "artifacts": artifacts,
                 **(
+                    {
+                        "failure_kind": "replay_delivery",
+                        "qualification_reason": delivery_problem,
+                    }
+                    if verdict == "FAIL"
+                    else {}
+                ),
+                **(
                     {"qualification_reason": qualification.get("reason", "unqualified")}
                     if verdict == "COLLECTION_ONLY"
                     else {}
@@ -1153,6 +1402,9 @@ def main() -> int:
                 flush=True,
             )
             return 1
+        if verdict == "FAIL":
+            print(f"[bench] fail: {delivery_problem}", file=sys.stderr, flush=True)
+            return 2
         return 0
     except RuntimeIdentityFailure as exc:
         return fail(

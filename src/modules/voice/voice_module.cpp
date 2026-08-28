@@ -92,6 +92,14 @@ static bool isValidAnnounceBand(Band band) {
 // ============================================================================
 
 VoiceAction VoiceModule::process(const VoiceContext& ctx) {
+    VoiceAction action = prepareAction(ctx);
+    if (action.hasAction()) {
+        commitAction(action, ctx.now);
+    }
+    return action;
+}
+
+VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
     VoiceAction action; // Default = NONE
 
     if (!settings_)
@@ -159,17 +167,14 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         if (!isValidAnnounceBand(priority.band))
             return action;
 
-        resetDirectionThrottle(ctx.now);
-
         action.type = VoiceAction::Type::ANNOUNCE_PRIORITY;
         action.band = toAudioBand(priority.band);
         action.freq = currentFreq;
         action.dir = audioDir;
         action.bogeyCount = s.announceBogeyCount ? (uint8_t)ctx.alertCount : 1;
-
-        updateLastAnnounced(priority.band, priority.direction, currentFreq, (uint8_t)ctx.alertCount, ctx.now);
-        markPriorityAnnounced(ctx.now);
-        markAlertAnnounced(priority.band, currentFreq);
+        action.sourceBand = priority.band;
+        action.sourceDirection = priority.direction;
+        action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
         return action;
     }
@@ -181,9 +186,8 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     if (!alertChanged && directionChanged && cooldownPassed && s.voiceDirectionEnabled && directionKnown &&
         countStable) {
         bool throttled = shouldThrottleDirectionChange(ctx.now);
-        updateLastAnnouncedDirection(priority.direction, (uint8_t)ctx.alertCount);
-
         if (throttled) {
+            updateLastAnnouncedDirection(priority.direction, (uint8_t)ctx.alertCount);
             return action;
         }
 
@@ -192,9 +196,9 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
         // C: never speak bogey-count on direction-only updates — display owns
         // the count; voice is just the directional cue.
         action.bogeyCount = 0;
-
-        updateLastAnnouncedTime(ctx.now);
-        markPriorityAnnounced(ctx.now);
+        action.sourceBand = priority.band;
+        action.sourceDirection = priority.direction;
+        action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
         return action;
     }
@@ -234,9 +238,9 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
             action.freq = alertFreq;
             action.dir = toAudioDirection(alert.direction);
             action.bogeyCount = 1;
-
-            markAlertAnnounced(alert.band, alertFreq);
-            updateLastAnnouncedTime(ctx.now);
+            action.sourceBand = alert.band;
+            action.sourceDirection = alert.direction;
+            action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
             return action;
         }
@@ -282,8 +286,6 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
                     continue;
 
                 if (shouldAnnounceThreatEscalation(alert.band, alertFreq, (uint8_t)ctx.alertCount, ctx.now)) {
-                    markThreatEscalationAnnounced(alert.band, alertFreq);
-
                     if (!isValidAnnounceBand(alert.band))
                         continue;
 
@@ -312,8 +314,9 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
                     action.aheadCount = aheadCount;
                     action.behindCount = behindCount;
                     action.sideCount = sideCount;
-
-                    updateLastAnnouncedTime(ctx.now);
+                    action.sourceBand = alert.band;
+                    action.sourceDirection = alert.direction;
+                    action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
                     return action;
                 }
@@ -322,6 +325,34 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     }
 
     return action; // NONE
+}
+
+void VoiceModule::commitAction(const VoiceAction& action, const unsigned long acceptedAtMs) {
+    switch (action.type) {
+    case VoiceAction::Type::ANNOUNCE_PRIORITY:
+        resetDirectionThrottle(acceptedAtMs);
+        updateLastAnnounced(action.sourceBand, action.sourceDirection, action.freq, action.sourceAlertCount,
+                            acceptedAtMs);
+        markPriorityAnnounced(acceptedAtMs);
+        markAlertAnnounced(action.sourceBand, action.freq);
+        break;
+    case VoiceAction::Type::ANNOUNCE_DIRECTION:
+        recordDirectionChange(acceptedAtMs);
+        updateLastAnnouncedDirection(action.sourceDirection, action.sourceAlertCount);
+        updateLastAnnouncedTime(acceptedAtMs);
+        markPriorityAnnounced(acceptedAtMs);
+        break;
+    case VoiceAction::Type::ANNOUNCE_SECONDARY:
+        markAlertAnnounced(action.sourceBand, action.freq);
+        updateLastAnnouncedTime(acceptedAtMs);
+        break;
+    case VoiceAction::Type::ANNOUNCE_ESCALATION:
+        markThreatEscalationAnnounced(action.sourceBand, action.freq);
+        updateLastAnnouncedTime(acceptedAtMs);
+        break;
+    case VoiceAction::Type::NONE:
+        break;
+    }
 }
 
 // ============================================================================
@@ -506,11 +537,17 @@ void VoiceModule::resetDirectionThrottle(unsigned long now) {
 
 bool VoiceModule::shouldThrottleDirectionChange(unsigned long now) {
     if (now - directionChangeWindowStart_ > DIRECTION_THROTTLE_WINDOW_MS) {
+        return false;
+    }
+    return static_cast<uint8_t>(directionChangeCount_ + 1u) > DIRECTION_CHANGE_LIMIT;
+}
+
+void VoiceModule::recordDirectionChange(unsigned long now) {
+    if (now - directionChangeWindowStart_ > DIRECTION_THROTTLE_WINDOW_MS) {
         directionChangeCount_ = 0;
         directionChangeWindowStart_ = now;
     }
     directionChangeCount_++;
-    return directionChangeCount_ > DIRECTION_CHANGE_LIMIT;
 }
 
 // ============================================================================

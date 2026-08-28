@@ -14,7 +14,7 @@ constexpr const char* STORE_TMP_PATH = "/v1devices.tmp";
 constexpr const char* LEGACY_ADDR_PATH = "/known_v1.txt";
 constexpr const char* LEGACY_NAME_PATH = "/known_v1_names.txt";
 constexpr const char* LEGACY_PROFILE_PATH = "/known_v1_profiles.txt";
-constexpr uint8_t STORE_VERSION = 1;
+constexpr uint8_t STORE_VERSION = 2;
 
 bool isHex(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -27,56 +27,25 @@ String clampLen(const String& input, size_t maxLen) {
     return input.substring(0, maxLen);
 }
 
-bool copyStoreFile(fs::FS* sourceFs, fs::FS* targetFs) {
-    if (!sourceFs || !targetFs || sourceFs == targetFs) {
-        return false;
-    }
-    if (!sourceFs->exists(STORE_PATH)) {
-        return false;
-    }
-
-    File source = sourceFs->open(STORE_PATH, FILE_READ);
-    if (!source) {
-        return false;
-    }
-
-    if (targetFs->exists(STORE_TMP_PATH)) {
-        targetFs->remove(STORE_TMP_PATH);
-    }
-
-    File target = targetFs->open(STORE_TMP_PATH, FILE_WRITE);
-    if (!target) {
-        source.close();
-        return false;
-    }
-
-    uint8_t buffer[256];
-    bool ok = true;
-    while (source.available()) {
-        size_t readLen = source.read(buffer, sizeof(buffer));
-        if (readLen == 0) {
-            break;
-        }
-        if (target.write(buffer, readLen) != readLen) {
-            ok = false;
-            break;
+uint32_t deviceStoreCrc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= data[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
         }
     }
+    return crc ^ 0xFFFFFFFFu;
+}
 
-    target.flush();
-    target.close();
-    source.close();
-
-    if (!ok) {
-        targetFs->remove(STORE_TMP_PATH);
-        return false;
-    }
-
-    if (!StorageManager::promoteTempFileWithRollback(*targetFs, STORE_TMP_PATH, STORE_PATH)) {
-        return false;
-    }
-
-    return true;
+uint32_t deviceStoreContentCrc(const JsonDocument& doc) {
+    JsonDocument integrity;
+    integrity["version"] = doc["version"] | STORE_VERSION;
+    integrity["generation"] = doc["generation"] | 0u;
+    integrity["devices"].set(doc["devices"].as<JsonVariantConst>());
+    String serialized;
+    serializeJson(integrity, serialized);
+    return deviceStoreCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
 }
 
 int parseDefaultProfile(const String& raw) {
@@ -156,13 +125,10 @@ void V1DeviceStore::sortAndTrim() {
     }
 }
 
-bool V1DeviceStore::saveToStore() const {
-    if (!ready_ || !fs_) {
-        return false;
-    }
-
+bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation) const {
     JsonDocument doc;
     doc["version"] = STORE_VERSION;
+    doc["generation"] = generation;
     JsonArray arr = doc["devices"].to<JsonArray>();
 
     for (const auto& device : devices_) {
@@ -173,49 +139,78 @@ bool V1DeviceStore::saveToStore() const {
         obj["lastSeenMs"] = device.lastSeenMs;
     }
 
-    if (fs_->exists(STORE_TMP_PATH)) {
-        fs_->remove(STORE_TMP_PATH);
+    doc["crc32"] = deviceStoreContentCrc(doc);
+
+    if (filesystem.exists(STORE_TMP_PATH)) {
+        filesystem.remove(STORE_TMP_PATH);
     }
 
-    File file = fs_->open(STORE_TMP_PATH, FILE_WRITE);
+    File file = filesystem.open(STORE_TMP_PATH, FILE_WRITE);
     if (!file) {
         return false;
     }
 
+    const size_t expected = measureJson(doc);
     size_t written = serializeJson(doc, file);
     file.flush();
     file.close();
 
-    if (written == 0) {
-        fs_->remove(STORE_TMP_PATH);
+    if (written != expected) {
+        filesystem.remove(STORE_TMP_PATH);
         return false;
     }
 
-    if (!StorageManager::promoteTempFileWithRollback(*fs_, STORE_TMP_PATH, STORE_PATH)) {
+    File verifyFile = filesystem.open(STORE_TMP_PATH, FILE_READ);
+    JsonDocument verified;
+    const bool validCandidate = verifyFile && verifyFile.size() == written && !deserializeJson(verified, verifyFile) &&
+                                verified["version"].as<uint8_t>() == STORE_VERSION &&
+                                verified["generation"].as<uint32_t>() == generation &&
+                                verified["crc32"].is<uint32_t>() &&
+                                verified["crc32"].as<uint32_t>() == deviceStoreContentCrc(verified);
+    if (verifyFile) verifyFile.close();
+    if (!validCandidate) {
+        filesystem.remove(STORE_TMP_PATH);
+        return false;
+    }
+
+    if (!StorageManager::promoteTempFileWithRollback(filesystem, STORE_TMP_PATH, STORE_PATH)) {
         return false;
     }
 
     return true;
 }
 
-bool V1DeviceStore::loadFromStore() {
-    devices_.clear();
-
-    if (!ready_ || !fs_) {
-        return false;
-    }
-
+V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const {
+    StoreSnapshot snapshot;
     JsonDocument doc;
-    const JsonRollbackLoadResult loadResult = loadJsonDocumentWithRollback(*fs_, STORE_PATH, MAX_STORE_BYTES, doc);
+    const JsonRollbackLoadResult loadResult =
+        loadJsonDocumentWithRollback(filesystem, STORE_PATH, MAX_STORE_BYTES, doc);
     if (loadResult == JsonRollbackLoadResult::Missing) {
-        return true;
+        return snapshot;
     }
     if (loadResult == JsonRollbackLoadResult::Invalid) {
-        return false;
+        snapshot.status = StoreReadStatus::Invalid;
+        return snapshot;
     }
 
+    const uint8_t version = doc["version"] | 1u;
+    snapshot.generation = doc["generation"] | (version == 1 ? 1u : 0u);
+    snapshot.legacy = version < STORE_VERSION;
+    snapshot.needsRewrite = loadResult == JsonRollbackLoadResult::LoadedRollback;
+    if (version > STORE_VERSION || snapshot.generation == 0 || !doc["devices"].is<JsonArray>()) {
+        snapshot.status = StoreReadStatus::Invalid;
+        return snapshot;
+    }
+    snapshot.contentCrc = deviceStoreContentCrc(doc);
+    if (version >= STORE_VERSION &&
+        (!doc["crc32"].is<uint32_t>() || doc["crc32"].as<uint32_t>() != snapshot.contentCrc)) {
+        snapshot.status = StoreReadStatus::Invalid;
+        return snapshot;
+    }
+
+    snapshot.status = StoreReadStatus::Valid;
     if (!doc["devices"].is<JsonArray>()) {
-        return true;
+        return snapshot;
     }
 
     JsonArray arr = doc["devices"].as<JsonArray>();
@@ -230,39 +225,120 @@ bool V1DeviceStore::loadFromStore() {
         uint32_t lastSeenMs = item["lastSeenMs"] | 0;
 
         int existing = -1;
-        for (size_t i = 0; i < devices_.size(); ++i) {
-            if (devices_[i].address.equalsIgnoreCase(address)) {
+        for (size_t i = 0; i < snapshot.devices.size(); ++i) {
+            if (snapshot.devices[i].address.equalsIgnoreCase(address)) {
                 existing = static_cast<int>(i);
                 break;
             }
         }
 
         if (existing >= 0) {
-            devices_[existing].name = name;
-            devices_[existing].defaultProfile = defaultProfile;
-            devices_[existing].lastSeenMs = std::max(devices_[existing].lastSeenMs, lastSeenMs);
+            snapshot.devices[existing].name = name;
+            snapshot.devices[existing].defaultProfile = defaultProfile;
+            snapshot.devices[existing].lastSeenMs = std::max(snapshot.devices[existing].lastSeenMs, lastSeenMs);
         } else {
             V1DeviceRecord device;
             device.address = address;
             device.name = name;
             device.defaultProfile = defaultProfile;
             device.lastSeenMs = lastSeenMs;
-            devices_.push_back(device);
+            snapshot.devices.push_back(device);
         }
     }
 
-    sortAndTrim();
+    std::sort(snapshot.devices.begin(), snapshot.devices.end(), [](const V1DeviceRecord& lhs,
+                                                                  const V1DeviceRecord& rhs) {
+        if (lhs.lastSeenMs != rhs.lastSeenMs) return lhs.lastSeenMs > rhs.lastSeenMs;
+        return lhs.address < rhs.address;
+    });
+    if (snapshot.devices.size() > MAX_DEVICES) snapshot.devices.resize(MAX_DEVICES);
+    return snapshot;
+}
+
+bool V1DeviceStore::loadFromStore() {
+    devices_.clear();
+    if (!ready_ || !fs_) return false;
+
+    const StoreSnapshot snapshot = readStore(*fs_);
+    if (snapshot.status == StoreReadStatus::Missing) return true;
+    if (snapshot.status != StoreReadStatus::Valid) return false;
+
+    devices_ = snapshot.devices;
+    generation_ = snapshot.generation;
     return true;
 }
 
-bool V1DeviceStore::migrateStoreFrom(fs::FS* sourceFs) {
-    if (!ready_ || !fs_) {
+bool V1DeviceStore::reconcileStores() {
+    if (!ready_ || !fs_) return false;
+
+    const StoreSnapshot primary = readStore(*fs_);
+    const StoreSnapshot secondary = secondaryFs_ ? readStore(*secondaryFs_) : StoreSnapshot{};
+    const bool primaryValid = primary.status == StoreReadStatus::Valid;
+    const bool secondaryValid = secondary.status == StoreReadStatus::Valid;
+
+    if (!primaryValid && !secondaryValid) {
+        devices_.clear();
+        generation_ = 0;
+        return primary.status == StoreReadStatus::Missing && secondary.status == StoreReadStatus::Missing;
+    }
+
+    bool secondaryWins = secondaryValid && !primaryValid;
+    bool generationMustAdvance = false;
+    if (primaryValid && secondaryValid) {
+        secondaryWins = secondary.generation > primary.generation;
+        if (secondary.generation == primary.generation && secondary.contentCrc != primary.contentCrc) {
+            // The secondary filesystem is the active store while SD is absent;
+            // equal-generation divergence therefore represents an offline edit.
+            secondaryWins = true;
+            generationMustAdvance = true;
+        }
+    }
+
+    const StoreSnapshot& winner = secondaryWins ? secondary : primary;
+    const StoreSnapshot& loser = secondaryWins ? primary : secondary;
+    devices_ = winner.devices;
+    generation_ = winner.generation;
+    if (loser.status == StoreReadStatus::Invalid && loser.generation >= generation_) {
+        generationMustAdvance = true;
+    }
+    if (generationMustAdvance) {
+        generation_ = std::max(primary.generation, secondary.generation) + 1u;
+    }
+
+    const bool contentDiffers = !primaryValid || primary.legacy || primary.needsRewrite || generationMustAdvance ||
+                                (secondaryFs_ &&
+                                 (!secondaryValid || secondary.legacy || secondary.needsRewrite ||
+                                  primary.generation != secondary.generation ||
+                                  primary.contentCrc != secondary.contentCrc));
+    if (!contentDiffers) return true;
+
+    const bool primaryWritten = writeStore(*fs_, generation_);
+    const bool secondaryWritten = !secondaryFs_ || writeStore(*secondaryFs_, generation_);
+    if (!primaryWritten || !secondaryWritten) {
+        Serial.println("[V1Devices] WARN: device-store mirror reconciliation deferred");
+    }
+    // Keep retry state when either copy could not be repaired. A successful
+    // secondary write must not hide a failed primary repair.
+    mirrorDirty_ = !primaryWritten || (secondaryFs_ && !secondaryWritten);
+    return primaryWritten || secondaryWritten;
+}
+
+bool V1DeviceStore::saveToStore() {
+    if (!ready_ || !fs_) return false;
+
+    const StoreSnapshot primary = readStore(*fs_);
+    const StoreSnapshot secondary = secondaryFs_ ? readStore(*secondaryFs_) : StoreSnapshot{};
+    const uint32_t nextGeneration = std::max({generation_, primary.generation, secondary.generation}) + 1u;
+
+    if (!writeStore(*fs_, nextGeneration)) return false;
+    generation_ = nextGeneration;
+    if (secondaryFs_ && !writeStore(*secondaryFs_, nextGeneration)) {
+        Serial.println("[V1Devices] WARN: secondary device-store mirror deferred");
+        mirrorDirty_ = true;
         return false;
     }
-    if (fs_->exists(STORE_PATH)) {
-        return false;
-    }
-    return copyStoreFile(sourceFs, fs_);
+    mirrorDirty_ = false;
+    return true;
 }
 
 bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
@@ -367,18 +443,18 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
 
 bool V1DeviceStore::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     fs_ = filesystem;
+    secondaryFs_ = importFilesystem && importFilesystem != filesystem ? importFilesystem : nullptr;
     ready_ = fs_ != nullptr;
     dirty_ = false;
+    mirrorDirty_ = false;
+    generation_ = 0;
     devices_.clear();
 
     if (!ready_) {
         return false;
     }
 
-    // Prefer primary store, but migrate prior data from secondary store when needed.
-    migrateStoreFrom(importFilesystem);
-
-    if (!loadFromStore()) {
+    if (!reconcileStores() && !loadFromStore()) {
         devices_.clear();
     }
 
@@ -401,7 +477,7 @@ std::vector<V1DeviceRecord> V1DeviceStore::listDevices() const {
 }
 
 bool V1DeviceStore::persistDirtyStore() {
-    if (!dirty_) {
+    if (!dirty_ && !mirrorDirty_) {
         return true;
     }
     if (!saveToStore()) {

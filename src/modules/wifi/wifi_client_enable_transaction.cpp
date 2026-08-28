@@ -17,7 +17,10 @@ bool execute(const Runtime& runtime) {
     }
 
     if (!runtime.persistedEnabled) {
-        runtime.commitEnabled(runtime.ctx);
+        if (!runtime.commitEnabled(runtime.ctx)) {
+            runtime.rollbackFailedStart(runtime.ctx);
+            return false;
+        }
     }
     return true;
 }

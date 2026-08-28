@@ -28,11 +28,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "color_themes.h"
 
 // Forward declarations
 class StorageManager;
 class V1ProfileManager;
+struct ProfileOperationResult;
 
 // V1 operating modes (from ESP library)
 enum V1Mode {
@@ -85,6 +87,17 @@ struct AutoPushPersistResult {
     bool changed = false;
 };
 
+// Outcome of one settings mutation and its requested persistence boundary.
+// `success` means that boundary completed: Deferred means the NVS write was
+// queued, while both Immediate modes mean NVS committed before return.
+// `deferred` is deliberately narrower: it reports only that the SD backup is
+// pending after a successful NVS commit; it never describes an NVS deferral.
+struct SettingsPersistResult {
+    bool success = false;
+    bool changed = false;
+    bool deferred = false;
+};
+
 inline constexpr size_t kWifiStaSlotCount = 4;
 
 // Saved STA network metadata. Passwords intentionally stay outside the main
@@ -98,6 +111,11 @@ struct WifiStaSlot {
     WifiStaSlot() : ssid(""), label(""), priority(0), lastConnectedAtSec(0) {}
 
     bool isConfigured() const { return ssid.length() > 0; }
+};
+
+struct WifiStaPriorityUpdate {
+    size_t index = 0;
+    uint8_t priority = 0;
 };
 
 // Settings structure
@@ -753,13 +771,39 @@ class SettingsManager {
 #ifdef UNIT_TEST
     // Test-only mutable access for fixture seeding.
     V1Settings& mutableSettings() { return settings_; }
+    void utInterruptWifiCredentialBeforeSettingsCommit(bool enabled) {
+        wifiCredentialInterruptBeforeSettingsCommit_ = enabled;
+    }
+    void utInterruptRestoreAfterCredentials(bool enabled) {
+        restoreInterruptAfterCredentials_ = enabled;
+    }
+    void utInterruptRestoreAfterProfiles(bool enabled) {
+        restoreInterruptAfterProfiles_ = enabled;
+    }
+    void utInterruptProfileDeleteAfterJournal(bool enabled) {
+        profileDeleteInterruptAfterJournal_ = enabled;
+    }
+    void utInterruptProfileDeleteAfterProfile(bool enabled) {
+        profileDeleteInterruptAfterProfile_ = enabled;
+    }
+    void utInterruptProfileDeleteAfterReferences(bool enabled) {
+        profileDeleteInterruptAfterReferences_ = enabled;
+    }
+    void utLeaveRestoreJournalAfterCommit(bool enabled) {
+        leaveRestoreJournalAfterCommit_ = enabled;
+    }
+    void utLeaveProfileDeleteJournalAfterCommit(bool enabled) {
+        leaveProfileDeleteJournalAfterCommit_ = enabled;
+    }
 #endif
     uint32_t backupRevision() const { return backupRevisionCounter_; }
     uint32_t backupDueRevision() const { return backupDueRevision_; }
 
     uint8_t getApTimeoutMinutes() const { return settings_.apTimeoutMinutes; }
-    void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult setActiveSlot(int slot,
+                                        SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult setStealthEnabled(bool enabled,
+                                            SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     void setLastV1Address(const String& addr);
     // One-key NVS safety net used only when filesystem-backed V1DeviceStore is
     // unavailable. Writes are deferred through serviceDeferredPersist().
@@ -783,20 +827,20 @@ class SettingsManager {
     // source, independent of V1 auto-push profiles. Clamped 0..5 like V1.
     uint8_t getAlpAlertPersistSec() const { return settings_.alpAlertPersistSec; }
 
-    void applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
-                                   SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
-                                    SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void resetDisplaySettings(SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    void applyAudioSettingsUpdate(const AudioSettingsUpdate& update,
-                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    bool applyObdSettingsUpdate(const ObdSettingsUpdate& update,
-                                SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult applyDeviceSettingsUpdate(
+        const DeviceSettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult applyDisplaySettingsUpdate(
+        const DisplaySettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult resetDisplaySettings(SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult applyAudioSettingsUpdate(
+        const AudioSettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult applyObdSettingsUpdate(
+        const ObdSettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     bool applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     AutoPushPersistResult applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update);
-    bool applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
-                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
+    SettingsPersistResult applyAutoPushStateUpdate(
+        const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
 
     // Batch update methods (don't auto-save, call save() after)
     void updateBrightness(uint8_t brightness) { settings_.brightness = brightness; }
@@ -809,6 +853,10 @@ class SettingsManager {
     // Clear all references to a profile and persist the reconciliation before
     // the profile file is deleted. Returns false without changing RAM on NVS failure.
     bool clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed);
+    // Delete a profile and its slot assignments as one recoverable operation.
+    // A reset or write failure converges to either the old profile+assignments
+    // or the deleted profile+cleared assignments, never a dangling reference.
+    ProfileOperationResult deleteProfileAndReferences(const String& canonicalProfileName);
     // Persist settings atomically to NVS, then coalesce a deferred SD backup.
     // Returns false when the NVS persist failed (settings remain RAM-only).
     bool saveDeferredBackup();
@@ -826,13 +874,14 @@ class SettingsManager {
     // WiFi client (STA) settings - connect to external network
     String getWifiClientPassword(); // Retrieves from secure NVS namespace
     String getWifiStaSlotPassword(size_t index);
-    void setWifiClientEnabled(bool enabled);
-    void setWifiClientCredentials(const String& ssid, const String& password);
-    void setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password, const String& label,
+    SettingsPersistResult setWifiClientEnabled(bool enabled);
+    bool setWifiClientCredentials(const String& ssid, const String& password);
+    bool setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password, const String& label,
                                    uint8_t priority);
     void markWifiStaSlotConnected(size_t index, uint32_t connectedAtSec);
-    void clearWifiStaSlot(size_t index);
-    void clearWifiClientCredentials(); // Forget saved network
+    bool clearWifiStaSlot(size_t index);
+    bool clearWifiClientCredentials(); // Forget saved network
+    SettingsPersistResult applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates);
 
     // SD card backup/restore for display settings
     bool backupToSD();
@@ -845,6 +894,9 @@ class SettingsManager {
                                                   const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{});
     bool restoreFromSD();
     bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
+    // Before starting a new external mutation, converge every recoverable
+    // storage transaction or fail closed while its rollback evidence remains.
+    bool resolveStorageTransactionsForMutation();
 
     // NVS diagnostic info for troubleshooting persistence
     struct NvsDiagnostic {
@@ -876,6 +928,18 @@ class SettingsManager {
     bool lastV1AddressFallbackPending_ = false;
     uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
+    uint64_t restoreCommitWatermark_ = 0;
+    uint64_t profileDeleteCommitWatermark_ = 0;
+#ifdef UNIT_TEST
+    bool wifiCredentialInterruptBeforeSettingsCommit_ = false;
+    bool restoreInterruptAfterCredentials_ = false;
+    bool restoreInterruptAfterProfiles_ = false;
+    bool profileDeleteInterruptAfterJournal_ = false;
+    bool profileDeleteInterruptAfterProfile_ = false;
+    bool profileDeleteInterruptAfterReferences_ = false;
+    bool leaveRestoreJournalAfterCommit_ = false;
+    bool leaveProfileDeleteJournalAfterCommit_ = false;
+#endif
     void recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
                                                         const JsonDocument& backupDoc);
     void healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc);
@@ -886,13 +950,18 @@ class SettingsManager {
     static bool markBackupRevisionCompleted(uint32_t revision);
     static bool markDeferredBackupRevisionCompleted(uint32_t revision, void* context);
     void clearDeferredPersistState();
+    SettingsPersistResult finishSettingsMutation(const V1Settings& before, bool changed,
+                                                  SettingsPersistMode persistMode);
     void markRestorePending(const char* reason);
     void clearRestorePending();
+    bool resolveWifiCredentialTransaction();
+    bool resolveRestoreTransaction();
+    bool resolveProfileDeleteTransaction();
     bool persistSettingsAtomically();
-    bool writeSettingsToNamespace(const char* ns);
+    bool writeSettingsToNamespace(const char* ns, uint32_t generation);
     bool persistLastV1AddressFallbackNow(const String& addr);
     void serviceLastV1AddressFallbackPersist(uint32_t nowMs);
-    String getActiveNamespace();
+    String getActiveNamespace(uint32_t* activeGeneration = nullptr);
     String getStagingNamespace(const String& activeNamespace);
     bool checkNeedsRestore(); // Returns true if NVS appears to be default/empty
     void cleanupNamespacesIfNeeded(bool hasSdBackup);

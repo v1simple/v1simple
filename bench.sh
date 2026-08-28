@@ -114,6 +114,11 @@ finish() {
   exit "$status"
 }
 
+if [[ "$GIT_WORKTREE_CLEAN" -ne 1 ]]; then
+  printf 'qualification: source worktree is dirty; exact source identity is unavailable\n' >> "$RUN_LOG"
+  finish 'FAIL (qualification): source worktree is dirty; commit or remove relevant changes before bench qualification' 2
+fi
+
 SIGNALLED=0
 handle_signal() {
   SIGNALLED=1

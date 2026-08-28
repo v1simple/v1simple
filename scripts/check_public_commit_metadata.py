@@ -117,25 +117,21 @@ def commit_metadata(repo: Path, revision: str) -> list[tuple[str, str, str, str,
     ]
 
 
-def annotated_tag_metadata(repo: Path) -> list[tuple[str, str, str]]:
+def annotated_tag_ref_objects(repo: Path) -> list[str]:
     output = run_git(
         repo,
         "for-each-ref",
         "refs/tags",
-        "--format=%(objectname)%00%(objecttype)%00%(taggername)%00%(taggeremail)%00",
+        "--format=%(objectname)%00%(objecttype)%00",
     )
     fields = output.split("\x00")
     if fields and fields[-1].strip() == "":
         fields.pop()
-    if len(fields) % 4 != 0:
+    if len(fields) % 2 != 0:
         raise RuntimeError("Git returned malformed tag metadata")
     return [
-        (
-            fields[index].lstrip("\n"),
-            fields[index + 2],
-            fields[index + 3].strip("<>"),
-        )
-        for index in range(0, len(fields), 4)
+        fields[index].lstrip("\n")
+        for index in range(0, len(fields), 2)
         if fields[index + 1] == "tag"
     ]
 
@@ -156,6 +152,32 @@ def annotated_tag_object_metadata(repo: Path, object_id: str) -> tuple[str, str,
     if not match:
         raise RuntimeError("Annotated tag has malformed tagger identity")
     return object_id, match.group(1).strip(), match.group(2)
+
+
+def annotated_tag_target(repo: Path, object_id: str) -> str:
+    output = run_git(repo, "cat-file", "tag", object_id)
+    target_line = next(
+        (line.removeprefix("object ") for line in output.splitlines() if line.startswith("object ")),
+        None,
+    )
+    if target_line is None or not OBJECT_ID_PATTERN.fullmatch(target_line):
+        raise RuntimeError("Annotated tag has a malformed target object")
+    return target_line.lower()
+
+
+def annotated_tag_chain(repo: Path, revision: str) -> tuple[list[str], str, str]:
+    """Return every tag object before the final peeled target, rejecting cycles."""
+
+    object_id = resolve_object(repo, revision)
+    tags: list[str] = []
+    seen: set[str] = set()
+    while git_object_type(repo, object_id) == "tag":
+        if object_id in seen:
+            raise RuntimeError("Annotated tag chain contains a cycle")
+        seen.add(object_id)
+        tags.append(object_id)
+        object_id = annotated_tag_target(repo, object_id)
+    return tags, object_id, git_object_type(repo, object_id)
 
 
 def is_shallow_repository(repo: Path) -> bool:
@@ -199,8 +221,15 @@ def violations(repo: Path, revision: str = "HEAD") -> list[str]:
         return ["repository is shallow; full commit and tag history is required"]
     errors: list[str] = []
     append_commit_violations(errors, repo, revision)
-    for metadata in annotated_tag_metadata(repo):
-        append_tag_violations(errors, metadata)
+    seen_tags: set[str] = set()
+    for tag_ref_object in annotated_tag_ref_objects(repo):
+        tags, _target, _target_type = annotated_tag_chain(repo, tag_ref_object)
+        for tag_object in tags:
+            if tag_object not in seen_tags:
+                append_tag_violations(
+                    errors, annotated_tag_object_metadata(repo, tag_object)
+                )
+                seen_tags.add(tag_object)
     return errors
 
 
@@ -212,18 +241,19 @@ def object_violations(repo: Path, revisions: list[str]) -> list[str]:
     seen_commits: set[str] = set()
     seen_tags: set[str] = set()
     for revision in revisions:
-        object_id = resolve_object(repo, revision)
-        object_kind = git_object_type(repo, object_id)
-        if object_kind == "tag" and object_id not in seen_tags:
-            append_tag_violations(errors, annotated_tag_object_metadata(repo, object_id))
-            seen_tags.add(object_id)
-        if object_kind not in {"commit", "tag"}:
-            errors.append(f"{object_id}: reference target is not a commit or annotated tag")
+        tags, target_id, target_kind = annotated_tag_chain(repo, revision)
+        for tag_object in tags:
+            if tag_object not in seen_tags:
+                append_tag_violations(
+                    errors, annotated_tag_object_metadata(repo, tag_object)
+                )
+                seen_tags.add(tag_object)
+        if target_kind != "commit":
+            errors.append(f"{target_id}: reference target does not peel to a commit")
             continue
-        commit_id = resolve_object(repo, f"{object_id}^{{commit}}")
-        if commit_id not in seen_commits:
-            append_commit_violations(errors, repo, commit_id)
-            seen_commits.add(commit_id)
+        if target_id not in seen_commits:
+            append_commit_violations(errors, repo, target_id)
+            seen_commits.add(target_id)
     return errors
 
 

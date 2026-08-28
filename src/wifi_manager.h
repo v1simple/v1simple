@@ -23,6 +23,9 @@
 #include "modules/wifi/wifi_client_api_service.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_status_api_service.h"
+#include "modules/wifi/wifi_maintenance_web_server.h"
+#include "modules/wifi/wifi_maintenance_link_policy.h"
+#include "modules/wifi/wifi_maintenance_write_policy.h"
 
 namespace WifiDisplayColorsApiService {
 struct Runtime;
@@ -120,7 +123,7 @@ class WiFiManager {
     static constexpr unsigned long WIFI_LOW_DMA_PERSIST_MS = 1500;         // Require sustained low heap before shutdown
     static constexpr unsigned long WIFI_LOW_DMA_RETRY_COOLDOWN_MS = 30000; // Avoid rapid start/stop thrash
 
-    // AP control (AP-only for configuration)
+    // Setup AP control; maintenance may concurrently use STA for saved-network operations.
     bool startSetupMode(bool autoStarted = false);                         // Start or re-enable AP for configuration
     bool stopSetupMode(bool manual = false, const char* reason = nullptr); // Stop AP (manual/timeout/low_dma)
 
@@ -234,7 +237,7 @@ class WiFiManager {
     V1ProfileManager& profiles_;
     V1DeviceStore& devices_;
     StorageManager& storage_;
-    WebServer server_;
+    WifiMaintenanceWebServer server_;
     bool webRoutesInitialized_ = false;
     SetupModeState setupModeState_;
     bool apInterfaceEnabled_ = false; // True only when softAP interface is enabled
@@ -286,7 +289,12 @@ class WiFiManager {
     size_t maintenanceAutoConnectSlotCount_ = 0;
     size_t maintenanceAutoConnectSlotCursor_ = 0;
     WifiScanStaDropGate maintenanceAutoConnectStaDropGate_;
+    unsigned long maintenanceAutoConnectRetryAtMs_ = 0;
+    uint8_t maintenanceAddressCollisionSlotMask_ = 0;
+    bool maintenanceManualDisconnect_ = false;
     static constexpr unsigned long WIFI_MAINTENANCE_SCAN_TIMEOUT_MS = 15000;
+    static constexpr unsigned long WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS = 5000;
+    static constexpr unsigned long WIFI_MAINTENANCE_RETRY_INTERVAL_MS = 30000;
 
     enum class WifiStopPhase : uint8_t {
         IDLE = 0,
@@ -337,9 +345,13 @@ class WiFiManager {
     static constexpr size_t RATE_LIMIT_MAX_REQUESTS = SlidingWindowRateLimiter::MAX_REQUESTS;
     SlidingWindowRateLimiter rateLimiter_;
     bool checkRateLimit(); // Returns true if mutation is allowed, false if rate limited
-    bool requireMaintenanceApiWriteHeader();
-    static const char* maintenanceApiWriteHeader() { return "X-V1Simple-Request"; }
-    static const char* maintenanceApiWriteHeaderValue() { return "maintenance-ui"; }
+    bool admitMaintenanceWriteBeforeBody();
+    bool maintenanceWritePreAdmitted_ = false;
+    bool hasMaintenanceWriteRequestShape() const;
+    bool requireMaintenanceWriteRequestShape();
+    void registerMaintenanceWriteRoute(const char* uri, WebServer::THandlerFunction handler);
+    static const char* maintenanceApiWriteHeader() { return WifiMaintenanceWritePolicy::kRequestShapeHeader; }
+    static const char* maintenanceApiWriteHeaderValue() { return WifiMaintenanceWritePolicy::kRequestShapeValue; }
 
     // Status JSON caching (Option 2 optimization)
     static constexpr unsigned long STATUS_CACHE_TTL_MS = 500; // 500ms cache
@@ -378,6 +390,8 @@ class WiFiManager {
     std::vector<WifiClientApiService::SavedNetworkSlotPayload> getSavedNetworkSlots() const;
     bool upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut);
     bool deleteSavedNetwork(size_t index);
+    WifiClientApiService::PriorityUpdateStatus updateSavedNetworkPriorities(
+        const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates);
     bool testSavedNetwork(size_t index);
     int selectSlotForNetworkConnect(const String& ssid) const;
     int findConfiguredSlotBySsid(const String& ssid) const;
@@ -386,11 +400,15 @@ class WiFiManager {
     bool queueNextMaintenanceAutoConnectSlot();
     void finishMaintenanceAutoConnect(const char* reason, bool dropStaRadio);
     void cancelMaintenanceAutoConnect(const char* reason);
+    void clearPendingWifiConnectState();
+    void disconnectTrackedWifiActivity(const char* reason, bool disableClientState);
+    void scheduleMaintenanceAutoConnectRetry(unsigned long delayMs);
+    bool maintenanceAddressCollision() const;
     void applyDeferredMaintenanceStaRadioDrop();
     void resetWifiScanState();
     bool enableWifiClientFromSavedCredentials();
-    void disableWifiClient();
-    void forgetWifiClient();
+    bool disableWifiClient();
+    bool forgetWifiClient();
     void processStopSetupModePhase();
     void finalizeStopSetupMode();
     bool stopSetupModeImmediate(bool emergencyLowDma);

@@ -49,14 +49,21 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
                               uint32_t profileRevision, BackupSnapshotBuildFn buildSnapshot, void* buildCtx,
                               uint32_t (*millisFn)(void* ctx), void* millisCtx) {
     if (hasMatchingSnapshot(cache, settingsRevision, profileRevision)) {
+        server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
         sendSerializedJson(server, cache.data, cache.length);
         return true;
     }
 
     WifiJson::Document doc;
     const uint32_t snapshotMs = millisFn ? millisFn(millisCtx) : static_cast<uint32_t>(millis());
+    BackupSnapshotBuildResult buildResult;
     if (buildSnapshot) {
-        buildSnapshot(doc, snapshotMs, buildCtx);
+        buildResult = buildSnapshot(doc, snapshotMs, buildCtx);
+    }
+    if (!buildResult.safeToCommit) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"backup_snapshot_incomplete\",\"retryable\":true}");
+        return false;
     }
 
     const size_t required = measureJson(doc) + 1u;
@@ -70,6 +77,7 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         size_t newCapacity = 0;
         bool newInPsram = false;
         if (!allocateBackupSnapshotBuffer(required, newData, newCapacity, newInPsram)) {
+            server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
             sendJsonStream(server, doc);
             return false;
         }
@@ -88,6 +96,7 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         if (usingNewAllocation) {
             heap_caps_free(targetData);
         }
+        server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
         sendJsonStream(server, doc);
         return false;
     }
@@ -108,6 +117,7 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
     cache.profileRevision = profileRevision;
     cache.valid = true;
 
+    server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
     sendSerializedJson(server, cache.data, cache.length);
     return true;
 }

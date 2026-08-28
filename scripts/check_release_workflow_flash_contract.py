@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORMIO_INI = ROOT / "platformio.ini"
 PRODUCTION_BUILD = ROOT / "scripts" / "build_production_artifacts.sh"
 RELEASE_YML = ROOT / ".github" / "workflows" / "release.yml"
+CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
 CONFIG_H = ROOT / "include" / "config.h"
 BUILD_METADATA = ROOT / "scripts" / "get_git_sha.py"
 PARTITIONS = ROOT / "partitions_v1.csv"
@@ -190,6 +191,70 @@ def check_version_and_publication(errors: list[str]) -> None:
         )
 
 
+def check_toolchain_provenance(errors: list[str]) -> None:
+    """Require CI and Release to use and verify the same exact image tools."""
+
+    ci_text = CI_YML.read_text(encoding="utf-8")
+    release_text = RELEASE_YML.read_text(encoding="utf-8")
+    exact_pins = {
+        "platformio": "==6.1.19",
+        "esptool": "==5.3.0",
+    }
+    for text, label in (
+        (ci_text, ".github/workflows/ci.yml"),
+        (release_text, ".github/workflows/release.yml"),
+    ):
+        for package, expected_spec in exact_pins.items():
+            specs = re.findall(
+                rf"[\"']{re.escape(package)}((?:==|>=|<=|~=|!=|>|<)[^\"']*)[\"']",
+                text,
+            )
+            if specs != [expected_spec]:
+                errors.append(
+                    f"{label} must install exactly one exact {package} pin "
+                    f"({package}{expected_spec}); got {specs!r}"
+                )
+
+    for required in (
+        "python3 scripts/check_platformio_core_version.py --pio pio",
+        "python3 scripts/check_esptool_version.py --python python3",
+    ):
+        require_contains(
+            release_text,
+            required,
+            ".github/workflows/release.yml exact tool verification",
+            errors,
+        )
+        require_contains(
+            ci_text,
+            required,
+            ".github/workflows/ci.yml exact tool verification",
+            errors,
+        )
+    require_contains(
+        release_text,
+        "python3 -m esptool --chip esp32s3 merge-bin",
+        ".github/workflows/release.yml checked esptool invocation",
+        errors,
+    )
+    merge_step = release_text.find("- name: Merge firmware for ESP Web Tools")
+    merge_command = release_text.find("python3 -m esptool --chip esp32s3 merge-bin")
+    merge_version_check = release_text.find(
+        "python3 scripts/check_esptool_version.py --python python3",
+        merge_step,
+    )
+    if (
+        merge_step == -1
+        or merge_version_check == -1
+        or merge_command == -1
+        or not (merge_step < merge_version_check < merge_command)
+    ):
+        errors.append(
+            "release merge step must verify the exact esptool module immediately "
+            "before invoking that same module"
+        )
+
+
 def check_flash_and_package(errors: list[str]) -> None:
     try:
         expected = {
@@ -244,6 +309,11 @@ def check_flash_and_package(errors: list[str]) -> None:
         "cp interface/static/branding/v1simple-logo-transparent.png release/pages/v1simple-logo-transparent.png",
         "sed -i 's#../interface/static/branding/v1simple-logo-transparent.png#v1simple-logo-transparent.png#' release/pages/index.html",
         "python3 scripts/stage_release_licenses.py",
+        "cp .pio/build/waveshare-349/firmware.bin release/firmware-update.bin",
+        "python3 scripts/write_release_manifests.py",
+        "cp release/manifest-update.json release/pages/manifest-update.json",
+        "cp release/firmware-update.bin release/pages/firmware-update.bin",
+        "--expected-version \"${{ steps.version.outputs.tag }}\"",
         "--release-dir release",
         "--pages-dir release/pages",
         "\n            release/LICENSE",
@@ -262,7 +332,8 @@ def check_flash_and_package(errors: list[str]) -> None:
         "\n            release/SvelteKit-LICENSE.txt",
         "\n            release/daisyUI-LICENSE.txt",
         "\n            release/Tailwind-CSS-LICENSE.txt",
-        "scripts/check_web_installer_page.py --site-dir release/pages",
+        "python3 scripts/check_web_installer_page.py",
+        "--site-dir release/pages",
         "uses: actions/configure-pages@",
         "enablement: true",
         "uses: actions/upload-pages-artifact@",
@@ -275,6 +346,7 @@ def main() -> int:
     errors: list[str] = []
     check_production_build(errors)
     check_version_and_publication(errors)
+    check_toolchain_provenance(errors)
     check_flash_and_package(errors)
     if errors:
         print("[release] production artifact contract failed:")

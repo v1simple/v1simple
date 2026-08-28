@@ -460,7 +460,12 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             assert_true(self.started, "idle ownership was checked before emulator start")
 
         def finish(self, completed: bool) -> dict[str, Any]:
-            return {"completed": bool(completed and self.started), "mode": "idle"}
+            lifecycle_completed = bool(completed and self.started)
+            return {
+                "completed": lifecycle_completed,
+                "lifecycle_completed": lifecycle_completed,
+                "mode": "idle",
+            }
 
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
@@ -568,9 +573,14 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             def calibrate(_path: Path, _ffmpeg: str) -> tuple[float, float, dict[str, Any]]:
                 return detect_display_crop_registration(registration_fixture(0.0, 0.0))
 
-            with_calibrator(
+            passed = with_calibrator(
                 calibrate,
                 lambda: collect_live(make_live_args(), root / "passed", {}),
+            )
+            assert_true(
+                passed["emulator"]["lifecycle_completed"]
+                and passed["emulator"]["completed"],
+                f"pass fixture did not cover the managed external window: {passed['emulator']}",
             )
             passed_camera = cameras[-1]
             assert_true(

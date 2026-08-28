@@ -309,6 +309,38 @@ def test_reference_transaction_blocks_private_annotated_tag_identity() -> None:
         assert private_email not in completed.stderr
 
 
+def test_reference_transaction_blocks_unsafe_nested_tag() -> None:
+    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
+        repo = make_repo(Path(raw))
+        private_email = "nested-tag" + "@" + "corp.com"
+        git(
+            repo,
+            "tag",
+            "-a",
+            "inner-private",
+            "-m",
+            f"Reviewed-by: {private_email}",
+        )
+        inner = git(repo, "rev-parse", "refs/tags/inner-private")
+        git(repo, "tag", "-d", "inner-private")
+        enable_tracked_hooks(repo)
+
+        completed = run(
+            ["git", "tag", "-a", "v9.9.9", inner, "-m", "safe outer fixture"],
+            cwd=repo,
+        )
+        assert completed.returncode != 0
+        assert (
+            run(
+                ["git", "rev-parse", "--verify", "refs/tags/v9.9.9"],
+                cwd=repo,
+            ).returncode
+            != 0
+        )
+        assert private_email not in completed.stdout
+        assert private_email not in completed.stderr
+
+
 def test_reference_transaction_blocks_direct_ref_to_unsafe_commit() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -769,6 +801,7 @@ def main() -> int:
         test_no_verify_identity_override_is_blocked_before_commit_object,
         test_no_verify_message_pii_is_blocked_before_commit_object,
         test_reference_transaction_blocks_private_annotated_tag_identity,
+        test_reference_transaction_blocks_unsafe_nested_tag,
         test_reference_transaction_blocks_direct_ref_to_unsafe_commit,
         test_reference_transaction_blocks_direct_ref_to_unsafe_message,
         test_reference_transaction_blocks_tree_reference_target,

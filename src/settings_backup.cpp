@@ -359,6 +359,10 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
     const BackupPayloadBuilder::BuildResult buildResult = BackupPayloadBuilder::buildBackupDocument(
         doc, settings_, profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, snapshotMs);
 
+    if (!buildResult.safeToCommit) {
+        Serial.println("[Settings] Profile snapshot is incomplete; retrying backup later");
+        return false;
+    }
     if (buildResult.profileStatus != ProfileStorageStatus::Success) {
         Serial.printf("[Settings] Profile snapshot unavailable status=%d; retrying backup later\n",
                       static_cast<int>(buildResult.profileStatus));
@@ -460,14 +464,9 @@ bool SettingsManager::backupToSD() {
     }
 
     if (payload.protectExistingBackupFromUnsafeProfileSnapshot) {
-        JsonDocument existingBackup;
-        const char* existingBackupPath = nullptr;
-        if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
-            Serial.printf("[Settings] Refusing to rotate valid backup %s with unsafe zero-profile snapshot\n",
-                          existingBackupPath ? existingBackupPath : "(unknown)");
-            releaseSerializedSettingsBackupPayload(payload);
-            return false;
-        }
+        Serial.println("[Settings] Refusing to commit incomplete profile snapshot");
+        releaseSerializedSettingsBackupPayload(payload);
+        return false;
     }
 
     const bool ok = writeBackupAtomically(fs, payload);
@@ -593,13 +592,8 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
     }
 
     if (payload.protectExistingBackupFromUnsafeProfileSnapshot) {
-        JsonDocument existingBackup;
-        const char* existingBackupPath = nullptr;
-        if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
-            Serial.printf("[Settings] Unsafe profile snapshot; preserving existing SD backup %s and retrying\n",
-                          existingBackupPath ? existingBackupPath : "(unknown)");
-            return false;
-        }
+        Serial.println("[Settings] Unsafe profile snapshot; retrying without writing SD backup");
+        return false;
     }
 
     return writeBackupAtomically(fs, payload);

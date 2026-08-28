@@ -32,6 +32,25 @@ void TapGestureModule::process(unsigned long nowMs) {
     }
     nextTouchPollMs_ = nowMs + TOUCH_POLL_INTERVAL_MS;
 
+    if (pendingMuteCommand_) {
+        // A tap-mute belongs only to the alert that caused it. Do not deliver
+        // the old command after that alert clears, and stop retrying once the
+        // parser already reflects the desired state.
+        const bool desiredStateAlreadyCommitted = parser_->getDisplayState().muted == pendingMuteValue_;
+        if (!parser_->hasAlerts() || desiredStateAlreadyCommitted || !quiet_) {
+            pendingMuteCommand_ = false;
+        } else if ((nowMs - pendingMuteLastAttemptMs_) >= MUTE_RETRY_INTERVAL_MS) {
+            pendingMuteLastAttemptMs_ = nowMs;
+            const SendResult result = quiet_->sendMuteResult(QuietOwner::TapGesture, pendingMuteValue_);
+            if (result != SendResult::NOT_YET) {
+                pendingMuteCommand_ = false;
+            }
+        }
+        // Continue through touch-level processing even while a retry remains
+        // pending. In particular, alert-clear must still allow the maintenance
+        // long-press lifecycle to progress.
+    }
+
     int16_t touchX, touchY;
 
     auto performMuteToggle = [&](const char* reason) {
@@ -48,8 +67,14 @@ void TapGestureModule::process(unsigned long nowMs) {
         Serial.printf("Mute: %s -> Sending: %s (%s)\n", currentMuted ? "MUTED" : "UNMUTED",
                    newMuted ? "MUTE_ON" : "MUTE_OFF", reason);
 
-        const bool cmdSent = quiet_ && quiet_->sendMute(QuietOwner::TapGesture, newMuted);
-        Serial.printf("Mute command sent: %s\n", cmdSent ? "OK" : "FAIL");
+        const SendResult result =
+            quiet_ ? quiet_->sendMuteResult(QuietOwner::TapGesture, newMuted) : SendResult::FAILED;
+        if (result == SendResult::NOT_YET) {
+            pendingMuteCommand_ = true;
+            pendingMuteValue_ = newMuted;
+            pendingMuteLastAttemptMs_ = nowMs;
+        }
+        Serial.printf("Mute command result: %d\n", static_cast<int>(result));
     };
 
     auto performProfileCycle = [&]() {
@@ -151,4 +176,7 @@ void TapGestureModule::suspendForPresentationOwner() {
     nextTouchPollMs_ = 0;
     touching_ = false;
     longPressFired_ = false;
+    pendingMuteCommand_ = false;
+    pendingMuteValue_ = false;
+    pendingMuteLastAttemptMs_ = 0;
 }

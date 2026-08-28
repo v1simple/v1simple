@@ -216,6 +216,43 @@ void test_runtime_profile_busy_retries_without_blocking_or_reporting_not_found()
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
 }
 
+void test_slot_push_deadlines_are_wrap_safe() {
+    configureProfileSlot(true);
+    const uint32_t queuedAt = UINT32_MAX - 50u;
+    mockMillis = queuedAt;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AutoPushModule::QueueResult::QUEUED),
+                          static_cast<int>(module.queueSlotPush(0)));
+
+    // The 100 ms ready deadline wraps to 49. A direct unsigned comparison
+    // would run the state machine immediately and adjacent BLE commands would
+    // violate the production pacing window.
+    at(queuedAt);
+    at(UINT32_MAX);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+
+    at(48u);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    at(49u); // WaitReady -> Profile
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    at(49u); // profile write
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    at(79u); // request readback
+    ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+    at(79u); // verification match, schedules display at 109
+    at(108u);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    at(109u);
+    TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
+    at(139u);
+    TEST_ASSERT_EQUAL_INT(1, ble.setModeCalls);
+    at(169u);
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_matching_readback_is_required_before_success);
@@ -226,5 +263,6 @@ int main() {
     RUN_TEST(test_disconnect_is_terminal_and_never_reports_success);
     RUN_TEST(test_incomplete_volume_pair_is_rejected_before_queueing);
     RUN_TEST(test_runtime_profile_busy_retries_without_blocking_or_reporting_not_found);
+    RUN_TEST(test_slot_push_deadlines_are_wrap_safe);
     return UNITY_END();
 }

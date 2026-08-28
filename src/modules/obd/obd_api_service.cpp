@@ -165,9 +165,14 @@ void handleApiDeviceNameSave(WebServer& server, SettingsManager& settings, const
     ObdSettingsUpdate update;
     update.hasSavedName = true;
     update.savedName = sanitizeObdDeviceName(server.hasArg("name") ? server.arg("name") : "");
-    settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
-                                                ? SettingsPersistMode::Immediate
-                                                : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    const SettingsPersistResult result =
+        settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                    ? SettingsPersistMode::Immediate
+                                                    : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     server.send(200, "application/json", "{\"success\":true}");
 }
@@ -182,9 +187,6 @@ void handleApiForget(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
         sendRuntimeUnavailableError(server);
         return;
     }
-    if (!runtime.maintenanceBootActive) {
-        obdRuntime->forgetDevice();
-    }
     ObdSettingsUpdate update;
     update.hasSavedAddress = true;
     update.savedAddress = "";
@@ -192,9 +194,17 @@ void handleApiForget(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
     update.savedName = "";
     update.hasSavedAddrType = true;
     update.savedAddrType = 0;
-    settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
-                                                ? SettingsPersistMode::Immediate
-                                                : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    const SettingsPersistResult result =
+        settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                    ? SettingsPersistMode::Immediate
+                                                    : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
+    if (!runtime.maintenanceBootActive) {
+        obdRuntime->forgetDevice();
+    }
     WifiJson::Document doc;
     doc["success"] = true;
     WifiApiResponse::sendJsonDocument(server, 200, doc);
@@ -270,10 +280,15 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
         }
     }
 
-    const bool changed = settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
-                                                                     ? SettingsPersistMode::Immediate
-                                                                     : SettingsPersistMode::ImmediateNvsDeferredBackup);
-    if (changed && !runtime.maintenanceBootActive && runtime.syncAfterConfigChange) {
+    const SettingsPersistResult result =
+        settings.applyObdSettingsUpdate(update, runtime.maintenanceBootActive
+                                                    ? SettingsPersistMode::Immediate
+                                                    : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
+    if (result.changed && !runtime.maintenanceBootActive && runtime.syncAfterConfigChange) {
         runtime.syncAfterConfigChange(runtime.ctx);
     }
 

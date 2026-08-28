@@ -34,6 +34,7 @@ namespace mock_fs_detail {
 inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max();
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
+inline std::string g_fail_next_remove_path;
 
 }  // namespace mock_fs_detail
 
@@ -317,6 +318,14 @@ inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
 }
 
+inline void mock_fail_next_remove(const char* path) {
+    mock_fs_detail::g_fail_next_remove_path = path ? path : "";
+}
+
+inline void mock_reset_fs_remove_state() {
+    mock_fs_detail::g_fail_next_remove_path.clear();
+}
+
 class FS {
 public:
     FS()
@@ -354,6 +363,10 @@ public:
     }
 
     bool remove(const char* path) {
+        if (path && mock_fs_detail::g_fail_next_remove_path == path) {
+            mock_fs_detail::g_fail_next_remove_path.clear();
+            return false;
+        }
         std::error_code ec;
         return std::filesystem::remove_all(resolve(path), ec) > 0;
     }

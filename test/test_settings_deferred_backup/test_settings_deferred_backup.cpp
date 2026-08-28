@@ -364,7 +364,7 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
 }
 
-void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset() {
+void test_stale_selector_cannot_roll_back_completed_revision() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
@@ -392,8 +392,8 @@ void test_ab_rollback_completed_revision_collision_requeues_latest_after_reset()
     resetDeferredSettingsBackupStateForTest();
     SettingsManager recovered(storage, profiles);
     recovered.load();
-    TEST_ASSERT_EQUAL_UINT32(rollbackDue, recovered.backupDueRevision());
-    TEST_ASSERT_TRUE(recovered.deferredBackupPending());
+    TEST_ASSERT_EQUAL_UINT32(completedRevision, recovered.backupDueRevision());
+    TEST_ASSERT_FALSE(recovered.deferredBackupPending());
 
     recovered.mutableSettings().brightness = 99;
     TEST_ASSERT_TRUE(recovered.saveDeferredBackup());
@@ -686,8 +686,7 @@ void test_zero_profile_snapshot_with_configured_reference_preserves_good_backup(
 
     source.requestDeferredBackupFromCurrentState();
     source.serviceDeferredBackup(1000);
-    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
-    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
     TEST_ASSERT_TRUE(source.deferredBackupPending());
 
     JsonDocument preserved;
@@ -705,7 +704,7 @@ int main() {
     RUN_TEST(test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_intent);
     RUN_TEST(test_older_writer_completion_does_not_suppress_newer_persisted_due_revision);
     RUN_TEST(test_completion_revision_write_failure_preserves_deferred_retry);
-    RUN_TEST(test_ab_rollback_completed_revision_collision_requeues_latest_after_reset);
+    RUN_TEST(test_stale_selector_cannot_roll_back_completed_revision);
     RUN_TEST(test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest);
     RUN_TEST(test_service_deferred_backup_keeps_pending_when_writer_setup_fails);
     RUN_TEST(test_aborted_shutdown_reopens_deferred_backup_writer_admission);

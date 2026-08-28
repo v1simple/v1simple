@@ -255,7 +255,7 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
 
     proxyEnabled_ = enableProxy;
     proxyName_ = proxyName ? proxyName : "V1C-LE-S3";
-    bool needsFreshFlashBondReset = false;
+    bool needsBondSchemaMigration = false;
 
     // Create mutexes for thread-safe BLE operations (only once)
     if (!bleMutex_) {
@@ -273,13 +273,16 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
         return false;
     }
 
-    // Fresh-flash detection: stage BLE bond reset if firmware version changed.
-    // The actual delete happens only after the normal NimBLE init path so the
-    // stack is brought up once per boot.
+    // Bond persistence has its own schema lifecycle. Marketing firmware
+    // releases must not destructively clear otherwise-compatible bonds.
     {
         Preferences blePrefs;
         if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) { // Read-write mode
-            needsFreshFlashBondReset = BleFreshFlashPolicy::hasFirmwareVersionMismatch(blePrefs, FIRMWARE_VERSION);
+            const BleFreshFlashPolicy::BondSchemaState schemaState = BleFreshFlashPolicy::prepareBondSchema(blePrefs);
+            needsBondSchemaMigration = schemaState == BleFreshFlashPolicy::BondSchemaState::MigrationRequired;
+            if (schemaState == BleFreshFlashPolicy::BondSchemaState::BootstrapPending) {
+                Serial.print(" bond-schema metadata pending...");
+            }
             blePrefs.end();
         }
     }
@@ -326,15 +329,17 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
 
-    if (needsFreshFlashBondReset) {
+    if (needsBondSchemaMigration) {
         Preferences blePrefs;
         if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
-            Serial.printf(" fresh-flash detected...");
-            const BleFreshFlashPolicy::BondResetResult resetResult = BleFreshFlashPolicy::resetBondsForFirmwareVersion(
-                blePrefs, FIRMWARE_VERSION, backupCurrentBleBondsViaCore0AtBoot,
-                []() { NimBLEDevice::deleteAllBonds(); });
+            Serial.printf(" bond-schema migration...");
+            const BleFreshFlashPolicy::BondResetResult resetResult = BleFreshFlashPolicy::migrateBondSchema(
+                blePrefs, backupCurrentBleBondsViaCore0AtBoot, []() { NimBLEDevice::deleteAllBonds(); });
             if (resetResult.backedUpBondCount > 0) {
                 Serial.printf(" backed up %d bond(s)...", resetResult.backedUpBondCount);
+            }
+            if (!resetResult.clearedBonds) {
+                Serial.printf(" backup failed; bonds retained...");
             }
             blePrefs.end();
         }

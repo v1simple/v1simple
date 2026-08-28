@@ -201,8 +201,12 @@ bool V1BLEClient::setDisplayOn(bool on) {
 }
 
 bool V1BLEClient::setMute(bool muted) {
+    return setMuteResult(muted) == SendResult::SENT;
+}
+
+SendResult V1BLEClient::setMuteResult(bool muted) {
     if (localV1WriteSuppressedByProxy("mute")) {
-        return false;
+        return SendResult::FAILED;
     }
 
     uint8_t packetId = muted ? PACKET_ID_MUTE_ON : PACKET_ID_MUTE_OFF;
@@ -220,7 +224,7 @@ bool V1BLEClient::setMute(bool muted) {
 
     packet[5] = calcV1Checksum(packet, 5);
 
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 bool V1BLEClient::setMode(uint8_t mode) {
@@ -248,15 +252,19 @@ bool V1BLEClient::setMode(uint8_t mode) {
 }
 
 bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
+    return setVolumeResult(mainVolume, mutedVolume) == SendResult::SENT;
+}
+
+SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume) {
     if (localV1WriteSuppressedByProxy("volume")) {
-        return false;
+        return SendResult::FAILED;
     }
 
     // V1 REQWRITEVOLUME sets BOTH values. Reject a non-pair rather than
     // reporting a skipped command as successful to an owning state machine.
     if (mainVolume == 0xFF || mutedVolume == 0xFF) {
         Serial.printf("setVolume: rejected incomplete pair - main=%d mute=%d\n", mainVolume, mutedVolume);
-        return false;
+        return SendResult::FAILED;
     }
 
     // Clamp to valid range (0-9)
@@ -283,7 +291,7 @@ bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
     // Calculate checksum over bytes 0-7 (8 bytes)
     packet[8] = calcV1Checksum(packet, 8);
 
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 // --- user bytes read/write ---

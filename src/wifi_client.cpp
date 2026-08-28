@@ -7,7 +7,10 @@
 #include "settings.h"
 #include "settings_sanitize.h"
 #include "modules/wifi/wifi_client_enable_transaction.h"
+#include "modules/wifi/wifi_maintenance_interface_policy.h"
 #include "modules/wifi/wifi_reconnect_policy.h"
+#include "modules/wifi/wifi_saved_network_mutation_policy.h"
+#include "modules/wifi/wifi_setup_network_policy.h"
 #include "modules/wifi/wifi_sta_slot_policy.h"
 #include <vector>
 
@@ -208,17 +211,32 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
         return false;
     }
 
-    cancelMaintenanceAutoConnect("slot_upsert");
-
     const size_t index = static_cast<size_t>(selectedIndex);
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
+    const bool maintenanceScanActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING;
+    const bool maintenanceConnectActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
     const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index);
     const String label = request.hasLabel ? request.label : currentSlot.label;
     const uint8_t priority = request.hasPriority
                                  ? request.priority
                                  : (currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(index));
 
-    settings_.setWifiStaSlotCredentials(index, ssid, password, label, priority);
+    if (!settings_.setWifiStaSlotCredentials(index, ssid, password, label, priority)) {
+        return false;
+    }
+    const WifiSavedNetworkMutationPolicy::Decision mutation = WifiSavedNetworkMutationPolicy::evaluate(
+        {true, false, selectedIndex, currentConnectedSlotIndex_, pendingConnectSlotIndex_, maintenanceScanActive,
+         maintenanceConnectActive});
+    if (mutation.cancelMaintenanceAutoActivity) {
+        cancelMaintenanceAutoConnect("slot_upsert");
+    }
+    maintenanceAddressCollisionSlotMask_ &= static_cast<uint8_t>(~(1U << index));
+    if (mutation.disconnectTrackedActivity) {
+        disconnectTrackedWifiActivity("slot_upsert", false);
+    }
+    if (mutation.scheduleReplacementScan) {
+        scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
+    }
     indexOut = index;
     return true;
 }
@@ -227,12 +245,72 @@ bool WiFiManager::deleteSavedNetwork(size_t index) {
     if (index >= kWifiStaSlotCount) {
         return false;
     }
-    cancelMaintenanceAutoConnect("slot_delete");
-    if (currentConnectedSlotIndex_ == static_cast<int>(index)) {
-        currentConnectedSlotIndex_ = -1;
+    const bool maintenanceScanActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING;
+    const bool maintenanceConnectActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+    if (!settings_.clearWifiStaSlot(index)) {
+        return false;
     }
-    settings_.clearWifiStaSlot(index);
+    const WifiSavedNetworkMutationPolicy::Decision mutation = WifiSavedNetworkMutationPolicy::evaluate(
+        {true, false, static_cast<int>(index), currentConnectedSlotIndex_, pendingConnectSlotIndex_,
+         maintenanceScanActive, maintenanceConnectActive});
+    if (mutation.cancelMaintenanceAutoActivity) {
+        cancelMaintenanceAutoConnect("slot_delete");
+    }
+    maintenanceAddressCollisionSlotMask_ &= static_cast<uint8_t>(~(1U << index));
+    if (mutation.disconnectTrackedActivity) {
+        disconnectTrackedWifiActivity("slot_delete", false);
+    }
+    if (mutation.scheduleReplacementScan) {
+        scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
+    }
     return true;
+}
+
+WifiClientApiService::PriorityUpdateStatus WiFiManager::updateSavedNetworkPriorities(
+    const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates) {
+    if (updates.empty() || updates.size() > kWifiStaSlotCount) {
+        return WifiClientApiService::PriorityUpdateStatus::Invalid;
+    }
+
+    bool seenIndices[kWifiStaSlotCount] = {};
+    bool seenPriorities[kWifiStaSlotCount] = {};
+    uint8_t finalPriorities[kWifiStaSlotCount];
+    const V1Settings& current = settings_.get();
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        finalPriorities[index] = current.wifiStaSlots[index].priority;
+    }
+
+    std::vector<WifiStaPriorityUpdate> settingsUpdates;
+    settingsUpdates.reserve(updates.size());
+    for (const auto& update : updates) {
+        if (update.index >= kWifiStaSlotCount || update.priority >= kWifiStaSlotCount || seenIndices[update.index] ||
+            seenPriorities[update.priority]) {
+            return WifiClientApiService::PriorityUpdateStatus::Invalid;
+        }
+        if (!current.wifiStaSlots[update.index].isConfigured()) {
+            return WifiClientApiService::PriorityUpdateStatus::Conflict;
+        }
+        seenIndices[update.index] = true;
+        seenPriorities[update.priority] = true;
+        finalPriorities[update.index] = update.priority;
+        settingsUpdates.push_back(WifiStaPriorityUpdate{update.index, update.priority});
+    }
+
+    bool finalSeen[kWifiStaSlotCount] = {};
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if (!current.wifiStaSlots[index].isConfigured()) {
+            continue;
+        }
+        const uint8_t priority = finalPriorities[index];
+        if (priority >= kWifiStaSlotCount || finalSeen[priority]) {
+            return WifiClientApiService::PriorityUpdateStatus::Conflict;
+        }
+        finalSeen[priority] = true;
+    }
+
+    const SettingsPersistResult result = settings_.applyWifiStaPriorityUpdates(settingsUpdates);
+    return result.success ? WifiClientApiService::PriorityUpdateStatus::Success
+                          : WifiClientApiService::PriorityUpdateStatus::PersistFailed;
 }
 
 bool WiFiManager::testSavedNetwork(size_t index) {
@@ -245,9 +323,12 @@ bool WiFiManager::testSavedNetwork(size_t index) {
         return false;
     }
 
+    if (!settings_.setWifiClientEnabled(true).success) {
+        return false;
+    }
+    maintenanceManualDisconnect_ = false;
     cancelMaintenanceAutoConnect("slot_test");
-
-    settings_.setWifiClientEnabled(true);
+    maintenanceAddressCollisionSlotMask_ &= static_cast<uint8_t>(~(1U << index));
     resetReconnectFailures();
     return connectToNetwork(slot.ssid, settings_.getWifiStaSlotPassword(index), false, static_cast<int>(index));
 }
@@ -260,6 +341,7 @@ bool WiFiManager::connectToNetwork(const String& ssid, const String& password, b
     }
 
     if (!maintenanceAutoConnect) {
+        maintenanceManualDisconnect_ = false;
         cancelMaintenanceAutoConnect("manual_connect");
     }
 
@@ -281,10 +363,53 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
         WiFiManager* manager;
         WifiClientState priorState;
         int priorConnectedSlotIndex;
+        WifiConnectPhase priorConnectPhase;
+        unsigned long priorConnectPhaseStartMs;
+        unsigned long priorConnectStartMs;
+        String priorPendingSsid;
+        String priorPendingPassword;
+        bool priorPendingPersist;
+        int priorPendingSlotIndex;
+        MaintenanceAutoConnectPhase priorAutoConnectPhase;
+        unsigned long priorAutoConnectScanStartMs;
+        size_t priorAutoConnectSlots[kWifiStaSlotCount];
+        size_t priorAutoConnectSlotCount;
+        size_t priorAutoConnectSlotCursor;
+        bool priorStaDropPending;
+        unsigned long priorRetryAtMs;
+        uint8_t priorCollisionSlotMask;
+        bool priorManualDisconnect;
+        wifi_mode_t priorMode;
+        bool priorAutoReconnect;
     };
 
     const bool wasEnabled = settings_.get().wifiClientEnabled;
-    EnableContext transaction{this, wifiClientState_, currentConnectedSlotIndex_};
+    EnableContext transaction{
+        this,
+        wifiClientState_,
+        currentConnectedSlotIndex_,
+        wifiConnectPhase_,
+        wifiConnectPhaseStartMs_,
+        wifiConnectStartMs_,
+        pendingConnectSSID_,
+        pendingConnectPassword_,
+        pendingConnectPersistCredentials_,
+        pendingConnectSlotIndex_,
+        maintenanceAutoConnectPhase_,
+        maintenanceAutoConnectScanStartMs_,
+        {},
+        maintenanceAutoConnectSlotCount_,
+        maintenanceAutoConnectSlotCursor_,
+        maintenanceAutoConnectStaDropGate_.pending(),
+        maintenanceAutoConnectRetryAtMs_,
+        maintenanceAddressCollisionSlotMask_,
+        maintenanceManualDisconnect_,
+        WiFi.getMode(),
+        WiFi.getAutoReconnect(),
+    };
+    for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+        transaction.priorAutoConnectSlots[i] = maintenanceAutoConnectSlots_[i];
+    }
 
     WifiClientEnableTransaction::Runtime runtime;
     runtime.ctx = &transaction;
@@ -320,12 +445,40 @@ bool WiFiManager::enableWifiClientFromSavedCredentials() {
     };
     runtime.rollbackFailedStart = [](void* ctx) {
         auto* transaction = static_cast<EnableContext*>(ctx);
-        transaction->manager->wifiClientState_ = transaction->priorState;
-        transaction->manager->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
+        WiFiManager* self = transaction->manager;
+        self->cancelMaintenanceAutoConnect("enable_persist_rollback");
+        if (transaction->priorState != WIFI_CLIENT_CONNECTED && WiFi.status() == WL_CONNECTED) {
+            WiFi.disconnect(false, false);
+        }
+        self->wifiClientState_ = transaction->priorState;
+        self->currentConnectedSlotIndex_ = transaction->priorConnectedSlotIndex;
+        self->wifiConnectPhase_ = transaction->priorConnectPhase;
+        self->wifiConnectPhaseStartMs_ = transaction->priorConnectPhaseStartMs;
+        self->wifiConnectStartMs_ = transaction->priorConnectStartMs;
+        self->pendingConnectSSID_ = transaction->priorPendingSsid;
+        self->pendingConnectPassword_ = transaction->priorPendingPassword;
+        self->pendingConnectPersistCredentials_ = transaction->priorPendingPersist;
+        self->pendingConnectSlotIndex_ = transaction->priorPendingSlotIndex;
+        self->maintenanceAutoConnectPhase_ = transaction->priorAutoConnectPhase;
+        self->maintenanceAutoConnectScanStartMs_ = transaction->priorAutoConnectScanStartMs;
+        self->maintenanceAutoConnectSlotCount_ = transaction->priorAutoConnectSlotCount;
+        self->maintenanceAutoConnectSlotCursor_ = transaction->priorAutoConnectSlotCursor;
+        for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+            self->maintenanceAutoConnectSlots_[i] = transaction->priorAutoConnectSlots[i];
+        }
+        self->maintenanceAutoConnectStaDropGate_.clear();
+        if (transaction->priorStaDropPending) {
+            self->maintenanceAutoConnectStaDropGate_.request();
+        }
+        self->maintenanceAutoConnectRetryAtMs_ = transaction->priorRetryAtMs;
+        self->maintenanceAddressCollisionSlotMask_ = transaction->priorCollisionSlotMask;
+        self->maintenanceManualDisconnect_ = transaction->priorManualDisconnect;
+        WiFi.setAutoReconnect(transaction->priorAutoReconnect);
+        WiFi.mode(transaction->priorMode);
     };
     runtime.commitEnabled = [](void* ctx) {
         auto* transaction = static_cast<EnableContext*>(ctx);
-        transaction->manager->settings_.setWifiClientEnabled(true);
+        return transaction->manager->settings_.setWifiClientEnabled(true).success;
     };
     return WifiClientEnableTransaction::execute(runtime);
 }
@@ -334,32 +487,61 @@ void WiFiManager::disconnectFromNetwork() {
     cancelMaintenanceAutoConnect("disconnect");
 
     Serial.println("[WiFiClient] Disconnecting from network");
-    wifiConnectPhase_ = WifiConnectPhase::IDLE;
-    wifiConnectPhaseStartMs_ = 0;
-    wifiConnectStartMs_ = 0;
+    WiFi.setAutoReconnect(false);
     WiFi.disconnect(false); // Don't turn off station mode
     wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
     currentConnectedSlotIndex_ = -1;
+    clearPendingWifiConnectState();
+    maintenanceAutoConnectRetryAtMs_ = 0;
+    maintenanceManualDisconnect_ = true;
+}
+
+void WiFiManager::clearPendingWifiConnectState() {
+    wifiConnectPhase_ = WifiConnectPhase::IDLE;
+    wifiConnectPhaseStartMs_ = 0;
+    wifiConnectStartMs_ = 0;
     pendingConnectSSID_ = "";
     pendingConnectPassword_ = "";
     pendingConnectPersistCredentials_ = true;
     pendingConnectSlotIndex_ = -1;
 }
 
-void WiFiManager::disableWifiClient() {
-    disconnectFromNetwork();
-    settings_.setWifiClientEnabled(false);
-    wifiClientState_ = WIFI_CLIENT_DISABLED;
-    WiFi.mode(WIFI_AP);
+void WiFiManager::disconnectTrackedWifiActivity(const char* reason, bool disableClientState) {
+    Serial.printf("[WiFiClient] Canceling tracked STA activity: %s\n", reason ? reason : "mutation");
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    clearPendingWifiConnectState();
+    currentConnectedSlotIndex_ = -1;
+    wifiClientState_ = disableClientState ? WIFI_CLIENT_DISABLED : WIFI_CLIENT_DISCONNECTED;
+    maintenanceAutoConnectStaDropGate_.request();
+    applyDeferredMaintenanceStaRadioDrop();
+    if (!disableClientState) {
+        scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
+    }
 }
 
-void WiFiManager::forgetWifiClient() {
-    cancelMaintenanceAutoConnect("forget");
-
+bool WiFiManager::disableWifiClient() {
+    if (!settings_.setWifiClientEnabled(false).success) {
+        return false;
+    }
     disconnectFromNetwork();
-    settings_.clearWifiClientCredentials();
     wifiClientState_ = WIFI_CLIENT_DISABLED;
+    maintenanceAutoConnectRetryAtMs_ = 0;
     WiFi.mode(WIFI_AP);
+    return true;
+}
+
+bool WiFiManager::forgetWifiClient() {
+    if (!settings_.clearWifiClientCredentials()) {
+        return false;
+    }
+    cancelMaintenanceAutoConnect("forget");
+    disconnectFromNetwork();
+    wifiClientState_ = WIFI_CLIENT_DISABLED;
+    maintenanceAutoConnectRetryAtMs_ = 0;
+    maintenanceAddressCollisionSlotMask_ = 0;
+    WiFi.mode(WIFI_AP);
+    return true;
 }
 
 void WiFiManager::processWifiClientConnectPhase() {
@@ -435,42 +617,55 @@ void WiFiManager::processWifiClientConnectPhase() {
 }
 
 bool WiFiManager::beginMaintenanceAutoConnectScan(bool explicitEnableRequest) {
-    cancelMaintenanceAutoConnect("restart_scan");
+    return WifiSetupNetworkPolicy::startMaintenanceAutoConnect(
+        [this]() { return settings_.resolveStorageTransactionsForMutation(); },
+        [this]() {
+            Serial.println("[WiFiClient] Maintenance STA auto-connect deferred: storage recovery pending");
+            scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_RETRY_INTERVAL_MS);
+        },
+        [this, explicitEnableRequest]() {
+            cancelMaintenanceAutoConnect("restart_scan");
 
-    if (!maintenanceBootMode_) {
-        return false;
-    }
+            if (!maintenanceBootMode_) {
+                return false;
+            }
 
-    const V1Settings& settings = settings_.get();
-    if (!settings.hasConfiguredWifiStaSlot()) {
-        Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: no saved slots");
-        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-        return false;
-    }
-    if (!settings.wifiClientEnabled && !explicitEnableRequest) {
-        Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: client disabled");
-        wifiClientState_ = WIFI_CLIENT_DISABLED;
-        return false;
-    }
+            const V1Settings& settings = settings_.get();
+            if (explicitEnableRequest) {
+                maintenanceAddressCollisionSlotMask_ = 0;
+                maintenanceManualDisconnect_ = false;
+            }
+            if (!settings.hasConfiguredWifiStaSlot()) {
+                Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: no saved slots");
+                wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+                return false;
+            }
+            if (!settings.wifiClientEnabled && !explicitEnableRequest) {
+                Serial.println("[WiFiClient] Maintenance STA auto-connect skipped: client disabled");
+                wifiClientState_ = WIFI_CLIENT_DISABLED;
+                return false;
+            }
 
-    const WifiScanResultOwner::RequestResult requestResult =
-        wifiScanOwner_.request(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
-    if (requestResult == WifiScanResultOwner::RequestResult::FAILED) {
-        Serial.println("[WiFiClient] Maintenance STA auto-connect scan failed to start");
-        finishMaintenanceAutoConnect("scan_start_failed", true);
-        return false;
-    }
+            const WifiScanResultOwner::RequestResult requestResult =
+                wifiScanOwner_.request(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
+            if (requestResult == WifiScanResultOwner::RequestResult::FAILED) {
+                Serial.println("[WiFiClient] Maintenance STA auto-connect scan failed to start");
+                finishMaintenanceAutoConnect("scan_start_failed", true);
+                return false;
+            }
 
-    maintenanceAutoConnectStaDropGate_.clear();
-    wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-    maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::SCANNING;
-    maintenanceAutoConnectScanStartMs_ = millis();
-    maintenanceAutoConnectSlotCount_ = 0;
-    maintenanceAutoConnectSlotCursor_ = 0;
-    Serial.println(requestResult == WifiScanResultOwner::RequestResult::JOINED
-                       ? "[WiFiClient] Maintenance STA auto-connect joined the active scan"
-                       : "[WiFiClient] Maintenance STA auto-connect scan started");
-    return true;
+            maintenanceAutoConnectStaDropGate_.clear();
+            maintenanceAutoConnectRetryAtMs_ = 0;
+            wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::SCANNING;
+            maintenanceAutoConnectScanStartMs_ = millis();
+            maintenanceAutoConnectSlotCount_ = 0;
+            maintenanceAutoConnectSlotCursor_ = 0;
+            Serial.println(requestResult == WifiScanResultOwner::RequestResult::JOINED
+                               ? "[WiFiClient] Maintenance STA auto-connect joined the active scan"
+                               : "[WiFiClient] Maintenance STA auto-connect scan started");
+            return true;
+        });
 }
 
 void WiFiManager::processMaintenanceAutoConnect() {
@@ -516,6 +711,9 @@ void WiFiManager::processMaintenanceAutoConnect() {
 
     for (size_t orderedPos = 0; orderedPos < orderedCount; ++orderedPos) {
         const size_t slotIndex = ordered[orderedPos];
+        if ((maintenanceAddressCollisionSlotMask_ & static_cast<uint8_t>(1U << slotIndex)) != 0) {
+            continue;
+        }
         const WifiStaSlot& slot = settings.wifiStaSlots[slotIndex];
         for (const ScannedNetwork& scannedNetwork : scannedNetworks) {
             if (scannedNetwork.ssid == slot.ssid) {
@@ -551,6 +749,9 @@ bool WiFiManager::queueNextMaintenanceAutoConnectSlot() {
         if (slotIndex >= kWifiStaSlotCount) {
             continue;
         }
+        if ((maintenanceAddressCollisionSlotMask_ & static_cast<uint8_t>(1U << slotIndex)) != 0) {
+            continue;
+        }
 
         const WifiStaSlot& slot = settings.wifiStaSlots[slotIndex];
         if (!slot.isConfigured()) {
@@ -582,9 +783,13 @@ void WiFiManager::finishMaintenanceAutoConnect(const char* reason, bool dropStaR
     maintenanceAutoConnectSlotCursor_ = 0;
 
     if (dropStaRadio) {
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
         maintenanceAutoConnectStaDropGate_.request();
+        scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_RETRY_INTERVAL_MS);
     } else {
         maintenanceAutoConnectStaDropGate_.clear();
+        maintenanceAutoConnectRetryAtMs_ = 0;
     }
     applyDeferredMaintenanceStaRadioDrop();
 }
@@ -613,22 +818,106 @@ void WiFiManager::cancelMaintenanceAutoConnect(const char* reason) {
 
     Serial.printf("[WiFiClient] Maintenance STA auto-connect canceled: %s\n",
                   (reason && reason[0] != '\0') ? reason : "unknown");
-    if (maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING) {
+    const bool wasScanning = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING;
+    const bool wasConnecting = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+    if (wasScanning) {
         wifiScanOwner_.cancel(WifiScanConsumer::MAINTENANCE, makeWifiScanDriver());
+    }
+    if (wasConnecting) {
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+        clearPendingWifiConnectState();
+        currentConnectedSlotIndex_ = -1;
+        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
     }
     maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
     maintenanceAutoConnectScanStartMs_ = 0;
     maintenanceAutoConnectSlotCount_ = 0;
     maintenanceAutoConnectSlotCursor_ = 0;
+    maintenanceAutoConnectStaDropGate_.request();
+    applyDeferredMaintenanceStaRadioDrop();
+}
+
+void WiFiManager::scheduleMaintenanceAutoConnectRetry(unsigned long delayMs) {
+    if (!maintenanceBootMode_ || !settings_.get().wifiClientEnabled ||
+        !settings_.get().hasConfiguredWifiStaSlot()) {
+        maintenanceAutoConnectRetryAtMs_ = 0;
+        return;
+    }
+    maintenanceAutoConnectRetryAtMs_ = millis() + delayMs;
+    if (maintenanceAutoConnectRetryAtMs_ == 0) {
+        maintenanceAutoConnectRetryAtMs_ = 1;
+    }
+}
+
+bool WiFiManager::maintenanceAddressCollision() const {
+    if (!maintenanceBootMode_ || !isSetupModeActive()) {
+        return false;
+    }
+    return WifiMaintenanceInterfacePolicy::hasAddressCollision(static_cast<uint32_t>(WiFi.softAPIP()),
+                                                                static_cast<uint32_t>(WiFi.localIP()));
 }
 
 void WiFiManager::checkWifiClientStatus() {
     // Skip if WiFi client is disabled
     if (wifiClientState_ == WIFI_CLIENT_DISABLED) {
+        if (maintenanceBootMode_ && WiFi.status() == WL_CONNECTED) {
+            Serial.println("[WiFiClient] Disconnecting unexpected physical STA while client is disabled");
+            WiFi.setAutoReconnect(false);
+            WiFi.disconnect(false, false);
+            if (!wifiScanOwner_.isRunning() && isSetupModeActive()) {
+                WiFi.mode(WIFI_AP);
+            }
+        }
         return;
     }
 
     wl_status_t status = WiFi.status();
+
+    if (WifiMaintenanceLinkPolicy::evaluate({
+            .physicalConnected = status == WL_CONNECTED,
+            .autoJoinSuppressed = maintenanceManualDisconnect_,
+        }) == WifiMaintenanceLinkPolicy::Decision::RejectSuppressedPhysicalConnection) {
+        Serial.println("[WiFiClient] Rejecting late STA connection after explicit disconnect");
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+        clearPendingWifiConnectState();
+        currentConnectedSlotIndex_ = -1;
+        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        maintenanceAutoConnectRetryAtMs_ = 0;
+        maintenanceAutoConnectStaDropGate_.request();
+        applyDeferredMaintenanceStaRadioDrop();
+        return;
+    }
+
+    if (WifiMaintenanceLinkPolicy::shouldDisconnectAddressCollision(status == WL_CONNECTED,
+                                                                    maintenanceAddressCollision())) {
+        int collisionSlot = pendingConnectSlotIndex_;
+        if (collisionSlot < 0 || static_cast<size_t>(collisionSlot) >= kWifiStaSlotCount) {
+            collisionSlot = findConfiguredSlotBySsid(WiFi.SSID());
+        }
+        if (collisionSlot >= 0 && static_cast<size_t>(collisionSlot) < kWifiStaSlotCount) {
+            maintenanceAddressCollisionSlotMask_ |= static_cast<uint8_t>(1U << collisionSlot);
+        }
+
+        const bool wasMaintenanceCandidate =
+            maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+        Serial.println("[WiFiClient] STA address collides with maintenance AP; disconnecting STA");
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+        clearPendingWifiConnectState();
+        wifiClientState_ = WIFI_CLIENT_FAILED;
+        currentConnectedSlotIndex_ = -1;
+        if (wasMaintenanceCandidate) {
+            if (!queueNextMaintenanceAutoConnectSlot()) {
+                finishMaintenanceAutoConnect("address_collision", true);
+            }
+        } else {
+            cancelMaintenanceAutoConnect("address_collision");
+            scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_RETRY_INTERVAL_MS);
+        }
+        return;
+    }
 
     switch (wifiClientState_) {
     case WIFI_CLIENT_CONNECTING: {
@@ -740,6 +1029,7 @@ void WiFiManager::checkWifiClientStatus() {
             wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
             currentConnectedSlotIndex_ = -1;
             Serial.println("[WiFiClient] Lost connection");
+            scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
         }
         break;
     }
@@ -751,6 +1041,40 @@ void WiFiManager::checkWifiClientStatus() {
         }
 
         if (maintenanceBootMode_) {
+            const V1Settings& settings = settings_.get();
+            const bool autoConnectActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING ||
+                                           maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
+            const WifiMaintenanceLinkPolicy::Decision decision = WifiMaintenanceLinkPolicy::evaluate({
+                .physicalConnected = status == WL_CONNECTED,
+                .appConnected = false,
+                .appConnecting = false,
+                .autoConnectActive = autoConnectActive,
+                .clientEnabled = settings.wifiClientEnabled,
+                .hasSavedCandidates = settings.hasConfiguredWifiStaSlot(),
+                .autoJoinSuppressed = maintenanceManualDisconnect_,
+                .nowMs = static_cast<uint32_t>(millis()),
+                .retryAtMs = static_cast<uint32_t>(maintenanceAutoConnectRetryAtMs_),
+            });
+            if (decision == WifiMaintenanceLinkPolicy::Decision::ReconcilePhysicalConnection) {
+                const int slotIndex = findConfiguredSlotBySsid(WiFi.SSID());
+                if (slotIndex >= 0) {
+                    cancelMaintenanceAutoConnect("physical_reconnect");
+                    wifiClientState_ = WIFI_CLIENT_CONNECTED;
+                    currentConnectedSlotIndex_ = slotIndex;
+                    wifiReconnectFailures_ = 0;
+                    maintenanceAutoConnectRetryAtMs_ = 0;
+                    Serial.println("[WiFiClient] Reconciled framework STA auto-reconnect");
+                } else {
+                    Serial.println("[WiFiClient] Rejecting physical connection to unsaved network");
+                    WiFi.setAutoReconnect(false);
+                    WiFi.disconnect(false, false);
+                    scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
+                }
+            } else if (decision == WifiMaintenanceLinkPolicy::Decision::StartCandidateScan) {
+                if (!beginMaintenanceAutoConnectScan(false)) {
+                    scheduleMaintenanceAutoConnectRetry(WIFI_MAINTENANCE_RETRY_INTERVAL_MS);
+                }
+            }
             break;
         }
 

@@ -366,6 +366,32 @@ def object_type(repo: Path, object_id: str) -> str:
     return value
 
 
+def annotated_tag_target(repo: Path, object_id: str) -> str:
+    data = run_git(repo, "cat-file", "tag", object_id)
+    target_line = next(
+        (line.removeprefix(b"object ") for line in data.splitlines() if line.startswith(b"object ")),
+        None,
+    )
+    if target_line is None:
+        raise RuntimeError("Annotated tag has no target object")
+    return validated_oid(target_line)
+
+
+def annotated_tag_chain(repo: Path, revision: str) -> tuple[list[str], str, str]:
+    """Return every reachable tag object before the final peeled target."""
+
+    object_id = resolve_object(repo, revision)
+    tags: list[str] = []
+    seen: set[str] = set()
+    while object_type(repo, object_id) == "tag":
+        if object_id in seen:
+            raise RuntimeError("Annotated tag chain contains a cycle")
+        seen.add(object_id)
+        tags.append(object_id)
+        object_id = annotated_tag_target(repo, object_id)
+    return tags, object_id, object_type(repo, object_id)
+
+
 def object_message(data: bytes) -> bytes:
     separator = data.find(b"\n\n")
     return b"" if separator == -1 else data[separator + 2 :]
@@ -637,6 +663,21 @@ def scan_messages(
     return findings
 
 
+def scan_tag_objects(
+    repo: Path,
+    object_ids: Iterable[str],
+    local_terms: list[bytes],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for object_id, actual_type, data in iter_git_objects(repo, object_ids):
+        if actual_type != "tag":
+            raise RuntimeError("Git returned an unexpected annotated-tag object")
+        findings.extend(
+            scan_blob(f"<annotated-tag:{object_id[:12]}>", data, local_terms)
+        )
+    return findings
+
+
 def scan_repository(
     repo: Path,
     *,
@@ -660,18 +701,24 @@ def scan_repository(
     commit_ids: list[str] = []
     annotated_tag_ids: set[str] = set()
     paths_by_blob: dict[str, set[bytes]] = defaultdict(set)
+    revision_treeish: str | None = None
 
     if all_history:
         commit_ids = all_history_commits(repo)
         for object_id, ref_type, raw_name in reference_records(repo):
             findings.extend(scan_blob("<reference-name>", raw_name, local_terms))
             if ref_type == "tag":
-                annotated_tag_ids.add(object_id)
+                tags, _target, _target_type = annotated_tag_chain(repo, object_id)
+                annotated_tag_ids.update(tags)
     elif history_tip is not None:
-        tip_object = resolve_object(repo, history_tip)
-        if object_type(repo, tip_object) == "tag":
-            annotated_tag_ids.add(tip_object)
+        tags, tip_object, tip_type = annotated_tag_chain(repo, history_tip)
+        annotated_tag_ids.update(tags)
+        if tip_type != "commit":
+            raise RuntimeError("History tip does not peel to a commit")
         commit_ids = history_commits(repo, tip_object, history_base)
+    elif revision is not None:
+        tags, revision_treeish, _revision_type = annotated_tag_chain(repo, revision)
+        annotated_tag_ids.update(tags)
 
     for ref_name in ref_names or []:
         findings.extend(scan_blob("<reference-name>", os.fsencode(ref_name), local_terms))
@@ -684,8 +731,10 @@ def scan_repository(
         treeish = (
             validated_oid(run_git(repo, "write-tree"))
             if index
-            else resolve_object(repo, revision or "")
+            else revision_treeish
         )
+        if treeish is None:
+            raise RuntimeError("Revision did not resolve to a treeish object")
         for blob_id, raw_path in tree_entries(repo, treeish):
             paths_by_blob[blob_id].add(raw_path)
 
@@ -702,15 +751,7 @@ def scan_repository(
     if commit_ids:
         findings.extend(scan_messages(repo, commit_ids, "commit", "commit-message", local_terms))
     if annotated_tag_ids:
-        findings.extend(
-            scan_messages(
-                repo,
-                sorted(annotated_tag_ids),
-                "tag",
-                "annotated-tag-message",
-                local_terms,
-            )
-        )
+        findings.extend(scan_tag_objects(repo, sorted(annotated_tag_ids), local_terms))
     return findings
 
 

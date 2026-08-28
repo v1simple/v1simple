@@ -98,7 +98,11 @@ void handleApiSave(WebServer& server, const Runtime& runtime) {
     }
     WifiQuietSettingsFields::parse(server, update, true);
 
-    runtime.applySettingsUpdate(update, runtime.ctx);
+    const SettingsPersistResult result = runtime.applySettingsUpdate(update, runtime.ctx);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     if (hasVoiceVolume && runtime.setAudioVolume) {
         runtime.setAudioVolume(nextVoiceVolume, runtime.ctx);

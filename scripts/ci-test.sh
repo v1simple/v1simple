@@ -123,6 +123,7 @@ section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
+run_step "Car firmware CI contract regression suite" python3 scripts/test_ci_car_build_contract.py
 
 section "Privacy"
 # The guards run first, then the tests that prove the guards still work. A
@@ -159,6 +160,8 @@ run_step "Identity gate workflow regression suite" python3 scripts/test_identity
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
+run_step "Exact build-tool version regression suite" python3 scripts/test_build_tool_versions.py
+run_step "Maintenance HTTP ingress contract" python3 scripts/test_maintenance_ingress_contract.py
 
 section "Host Tools"
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -179,6 +182,9 @@ run_step "Frontend dependencies" bash -c 'cd interface && npm ci'
 run_step "Frontend dependency audit" bash -c 'cd interface && npm audit --audit-level=high'
 run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
 run_step "Frontend unit tests" bash -c 'cd interface && npm test'
+
+section "Hardware Variant Builds"
+run_step "Car install firmware build" "$PIO_CMD" run -e esp32-s3-car-install
 
 section "Production Build"
 run_step "Production artifact build" ./scripts/build_production_artifacts.sh

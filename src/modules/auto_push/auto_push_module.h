@@ -70,7 +70,7 @@ class AutoPushModule {
 
     struct State {
         Step step = Step::Idle;
-        unsigned long nextStepAtMs = 0;
+        uint32_t nextStepAtMs = 0;
         int slotIndex = 0;
         AutoPushSlot slot;
         V1Profile profile;
@@ -127,6 +127,9 @@ class AutoPushModule {
     void finishOperation();
     void scheduleNextAfterProfile(uint32_t nowMs);
     void retryOrFailProfile(uint32_t nowMs, FailureReason reason);
+    static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
+        return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+    }
 
     SettingsManager* settings_ = nullptr;
     V1ProfileManager* profiles_ = nullptr;

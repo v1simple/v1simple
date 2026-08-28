@@ -81,6 +81,12 @@ struct VoiceAction {
     uint8_t behindCount; // Bogeys behind (ESCALATION only)
     uint8_t sideCount;   // Bogeys to side (ESCALATION only)
 
+    // Source protocol values used to commit dedup/cooldown state only after
+    // the playback boundary accepts this exact action.
+    Band sourceBand = BAND_NONE;
+    Direction sourceDirection = DIR_NONE;
+    uint8_t sourceAlertCount = 0;
+
     // Default constructor - NONE action
     VoiceAction()
         : type(Type::NONE), band(AlertBand::KA), freq(0), dir(AlertDirection::AHEAD), bogeyCount(0), aheadCount(0),
@@ -102,6 +108,8 @@ class VoiceModule {
 
     // Main decision method - returns what to announce (if anything)
     VoiceAction process(const VoiceContext& ctx);
+    VoiceAction prepareAction(const VoiceContext& ctx);
+    void commitAction(const VoiceAction& action, unsigned long acceptedAtMs);
 
     // State management - call when all alerts clear
     void reset() { clearAllState(); } // Alias for consistency with other modules
@@ -180,6 +188,7 @@ class VoiceModule {
 
     void resetDirectionThrottle(unsigned long now);
     bool shouldThrottleDirectionChange(unsigned long now);
+    void recordDirectionChange(unsigned long now);
 
     // Priority stability tracking
     static constexpr unsigned long PRIORITY_STABILITY_MS = 1000;

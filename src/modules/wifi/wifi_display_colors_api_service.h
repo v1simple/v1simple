@@ -11,9 +11,9 @@ namespace WifiDisplayColorsApiService {
 struct Runtime {
     const V1Settings& (*getSettings)(void* ctx) = nullptr;
     void* getSettingsCtx = nullptr;
-    void (*applySettingsUpdate)(const DisplaySettingsUpdate& update, void* ctx) = nullptr;
+    SettingsPersistResult (*applySettingsUpdate)(const DisplaySettingsUpdate& update, void* ctx) = nullptr;
     void* applySettingsUpdateCtx = nullptr;
-    void (*resetDisplaySettings)(void* ctx) = nullptr;
+    SettingsPersistResult (*resetDisplaySettings)(void* ctx) = nullptr;
     void* resetDisplaySettingsCtx = nullptr;
     void (*setDisplayBrightness)(uint8_t brightness, void* ctx) = nullptr;
     void* setDisplayBrightnessCtx = nullptr;

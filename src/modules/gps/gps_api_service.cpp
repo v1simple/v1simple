@@ -125,9 +125,14 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
         return;
     }
 
-    settings.applyDeviceSettingsUpdate(update, runtime.maintenanceBootActive
-                                                   ? SettingsPersistMode::Immediate
-                                                   : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    const SettingsPersistResult persistResult =
+        settings.applyDeviceSettingsUpdate(update, runtime.maintenanceBootActive
+                                                        ? SettingsPersistMode::Immediate
+                                                        : SettingsPersistMode::ImmediateNvsDeferredBackup);
+    if (!persistResult.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     // Maintenance boot intentionally skips GPS runtime init, so saving still
     // persists the new values to NVS (above) but we must not bring the UART

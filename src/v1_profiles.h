@@ -336,7 +336,8 @@ class V1ProfileManager {
 
     // Startup recovery for interrupted saves
     ProfileOperationResult loadProfileUnlocked(const String& canonicalName, V1Profile& profile,
-                                               bool allowTransactionRecovery = true) const;
+                                               bool allowTransactionRecovery = true,
+                                               bool verifyCandidateOwnedBySave = false) const;
     ProfileListResult listProfilesUnlocked() const;
     ProfileSaveResult saveProfileUnlocked(const V1Profile& profile, const String& canonicalName);
     ProfileOperationResult deleteProfileUnlocked(const String& canonicalName);

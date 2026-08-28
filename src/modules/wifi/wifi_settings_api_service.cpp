@@ -127,7 +127,11 @@ void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
         update.hasAlpDisableV1LaserOnPush = true;
         update.alpDisableV1LaserOnPush = argIsTrue(server.arg("alpDisableV1LaserOnPush"));
     }
-    runtime.applySettingsUpdate(update, runtime.ctx);
+    const SettingsPersistResult result = runtime.applySettingsUpdate(update, runtime.ctx);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     server.send(200, "application/json", "{\"success\":true}");
 }

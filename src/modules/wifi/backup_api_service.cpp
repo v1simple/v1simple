@@ -21,7 +21,6 @@ void feedTaskWatchdog(void* /*ctx*/) {
 static void sendBackup(WebServer& server, BackupSnapshotCache& cachedSnapshot, const BackupRuntime& runtime,
                        uint32_t (*millisFn)(void* ctx), void* millisCtx) {
     Serial.println("[HTTP] GET /api/settings/backup");
-    server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
     sendCachedBackupSnapshot(server, cachedSnapshot, runtime.getBackupRevision(runtime.ctx),
                              runtime.getCatalogRevision(runtime.ctx), runtime.buildDocument, runtime.ctx, millisFn,
                              millisCtx);
@@ -67,12 +66,9 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
         return;
     }
 
-    // Arduino WebServer has already read and buffered the whole request body by
-    // the time this handler is dispatched, so the transport-level allocation has
-    // happened before this handler runs.
-    // This cap does not bound the transport allocation or prevent a large
-    // upload from exhausting the heap. That requires streaming or
-    // Content-Length rejection in the transport layer.
+    // The maintenance ingress enforces the same cap from Content-Length before
+    // WebServer's body-sized allocation for supported non-multipart requests.
+    // Retain the handler check as defense in depth and for direct service tests.
     // WebServer::arg() returns String by value, so every call allocates a fresh
     // full copy of the body. Binding it once is the minimum achievable here.
     const String body = server.arg("plain");
@@ -93,6 +89,12 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
     if (!doc["_type"].is<const char*>() ||
         !BackupPayloadBuilder::isRecognizedBackupType(doc["_type"].as<const char*>())) {
         server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid backup format\"}");
+        return;
+    }
+    if (!doc["_crc32"].isNull() &&
+        (!doc["_crc32"].is<uint32_t>() ||
+         doc["_crc32"].as<uint32_t>() != BackupPayloadBuilder::computeBackupCrc32(doc))) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"Backup checksum mismatch\"}");
         return;
     }
 

@@ -12,6 +12,15 @@
 #include "../mocks/storage_manager.h"
 #include "../../src/settings.h"
 #include "../../src/v1_profiles.h"
+#include "../../src/modules/wifi/wifi_client_api_service.h"
+#include "../../src/modules/wifi/wifi_settings_api_service.h"
+#include "../../src/modules/wifi/wifi_audio_api_service.h"
+#include "../../src/modules/wifi/wifi_quiet_api_service.h"
+#include "../../src/modules/wifi/wifi_display_colors_api_service.h"
+#include "../../src/modules/gps/gps_api_service.h"
+#include "../../src/modules/gps/gps_runtime_module.h"
+#include "../../src/modules/obd/obd_api_service.h"
+#include "../../src/modules/obd/obd_runtime_module.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -35,6 +44,11 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 V1ProfileManager profiles;
 SettingsManager settings(storage, profiles);
 
+void GpsRuntimeModule::setEnabled(bool enabled) { enabled_ = enabled; }
+void GpsRuntimeModule::setBaud(uint32_t baud) { baud_ = baud; }
+ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t) const { return {}; }
+void ObdRuntimeModule::forgetDevice() {}
+
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -44,6 +58,13 @@ SettingsManager settings(storage, profiles);
 #include "../../src/settings_backup.cpp"
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
+#include "../../src/modules/wifi/wifi_client_api_service.cpp"
+#include "../../src/modules/wifi/wifi_settings_api_service.cpp"
+#include "../../src/modules/wifi/wifi_audio_api_service.cpp"
+#include "../../src/modules/wifi/wifi_quiet_api_service.cpp"
+#include "../../src/modules/wifi/wifi_display_colors_api_service.cpp"
+#include "../../src/modules/gps/gps_api_service.cpp"
+#include "../../src/modules/obd/obd_api_service.cpp"
 
 namespace {
 
@@ -75,6 +96,19 @@ String stagingNamespaceFor(const String& active) {
     return active == SETTINGS_NS_A ? String(SETTINGS_NS_B) : String(SETTINGS_NS_A);
 }
 
+void writeHealthySettingsCopy(const char* ns, uint8_t brightness, int version) {
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(ns, false));
+    TEST_ASSERT_TRUE(prefs.clear());
+    TEST_ASSERT_GREATER_THAN(0, prefs.putInt(kNvsSettingsVer, version));
+    TEST_ASSERT_GREATER_THAN(0, prefs.putBool(kNvsProxyBle, false));
+    TEST_ASSERT_GREATER_THAN(0, prefs.putString(kNvsProxyName, "Fixture"));
+    TEST_ASSERT_GREATER_THAN(0, prefs.putUChar(kNvsBrightness, brightness));
+    TEST_ASSERT_GREATER_THAN(0, prefs.putBool(kNvsAutoPush, false));
+    TEST_ASSERT_GREATER_THAN(0, prefs.putInt(kNvsValid, version));
+    prefs.end();
+}
+
 bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
     File file = fs.open(path, FILE_READ);
     if (!file) {
@@ -97,6 +131,19 @@ std::string readFileToString(fs::FS& fs, const char* path) {
     }
     file.close();
     return output;
+}
+
+void writeFileFromString(fs::FS& fs, const char* path, const String& contents) {
+    File file = fs.open(path, FILE_WRITE);
+    TEST_ASSERT_TRUE(file);
+    TEST_ASSERT_EQUAL_UINT(contents.length(), file.print(contents.c_str()));
+    file.close();
+}
+
+void writeJsonFile(fs::FS& fs, const char* path, const JsonDocument& doc) {
+    String serialized;
+    serializeJson(doc, serialized);
+    writeFileFromString(fs, path, serialized);
 }
 
 void assertSettingsEqual(const V1Settings& expected, const V1Settings& actual) {
@@ -252,6 +299,10 @@ void setUp() {
     std::filesystem::remove_all(g_tempRoot);
     std::filesystem::create_directories(g_tempRoot);
     resetRuntimeState();
+    fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_rename_state();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
 }
 
 void tearDown() {
@@ -446,6 +497,9 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     settings.slot0_default = AutoPushSlot("City", V1_MODE_LOGIC);
     settings.slot1_highway = AutoPushSlot("Highway", V1_MODE_ALL_BOGEYS);
     settings.slot2_comfort = AutoPushSlot("Quiet", V1_MODE_ADVANCED_LOGIC);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("City")).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Highway")).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Quiet")).success);
     settings.lastV1Address = "AA:BB:CC:DD:EE:FF";
     settings.autoPowerOffMinutes = 7;
     settings.apTimeoutMinutes = 15;
@@ -1045,6 +1099,9 @@ void test_wifi_sta_slots_restore_without_passwords_clears_stale_secrets() {
 }
 
 void test_legacy_station_backup_restores_to_slot0() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
@@ -1157,6 +1214,9 @@ void test_legacy_wifi_client_enabled_missing_still_heals_saved_slots() {
 }
 
 void test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slots() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
@@ -1178,6 +1238,9 @@ void test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slot
 }
 
 void test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
 
     JsonDocument doc;
@@ -1301,13 +1364,14 @@ void test_apply_backup_document_unifies_restore_field_coverage_and_profile_resto
     TEST_ASSERT_EQUAL_UINT8(6, restoredProfile.settings.bytes[5]);
 }
 
-void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_sibling() {
+void test_apply_backup_document_rejects_entire_document_when_any_profile_is_invalid() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     JsonDocument doc;
     doc["_type"] = "v1simple_http_backup";
+    doc["brightness"] = 77;
     JsonArray profileArray = doc["profiles"].to<JsonArray>();
 
     const char* invalidValues[] = {"\"6\"", "true", "null", "5.5", "-1", "256"};
@@ -1329,20 +1393,18 @@ void test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_s
     }
 
     SettingsManager manager(storage, profiles);
+    const uint8_t brightnessBefore = manager.get().brightness;
     const SettingsBackupApplyResult applyResult = manager.applyBackupDocument(doc, true);
 
-    TEST_ASSERT_TRUE(applyResult.success);
-    TEST_ASSERT_EQUAL_INT(1, applyResult.profilesRestored);
+    TEST_ASSERT_FALSE(applyResult.success);
+    TEST_ASSERT_EQUAL_INT(0, applyResult.profilesRestored);
+    TEST_ASSERT_EQUAL_UINT8(brightnessBefore, manager.get().brightness);
     for (size_t i = 0; i < sizeof(invalidValues) / sizeof(invalidValues[0]); ++i) {
         const String path = String("/v1profiles/Invalid") + String(static_cast<unsigned long>(i)) + ".json";
         TEST_ASSERT_FALSE(fs.exists(path));
     }
 
-    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Valid.json"));
-    V1Profile restoredProfile;
-    TEST_ASSERT_TRUE(profiles.loadProfile("Valid", restoredProfile));
-    TEST_ASSERT_EQUAL_STRING("Valid sibling", restoredProfile.description.c_str());
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedBytes, restoredProfile.settings.bytes, 6);
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Valid.json"));
 }
 
 void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
@@ -1686,7 +1748,7 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
     TEST_ASSERT_EQUAL_UINT8(7, target.get().speedMuteHysteresisMph);
 }
 
-void test_partial_recovery_uses_authoritative_profile_and_active_slot_sanitizers() {
+void test_sd_backup_builder_rejects_dangling_profile_assignment() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
@@ -1697,19 +1759,8 @@ void test_partial_recovery_uses_authoritative_profile_and_active_slot_sanitizers
     src.slot0_default.profileName = "A-profile-name-that-is-deliberately-longer-than-the-storage-contract-allows";
 
     SerializedSettingsBackupPayload payload;
-    TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(payload, source.get(), profiles, 5000));
-    TEST_ASSERT_TRUE(writeBackupAtomically(&fs, payload));
-    releaseSerializedSettingsBackupPayload(payload);
-
-    StorageManager::resetMockSdLockState();
-    StorageManager::mockSdLockState.failNextBlockingLock = true;
-
-    SettingsManager target(storage, profiles);
-    target.checkAndRestoreFromSD();
-
-    TEST_ASSERT_EQUAL_INT(2, target.get().activeSlot);
-    TEST_ASSERT_EQUAL_STRING(sanitizeProfileNameValue(src.slot0_default.profileName).c_str(),
-                             target.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_FALSE(buildSerializedSdBackupPayload(payload, source.get(), profiles, 5000));
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
 }
 
 void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
@@ -1724,6 +1775,11 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     sourceSettings.brightness = 88;
     sourceSettings.autoPushEnabled = true;
     sourceSettings.slot0_default = AutoPushSlot("Road", V1_MODE_LOGIC);
+    V1Profile road("Road");
+    for (int i = 0; i < 6; ++i) {
+        road.settings.bytes[i] = static_cast<uint8_t>(i + 1);
+    }
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
 
     SerializedSettingsBackupPayload payload;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(
@@ -2155,6 +2211,1394 @@ void test_healthy_nvs_recovers_referenced_profile_from_previous_backup() {
     verify_healthy_nvs_recovers_referenced_profile(true);
 }
 
+void test_enabled_setter_rolls_back_ram_and_reboot_state_on_persist_failure() {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    mock_preferences::set_fail_writes_for_key(kNvsWifiClientEnabled);
+    const SettingsPersistResult result = manager.setWifiClientEnabled(true);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_TRUE(result.changed);
+    TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.get().wifiClientEnabled);
+}
+
+void test_autopush_activation_rolls_back_ram_and_reboot_state_on_persist_failure() {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const int priorSlot = manager.get().activeSlot;
+    const bool priorEnabled = manager.get().autoPushEnabled;
+    AutoPushStateUpdate update;
+    update.hasActiveSlot = true;
+    update.activeSlot = 2;
+    update.hasEnabled = true;
+    update.enabled = !priorEnabled;
+
+    mock_preferences::set_fail_writes_for_key(kNvsActiveSlot);
+    const SettingsPersistResult result = manager.applyAutoPushStateUpdate(
+        update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_EQUAL_INT(priorSlot, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL(priorEnabled, manager.get().autoPushEnabled);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_INT(priorSlot, rebooted.get().activeSlot);
+    TEST_ASSERT_EQUAL(priorEnabled, rebooted.get().autoPushEnabled);
+}
+
+void test_lost_selector_chooses_newest_committed_generation() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_TRUE(meta.remove(kNvsMetaActive));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(99, rebooted.get().brightness);
+}
+
+void test_uncommitted_higher_generation_is_ignored_when_selector_is_lost() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const String committedNamespace = activeNamespaceOrEmpty();
+    const String stagedNamespace = stagingNamespaceFor(committedNamespace);
+
+    Preferences staged;
+    TEST_ASSERT_TRUE(staged.begin(stagedNamespace.c_str(), false));
+    TEST_ASSERT_GREATER_THAN(0, staged.putUInt(kNvsSettingsGeneration, 999));
+    TEST_ASSERT_GREATER_THAN(0, staged.putUInt(kNvsCommittedGeneration, 0));
+    staged.end();
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_TRUE(meta.remove(kNvsMetaActive));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(99, rebooted.get().brightness);
+}
+
+void test_selector_cannot_commit_a_higher_uncommitted_generation() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const String committedNamespace = activeNamespaceOrEmpty();
+    const String interruptedNamespace = stagingNamespaceFor(committedNamespace);
+
+    // Model reset after the selector cache moved but before commitGen landed.
+    Preferences interrupted;
+    TEST_ASSERT_TRUE(interrupted.begin(interruptedNamespace.c_str(), false));
+    TEST_ASSERT_GREATER_THAN(0, interrupted.putUChar(kNvsBrightness, 17));
+    TEST_ASSERT_GREATER_THAN(0, interrupted.putUInt(kNvsSettingsGeneration, 999));
+    TEST_ASSERT_GREATER_THAN(0, interrupted.putUInt(kNvsCommittedGeneration, 0));
+    interrupted.end();
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, interruptedNamespace));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(99, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING(committedNamespace.c_str(), activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, mock_preferences::getUnsigned(interruptedNamespace.c_str(), kNvsCommittedGeneration, 0));
+}
+
+void test_first_migration_staging_copy_is_not_committed_by_selector() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 41, SETTINGS_VERSION - 1);
+    writeHealthySettingsCopy(SETTINGS_NS_A, 99, SETTINGS_VERSION);
+    Preferences staged;
+    TEST_ASSERT_TRUE(staged.begin(SETTINGS_NS_A, false));
+    TEST_ASSERT_GREATER_THAN(0, staged.putUInt(kNvsSettingsGeneration, 1));
+    staged.end();
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+
+    TEST_ASSERT_EQUAL_UINT8(41, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsCommittedGeneration, 0));
+}
+
+void test_first_migration_staging_copy_is_not_committed_without_selector() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 41, SETTINGS_VERSION - 1);
+    writeHealthySettingsCopy(SETTINGS_NS_A, 99, SETTINGS_VERSION);
+    Preferences staged;
+    TEST_ASSERT_TRUE(staged.begin(SETTINGS_NS_A, false));
+    TEST_ASSERT_GREATER_THAN(0, staged.putUInt(kNvsSettingsGeneration, 1));
+    staged.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+
+    TEST_ASSERT_EQUAL_UINT8(41, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsCommittedGeneration, 0));
+}
+
+void test_generationless_ab_copy_is_adopted_as_legacy() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 41, SETTINGS_VERSION);
+    writeHealthySettingsCopy(SETTINGS_NS_A, 73, SETTINGS_VERSION);
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+
+    TEST_ASSERT_EQUAL_UINT8(73, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(
+        1u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsSettingsGeneration, 0));
+    TEST_ASSERT_EQUAL_UINT32(
+        1u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsCommittedGeneration, 0));
+}
+
+void test_failed_commit_generation_write_preserves_last_committed_settings() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 51;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 52;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    const String activeBefore = activeNamespaceOrEmpty();
+    const String staging = stagingNamespaceFor(activeBefore);
+    manager.mutableSettings().brightness = 93;
+    mock_preferences::set_fail_writes_for_key(kNvsCommittedGeneration);
+    TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_STRING(activeBefore.c_str(), activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(52, rebooted.get().brightness);
+}
+
+void test_equal_committed_generations_do_not_make_selector_authoritative() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    Preferences copyA;
+    TEST_ASSERT_TRUE(copyA.begin(SETTINGS_NS_A, false));
+    TEST_ASSERT_GREATER_THAN(0, copyA.putUChar(kNvsBrightness, 11));
+    TEST_ASSERT_GREATER_THAN(0, copyA.putUInt(kNvsSettingsGeneration, 7));
+    TEST_ASSERT_GREATER_THAN(0, copyA.putUInt(kNvsCommittedGeneration, 7));
+    copyA.end();
+    Preferences copyB;
+    TEST_ASSERT_TRUE(copyB.begin(SETTINGS_NS_B, false));
+    TEST_ASSERT_GREATER_THAN(0, copyB.putUChar(kNvsBrightness, 22));
+    TEST_ASSERT_GREATER_THAN(0, copyB.putUInt(kNvsSettingsGeneration, 7));
+    TEST_ASSERT_GREATER_THAN(0, copyB.putUInt(kNvsCommittedGeneration, 7));
+    copyB.end();
+
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+    SettingsManager selectedFromA(storage, profiles);
+    selectedFromA.load();
+    const uint8_t deterministicBrightness = selectedFromA.get().brightness;
+
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_B));
+    meta.end();
+    SettingsManager selectedFromB(storage, profiles);
+    selectedFromB.load();
+    TEST_ASSERT_EQUAL_UINT8(deterministicBrightness, selectedFromB.get().brightness);
+}
+
+void test_stale_known_selector_is_repaired_to_newest_committed_generation() {
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const String olderNamespace = activeNamespaceOrEmpty();
+    manager.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    TEST_ASSERT_TRUE(olderNamespace != activeNamespaceOrEmpty());
+
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, olderNamespace));
+    meta.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(99, rebooted.get().brightness);
+    TEST_ASSERT_TRUE(olderNamespace != activeNamespaceOrEmpty());
+}
+
+void test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "NewNet", "new-password", "New", 0));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    const std::string secretBefore = readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH);
+    TEST_ASSERT_GREATER_THAN_UINT32(8u, static_cast<uint32_t>(secretBefore.size()));
+
+    fs::mock_set_fs_write_budget(8);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "NewNet", "new-password", "New", 0));
+    TEST_ASSERT_EQUAL_STRING("OldNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING(secretBefore.c_str(), readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+
+    fs::mock_reset_fs_write_budget();
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING(secretBefore.c_str(), readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+}
+
+void test_interrupted_forget_all_reboots_with_every_slot_and_password_restored() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "One", "password-one", "One", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "Two", "password-two", "Two", 1));
+
+    manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
+    TEST_ASSERT_FALSE(manager.clearWifiClientCredentials());
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("One", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Two", rebooted.get().wifiStaSlots[1].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("password-one", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("password-two", rebooted.getWifiStaSlotPassword(1).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_restore_crc_mismatch_rejects_before_any_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    const uint8_t brightnessBefore = manager.get().brightness;
+    JsonDocument doc;
+    BackupPayloadBuilder::buildBackupDocument(
+        doc, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::SdBackup, 2000);
+    TEST_ASSERT_TRUE(doc["_crc32"].is<uint32_t>());
+    doc["brightness"] = 77;
+
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_EQUAL_UINT8(brightnessBefore, manager.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
+}
+
+void test_restore_dangling_assignment_rejects_before_any_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    const uint8_t brightnessBefore = manager.get().brightness;
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    doc["brightness"] = 77;
+    doc["slot0ProfileName"] = "Missing";
+
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_EQUAL_UINT8(brightnessBefore, manager.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("", manager.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
+}
+
+void test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    V1Profile road("Road");
+    for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(i + 1);
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 41;
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    doc["brightness"] = 99;
+    doc["slot0ProfileName"] = "Road";
+    JsonObject profile = doc["profiles"].to<JsonArray>().add<JsonObject>();
+    profile["name"] = "Road";
+    JsonArray bytes = profile["bytes"].to<JsonArray>();
+    for (int i = 0; i < 6; ++i) bytes.add(static_cast<uint8_t>(20 + i));
+
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_UINT8(41, manager.get().brightness);
+    V1Profile restored;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, restored.settings.bytes, 6);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(41, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+}
+
+void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "One", "password-one", "One", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "Two", "password-two", "Two", 1));
+
+    WifiClientApiService::Runtime runtime{};
+    runtime.maintenanceBootActive = true;
+    runtime.updateSavedNetworkPriorities =
+        [](const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates, void* ctx) {
+            std::vector<WifiStaPriorityUpdate> settingsUpdates;
+            for (const auto& update : updates) {
+                settingsUpdates.push_back(WifiStaPriorityUpdate{update.index, update.priority});
+            }
+            return static_cast<SettingsManager*>(ctx)->applyWifiStaPriorityUpdates(settingsUpdates).success
+                       ? WifiClientApiService::PriorityUpdateStatus::Success
+                       : WifiClientApiService::PriorityUpdateStatus::PersistFailed;
+        };
+    runtime.updateSavedNetworkPrioritiesCtx = &manager;
+    WebServer failed(80);
+    failed.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPriority[0]);
+    WifiClientApiService::handleApiNetworksPriorities(failed, runtime, nullptr, nullptr, nullptr, nullptr);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_INT(500, failed.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT8(0, manager.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(1, manager.get().wifiStaSlots[1].priority);
+    SettingsManager failedReboot(storage, profiles);
+    failedReboot.load();
+    TEST_ASSERT_EQUAL_UINT8(0, failedReboot.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(1, failedReboot.get().wifiStaSlots[1].priority);
+
+    WebServer success(80);
+    success.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    WifiClientApiService::handleApiNetworksPriorities(success, runtime, nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, success.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT8(1, manager.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(0, manager.get().wifiStaSlots[1].priority);
+    SettingsManager successReboot(storage, profiles);
+    successReboot.load();
+    TEST_ASSERT_EQUAL_UINT8(1, successReboot.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(0, successReboot.get().wifiStaSlots[1].priority);
+}
+
+void test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    WifiSettingsApiService::Runtime runtime{};
+    runtime.ctx = &manager;
+    runtime.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<SettingsManager*>(ctx)->get();
+    };
+    runtime.applySettingsUpdate = [](const DeviceSettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyDeviceSettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    };
+    WebServer server(80);
+    server.setArg("proxy_ble", "false");
+    mock_preferences::set_fail_writes_for_key(kNvsProxyBle);
+    WifiSettingsApiService::handleApiDeviceSettingsSave(server, runtime);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_TRUE(manager.get().proxyBLE);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_TRUE(rebooted.get().proxyBLE);
+}
+
+void test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    WifiAudioSettingsRuntime runtime{};
+    runtime.ctx = &manager;
+    runtime.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<SettingsManager*>(ctx)->get();
+    };
+    runtime.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyAudioSettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    };
+
+    WebServer audioServer(80);
+    audioServer.setArg("voiceVolume", "44");
+    mock_preferences::set_fail_writes_for_key(kNvsVoiceVolume);
+    WifiAudioApiService::handleApiSave(audioServer, runtime);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_INT(500, audioServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT8(75, manager.get().voiceVolume);
+
+    WebServer quietServer(80);
+    quietServer.setArg("stealthEnabled", "true");
+    mock_preferences::set_fail_writes_for_key(kNvsStealthEnabled);
+    WifiQuietApiService::handleApiSave(quietServer, runtime);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_INT(500, quietServer.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().stealthEnabled);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(75, rebooted.get().voiceVolume);
+    TEST_ASSERT_FALSE(rebooted.get().stealthEnabled);
+}
+
+void test_display_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    WifiDisplayColorsApiService::Runtime runtime{};
+    runtime.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<SettingsManager*>(ctx)->get();
+    };
+    runtime.getSettingsCtx = &manager;
+    runtime.applySettingsUpdate = [](const DisplaySettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyDisplaySettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    };
+    runtime.applySettingsUpdateCtx = &manager;
+    WebServer server(80);
+    server.setArg("brightness", "44");
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    WifiDisplayColorsApiService::handleApiSave(server, runtime, nullptr, nullptr);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT8(200, manager.get().brightness);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(200, rebooted.get().brightness);
+}
+
+void test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    GpsApiService::Runtime runtime{};
+    runtime.maintenanceBootActive = true;
+    WebServer server(80);
+    server.setArg("plain", "{\"gpsEnabled\":true}");
+    mock_preferences::set_fail_writes_for_key(kNvsGpsEnabled);
+    GpsApiService::handleApiConfigSave(server, manager, nullptr, runtime);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().gpsEnabled);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.get().gpsEnabled);
+}
+
+void test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    ObdApiService::Runtime runtime{};
+    runtime.maintenanceBootActive = true;
+    WebServer server(80);
+    server.setArg("plain", "{\"enabled\":true}");
+    mock_preferences::set_fail_writes_for_key(kNvsObdEnabled);
+    ObdApiService::handleApiConfig(server, nullptr, manager, runtime);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().obdEnabled);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.get().obdEnabled);
+}
+
+void test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_FALSE(profiles.isReady());
+    SettingsManager manager(storage, profiles);
+    JsonDocument httpDoc;
+    const BackupPayloadBuilder::BuildResult httpResult = BackupPayloadBuilder::buildBackupDocument(
+        httpDoc, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    TEST_ASSERT_FALSE(httpResult.safeToCommit);
+    TEST_ASSERT_FALSE(httpResult.profileCatalogGenuinelyEmpty);
+    TEST_ASSERT_FALSE(manager.backupToSD());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
+}
+
+void test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    const uint8_t oldBrightness = manager.get().brightness;
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    doc["brightness"] = 91;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["label"] = "New";
+    slot["priority"] = 0;
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_TRUE(fs.exists("/v1restore_transaction.json"));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_UINT8(oldBrightness, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+}
+
+void test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["label"] = "New";
+    slot["priority"] = 0;
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_TRUE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_TRUE(little.exists("/v1restore_transaction.json"));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
+}
+
+void test_interrupted_restore_after_profile_write_reboots_to_old_profile() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(i + 1);
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    manager.mutableSettings().brightness = 33;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    doc["brightness"] = 88;
+    doc["slot0ProfileName"] = "Road";
+    JsonObject incoming = doc["profiles"].to<JsonArray>().add<JsonObject>();
+    incoming["name"] = "Road";
+    JsonArray bytes = incoming["bytes"].to<JsonArray>();
+    for (int i = 0; i < 6; ++i) bytes.add(static_cast<uint8_t>(20 + i));
+
+    manager.utInterruptRestoreAfterProfiles(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    V1Profile changed;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", changed));
+    TEST_ASSERT_EQUAL_UINT8(20, changed.settings.bytes[0]);
+    TEST_ASSERT_TRUE(fs.exists("/v1restore_transaction.json"));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_UINT8(33, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+    TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+}
+
+void test_restore_password_remove_failure_rolls_back_on_modeled_reboot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+
+    mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPassword[0]);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_restore_password_write_failure_does_not_create_partial_network() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+
+    mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPassword[0]);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_restore_sd_secret_promotion_failure_preserves_old_pair() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+
+    const size_t renameBefore = fs::g_mock_fs_rename_state.renameCalls;
+    // Journal promotion, old-secret removal, then new-secret promotion.
+    fs::mock_fail_rename_on_call(renameBefore + 3);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    fs::mock_reset_fs_rename_state();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_busy_profile_delete_leaves_profile_and_assignments_durable() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    const ProfileOperationResult result = manager.deleteProfileAndReferences("Road");
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Busy), static_cast<int>(result.status));
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+}
+
+void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_reboot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(i + 3);
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    // The compact journal and tombstone metadata fit; the larger compensating
+    // profile rewrite is short-written after assignment persistence fails.
+    fs::mock_set_fs_write_budget(300);
+    mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
+    const ProfileOperationResult failed = manager.deleteProfileAndReferences("Road");
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(failed.status));
+    TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
+    V1Profile unavailable;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(profiles.loadProfileResult("Road", unavailable).status));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    fs::mock_reset_fs_write_budget();
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+}
+
+void test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_snapshot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.description = "snapshot";
+    road.displayOn = false;
+    road.mainVolume = 7;
+    road.mutedVolume = 2;
+    for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(11 + i);
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    TEST_ASSERT_TRUE(profiles.deleteProfileResult("Road").success());
+
+    V1Profile deleted;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(profiles.loadProfileResult("Road", deleted).status));
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    V1Profile restored;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_STRING("snapshot", restored.description.c_str());
+    TEST_ASSERT_FALSE(restored.displayOn);
+    TEST_ASSERT_EQUAL_UINT8(7, restored.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, restored.mutedVolume);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, restored.settings.bytes, 6);
+}
+
+void test_profile_delete_reset_after_journal_converges_to_old_complete_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.settings.bytes[0] = 17;
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utInterruptProfileDeleteAfterJournal(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    V1Profile restored;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_UINT8(17, restored.settings.bytes[0]);
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+}
+
+void test_profile_delete_reset_after_profile_removal_converges_to_old_complete_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.settings.bytes[0] = 23;
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot1_highway.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot1_highway.profileName.c_str());
+    V1Profile restored;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_UINT8(23, restored.settings.bytes[0]);
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+}
+
+void test_profile_delete_reset_after_reference_commit_converges_to_new_complete_state() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot2_comfort.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utInterruptProfileDeleteAfterReferences(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("", rebooted.get().slot2_comfort.profileName.c_str());
+    V1Profile deleted;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(rebootProfiles.loadProfileResult("Road", deleted).status));
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+}
+
+void test_restore_uses_valid_secondary_when_primary_crc_is_corrupt() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument doc;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+
+    JsonDocument corrupt;
+    TEST_ASSERT_TRUE(loadJsonFile(sd, "/v1restore_transaction.json", corrupt));
+    corrupt["credentialsMutated"] = false; // Parseable, but CRC no longer matches.
+    writeJsonFile(sd, "/v1restore_transaction.json", corrupt);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
+}
+
+void test_restore_token_advances_after_meta_loss_and_rolls_back_second_interruption() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument first;
+    JsonObject firstSlot = first["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    firstSlot["index"] = 0;
+    firstSlot["ssid"] = "CommittedNet";
+    firstSlot["passwordObf"] = encodeObfuscatedForStorage("committed-password");
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(first, true).success);
+    const String firstNamespace = activeNamespaceOrEmpty();
+    const int64_t firstWatermark = mock_preferences::getSigned(
+        firstNamespace.c_str(), kNvsRestoreCommitWatermark, 0);
+    TEST_ASSERT_GREATER_THAN_INT64(0, firstWatermark);
+
+    // Lose selector and sequence metadata while both A/B payloads survive.
+    mock_preferences::ensureNamespace(SETTINGS_NS_META).clear();
+    SettingsManager second(storage, profiles);
+    second.load();
+    TEST_ASSERT_EQUAL_STRING("CommittedNet", second.get().wifiStaSlots[0].ssid.c_str());
+
+    JsonDocument interrupted;
+    JsonObject interruptedSlot = interrupted["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    interruptedSlot["index"] = 0;
+    interruptedSlot["ssid"] = "InterruptedNet";
+    interruptedSlot["passwordObf"] = encodeObfuscatedForStorage("interrupted-password");
+    second.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(second.applyBackupDocument(interrupted, true).success);
+    JsonDocument journal;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, "/v1restore_transaction.json", journal));
+    TEST_ASSERT_GREATER_THAN_INT64(firstWatermark, journal["token"].as<int64_t>());
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("CommittedNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("committed-password", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_stale_offline_restore_journal_is_cleanup_only_after_ordinary_save() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    JsonDocument doc;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "CommittedNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("committed-password");
+    manager.utLeaveRestoreJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_TRUE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_TRUE(little.exists("/v1restore_transaction.json"));
+
+    storage.setFilesystem(&little, false);
+    storage.setLittleFS(nullptr);
+    V1ProfileManager offlineProfiles;
+    TEST_ASSERT_TRUE(offlineProfiles.begin(storage));
+    SettingsManager offline(storage, offlineProfiles);
+    offline.load();
+    offline.checkAndRestoreFromSD();
+    TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
+    offline.mutableSettings().brightness = 77;
+    TEST_ASSERT_TRUE(offline.saveDeferredBackup());
+
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager reattachedProfiles;
+    TEST_ASSERT_TRUE(reattachedProfiles.begin(storage));
+    SettingsManager reattached(storage, reattachedProfiles);
+    reattached.load();
+    reattached.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("CommittedNet", reattached.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("committed-password", reattached.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_UINT8(77, reattached.get().brightness);
+    TEST_ASSERT_FALSE(sd.exists("/v1restore_transaction.json"));
+}
+
+void test_divergent_pending_restore_mirrors_fail_closed_and_preserve_evidence() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    JsonDocument doc;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+
+    JsonDocument divergent;
+    TEST_ASSERT_TRUE(loadJsonFile(sd, "/v1restore_transaction.json", divergent));
+    divergent["token"] = divergent["token"].as<int64_t>() + 1;
+    stampJournalCrc(divergent);
+    writeJsonFile(sd, "/v1restore_transaction.json", divergent);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_TRUE(little.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_EQUAL_STRING("new-password", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_divergent_restore_mirrors_use_watermark_to_select_pending_record() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument committed;
+    JsonObject committedSlot = committed["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    committedSlot["index"] = 0;
+    committedSlot["ssid"] = "CommittedNet";
+    committedSlot["passwordObf"] = encodeObfuscatedForStorage("committed-password");
+    manager.utLeaveRestoreJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(committed, true).success);
+    const String obsoleteMirror = readFileToString(little, "/v1restore_transaction.json").c_str();
+
+    JsonDocument interrupted;
+    JsonObject interruptedSlot = interrupted["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    interruptedSlot["index"] = 0;
+    interruptedSlot["ssid"] = "InterruptedNet";
+    interruptedSlot["passwordObf"] = encodeObfuscatedForStorage("interrupted-password");
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(interrupted, true).success);
+    writeFileFromString(little, "/v1restore_transaction.json", obsoleteMirror);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("CommittedNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("committed-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
+}
+
+void test_oversized_restore_journal_is_rejected_and_preserved() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    std::string oversized(RESTORE_TRANSACTION_MAX_BYTES + 1, 'x');
+    writeFileFromString(fs, "/v1restore_transaction.json", oversized.c_str());
+    SettingsManager manager(storage, profiles);
+    manager.load();
+    TEST_ASSERT_FALSE(manager.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(fs.exists("/v1restore_transaction.json"));
+}
+
+void test_committed_unassigned_profile_delete_journal_does_not_overwrite_recreation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utLeaveProfileDeleteJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.deleteProfileAndReferences("Road").success());
+
+    V1Profile recreated("Road");
+    recreated.description = "later-unassigned";
+    recreated.settings.bytes[0] = 81;
+    TEST_ASSERT_TRUE(profiles.saveProfile(recreated).success);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("later-unassigned", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(81, loaded.settings.bytes[0]);
+}
+
+void test_committed_profile_delete_journal_does_not_overwrite_reassigned_recreation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utLeaveProfileDeleteJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.deleteProfileAndReferences("Road").success());
+
+    V1Profile recreated("Road");
+    recreated.description = "later-reassigned";
+    recreated.settings.bytes[0] = 91;
+    TEST_ASSERT_TRUE(profiles.saveProfile(recreated).success);
+    manager.mutableSettings().slot1_highway.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot1_highway.profileName.c_str());
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("later-reassigned", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(91, loaded.settings.bytes[0]);
+}
+
+void test_profile_delete_uses_valid_secondary_when_primary_crc_is_corrupt() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.description = "snapshot";
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+
+    JsonDocument corrupt;
+    TEST_ASSERT_TRUE(loadJsonFile(sd, "/v1profile_delete_transaction.json", corrupt));
+    corrupt["hadReferences"] = false;
+    writeJsonFile(sd, "/v1profile_delete_transaction.json", corrupt);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    V1Profile restored;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_STRING("snapshot", restored.description.c_str());
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+}
+
+void test_stale_offline_profile_delete_journal_cannot_target_later_recreation() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utLeaveProfileDeleteJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.deleteProfileAndReferences("Road").success());
+
+    storage.setFilesystem(&little, false);
+    storage.setLittleFS(nullptr);
+    V1ProfileManager offlineProfiles;
+    TEST_ASSERT_TRUE(offlineProfiles.begin(storage));
+    SettingsManager offline(storage, offlineProfiles);
+    offline.load();
+    offline.checkAndRestoreFromSD();
+    V1Profile recreated("Road");
+    recreated.description = "offline-recreation";
+    recreated.settings.bytes[0] = 101;
+    TEST_ASSERT_TRUE(offlineProfiles.saveProfile(recreated).success);
+    offline.mutableSettings().slot2_comfort.profileName = "Road";
+    TEST_ASSERT_TRUE(offline.saveDeferredBackup());
+
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager reattachedProfiles;
+    TEST_ASSERT_TRUE(reattachedProfiles.begin(storage));
+    SettingsManager reattached(storage, reattachedProfiles);
+    reattached.load();
+    reattached.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", reattached.get().slot2_comfort.profileName.c_str());
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(reattachedProfiles.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("offline-recreation", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(101, loaded.settings.bytes[0]);
+    TEST_ASSERT_FALSE(sd.exists("/v1profile_delete_transaction.json"));
+}
+
+void test_divergent_pending_profile_delete_mirrors_fail_closed_and_preserve_evidence() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+    JsonDocument divergent;
+    TEST_ASSERT_TRUE(loadJsonFile(sd, "/v1profile_delete_transaction.json", divergent));
+    divergent["token"] = divergent["token"].as<int64_t>() + 1;
+    stampJournalCrc(divergent);
+    writeJsonFile(sd, "/v1profile_delete_transaction.json", divergent);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(sd.exists("/v1profile_delete_transaction.json"));
+    TEST_ASSERT_TRUE(little.exists("/v1profile_delete_transaction.json"));
+    V1Profile missing;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(rebootProfiles.loadProfileResult("Road", missing).status));
+}
+
+void test_divergent_profile_delete_mirrors_use_watermark_to_select_pending_record() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile original("Road");
+    original.description = "original";
+    TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utLeaveProfileDeleteJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.deleteProfileAndReferences("Road").success());
+    const String obsoleteMirror = readFileToString(little, "/v1profile_delete_transaction.json").c_str();
+
+    V1Profile recreated("Road");
+    recreated.description = "recreated-before-interruption";
+    recreated.settings.bytes[0] = 111;
+    TEST_ASSERT_TRUE(profiles.saveProfile(recreated).success);
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+    writeFileFromString(little, "/v1profile_delete_transaction.json", obsoleteMirror);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    V1Profile restored;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_STRING("recreated-before-interruption", restored.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(111, restored.settings.bytes[0]);
+    TEST_ASSERT_FALSE(sd.exists("/v1profile_delete_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1profile_delete_transaction.json"));
+}
+
+void test_mutation_gate_blocks_same_name_profile_until_pending_journal_cleanup_succeeds() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+
+    V1Profile original("Road");
+    original.description = "pre-delete";
+    original.settings.bytes[0] = 41;
+    TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+
+    SettingsManager manager(storage, profiles);
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+    TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    fs::mock_fail_next_remove("/v1profile_delete_transaction.json");
+
+    V1Profile replacement("Road");
+    replacement.description = "newer-user-edit";
+    replacement.settings.bytes[0] = 92;
+    bool mutationInvoked = false;
+    const auto attemptMutation = [&]() {
+        if (!rebooted.resolveStorageTransactionsForMutation()) {
+            return false;
+        }
+        mutationInvoked = true;
+        return profiles.saveProfile(replacement).success;
+    };
+
+    TEST_ASSERT_FALSE(attemptMutation());
+    TEST_ASSERT_FALSE(mutationInvoked);
+    TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
+    V1Profile rolledBack;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", rolledBack));
+    TEST_ASSERT_EQUAL_STRING("pre-delete", rolledBack.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(41, rolledBack.settings.bytes[0]);
+
+    TEST_ASSERT_TRUE(attemptMutation());
+    TEST_ASSERT_TRUE(mutationInvoked);
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+
+    SettingsManager afterCleanup(storage, profiles);
+    afterCleanup.load();
+    TEST_ASSERT_TRUE(afterCleanup.resolveStorageTransactionsForMutation());
+    V1Profile preserved;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", preserved));
+    TEST_ASSERT_EQUAL_STRING("newer-user-edit", preserved.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(92, preserved.settings.bytes[0]);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
@@ -2190,7 +3634,7 @@ int main() {
     RUN_TEST(test_backup_restore_heals_missing_wifi_client_enabled_with_saved_slots);
     RUN_TEST(test_legacy_wifi_client_credentials_migrate_to_slot0);
     RUN_TEST(test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore);
-    RUN_TEST(test_apply_backup_document_skips_invalid_profile_bytes_and_persists_valid_sibling);
+    RUN_TEST(test_apply_backup_document_rejects_entire_document_when_any_profile_is_invalid);
     RUN_TEST(test_serialized_backup_payload_matches_builder_and_writes_same_json);
     RUN_TEST(test_device_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_proxy_mode_disables_obd_setting);
@@ -2205,7 +3649,7 @@ int main() {
     RUN_TEST(test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_autopush_state_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_partial_recovery_restores_both_speed_mute_fields);
-    RUN_TEST(test_partial_recovery_uses_authoritative_profile_and_active_slot_sanitizers);
+    RUN_TEST(test_sd_backup_builder_rejects_dangling_profile_assignment);
     RUN_TEST(test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot);
     RUN_TEST(test_voice_fields_round_trip_through_sd_backup_and_restore);
     RUN_TEST(test_gps_fields_round_trip_through_backup_and_restore);
@@ -2222,5 +3666,54 @@ int main() {
     RUN_TEST(test_profile_delete_reconciliation_clears_all_slots_and_survives_reload);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_primary_backup);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_previous_backup);
+    RUN_TEST(test_enabled_setter_rolls_back_ram_and_reboot_state_on_persist_failure);
+    RUN_TEST(test_autopush_activation_rolls_back_ram_and_reboot_state_on_persist_failure);
+    RUN_TEST(test_lost_selector_chooses_newest_committed_generation);
+    RUN_TEST(test_uncommitted_higher_generation_is_ignored_when_selector_is_lost);
+    RUN_TEST(test_selector_cannot_commit_a_higher_uncommitted_generation);
+    RUN_TEST(test_first_migration_staging_copy_is_not_committed_by_selector);
+    RUN_TEST(test_first_migration_staging_copy_is_not_committed_without_selector);
+    RUN_TEST(test_generationless_ab_copy_is_adopted_as_legacy);
+    RUN_TEST(test_failed_commit_generation_write_preserves_last_committed_settings);
+    RUN_TEST(test_equal_committed_generations_do_not_make_selector_authoritative);
+    RUN_TEST(test_stale_known_selector_is_repaired_to_newest_committed_generation);
+    RUN_TEST(test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair);
+    RUN_TEST(test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently);
+    RUN_TEST(test_interrupted_forget_all_reboots_with_every_slot_and_password_restored);
+    RUN_TEST(test_restore_crc_mismatch_rejects_before_any_mutation);
+    RUN_TEST(test_restore_dangling_assignment_rejects_before_any_mutation);
+    RUN_TEST(test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state);
+    RUN_TEST(test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure);
+    RUN_TEST(test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
+    RUN_TEST(test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram);
+    RUN_TEST(test_display_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
+    RUN_TEST(test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply);
+    RUN_TEST(test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
+    RUN_TEST(test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup);
+    RUN_TEST(test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret);
+    RUN_TEST(test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery);
+    RUN_TEST(test_interrupted_restore_after_profile_write_reboots_to_old_profile);
+    RUN_TEST(test_restore_password_remove_failure_rolls_back_on_modeled_reboot);
+    RUN_TEST(test_restore_password_write_failure_does_not_create_partial_network);
+    RUN_TEST(test_restore_sd_secret_promotion_failure_preserves_old_pair);
+    RUN_TEST(test_busy_profile_delete_leaves_profile_and_assignments_durable);
+    RUN_TEST(test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_reboot);
+    RUN_TEST(test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_snapshot);
+    RUN_TEST(test_profile_delete_reset_after_journal_converges_to_old_complete_state);
+    RUN_TEST(test_profile_delete_reset_after_profile_removal_converges_to_old_complete_state);
+    RUN_TEST(test_profile_delete_reset_after_reference_commit_converges_to_new_complete_state);
+    RUN_TEST(test_restore_uses_valid_secondary_when_primary_crc_is_corrupt);
+    RUN_TEST(test_restore_token_advances_after_meta_loss_and_rolls_back_second_interruption);
+    RUN_TEST(test_stale_offline_restore_journal_is_cleanup_only_after_ordinary_save);
+    RUN_TEST(test_divergent_pending_restore_mirrors_fail_closed_and_preserve_evidence);
+    RUN_TEST(test_divergent_restore_mirrors_use_watermark_to_select_pending_record);
+    RUN_TEST(test_oversized_restore_journal_is_rejected_and_preserved);
+    RUN_TEST(test_committed_unassigned_profile_delete_journal_does_not_overwrite_recreation);
+    RUN_TEST(test_committed_profile_delete_journal_does_not_overwrite_reassigned_recreation);
+    RUN_TEST(test_profile_delete_uses_valid_secondary_when_primary_crc_is_corrupt);
+    RUN_TEST(test_stale_offline_profile_delete_journal_cannot_target_later_recreation);
+    RUN_TEST(test_divergent_pending_profile_delete_mirrors_fail_closed_and_preserve_evidence);
+    RUN_TEST(test_divergent_profile_delete_mirrors_use_watermark_to_select_pending_record);
+    RUN_TEST(test_mutation_gate_blocks_same_name_profile_until_pending_journal_cleanup_succeeds);
     return UNITY_END();
 }

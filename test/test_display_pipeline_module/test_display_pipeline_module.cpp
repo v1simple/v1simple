@@ -9,6 +9,7 @@
 #include "../mocks/display.h"
 #include "../mocks/packet_parser.h"
 #include "../mocks/settings.h"
+#include "../../src/audio_beep.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -20,6 +21,9 @@ unsigned long mockMicros = 0;
 #include "../../src/modules/alert_persistence/alert_persistence_module.h"
 
 static int g_voiceProcessCalls = 0;
+static AudioPlaybackResult g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+static int g_voicePlaybackAttempts = 0;
+static uint16_t g_lastVoiceFrequency = 0;
 
 AlertPersistenceModule::AlertPersistenceModule() = default;
 
@@ -81,17 +85,10 @@ AlpGunType alpLookupGun(uint8_t, uint8_t) { return AlpGunType::UNKNOWN; }
 AlpGunType alpLookupGunDetect(uint8_t, uint8_t) { return AlpGunType::UNKNOWN; }
 #include "../../src/modules/speed_mute/speed_mute_module.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
+#include "../../src/modules/voice/voice_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
-
-VoiceModule::VoiceModule() {}
-void VoiceModule::begin(SettingsManager*, V1BLEClient*) {}
-void VoiceModule::clearAllState() {}
-VoiceAction VoiceModule::process(const VoiceContext&) {
-    ++g_voiceProcessCalls;
-    return VoiceAction{};
-}
 
 void play_frequency_voice(AlertBand,
                           uint16_t,
@@ -101,6 +98,20 @@ void play_frequency_voice(AlertBand,
                           uint8_t) {}
 void play_direction_only(AlertDirection, uint8_t) {}
 void play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t) {}
+AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t freq, AlertDirection, VoiceAlertMode, bool, uint8_t) {
+    ++g_voicePlaybackAttempts;
+    g_lastVoiceFrequency = freq;
+    return g_voicePlaybackResult;
+}
+AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t) {
+    ++g_voicePlaybackAttempts;
+    return g_voicePlaybackResult;
+}
+AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t,
+                                               uint8_t) {
+    ++g_voicePlaybackAttempts;
+    return g_voicePlaybackResult;
+}
 
 static DisplayMode displayMode = DisplayMode::IDLE;
 static V1Display display;
@@ -174,7 +185,11 @@ void setUp() {
     displayMode = DisplayMode::IDLE;
     settings = SettingsManager{};
     g_voiceProcessCalls = 0;
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    g_voicePlaybackAttempts = 0;
+    g_lastVoiceFrequency = 0;
     quiet.begin(&ble, &parser);
+    voice.begin(&settings, &ble);
     beginModule();
 }
 
@@ -200,6 +215,58 @@ void test_handle_parsed_updates_live_display_when_alert_present() {
         "main live bars should use the parsed local display strength");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, display.lastRenderFrame.context.signalBars,
         "parsed local display bars remain available as frame context");
+}
+
+void test_busy_voice_keeps_exact_action_until_playback_accepts() {
+    parser.setMainVolume(5);
+    parser.setAlerts({makeKAlert(24148)});
+    g_voicePlaybackResult = AudioPlaybackResult::Busy;
+
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
+
+    module.handleParsed(1050);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(1100);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
+
+    module.handleParsed(1150);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+}
+
+void test_busy_voice_drops_stale_pending_action_when_alert_changes() {
+    parser.setMainVolume(5);
+    parser.setAlerts({makeKAlert(24148)});
+    g_voicePlaybackResult = AudioPlaybackResult::Busy;
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
+
+    parser.setAlerts({makeKAlert(24250)});
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(1050);
+
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
+}
+
+void test_unavailable_voice_is_not_retried_every_frame_or_committed() {
+    parser.setMainVolume(5);
+    parser.setAlerts({makeKAlert(24148)});
+    g_voicePlaybackResult = AudioPlaybackResult::Unavailable;
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    module.handleParsed(1100);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(2000);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
 }
 
 void test_handle_parsed_updates_resting_display_when_idle() {
@@ -962,6 +1029,9 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_handle_parsed_updates_live_display_when_alert_present);
+    RUN_TEST(test_busy_voice_keeps_exact_action_until_playback_accepts);
+    RUN_TEST(test_busy_voice_drops_stale_pending_action_when_alert_changes);
+    RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);
     RUN_TEST(test_handle_parsed_prefers_persisted_alert_when_configured);
     RUN_TEST(test_first_post_disconnect_display_frame_is_idle_not_stale_v1);

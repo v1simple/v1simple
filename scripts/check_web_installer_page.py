@@ -9,8 +9,11 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
+import write_release_manifests as release_manifests
+
 
 ROOT = Path(__file__).resolve().parents[1]
+PARTITIONS_PATH = ROOT / "partitions_v1.csv"
 PROJECT_LICENSE_PATH = "LICENSE"
 NOTICE_PATH = "THIRD_PARTY_NOTICES.md"
 BRANDING_PATHS = (
@@ -39,6 +42,7 @@ class InstallerParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.install_manifests: list[str] = []
+        self.install_modes: list[str] = []
         self.module_scripts: list[str] = []
         self.links: list[str] = []
         self.images: list[str] = []
@@ -47,6 +51,7 @@ class InstallerParser(HTMLParser):
         attr = {name: value or "" for name, value in attrs}
         if tag == "esp-web-install-button" and "manifest" in attr:
             self.install_manifests.append(attr["manifest"])
+            self.install_modes.append(attr.get("data-install-mode", ""))
         if tag == "script" and attr.get("type") == "module" and "src" in attr:
             self.module_scripts.append(attr["src"])
         if tag == "a" and "href" in attr:
@@ -62,28 +67,43 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def validate_manifest(site_dir: Path, manifest_path: str, require_assets: bool) -> list[str]:
+def validate_manifest(
+    site_dir: Path,
+    manifest_path: str,
+    require_assets: bool,
+    expected_version: str | None,
+) -> tuple[list[str], str | None]:
     errors: list[str] = []
     manifest_file = site_dir / manifest_path
     if not manifest_file.is_file():
         if require_assets:
-            return [f"manifest not found: {display_path(manifest_file)}"]
-        return []
+            return [f"manifest not found: {display_path(manifest_file)}"], None
+        return [], None
 
     try:
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        return [f"{display_path(manifest_file)} is invalid JSON: {exc}"]
+        return [f"{display_path(manifest_file)} is invalid JSON: {exc}"], None
 
     if manifest.get("name") != "V1-Simple":
         errors.append("manifest name must be V1-Simple")
-    if not isinstance(manifest.get("version"), str) or not manifest["version"]:
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version:
         errors.append("manifest version must be a non-empty string")
+        version = None
+    elif expected_version is not None and version != expected_version:
+        errors.append(
+            f"{manifest_path} version must be {expected_version}, got {version}"
+        )
+    if manifest.get("new_install_prompt_erase") is not True:
+        errors.append(
+            f"{manifest_path} must require an explicit ESP Web Tools erase choice"
+        )
 
     builds = manifest.get("builds")
     if not isinstance(builds, list) or len(builds) != 1:
         errors.append("manifest must contain exactly one build")
-        return errors
+        return errors, version
 
     build = builds[0]
     if build.get("chipFamily") != "ESP32-S3":
@@ -91,23 +111,53 @@ def validate_manifest(site_dir: Path, manifest_path: str, require_assets: bool) 
 
     parts = build.get("parts")
     if not isinstance(parts, list) or len(parts) != 1:
-        errors.append("manifest build must contain exactly one merged-image part")
-        return errors
+        errors.append("manifest build must contain exactly one firmware part")
+        return errors, version
 
     part = parts[0]
-    if part.get("path") != "merged-firmware.bin":
-        errors.append("manifest part path must be merged-firmware.bin")
-    if part.get("offset") != 0:
-        errors.append("manifest merged-firmware.bin offset must be 0")
+    partitions = release_manifests.read_partitions(PARTITIONS_PATH)
+    if manifest_path == release_manifests.UPDATE_MANIFEST:
+        expected_path = release_manifests.UPDATE_IMAGE
+        expected_offset = partitions["app"].offset
+        description = "app-only update"
+    elif manifest_path == release_manifests.FRESH_MANIFEST:
+        expected_path = release_manifests.FRESH_IMAGE
+        expected_offset = 0
+        description = "destructive fresh-install image"
+    else:
+        errors.append(f"unsupported installer manifest: {manifest_path}")
+        return errors, version
+
+    if part.get("path") != expected_path:
+        errors.append(f"{manifest_path} part path must be {expected_path}")
+    if part.get("offset") != expected_offset:
+        errors.append(
+            f"{manifest_path} {expected_path} offset must be {expected_offset:#x}"
+        )
 
     if require_assets:
         firmware_path = site_dir / str(part.get("path", ""))
         if not firmware_path.is_file():
-            errors.append(f"merged firmware not found: {display_path(firmware_path)}")
+            errors.append(f"{description} not found: {display_path(firmware_path)}")
         elif firmware_path.stat().st_size == 0:
-            errors.append(f"merged firmware is empty: {display_path(firmware_path)}")
+            errors.append(f"{description} is empty: {display_path(firmware_path)}")
+        elif manifest_path == release_manifests.UPDATE_MANIFEST:
+            start = expected_offset
+            end = start + firmware_path.stat().st_size
+            app = partitions["app"]
+            if end > app.end:
+                errors.append(f"{expected_path} exceeds the app partition")
+            for name, partition in partitions.items():
+                if name != "app" and release_manifests.overlaps(start, end, partition):
+                    errors.append(f"{expected_path} overlaps {name} partition")
+        else:
+            storage = partitions["storage"]
+            if firmware_path.stat().st_size < storage.end:
+                errors.append(
+                    f"{expected_path} does not contain the complete LittleFS partition"
+                )
 
-    return errors
+    return errors, version
 
 
 def validate_notices(site_dir: Path, require_assets: bool) -> list[str]:
@@ -151,6 +201,10 @@ def main() -> int:
         action="store_true",
         help="Validate page wiring without requiring generated manifest/binary assets.",
     )
+    parser.add_argument(
+        "--expected-version",
+        help="Require both generated manifests to carry this release tag.",
+    )
     args = parser.parse_args()
 
     site_dir = args.site_dir if args.site_dir.is_absolute() else ROOT / args.site_dir
@@ -173,10 +227,31 @@ def main() -> int:
         elif branding_file.stat().st_size == 0:
             errors.append(f"installer branding is empty: {display_path(branding_file)}")
 
-    if parser_obj.install_manifests != ["manifest.json"]:
+    expected_manifests = [
+        release_manifests.UPDATE_MANIFEST,
+        release_manifests.FRESH_MANIFEST,
+    ]
+    if parser_obj.install_manifests != expected_manifests:
         errors.append(
-            "index.html must contain exactly one esp-web-install-button pointing at manifest.json"
+            "index.html must present the app-only update before the destructive fresh install"
         )
+    if parser_obj.install_modes != ["preserve", "destructive"]:
+        errors.append(
+            "installer buttons must explicitly identify preserve and destructive modes"
+        )
+
+    index_text = index.read_text(encoding="utf-8")
+    for required_text in (
+        "Update firmware — preserve device data",
+        "Writes only the app partition.",
+        "existing LittleFS web interface are not part of this update image",
+        "Fresh install — erase and rebuild",
+        "destructive even if ESP Web Tools’ optional erase box is off",
+        "Physical SD-card contents are not part of this flash operation.",
+        "Checking “Erase device” changes this into a destructive erase.",
+    ):
+        if required_text not in index_text:
+            errors.append(f"index.html must explain installer consequence: {required_text!r}")
 
     has_install_script = any(
         src.startswith("https://unpkg.com/esp-web-tools@")
@@ -192,14 +267,19 @@ def main() -> int:
                 f"index.html must contain exactly one visible link to {required_link}"
             )
 
-    if parser_obj.install_manifests:
-        errors.extend(
-            validate_manifest(
-                site_dir,
-                parser_obj.install_manifests[0],
-                require_assets=not args.template_only,
-            )
+    manifest_versions: list[str] = []
+    for manifest_path in expected_manifests:
+        manifest_errors, version = validate_manifest(
+            site_dir,
+            manifest_path,
+            require_assets=not args.template_only,
+            expected_version=args.expected_version,
         )
+        errors.extend(manifest_errors)
+        if version is not None:
+            manifest_versions.append(version)
+    if len(set(manifest_versions)) > 1:
+        errors.append("fresh-install and app-only update manifests must use the same version")
 
     errors.extend(validate_notices(site_dir, require_assets=not args.template_only))
 

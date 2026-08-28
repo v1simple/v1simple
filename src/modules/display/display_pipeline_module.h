@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "render_frame_composer.h"
+#include "../voice/voice_module.h"
 
 // Forward declarations — full headers included in display_pipeline_module.cpp
 class V1Display;
@@ -70,6 +71,10 @@ class DisplayPipelineModule {
     // Edge detector for presented active->inactive ALP transitions; begin()
     // resets it because the pipeline assumes synchronous ticks.
     bool lastPresentedAlpEventActive_ = false;
+    VoiceAction pendingVoiceAction_{};
+    bool hasPendingVoiceAction_ = false;
+    uint32_t nextVoiceAttemptMs_ = 0;
+    static constexpr uint32_t VOICE_RETRY_INTERVAL_MS = 100;
 
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
     RenderFrame buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef);

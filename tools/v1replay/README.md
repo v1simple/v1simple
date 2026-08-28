@@ -245,11 +245,14 @@ restore, power-cycle persistence, and non-US mode variants remain outside this
 host-state gate.
 
 Managed replay keeps the quiet preflight and replacement process outputs as
-separate plain-text logs. Their machine events record requested and accepted
-notifications, transport readiness, lifecycle boundaries, and monotonic host
-times. The still-open serial log records the intervening board cleanup and
-same-boot fences. These raw streams remain the evidence; no derived post-run
-artifact is generated.
+separate plain-text logs. Their machine events record notification lifecycles,
+transport readiness, lifecycle boundaries, and monotonic host times. The
+still-open serial log records the intervening board cleanup and same-boot
+fences. These raw streams remain the source evidence. The bench collector also
+retains the notification lifecycle records in `replay_delivery.ndjson` and
+publishes explicit requested, attempted, accepted, dropped, skipped, unresolved,
+and malformed-sequence counters in its result. Missing delivery instrumentation,
+any delivery loss, or a malformed per-sequence lifecycle vetoes a replay PASS.
 
 With `--machine-events`, every queued notification emits
 `notification_requested`; every successful CoreBluetooth `updateValue` emits

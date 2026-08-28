@@ -452,7 +452,43 @@
 
     esp-web-install-button {
       display: block;
-      width: min(100%, 330px);
+      width: 100%;
+    }
+
+    .install-options {
+      display: grid;
+      width: min(100%, 440px);
+      gap: 14px;
+    }
+
+    .install-option {
+      border: 1px solid rgba(197, 108, 255, 0.24);
+      border-radius: 12px;
+      padding: 16px;
+      background: rgba(197, 108, 255, 0.055);
+    }
+
+    .install-option h3 {
+      margin: 0;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .install-option p {
+      margin: 8px 0 13px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .install-option .choice-warning {
+      margin: -3px 0 13px;
+      color: var(--ka);
+    }
+
+    .install-option-destructive {
+      border-color: rgba(243, 108, 108, 0.3);
+      background: rgba(243, 108, 108, 0.055);
     }
 
     esp-web-install-button button {
@@ -481,6 +517,13 @@
     esp-web-install-button button:active { transform: translateY(0); }
     esp-web-install-button button span:first-child { font-size: 14px; }
     esp-web-install-button button span:last-child { font-size: 20px; }
+
+    .install-option-destructive esp-web-install-button button {
+      border-color: rgba(243, 108, 108, 0.44);
+      background: linear-gradient(135deg, #f36c6c, #c64764);
+      box-shadow: 0 14px 32px rgba(198, 71, 100, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      color: #1b080d;
+    }
 
     .install-meta {
       display: flex;
@@ -757,14 +800,31 @@
             <span class="orbit-dot orbit-green"></span>
           </div>
           <p class="eyebrow">READY TO FLASH</p>
-          <h2>Install the latest release</h2>
-          <p>Your browser will ask you to choose the connected ESP32-S3. The matching firmware image is delivered with this release over HTTPS.</p>
+          <h2>Choose what the flash may replace</h2>
+          <p>Your choice is made before the browser connects to the ESP32-S3. Both paths use assets generated with this release.</p>
 
-          <esp-web-install-button manifest="manifest.json">
-            <button slot="activate" type="button"><span>Install V1-Simple</span><span aria-hidden="true">→</span></button>
-            <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
-            <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
-          </esp-web-install-button>
+          <div class="install-options">
+            <section class="install-option" aria-labelledby="preserve-title">
+              <h3 id="preserve-title">Update firmware — preserve device data</h3>
+              <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Because it deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
+              <p class="choice-warning">Leave “Erase device” off in ESP Web Tools. Checking “Erase device” changes this into a destructive erase.</p>
+              <esp-web-install-button manifest="manifest-update.json" data-install-mode="preserve">
+                <button slot="activate" type="button"><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
+                <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
+                <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
+              </esp-web-install-button>
+            </section>
+
+            <section class="install-option install-option-destructive" aria-labelledby="fresh-title">
+              <h3 id="fresh-title">Fresh install — erase and rebuild</h3>
+              <p>This is destructive even if ESP Web Tools’ optional erase box is off: the merged image replaces the bootloader, partition table, firmware, NVS data, and internal LittleFS web interface and fallback profiles. Saved settings and Wi-Fi networks are erased. Physical SD-card contents are not part of this flash operation.</p>
+              <esp-web-install-button manifest="manifest.json" data-install-mode="destructive">
+                <button slot="activate" type="button"><span>Erase and fresh install</span><span aria-hidden="true">→</span></button>
+                <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
+                <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
+              </esp-web-install-button>
+            </section>
+          </div>
 
           <div class="install-meta">
             <span><i class="status-dot"></i> Version <span data-version>loading...</span></span>
@@ -791,7 +851,7 @@
 
       <aside class="trust-strip" aria-label="Installer assurances">
         <span><b>HTTPS</b> secure delivery</span>
-        <span><b>One image</b> matched to the release</span>
+        <span><b>Matched assets</b> generated with the release</span>
         <span><b>Open source</b> licenses and notices included</span>
       </aside>
     </main>

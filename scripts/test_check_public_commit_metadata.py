@@ -247,6 +247,78 @@ def test_exact_unreferenced_annotated_tag_object_is_checked() -> None:
         assert all(private_email not in error for error in errors)
 
 
+def test_safe_outer_tag_does_not_hide_unsafe_inner_tag_identity() -> None:
+    with tempfile.TemporaryDirectory(prefix="public-metadata-") as raw:
+        repo = make_repo(Path(raw))
+        private_email = "nested-tagger@personal.test"
+        unsafe_environment = os.environ.copy()
+        unsafe_environment.update(
+            {
+                "GIT_COMMITTER_NAME": "private tagger",
+                "GIT_COMMITTER_EMAIL": private_email,
+            }
+        )
+        git(
+            repo,
+            "tag",
+            "-a",
+            "inner-private",
+            "-m",
+            "safe fixture",
+            environment=unsafe_environment,
+        )
+        inner = git(repo, "rev-parse", "refs/tags/inner-private")
+        git(repo, "tag", "-d", "inner-private")
+        git(repo, "tag", "-a", "outer-safe", inner, "-m", "safe outer fixture")
+
+        errors = checker.violations(repo)
+        assert len(errors) == 2
+        assert all(error.startswith(inner) for error in errors)
+        assert all(private_email not in error for error in errors)
+
+
+def test_safe_nested_tags_and_ordinary_commits_pass() -> None:
+    with tempfile.TemporaryDirectory(prefix="public-metadata-") as raw:
+        repo = make_repo(Path(raw))
+        git(repo, "tag", "-a", "inner-safe", "-m", "safe inner fixture")
+        inner = git(repo, "rev-parse", "refs/tags/inner-safe")
+        git(repo, "tag", "-d", "inner-safe")
+        git(repo, "tag", "-a", "outer-safe", inner, "-m", "safe outer fixture")
+
+        outer = git(repo, "rev-parse", "refs/tags/outer-safe")
+        assert checker.violations(repo) == []
+        assert checker.object_violations(repo, [outer]) == []
+        assert checker.object_violations(repo, ["HEAD"]) == []
+
+
+def test_annotated_tag_cycle_is_rejected_defensively() -> None:
+    first = "a" * 40
+    second = "b" * 40
+    originals = (
+        checker.resolve_object,
+        checker.git_object_type,
+        checker.annotated_tag_target,
+    )
+    checker.resolve_object = lambda _repo, _revision: first
+    checker.git_object_type = lambda _repo, _object_id: "tag"
+    checker.annotated_tag_target = (  # type: ignore[assignment]
+        lambda _repo, object_id: second if object_id == first else first
+    )
+    try:
+        try:
+            checker.annotated_tag_chain(Path("."), "fixture")
+        except RuntimeError as exc:
+            assert "cycle" in str(exc)
+        else:
+            raise AssertionError("annotated tag cycle was accepted")
+    finally:
+        (
+            checker.resolve_object,
+            checker.git_object_type,
+            checker.annotated_tag_target,
+        ) = originals
+
+
 def main() -> int:
     tests = (
         test_allows_project_and_github_noreply_identities,
@@ -259,6 +331,9 @@ def main() -> int:
         test_identity_cli_failure_does_not_print_personal_address,
         test_exact_unreferenced_commit_object_is_checked,
         test_exact_unreferenced_annotated_tag_object_is_checked,
+        test_safe_outer_tag_does_not_hide_unsafe_inner_tag_identity,
+        test_safe_nested_tags_and_ordinary_commits_pass,
+        test_annotated_tag_cycle_is_rejected_defensively,
     )
     for test in tests:
         test()

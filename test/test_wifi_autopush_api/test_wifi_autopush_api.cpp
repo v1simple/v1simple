@@ -19,6 +19,8 @@ struct FakeRuntime {
     WifiAutoPushApiService::ProfileAssignmentStatus profileStatus =
         WifiAutoPushApiService::ProfileAssignmentStatus::Success;
     bool persistResult = true;
+    int activationCalls = 0;
+    WifiAutoPushApiService::ActivationRequest activation;
 };
 
 WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
@@ -42,6 +44,13 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         return state->persistResult;
     };
     runtime.applySlotUpdateCtx = &fake;
+    runtime.applyActivation = [](const WifiAutoPushApiService::ActivationRequest& request, void* ctx) {
+        auto* state = static_cast<FakeRuntime*>(ctx);
+        state->activation = request;
+        state->activationCalls++;
+        return state->persistResult;
+    };
+    runtime.applyActivationCtx = &fake;
     runtime.validateProfileAssignment = [](const String&, void* ctx) {
         return static_cast<FakeRuntime*>(ctx)->profileStatus;
     };
@@ -159,6 +168,22 @@ void test_slot_save_requires_persistence_but_accepts_noop_success() {
     TEST_ASSERT_EQUAL_INT(200, noopServer.lastStatusCode);
 }
 
+void test_activate_reports_persistence_failure_instead_of_success() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.persistResult = false;
+    server.setArg("slot", "2");
+    server.setArg("enable", "true");
+
+    WifiAutoPushApiService::handleApiActivate(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, fake.activationCalls);
+    TEST_ASSERT_EQUAL_INT(2, fake.activation.slot);
+    TEST_ASSERT_TRUE(fake.activation.enable);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "settings_persist_failed"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
@@ -168,5 +193,6 @@ int main() {
     RUN_TEST(test_slot_save_rejects_nonexistent_profile_without_mutating_settings);
     RUN_TEST(test_slot_save_reports_busy_for_temporarily_unreadable_profile);
     RUN_TEST(test_slot_save_requires_persistence_but_accepts_noop_success);
+    RUN_TEST(test_activate_reports_persistence_failure_instead_of_success);
     return UNITY_END();
 }

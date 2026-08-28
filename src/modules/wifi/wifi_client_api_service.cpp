@@ -10,6 +10,8 @@ namespace WifiClientApiService {
 
 namespace {
 
+constexpr size_t SAVED_NETWORK_SLOT_COUNT = 4;
+
 static void sendStatus(WebServer& server, const StatusPayload& payload) {
     WifiJson::Document doc;
     doc["enabled"] = payload.enabled;
@@ -210,6 +212,56 @@ static bool parseSlotIndexRequest(WebServer& server, size_t& indexOut, const cha
     return true;
 }
 
+static bool parsePriorityUpdatesRequest(WebServer& server, std::vector<SavedNetworkPriorityUpdate>& updatesOut,
+                                        const char*& errorMessageOut) {
+    updatesOut.clear();
+    errorMessageOut = nullptr;
+    if (!server.hasArg("plain")) {
+        errorMessageOut = "Missing request body";
+        return false;
+    }
+
+    WifiJson::Document doc;
+    const DeserializationError error = deserializeJson(doc, server.arg("plain").c_str());
+    if (error || !doc.is<JsonObjectConst>() || !doc["updates"].is<JsonArrayConst>()) {
+        errorMessageOut = "Invalid priority updates";
+        return false;
+    }
+
+    const JsonArrayConst updates = doc["updates"].as<JsonArrayConst>();
+    if (updates.size() == 0 || updates.size() > SAVED_NETWORK_SLOT_COUNT) {
+        errorMessageOut = "Priority updates must contain 1 to 4 entries";
+        return false;
+    }
+
+    bool seenIndices[SAVED_NETWORK_SLOT_COUNT] = {};
+    bool seenPriorities[SAVED_NETWORK_SLOT_COUNT] = {};
+    for (JsonVariantConst value : updates) {
+        if (!value.is<JsonObjectConst>()) {
+            errorMessageOut = "Each priority update must be an object";
+            return false;
+        }
+        const JsonObjectConst item = value.as<JsonObjectConst>();
+        if (!item["index"].is<int>() || !item["priority"].is<int>()) {
+            errorMessageOut = "Priority index and value must be integers";
+            return false;
+        }
+        const int index = item["index"].as<int>();
+        const int priority = item["priority"].as<int>();
+        if (index < 0 || index >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT) || priority < 0 ||
+            priority >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT) || seenIndices[index] ||
+            seenPriorities[priority]) {
+            errorMessageOut = "Invalid or duplicate priority update";
+            return false;
+        }
+        seenIndices[index] = true;
+        seenPriorities[priority] = true;
+        updatesOut.push_back(
+            SavedNetworkPriorityUpdate{static_cast<size_t>(index), static_cast<uint8_t>(priority)});
+    }
+    return true;
+}
+
 static void sendRequestParseError(WebServer& server, const char* message) {
     WifiJson::Document doc;
     doc["success"] = false;
@@ -263,6 +315,22 @@ static void sendNetworkTestFailed(WebServer& server) {
     doc["error"] = "network_test_failed";
     doc["message"] = "Failed to start saved network connection test";
     WifiApiResponse::sendJsonDocument(server, 404, doc);
+}
+
+static void sendPriorityUpdateResult(WebServer& server, PriorityUpdateStatus status) {
+    if (status == PriorityUpdateStatus::Success) {
+        server.send(200, "application/json", "{\"success\":true}");
+        return;
+    }
+    if (status == PriorityUpdateStatus::Invalid) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_priority_updates\"}");
+        return;
+    }
+    if (status == PriorityUpdateStatus::Conflict) {
+        server.send(409, "application/json", "{\"success\":false,\"error\":\"priority_conflict\"}");
+        return;
+    }
+    server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
 }
 
 } // namespace
@@ -349,7 +417,10 @@ static void handleForgetImpl(WebServer& server, const Runtime& runtime) {
     }
 
     Serial.println("[HTTP] POST /api/wifi/forget");
-    runtime.forgetClient(runtime.forgetClientCtx);
+    if (!runtime.forgetClient(runtime.forgetClientCtx)) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
     sendForgotten(server);
 }
 
@@ -375,7 +446,10 @@ static void handleEnableImpl(WebServer& server, const Runtime& runtime) {
         return;
     }
 
-    runtime.disableClient(runtime.disableClientCtx);
+    if (!runtime.disableClient(runtime.disableClientCtx)) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
     sendEnableResult(server, false);
 }
 
@@ -441,6 +515,26 @@ static void handleNetworksDeleteImpl(WebServer& server, const Runtime& runtime) 
     }
 
     sendNetworkDeleted(server, index);
+}
+
+static void handleNetworksPrioritiesImpl(WebServer& server, const Runtime& runtime) {
+    if (!runtime.maintenanceBootActive) {
+        sendMaintenanceRequired(server);
+        return;
+    }
+    if (!runtime.updateSavedNetworkPriorities) {
+        sendRuntimeUnavailable(server);
+        return;
+    }
+
+    std::vector<SavedNetworkPriorityUpdate> updates;
+    const char* errorMessage = nullptr;
+    if (!parsePriorityUpdatesRequest(server, updates, errorMessage)) {
+        sendRequestParseError(server, errorMessage);
+        return;
+    }
+    sendPriorityUpdateResult(
+        server, runtime.updateSavedNetworkPriorities(updates, runtime.updateSavedNetworkPrioritiesCtx));
 }
 
 static void handleNetworksTestImpl(WebServer& server, const Runtime& runtime) {
@@ -550,6 +644,16 @@ void handleApiNetworksDelete(WebServer& server, const Runtime& runtime, bool (*c
         markUiActivity(uiActivityCtx);
     }
     handleNetworksDeleteImpl(server, runtime);
+}
+
+void handleApiNetworksPriorities(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                                 void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (checkRateLimit && !checkRateLimit(rateLimitCtx))
+        return;
+    if (markUiActivity) {
+        markUiActivity(uiActivityCtx);
+    }
+    handleNetworksPrioritiesImpl(server, runtime);
 }
 
 void handleApiNetworksTest(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),

@@ -433,6 +433,249 @@ void test_rename_normal_path_succeeds_and_advances_revision() {
     TEST_ASSERT_EQUAL_UINT8(85, loaded.settings.bytes[5]);
 }
 
+void test_equal_generation_divergence_converges_to_offline_fallback_edit() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    V1ProfileManager sdOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 10, "sd-v1")).success);
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 20, "sd-v2")).success);
+
+    V1ProfileManager fallbackOnly;
+    TEST_ASSERT_TRUE(fallbackOnly.begin(&little));
+    TEST_ASSERT_TRUE(fallbackOnly.saveProfile(makeProfile("Road", 10, "fallback-v1")).success);
+    TEST_ASSERT_TRUE(fallbackOnly.saveProfile(makeProfile("Road", 30, "fallback-v2")).success);
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager reconciled;
+    TEST_ASSERT_TRUE(reconciled.begin(storage));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(reconciled.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("fallback-v2", loaded.description.c_str());
+
+    V1ProfileManager fallbackAfter;
+    TEST_ASSERT_TRUE(fallbackAfter.begin(&little));
+    TEST_ASSERT_TRUE(fallbackAfter.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("fallback-v2", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_STRING(readFileToString(sd, "/v1profiles/Road.json").c_str(),
+                             readFileToString(little, "/v1profiles/Road.json").c_str());
+}
+
+void test_corrupt_newer_profile_cannot_replace_valid_older_mirror() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    V1ProfileManager sdOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 10, "valid-sd")).success);
+
+    V1ProfileManager fallbackOnly;
+    TEST_ASSERT_TRUE(fallbackOnly.begin(&little));
+    TEST_ASSERT_TRUE(fallbackOnly.saveProfile(makeProfile("Road", 20, "fallback-v1")).success);
+    TEST_ASSERT_TRUE(fallbackOnly.saveProfile(makeProfile("Road", 30, "fallback-v2")).success);
+    writeFileFromString(little, "/v1profiles/Road.json", "{corrupt-json");
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager reconciled;
+    TEST_ASSERT_TRUE(reconciled.begin(storage));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(reconciled.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("valid-sd", loaded.description.c_str());
+
+    V1ProfileManager fallbackAfter;
+    TEST_ASSERT_TRUE(fallbackAfter.begin(&little));
+    TEST_ASSERT_TRUE(fallbackAfter.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("valid-sd", loaded.description.c_str());
+}
+
+void test_profile_sync_metadata_short_write_is_rejected() {
+    fs::FS fs(g_tempRoot);
+    ProfileSyncState state;
+    state.version = 42;
+    state.deleted = true;
+
+    fs::mock_set_fs_write_budget(2);
+    TEST_ASSERT_FALSE(writeSyncState(fs, "/v1profiles/Road.json", state));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.meta"));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.meta.tmp"));
+}
+
+void test_secondary_profile_save_failure_is_reported_and_rolls_back_both_copies() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "existing")).success);
+
+    fs::mock_reset_fs_rename_state();
+    fs::mock_fail_rename_on_call(6); // secondary live-file promotion after its rollback snapshot
+    const ProfileSaveResult saved = manager.saveProfile(makeProfile("Road", 20, "replacement"));
+    TEST_ASSERT_FALSE(saved.success);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(saved.status));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("existing", loaded.description.c_str());
+
+    fs::mock_reset_fs_rename_state();
+    V1ProfileManager fallbackOnly;
+    TEST_ASSERT_TRUE(fallbackOnly.begin(&little));
+    TEST_ASSERT_TRUE(fallbackOnly.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("existing", loaded.description.c_str());
+}
+
+void test_secondary_tombstone_failure_is_reported_and_preserves_profile() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    V1ProfileManager fallback;
+    TEST_ASSERT_TRUE(fallback.begin(&little));
+    TEST_ASSERT_TRUE(fallback.saveProfile(makeProfile("Road", 10, "existing")).success);
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+
+    fs::mock_reset_fs_rename_state();
+    fs::mock_fail_rename_on_call(3); // first rename of the secondary metadata promotion
+    const ProfileOperationResult deleted = manager.deleteProfileResult("Road");
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(deleted.status));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("existing", loaded.description.c_str());
+
+    fs::mock_reset_fs_rename_state();
+    V1ProfileManager afterReboot;
+    TEST_ASSERT_TRUE(afterReboot.begin(storage));
+    TEST_ASSERT_TRUE(afterReboot.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("existing", loaded.description.c_str());
+    TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json"));
+    TEST_ASSERT_TRUE(little.exists("/v1profiles/Road.json"));
+}
+
+void test_existing_malformed_sync_metadata_fails_closed_without_resurrecting_json() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "preserved-bytes")).success);
+
+    const char* corruptDocuments[] = {"{}", "{\"version\":2", "{\"version\":2,\"deleted\":false,\"extra\":1}"};
+    for (const char* corrupt : corruptDocuments) {
+        writeFileFromString(fs, "/v1profiles/Road.json.meta", corrupt);
+        V1Profile loaded;
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Corrupt),
+                              static_cast<int>(manager.loadProfileResult("Road", loaded).status));
+        const ProfileListResult catalog = manager.listProfilesResult();
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Corrupt),
+                              static_cast<int>(catalog.status));
+        TEST_ASSERT_TRUE(fs.exists("/v1profiles/Road.json"));
+    }
+}
+
+void test_sync_metadata_crc_mutation_and_oversize_fail_closed() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 20, "crc")).success);
+
+    JsonDocument meta;
+    File input = fs.open("/v1profiles/Road.json.meta", FILE_READ);
+    TEST_ASSERT_TRUE(input);
+    TEST_ASSERT_FALSE(deserializeJson(meta, input));
+    input.close();
+    meta["version"] = meta["version"].as<uint32_t>() + 1u; // Deliberately retain the old CRC.
+    String mutated;
+    serializeJson(meta, mutated);
+    writeFileFromString(fs, "/v1profiles/Road.json.meta", mutated.c_str());
+    V1Profile loaded;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Corrupt),
+                          static_cast<int>(manager.loadProfileResult("Road", loaded).status));
+
+    std::string oversized(PROFILE_SYNC_META_MAX_BYTES + 1, 'x');
+    writeFileFromString(fs, "/v1profiles/Road.json.meta", oversized.c_str());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::Corrupt),
+                          static_cast<int>(manager.loadProfileResult("Road", loaded).status));
+}
+
+void test_valid_tombstone_remains_authoritative_when_json_removal_was_incomplete() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 30, "deleted")).success);
+    const std::string staleJson = readFileToString(fs, "/v1profiles/Road.json");
+    TEST_ASSERT_TRUE(manager.deleteProfileResult("Road").success());
+    writeFileFromString(fs, "/v1profiles/Road.json", staleJson.c_str());
+
+    V1Profile loaded;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(manager.loadProfileResult("Road", loaded).status));
+    TEST_ASSERT_TRUE(manager.listProfilesResult().genuinelyEmpty);
+}
+
+void test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_rewritten() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 40, "mirror")).success);
+    writeFileFromString(sd, "/v1profiles/Road.json.meta", "{}");
+
+    V1ProfileManager rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(storage));
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(rebooted.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("mirror", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileSyncState::Status::Current),
+                          static_cast<int>(readSyncState(sd, "/v1profiles/Road.json").status));
+
+    writeFileFromString(sd, "/v1profiles/Road.json.meta", "{\"version\":7,\"deleted\":false}");
+    storage.setLittleFS(nullptr);
+    V1ProfileManager legacy;
+    TEST_ASSERT_TRUE(legacy.begin(storage));
+    TEST_ASSERT_TRUE(legacy.loadProfile("Road", loaded));
+    TEST_ASSERT_TRUE(legacy.saveProfile(makeProfile("Road", 50, "legacy-rewritten")).success);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileSyncState::Status::Current),
+                          static_cast<int>(readSyncState(sd, "/v1profiles/Road.json").status));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
@@ -449,5 +692,14 @@ int main() {
     RUN_TEST(test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection);
     RUN_TEST(test_rename_existing_distinct_destination_fails_without_mutation);
     RUN_TEST(test_rename_normal_path_succeeds_and_advances_revision);
+    RUN_TEST(test_equal_generation_divergence_converges_to_offline_fallback_edit);
+    RUN_TEST(test_corrupt_newer_profile_cannot_replace_valid_older_mirror);
+    RUN_TEST(test_profile_sync_metadata_short_write_is_rejected);
+    RUN_TEST(test_secondary_profile_save_failure_is_reported_and_rolls_back_both_copies);
+    RUN_TEST(test_secondary_tombstone_failure_is_reported_and_preserves_profile);
+    RUN_TEST(test_existing_malformed_sync_metadata_fails_closed_without_resurrecting_json);
+    RUN_TEST(test_sync_metadata_crc_mutation_and_oversize_fail_closed);
+    RUN_TEST(test_valid_tombstone_remains_authoritative_when_json_removal_was_incomplete);
+    RUN_TEST(test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_rewritten);
     return UNITY_END();
 }

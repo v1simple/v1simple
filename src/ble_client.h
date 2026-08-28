@@ -208,12 +208,14 @@ class V1BLEClient {
 
     // Send mute on/off command
     bool setMute(bool muted);
+    SendResult setMuteResult(bool muted);
 
     // Change V1 operating mode (All Bogeys, Logic, Advanced Logic)
     bool setMode(uint8_t mode);
 
     // Set V1 volume settings (0-9 for each, 0xFF to keep current)
     bool setVolume(uint8_t mainVolume, uint8_t mutedVolume);
+    SendResult setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume);
 
     // Request user settings bytes from V1 (6 bytes)
     bool requestUserBytes();

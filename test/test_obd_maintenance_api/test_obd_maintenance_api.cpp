@@ -114,11 +114,65 @@ void test_maintenance_forget_updates_storage_without_obd_runtime_instance() {
     TEST_ASSERT_EQUAL_INT(1, settings.saveCalls);
 }
 
+void test_config_persist_failure_returns_500_and_rolls_back() {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    settings.obdPersistSuccess = false;
+    server.setArg("plain", "{\"enabled\":true}");
+
+    ObdApiService::handleApiConfig(server, nullptr, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_TRUE(bodyContains(server, "settings_persist_failed"));
+    TEST_ASSERT_FALSE(settings.get().obdEnabled);
+    TEST_ASSERT_EQUAL_INT(0, settings.saveCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.syncCalls);
+}
+
+void test_forget_persist_failure_returns_500_and_preserves_device() {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    settings.getMutable().obdSavedAddress = kSavedAddress;
+    settings.getMutable().obdSavedName = "Garage";
+    settings.obdPersistSuccess = false;
+
+    ObdApiService::handleApiForget(server, nullptr, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_TRUE(bodyContains(server, "settings_persist_failed"));
+    TEST_ASSERT_EQUAL_STRING(kSavedAddress, settings.get().obdSavedAddress.c_str());
+    TEST_ASSERT_EQUAL_STRING("Garage", settings.get().obdSavedName.c_str());
+    TEST_ASSERT_EQUAL_INT(0, settings.saveCalls);
+}
+
+void test_device_name_persist_failure_returns_500_and_preserves_name() {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    settings.getMutable().obdSavedAddress = kSavedAddress;
+    settings.getMutable().obdSavedName = "Garage";
+    settings.obdPersistSuccess = false;
+    server.setArg("address", kSavedAddress);
+    server.setArg("name", "Road Car");
+
+    ObdApiService::handleApiDeviceNameSave(server, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_TRUE(bodyContains(server, "settings_persist_failed"));
+    TEST_ASSERT_EQUAL_STRING("Garage", settings.get().obdSavedName.c_str());
+    TEST_ASSERT_EQUAL_INT(0, settings.saveCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_maintenance_config_get_exposes_live_settings_without_retired_wifi_dwell);
     RUN_TEST(test_maintenance_config_update_persists_immediately_without_live_runtime_sync);
     RUN_TEST(test_legacy_wifi_dwell_key_is_accepted_but_ignored_at_api_parse_boundary);
     RUN_TEST(test_maintenance_forget_updates_storage_without_obd_runtime_instance);
+    RUN_TEST(test_config_persist_failure_returns_500_and_rolls_back);
+    RUN_TEST(test_forget_persist_failure_returns_500_and_preserves_device);
+    RUN_TEST(test_device_name_persist_failure_returns_500_and_preserves_name);
     return UNITY_END();
 }

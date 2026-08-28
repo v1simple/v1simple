@@ -88,12 +88,9 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         return;
     }
 
-    // Arduino WebServer buffers the entire body before dispatching this handler,
-    // so this cap is an application limit on what we will parse.
-    // This cap does not bound the transport allocation or prevent a large
-    // upload from exhausting the heap. WebServer::arg() returns String by
-    // value, so binding it once is the minimum; another call would allocate
-    // the whole body a second time.
+    // The registered maintenance ingress rejects oversized non-multipart
+    // bodies before WebServer's body-sized allocation. Keep this tighter
+    // endpoint cap as a semantic limit on profile JSON.
     const String body = server.arg("plain");
     if (body.length() > 4096) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");
@@ -123,8 +120,61 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
         return;
     }
 
-    const String description = doc["description"] | "";
-    const bool displayOn = doc["displayOn"] | true; // Default to on
+    const JsonVariantConst descriptionValue = doc["description"];
+    const JsonVariantConst displayOnValue = doc["displayOn"];
+    const JsonVariantConst mainVolumeValue = doc["mainVolume"];
+    const JsonVariantConst mutedVolumeValue = doc["mutedVolume"];
+    const bool hasDescription = !descriptionValue.isUnbound();
+    const bool hasDisplayOn = !displayOnValue.isUnbound();
+    const bool hasMainVolume = !mainVolumeValue.isUnbound();
+    const bool hasMutedVolume = !mutedVolumeValue.isUnbound();
+    if ((hasDescription && !descriptionValue.is<const char*>()) ||
+        (hasDisplayOn && !displayOnValue.is<bool>()) ||
+        (hasMainVolume && !mainVolumeValue.is<int>()) ||
+        (hasMutedVolume && !mutedVolumeValue.is<int>())) {
+        server.send(400, "application/json", "{\"error\":\"Invalid profile metadata\"}");
+        return;
+    }
+
+    auto validVolume = [](int value) { return (value >= 0 && value <= 9) || value == 0xFF; };
+    if ((hasMainVolume && !validVolume(mainVolumeValue.as<int>())) ||
+        (hasMutedVolume && !validVolume(mutedVolumeValue.as<int>()))) {
+        server.send(400, "application/json", "{\"error\":\"Invalid profile volume\"}");
+        return;
+    }
+
+    JsonDocument existingDoc;
+    const bool needsExisting = !hasDescription || !hasDisplayOn || !hasMainVolume || !hasMutedVolume;
+    if (needsExisting) {
+        String existingJson;
+        CatalogStatus status = CatalogStatus::NotFound;
+        if (runtime.loadProfileJsonResult) {
+            status = runtime.loadProfileJsonResult(name, existingJson, runtime.loadProfileJsonResultCtx);
+        } else if (runtime.loadProfileJson && runtime.loadProfileJson(name, existingJson, runtime.loadProfileJsonCtx)) {
+            status = CatalogStatus::Success;
+        }
+
+        if (status == CatalogStatus::Success && deserializeJson(existingDoc, existingJson)) {
+            server.send(500, "application/json", "{\"error\":\"Existing profile metadata is corrupt\"}");
+            return;
+        }
+        if (status != CatalogStatus::Success && status != CatalogStatus::NotFound) {
+            const int httpStatus = status == CatalogStatus::Busy ? 409 : 500;
+            const char* error = status == CatalogStatus::Busy ? "Profile storage busy; retry" :
+                                status == CatalogStatus::Corrupt ? "Profile is corrupt" :
+                                "Profile read failed";
+            server.send(httpStatus, "application/json", String("{\"error\":\"") + error + "\"}");
+            return;
+        }
+    }
+
+    const String description = hasDescription ? descriptionValue.as<const char*>() :
+                                                 String(existingDoc["description"] | "");
+    const bool displayOn = hasDisplayOn ? displayOnValue.as<bool>() : (existingDoc["displayOn"] | true);
+    const uint8_t mainVolume = hasMainVolume ? static_cast<uint8_t>(mainVolumeValue.as<int>()) :
+                                              static_cast<uint8_t>(existingDoc["mainVolume"] | 0xFF);
+    const uint8_t mutedVolume = hasMutedVolume ? static_cast<uint8_t>(mutedVolumeValue.as<int>()) :
+                                                static_cast<uint8_t>(existingDoc["mutedVolume"] | 0xFF);
     uint8_t settingsBytes[6];
     memset(settingsBytes, 0xFF, sizeof(settingsBytes));
 
@@ -145,7 +195,8 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
     }
 
     String saveError;
-    if (runtime.saveProfile(name, description, displayOn, settingsBytes, saveError, runtime.saveProfileCtx)) {
+    if (runtime.saveProfile(name, description, displayOn, mainVolume, mutedVolume, settingsBytes, saveError,
+                            runtime.saveProfileCtx)) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
         }
@@ -172,9 +223,7 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
         return;
     }
 
-    // Same story as the save handler: WebServer already buffered the body, so
-    // this is a semantic/application cap on what we will parse, NOT a bound on
-    // the transport allocation.
+    // Keep a tighter semantic limit than the transport-wide ingress cap.
     const String body = server.arg("plain");
     if (body.length() > 2048) {
         server.send(400, "application/json", "{\"error\":\"Payload too large\"}");

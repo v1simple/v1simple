@@ -257,7 +257,7 @@ public:
     }
 
     bool remove(const char* key) {
-        if (!started_ || readOnly_ || !key) {
+        if (!started_ || readOnly_ || !key || mock_preferences::writesFailForKey(key)) {
             return false;
         }
         const bool removed = mock_preferences::ensureNamespace(namespaceName_).erase(key) > 0;

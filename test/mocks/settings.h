@@ -163,6 +163,12 @@ enum class SettingsPersistMode : uint8_t {
     Deferred,
 };
 
+struct SettingsPersistResult {
+    bool success = false;
+    bool changed = false;
+    bool deferred = false;
+};
+
 struct ObdSettingsUpdate {
     bool hasEnabled = false;
     bool enabled = false;
@@ -251,6 +257,7 @@ public:
     bool slotMuteToZero[3] = {false, false, false};
     bool slotPriorityArrowOnly[3] = {false, false, false};
     bool backupToSDResult = true;
+    bool obdPersistSuccess = true;
     
     void load() {}
     void save() { ++saveCalls; }
@@ -271,8 +278,10 @@ public:
     bool deferredBackupPending() const { return false; }
     bool deferredBackupRetryScheduled() const { return false; }
     uint32_t deferredBackupNextAttemptAtMs() const { return 0; }
+    bool resolveStorageTransactionsForMutation() { return true; }
     void setLastV1Address(const char*) {}
-    void setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+    SettingsPersistResult setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        const bool changed = settings.activeSlot != static_cast<uint8_t>(slot);
         settings.activeSlot = static_cast<uint8_t>(slot);
         if (persistMode == SettingsPersistMode::Deferred) {
             ++requestDeferredPersistCalls;
@@ -281,6 +290,7 @@ public:
         } else {
             ++saveCalls;
         }
+        return SettingsPersistResult{true, changed, persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup};
     }
     void setAutoPushEnabled(bool enabled) { settings.autoPushEnabled = enabled; }
     void setSlot(int slotNum, const String& profile, V1Mode mode) {
@@ -325,9 +335,9 @@ public:
     const V1Settings& get() const { return settings; }
     V1Settings& getMutable() { return settings; }
     V1Settings& mutableSettings() { return settings; }
-    bool applyObdSettingsUpdate(const ObdSettingsUpdate& update,
-                                SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
-        (void)persistMode;
+    SettingsPersistResult applyObdSettingsUpdate(const ObdSettingsUpdate& update,
+                                                 SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        const V1Settings before = settings;
         bool changed = false;
         if (update.resetSavedNameOnAddressChange &&
             update.hasSavedAddress &&
@@ -382,6 +392,10 @@ public:
             settings.obdSavedAddrType = update.savedAddrType;
             changed = true;
         }
+        if (changed && !obdPersistSuccess) {
+            settings = before;
+            return SettingsPersistResult{false, true, false};
+        }
         if (changed) {
             if (persistMode == SettingsPersistMode::Deferred) {
                 ++requestDeferredPersistCalls;
@@ -391,7 +405,7 @@ public:
                 ++saveCalls;
             }
         }
-        return changed;
+        return SettingsPersistResult{true, changed, persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup};
     }
     bool applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
@@ -454,8 +468,8 @@ public:
         }
         return changed;
     }
-    bool applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
-                                  SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+    SettingsPersistResult applyAutoPushStateUpdate(
+        const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
         ++applyAutoPushStateUpdateCalls;
         bool changed = false;
         if (update.hasActiveSlot && settings.activeSlot != update.activeSlot) {
@@ -475,7 +489,7 @@ public:
                 ++saveCalls;
             }
         }
-        return changed;
+        return SettingsPersistResult{true, changed, persistMode == SettingsPersistMode::Deferred};
     }
     uint8_t getSlotAlertPersistSec(uint8_t slot) const {
         return (slot < 3) ? slotAlertPersistSec[slot] : 0;
@@ -494,7 +508,9 @@ public:
     bool isDisplayOn() const { return settings.displayOn; }
     void setDisplayOn(bool on) { settings.displayOn = on; }
 
-    void setStealthEnabled(bool enabled, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+    SettingsPersistResult setStealthEnabled(bool enabled,
+                                            SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        const bool changed = settings.stealthEnabled != enabled;
         settings.stealthEnabled = enabled;
         if (persistMode == SettingsPersistMode::Deferred) {
             ++requestDeferredPersistCalls;
@@ -503,6 +519,7 @@ public:
         } else {
             ++saveCalls;
         }
+        return SettingsPersistResult{true, changed, persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup};
     }
 };
 

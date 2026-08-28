@@ -99,6 +99,9 @@
             const payload = {
                 name: validatedName.canonical,
                 description: saveDescription.trim(),
+                displayOn: currentProfile?.displayOn,
+                mainVolume: currentProfile?.mainVolume,
+                mutedVolume: currentProfile?.mutedVolume,
                 settings: toApiSettings(settingsToSave)
             };
 
@@ -210,6 +213,9 @@
             const payload = {
                 name: currentProfile.name,
                 description: editDescription.trim(),
+                displayOn: currentProfile.displayOn,
+                mainVolume: currentProfile.mainVolume,
+                mutedVolume: currentProfile.mutedVolume,
                 settings: toApiSettings(editedSettings)
             };
 

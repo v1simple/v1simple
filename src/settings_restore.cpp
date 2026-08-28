@@ -74,10 +74,20 @@ void SettingsManager::recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs,
                                                                      const JsonDocument& backupDoc) {
     if (!storage_->isReady() || !storage_->isSDCard()) return;
 
+    if (hasSdBackup && !backupDocumentCanApply(backupDoc, settings_, *profiles_)) {
+        Serial.println("[Settings] Rejecting partial recovery from transactionally invalid backup");
+        return;
+    }
+
     bool recovered = false;
     if (hasSdBackup) {
+        const V1Settings before = settings_;
         Serial.println("[Settings] Attempting partial recovery from SD backup");
-        applyBackupNetworkFields(backupDoc, settings_, *storage_, BackupRestoreScope::CriticalRecovery, false);
+        if (!applyBackupNetworkFields(backupDoc, settings_, *storage_, BackupRestoreScope::CriticalRecovery, false)) {
+            settings_ = before;
+            Serial.println("[Settings] Partial recovery credential apply failed; leaving settings unchanged");
+            return;
+        }
         applyBackupDisplayFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
         applyBackupAudioFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
         applyBackupProfileSlotFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
@@ -188,6 +198,11 @@ void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPa
 bool SettingsManager::checkAndRestoreFromSD() {
     // Check if NVS was erased (appears default) and backup exists on SD
     // This can be called after storage is mounted to retry the restore
+    resolveWifiCredentialTransaction();
+    if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
+        Serial.println("[Settings] Storage transaction recovery remains pending");
+        return false;
+    }
     bool needsRestore = checkNeedsRestore();
     fs::FS* fs = nullptr;
     bool hasSdBackup = false;

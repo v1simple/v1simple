@@ -749,30 +749,26 @@
             reordered[targetPosition],
             reordered[position]
         ];
+        const updates = reordered.flatMap((candidate, priority) =>
+            candidate.priority === priority ? [] : [{ index: candidate.index, priority }]
+        );
 
         wifiOrdering = true;
         try {
-            for (let priority = 0; priority < reordered.length; priority += 1) {
-                const candidate = reordered[priority];
-                if (candidate.priority === priority) continue;
-                const res = await fetchWithTimeout('/api/wifi/networks', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        index: candidate.index,
-                        ssid: candidate.ssid,
-                        label: candidate.label,
-                        priority
-                    })
-                });
-                if (!res.ok) {
-                    message = { type: 'error', text: 'Failed to reorder WiFi networks' };
-                    return;
-                }
+            const res = await fetchWithTimeout('/api/wifi/networks/priorities', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ updates })
+            });
+            if (!res.ok) {
+                await fetchSavedWifiNetworks();
+                message = { type: 'error', text: 'Failed to reorder WiFi networks' };
+                return;
             }
-            message = { type: 'success', text: 'WiFi network priority updated' };
             await fetchSavedWifiNetworks();
+            message = { type: 'success', text: 'WiFi network priority updated' };
         } catch (e) {
+            await fetchSavedWifiNetworks();
             message = { type: 'error', text: 'Failed to reorder WiFi networks' };
         } finally {
             wifiOrdering = false;

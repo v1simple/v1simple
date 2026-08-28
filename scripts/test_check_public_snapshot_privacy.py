@@ -454,6 +454,67 @@ def test_history_scans_commit_tag_and_reference_text_without_echoing_values() ->
         assert sensitive not in rendered
 
 
+def test_safe_outer_tag_does_not_hide_unsafe_inner_tag_content() -> None:
+    with tempfile.TemporaryDirectory(prefix="snapshot-privacy-") as raw:
+        repo = make_repo(Path(raw))
+        sensitive = private_email().decode("ascii")
+        git(repo, "tag", "-a", "inner-private", "-m", f"Contact {sensitive}")
+        inner = git_output(repo, "rev-parse", "refs/tags/inner-private")
+        git(repo, "tag", "-d", "inner-private")
+        git(repo, "tag", "-a", "outer-safe", inner, "-m", "safe outer fixture")
+
+        findings = checker.scan_repository(repo, all_history=True, local_terms=[])
+        assert any(finding.rule == "non-public-email" for finding in findings)
+        rendered = "\n".join(finding.render() for finding in findings)
+        assert sensitive not in rendered
+
+        outer = git_output(repo, "rev-parse", "refs/tags/outer-safe")
+        direct_findings = checker.scan_repository(
+            repo,
+            history_tip=outer,
+            local_terms=[],
+        )
+        assert any(finding.rule == "non-public-email" for finding in direct_findings)
+
+
+def test_safe_nested_tags_direct_tags_and_commits_pass() -> None:
+    with tempfile.TemporaryDirectory(prefix="snapshot-privacy-") as raw:
+        repo = make_repo(Path(raw))
+        git(repo, "tag", "-a", "inner-safe", "-m", "safe inner fixture")
+        inner = git_output(repo, "rev-parse", "refs/tags/inner-safe")
+        git(repo, "tag", "-d", "inner-safe")
+        git(repo, "tag", "-a", "outer-safe", inner, "-m", "safe outer fixture")
+
+        outer = git_output(repo, "rev-parse", "refs/tags/outer-safe")
+        assert checker.scan_repository(repo, all_history=True, local_terms=[]) == []
+        assert checker.scan_repository(repo, history_tip=outer, local_terms=[]) == []
+        assert checker.scan_repository(repo, revision="HEAD", local_terms=[]) == []
+
+
+def test_annotated_tag_cycle_is_rejected_defensively() -> None:
+    first = "a" * 40
+    second = "b" * 40
+    originals = (
+        checker.resolve_object,
+        checker.object_type,
+        checker.annotated_tag_target,
+    )
+    checker.resolve_object = lambda _repo, _revision: first
+    checker.object_type = lambda _repo, _object_id: "tag"
+    checker.annotated_tag_target = (  # type: ignore[assignment]
+        lambda _repo, object_id: second if object_id == first else first
+    )
+    try:
+        try:
+            checker.annotated_tag_chain(Path("."), "fixture")
+        except RuntimeError as exc:
+            assert "cycle" in str(exc)
+        else:
+            raise AssertionError("annotated tag cycle was accepted")
+    finally:
+        checker.resolve_object, checker.object_type, checker.annotated_tag_target = originals
+
+
 def test_history_scan_rejects_shallow_repositories() -> None:
     with tempfile.TemporaryDirectory(prefix="snapshot-privacy-") as raw:
         base = Path(raw)
@@ -527,6 +588,9 @@ def main() -> int:
         test_replacement_refs_cannot_conceal_the_real_revision,
         test_old_blob_reused_at_a_private_path_is_checked_by_path,
         test_history_scans_commit_tag_and_reference_text_without_echoing_values,
+        test_safe_outer_tag_does_not_hide_unsafe_inner_tag_content,
+        test_safe_nested_tags_direct_tags_and_commits_pass,
+        test_annotated_tag_cycle_is_rejected_defensively,
         test_history_scan_rejects_shallow_repositories,
         test_blob_object_reader_deduplicates_unchanged_content_by_hash,
     )

@@ -52,6 +52,45 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it('preserves display and volume metadata when editing a saved profile', async () => {
+        let savedPayload;
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({
+                    name: 'Daily Drive',
+                    description: 'Existing metadata',
+                    displayOn: false,
+                    mainVolume: 7,
+                    mutedVolume: 2,
+                    settings: { xBand: true }
+                })
+            },
+            {
+                method: 'POST',
+                match: '/api/v1/profile',
+                respond: ({ init }) => {
+                    savedPayload = JSON.parse(init.body);
+                    return jsonResponse({ success: true });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
+        await screen.findByText('Editing profile: Daily Drive');
+        await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+
+        await screen.findByText('Profile "Daily Drive" saved');
+        expect(savedPayload.description).toBe('Existing metadata');
+        expect(savedPayload.displayOn).toBe(false);
+        expect(savedPayload.mainVolume).toBe(7);
+        expect(savedPayload.mutedVolume).toBe(2);
+        unmount();
+    });
+
     it('surfaces profile load failures without breaking the route', async () => {
         installFetchMock(
             [

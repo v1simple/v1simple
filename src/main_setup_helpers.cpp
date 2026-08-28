@@ -36,12 +36,13 @@ bool preparePersistenceForShutdown(ProductEventLog& events, HealthJournal& healt
     shutdownBleBondBackupWriter(1500);
     feedLoopTaskWatchdogDuringShutdown();
 
+    bool settingsCommitted = false;
     if (eventWriterReleased) {
         Serial.println("[Battery] Saving settings...");
-        settings.save();
-        feedLoopTaskWatchdogDuringShutdown();
-        Serial.println("[Battery] Forcing final SD settings backup...");
-        settings.backupToSD();
+        settingsCommitted = settings.save();
+        if (!settingsCommitted) {
+            Serial.println("[Battery] ERROR: Final settings NVS commit failed; shutdown remains unclean");
+        }
         feedLoopTaskWatchdogDuringShutdown();
     }
 
@@ -51,7 +52,7 @@ bool preparePersistenceForShutdown(ProductEventLog& events, HealthJournal& healt
         health.end(millis());
         feedLoopTaskWatchdogDuringShutdown();
     }
-    return eventWriterReleased;
+    return eventWriterReleased && settingsCommitted;
 }
 
 bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal& health) {

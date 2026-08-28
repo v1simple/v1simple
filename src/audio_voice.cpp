@@ -69,13 +69,16 @@ static void sd_audio_playback_task(void* pvParameters);
 static TaskHandle_t sdAudioWorkerHandle = nullptr;
 
 // Helper to start SD audio task with pre-allocated params
-// Returns true if task started, false if already playing or failed
+// Returns the authoritative task-start result. Callers must not infer
+// acceptance by sampling audio_playing after the worker has been notified: a
+// short clip can finish before that sample and make an accepted job look like
+// a failure.
 // Caller should prepare a local SDAudioTaskParams, then call this
-static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
+static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localParams) {
     // Atomic exchange: if already true, abort; otherwise set to true
     if (audio_playing.exchange(true)) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return false;
+        return AudioPlaybackResult::Busy;
     }
 
     // Copy local params to pre-allocated global (protected by audio_playing flag)
@@ -100,13 +103,13 @@ static bool start_sd_audio_task(const SDAudioTaskParams& localParams) {
         if (sdAudioWorkerHandle == nullptr) {
             Serial.println("[AUDIO] ERROR: Failed to create SD audio worker!");
             audio_playing.store(false);
-            return false;
+            return AudioPlaybackResult::Unavailable;
         }
     }
 
     audioTaskHandle.store(sdAudioWorkerHandle);
     xTaskNotifyGive(sdAudioWorkerHandle);
-    return true;
+    return AudioPlaybackResult::Accepted;
 }
 
 static void finish_sd_audio_job() {
@@ -343,35 +346,38 @@ void play_test_voice() {
 //   BAND_FREQ: "Ka 34 7 49"
 // direction appended if includeDirection is true
 // bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
-void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
-                          bool includeDirection, uint8_t bogeyCount) {
+static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                                      VoiceAlertMode mode, bool includeDirection,
+                                                      uint8_t bogeyCount) {
     AUDIO_LOGF("[AUDIO] play_frequency_voice() band=%d freq=%d dir=%d mode=%d incDir=%d bogeys=%d\n", (int)band,
                freqMHz, (int)direction, (int)mode, includeDirection, bogeyCount);
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return;
+        return AudioPlaybackResult::Busy;
     }
 
     if (mode == VOICE_MODE_DISABLED) {
         AUDIO_LOGLN("[AUDIO] Voice alerts disabled");
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     if (!sd_audio_ready) {
         AUDIO_LOGLN("[AUDIO] LittleFS audio not ready, skipping frequency voice");
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     // Laser alerts have no frequency clip, so pair the band with direction when enabled.
+    // Compose here so the return value comes directly from the worker start,
+    // just like the non-laser paths.
     if (band == AlertBand::LASER) {
+        SDAudioTaskParams laserParams;
+        laserParams.numClips = 0;
+        appendAudioClip(laserParams, getBandClipFile(band));
         if (includeDirection) {
-            // Compose "Laser ahead/behind/side" from LittleFS clips.
-            play_alert_voice(band, direction);
-        } else {
-            play_band_only(band);
+            appendAudioClip(laserParams, getDirectionClipFile(direction));
         }
-        return;
+        return laserParams.numClips > 0 ? start_sd_audio_task(laserParams) : AudioPlaybackResult::Unavailable;
     }
 
     // Prepare params on stack (no malloc needed)
@@ -455,7 +461,12 @@ void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direc
     }
 
     // Start task using pre-allocated global params
-    start_sd_audio_task(params);
+    return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
+}
+
+void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
+                          bool includeDirection, uint8_t bogeyCount) {
+    (void)play_frequency_voice_impl(band, freqMHz, direction, mode, includeDirection, bogeyCount);
 }
 
 // Play band-only announcement (e.g., "Ka", "K", "X", "Laser")
@@ -502,17 +513,17 @@ void play_band_only(AlertBand band) {
 
 // Play direction-only announcement (used when same alert changes direction)
 // Says "ahead", "behind", or "side", optionally with bogey count if > 1
-void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
+static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, uint8_t bogeyCount) {
     AUDIO_LOGF("[AUDIO] play_direction_only() dir=%d bogeys=%d\n", (int)direction, bogeyCount);
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return;
+        return AudioPlaybackResult::Busy;
     }
 
     if (!sd_audio_ready) {
         AUDIO_LOGLN("[AUDIO] SD audio not ready, skipping direction-only");
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     // Prepare params on stack (no malloc needed)
@@ -547,13 +558,17 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
     }
 
     if (params.numClips == 0) {
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     AUDIO_LOGF("[AUDIO] Playing direction-only: %s\n", params.filePaths[0]);
 
     // Start task using pre-allocated global params
-    start_sd_audio_task(params);
+    return start_sd_audio_task(params);
+}
+
+void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
+    (void)play_direction_only_impl(direction, bogeyCount);
 }
 
 // Call from main loop to handle amp warm timeout
@@ -592,25 +607,25 @@ void audio_process_amp_timeout() {
 
 // Play threat escalation: "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
 // Used when secondary alert ramps up from weak (≤2 bars) to strong (≥4 bars) over time
-void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
-                            uint8_t behind, uint8_t side) {
+static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                                       uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
     AUDIO_LOGF("[AUDIO] play_threat_escalation() band=%d freq=%d dir=%d total=%d\n", (int)band, freqMHz, (int)direction,
                total);
 
     if (audio_playing.load()) {
         AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return;
+        return AudioPlaybackResult::Busy;
     }
 
     if (!sd_audio_ready) {
         AUDIO_LOGLN("[AUDIO] SD audio not ready, skipping threat escalation");
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     // Laser excluded - shouldn't happen but guard anyway
     if (band == AlertBand::LASER) {
         AUDIO_LOGLN("[AUDIO] Laser excluded from threat escalation");
-        return;
+        return AudioPlaybackResult::Unavailable;
     }
 
     // Prepare params on stack (no malloc needed)
@@ -710,5 +725,24 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
     }
 
     // Start task using pre-allocated global params
-    start_sd_audio_task(params);
+    return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
+}
+
+void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
+                            uint8_t behind, uint8_t side) {
+    (void)play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side);
+}
+
+AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount) {
+    return play_frequency_voice_impl(band, freqMHz, direction, mode, includeDirection, bogeyCount);
+}
+
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
+    return play_direction_only_impl(direction, bogeyCount);
+}
+
+AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
+    return play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side);
 }

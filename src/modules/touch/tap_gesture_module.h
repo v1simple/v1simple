@@ -58,6 +58,10 @@ class TapGestureModule {
     unsigned long nextTouchPollMs_ = 0;
     bool touching_ = false;
     bool longPressFired_ = false;
+    bool pendingMuteCommand_ = false;
+    bool pendingMuteValue_ = false;
+    unsigned long pendingMuteLastAttemptMs_ = 0;
+    static constexpr unsigned long MUTE_RETRY_INTERVAL_MS = 25;
     static constexpr unsigned long LONG_PRESS_WIFI_MS = 4000;
     static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 25;
 };

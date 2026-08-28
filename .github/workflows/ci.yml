@@ -79,11 +79,15 @@ jobs:
       - name: Install Python toolchain
         run: |
           python3 -m venv --copies "$HOME/.platformio/penv"
-          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "cryptography>=41" "Pillow>=10.4,<13" "littlefs-python==0.18.0"
+          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "esptool==5.3.0" "cryptography>=41" "Pillow>=10.4,<13" "littlefs-python==0.18.0"
           echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
 
       - name: Run ci-test.sh
+        env:
+          PLATFORMIO_RUN_JOBS: '1'
         run: |
+          python3 scripts/check_platformio_core_version.py --pio pio
+          python3 scripts/check_esptool_version.py --python python3
           set -o pipefail
           bash ./scripts/ci-test.sh 2>&1 | tee ci-test.log
 

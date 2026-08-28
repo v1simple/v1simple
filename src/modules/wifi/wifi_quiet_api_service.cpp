@@ -36,7 +36,11 @@ void handleApiSave(WebServer& server, const Runtime& runtime) {
     AudioSettingsUpdate update;
     WifiQuietSettingsFields::parse(server, update, false);
 
-    runtime.applySettingsUpdate(update, runtime.ctx);
+    const SettingsPersistResult result = runtime.applySettingsUpdate(update, runtime.ctx);
+    if (!result.success) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
+    }
 
     server.send(200, "application/json", "{\"success\":true}");
 }

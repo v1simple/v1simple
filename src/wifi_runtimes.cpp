@@ -177,7 +177,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.hasEnabled = true;
             update.enabled = request.enable;
             return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+                update, SettingsPersistMode::ImmediateNvsDeferredBackup).success;
         },
         this,
         [](int slot, void* ctx) {
@@ -226,12 +226,12 @@ WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
         [](void* ctx) -> const V1Settings& { return static_cast<WiFiManager*>(ctx)->settings_.get(); },
         this,
         [](const DisplaySettingsUpdate& update, void* ctx) {
-            static_cast<WiFiManager*>(ctx)->settings_.applyDisplaySettingsUpdate(
+            return static_cast<WiFiManager*>(ctx)->settings_.applyDisplaySettingsUpdate(
                 update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
         this,
         [](void* ctx) {
-            static_cast<WiFiManager*>(ctx)->settings_.resetDisplaySettings(
+            return static_cast<WiFiManager*>(ctx)->settings_.resetDisplaySettings(
                 SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
         this,
@@ -259,7 +259,7 @@ WifiAudioSettingsRuntime WiFiManager::makeAudioRuntime() {
         return static_cast<WiFiManager*>(ctx)->settings_.get();
     };
     r.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* ctx) {
-        static_cast<WiFiManager*>(ctx)->settings_.applyAudioSettingsUpdate(
+        return static_cast<WiFiManager*>(ctx)->settings_.applyAudioSettingsUpdate(
             update, SettingsPersistMode::ImmediateNvsDeferredBackup);
     };
     r.setAudioVolume = [](uint8_t volume, void* /*ctx*/) { audio_set_volume(volume); };
@@ -323,16 +323,20 @@ WifiSettingsApiService::Runtime WiFiManager::makeSettingsRuntime() {
     r.applySettingsUpdate = [](const DeviceSettingsUpdate& update, void* ctx) {
         auto* self = static_cast<WiFiManager*>(ctx);
         const bool maintenanceBoot = self && self->isMaintenanceBootMode();
-        self->settings_.applyDeviceSettingsUpdate(
+        const SettingsPersistResult result = self->settings_.applyDeviceSettingsUpdate(
             update, maintenanceBoot ? SettingsPersistMode::Immediate : SettingsPersistMode::ImmediateNvsDeferredBackup);
+        if (!result.success) {
+            return result;
+        }
         const V1Settings& settings = self->settings_.get();
         if (maintenanceBoot) {
-            return;
+            return result;
         }
         self->bleRuntime_->setProxyRuntimeEnabled(settings.proxyBLE, settings.proxyName.c_str());
         if (self && self->obdRuntime_ && self->speedSelector_) {
             SettingsRuntimeSync::syncObdVehicleRuntimeSettings(settings, *self->obdRuntime_, *self->speedSelector_);
         }
+        return result;
     };
     r.checkRateLimit = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); };
     r.getNvsDiagnostic = [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getNvsDiagnostic(); };
@@ -384,11 +388,11 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         this,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->disconnectFromNetwork(); },
         this,
-        [](void* ctx) { static_cast<WiFiManager*>(ctx)->forgetWifiClient(); },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->forgetWifiClient(); },
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->enableWifiClientFromSavedCredentials(); },
         this,
-        [](void* ctx) { static_cast<WiFiManager*>(ctx)->disableWifiClient(); },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->disableWifiClient(); },
         this,
         maintenanceBootMode_,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->getSavedNetworkSlots(); },
@@ -398,6 +402,10 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         },
         this,
         [](size_t index, void* ctx) { return static_cast<WiFiManager*>(ctx)->deleteSavedNetwork(index); },
+        this,
+        [](const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->updateSavedNetworkPriorities(updates);
+        },
         this,
         [](size_t index, void* ctx) { return static_cast<WiFiManager*>(ctx)->testSavedNetwork(index); },
         this,
@@ -439,12 +447,14 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        [](const String& name, const String& description, bool displayOn, const uint8_t inBytes[6], String& error,
-           void* ctx) {
+        [](const String& name, const String& description, bool displayOn, uint8_t mainVolume, uint8_t mutedVolume,
+           const uint8_t inBytes[6], String& error, void* ctx) {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
             profile.displayOn = displayOn;
+            profile.mainVolume = mainVolume;
+            profile.mutedVolume = mutedVolume;
             memcpy(profile.settings.bytes, inBytes, 6);
             ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile);
             if (!result.success) {
@@ -506,13 +516,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         this,
         [](const String& name, void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
-            bool referencesChanged = false;
-            if (!self->settings_.clearProfileReferencesPersisted(name, referencesChanged)) {
-                Serial.printf("[V1Profiles] DELETE aborted name='%s': slot reconciliation did not persist\n",
-                              name.c_str());
-                return WifiV1ProfileApiService::CatalogStatus::IoError;
-            }
-            const ProfileOperationResult result = self->profiles_.deleteProfileResult(name, 250);
+            const ProfileOperationResult result = self->settings_.deleteProfileAndReferences(name);
             switch (result.status) {
             case ProfileStorageStatus::Success:
                 return WifiV1ProfileApiService::CatalogStatus::Success;
@@ -605,8 +609,10 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // buildDocument
         [](JsonDocument& doc, uint32_t snapshotMs, void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
-            BackupPayloadBuilder::buildBackupDocument(doc, self->settings_.get(), self->profiles_,
-                                                      BackupPayloadBuilder::BackupTransport::HttpDownload, snapshotMs);
+            const BackupPayloadBuilder::BuildResult result = BackupPayloadBuilder::buildBackupDocument(
+                doc, self->settings_.get(), self->profiles_, BackupPayloadBuilder::BackupTransport::HttpDownload,
+                snapshotMs);
+            return BackupApiService::BackupSnapshotBuildResult{result.safeToCommit};
         },
         // isStorageReady
         [](void* ctx) -> bool { return static_cast<WiFiManager*>(ctx)->storage_.isReady(); },

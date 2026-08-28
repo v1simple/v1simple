@@ -19,7 +19,11 @@ struct BackupSnapshotCache {
     bool valid = false;
 };
 
-using BackupSnapshotBuildFn = void (*)(JsonDocument&, uint32_t snapshotMs, void* ctx);
+struct BackupSnapshotBuildResult {
+    bool safeToCommit = true;
+};
+
+using BackupSnapshotBuildFn = BackupSnapshotBuildResult (*)(JsonDocument&, uint32_t snapshotMs, void* ctx);
 
 bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uint32_t settingsRevision,
                               uint32_t profileRevision, BackupSnapshotBuildFn buildSnapshot, void* buildCtx,

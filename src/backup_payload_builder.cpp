@@ -12,6 +12,9 @@ namespace {
 
 constexpr const char* HTTP_BACKUP_TYPE = "v1simple_backup";
 constexpr const char* SD_BACKUP_TYPE = "v1simple_sd_backup";
+// Early downloadable backups used this name. They remain import-compatible;
+// new exports continue to use HTTP_BACKUP_TYPE.
+constexpr const char* LEGACY_HTTP_BACKUP_TYPE = "v1simple_http_backup";
 // computeCrc32 is the canonical IEEE 802.3 CRC32 from settings_backup.cpp.
 
 void appendProfile(JsonArray profilesArr, const V1Profile& profile) {
@@ -38,7 +41,8 @@ bool isRecognizedBackupType(const char* type) {
     if (type == nullptr) {
         return false;
     }
-    return strcmp(type, HTTP_BACKUP_TYPE) == 0 || strcmp(type, SD_BACKUP_TYPE) == 0;
+    return strcmp(type, HTTP_BACKUP_TYPE) == 0 || strcmp(type, SD_BACKUP_TYPE) == 0 ||
+           strcmp(type, LEGACY_HTTP_BACKUP_TYPE) == 0;
 }
 
 BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, const V1ProfileManager& profileManager,
@@ -238,6 +242,10 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
         if (!snapshotResult.success() || (hasConfiguredReferences && result.profilesBackedUp == 0)) {
             result.safeToCommit = false;
         }
+    } else {
+        result.profileStatus = ProfileStorageStatus::Busy;
+        result.profileCatalogGenuinelyEmpty = false;
+        result.safeToCommit = false;
     }
 
     // Stamp _crc32 on SD backups to catch media-level corruption. The checksum

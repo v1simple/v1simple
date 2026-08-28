@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <string>
+
 #include "../mocks/WebServer.h"
 #include "../../src/modules/wifi/wifi_ap_lifecycle_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_interface_policy.h"
@@ -308,6 +310,56 @@ static void assertPreflightDecision(const char (&request)[N], const bool mainten
                               WifiMaintenanceHttpPreflight::evaluate(request, N - 1, maintenanceBootMode)));
 }
 
+static void assertPreflightDecision(const std::string& request, const bool maintenanceBootMode,
+                                    const WifiMaintenanceHttpPreflight::Decision expected) {
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(expected),
+        static_cast<int>(WifiMaintenanceHttpPreflight::evaluate(
+            request.data(), request.size(), maintenanceBootMode)));
+}
+
+void test_http_preflight_allows_bounded_legacy_multipart_posts() {
+    using WifiMaintenanceHttpPreflight::Decision;
+    const char* const paths[] = {
+        "/api/device/settings",
+        "/api/obd/devices/name",
+        "/api/autopush/activate",
+        "/api/autopush/slot",
+        "/api/v1/devices/name",
+        "/api/v1/devices/profile",
+        "/api/v1/devices/delete",
+    };
+    for (const char* path : paths) {
+        const std::string request =
+            std::string("POST ") + path + " HTTP/1.1\r\n"
+            "X-V1Simple-Request: maintenance-ui\r\n"
+            "Content-Type: multipart/form-data; boundary=legacy\r\n"
+            "Content-Length: 120\r\n\r\n";
+        assertPreflightDecision(request, true, Decision::AllowBodyParsing);
+    }
+
+    const char oversized[] =
+        "POST /api/device/settings HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data; boundary=legacy\r\n"
+        "Content-Length: 4097\r\n\r\n";
+    assertPreflightDecision(oversized, true, Decision::RejectTooLarge);
+
+    const char wrongMethod[] =
+        "PUT /api/device/settings HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data; boundary=legacy\r\n"
+        "Content-Length: 120\r\n\r\n";
+    assertPreflightDecision(wrongMethod, true, Decision::RejectMultipart);
+
+    const char missingBoundary[] =
+        "POST /api/device/settings HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data\r\n"
+        "Content-Length: 120\r\n\r\n";
+    assertPreflightDecision(missingBoundary, true, Decision::RejectMultipart);
+}
+
 void test_http_preflight_rejects_multipart_before_framework_parser() {
     using WifiMaintenanceHttpPreflight::Decision;
     const char request[] =
@@ -317,6 +369,13 @@ void test_http_preflight_rejects_multipart_before_framework_parser() {
         "Content-Type: multipart/form-data; boundary=abc\r\n"
         "Content-Length: 120\r\n\r\n";
     assertPreflightDecision(request, true, Decision::RejectMultipart);
+
+    const char nonLegacyRoute[] =
+        "POST /api/audio/settings HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data; boundary=abc\r\n"
+        "Content-Length: 120\r\n\r\n";
+    assertPreflightDecision(nonLegacyRoute, true, Decision::RejectMultipart);
 }
 
 void test_http_preflight_rejects_wrong_shape_and_nonmaintenance_before_body() {
@@ -481,6 +540,7 @@ int main() {
     RUN_TEST(test_failed_saved_network_persistence_has_no_runtime_side_effects);
     RUN_TEST(test_committed_mutation_cancels_old_auto_activity_and_only_affected_link);
     RUN_TEST(test_scan_mutation_restarts_but_unrelated_connecting_mutation_is_preserved);
+    RUN_TEST(test_http_preflight_allows_bounded_legacy_multipart_posts);
     RUN_TEST(test_http_preflight_rejects_multipart_before_framework_parser);
     RUN_TEST(test_http_preflight_rejects_wrong_shape_and_nonmaintenance_before_body);
     RUN_TEST(test_http_preflight_rejects_invalid_or_unbounded_framing_before_body);

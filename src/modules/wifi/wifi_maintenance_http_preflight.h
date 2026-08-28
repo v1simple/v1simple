@@ -9,6 +9,7 @@ namespace WifiMaintenanceHttpPreflight {
 
 constexpr size_t kMaxHeaderBytes = 2048;
 constexpr size_t kMaxBodyBytes = 128u * 1024u;
+constexpr size_t kMaxLegacyMultipartBodyBytes = 4u * 1024u;
 
 enum class Decision : uint8_t {
     NeedMoreHeaders,
@@ -39,6 +40,18 @@ inline bool equalsIgnoreCase(const char* begin, const char* end, const char* exp
     return begin == end && *expected == '\0';
 }
 
+inline bool equalsExact(const char* begin, const char* end, const char* expected) {
+    if (!begin || !end || !expected) {
+        return false;
+    }
+    while (begin < end && *expected != '\0') {
+        if (*begin++ != *expected++) {
+            return false;
+        }
+    }
+    return begin == end && *expected == '\0';
+}
+
 inline bool startsWithIgnoreCase(const char* begin, const char* end, const char* expected) {
     if (!begin || !end || !expected) {
         return false;
@@ -49,6 +62,29 @@ inline bool startsWithIgnoreCase(const char* begin, const char* end, const char*
         }
     }
     return true;
+}
+
+inline bool isMultipartFormDataWithBoundary(const char* begin, const char* end) {
+    constexpr char kMediaType[] = "multipart/form-data";
+    constexpr char kBoundary[] = "boundary=";
+    if (!startsWithIgnoreCase(begin, end, kMediaType)) {
+        return false;
+    }
+    const char* cursor = begin + sizeof(kMediaType) - 1;
+    while (cursor < end && (*cursor == ' ' || *cursor == '\t')) {
+        ++cursor;
+    }
+    if (cursor == end || *cursor++ != ';') {
+        return false;
+    }
+    while (cursor < end && (*cursor == ' ' || *cursor == '\t')) {
+        ++cursor;
+    }
+    if (!startsWithIgnoreCase(cursor, end, kBoundary)) {
+        return false;
+    }
+    cursor += sizeof(kBoundary) - 1;
+    return cursor < end;
 }
 
 inline void trim(const char*& begin, const char*& end) {
@@ -81,6 +117,16 @@ inline bool isBodyMethod(const char* begin, const char* end) {
            equalsIgnoreCase(begin, end, "PATCH") || equalsIgnoreCase(begin, end, "DELETE");
 }
 
+inline bool isLegacyMultipartPath(const char* begin, const char* end) {
+    return equalsExact(begin, end, "/api/device/settings") ||
+           equalsExact(begin, end, "/api/obd/devices/name") ||
+           equalsExact(begin, end, "/api/autopush/activate") ||
+           equalsExact(begin, end, "/api/autopush/slot") ||
+           equalsExact(begin, end, "/api/v1/devices/name") ||
+           equalsExact(begin, end, "/api/v1/devices/profile") ||
+           equalsExact(begin, end, "/api/v1/devices/delete");
+}
+
 inline Decision applyWriteAdmission(const Decision decision, const bool admitted) {
     return decision == Decision::AllowBodyParsing && !admitted ? Decision::RejectRateLimited : decision;
 }
@@ -101,6 +147,12 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
     }
     if (!isBodyMethod(data, methodEnd)) {
         return Decision::AllowFrameworkParsing;
+    }
+    const char* const targetBegin = methodEnd + 1;
+    const char* const targetEnd = findBytes(
+        targetBegin, static_cast<size_t>(requestLineEnd - targetBegin), " ", 1);
+    if (!targetEnd || targetEnd == targetBegin) {
+        return Decision::RejectBadRequest;
     }
     if (!maintenanceBootMode) {
         return Decision::RejectForbidden;
@@ -173,9 +225,16 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
         return Decision::RejectLengthRequired;
     }
     if (foundContentType && startsWithIgnoreCase(contentTypeBegin, contentTypeEnd, "multipart/")) {
-        // Pinned WebServer bypasses RequestHandler::canRaw for multipart and
-        // grows String form fields. Maintenance APIs do not use multipart.
-        return Decision::RejectMultipart;
+        // App-only upgrades preserve the v2.0.3 LittleFS UI, whose string-only
+        // forms use multipart. Bound that compatibility path tightly because
+        // pinned WebServer grows String form fields while parsing multipart.
+        if (!equalsIgnoreCase(data, methodEnd, "POST") || !isLegacyMultipartPath(targetBegin, targetEnd) ||
+            !isMultipartFormDataWithBoundary(contentTypeBegin, contentTypeEnd)) {
+            return Decision::RejectMultipart;
+        }
+        if (contentLength > kMaxLegacyMultipartBodyBytes) {
+            return Decision::RejectTooLarge;
+        }
     }
     (void)contentLength;
     return Decision::AllowBodyParsing;

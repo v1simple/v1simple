@@ -35,15 +35,27 @@ void V1BLEClient::processConnectedFollowup() {
     case ConnectedFollowupStep::NONE:
         return;
     case ConnectedFollowupStep::REQUEST_ALERT_DATA: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 &&
+            static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
+            return;
+        }
         const bool ok = requestAlertData();
         if (!ok) {
+            const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
+            if (!retryTimedOut) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
             logNonCriticalFollowupFailure(followupRequestAlertFailLog_,
-                                          "[BLE] Failed to request alert data (non-critical)");
+                                          "[BLE] Alert-data request retry timed out (non-critical)");
         }
-    }
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = 0;
         connectBurstStableLoopCount_ = 0;
         connectedFollowupStep_ = ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE;
         return;
+    }
     case ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE: {
         if (connectBurstStableLoopCount_ < 0xFF) {
             ++connectBurstStableLoopCount_;

@@ -73,6 +73,8 @@ void V1BLEClient::processSubscribing() {
         connectCompletedAtMs_.store(connectedNowMs, std::memory_order_relaxed);
         firstRxAfterConnectMs_.store(0, std::memory_order_relaxed);
         connectBurstStableLoopCount_ = 0;
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = connectedNowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALERT_DATA;
         connectInProgress_ = false;
         connectStartMs_ = 0;

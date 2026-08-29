@@ -28,6 +28,7 @@ std::vector<SendAttempt> gAttempts;
 std::vector<std::vector<uint8_t>> gSentPackets;
 int gStableCallbackCalls = 0;
 int gAlertRequestCalls = 0;
+std::deque<bool> gAlertRequestResults;
 
 constexpr uint8_t kVersionRequest[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
 constexpr uint8_t kAllVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
@@ -57,7 +58,11 @@ V1BLEClient::~V1BLEClient() {}
 
 bool V1BLEClient::requestAlertData() {
     ++gAlertRequestCalls;
-    return true;
+    const bool result = gAlertRequestResults.empty() ? true : gAlertRequestResults.front();
+    if (!gAlertRequestResults.empty()) {
+        gAlertRequestResults.pop_front();
+    }
+    return result;
 }
 
 SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length) {
@@ -87,22 +92,63 @@ void setUp() {
     gSentPackets.clear();
     gStableCallbackCalls = 0;
     gAlertRequestCalls = 0;
+    gAlertRequestResults.clear();
     mock_reset_nimble_state();
 }
 
 void tearDown() {}
 
-void test_alert_request_followup_runs_once_before_settle() {
+void test_alert_request_transient_failure_retries_then_settles() {
     V1BLEClient client;
+    mockMillis = 100;
     client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_ALERT_DATA;
+    client.connectedFollowupSendDeadlineMs_ = mockMillis + V1BLEClient::CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+    gAlertRequestResults = {false, true};
 
     client.processConnectedFollowup();
     TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_ALERT_DATA,
+                      client.connectedFollowupStep_);
+
+    mockMillis = 104;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+
+    mockMillis = 105;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(2, gAlertRequestCalls);
     TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE,
                       client.connectedFollowupStep_);
 
     client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(2, gAlertRequestCalls);
+}
+
+void test_alert_request_retry_deadline_is_bounded() {
+    V1BLEClient client;
+    mockMillis = 200;
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_ALERT_DATA;
+    client.connectedFollowupSendDeadlineMs_ = 210;
+    gAlertRequestResults = {false, false, false};
+
+    client.processConnectedFollowup();
     TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+
+    mockMillis = 204;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(1, gAlertRequestCalls);
+
+    mockMillis = 205;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(2, gAlertRequestCalls);
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_ALERT_DATA,
+                      client.connectedFollowupStep_);
+
+    mockMillis = 210;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_INT(3, gAlertRequestCalls);
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_CONNECT_BURST_SETTLE,
+                      client.connectedFollowupStep_);
 }
 
 // V1-CONNECT-READBACK-001: transient deferrals retain the current request;
@@ -293,7 +339,8 @@ void test_disconnect_none_cancels_retry_and_new_settle_restarts_at_version() {
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
-    RUN_TEST(test_alert_request_followup_runs_once_before_settle);
+    RUN_TEST(test_alert_request_transient_failure_retries_then_settles);
+    RUN_TEST(test_alert_request_retry_deadline_is_bounded);
     RUN_TEST(test_not_yet_retries_in_order_without_spinning_or_duplicate_success);
     RUN_TEST(test_version_terminal_failure_skips_volume_and_reaches_stable_callback);
     RUN_TEST(test_all_volume_terminal_failure_does_not_resend_version_or_block_stable_callback);

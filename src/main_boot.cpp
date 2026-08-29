@@ -176,9 +176,9 @@ uint32_t nextBootId() {
         return 0;
     }
     uint32_t bootId = prefs.getUInt(kNvsBootId, 0) + 1;
-    prefs.putUInt(kNvsBootId, bootId);
+    const bool stored = prefs.putUInt(kNvsBootId, bootId) > 0;
     prefs.end();
-    return bootId;
+    return stored ? bootId : 0;
 }
 
 // --- clean-shutdown marker ---

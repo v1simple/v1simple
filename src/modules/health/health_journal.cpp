@@ -53,8 +53,10 @@ bool HealthJournal::begin(StorageManager& storage, uint32_t bootId, const char* 
         }
         const size_t size = existing.size();
         needsHeader = size == 0;
+        const bool malformedTail = size > 0 &&
+                                   (!existing.seek(static_cast<uint32_t>(size - 1)) || existing.read() != '\n');
         existing.close();
-        if (size >= kMaxBytes) {
+        if (malformedTail || size >= kMaxBytes) {
             if (fs.exists(kPreviousPath)) {
                 fs.remove(kPreviousPath);
             }

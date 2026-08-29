@@ -23,6 +23,7 @@ void setUp() {
     std::filesystem::remove_all(root, error);
     std::filesystem::create_directories(root, error);
     StorageManager::resetMockSdLockState();
+    fs::mock_reset_fs_write_budget();
     HealthCounters::reset();
 }
 void tearDown() {}
@@ -75,11 +76,40 @@ void test_lock_failure_disables_journal_for_boot_without_retry() {
     TEST_ASSERT_FALSE(journal.enabled());
     TEST_ASSERT_EQUAL_UINT32(1, StorageManager::mockSdLockState.blockingAcquireCalls);
 }
+void test_short_writes_are_quarantined_before_next_boot_append() {
+    for (int stage = 0; stage < 4; ++stage) {
+        setUp();
+        if (stage == 1) {
+            std::ofstream(root / "health.log", std::ios::binary) << "# health_schema=1\n";
+        }
+        fs::FS filesystem(root);
+        StorageManager storage;
+        storage.reset();
+        storage.setFilesystem(&filesystem, true);
+        HealthJournal journal;
+        if (stage < 2) {
+            fs::mock_set_fs_write_budget(1);
+            TEST_ASSERT_FALSE(journal.begin(storage, 1, "img", "SW", false, false));
+        } else {
+            TEST_ASSERT_TRUE(journal.begin(storage, 1, "img", "SW", false, false));
+            fs::mock_set_fs_write_budget(1);
+            stage == 2 ? journal.ready(10) : journal.end(10);
+            TEST_ASSERT_FALSE(journal.enabled());
+        }
+        const std::string damaged = readFile("health.log");
+        fs::mock_reset_fs_write_budget();
+        HealthJournal next;
+        TEST_ASSERT_TRUE(next.begin(storage, 2, "img", "SW", false, false));
+        TEST_ASSERT_EQUAL_STRING(damaged.c_str(), readFile("health.prev.log").c_str());
+        TEST_ASSERT_TRUE(readFile("health.log").rfind("# health_schema=1\nBOOT,boot=2,", 0) == 0);
+    }
+}
 
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_boot_ready_end_schema_and_drop_aggregates);
     RUN_TEST(test_boot_rotation_is_bounded_to_one_previous_file);
     RUN_TEST(test_lock_failure_disables_journal_for_boot_without_retry);
+    RUN_TEST(test_short_writes_are_quarantined_before_next_boot_append);
     return UNITY_END();
 }

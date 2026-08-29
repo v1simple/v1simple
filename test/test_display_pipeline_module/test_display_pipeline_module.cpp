@@ -712,23 +712,29 @@ void test_alp_hold_and_persistence_deadlines_each_request_one_refresh() {
     // Close into the existing abnormal-listening hold. No packet arrives at
     // either expiry; the runtime deadline consumer is the only wake source.
     alpModule.testSetLastHbByte1(0x00);
-    alpModule.testSetState(AlpState::LISTENING, 1100);
-    alpModule.testCloseSession(1100);
-    module.handleParsed(1100);
+    alpModule.testSetState(AlpState::LISTENING, UINT32_MAX - 999u);
+    alpModule.testCloseSession(UINT32_MAX - 999u);
+    module.handleParsed(UINT32_MAX - 999u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
-    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(2099));
-    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(2100));
-    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(2100));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(0u));
+    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(1u));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(1u));
 
-    module.handleParsed(2100);
+    setUp();
+    settings.alpAlertPersistSec = 2;
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE, AlpLaserDirection::REAR);
+    module.handleParsed(1000);
+    alpModule.testSetState(AlpState::TEARDOWN, UINT32_MAX - 1999u);
+    alpModule.testCloseSession(UINT32_MAX - 1999u);
+    module.handleParsed(UINT32_MAX - 1999u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
 
-    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(4099));
-    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(4100));
-    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(4100));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(0u));
+    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(1u));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(1u));
 
-    module.handleParsed(4100);
+    module.handleParsed(1u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
 }
 

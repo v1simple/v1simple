@@ -1,5 +1,6 @@
 #include "display_pipeline_module.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -171,7 +172,7 @@ void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32
     } else if (alpLatch_ && lastPresentedAlpEventActive_) {
         alpLatch_->startPersistence(nowMs);
         alpPersistRefreshDeadlineMs_ =
-            persistSec > 0 ? nowMs + static_cast<uint32_t>(persistSec) * 1000UL : 0;
+            persistSec > 0 ? std::max<uint32_t>(1, nowMs + static_cast<uint32_t>(persistSec) * 1000UL) : 0;
     }
 
     lastPresentedAlpEventActive_ = alpEvent.active;
@@ -216,7 +217,7 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
 
     if ((holdAcrossListeningGap || holdAcrossTeardownGap) && hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
         alpHoldRefreshDeadlineMs_ =
-            holdAcrossListeningGap ? rawAlpEvent.closedAtMs + kAlpListeningHoldDwellMs : 0;
+            holdAcrossListeningGap ? std::max<uint32_t>(1, rawAlpEvent.closedAtMs + kAlpListeningHoldDwellMs) : 0;
         alpAlertPresentation_.active = true;
         alpAlertPresentation_.lidActive = (heartbeatByte1 == 0x04);
         alpAlertPresentation_.closedAtMs = 0;

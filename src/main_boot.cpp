@@ -251,9 +251,9 @@ bool readAndClearMaintenanceBootRequest() {
         return false;
     }
     const bool requested = prefs.getBool(kNvsMaintenanceBootReq, false);
-    prefs.putBool(kNvsMaintenanceBootReq, false);
+    const bool cleared = prefs.putBool(kNvsMaintenanceBootReq, false) > 0;
     prefs.end();
-    return requested;
+    return requested && cleared;
 }
 
 // --- fatalBootError ---

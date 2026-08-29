@@ -557,6 +557,9 @@ void DriveRuntime::processSpeedAlert(uint32_t nowMs) {
 DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
     DisplayEdges edges;
     edges.nowMs = millis();
+    if (displayPipeline_.consumeAlpPresentationRefreshDue(edges.nowMs)) {
+        systemEvents_.publishAlpStateChanged();
+    }
     edges.parsed = ParsedFrameEventModule::collect(bleQueue_.consumeParsedFlag(), systemEvents_);
     return edges;
 }

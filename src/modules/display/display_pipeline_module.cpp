@@ -155,6 +155,8 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastPersistenceSlot_ = -1;
     alpAlertPresentation_ = AlpLaserEvent{};
     lastPresentedAlpEventActive_ = false;
+    alpHoldRefreshDeadlineMs_ = 0;
+    alpPersistRefreshDeadlineMs_ = 0;
     pendingVoiceAction_ = VoiceAction{};
     hasPendingVoiceAction_ = false;
     nextVoiceAttemptMs_ = 0;
@@ -162,11 +164,14 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
 
 void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec) {
     if (alpEvent.active) {
+        alpPersistRefreshDeadlineMs_ = 0;
         if (alpLatch_) {
             alpLatch_->setEvent(alpEvent);
         }
     } else if (alpLatch_ && lastPresentedAlpEventActive_) {
         alpLatch_->startPersistence(nowMs);
+        alpPersistRefreshDeadlineMs_ =
+            persistSec > 0 ? nowMs + static_cast<uint32_t>(persistSec) * 1000UL : 0;
     }
 
     lastPresentedAlpEventActive_ = alpEvent.active;
@@ -175,12 +180,14 @@ void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32
         const uint32_t persistWindowMs = static_cast<uint32_t>(persistSec) * 1000UL;
         if (!alpLatch_->shouldShowPersisted(nowMs, persistWindowMs)) {
             alpLatch_->clearLatch();
+            alpPersistRefreshDeadlineMs_ = 0;
         }
     }
 }
 
 AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs) {
     if (rawAlpEvent.active) {
+        alpHoldRefreshDeadlineMs_ = 0;
         AlpLaserEvent next = rawAlpEvent;
         if (next.gun == AlpGunType::UNKNOWN && alpAlertPresentation_.gun != AlpGunType::UNKNOWN) {
             next.gun = alpAlertPresentation_.gun;
@@ -208,14 +215,31 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
     const bool holdAcrossTeardownGap = alpState == AlpState::TEARDOWN && sessionActive;
 
     if ((holdAcrossListeningGap || holdAcrossTeardownGap) && hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
+        alpHoldRefreshDeadlineMs_ =
+            holdAcrossListeningGap ? rawAlpEvent.closedAtMs + kAlpListeningHoldDwellMs : 0;
         alpAlertPresentation_.active = true;
         alpAlertPresentation_.lidActive = (heartbeatByte1 == 0x04);
         alpAlertPresentation_.closedAtMs = 0;
         return alpAlertPresentation_;
     }
 
+    alpHoldRefreshDeadlineMs_ = 0;
     alpAlertPresentation_ = AlpLaserEvent{};
     return alpAlertPresentation_;
+}
+
+bool DisplayPipelineModule::consumeAlpPresentationRefreshDue(uint32_t nowMs) {
+    const bool holdDue = alpHoldRefreshDeadlineMs_ != 0 &&
+                         static_cast<int32_t>(nowMs - alpHoldRefreshDeadlineMs_) >= 0;
+    const bool persistDue = alpPersistRefreshDeadlineMs_ != 0 &&
+                            static_cast<int32_t>(nowMs - alpPersistRefreshDeadlineMs_) >= 0;
+    if (holdDue) {
+        alpHoldRefreshDeadlineMs_ = 0;
+    }
+    if (persistDue) {
+        alpPersistRefreshDeadlineMs_ = 0;
+    }
+    return holdDue || persistDue;
 }
 
 RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef) {

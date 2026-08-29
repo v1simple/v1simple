@@ -48,6 +48,7 @@ class DisplayPipelineModule {
     void refreshBlinkTick(uint32_t nowMs);
     bool restoreCurrentOwner(uint32_t nowMs);
     bool allowsObdPairGesture(uint32_t nowMs) const;
+    bool consumeAlpPresentationRefreshDue(uint32_t nowMs);
 
   private:
     DisplayMode* displayMode_ = nullptr;
@@ -71,6 +72,8 @@ class DisplayPipelineModule {
     // Edge detector for presented active->inactive ALP transitions; begin()
     // resets it because the pipeline assumes synchronous ticks.
     bool lastPresentedAlpEventActive_ = false;
+    uint32_t alpHoldRefreshDeadlineMs_ = 0;
+    uint32_t alpPersistRefreshDeadlineMs_ = 0;
     VoiceAction pendingVoiceAction_{};
     bool hasPendingVoiceAction_ = false;
     uint32_t nextVoiceAttemptMs_ = 0;

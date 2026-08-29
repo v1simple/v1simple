@@ -246,6 +246,8 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     if (!begun_ || !enabled_)
         return;
 
+    const AlpLaserEvent displayProjectionBefore = currentEvent_;
+
     // TEARDOWN timeout runs before parseRingBuffer(). If it returns us to
     // LISTENING, any queued housekeeping heartbeats still sitting in the
     // ring for this same process() call must not heartbeat-reopen the
@@ -281,7 +283,18 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     // Keep the atomic snapshot current even when no state transition fires.
     updateCurrentEvent(nowMs);
 
-    // Record display-window edges after the snapshot is current.
+    // Gun identification and direction sampling can arrive in a later UART
+    // drain than the state transition that opened the alert. Wake the display
+    // for those projection-only changes too; SystemEventBus coalesces this with
+    // any state edge already published during the same process() pass.
+    const bool displayProjectionChanged =
+        displayProjectionBefore.active != currentEvent_.active ||
+        displayProjectionBefore.gun != currentEvent_.gun ||
+        displayProjectionBefore.direction != currentEvent_.direction ||
+        displayProjectionBefore.lidActive != currentEvent_.lidActive;
+    if (displayProjectionChanged) {
+        publishDisplayEdge();
+    }
 }
 
 // ── snapshot() ───────────────────────────────────────────────────────

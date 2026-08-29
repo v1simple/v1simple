@@ -702,6 +702,36 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
     TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
 }
 
+void test_alp_hold_and_persistence_deadlines_each_request_one_refresh() {
+    settings.alpAlertPersistSec = 2;
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
+                              AlpLaserDirection::REAR);
+
+    module.handleParsed(1000);
+
+    // Close into the existing abnormal-listening hold. No packet arrives at
+    // either expiry; the runtime deadline consumer is the only wake source.
+    alpModule.testSetLastHbByte1(0x00);
+    alpModule.testSetState(AlpState::LISTENING, 1100);
+    alpModule.testCloseSession(1100);
+    module.handleParsed(1100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(2099));
+    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(2100));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(2100));
+
+    module.handleParsed(2100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
+
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(4099));
+    TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(4100));
+    TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(4100));
+
+    module.handleParsed(4100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
+}
+
 void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_updates() {
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::FRONT);
@@ -1072,6 +1102,7 @@ int main() {
     RUN_TEST(test_handle_parsed_clears_alp_projection_during_teardown_gap);
     RUN_TEST(test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_returns);
     RUN_TEST(test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell);
+    RUN_TEST(test_alp_hold_and_persistence_deadlines_each_request_one_refresh);
     RUN_TEST(test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_updates);
     RUN_TEST(test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap);
     RUN_TEST(test_restore_current_owner_synthesizes_laser_alert_when_alp_active);

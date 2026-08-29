@@ -2817,6 +2817,45 @@ void test_session_close_publishes_display_edge() {
     TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
 }
 
+void test_split_projection_updates_publish_display_edge() {
+    resetModule();
+    SystemEventBus bus;
+    bus.reset();
+    alpRuntimeModule.setEventBus(&bus);
+    beginEnabled();
+
+    const uint8_t hbWarm[] = {0xB0, 0x02, 0x00, 0x32};
+    inject(hbWarm, sizeof(hbWarm));
+    processAt(1000);
+    (void)bus.consumeAlpStateChanged();
+
+    const uint8_t trigger[] = {0x98, 0x02, 0x00, 0x1A};
+    inject(trigger, sizeof(trigger));
+    processAt(1100);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().isWarmUp);
+    TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
+    (void)bus.consumeAlpStateChanged();
+
+    // The gun arrives in a later UART drain without a state transition. It
+    // promotes the Warm-Up session and must wake the display on its own.
+    const uint8_t gunPl3[] = {0xC8, 0x0D, 0x00, 0x55};
+    inject(gunPl3, sizeof(gunPl3));
+    processAt(1200);
+
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentEvent().gun);
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
+    TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
+
+    // Direction can follow the gun in another drain without a state edge.
+    const uint8_t hbDli[] = {0xB0, 0x03, 0x00, 0x33};
+    inject(hbDli, sizeof(hbDli));
+    processAt(1300);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, alpRuntimeModule.currentEvent().direction);
+    TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
+    TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
+}
+
 void test_no_bus_wired_is_safe() {
     resetModule();
     alpRuntimeModule.setEventBus(nullptr);
@@ -3138,6 +3177,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_transitionTo_leaving_alert_active_publishes_display_edge);
     RUN_TEST(test_session_open_publishes_display_edge);
     RUN_TEST(test_session_close_publishes_display_edge);
+    RUN_TEST(test_split_projection_updates_publish_display_edge);
     RUN_TEST(test_no_bus_wired_is_safe);
     RUN_TEST(test_process_loop_does_not_spam_events);
 

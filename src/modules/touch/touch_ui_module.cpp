@@ -67,6 +67,9 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
                     callbacks_.drawWifiIndicator(callbacks_.drawWifiIndicatorCtx);
                 display_->flush();
             } else if (callbacks_.requestMaintenanceBoot) {
+                if (brightnessAdjustMode_) {
+                    exitAdjustModeAndSave();
+                }
                 callbacks_.requestMaintenanceBoot(callbacks_.requestMaintenanceBootCtx);
             }
         } else if (pressDuration >= BOOT_DEBOUNCE_MS) {

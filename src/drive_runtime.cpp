@@ -146,8 +146,11 @@ void DriveRuntime::requestMaintenanceBootRestart() {
     Serial.println("[MaintBoot] rebooting into maintenance mode");
     const bool persistenceSafe = completeLoggingForControlledRestart(events_, health_);
     if (persistenceSafe) {
-        settings_.save();
-        markCleanShutdown();
+        if (settings_.save()) {
+            markCleanShutdown();
+        } else {
+            Serial.println("[MaintBoot] WARN: settings save failed; restart continuing unclean");
+        }
     } else {
         Serial.println("[MaintBoot] WARN: restart continuing without final persistence writes");
     }

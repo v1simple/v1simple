@@ -37,6 +37,11 @@ LICENSE_PATHS = (
     "licenses/daisyUI-LICENSE.txt",
     "licenses/Tailwind-CSS-LICENSE.txt",
 )
+EXPECTED_INSTALL_SCRIPT = (
+    "https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js?module",
+    "sha384-2Ea4WL8tjFb0qQKUqBoX45KlPVoUgL+Z3zUqsD0MHmtJ3faDbfNyZulLg/LfYDUZ",
+    "anonymous",
+)
 
 
 class InstallerParser(HTMLParser):
@@ -44,7 +49,7 @@ class InstallerParser(HTMLParser):
         super().__init__()
         self.install_manifests: list[str] = []
         self.install_modes: list[str] = []
-        self.module_scripts: list[str] = []
+        self.module_scripts: list[tuple[str, str, str]] = []
         self.links: list[str] = []
         self.images: list[str] = []
 
@@ -54,7 +59,9 @@ class InstallerParser(HTMLParser):
             self.install_manifests.append(attr["manifest"])
             self.install_modes.append(attr.get("data-install-mode", ""))
         if tag == "script" and attr.get("type") == "module" and "src" in attr:
-            self.module_scripts.append(attr["src"])
+            self.module_scripts.append(
+                (attr["src"], attr.get("integrity", ""), attr.get("crossorigin", ""))
+            )
         if tag == "a" and "href" in attr:
             self.links.append(attr["href"])
         if tag == "img" and "src" in attr:
@@ -254,13 +261,8 @@ def main() -> int:
         if required_text not in index_text:
             errors.append(f"index.html must explain installer consequence: {required_text!r}")
 
-    has_install_script = any(
-        src.startswith("https://unpkg.com/esp-web-tools@")
-        and "dist/web/install-button.js" in src
-        for src in parser_obj.module_scripts
-    )
-    if not has_install_script:
-        errors.append("index.html must load the pinned ESP Web Tools install-button module")
+    if parser_obj.module_scripts != [EXPECTED_INSTALL_SCRIPT]:
+        errors.append("index.html must load the exact pinned ESP Web Tools module with SRI")
 
     for required_link in (PROJECT_LICENSE_PATH, NOTICE_PATH, *LICENSE_PATHS):
         if parser_obj.links.count(required_link) != 1:

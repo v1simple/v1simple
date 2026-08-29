@@ -385,6 +385,22 @@ void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
     TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("return;", cleanup));
 }
 
+void test_controlled_restarts_mark_clean_only_after_settings_save_succeeds() {
+    const std::string drive = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
+                                                  "void DriveRuntime::requestMaintenanceBootRestart()");
+    const std::string maintenance = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
+                                                        "void MaintenanceRuntime::restartNormal(");
+
+    const std::string* bodies[] = {&drive, &maintenance};
+    for (const std::string* body : bodies) {
+        const std::string saveSuccess = extractFunctionBody(*body, "if (settings_.save())");
+        TEST_ASSERT_NOT_EQUAL(std::string::npos, saveSuccess.find("markCleanShutdown();"));
+        TEST_ASSERT_EQUAL(std::string::npos, saveSuccess.find("ESP.restart();"));
+        TEST_ASSERT_NOT_EQUAL(std::string::npos, body->find("settings save failed"));
+        TEST_ASSERT_NOT_EQUAL(std::string::npos, body->find("ESP.restart();"));
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_idle_window_is_still_ten_minutes_and_extension_is_bounded);
@@ -409,5 +425,6 @@ int main() {
     RUN_TEST(test_session_start_is_latched_once_and_never_moves);
     RUN_TEST(test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging);
     RUN_TEST(test_maintenance_entry_request_is_never_left_for_a_cancelled_restart);
+    RUN_TEST(test_controlled_restarts_mark_clean_only_after_settings_save_succeeds);
     return UNITY_END();
 }

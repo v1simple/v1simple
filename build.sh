@@ -335,11 +335,10 @@ if [ "$SKIP_WEB" = false ]; then
     echo ""
 else
     echo -e "${YELLOW}Skipping web interface build${NC}"
-    # Ensure data directory exists with at least one file for LittleFS build
-    if [ ! -d "data" ] || [ -z "$(ls -A data 2>/dev/null)" ]; then
-        echo -e "${YELLOW}   Creating minimal data/ directory for filesystem build...${NC}"
-        mkdir -p data
-        echo '{"placeholder":true}' > data/.placeholder.json
+    if { [ "$UPLOAD_FS" = true ] || [ "$DIST_BUILD" = true ]; } && [ ! -s "data/index.html" ]; then
+        echo -e "${RED}Cannot reuse web files: data/index.html is missing or empty.${NC}" >&2
+        echo "   Run without --skip-web to rebuild the web interface." >&2
+        exit 1
     fi
     echo ""
 fi

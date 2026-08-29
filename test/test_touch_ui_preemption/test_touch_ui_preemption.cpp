@@ -44,6 +44,14 @@ TouchUiModule gModule;
 
 int gRestoreDisplayCalls = 0;
 void restoreDisplay(void* /*ctx*/) { ++gRestoreDisplayCalls; }
+int gMaintenanceBootCalls = 0;
+uint8_t gBrightnessAtMaintenanceRequest = 0;
+int gPersistCallsAtMaintenanceRequest = 0;
+void requestMaintenanceBoot(void* /*ctx*/) {
+    ++gMaintenanceBootCalls;
+    gBrightnessAtMaintenanceRequest = gSettings.settings.brightness;
+    gPersistCallsAtMaintenanceRequest = gSettings.saveDeferredBackupCalls;
+}
 
 // Short BOOT press/release: the module's documented enter-adjust gesture.
 unsigned long enterAdjustMode(unsigned long now) {
@@ -66,9 +74,13 @@ void setUp() {
     gAudioSetVolumeCalls = 0;
     gLastAudioVolume = 0;
     gPlayTestVoiceCalls = 0;
+    gMaintenanceBootCalls = 0;
+    gBrightnessAtMaintenanceRequest = 0;
+    gPersistCallsAtMaintenanceRequest = 0;
 
     TouchUiModule::Callbacks cbs{};
     cbs.restoreDisplay = &restoreDisplay;
+    cbs.requestMaintenanceBoot = &requestMaintenanceBoot;
     gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
 }
 
@@ -117,10 +129,28 @@ void test_preempt_is_single_shot() {
     TEST_ASSERT_EQUAL(1, gSettings.requestDeferredPersistCalls);
 }
 
+void test_maintenance_long_press_saves_active_slider_edits_before_request() {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    gTouch.queueTouch(600, 100);
+    TEST_ASSERT_TRUE(gModule.process(now + 10, false));
+
+    TEST_ASSERT_TRUE(gModule.process(now + 100, true));
+    TEST_ASSERT_FALSE(gModule.process(now + 4200, false));
+
+    TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL(80, gBrightnessAtMaintenanceRequest);
+    TEST_ASSERT_EQUAL(1, gPersistCallsAtMaintenanceRequest);
+    TEST_ASSERT_EQUAL(80, gSettings.settings.brightness);
+    TEST_ASSERT_EQUAL(1, gSettings.saveDeferredBackupCalls);
+    TEST_ASSERT_EQUAL(0, gSettings.requestDeferredPersistCalls);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_preempt_is_noop_when_menu_closed);
     RUN_TEST(test_preempt_closes_active_adjust_session);
     RUN_TEST(test_preempt_is_single_shot);
+    RUN_TEST(test_maintenance_long_press_saves_active_slider_edits_before_request);
     return UNITY_END();
 }

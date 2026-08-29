@@ -27,7 +27,10 @@ def write_executable(path: Path, content: str) -> None:
 
 
 def run_reset(
-    *, confirmation: str, fail_build: bool = False
+    *,
+    confirmation: str,
+    fail_build: bool = False,
+    arguments: tuple[str, ...] = ("--reset",),
 ) -> tuple[subprocess.CompletedProcess[str], list[str], bool]:
     temp_dir = tempfile.TemporaryDirectory()
     fixture = Path(temp_dir.name)
@@ -73,7 +76,7 @@ exec {shlex.quote(sys.executable)} "$@"
         env["BUILD_RESET_FAIL_BUILD"] = "1"
 
     result = subprocess.run(
-        ["bash", str(fixture / "build.sh"), "--reset"],
+        ["bash", str(fixture / "build.sh"), *arguments],
         cwd=fixture,
         env=env,
         input=confirmation,
@@ -120,6 +123,16 @@ def test_build_failure_happens_before_erase() -> None:
     assert_true(calls == ["run -e waveshare-349"], f"erase ran after failed build: {calls}")
 
 
+def test_skip_web_rejects_missing_filesystem_data() -> None:
+    result, calls, _ = run_reset(
+        confirmation="",
+        arguments=("--skip-web", "--upload-fs"),
+    )
+    assert_true(result.returncode != 0, "missing web files were accepted for uploadfs")
+    assert_true(not calls, f"PlatformIO ran before missing web files were rejected: {calls}")
+    assert_true("data/index.html is missing or empty" in result.stderr, result.stderr)
+
+
 def test_build_reuses_frontend_and_firmware_outputs() -> None:
     source = (ROOT / "build.sh").read_text(encoding="utf-8")
     assert_true("npm run deploy:built" in source, "build.sh must deploy the frontend it just built")
@@ -140,6 +153,7 @@ def main() -> int:
     test_reset_contract()
     test_reset_rejects_missing_confirmation()
     test_build_failure_happens_before_erase()
+    test_skip_web_rejects_missing_filesystem_data()
     test_build_reuses_frontend_and_firmware_outputs()
     test_build_uses_the_authoritative_native_runner()
     print("build reset tests: PASS")

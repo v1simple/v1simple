@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import check_release_workflow_flash_contract as contract
+import check_web_installer_page as installer
 import write_release_manifests as manifests
 
 
@@ -174,6 +175,34 @@ class ReleaseArtifactContractTests(unittest.TestCase):
                 contract.check_flash_and_package(errors)
 
         self.assertTrue(any(required in error for error in errors), errors)
+
+    def test_rejects_unpinned_installer_dependency_without_sri(self) -> None:
+        index_text = (contract.ROOT / "web-installer" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        expected_url, expected_integrity, expected_crossorigin = installer.EXPECTED_INSTALL_SCRIPT
+        self.assertIn(f'src="{expected_url}"', index_text)
+        mutated = index_text.replace(
+            expected_url,
+            "https://unpkg.com/esp-web-tools@latest/dist/web/install-button.js?module",
+            1,
+        )
+        mutated = mutated.replace(f'\n    integrity="{expected_integrity}"', "", 1)
+        mutated = mutated.replace(f'\n    crossorigin="{expected_crossorigin}"', "", 1)
+
+        with tempfile.TemporaryDirectory(prefix="installer_dependency_") as temporary:
+            site_dir = Path(temporary) / "web-installer"
+            site_dir.mkdir()
+            (site_dir / "index.html").write_text(mutated, encoding="utf-8")
+            branding = Path(temporary) / "interface/static/branding/v1simple-logo-transparent.png"
+            branding.parent.mkdir(parents=True)
+            branding.write_bytes(b"branding")
+            with mock.patch.object(
+                installer.sys,
+                "argv",
+                ["checker", "--site-dir", str(site_dir), "--template-only"],
+            ):
+                self.assertEqual(installer.main(), 1)
 
     def test_release_offsets_match_partition_table(self) -> None:
         self.assertEqual(

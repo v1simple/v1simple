@@ -62,16 +62,26 @@ public:
     void setMuteVolume(uint8_t vol)    { state.muteVolume = vol; }
 
     // Parser interface
-    bool hasAlerts()     const { return hasAlertsFlag; }
+    bool hasDisplayLaserAlert() const { return (state.activeBands & BAND_LASER) != 0; }
+    bool hasAlerts()     const { return hasAlertsFlag || hasDisplayLaserAlert(); }
     int  getAlertCount() const { return static_cast<int>(alerts.size()); }
-    AlertData getPriorityAlert() const { return priorityAlert; }
+    AlertData getPriorityAlert() const {
+        if (!hasDisplayLaserAlert()) return priorityAlert;
+        AlertData laser;
+        laser.band = BAND_LASER;
+        laser.direction = state.arrows;
+        laser.isValid = true;
+        laser.isPriority = true;
+        return laser;
+    }
 
     bool getRenderablePriorityAlert(AlertData& out) const {
         auto isRenderable = [](const AlertData& a) -> bool {
             if (!a.isValid || a.band == BAND_NONE) return false;
             return (a.band == BAND_LASER) || (a.frequency != 0);
         };
-        if (isRenderable(priorityAlert)) { out = priorityAlert; return true; }
+        const AlertData priority = getPriorityAlert();
+        if (isRenderable(priority)) { out = priority; return true; }
         for (const auto& alert : alerts) {
             if (isRenderable(alert)) { out = alert; return true; }
         }
@@ -101,6 +111,11 @@ public:
         priorityAlert = AlertData();
         hasAlertsFlag = false;
         state.priorityArrow = DIR_NONE;
+        state.activeBands = BAND_NONE;
+        state.arrows = DIR_NONE;
+        state.signalBars = 0;
+        state.flashBits = 0;
+        state.bandFlashBits = 0;
         state.v1PriorityIndex = 0;
         state.hasJunkAlert = false;
         state.hasPhotoAlert = false;

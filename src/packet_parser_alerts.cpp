@@ -22,6 +22,13 @@ void PacketParser::resetAlertAssembly() {
 }
 
 void PacketParser::resetAlertState() {
+    // InfDisplayData is session-scoped too. Do not let a laser snapshot from
+    // the closed link become live again before the new session sends data.
+    displayState_.activeBands = BAND_NONE;
+    displayState_.arrows = DIR_NONE;
+    displayState_.signalBars = 0;
+    displayState_.flashBits = 0;
+    displayState_.bandFlashBits = 0;
     resetAlertStateAt(static_cast<uint32_t>(millis()));
 }
 
@@ -199,7 +206,11 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     if (receivedAlertCount == 0) {
         // The empty alert publication owns this arrow clear too. Apply it
         // before advancing the revision observed by downstream consumers.
-        displayState_.arrows = DIR_NONE;
+        // Laser is not present in the radar-only table, so keep its
+        // InfDisplayData direction while clearing the radar rows.
+        if (!hasDisplayLaserAlert()) {
+            displayState_.arrows = DIR_NONE;
+        }
         resetAlertStateAt(nowMs);
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
         // Preserve muted; its authoritative state comes from
@@ -441,6 +452,17 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 }
 
 AlertData PacketParser::getPriorityAlert() const {
+    if (hasDisplayLaserAlert()) {
+        // Laser is absent from the radar-only Alert Table. Carry its live
+        // source values from InfDisplayData without inventing row RSSI.
+        AlertData laser;
+        laser.band = BAND_LASER;
+        laser.direction = displayState_.arrows;
+        laser.isValid = true;
+        laser.isPriority = true;
+        return laser;
+    }
+
     if (alertCount_ == 0) {
         return AlertData();
     }
@@ -456,9 +478,6 @@ AlertData PacketParser::getPriorityAlert() const {
 
 bool PacketParser::getRenderablePriorityAlert(AlertData& out) const {
     out = AlertData();
-    if (alertCount_ == 0) {
-        return false;
-    }
 
     auto isRenderable = [](const AlertData& a) -> bool {
         if (!a.isValid || a.band == BAND_NONE) {

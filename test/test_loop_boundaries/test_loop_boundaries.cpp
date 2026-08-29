@@ -273,6 +273,8 @@ void test_settings_remains_open_after_alp_processing_without_live_alert() {
                  Call::POWER_PRESENTATION,
                  Call::PARSING,
                  Call::SETTINGS_PREEMPT,
+                 Call::READY_GATE,
+                 Call::BLE_RUNTIME,
                  Call::OBSERVE_ALP,
                  Call::PERSISTENCE,
                  Call::FINISH});

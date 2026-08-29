@@ -165,6 +165,26 @@ void test_parse_display_packet_laser_keeps_led_bitmap_signal_bars() {
     TEST_ASSERT_EQUAL_UINT8(DIR_FRONT, state.arrows);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, state.signalBars,
         "laser display packets must render the LED bitmap literally, not force synthetic full bars");
+    TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(parser.getAlertCount()));
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+
+    const AlertData directPriority = parser.getPriorityAlert();
+    TEST_ASSERT_EQUAL(BAND_LASER, directPriority.band);
+
+    AlertData priority;
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL(BAND_LASER, priority.band);
+    TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
+
+    const auto emptyRadarTable = makePacket(PACKET_ID_ALERT_DATA, {0x00, 0x00});
+    TEST_ASSERT_TRUE(parsePacket(parser, emptyRadarTable));
+    TEST_ASSERT_TRUE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL(DIR_FRONT, parser.getPriorityAlert().direction);
+
+    parser.resetAlertState();
+    TEST_ASSERT_FALSE(parser.hasAlerts());
+    TEST_ASSERT_EQUAL(BAND_NONE, parser.getDisplayState().activeBands);
+    TEST_ASSERT_EQUAL(DIR_NONE, parser.getDisplayState().arrows);
 }
 
 void test_parse_display_packet_zero_volume_does_not_force_muted() {

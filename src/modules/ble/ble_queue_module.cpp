@@ -381,7 +381,7 @@ void BleQueueModule::process() {
             }
             // Only cancel preview when V1 has an actual alert (not on every packet)
             // This allows color preview to run while V1 is connected but resting
-            if (previewActive && preview_ && parser_->getAlertCount() > 0) {
+            if (previewActive && preview_ && parser_->hasAlerts()) {
                 preview_->cancel();
                 previewActive = false;
             }

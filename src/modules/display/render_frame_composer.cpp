@@ -147,6 +147,9 @@ RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot
         // them from alert-row RSSI; those per-alert strengths drive secondary
         // alert context only.
         frame.primaryState = v1.state;
+        if (filteredPriority.band == BAND_LASER) {
+            frame.primaryState.priorityArrow = filteredPriority.direction;
+        }
         appendFilteredV1Alerts(frame, v1, /*suppressLaser=*/false, &filteredPriority);
         return frame;
     }

@@ -217,6 +217,28 @@ void test_handle_parsed_updates_live_display_when_alert_present() {
         "parsed local display bars remain available as frame context");
 }
 
+void test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards() {
+    parser.state.activeBands = BAND_LASER;
+    parser.state.arrows = DIR_REAR;
+    parser.state.signalBars = 2;
+    parser.setAlerts({makeKAlert()});
+
+    module.handleParsed(1000);
+
+    TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
+    TEST_ASSERT_TRUE(display.hasLastRenderFrame);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL(BAND_K, display.lastRenderFrame.cards[0].v1Alert.band);
+    TEST_ASSERT_EQUAL(BAND_LASER, display.lastPriorityAlert.band);
+    TEST_ASSERT_EQUAL(DIR_REAR, display.lastPriorityAlert.direction);
+    TEST_ASSERT_EQUAL(BAND_LASER, display.lastAlertDisplayState.activeBands);
+    TEST_ASSERT_EQUAL(DIR_REAR, display.lastAlertDisplayState.arrows);
+    TEST_ASSERT_EQUAL(DIR_REAR, display.lastAlertDisplayState.priorityArrow);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, display.lastAlertDisplayState.signalBars,
+                                    "display-only V1 laser must keep the source bitmap strength");
+}
+
 void test_busy_voice_keeps_exact_action_until_playback_accepts() {
     parser.setMainVolume(5);
     parser.setAlerts({makeKAlert(24148)});
@@ -1029,6 +1051,7 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_handle_parsed_updates_live_display_when_alert_present);
+    RUN_TEST(test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards);
     RUN_TEST(test_busy_voice_keeps_exact_action_until_playback_accepts);
     RUN_TEST(test_busy_voice_drops_stale_pending_action_when_alert_changes);
     RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);

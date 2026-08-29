@@ -49,6 +49,8 @@ class DriveLoopCoordinator {
             runtime.processAlp(timing.nowMs);
             alpProcessed = true;
             if (!runtime.preemptSettingsForLiveAlert()) {
+                runtime.openBootReadyGate(timing.nowMs);
+                runtime.processBleRuntime();
                 runtime.observeAlpProductState(timing.nowMs);
                 runtime.processPeriodicMaintenance(timing.nowMs, bleConnected, false, false, true);
                 runtime.finishDriveLoop(false, timing.loopStartUs, true);

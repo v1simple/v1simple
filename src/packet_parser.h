@@ -46,9 +46,9 @@ class PacketParser {
     // Get number of active alerts
     size_t getAlertCount() const { return alertCount_; }
 
-    // Check if there are active alerts
-    // Only check alertCount_ - display state can lag behind
-    bool hasAlerts() const { return alertCount_ > 0; }
+    // The Alert Table contains radar only. A V1 laser is live from
+    // InfDisplayData even when the table has zero rows.
+    bool hasAlerts() const { return alertCount_ > 0 || hasDisplayLaserAlert(); }
 
     // Check if V1 firmware supports volume display
     // Show volume if we've received volume data OR confirmed firmware version 4.1028+
@@ -91,6 +91,8 @@ class PacketParser {
     std::array<uint32_t, MAX_ALERTS + 1> alertTableFirstSeenMs_;
     AlertTableObserver alertTableObserver_ = nullptr;
     void* alertTableObserverContext_ = nullptr;
+
+    bool hasDisplayLaserAlert() const { return (displayState_.activeBands & BAND_LASER) != 0; }
 
     // Packet parsing helpers
     bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs);

@@ -224,15 +224,16 @@ void test_last_v1_address_does_not_schedule_full_settings_persist() {
 void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
     SettingsManager manager(storage, profiles);
 
+    mockMillis = UINT32_MAX - 749u;
     manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
     TEST_ASSERT_EQUAL_STRING(
         "",
         mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
-    manager.serviceDeferredPersist(1749u);
+    manager.serviceDeferredPersist(UINT32_MAX);
     TEST_ASSERT_EQUAL_STRING(
         "",
         mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
-    manager.serviceDeferredPersist(1750u);
+    manager.serviceDeferredPersist(0u);
     TEST_ASSERT_EQUAL_STRING(
         "AA:BB:CC:DD:EE:FF",
         mock_preferences::getString(kSettingsV1RuntimeNamespace, kNvsLastConnectedV1Address, "").c_str());
@@ -247,12 +248,15 @@ void test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key() {
     mock_preferences::set_fail_writes(true);
     manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
     manager.serviceDeferredPersist(3000u);
+    mockMillis = UINT32_MAX - 1749u;
     manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");
-    manager.serviceDeferredPersist(1750u);
+    manager.serviceDeferredPersist(UINT32_MAX - 999u);
     TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
 
     mock_preferences::set_fail_writes(false);
-    manager.serviceDeferredPersist(2750u);
+    manager.serviceDeferredPersist(UINT32_MAX);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
+    manager.serviceDeferredPersist(0u);
     TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", manager.loadLastV1AddressFallback().c_str());
     TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback());
     TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());

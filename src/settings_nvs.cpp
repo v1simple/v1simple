@@ -1038,8 +1038,7 @@ void SettingsManager::serviceLastV1AddressFallbackPersist(uint32_t nowMs) {
     if (!lastV1AddressFallbackPending_) {
         return;
     }
-    if (lastV1AddressFallbackNextAttemptAtMs_ != 0 &&
-        static_cast<int32_t>(nowMs - lastV1AddressFallbackNextAttemptAtMs_) < 0) {
+    if (static_cast<int32_t>(nowMs - lastV1AddressFallbackNextAttemptAtMs_) < 0) {
         return;
     }
 

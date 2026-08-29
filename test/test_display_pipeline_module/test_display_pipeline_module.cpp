@@ -763,7 +763,7 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
     TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
 }
 
-void test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap() {
+void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
     settings.alpAlertPersistSec = 0;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE,
                               AlpLaserDirection::FRONT);
@@ -776,25 +776,8 @@ void test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap(
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
 
-    // The runtime times out to LISTENING while the ALP is still toggling
-    // Targeted/idle heartbeats for the same physical encounter.
-    alpModule.testSetLastHbByte1(0x01);
-    alpModule.testSetState(AlpState::LISTENING, 1000);
-    alpModule.testCloseSession(1000);
-
-    display.reset();
-    mockMillis = 1100;
-    mockMicros = 1100 * 1000UL;
-    module.handleParsed(1100);
-
-    TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
-
-    // Same encounter immediately reopens and falls back into TEARDOWN
-    // before a new gun frame arrives. Keep showing the prior context.
+    // Runtime deliberately suppresses a TEARDOWN session with no gun ID.
+    // Prior display context must not resurrect that inactive projection.
     alpModule.testOpenSession(AlpGunType::UNKNOWN, /*isWarmUp=*/false,
                               AlpLaserDirection::FRONT);
     alpModule.testSetState(AlpState::TEARDOWN);
@@ -805,11 +788,9 @@ void test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap(
     mockMicros = 1200 * 1000UL;
     module.handleParsed(1200);
 
-    TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
 }
 
 void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
@@ -1110,7 +1091,7 @@ int main() {
     RUN_TEST(test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell);
     RUN_TEST(test_alp_hold_and_persistence_deadlines_each_request_one_refresh);
     RUN_TEST(test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_updates);
-    RUN_TEST(test_handle_parsed_keeps_prior_alp_context_through_teardown_only_rearm_gap);
+    RUN_TEST(test_handle_parsed_clears_prior_alp_context_during_unknown_teardown);
     RUN_TEST(test_restore_current_owner_synthesizes_laser_alert_when_alp_active);
     RUN_TEST(test_restore_current_owner_restores_alp_persisted_owner);
     RUN_TEST(test_restore_current_owner_prioritizes_alp_laser_over_v1_radar);

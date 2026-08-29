@@ -207,17 +207,15 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
 
     const AlpState alpState = alp_ ? alp_->getState() : AlpState::OFF;
     const uint8_t heartbeatByte1 = alp_ ? alp_->lastHeartbeatByte1() : 0xFF;
-    const bool sessionActive = alp_ && alp_->currentSession().active;
     const bool normalHeartbeat = isNormalAlpListeningHeartbeat(alpState, heartbeatByte1);
     const bool recentInactiveClose =
         rawAlpEvent.closedAtMs != 0 && (nowMs - rawAlpEvent.closedAtMs) < kAlpListeningHoldDwellMs;
 
     const bool holdAcrossListeningGap = alpState == AlpState::LISTENING && !normalHeartbeat && recentInactiveClose;
-    const bool holdAcrossTeardownGap = alpState == AlpState::TEARDOWN && sessionActive;
 
-    if ((holdAcrossListeningGap || holdAcrossTeardownGap) && hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
+    if (holdAcrossListeningGap && hasDisplayableAlpAlertContext(alpAlertPresentation_)) {
         alpHoldRefreshDeadlineMs_ =
-            holdAcrossListeningGap ? std::max<uint32_t>(1, rawAlpEvent.closedAtMs + kAlpListeningHoldDwellMs) : 0;
+            std::max<uint32_t>(1, rawAlpEvent.closedAtMs + kAlpListeningHoldDwellMs);
         alpAlertPresentation_.active = true;
         alpAlertPresentation_.lidActive = (heartbeatByte1 == 0x04);
         alpAlertPresentation_.closedAtMs = 0;

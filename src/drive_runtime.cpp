@@ -460,10 +460,11 @@ void DriveRuntime::observeAlpProductState(uint32_t nowMs) {
 void DriveRuntime::processConnectionCycle(uint32_t nowMs, bool bleConnectedNow) {
     const ObdRuntimeStatus obdStatus = obd_.snapshot(nowMs);
     const V1Settings& currentSettings = settings_.get();
+    const bool v1GattReady = bleConnectedNow && ble_.getBLEState() == BLEState::CONNECTED;
     const CycleContext cycleContext{
         nowMs,
         state_.bootReady,
-        bleConnectedNow,
+        v1GattReady,
         currentSettings.autoPushEnabled,
         ble_.consumeVerifyPushMatchEdge(),
         ble_.lastV1ConnectionEventMs(),
